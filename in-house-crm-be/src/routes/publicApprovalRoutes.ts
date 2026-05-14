@@ -1,0 +1,34 @@
+import express from 'express';
+import publicApprovalController from '../controllers/publicApprovalController';
+import { authenticateToken } from '../middleware/authMiddleware';
+
+const router = express.Router();
+
+// Generate a new share token for an application's Approval page (protected)
+router.post(
+  '/application/:applicationId/approval-token',
+  authenticateToken,
+  publicApprovalController.createToken.bind(publicApprovalController)
+);
+
+// Public: status portal (register before the generic `/:token` handler)
+router.get(
+  '/application/:token/portal-status',
+  publicApprovalController.getPortalStatusByToken.bind(publicApprovalController)
+);
+
+// Public: open approval by token (no auth required)
+router.get(
+  '/application/:token',
+  publicApprovalController.getByToken.bind(publicApprovalController)
+);
+
+// Public: create an authenticated session (JWT) for public approval token
+// so existing authenticated UI actions (comments, uploads) can work end-to-end.
+router.post(
+  '/application/:token/approval-session',
+  publicApprovalController.createApprovalSession.bind(publicApprovalController)
+);
+
+export default router;
+

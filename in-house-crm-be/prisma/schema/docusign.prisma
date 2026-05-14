@@ -1,0 +1,81 @@
+model DocuSignToken {
+  id             Int      @id @default(autoincrement())
+  userId         String   @unique
+  accessToken    String
+  refreshToken   String
+  expirationTime DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model DocuSignEnvelope {
+  id                 Int                    @id @default(autoincrement())
+  envelopeId         String                 @unique
+  status             String
+  sentAt             DateTime?
+  completedAt        DateTime?
+  envelopeUri        String
+  deliveredAt        DateTime?
+  declinedAt         DateTime?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  termsOfferId       String?                @db.Uuid
+  contractId         Int?
+  docuSignDocuments  DocuSignDocument[]
+  contract           Contract?              @relation(fields: [contractId], references: [id])
+  termsOffer         TermsOffer?            @relation(fields: [termsOfferId], references: [id])
+  docuSignRecipients DocuSignRecipient[]
+  docuSignSender     DocuSignSender?
+  webhookEvents      DocuSignWebhookEvent[]
+
+  @@index([envelopeId], map: "docuSignEnvelope_envelopeId_idx")
+}
+
+model DocuSignSender {
+  id               Int              @id @default(autoincrement())
+  envelopeId       String           @unique @db.VarChar(36)
+  senderName       String
+  senderEmail      String
+  senderIp         String?
+  accountId        String
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  docuSignEnvelope DocuSignEnvelope @relation(fields: [envelopeId], references: [envelopeId], onDelete: Cascade)
+}
+
+model DocuSignRecipient {
+  id               Int              @id @default(autoincrement())
+  envelopeId       String           @db.VarChar(36)
+  recipientId      String
+  recipientRole    String
+  status           String
+  signedAt         DateTime?
+  declinedAt       DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  declinedReason   String?
+  docuSignEnvelope DocuSignEnvelope @relation(fields: [envelopeId], references: [envelopeId], onDelete: Cascade)
+
+  @@unique([envelopeId, recipientId], name: "docuSign_envelopeId_recipientId_idx")
+}
+
+model DocuSignWebhookEvent {
+  id               Int              @id @default(autoincrement())
+  envelopeId       String           @db.VarChar(36)
+  eventType        String
+  eventTimestamp   DateTime
+  createdAt        DateTime         @default(now())
+  docuSignEnvelope DocuSignEnvelope @relation(fields: [envelopeId], references: [envelopeId], onDelete: Cascade)
+}
+
+model DocuSignDocument {
+  id               Int              @id @default(autoincrement())
+  envelopeId       String           @db.VarChar(36)
+  documentId       String
+  documentName     String
+  status           String
+  documentUrl      String
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  docuSignEnvelope DocuSignEnvelope @relation(fields: [envelopeId], references: [envelopeId], onDelete: Cascade)
+}

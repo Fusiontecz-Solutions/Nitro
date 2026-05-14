@@ -1,0 +1,19 @@
+model DecisionLogicToken {
+  token           String   @id
+  businessOwnerId Int
+  bankAccountId   Int
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+}
+
+model DecisionLogicReportRow {
+  id              String   @id @default(uuid()) @db.Uuid
+  requestCode     String
+  businessOwnerId Int
+  bankAccountId   Int
+  reportsDetails  Json
+  createdAt       DateTime @default(now())
+
+  @@unique([requestCode, businessOwnerId, bankAccountId])
+  @@index([businessOwnerId])
+}
