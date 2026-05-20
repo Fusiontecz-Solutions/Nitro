@@ -44,13 +44,15 @@ export type BoldSignMergeAndSendPayload = {
   useLegacyMergeApi?: boolean;
   /** Non-signers who receive a copy when the merged document is sent from BoldSign. */
   ccEmails?: string[];
+  /** When false, creates a draft envelope only (no signing emails). */
+  autoSend?: boolean;
 };
 
 export const mergeAndSendBoldSignTemplates = createAsyncThunk(
   "boldSign/mergeAndSendTemplates",
   async (payload: BoldSignMergeAndSendPayload, { rejectWithValue }) => {
     try {
-      const response = await axiosPost("/boldsign/merge-and-send", payload);
+      const response = await axiosPost("/docusign/merge-and-send", payload);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
@@ -71,11 +73,11 @@ export const sendBoldSignDocument = createAsyncThunk(
     ccEmails?: string[];
   }, { rejectWithValue }) => {
     try {
-      const response = await axiosPost("/boldsign/send-document", payload);
+      const response = await axiosPost("/docusign/send-document", payload);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
-        error.response?.data?.message || "Failed to send BoldSign document"
+        error.response?.data?.message || "Failed to send DocuSign document"
       );
     }
   }
@@ -130,20 +132,22 @@ export type BoldSignSendTemplateOptions = {
   roleRemovalIndices?: number[];
   /** Application UUID — backend links BoldSign document to CRM `Document` / `Contract` for webhooks. */
   applicationId?: string;
+  /** When true (default), DocuSign emails signers without opening sender UI. */
+  autoSend?: boolean;
 };
 
 export const sendBoldSignTemplate = createAsyncThunk(
   "boldSign/sendTemplate",
   async (payload: BoldSignSendTemplateOptions, { rejectWithValue }) => {
     try {
-      const response = await axiosPost("/boldsign/send-template", payload);
+      const response = await axiosPost("/docusign/send-template", payload);
       console.log("sendBoldSignTemplate response:", response.data);
       console.log("sendBoldSignTemplate payload:", payload);
       return response.data;
     } catch (error: any) {
       console.log("sendBoldSignTemplate error:", error);
       return rejectWithValue(
-        error.response?.data?.message || "Failed to send BoldSign template"
+        error.response?.data?.message || "Failed to send DocuSign template"
       );
     }
   }
@@ -153,7 +157,7 @@ export const getBoldSignEmbeddedRequestUrl = createAsyncThunk(
   "boldSign/getEmbeddedRequestUrl",
   async (payload: Record<string, any>, { rejectWithValue }) => {
     try {
-      const response = await axiosPost("/boldsign/embedded-request-url", payload);
+      const response = await axiosPost("/docusign/embedded-request-url", payload);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
@@ -167,7 +171,7 @@ export const getBoldSignEmbeddedSignLink = createAsyncThunk(
   "boldSign/getEmbeddedSignLink",
   async (payload: Record<string, any>, { rejectWithValue }) => {
     try {
-      const response = await axiosPost("/boldsign/embedded-sign-link", payload);
+      const response = await axiosPost("/docusign/embedded-sign-link", payload);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
@@ -181,7 +185,7 @@ export const voidBoldSignDocument = createAsyncThunk(
   "boldSign/voidDocument",
   async (payload: Record<string, any>, { rejectWithValue }) => {
     try {
-      const response = await axiosPost("/boldsign/void-document", payload);
+      const response = await axiosPost("/docusign/void-document", payload);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
@@ -195,7 +199,7 @@ export const getBoldSignDocumentProperties = createAsyncThunk(
   "boldSign/getDocumentProperties",
   async (documentId: string, { rejectWithValue }) => {
     try {
-      const response = await axiosGet(`/boldsign/document-properties/${documentId}`);
+      const response = await axiosGet(`/docusign/document-properties/${documentId}`);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
@@ -209,7 +213,7 @@ export const downloadBoldSignSignedPdf = createAsyncThunk(
   "boldSign/downloadSignedPdf",
   async (documentId: string, { rejectWithValue }) => {
     try {
-      const response = await axiosGet(`/boldsign/download/${documentId}`, {
+      const response = await axiosGet(`/docusign/download/${documentId}`, {
         responseType: "blob",
       });
 
@@ -236,7 +240,7 @@ export const listBoldSignDocuments = createAsyncThunk(
     { rejectWithValue }
   ) => {
     try {
-      const response = await axiosGet("/boldsign/list", { params });
+      const response = await axiosGet("/docusign/list", { params });
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
@@ -280,7 +284,7 @@ export const addRecipientsToBoldSignTemplate = createAsyncThunk(
   "boldSign/addRecipientsToTemplate",
   async (payload: AddRecipientsToTemplatePayload, { rejectWithValue }) => {
     try {
-      const response = await axiosPost("/boldsign/add-template-recipients", {
+      const response = await axiosPost("/docusign/add-template-recipients", {
         templateId: payload.templateId,
         roles: payload.roles,
         title: payload.title,
@@ -299,10 +303,13 @@ export const addRecipientsToBoldSignTemplate = createAsyncThunk(
 
 export const getBoldSignTemplateRecipients = createAsyncThunk(
   "boldSign/getTemplateRecipients",
-  async (_, { rejectWithValue }) => {
+  async (templateId: string | undefined, { rejectWithValue }) => {
     try {
-      // const FIXED_TEMPLATE_ID = "50deb96f-c5da-44b7-9a97-90397deaa29c";
-      const response = await axiosGet(`/boldsign/template/recipients`);
+      const tid = String(templateId ?? "").trim();
+      const url = tid
+        ? `/docusign/template/recipients?templateId=${encodeURIComponent(tid)}`
+        : `/docusign/template/recipients`;
+      const response = await axiosGet(url);
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
@@ -317,7 +324,7 @@ export const prefillBoldSignFields = createAsyncThunk(
   async (payload: BoldSignPrefillFieldsPayload, { rejectWithValue }) => {
     try {
       // Backend expects fields: [{ id, value }]
-      const response = await axiosPatch("/boldsign/prefill-fields", {
+      const response = await axiosPatch("/docusign/prefill-fields", {
         documentId: payload.documentId,
         fields: payload.fields.map((field) => ({
           id: field.id,

@@ -152,10 +152,9 @@ export function AvochatoCallSurface({
         ) : null}
 
         {configured === false ? (
-          <p className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] px-4 py-3 text-sm text-amber-950 backdrop-blur-sm dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-100">
-            Set <span className="font-mono text-foreground/90">AVOCHATO_AUTH_ID</span> and{" "}
-            <span className="font-mono text-foreground/90">AVOCHATO_AUTH_SECRET</span> on the API server to enable
-            calling.
+          <p className="rounded-xl border border-amber-200/80 bg-[#fff7e6] px-4 py-3 text-sm leading-relaxed text-amber-950 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-100">
+            Voice calling is not set up for your organization yet. Ask your administrator to enable it if you
+            need calls from the browser.
           </p>
         ) : null}
 

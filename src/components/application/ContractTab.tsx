@@ -16,7 +16,6 @@ import {
     getAllContractGuarantors,
     getAllContractOwners,
     getAllEPO,
-    getBoldSignTemplates,
     getByApplicationIdContract,
     getByIdContract,
 } from "@/redux/actions/contractActions";
@@ -27,6 +26,7 @@ import {
     sendBoldSignTemplate,
     type BoldSignTemplateRole,
 } from "@/redux/actions/boldSignActions";
+import { axiosPost } from "@/redux/axios";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -76,11 +76,18 @@ import {
     type ContractPrefillContractRecords,
 } from "./contractdata/Contract";
 import { buildBoldSignMergeRolesForStateTemplateMerge } from "./contractdata/boldSignMergeRoles";
-import {
-    buildStateDisclosurePrefillContextFromContract,
-    getStateDisclosurePrefillFieldsForTemplates,
-} from "./contractdata/stateDisclosurePrefill";
 import { applyDocumentTemplateMappingPrefillOverrides } from "./contractdata/documentTemplateMappingPrefill";
+import {
+    DEFAULT_DOCUSIGN_TEMPLATE_ID,
+    DOCUSIGN_DEFAULT_SIGNER_ROLE,
+} from "./contractdata/docusignTemplateConfig";
+import {
+    firstNonEmptyString,
+    getTemplateRoleEmailFromRow,
+    getTemplateRoleLabel,
+    getTemplateRoleNameFromRow,
+    parseBoldSignTemplateRolesFromRecipientsPayload,
+} from "./contractdata/templateRecipients";
 import {
     formatCurrency,
     formatCurrencyFull,
@@ -109,7 +116,8 @@ function isBoldSignMissingSignerMessage(message: string): boolean {
         m.includes("minimum one signer") ||
         m.includes("one signer is needed") ||
         m.includes('"signers"') ||
-        (m.includes("boldsign validation error") && m.includes("signer"))
+        (m.includes("boldsign validation error") && m.includes("signer")) ||
+        (m.includes("docusign error") && m.includes("signer"))
     );
 }
 
@@ -175,102 +183,6 @@ interface ContractTabProps {
     readOnly?: boolean;
 }
 
-const DEFAULT_BOLDSIGN_TEMPLATE_ID =
-    (typeof import.meta !== "undefined" &&
-        String(import.meta.env?.VITE_BOLDSIGN_TEMPLATE_ID || "").trim()) ||
-    "50deb96f-c5da-44b7-9a97-90397deaa29c";
-
-function firstNonEmptyString(...values: unknown[]): string {
-    for (const v of values) {
-        if (typeof v === "string" && v.trim().length > 0) {
-            return v.trim();
-        }
-    }
-    return "";
-}
-
-/**
- * `BoldSignTemplate.frequency` is stored lowercase (e.g. `daily`, `weekly`).
- * Resolves one key per contract so state disclosure merge does not pull every frequency for the state.
- */
-function resolveBoldSignDisclosureFrequencyKey(
-    latestContract: unknown,
-    frequencyInput: string,
-    decisionFrequency: string,
-): string | undefined {
-    const contract = latestContract as Record<string, unknown> | null | undefined;
-    const fromInput = firstNonEmptyString(frequencyInput);
-    const fromOffer = firstNonEmptyString(
-        contract?.offer && typeof contract.offer === "object"
-            ? (contract.offer as Record<string, unknown>).frequency
-            : "",
-    );
-    let fromPaymentTerms = "";
-    const pt = contract?.paymentTerms;
-    if (pt && typeof pt === "object") {
-        const pf = (pt as Record<string, unknown>).paymentFrequency;
-        if (typeof pf === "string") {
-            const u = pf.toUpperCase();
-            if (u === "DAILY") fromPaymentTerms = "daily";
-            else if (u === "WEEKLY") fromPaymentTerms = "weekly";
-            else if (u === "BIWEEKLY") fromPaymentTerms = "biweekly";
-        }
-    }
-    const fromDecision = firstNonEmptyString(decisionFrequency);
-
-    const raw = firstNonEmptyString(
-        fromInput,
-        fromOffer,
-        fromPaymentTerms,
-        fromDecision,
-    );
-    if (!raw) return undefined;
-    const normalized = raw.toLowerCase().replace(/\s+/g, "");
-    return normalized || undefined;
-}
-
-/**
- * Recipients API / Redux `templateRecipients` shapes vary: `data.raw.roles`, top-level
- * `roles`, PascalCase (`Roles`, `DefaultSignerEmail`), or `roleName` + `signerEmail`.
- */
-function parseBoldSignTemplateRolesFromRecipientsPayload(
-    payload: unknown,
-): Array<Record<string, unknown>> {
-    if (!payload || typeof payload !== "object") {
-        return [];
-    }
-    const p = payload as Record<string, unknown>;
-    const data = (p.data as Record<string, unknown>) ?? p;
-    const innerRaw =
-        data.raw && typeof data.raw === "object"
-            ? (data.raw as Record<string, unknown>)
-            : null;
-
-    const candidates: unknown[] = [
-        innerRaw?.roles,
-        innerRaw?.Roles,
-        innerRaw?.Signers,
-        data.roles,
-        data.Roles,
-        data.Signers,
-        p.roles,
-        p.Roles,
-        p.Signers,
-    ];
-
-    for (const arr of candidates) {
-        if (
-            Array.isArray(arr) &&
-            arr.length > 0 &&
-            typeof arr[0] === "object" &&
-            arr[0] !== null
-        ) {
-            return arr as Array<Record<string, unknown>>;
-        }
-    }
-    return [];
-}
-
 function buildBoldSignRolesFromTemplateRecipients(
     templateRoles: Array<Record<string, unknown>>,
     applicationSignerEmail: string,
@@ -296,7 +208,7 @@ function buildBoldSignRolesFromTemplateRecipients(
                 signerName: applicationSignerName,
                 signerOrder: 1,
                 signerEmail: appEmail,
-                signerRole: "Signer",
+                signerRole: DOCUSIGN_DEFAULT_SIGNER_ROLE,
                 ...common,
             },
         ];
@@ -304,47 +216,19 @@ function buildBoldSignRolesFromTemplateRecipients(
 
     return templateRoles.map((r, idx) => {
         const row = r as Record<string, unknown>;
-        const nestedSigner =
-            row.signer && typeof row.signer === "object"
-                ? (row.signer as Record<string, unknown>)
-                : row.Signer && typeof row.Signer === "object"
-                    ? (row.Signer as Record<string, unknown>)
-                    : null;
 
-        const templateEmail = firstNonEmptyString(
-            row.defaultSignerEmail,
-            row.DefaultSignerEmail,
-            row.signerEmail,
-            row.SignerEmail,
-            row.email,
-            row.Email,
-            nestedSigner?.email,
-            nestedSigner?.Email,
-        );
+        const templateEmail = getTemplateRoleEmailFromRow(row);
 
         const signerEmail =
             templateEmail || (idx === 0 ? appEmail : "");
 
-        const templatePersonName = firstNonEmptyString(
-            row.defaultSignerName,
-            row.DefaultSignerName,
-            row.signerName,
-            row.SignerName,
-            nestedSigner?.name,
-            nestedSigner?.Name,
-        );
+        const templatePersonName = getTemplateRoleNameFromRow(row);
 
         const signerName =
             templatePersonName ||
             (idx === 0 ? applicationSignerName : `Signer ${idx + 1}`);
 
-        const roleLabel =
-            firstNonEmptyString(
-                row.name,
-                row.Name,
-                row.roleName,
-                row.RoleName,
-            ) || `Role ${idx + 1}`;
+        const roleLabel = getTemplateRoleLabel(row) || `Role ${idx + 1}`;
 
         const roleIndexRaw = row.roleIndex ?? row.RoleIndex;
         const roleIndex =
@@ -797,7 +681,10 @@ export default function ContractTab({
             setSelectedContractId(byAppContractId);
             setPdfUrl(templateUrl);
             setPdfName(globalTemplateName || "Contract.pdf");
-            setPdfViewerInitialRightPaneTab("prefilled");
+            const linkedEnvelopeId = String(
+                (contract as any)?.application?.document?.envelopeId ?? "",
+            ).trim();
+            setPdfViewerInitialRightPaneTab(linkedEnvelopeId ? "prefilled" : "template");
             setPdfViewerOpen(true);
             return true;
         } catch {
@@ -980,15 +867,22 @@ export default function ContractTab({
     const getPrimaryRecipientName = () =>
         getApplicationPrimaryRecipientName(applicationData);
 
-    const handleCreateBoldSignDocument = async (sendPayload: {
-        ccEmails: string[];
-        addendumBoldSignTemplateId?: string | null;
-    }) => {
+    const runDocuSignEnvelope = async (
+        sendPayload: {
+            ccEmails: string[];
+            addendumBoldSignTemplateId?: string | null;
+        },
+        options: { autoSend: boolean },
+    ): Promise<{ envelopeId: string }> => {
+        const failDocuSignEnvelope = (message: string): never => {
+            toast.error(message);
+            throw new Error(message);
+        };
+
         if (!globalTemplateUrl || !applicationUuid) {
-            toast.error(
+            failDocuSignEnvelope(
                 "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
             );
-            return;
         }
 
         const effectiveCcEmails = [
@@ -1006,12 +900,30 @@ export default function ContractTab({
         setCreatingEnvelope(true);
         try {
             let recipientsPayload: unknown = null;
-            try {
-                recipientsPayload = await dispatch(
-                    getBoldSignTemplateRecipients(),
-                ).unwrap();
-            } catch {
-                // Fall back to application-only signers if the template list is unavailable.
+            const templateIdForRecipients = String(DEFAULT_DOCUSIGN_TEMPLATE_ID || "").trim();
+            const cachedRecipients = store.getState().boldSign?.templateRecipients ?? null;
+            const cachedRolesEarly =
+                parseBoldSignTemplateRolesFromRecipientsPayload(cachedRecipients);
+            const cachedTemplateId = String(
+                (cachedRecipients as { templateId?: string } | null)?.templateId ?? "",
+            ).trim();
+            if (
+                cachedRolesEarly.length > 0 &&
+                (!cachedTemplateId ||
+                    !templateIdForRecipients ||
+                    cachedTemplateId === templateIdForRecipients)
+            ) {
+                recipientsPayload = cachedRecipients;
+            } else {
+                try {
+                    recipientsPayload = await dispatch(
+                        getBoldSignTemplateRecipients(
+                            templateIdForRecipients || undefined,
+                        ),
+                    ).unwrap();
+                } catch {
+                    // Fall back to application-only signers if the template list is unavailable.
+                }
             }
 
             let templateRoles =
@@ -1032,10 +944,9 @@ export default function ContractTab({
             );
 
             if (roles.length === 0) {
-                toast.error(
-                    "Could not resolve any BoldSign signers. Add a client email on this application or configure default signer emails on the BoldSign template.",
+                failDocuSignEnvelope(
+                    "Could not resolve any DocuSign signers. Add a client email on this application or configure default signer emails on the DocuSign template.",
                 );
-                return;
             }
 
             const missingEmailIndexes = roles
@@ -1044,14 +955,13 @@ export default function ContractTab({
                 )
                 .filter((i) => i >= 0);
             if (missingEmailIndexes.length > 0) {
-                toast.error(
-                    `BoldSign template has signer role(s) without an email (roles ${missingEmailIndexes
+                failDocuSignEnvelope(
+                    `DocuSign template has signer role(s) without an email (roles ${missingEmailIndexes
                         .map((i) => i + 1)
                         .join(
                             ", ",
-                        )}). Set default signer emails on the template in BoldSign, or add a client email on this application for the first signer.`,
+                        )}). Set default signer emails on the template in DocuSign, or add a client email on this application for the first signer.`,
                 );
-                return;
             }
 
             const primarySignerEmail = String(roles[0]?.signerEmail || "").trim();
@@ -1067,10 +977,10 @@ export default function ContractTab({
                 );
             }
 
-            const redirectUrlBoldSign =
+            const redirectUrlDocusign =
                 typeof window !== "undefined"
                     ? window.location.href
-                    : "https://boldsign.com/esignature-api/";
+                    : "https://www.docusign.com";
 
             let latestContract: any = fetchedContract;
             try {
@@ -1086,62 +996,15 @@ export default function ContractTab({
                 /* use fetchedContract */
             }
 
-            const contractStateRaw = String(latestContract?.state ?? "").trim();
-            const contractStateKey = contractStateRaw.toLowerCase();
-            const disclosureFrequencyKey = resolveBoldSignDisclosureFrequencyKey(
-                latestContract,
-                frequencyInput,
-                decisionFrequency,
-            );
-
-            let stateTemplateIds: string[] = [];
-            let stateTemplateRows: Array<{
-                templateId: string;
-                name?: string | null;
-                state?: string | null;
-                frequency?: string | null;
-            }> = [];
-            if (contractStateKey) {
-                if (!disclosureFrequencyKey) {
-                    console.warn(
-                        "[ContractTab] BoldSign state disclosure: could not resolve payment frequency for this contract; template query uses state only (may match multiple disclosure frequencies).",
-                    );
-                }
-                try {
-                    const tplRes = await dispatch(
-                        getBoldSignTemplates({
-                            state: contractStateKey,
-                            ...(disclosureFrequencyKey
-                                ? { frequency: disclosureFrequencyKey }
-                                : {}),
-                        }),
-                    ).unwrap();
-                    const tplList = Array.isArray((tplRes as any)?.data)
-                        ? (tplRes as any).data
-                        : Array.isArray(tplRes)
-                            ? tplRes
-                            : [];
-                    stateTemplateRows = (tplList as any[])
-                        .map((row) => ({
-                            templateId: String(row?.templateId ?? row?.template_id ?? "").trim(),
-                            name: row?.name ?? null,
-                            state: row?.state ?? null,
-                            frequency: row?.frequency ?? null,
-                        }))
-                        .filter((r) => Boolean(r.templateId));
-                    stateTemplateIds = [
-                        ...new Set(stateTemplateRows.map((r) => r.templateId)),
-                    ];
-                } catch (tplErr) {
-                    console.warn("[ContractTab] BoldSignTemplate fetch by state failed:", tplErr);
-                }
+            const baseTemplateId = DEFAULT_DOCUSIGN_TEMPLATE_ID;
+            if (!baseTemplateId) {
+                failDocuSignEnvelope(
+                    "DocuSign base template ID is not configured. Set VITE_DOCUSIGN_TEMPLATE_ID.",
+                );
             }
-
-            const baseTemplateId = DEFAULT_BOLDSIGN_TEMPLATE_ID;
             const mergedTemplateIds = [
                 ...new Set([
                     baseTemplateId,
-                    ...stateTemplateIds.filter((id) => id && id !== baseTemplateId),
                     ...(addendumBoldSignTemplateId &&
                         addendumBoldSignTemplateId !== baseTemplateId
                         ? [addendumBoldSignTemplateId]
@@ -1158,43 +1021,9 @@ export default function ContractTab({
                         ? buildBoldSignMergeRolesForStateTemplateMerge({
                             templateIds: mergedTemplateIds,
                             baseRoles: roles,
-                            contractStateKey,
-                            disclosureFrequencyKey,
-                            stateTemplateRows: stateTemplateRows.map((r) => ({
-                                templateId: r.templateId,
-                                name: r.name,
-                            })),
+                            contractStateKey: String(latestContract?.state ?? "").trim().toLowerCase(),
                         })
                         : roles;
-
-                const stateDisclosureContext =
-                    buildStateDisclosurePrefillContextFromContract({
-                        contract: latestContract as Record<string, unknown> | null,
-                        application: applicationData as Record<string, unknown> | null,
-                        agreementDate: formatDate(new Date()),
-                    });
-                const stateDisclosureRows = getStateDisclosurePrefillFieldsForTemplates({
-                    templates: stateTemplateRows.map((r) => ({
-                        name: r.name,
-                        state: r.state,
-                        frequency: r.frequency,
-                    })),
-                    context: stateDisclosureContext,
-                });
-                if (stateDisclosureRows.length > 0) {
-                    const existingIds = new Set(
-                        prefillFieldsPayload.map((f) => f.id),
-                    );
-                    for (const row of stateDisclosureRows) {
-                        if (existingIds.has(row.id)) continue;
-                        prefillFieldsPayload.push({ id: row.id, value: row.value });
-                        existingIds.add(row.id);
-                    }
-                    console.log(
-                        "[ContractTab] BoldSign state disclosure prefill rows merged:",
-                        stateDisclosureRows,
-                    );
-                }
 
                 try {
                     const contractNumericId = Number((latestContract as { id?: unknown })?.id);
@@ -1223,7 +1052,7 @@ export default function ContractTab({
                     roles: mergeRolesForRequest,
                     prefillFields: prefillFieldsPayload,
                     applicationId: String(applicationUuid),
-                    redirectUrl: redirectUrlBoldSign,
+                    redirectUrl: redirectUrlDocusign,
                     showToolbar: true,
                     sendViewOption: "PreparePage",
                     showSaveButton: true,
@@ -1231,9 +1060,10 @@ export default function ContractTab({
                     showPreviewButton: true,
                     showNavigationButtons: true,
                     ccEmails: effectiveCcEmails,
+                    autoSend: options.autoSend,
                 };
                 console.log(
-                    "[ContractTab] BoldSign mergeAndSend request (base + state disclosure + optional addendum):",
+                    "[ContractTab] BoldSign mergeAndSend request (base contract + optional addendum):",
                     mergeRequest,
                 );
                 sendResponse = await dispatch(
@@ -1241,17 +1071,11 @@ export default function ContractTab({
                 ).unwrap();
                 console.log("[ContractTab] BoldSign mergeAndSend response:", sendResponse);
             } else {
-                if (contractStateKey && stateTemplateIds.length === 0) {
-                    console.info(
-                        "[ContractTab] Contract has state but no BoldSignTemplate rows for this state/frequency; using single send-template (unless addendum merge).",
-                        { contractStateKey, disclosureFrequencyKey, addendumBoldSignTemplateId },
-                    );
-                }
                 sendResponse = await dispatch(
                     sendBoldSignTemplate({
                         applicationId: String(applicationUuid),
-                        templateId: DEFAULT_BOLDSIGN_TEMPLATE_ID,
-                        redirectUrl: redirectUrlBoldSign,
+                        templateId: DEFAULT_DOCUSIGN_TEMPLATE_ID,
+                        redirectUrl: redirectUrlDocusign,
                         showToolbar: true,
                         sendViewOption: "PreparePage",
                         showSaveButton: true,
@@ -1270,6 +1094,7 @@ export default function ContractTab({
                         },
                         prefillFields: prefillFieldsPayload,
                         ccEmails: effectiveCcEmails,
+                        autoSend: options.autoSend,
                         // expiryDays: 10,
                         // expiryDateType: "Days",
                         // expiryValue: 60,
@@ -1281,7 +1106,9 @@ export default function ContractTab({
             }
 
             const documentId =
+                (sendResponse as any)?.envelopeId ||
                 (sendResponse as any)?.documentId ||
+                (sendResponse as any)?.data?.envelopeId ||
                 (sendResponse as any)?.data?.documentId ||
                 (sendResponse as any)?.id;
             const senderUrl =
@@ -1290,34 +1117,71 @@ export default function ContractTab({
                 (sendResponse as any)?.url;
 
             if (!documentId) {
-                toast.error("BoldSign did not return a document ID.");
-                return;
+                failDocuSignEnvelope("DocuSign did not return a document ID.");
             }
-            if (!senderUrl) {
-                toast.error("BoldSign did not return a sender URL.");
-                return;
-            }
+
+            const envelopeStatus = (sendResponse as { data?: { envelopeStatus?: string } })
+                ?.data?.envelopeStatus;
+            const autoSent =
+                envelopeStatus === "sent" ||
+                (sendResponse as { data?: { autoSend?: boolean } })?.data?.autoSend === true;
 
             const recipientList = roles
                 .map((r) => String(r.signerEmail || "").trim())
                 .filter(Boolean)
                 .join(", ");
 
-            if (senderUrl && typeof window !== "undefined") {
-                window.open(senderUrl, "_blank", "noopener,noreferrer");
-                const mergeNote = useMerge
-                    ? ` Merged ${mergedTemplateIds.length} template(s)${contractStateRaw ? ` (state "${contractStateRaw}")` : ""}${addendumBoldSignTemplateId ? " including addendum." : "."}`
+            const contractStateRaw = String(latestContract?.state ?? "").trim();
+            const mergeNote = useMerge
+                ? ` Merged ${mergedTemplateIds.length} template(s)${contractStateRaw ? ` (state "${contractStateRaw}")` : ""}${addendumBoldSignTemplateId ? " including addendum." : "."}`
+                : "";
+            const prefillApplied = (sendResponse as { data?: { prefillTabsApplied?: number } })
+                ?.data?.prefillTabsApplied;
+            const prefillAttempted = (sendResponse as { data?: { prefillFieldCount?: number } })
+                ?.data?.prefillFieldCount;
+            const prefillNote =
+                prefillApplied != null && prefillApplied > 0
+                    ? ` ${prefillApplied} field(s) prefilled.`
                     : "";
-                toast.success(
-                    recipientList
-                        ? `Draft opened in BoldSign.${mergeNote} Signer inbox(es): ${recipientList}. Review and click Send there to deliver.`
-                        : `Draft opened in BoldSign with prefilled fields.${mergeNote} Review and click Send there to deliver to recipient.`,
-                );
-            } else {
-                toast.success(
-                    "Draft created, but no BoldSign review URL was returned.",
+            if (
+                prefillAttempted != null &&
+                prefillAttempted > 0 &&
+                (prefillApplied == null || prefillApplied === 0)
+            ) {
+                toast.warning(
+                    "Contract sent, but DocuSign field labels did not match CRM prefill ids. Signer may need to fill fields manually. Check template Data Labels in DocuSign Admin.",
+                    { duration: 8000 },
                 );
             }
+
+            if (!options.autoSend) {
+                toast.success(
+                    recipientList
+                        ? `DocuSign draft is ready.${mergeNote}${prefillNote} Review the prefilled PDF, then click Send to DocuSign. Signer(s): ${recipientList}.`
+                        : `DocuSign draft is ready.${mergeNote}${prefillNote} Review the prefilled PDF, then click Send to DocuSign.`,
+                );
+            } else if (!autoSent && senderUrl && typeof window !== "undefined") {
+                window.open(senderUrl, "_blank", "noopener,noreferrer");
+                toast.success(
+                    recipientList
+                        ? `Draft opened in DocuSign.${mergeNote}${prefillNote} Review and click Send in DocuSign to email signers. Signer(s): ${recipientList}.`
+                        : `Draft opened in DocuSign.${mergeNote}${prefillNote} Review and click Send in DocuSign to email signers.`,
+                );
+            } else if (autoSent) {
+                toast.success(
+                    recipientList
+                        ? `Contract sent via DocuSign.${mergeNote}${prefillNote} Signing email sent to: ${recipientList}.`
+                        : `Contract sent via DocuSign.${mergeNote}${prefillNote}`,
+                );
+            } else if (!senderUrl) {
+                toast.success(
+                    autoSent
+                        ? `Contract sent via DocuSign.${mergeNote}${prefillNote}`
+                        : "Envelope created, but no DocuSign review URL was returned.",
+                );
+            }
+
+            return { envelopeId: String(documentId) };
         } catch (error: unknown) {
             const raw =
                 typeof error === "string"
@@ -1326,18 +1190,53 @@ export default function ContractTab({
                     (error as { response?: { data?: { message?: string } } })
                         ?.response?.data?.message ??
                     (error as Error)?.message ??
-                    "Failed to send template via BoldSign.";
+                    "Failed to send template via DocuSign.";
             const msg =
                 typeof raw === "string" ? raw : JSON.stringify(raw ?? "");
             if (isBoldSignMissingSignerMessage(msg)) {
                 toast.success("Contract sent successfully.");
-                return;
+                throw new Error(msg);
             }
             if (isBoldSignSendViewOptionPageViewError(msg)) {
                 toast.success("Contract generated successfully.");
-                return;
+                throw new Error(msg);
             }
-            toast.error(msg);
+            failDocuSignEnvelope(msg);
+        } finally {
+            setCreatingEnvelope(false);
+        }
+    };
+
+    const prepareDocuSignDraft = async (payload: {
+        ccEmails: string[];
+        addendumBoldSignTemplateId?: string | null;
+    }) => {
+        const result = await runDocuSignEnvelope(payload, { autoSend: false });
+        const envelopeId = String(result?.envelopeId ?? "").trim();
+        if (!envelopeId) {
+            throw new Error("DocuSign did not return an envelope ID after creating the draft.");
+        }
+        return { envelopeId };
+    };
+
+    const sendDocuSignEnvelope = async (payload: {
+        envelopeId: string;
+        ccEmails: string[];
+    }) => {
+        if (!applicationUuid) {
+            throw new Error("Missing application ID.");
+        }
+        const envelopeId = String(payload.envelopeId || "").trim();
+        if (!envelopeId) {
+            throw new Error("Missing DocuSign envelope ID.");
+        }
+        setCreatingEnvelope(true);
+        try {
+            await axiosPost("/docusign/send-envelope", {
+                envelopeId,
+                applicationId: String(applicationUuid),
+            });
+            toast.success("Contract sent via DocuSign. Signing emails were delivered to signers.");
         } finally {
             setCreatingEnvelope(false);
         }
@@ -2131,11 +2030,13 @@ export default function ContractTab({
                 fileName={pdfName}
                 contractId={selectedContractId}
                 applicationId={applicationUuid ? String(applicationUuid) : null}
+                templateId={DEFAULT_DOCUSIGN_TEMPLATE_ID || null}
                 initialRightPaneTab={pdfViewerInitialRightPaneTab}
-                onSendToBoldSign={
-                    isReadOnly
-                        ? undefined
-                        : (payload) => handleCreateBoldSignDocument(payload)
+                onPrepareDocuSignDraft={
+                    isReadOnly ? undefined : (payload) => prepareDocuSignDraft(payload)
+                }
+                onSendDocuSignEnvelope={
+                    isReadOnly ? undefined : (payload) => sendDocuSignEnvelope(payload)
                 }
             />
         </div>

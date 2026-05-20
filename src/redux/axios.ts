@@ -61,7 +61,9 @@ axiosInstance.interceptors.response.use(
             const requestUrl = error.config?.url ?? '';
             const isLoginRequest = requestUrl.includes('/auth/login');
 
-            if (status === 401 && !isLoginRequest) {
+            const isDocusignIntegrationRequest = requestUrl.includes('/docusign/');
+
+            if (status === 401 && !isLoginRequest && !isDocusignIntegrationRequest) {
                 localStorage.removeItem('token');
                 sessionStorage.removeItem('token');
                 if (window.location.pathname !== '/login') {

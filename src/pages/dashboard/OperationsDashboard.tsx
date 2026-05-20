@@ -344,6 +344,16 @@ export const OperationsDashboard = () => {
     [summaryCounts],
   );
 
+  /** Ops works post-signature only — hide Contract Pending / Contract Out queue cards. */
+  const summaryCardsForRole = useMemo(() => {
+    if (!isOperationsUser) return summaryCards;
+    return summaryCards.filter(
+      (card) =>
+        card.operationsStatus !== "Contract_Out" &&
+        card.operationsStatus !== "Contract_Pending",
+    );
+  }, [summaryCards, isOperationsUser]);
+
   /** Deal pipeline stages — aligned with Super Admin sidebar (DEAL PIPELINE). */
   const superAdminPipelineCards: SummaryCard[] = useMemo(
     () => [
@@ -423,7 +433,7 @@ export const OperationsDashboard = () => {
       const qs = new URLSearchParams();
       qs.set(
         "operationsStatus",
-        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Out" : "Contracted",
+        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Signed" : "Contracted",
       );
       navigate(
         `/application-details/${recentCase.applicationId}?${qs.toString()}`,
@@ -567,9 +577,8 @@ export const OperationsDashboard = () => {
       });
     }
     if (isOperationsUser) {
-      return recentCases.filter((item) =>
-        isContractOutQueueBadgeLabel(String(item.status ?? "")),
-      );
+      // Recent-cases API is already scoped to Contract_Signed for OPERATIONS.
+      return recentCases;
     }
     return recentCases;
   }, [isOperationsUser, isSuperAdmin, recentCases]);
@@ -636,7 +645,7 @@ export const OperationsDashboard = () => {
 
       {/* Summary cards — skeleton on first load; stale values kept while refreshing */}
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
-        {(isSuperAdmin ? superAdminPipelineCards : summaryCards).map((card) =>
+        {(isSuperAdmin ? superAdminPipelineCards : summaryCardsForRole).map((card) =>
           renderSummaryCard(card),
         )}
       </section>
@@ -829,14 +838,14 @@ export const OperationsDashboard = () => {
                 {isSuperAdmin
                   ? "Latest Funded Deals"
                   : isOperationsUser
-                    ? "Contract Out Applications"
+                    ? "Contract Signed Applications"
                     : "Recent Applications"}
               </span>
               <p className="mt-0.5 text-xs text-muted-foreground hidden sm:block">
                 {isSuperAdmin
                   ? "Most recently funded or disbursed deals."
                   : isOperationsUser
-                    ? "Applications currently in the Contract Out queue."
+                    ? "Deals with a fully signed contract — ready for Final, funding call, and disbursement."
                     : "Latest contracted applications."}
               </p>
               {recentError ? (
@@ -858,7 +867,7 @@ export const OperationsDashboard = () => {
                     isSuperAdmin
                       ? "Search funded deals..."
                       : isOperationsUser
-                        ? "Search contract out..."
+                        ? "Search contract signed..."
                         : "Search contracted..."
                   }
                   className="h-10 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#276D9C]/30"
@@ -916,7 +925,7 @@ export const OperationsDashboard = () => {
                   {isSuperAdmin
                     ? "No funded deals found."
                     : isOperationsUser
-                      ? "No contract out applications found."
+                      ? "No contract signed applications found."
                       : "No contracted applications found."}
                 </div>
               ) : recentCasesViewMode === "list" ? (

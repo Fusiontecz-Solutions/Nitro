@@ -671,7 +671,7 @@ export const getBoldSignTemplates = createAsyncThunk(
             return response.data;
         } catch (error: any) {
             return rejectWithValue(
-                getErrorMessage(error, "Failed to fetch BoldSign templates"),
+                getErrorMessage(error, "Failed to fetch DocuSign templates"),
             );
         }
     },

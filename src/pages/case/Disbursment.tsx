@@ -10,6 +10,7 @@ import {
   updateApplication,
   sendFundedEmail,
 } from "@/redux/actions/applicationActions";
+import { getByApplicationIdContract } from "@/redux/actions/contractActions";
 import { clearBankDetails } from "@/redux/slices/bankDetailSlice";
 import { toast } from "react-toastify";
 import {
@@ -30,13 +31,22 @@ const normalizeWorkflowQueueKey = (queue: string | null | undefined) =>
     .toLowerCase();
 
 const QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT = new Set([
-  "agent",
-  "underwriter",
-  "finalunderwriter",
-  "contracted",
   "final",
   "fundingcall",
+  "contractsigned",
+  "signedcontracts",
 ]);
+
+const isContractFullySigned = (
+  contractStatus: unknown,
+  documentStatus?: unknown,
+) => {
+  const cs = String(contractStatus ?? "").trim().toUpperCase();
+  const ds = String(documentStatus ?? "").trim().toLowerCase();
+  if (cs === "COMPLETED" || cs === "SIGNED") return true;
+  if (ds === "completed") return true;
+  return false;
+};
 
 const shouldSetApplicationQueueToDisbursement = (
   currentQueue: string | null | undefined
@@ -80,6 +90,9 @@ export const Disbursement = ({
     useState(false);
   const [queueUpdatePending, setQueueUpdatePending] = useState(false);
   const [markFundedPending, setMarkFundedPending] = useState(false);
+  const [contractStatus, setContractStatus] = useState<string | null>(null);
+  const [documentStatus, setDocumentStatus] = useState<string | null>(null);
+  const [contractStatusLoading, setContractStatusLoading] = useState(false);
 
   const { data: applicationDetailData } = useSelector(
     (state: RootState) => state.applicationDetail
@@ -102,6 +115,52 @@ export const Disbursement = ({
     [effectiveQueue]
   );
   const isApplicationFunded = effectiveQueueKey === "funded";
+  const contractFullySigned = isContractFullySigned(contractStatus, documentStatus);
+  const isContractSignedQueue =
+    effectiveQueueKey === "contractsigned" || effectiveQueueKey === "signedcontracts";
+  const canProceedWithFunding =
+    contractFullySigned &&
+    (effectiveQueueKey === "disbursement" ||
+      effectiveQueueKey === "funded" ||
+      shouldSetApplicationQueueToDisbursement(effectiveQueue));
+
+  useEffect(() => {
+    const lookupId =
+      applicationRecordId ?? applicationId ?? summaryApplicationId;
+    if (!lookupId) {
+      setContractStatus(null);
+      setDocumentStatus(null);
+      return;
+    }
+    let cancelled = false;
+    setContractStatusLoading(true);
+    void dispatch(getByApplicationIdContract(String(lookupId)))
+      .unwrap()
+      .then((res) => {
+        if (cancelled) return;
+        const contract = (res as { data?: Record<string, unknown> })?.data ?? res;
+        const c = contract as {
+          status?: unknown;
+          application?: { document?: { status?: unknown } };
+        };
+        setContractStatus(String(c?.status ?? ""));
+        setDocumentStatus(
+          String(c?.application?.document?.status ?? ""),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setContractStatus(null);
+          setDocumentStatus(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setContractStatusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applicationId, summaryApplicationId, applicationRecordId, dispatch]);
 
   const [form, setForm] = useState({
     bankName: "",
@@ -157,6 +216,13 @@ export const Disbursement = ({
   const handleConfirmDisbursement = async () => {
     const qKey = normalizeWorkflowQueueKey(effectiveQueue);
 
+    if (!contractFullySigned) {
+      toast.error(
+        "The contract must be fully signed in DocuSign before disbursement or funding.",
+      );
+      return;
+    }
+
     if (effectiveRecordId) {
       try {
         setQueueUpdatePending(true);
@@ -211,22 +277,55 @@ export const Disbursement = ({
       toast.error("Application record is not loaded.");
       return;
     }
+    if (!contractFullySigned) {
+      toast.error(
+        "The contract must be fully signed in DocuSign before marking this deal as funded.",
+      );
+      return;
+    }
     try {
       setMarkFundedPending(true);
-      await dispatch(
+      const updated = await dispatch(
         updateApplication({
           id: effectiveRecordId,
           data: { currentQueue: "Funded", currentState: "Funded" },
         })
       ).unwrap();
+      const updatedQueue = normalizeWorkflowQueueKey(
+        (updated as { data?: { currentQueue?: string } })?.data?.currentQueue ??
+          (updated as { currentQueue?: string })?.currentQueue,
+      );
+      if (updatedQueue !== "funded") {
+        toast.error(
+          "Funded status was not saved. Confirm disbursement first or refresh and try again.",
+        );
+        return;
+      }
       const refetchAppId = summaryApplicationId ?? applicationId;
       if (refetchAppId) {
-        void dispatch(getApplicationByApplicationId(String(refetchAppId)));
+        await dispatch(getApplicationByApplicationId(String(refetchAppId))).unwrap();
+      }
+      const appIdForEmail = summaryApplicationId ?? applicationId;
+      if (appIdForEmail) {
+        try {
+          await dispatch(sendFundedEmail(String(appIdForEmail))).unwrap();
+        } catch (e) {
+          toast.error(
+            typeof e === "string"
+              ? e
+              : "Deal marked funded, but the funded notification email could not be sent.",
+          );
+        }
       }
       toast.success("Application marked as funded.");
       navigate("/payments");
-    } catch {
-      toast.error("Could not mark application as funded. Please try again.");
+    } catch (err: unknown) {
+      const msg =
+        typeof err === "string"
+          ? err
+          : (err as { message?: string })?.message ??
+            "Could not mark application as funded. Please try again.";
+      toast.error(msg);
     } finally {
       setMarkFundedPending(false);
     }
@@ -358,6 +457,14 @@ export const Disbursement = ({
             </p>
           </div>
 
+          {!contractStatusLoading && !contractFullySigned ? (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+              {isContractSignedQueue
+                ? "This deal is in Contract Signed, but DocuSign has not synced a completed signature yet. Open the contract modal on the Sent step and click Refresh status, or wait for DocuSign to finish syncing."
+                : "This deal cannot be funded until the contract is fully signed in DocuSign. It should appear under Contract Out until signing completes, then move to Contract Signed automatically."}
+            </div>
+          ) : null}
+
           {/* Actions */}
           <div className="mt-8 flex flex-wrap justify-end gap-3">
             <button
@@ -373,7 +480,9 @@ export const Disbursement = ({
                 !effectiveRecordId ||
                 markFundedPending ||
                 queueUpdatePending ||
-                isApplicationFunded
+                isApplicationFunded ||
+                contractStatusLoading ||
+                !canProceedWithFunding
               }
               onClick={() => void handleMarkAsFunded()}
             >
@@ -386,7 +495,9 @@ export const Disbursement = ({
                 !hasBankAccounts ||
                 showLoading ||
                 queueUpdatePending ||
-                markFundedPending
+                markFundedPending ||
+                contractStatusLoading ||
+                !canProceedWithFunding
               }
               onClick={() => void handleConfirmDisbursement()}
             >

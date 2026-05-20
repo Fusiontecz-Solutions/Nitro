@@ -1153,8 +1153,15 @@ function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildContract
 
 export function getApplicationPrimaryRecipientEmail(anyApp: unknown): string {
     if (!anyApp) return "";
-    const r = resolveClientForPrefill(anyApp as Record<string, any>);
-    return r.businessEmail || r.ownerEmail;
+    const a = anyApp as Record<string, any>;
+    const r = resolveClientForPrefill(a);
+    const bi = Array.isArray(a?.businessInfo) ? a.businessInfo[0] : a?.businessInfo;
+    return (
+        r.businessEmail ||
+        r.ownerEmail ||
+        String(bi?.clientBusinessEmail || "").trim() ||
+        ""
+    );
 }
 
 /**

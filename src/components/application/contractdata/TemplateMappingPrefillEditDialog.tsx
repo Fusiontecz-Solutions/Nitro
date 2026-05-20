@@ -104,7 +104,7 @@ export function TemplateMappingPrefillEditDialog({
         }
         const nextTemplateRef = String(templateRef ?? "").trim();
         if (!nextTemplateRef) {
-            toast.error("BoldSign template ID is required.");
+            toast.error("DocuSign template ID is required.");
             return;
         }
         setSaving(true);
@@ -143,7 +143,7 @@ export function TemplateMappingPrefillEditDialog({
                 }
             }
 
-            toast.success("Template mapping and BoldSign field overrides saved.");
+            toast.success("Template mapping and DocuSign field overrides saved.");
             onSaved();
             onOpenChange(false);
         } catch (e: unknown) {
@@ -171,7 +171,7 @@ export function TemplateMappingPrefillEditDialog({
 
     const titleName = row?.template?.name?.trim()
         ? row.template.name
-        : row?.template?.templateId || "BoldSign template";
+        : row?.template?.templateId || "DocuSign template";
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -182,7 +182,7 @@ export function TemplateMappingPrefillEditDialog({
                 <DialogHeader className="shrink-0 border-b px-6 py-4">
                     <DialogTitle className="text-base">Edit template mapping — {titleName}</DialogTitle>
                     <p className="text-muted-foreground text-sm font-normal leading-snug">
-                        Change the BoldSign template ID if needed, then adjust field values used when prefilling this
+                        Change the DocuSign template ID if needed, then adjust field values used when prefilling this
                         document. Values are saved on the contract under{" "}
                         <span className="font-mono text-xs">documentTemplatePrefillByMappingId</span>.
                     </p>
@@ -191,7 +191,7 @@ export function TemplateMappingPrefillEditDialog({
                     <div className="space-y-4">
                         <div className="space-y-1.5">
                             <Label htmlFor="tmpl-mapping-bsid" className="text-xs font-medium">
-                                BoldSign template ID (GUID)
+                                DocuSign template ID (GUID)
                             </Label>
                             <Input
                                 id="tmpl-mapping-bsid"

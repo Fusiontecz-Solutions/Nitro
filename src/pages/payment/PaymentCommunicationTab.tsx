@@ -1,15 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useSelector } from "react-redux";
-import { Copy, Loader2, MessageSquare, Phone } from "lucide-react";
-import { toast } from "react-toastify";
+import { Loader2, MessageSquare, Phone } from "lucide-react";
 
 import type { RootState } from "@/redux/store";
 import { AvochatoCallSurface } from "@/components/voice/AvochatoCallSurface";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  PaymentDealSmsWorkspace,
+  type DealSmsContact,
+} from "@/components/payment/PaymentDealSmsWorkspace";
 import { normalizeE164 } from "@/voice/useAvochatoVoice";
-import { AvochatoSmsInboxPanel } from "@/components/payment/AvochatoSmsInboxPanel";
+import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
 
 type CommMode = "sms" | "calling";
 
@@ -30,14 +30,21 @@ function pickDefaultPhones(app: unknown): {
   return { ownerMobile, businessNumber, preferred };
 }
 
+function displayPhone(raw: string): string {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return "";
+  const e164 = normalizeE164(trimmed);
+  if (e164) return e164;
+  const formatted = formatUSPhoneNumber(trimmed);
+  return formatted || trimmed;
+}
+
 export default function PaymentCommunicationTab() {
   const { loading, data: applicationData, error } = useSelector(
     (state: RootState) => state.applicationDetail,
   );
 
   const [mode, setMode] = useState<CommMode>("sms");
-  const [smsPhone, setSmsPhone] = useState("");
-  const [smsBody, setSmsBody] = useState("");
 
   const { ownerMobile, businessNumber, preferred } = useMemo(
     () => pickDefaultPhones(applicationData),
@@ -52,10 +59,6 @@ export default function PaymentCommunicationTab() {
     }
     return list;
   }, [ownerMobile, businessNumber]);
-  useEffect(() => {
-    if (!preferred) return;
-    setSmsPhone((prev) => (prev.trim() ? prev : preferred));
-  }, [preferred]);
 
   const businessName = useMemo(() => {
     const app = applicationData as { client?: { business?: { name?: string } } } | null;
@@ -71,29 +74,29 @@ export default function PaymentCommunicationTab() {
     return name || "Owner";
   }, [applicationData]);
 
-  const copySmsDraft = async () => {
-    const to = normalizeE164(smsPhone) || smsPhone.trim();
-    if (!to) {
-      toast.error("Enter a phone number first.");
-      return;
+  const dealContacts = useMemo((): DealSmsContact[] => {
+    const list: DealSmsContact[] = [];
+    if (ownerMobile) {
+      list.push({
+        id: "owner",
+        name: ownerLabel,
+        phone: displayPhone(ownerMobile),
+        subtitle: "On file · owner",
+      });
     }
-    const body = smsBody.trim();
-    const block = body ? `To: ${to}\n\n${body}` : `To: ${to}`;
-    try {
-      await navigator.clipboard.writeText(block);
-      toast.success("Copied to clipboard");
-    } catch {
-      toast.error("Could not copy — check browser permissions.");
+    if (businessNumber) {
+      const name = businessName ? `${businessName} · business` : "Business";
+      list.push({
+        id: "business",
+        name,
+        phone: displayPhone(businessNumber),
+        subtitle: "On file · business",
+      });
     }
-  };
+    return list;
+  }, [ownerMobile, businessNumber, ownerLabel, businessName]);
 
-  const smsDeviceHref = useMemo(() => {
-    const to = normalizeE164(smsPhone);
-    if (!to) return null;
-    const body = smsBody.trim();
-    const q = body ? `?body=${encodeURIComponent(body)}` : "";
-    return `sms:${to}${q}`;
-  }, [smsPhone, smsBody]);
+  const defaultDisplay = preferred ? formatUSPhoneNumber(preferred) || displayPhone(preferred) : "";
 
   if (loading && !applicationData) {
     return (
@@ -114,14 +117,6 @@ export default function PaymentCommunicationTab() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h2 className="text-sm font-semibold text-foreground">Communication</h2>
-        <p className="mt-1 text-xs text-muted-foreground sm:text-sm">
-          SMS uses Avochato when the API is configured (inbox + history in the CRM). You can still copy a
-          draft or call when needed. Phone numbers default from the application when available.
-        </p>
-      </div>
-
       <div className="inline-flex max-w-full flex-wrap gap-1 rounded-xl border border-border bg-muted/40 p-1 dark:border-white/10 dark:bg-white/[0.04]">
         <button
           type="button"
@@ -149,115 +144,34 @@ export default function PaymentCommunicationTab() {
         </button>
       </div>
 
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Communication
+        </p>
+        <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
+          Message people from this deal, see your inbox, or use Calling to place browser calls. Phone numbers
+          on the application are listed under Chats when SMS inbox is not connected.
+        </p>
+      </div>
+
       {mode === "sms" && (
-        <div className="space-y-5">
-          <AvochatoSmsInboxPanel matchPhones={matchPhones} />
-
-          <div className="rounded-2xl border border-border/70 bg-card/80 p-4 shadow-sm ring-1 ring-inset ring-border/30 dark:border-white/10 dark:bg-white/[0.03] dark:ring-white/10 sm:p-5">
-          <div className="mb-4 flex flex-col gap-1 border-b border-border/60 pb-4 dark:border-white/10">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              SMS draft (offline)
-            </p>
-            <p className="text-sm text-foreground">
-              {businessName ? (
-                <>
-                  <span className="font-medium">{businessName}</span>
-                  <span className="text-muted-foreground"> · </span>
-                  <span className="text-muted-foreground">{ownerLabel}</span>
-                </>
-              ) : (
-                <span className="text-muted-foreground">{ownerLabel}</span>
-              )}
-            </p>
-            {(ownerMobile || businessNumber) && (
-              <dl className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
-                {ownerMobile ? (
-                  <div>
-                    <dt className="inline font-medium text-foreground/80">Owner mobile</dt>{" "}
-                    <dd className="inline">{ownerMobile}</dd>
-                  </div>
-                ) : null}
-                {businessNumber ? (
-                  <div>
-                    <dt className="inline font-medium text-foreground/80">Business number</dt>{" "}
-                    <dd className="inline">{businessNumber}</dd>
-                  </div>
-                ) : null}
-              </dl>
-            )}
-          </div>
-
-          <div className="grid gap-4">
-            <div className="grid gap-1.5">
-              <label htmlFor="payment-sms-phone" className="text-sm font-medium text-foreground">
-                Phone number
-              </label>
-              <Input
-                id="payment-sms-phone"
-                placeholder="+14155552671 or 4155552671"
-                value={smsPhone}
-                onChange={(e) => setSmsPhone(e.target.value)}
-                autoComplete="tel"
-                className="bg-background dark:bg-white/[0.04]"
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <label htmlFor="payment-sms-body" className="text-sm font-medium text-foreground">
-                Message
-              </label>
-              <Textarea
-                id="payment-sms-body"
-                placeholder="Write your SMS…"
-                value={smsBody}
-                onChange={(e) => setSmsBody(e.target.value)}
-                rows={5}
-                className="min-h-[120px] resize-y bg-background dark:bg-white/[0.04]"
-              />
-            </div>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              Compose here, then copy into Avochato or your SMS tool. On a phone or compatible desktop
-              app, you can open the device SMS composer when a number is valid.
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="default"
-                className="gap-2 bg-[#276D9C] hover:bg-[#215a84]"
-                onClick={() => void copySmsDraft()}
-              >
-                <Copy className="size-4" aria-hidden />
-                Copy draft
-              </Button>
-              {smsDeviceHref ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="dark:border-white/15 dark:hover:bg-white/[0.06]"
-                  asChild
-                >
-                  <a href={smsDeviceHref}>Open SMS app</a>
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </div>
-        </div>
+        <PaymentDealSmsWorkspace dealContacts={dealContacts} matchPhones={matchPhones} />
       )}
 
       {mode === "calling" && (
-        <div className="space-y-5">
-          <div className="flex flex-col gap-2 border-b border-border/50 pb-4 dark:border-white/[0.06]">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#276D9C] dark:text-[#5AACEA]">
-              Voice link
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              Calling
             </p>
-            <p className="text-sm font-medium text-foreground">Calling from this deal</p>
-            <p className="text-sm leading-relaxed text-muted-foreground">
-              Dial or paste a number, then place the call. HTTPS or localhost; microphone required. Defaults to
-              owner mobile, then business number when present.
+            <h3 className="text-lg font-semibold tracking-tight text-foreground">Calling from this deal</h3>
+            <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
+              Enter a number and place the call. The browser will ask to use your microphone. When this deal
+              has a number on file, it is filled in for you.
             </p>
-            {preferred ? (
+            {defaultDisplay ? (
               <p className="text-xs text-muted-foreground">
-                Default: <span className="font-mono text-foreground/90">{preferred}</span>
+                Default: <span className="text-foreground/90">{defaultDisplay}</span>
               </p>
             ) : (
               <p className="text-xs text-amber-800 dark:text-amber-400/90">
