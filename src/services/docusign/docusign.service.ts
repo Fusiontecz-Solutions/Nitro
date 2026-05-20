@@ -1,128 +1,177 @@
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import dotenv from 'dotenv';
 import prisma from '../../config/prismaClient';
-import { STATE_DOCUMENT_CONFIG } from './state-document-config';
-import { FUNDERNAME_DOCUMENT_CONFIG } from './funderName-document-confitg';
-import { PAYOFF_DOCUMENT_CONFIG } from './payoff-document-config';
-import { ADDENDUM_DOCUMENT_CONFIG } from './addendum-document-config';
-import { EPO_DOCUMENT_CONFIG } from './epo-document-config';
-import { ACH_DOCUMENT_CONFIG } from './ach-document-config';
-import { Client, Application } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
+import {
+  DOCUSIGN_CLIENT_ID,
+  DOCUSIGN_INTEGRATION_KEY,
+  DOCUSIGN_CLIENT_SECRET,
+  DOCUSIGN_AUTO_SEND_ENVELOPE,
+  DOCUSIGN_DEFAULT_ROLE_NAME,
+  DOCUSIGN_DEFAULT_TEMPLATE_ID,
+  DOCUSIGN_REDIRECT_URI,
+  DOCUSIGN_JWT_CONSENT_REDIRECT_URI,
+  DOCUSIGN_WEBHOOK_BASIC_PASSWORD,
+  DOCUSIGN_WEBHOOK_BASIC_USER,
+  resolveDocusignWebhookUrl,
+  getDocusignOAuthUrls,
+  normalizeDocusignRestBaseUri,
+  resolveDocusignAuthMode,
+} from './utils/docusign-client';
+import {
+  buildTextTabsFromPrefillIds,
+  collectTabLabels,
+  mapMatchedTabsToEnvelopeTabIds,
+  matchPrefillFieldsToTextTabs,
+  type DocusignTextTabRef,
+  type PrefillFieldInput,
+} from './utils/docusign-prefill';
+import {
+  clearDocusignJwtCache,
+  getDocusignJwtSession,
+  isDocusignJwtConfigured,
+} from './utils/docusign-jwt';
+import {
+  extractDocusignConnectEventName,
+  extractDocusignEnvelopeId,
+  internalEnvelopeStatusToContractStatusDbValue,
+  mapDocusignEnvelopeStatus,
+  mergeWithExistingEnvelopeStatus,
+  parseDocusignWebhookBody,
+  resolveDocusignWebhookEnvelopeStatus,
+} from './utils/docusign-webhook';
+import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
 
 dotenv.config();
 
 class UnauthorizedException extends Error {
-  status: number;
+  status = 401;
   constructor(message: string) {
     super(message);
     this.name = 'UnauthorizedException';
-    this.status = 401;
   }
 }
 
 class BadRequestException extends Error {
-  status: number;
+  status = 400;
   constructor(message: string) {
     super(message);
     this.name = 'BadRequestException';
-    this.status = 400;
   }
 }
 
+/** DocuSign not configured / not connected — must not use HTTP 401 (CRM axios treats 401 as logout). */
+class ServiceConfigException extends Error {
+  status = 503;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ServiceConfigException';
+  }
+}
+
+type PrefillField = PrefillFieldInput;
+
+type SignerRoleInput = Record<string, unknown> & {
+  roleIndex?: number;
+  roleName?: string;
+  signerName?: string;
+  signerEmail?: string;
+  signerOrder?: number;
+  signerRole?: string;
+};
+
 export class DocusignService {
-  // Production DocuSign endpoints
-  private readonly docusignAuthUrl = 'https://account.boldsign.com';
-  private readonly docusignTokenUrl = 'https://account.boldsign.com/oauth/token';
-  // Prisma and config accessors adapted for non-NestJS environment
-  private prisma = prisma;
-  private configService = {
-    get<T = string>(key: string): T | undefined {
-      return process.env[key] as unknown as T | undefined;
-    },
-  };
+  // ─── OAuth ───────────────────────────────────────────────────────────────────
+
+  /**
+   * One-time JWT admin consent URL (DocuSign often hides "Grant consent" under Actions).
+   * Open while logged in as DOCUSIGN_IMPERSONATED_USER_ID (e.g. dev@).
+   */
+  getJwtConsentUrl(): string {
+    const clientId = DOCUSIGN_INTEGRATION_KEY || DOCUSIGN_CLIENT_ID;
+    if (!clientId?.trim()) {
+      throw new BadRequestException('DOCUSIGN_CLIENT_ID / DOCUSIGN_INTEGRATION_KEY is not set.');
+    }
+    const redirectUri = DOCUSIGN_REDIRECT_URI?.trim() || DOCUSIGN_JWT_CONSENT_REDIRECT_URI;
+    const scopes = encodeURIComponent('signature impersonation');
+    const { authUrl } = getDocusignOAuthUrls();
+    return (
+      `${authUrl}?response_type=code&scope=${scopes}` +
+      `&client_id=${encodeURIComponent(clientId)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}`
+    );
+  }
+
+  getConnectionStatus() {
+    const mode = resolveDocusignAuthMode();
+    const status: Record<string, unknown> = {
+      mode,
+      jwtConfigured: isDocusignJwtConfigured(),
+      requiresUserConnect: mode === 'oauth',
+    };
+    if (mode === 'jwt' && isDocusignJwtConfigured()) {
+      try {
+        status.consentUrl = this.getJwtConsentUrl();
+        status.consentInstructions =
+          'Open consentUrl in a browser while logged in as the impersonated DocuSign user (dev@). ' +
+          'Add the redirect URI to Apps and Keys → Redirect URIs if DocuSign rejects the redirect.';
+      } catch {
+        /* omit consent URL if misconfigured */
+      }
+    }
+    return status;
+  }
 
   getAuthUrl(state: string): string {
-    const clientId = this.configService.get<string>('BOLDSIGN_CLIENT_ID');
-    const redirectUri = this.configService.get<string>('BOLDSIGN_REDIRECT_URI');
-    const scopes = 'signature';
-    console.log("clientId", clientId);
-    console.log("redirectUri", redirectUri);
-    console.log("scopes", scopes);
-    console.log("state", state);
-
-    return `${this.docusignAuthUrl}/oauth/auth?response_type=code&scope=${scopes}&client_id=${clientId}&state=${state}&redirect_uri=${redirectUri}`;
+    if (resolveDocusignAuthMode() === 'jwt') {
+      throw new BadRequestException(
+        'DocuSign uses server JWT auth. Per-user Connect is not required.',
+      );
+    }
+    const scopes = encodeURIComponent('signature impersonation');
+    const { authUrl } = getDocusignOAuthUrls();
+    return (
+      `${authUrl}?response_type=code&scope=${scopes}` +
+      `&client_id=${encodeURIComponent(DOCUSIGN_CLIENT_ID)}` +
+      `&state=${encodeURIComponent(state)}` +
+      `&redirect_uri=${encodeURIComponent(DOCUSIGN_REDIRECT_URI)}`
+    );
   }
 
   async handleCallback(code: string, userId: string) {
-    const clientId = this.configService.get<string>('BOLDSIGN_CLIENT_ID');
-    const clientSecret = this.configService.get<string>('BOLDSIGN_CLIENT_SECRET');
-    const redirectUri = this.configService.get<string>('BOLDSIGN_REDIRECT_URI');
-
-    console.log("docusignTokenUrl", this.docusignTokenUrl);
-    console.log("code", code);
-
+    const { tokenUrl, userInfoUrl } = getDocusignOAuthUrls();
     try {
       const params = new URLSearchParams();
-
       params.append('grant_type', 'authorization_code');
       params.append('code', code);
-      params.append('client_id', clientId!);
-      params.append('client_secret', clientSecret!);
-      params.append('redirect_uri', redirectUri!);
+      params.append('client_id', DOCUSIGN_CLIENT_ID);
+      params.append('client_secret', DOCUSIGN_CLIENT_SECRET);
+      params.append('redirect_uri', DOCUSIGN_REDIRECT_URI);
 
-      const response = await axios.post(
-        this.docusignTokenUrl,
-        params,
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-        },
-      );
-      // const response = await axios.post(
-      //   this.docusignTokenUrl,
-      //   {
-      //     grant_type: 'authorization_code',
-      //     code,
-      //     client_id: clientId,
-      //     client_secret: clientSecret,
-      //     redirect_uri: redirectUri,
-      //   },
-      //   {
-      //     headers: {
-      //       'Content-Type': 'application/x-www-form-urlencoded',
-      //     },
-      //   },
-      // );
+      const tokenRes = await axios.post(tokenUrl, params, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
 
-      console.log("response", response.data);
-      if (!response.data || !response.data.access_token) {
+      const { access_token, refresh_token, expires_in } = tokenRes.data;
+      if (!access_token) {
         throw new Error('Invalid response from DocuSign: Missing access token');
       }
 
-      const { access_token, refresh_token, expires_in } = response.data;
-      console.log("access_token", access_token);
-      console.log("refresh_token", refresh_token);
-      console.log("expires_in", expires_in);
-
-      if (!access_token) {
-        throw new Error('Invalid response from DocuSign: Access token is undefined');
-      }
-
-      // Fetch user info from DocuSign
-      const userInfoRes = await axios.get(`${this.docusignAuthUrl}/oauth/userinfo`, {
+      const userInfoRes = await axios.get(userInfoUrl, {
         headers: { Authorization: `Bearer ${access_token}` },
       });
-      const defaultAccount = userInfoRes.data.accounts.find((acc: any) => acc.is_default);
-      if (!defaultAccount) {
+      const accounts = userInfoRes.data?.accounts || [];
+      const defaultAccount = accounts.find((a: { is_default?: boolean }) => a.is_default) || accounts[0];
+      if (!defaultAccount?.account_id) {
         throw new Error('No default DocuSign account found for user');
       }
 
       const tokenExpiry = expires_in
         ? new Date(Date.now() + expires_in * 1000)
-        : new Date(Date.now() + 24 * 60 * 60 * 1000);
+        : new Date(Date.now() + 8 * 60 * 60 * 1000);
 
-      await this.prisma.user.update({
+      await prisma.user.update({
         where: { id: userId },
         data: {
           docusignAccessToken: access_token,
@@ -135,1344 +184,1961 @@ export class DocusignService {
 
       return { success: true };
     } catch (error: any) {
-      throw new UnauthorizedException('Failed to get DocuSign tokens: ' + (error?.message || error));
+      throw new UnauthorizedException(
+        'Failed to get DocuSign tokens: ' + (error?.message || error),
+      );
     }
   }
 
-  private validateAndCleanBase64(base64String: string): string {
-    // Remove any data URI prefix if present
-    const base64Data = base64String.replace(/^data:application\/pdf;base64,/, '');
-
-    // Check if the string is valid base64
-    if (!/^[A-Za-z0-9+/=]+$/.test(base64Data)) {
-      throw new BadRequestException('Invalid base64 string format');
+  private async refreshToken(userId: string) {
+    const user: any = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user?.docusignRefreshToken) {
+      throw new UnauthorizedException('DocuSign refresh token missing');
     }
+    const { tokenUrl } = getDocusignOAuthUrls();
+    const params = new URLSearchParams();
+    params.append('grant_type', 'refresh_token');
+    params.append('refresh_token', user.docusignRefreshToken);
+    params.append('client_id', DOCUSIGN_CLIENT_ID);
+    params.append('client_secret', DOCUSIGN_CLIENT_SECRET);
 
-    // Check if the decoded length is reasonable for a PDF (at least 100 bytes)
-    const decodedLength = Math.ceil((base64Data.length * 3) / 4);
-    if (decodedLength < 100) {
-      throw new BadRequestException('Document appears to be too small to be a valid PDF');
-    }
-
-    return base64Data;
-  }
-
-  /**
-   * Get PDF page count from base64 string by parsing PDF structure
-   * This is a simple parser that looks for /Count in the PDF structure
-   */
-  private getPdfPageCount(base64String: string): number {
-    try {
-      const buffer = Buffer.from(base64String, 'base64');
-      const pdfText = buffer.toString('binary');
-
-      // Look for /Count pattern in the PDF (common in page tree)
-      // This is a simple heuristic - may not work for all PDFs
-      const countMatches = pdfText.match(/\/Count\s+(\d+)/g);
-      if (countMatches && countMatches.length > 0) {
-        // Get the last /Count value (usually the total page count)
-        const lastMatch = countMatches[countMatches.length - 1];
-        const pageCount = parseInt(lastMatch.match(/\d+/)?.[0] || '0');
-        if (pageCount > 0) {
-          return pageCount;
-        }
-      }
-
-      // Fallback: count /Page objects (less reliable)
-      const pageMatches = pdfText.match(/\/Type\s*\/Page[^s]/g);
-      if (pageMatches) {
-        return pageMatches.length;
-      }
-
-      // If we can't determine, return 0 (will use calculated max)
-      return 0;
-    } catch (error) {
-      console.warn('Failed to parse PDF page count:', error);
-      return 0; // Return 0 to use calculated max instead
-    }
-  }
-
-  /**
-   * Filter tabs to only include those within document page bounds
-   */
-  private filterTabsByPageCount(tabs: any[], maxPageCount: number): any[] {
-    return tabs.filter(tab => {
-      const pageNum = parseInt(tab.pageNumber || '1');
-      if (pageNum > maxPageCount) {
-        console.warn(`Filtering out tab ${tab.tabLabel || 'unknown'} on page ${pageNum} (document has ${maxPageCount} pages)`);
-        return false;
-      }
-      return true;
+    const res = await axios.post(tokenUrl, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
-  }
-
-  async sendEnvelope(userId: string, envelopeId: string) {
-    const user: any = await this.prisma.user.findUnique({
+    const { access_token, refresh_token, expires_in } = res.data;
+    await prisma.user.update({
       where: { id: userId },
+      data: {
+        docusignAccessToken: access_token,
+        docusignRefreshToken: refresh_token || user.docusignRefreshToken,
+        docusignTokenExpiry: new Date(Date.now() + (expires_in || 28800) * 1000),
+      } as any,
     });
+  }
 
+  /** Whether API calls use server JWT (no per-user Connect). */
+  isJwtAuthMode(): boolean {
+    return resolveDocusignAuthMode() === 'jwt';
+  }
+
+  getAuthMode(): 'jwt' | 'oauth' {
+    return resolveDocusignAuthMode();
+  }
+
+  private createRestClient(accessToken: string, baseUri: string): AxiosInstance {
+    return axios.create({
+      baseURL: baseUri,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+
+  private async getJwtAuthContext() {
+    try {
+      const { accessToken, accountId, baseUri } = await getDocusignJwtSession();
+      return {
+        user: null as any,
+        accountId,
+        client: this.createRestClient(accessToken, baseUri),
+      };
+    } catch (error: any) {
+      clearDocusignJwtCache();
+      const detail = error?.response?.data?.error_description || error?.message || String(error);
+      throw new ServiceConfigException(
+        `DocuSign JWT authentication failed. Check integration key, impersonated user GUID, RSA key, and admin consent. ${detail}`,
+      );
+    }
+  }
+
+  private async getOAuthAuthContext(userId: string) {
+    let user: any = await prisma.user.findUnique({ where: { id: userId } });
     if (!user?.docusignAccessToken) {
-      throw new UnauthorizedException('DocuSign not connected');
+      throw new ServiceConfigException(
+        'DocuSign is not connected for this user. Ask an admin to enable JWT (DOCUSIGN_RSA_PRIVATE_KEY) or connect DocuSign once.',
+      );
     }
 
-    const isTokenExpired = user.docusignTokenExpiry &&
+    const isExpired =
+      user.docusignTokenExpiry &&
       new Date(user.docusignTokenExpiry).getTime() - 5 * 60 * 1000 < Date.now();
 
-    if (isTokenExpired && user.docusignRefreshToken) {
-      try {
-        await this.refreshToken(userId);
-        const updatedUser: any = await this.prisma.user.findUnique({
-          where: { id: userId },
-        });
-        if (!updatedUser?.docusignAccessToken) {
-          throw new Error('Failed to refresh token');
-        }
-        user.docusignAccessToken = updatedUser.docusignAccessToken;
-        user.docusignAccountId = updatedUser.docusignAccountId;
-        user.docusignBaseUri = updatedUser.docusignBaseUri;
-      } catch (error) {
-        throw new UnauthorizedException('DocuSign token expired and refresh failed');
+    if (isExpired && user.docusignRefreshToken) {
+      await this.refreshToken(userId);
+      user = await prisma.user.findUnique({ where: { id: userId } });
+    }
+
+    if (!user?.docusignAccessToken || !user.docusignAccountId || !user.docusignBaseUri) {
+      throw new ServiceConfigException(
+        'DocuSign account information missing. Reconnect DocuSign or configure JWT.',
+      );
+    }
+
+    const baseUri = normalizeDocusignRestBaseUri(user.docusignBaseUri);
+    return {
+      user,
+      accountId: user.docusignAccountId as string,
+      client: this.createRestClient(user.docusignAccessToken, baseUri),
+    };
+  }
+
+  private async getAuthContext(userId: string) {
+    if (resolveDocusignAuthMode() === 'jwt') {
+      if (!isDocusignJwtConfigured()) {
+        throw new ServiceConfigException(
+          'DocuSign JWT is not configured. Set DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_IMPERSONATED_USER_ID, and DOCUSIGN_RSA_PRIVATE_KEY.',
+        );
       }
+      return this.getJwtAuthContext();
+    }
+    return this.getOAuthAuthContext(userId);
+  }
+
+  // ─── Prefill helpers ───────────────────────────────────────────────────────
+
+  /**
+   * One recipients GET plus document tab walks — used for prefill and role names (avoids duplicate template API calls).
+   */
+  private async fetchTemplateDefinition(
+    client: AxiosInstance,
+    accountId: string,
+    templateId: string,
+  ): Promise<{ textTabs: DocusignTextTabRef[]; roleNames: string[] }> {
+    const merged: DocusignTextTabRef[] = [];
+    const roleNames: string[] = [];
+    const seen = new Set<string>();
+
+    const pushTabs = (tabs: DocusignTextTabRef[]) => {
+      for (const t of tabs) {
+        const key = String(t.tabId || t.tabLabel || t.name || '').trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push(t);
+      }
+    };
+
+    try {
+      const recRes = await client.get(
+        `/v2.1/accounts/${accountId}/templates/${templateId}/recipients`,
+      );
+      const signers = recRes.data?.signers || [];
+      for (const s of signers) {
+        const rn = String(s.roleName || '').trim();
+        if (rn) roleNames.push(rn);
+      }
+      const signer = signers[0];
+      const recipientId = signer?.recipientId;
+      if (recipientId) {
+        const tabsRes = await client.get(
+          `/v2.1/accounts/${accountId}/templates/${templateId}/recipients/${recipientId}/tabs`,
+        );
+        pushTabs((tabsRes.data?.textTabs || []) as DocusignTextTabRef[]);
+      }
+    } catch (err) {
+      console.warn('[DocuSign] fetchTemplateDefinition (recipients) failed:', err);
     }
 
     try {
-      if (!envelopeId) {
-        throw new BadRequestException('Invalid envelopeId: must be provided');
-      }
-      if (!user.docusignAccountId || !user.docusignBaseUri) {
-        throw new UnauthorizedException('DocuSign account information missing. Please reconnect your DocuSign account.');
-      }
-      // Ensure /restapi is present in base_uri
-      // console.log("user.docusignBaseUri", user.docusignBaseUri, user.docusignAccountId)
-      let baseUri = user.docusignBaseUri;
-      if (!baseUri.endsWith('/restapi')) {
-        baseUri = baseUri.replace(/\/+$/, '') + '/restapi';
-      }
-      // Update the envelope status to "sent"
-      const response = await axios.put(
-        `${baseUri}/v2.1/accounts/${user.docusignAccountId}/envelopes/${envelopeId}`,
-        {
-          status: 'sent'
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${user.docusignAccessToken}`,
-            'Content-Type': 'application/json',
-          },
-        },
+      const docsRes = await client.get(
+        `/v2.1/accounts/${accountId}/templates/${templateId}/documents`,
       );
-
-      return response.data;
-    } catch (error: any) {
-      if (error?.response) {
-        if (error.response.status === 401) {
-          throw new UnauthorizedException('DocuSign authentication failed. Please reconnect your DocuSign account.');
-        }
-
-        if (error.response.status === 400) {
-          throw new BadRequestException(`DocuSign validation error: ${JSON.stringify(error.response.data)}`);
-        }
+      const docs =
+        docsRes.data?.templateDocuments || docsRes.data?.documents || [];
+      for (const doc of docs) {
+        const docId = String(doc?.documentId ?? '1');
+        const tabsRes = await client.get(
+          `/v2.1/accounts/${accountId}/templates/${templateId}/documents/${docId}/tabs`,
+        );
+        pushTabs((tabsRes.data?.textTabs || []) as DocusignTextTabRef[]);
       }
-
-      throw new BadRequestException('Failed to send envelope: ' + (error?.message || error));
+    } catch (err) {
+      console.warn('[DocuSign] fetchTemplateDefinition (documents) failed:', err);
     }
+
+    return { textTabs: merged, roleNames };
   }
 
-  async refreshToken(userId: string) {
-    const user: any = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
+  /** All text tabs on template documents (DocuSign stores most fields here, not only on recipient). */
+  private async fetchAllTemplateTextTabs(
+    client: AxiosInstance,
+    accountId: string,
+    templateId: string,
+  ): Promise<DocusignTextTabRef[]> {
+    const { textTabs } = await this.fetchTemplateDefinition(client, accountId, templateId);
+    return textTabs;
+  }
 
-    if (!user?.docusignRefreshToken) {
-      throw new UnauthorizedException('No refresh token available');
+  /** DocuSign virtual document ids (tabs/download per-doc are invalid for these). */
+  private static readonly DOCUSIGN_VIRTUAL_DOCUMENT_IDS = new Set([
+    'certificate',
+    'combined',
+    'portfolio',
+  ]);
+
+  /** True when document id supports GET .../documents/{id}/tabs (content docs only). */
+  private supportsEnvelopeDocumentTabs(doc: {
+    documentId?: string;
+    type?: string;
+  }): boolean {
+    const docId = String(doc?.documentId ?? '').trim();
+    if (!docId) return false;
+    if (DocusignService.DOCUSIGN_VIRTUAL_DOCUMENT_IDS.has(docId.toLowerCase())) {
+      return false;
     }
+    const docType = String(doc?.type ?? '').trim().toLowerCase();
+    if (docType && docType !== 'content') {
+      return false;
+    }
+    return true;
+  }
+
+  private filterEnvelopeContentDocuments<
+    T extends { documentId?: string; type?: string },
+  >(docs: T[]): T[] {
+    return docs.filter((d) => this.supportsEnvelopeDocumentTabs(d));
+  }
+
+  private async fetchEnvelopeDocumentTextTabs(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+  ): Promise<DocusignTextTabRef[]> {
+    const merged: DocusignTextTabRef[] = [];
+    const seen = new Set<string>();
 
     try {
-      const response = await axios.post(
-        this.docusignTokenUrl,
-        {
-          grant_type: 'refresh_token',
-          refresh_token: user.docusignRefreshToken,
-          client_id: this.configService.get('DOCUSIGN_CLIENT_ID'),
-          client_secret: this.configService.get('DOCUSIGN_CLIENT_SECRET'),
-        },
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-        },
+      const docsRes = await client.get(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents`,
       );
+      const docs = docsRes.data?.envelopeDocuments || docsRes.data?.documents || [];
+      const contentDocs = this.filterEnvelopeContentDocuments(
+        docs.length ? docs : [{ documentId: '1' }],
+      );
+      const toFetch = contentDocs.length ? contentDocs : [{ documentId: '1' }];
 
-      const { access_token, refresh_token, expires_in } = response.data;
+      for (const doc of toFetch) {
+        const docId = String(doc?.documentId ?? '1');
+        try {
+          const tabsRes = await client.get(
+            `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/${docId}/tabs`,
+          );
+          for (const t of (tabsRes.data?.textTabs || []) as DocusignTextTabRef[]) {
+            const key = String(t.tabId || t.tabLabel || '').trim();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            merged.push(t);
+          }
+        } catch (docErr) {
+          console.warn(
+            `[DocuSign] fetchEnvelopeDocumentTextTabs document ${docId} failed:`,
+            docErr,
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('[DocuSign] fetchEnvelopeDocumentTextTabs failed:', err);
+    }
 
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          docusignAccessToken: access_token,
-          docusignRefreshToken: refresh_token,
-          docusignTokenExpiry: new Date(Date.now() + expires_in * 1000),
-        } as any,
-      });
+    return merged;
+  }
 
-      return { success: true };
-    } catch (error: any) {
-      throw new UnauthorizedException('Failed to refresh DocuSign token: ' + (error?.message || error));
+  private async getTemplateSignerRoleNames(
+    client: AxiosInstance,
+    accountId: string,
+    templateId: string,
+  ): Promise<string[]> {
+    try {
+      const res = await client.get(
+        `/v2.1/accounts/${accountId}/templates/${templateId}/recipients`,
+      );
+      return (res.data?.signers || [])
+        .map((s: { roleName?: string }) => String(s.roleName || '').trim())
+        .filter(Boolean);
+    } catch {
+      return [];
     }
   }
 
-  async createDraftEnvelope(
-    userId: string,
-    documentBase64: string,
-    recipientEmail: string,
-    state: string,
-    application: any,
-    termsOffer: any,
-    ccEmails: string[] = [],
-    isResend: boolean = false
+  private async assertEnvelopeHasSigners(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    templateId: string,
   ) {
-    // Validate required parameters
-    if (!application) {
-      throw new BadRequestException('Application is required');
+    const res = await client.get(
+      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
+    );
+    const signers = (res.data?.signers || []).filter(
+      (s: { email?: string }) => String(s.email || '').trim(),
+    );
+    if (signers.length) return signers;
+
+    const templateRoles = await this.getTemplateSignerRoleNames(
+      client,
+      accountId,
+      templateId,
+    );
+    throw new BadRequestException(
+      `DocuSign envelope has no signers with email. Template role name(s): ${templateRoles.join(', ') || 'unknown'}. ` +
+        'CRM must send roles[].signerRole (or roleName) exactly matching the template role, plus a valid signerEmail.',
+    );
+  }
+
+  private async fetchEnvelopeSignerTextTabs(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    recipientId: string,
+  ): Promise<DocusignTextTabRef[]> {
+    try {
+      const tabsRes = await client.get(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${recipientId}/tabs`,
+      );
+      return (tabsRes.data?.textTabs || []) as DocusignTextTabRef[];
+    } catch (err) {
+      console.warn('[DocuSign] fetchEnvelopeSignerTextTabs failed:', err);
+      return [];
     }
-    console.log("application", application);
+  }
 
-    // Fix 8: Prevent crash if termsOffer missing
-    if (!termsOffer) {
-      throw new BadRequestException("Terms offer not found");
-    }
-    console.log("termsOffer", termsOffer);
+  private async buildTextTabsForPrefill(
+    client: AxiosInstance,
+    accountId: string,
+    templateId: string | undefined,
+    prefillFields?: PrefillField[],
+    preloadedTemplateTabs?: DocusignTextTabRef[],
+  ): Promise<Array<{ tabLabel: string; value: string; tabId?: string }>> {
+    const fields = this.sanitizePrefillFieldsForDocuSign(prefillFields);
+    if (!fields.length) return [];
 
-    const clientFromApp = application?.client;
-    const stateForDoc =
-      (typeof state === "string" && state.trim()) ||
-      clientFromApp?.businessState ||
-      clientFromApp?.ownerState ||
-      "";
-
-    const embeddedBusinessInfo = Array.isArray(application?.businessInfo)
-      ? application.businessInfo[0]
-      : application?.businessInfo;
-
-    const funderNameFromApp =
-      (termsOffer?.position && String(termsOffer.position).trim()) ||
-      (application?.OfferDecision?.position &&
-        String(application.OfferDecision.position).trim()) ||
-      "";
-
-    const businessInfo =
-      embeddedBusinessInfo ||
-      ({
-        funderName: funderNameFromApp,
-        frequency:
-          termsOffer.frequency || application?.OfferDecision?.frequency || "",
-        state: stateForDoc,
-        payoff: "",
-        epo: false,
-        ach: false,
-        addendum: false,
-        addendums: [],
-        epos: [],
-        achs: [],
-        client: clientFromApp ? [clientFromApp] : [],
-      } as any);
-
-    if (!businessInfo.funderName) {
-      throw new BadRequestException(
-        "funderName is required (set termsOffer.position or OfferDecision.position)"
+    const tid = String(templateId || '').trim();
+    if (tid) {
+      const templateTabs =
+        preloadedTemplateTabs ??
+        (await this.fetchAllTemplateTextTabs(client, accountId, tid));
+      const matched = matchPrefillFieldsToTextTabs(fields, templateTabs);
+      if (matched.length) return matched;
+      console.warn(
+        `[DocuSign] prefill: ${fields.length} CRM field(s), 0 tab matches on template ${tid}. ` +
+          `Sample DocuSign tab labels: ${collectTabLabels(templateTabs, 15).join(', ') || '(none — add Data Labels on PDF fields)'}`,
       );
     }
-    console.log("businessInfo.funderName", businessInfo.funderName);
 
-    // Fix 5: Fix frequency fallback
-    if (!termsOffer.frequency && businessInfo?.frequency) {
-      termsOffer.frequency = businessInfo.frequency;
-    }
-    console.log("termsOffer.frequency", termsOffer.frequency);
-    if (!termsOffer.frequency) {
-      throw new BadRequestException('termsOffer.frequency is required (can be in termsOffer or businessInfo.frequency)');
-    }
+    return buildTextTabsFromPrefillIds(fields);
+  }
 
-    // Fix 6: Prevent missing recipient email error
-    if (!recipientEmail) {
-      throw new BadRequestException("Recipient email is required");
-    }
-    console.log("isResend", isResend);
-    // Get user first to access userId (numeric)
-    const user: any = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
+  private logDocusignApiError(context: string, err: unknown) {
+    const ax = err as { response?: { data?: { errorCode?: string; message?: string } }; message?: string };
+    const code = ax?.response?.data?.errorCode;
+    const message = ax?.response?.data?.message || ax?.message || String(err);
+    console.warn(`[DocuSign] ${context}${code ? ` (${code})` : ''}: ${message}`);
+  }
 
-    if (!user?.docusignAccessToken) {
-      throw new UnauthorizedException('DocuSign not connected');
-    }
-
-    if (isResend) {
-      // Expire old envelopes related to this application
-      await (this.prisma as any).document.updateMany({
-        where: { applicationId: application.id },
-        data: { status: 'expired' },
-      });
-
-      // Remove old envelope reference from DB 
-      await (this.prisma as any).document.deleteMany({
-        where: { applicationId: application.id },
-      });
-
-      console.log('Old envelopes removed. Creating a fresh new one...');
-    }
-
-    const existingDoc: any = await (this.prisma as any).document.findFirst({
-      where: { applicationId: application.id, status: 'created' },
-    });
-    console.log("existingDoc", existingDoc);
-    if (existingDoc && !isResend) {
-      throw new BadRequestException('Envelope already created. Use resend to generate a new one.');
-    }
-    console.log("termsOffer.frequency", termsOffer.frequency);
-    // Fix 5: Fix frequency fallback
-    const freq = (termsOffer.frequency?.toLowerCase() || businessInfo.frequency?.toLowerCase()) || '';
-    const STATE_PAGE_COUNTS: Record<string, number> = {
-      "dailyCalifornia": 2,
-      "weeklyCalifornia": 2,
-      "dailyFlorida": 1,
-      "weeklyFlorida": 1,
-      "dailyGeorgia": 1,
-      "weeklyGeorgia": 1,
-      "dailyKansas": 1,
-      "weeklyKansas": 1,
-      "dailyUtah": 1,
-      "weeklyUtah": 1,
-      "dailyVirginia": 2,
-      "weeklyVirginia": 2,
-      "dailyConnecticut": 2,
-      "weeklyConnecticut": 2,
-      "dailyNewYork": 2,
-      "weeklyNewYork": 2,
-    };
-    const FUNDER_PAGE_COUNTS: Record<string, number> = {
-      "DAILYCOREFUNDING": 24,
-      "WEEKLYCOREFUNDING": 21,
-      // "DAILYBARCLAYS":18,
-    };
-    const PAYOFF_PAGE_COUNTS: Record<string, number> = {
-      "Payoff1": 1,
-      "Payoff2": 1,
-      "Payoff3": 1
-    };
-    console.log("STATE_PAGE_COUNTS", STATE_PAGE_COUNTS);
-    console.log("user", user);
-    const isTokenExpired = user.docusignTokenExpiry &&
-      new Date(user?.docusignTokenExpiry).getTime() - 5 * 60 * 1000 < Date.now();
-    console.log("isTokenExpired", isTokenExpired);
-    if (isTokenExpired && user.docusignRefreshToken) {
-      try {
-        await this.refreshToken(userId);
-        const updatedUser: any = await this.prisma.user.findUnique({
-          where: { id: userId },
-        });
-        if (!updatedUser?.docusignAccessToken) {
-          throw new Error('Failed to refresh token');
-        }
-        user.docusignAccessToken = updatedUser.docusignAccessToken;
-        user.docusignAccountId = updatedUser.docusignAccountId;
-        user.docusignBaseUri = updatedUser.docusignBaseUri;
-      } catch (error) {
-        throw new UnauthorizedException('DocuSign token expired and refresh failed');
-      }
-    }
-    console.log("user", user);
-
-    let client: Client | null = null;
-    const clientId = application?.clientId;
-    if (clientId) {
-      client = await this.prisma.client.findUnique({ where: { id: clientId } });
-    }
-
-    try {
-      if (!documentBase64 || typeof documentBase64 !== 'string') {
-        throw new BadRequestException('Invalid documentBase64: must be a non-empty string');
-      }
-      if (!user.docusignAccountId || !user.docusignBaseUri) {
-        throw new UnauthorizedException('DocuSign account information missing. Please reconnect your DocuSign account.');
-      }
-      let baseUri = user.docusignBaseUri;
-      if (!baseUri.endsWith('/restapi')) {
-        baseUri = baseUri.replace(/\/+$/, '') + '/restapi';
-      }
-      const cleanedBase64 = this.validateAndCleanBase64(documentBase64);
-
-      if (!recipientEmail || !recipientEmail.includes('@')) {
-        throw new BadRequestException('Invalid recipientEmail: must be a valid email address');
-      }
-
-      const mergeFreqWithState = freq + state;
-      // Fix 3: Safe merge key - normalize funder name to match config keys
-      // Normalize funder name: remove spaces, special chars, convert to uppercase
-      const normalizedFunderName = businessInfo.funderName
-        ?.replace(/\s+/g, '')
-        .replace(/[^a-zA-Z0-9]/g, '')
-        .toUpperCase() || '';
-
-      const mergeFreqWithFunderName = (termsOffer.frequency)?.toUpperCase() + normalizedFunderName;
-      const stateKey = mergeFreqWithState.replace(/\s/g, '');
-      const funderKey = mergeFreqWithFunderName?.replace(/\s/g, '') || '';
-
-      // Fix 4: Safe payoff check
-      const payoffKey = businessInfo.payoff !== "" ? businessInfo.payoff.replace(/\s/g, '') : "";
-      const epoKey = businessInfo?.epo ? 'epo' : '';
-      const achKey = businessInfo?.ach ? `${freq}Ach` : '';
-
-      // Check if state has disclosure document (exists in STATE_PAGE_COUNTS)
-      const hasStateDisclosure = stateKey in STATE_PAGE_COUNTS;
-      const statePageCount = hasStateDisclosure ? (STATE_PAGE_COUNTS[stateKey] || 0) : 0;
-
-      // Try to find funder config - first exact match, then fallback to COREFUNDING if funder name contains "fund", "core", or "funding"
-      let funderConfig = FUNDERNAME_DOCUMENT_CONFIG[funderKey];
-      let effectiveFunderKey = funderKey;
-
-      // Fallback: if exact match not found, try to match based on funder name content
-      if (!funderConfig) {
-        const funderNameUpper = normalizedFunderName;
-        const funderNameOriginal = businessInfo.funderName?.toUpperCase() || '';
-        // Check if funder name contains "fund", "core", or "funding" (case insensitive)
-        if (funderNameUpper.includes('FUND') || funderNameUpper.includes('CORE') ||
-          funderNameOriginal.includes('FUND') || funderNameOriginal.includes('CORE')) {
-          const fallbackKey = `${freq.toUpperCase()}COREFUNDING`;
-          funderConfig = FUNDERNAME_DOCUMENT_CONFIG[fallbackKey];
-          if (funderConfig) {
-            effectiveFunderKey = fallbackKey;
-            console.log(`Using fallback funder config: ${fallbackKey} for funder: ${businessInfo.funderName}`);
+  /** Decrypt CRM `enc:v1:` values and drop empty fields before sending to DocuSign. */
+  private sanitizePrefillFieldsForDocuSign(prefillFields?: PrefillField[]): PrefillField[] {
+    return (prefillFields || [])
+      .map((f) => {
+        const id = String(f?.id ?? '').trim();
+        let value = String(f?.value ?? '').trim();
+        if (!id || !value) return null;
+        if (isEncrypted(value)) {
+          try {
+            value = String(decryptField(value) ?? '').trim();
+          } catch {
+            return null;
           }
         }
-      }
-
-      // Use effectiveFunderKey for page count (fallback to original if not found)
-      const funderPageCount = FUNDER_PAGE_COUNTS[effectiveFunderKey] || FUNDER_PAGE_COUNTS[funderKey] || 1;
-      const payoffPageCount = PAYOFF_PAGE_COUNTS[payoffKey]
-      const epoPageCount = epoKey ? 1 : 0;
-
-      const addendums = businessInfo?.addendums || [];
-      const epos = businessInfo?.epos || [];
-      const achs = businessInfo?.achs || [];
-      const hasEpo = businessInfo?.epo;
-      const hasAch = businessInfo?.ach;
-
-      const hasAddendums = businessInfo?.addendum;
-      const addendumKey = hasAddendums ? 'guarantorAddendum' : '';
-      const effectiveAddendumConfig = addendumKey ? ADDENDUM_DOCUMENT_CONFIG[addendumKey] : null;
-      const effectiveEpoConfig = hasEpo ? EPO_DOCUMENT_CONFIG['epo'] : null;
-      const effectiveAchConfig = hasAch ? ACH_DOCUMENT_CONFIG[achKey] : null;
-
-      // Only get stateConfig if state has disclosure document
-      const stateConfig = hasStateDisclosure ? STATE_DOCUMENT_CONFIG[stateKey] : null;
-
-      const payoffConfig = PAYOFF_DOCUMENT_CONFIG[payoffKey];
-      const addendumConfig = ADDENDUM_DOCUMENT_CONFIG[addendumKey];
-      const epoConfig = EPO_DOCUMENT_CONFIG[epoKey];
-      const achConfig = ACH_DOCUMENT_CONFIG[achKey];
-
-      // Log for debugging
-      console.log("funderKey:", funderKey);
-      console.log("effectiveFunderKey:", effectiveFunderKey);
-      console.log("normalizedFunderName:", normalizedFunderName);
-      console.log("funderConfig:", funderConfig ? "found" : "not found");
-
-
-      let currentPage = 1;
-      // Only set stateStartPage if state has disclosure document
-      const stateStartPage = hasStateDisclosure ? currentPage : 0;
-      if (hasStateDisclosure) {
-        currentPage += statePageCount;
-      }
-      let addendumPageCount = 0;
-
-      const funderStartPage = currentPage;
-      currentPage += funderPageCount;
-
-      const payoffStartPage = payoffKey !== "" ? currentPage : 0;
-      if (payoffKey !== "") currentPage += payoffPageCount;
-
-      const addendumStartPage = hasAddendums ? currentPage : null;
-      if (hasAddendums) currentPage += addendums.length;
-
-      const epoStartPage = hasEpo ? currentPage : null;
-      if (hasEpo) currentPage += epos.length;
-
-      const achStartPage = hasAch ? currentPage : null;
-      if (hasAch) currentPage += achs.length;
-
-      // Get actual PDF page count and calculate max page count
-      const actualPdfPageCount = this.getPdfPageCount(cleanedBase64);
-      console.log("Actual PDF page count:", actualPdfPageCount);
-
-      // Calculate expected maximum page count from structure
-      // currentPage is already incremented beyond last page, so subtract 1
-      const expectedMaxPage = currentPage - 1;
-      const maxPageCount = actualPdfPageCount > 0 ? actualPdfPageCount : expectedMaxPage;
-      console.log("Using max page count:", maxPageCount, "(actual:", actualPdfPageCount, "expected:", expectedMaxPage, ")");
-
-      // Only require stateConfig if state should have disclosure document
-      if (hasStateDisclosure && !stateConfig) {
-        throw new BadRequestException(`State configuration missing for state: ${stateKey}`);
-      }
-      if (!funderConfig) {
-        console.log("---------------funder config-----------", funderConfig);
-        console.log("funderKey searched:", funderKey);
-        console.log("available funder keys:", Object.keys(FUNDERNAME_DOCUMENT_CONFIG));
-        console.log("businessInfo.funderName:", businessInfo.funderName);
-        console.log("normalizedFunderName:", normalizedFunderName);
-        throw new BadRequestException(`Unsupported funderName: "${businessInfo.funderName}". Available funders: ${Object.keys(FUNDERNAME_DOCUMENT_CONFIG).join(', ')}`);
-      }
-
-      if (businessInfo.payoff && !payoffConfig) {
-        throw new BadRequestException('Unsupported payoff');
-      }
-
-      const fundingInfoRaw = application?.FundingInfo;
-      const fundingInfo =
-        fundingInfoRaw && !Array.isArray(fundingInfoRaw)
-          ? fundingInfoRaw
-          : Array.isArray(fundingInfoRaw) && fundingInfoRaw.length > 0
-            ? fundingInfoRaw[0]
-            : {};
-
-      // Calculate finalCalculations from termsOffer and fundingInfo
-      const finalCalculations = {
-        amountFinanced: termsOffer?.approvedAmount?.toString() || '',
-        financeCharge: termsOffer?.paybackAmount && termsOffer?.approvedAmount
-          ? (termsOffer.paybackAmount - termsOffer.approvedAmount).toString()
-          : '',
-        recipientFunds: termsOffer?.approvedAmount?.toString() || '',
-        estimatedTotalPaymentAmount: termsOffer?.paybackAmount?.toString() || '',
-        estimatedMonthlyCost: termsOffer?.paymentAmount?.toString() || '',
-        estimatedPayment: termsOffer?.paymentAmount?.toString() || '',
-        estimatedTerm: termsOffer?.termLength?.toString() || '',
-        estimatedAnnualPercentageRate: termsOffer?.buyRate ? (termsOffer.buyRate * 100).toString() : '',
-        specifiedPercentage: termsOffer?.percentOfGross ? (termsOffer.percentOfGross * 100).toString() : '',
-        paymentTerms: termsOffer?.factorRate ? (termsOffer.factorRate * 100).toString() : '',
-      };
-
-      // Helper to format numbers with US formatting (commas for thousands separator)
-      function formatNumberUS(value: string | number, minDecimals: number = 2, maxDecimals: number = 20): string {
-        if (!value || value.toString().trim() === '') return '';
-
-        // Remove existing commas if present
-        let cleanValue = value.toString().replace(/,/g, '');
-
-        // Parse as number
-        const num = parseFloat(cleanValue);
-
-        // If not a valid number, return empty string
-        if (isNaN(num)) {
-          return '';
-        }
-
-        // Format with US locale (commas for thousands separator)
-        return num.toLocaleString('en-US', {
-          minimumFractionDigits: minDecimals,
-          maximumFractionDigits: maxDecimals
-        });
-      }
-
-      // Helper to format monetary values with US formatting (commas) and add $ prefix
-      function withDollar(value: string): string {
-        if (!value || value.trim() === '') return value || '';
-
-        const formatted = formatNumberUS(value);
-
-        // If formatting failed, return original value with $ prefix
-        if (!formatted) {
-          return value.startsWith('$') ? value : `$${value}`;
-        }
-
-        return `$${formatted}`;
-      }
-
-      // Helper to format percentage values with US formatting (without % sign)
-      function formatPercentage(value: string): string {
-        if (!value || value.toString().trim() === '') return '';
-        const formatted = formatNumberUS(value);
-        return formatted || '';
-      }
-
-      // Helper to convert full state name to abbreviation
-      // Only includes states that are available in this platform
-      function getStateAbbreviation(stateName: string): string {
-        if (!stateName) return '';
-
-        const stateNameUpper = stateName.toUpperCase().trim();
-
-        // Full state name to abbreviation mapping - only for states available in the platform
-        const stateMap: Record<string, string> = {
-          'CALIFORNIA': 'CA',
-          'FLORIDA': 'FL',
-          'GEORGIA': 'GA',
-          'KANSAS': 'KS',
-          'CONNECTICUT': 'CT',
-          'NEW YORK': 'NY',
-          'UTAH': 'UT',
-          'VIRGINIA': 'VA'
-        };
-
-        // If it's already an abbreviation (2 chars), return it uppercase
-        if (stateNameUpper.length === 2) {
-          return stateNameUpper;
-        }
-
-        // Convert full name to abbreviation (only for platform states)
-        return stateMap[stateNameUpper] || stateNameUpper;
-      }
-
-      function formatEinNumber(ein: string): string {
-        // Remove any non-digit characters
-        const cleanedEin = ein.replace(/\D/g, '');
-
-        // Format as XX-XXXXXXX if it has 9 digits
-        if (cleanedEin.length === 9) {
-          return cleanedEin.replace(/^(\d{2})(\d{7})$/, '$1-$2');
-        }
-
-        // Return the raw number if it's not exactly 9 digits
-        return ein;
-      }
-
-      function formatSsnNumber(ssn: string): string {
-        // Remove any non-digit characters
-        const cleanedSsn = ssn.replace(/\D/g, '');
-
-        // Format as XXX-XX-XXXX if it has 9 digits
-        if (cleanedSsn.length === 9) {
-          return cleanedSsn.replace(/^(\d{3})(\d{2})(\d{4})$/, '$1-$2-$3');
-        }
-
-        // Return the raw number if it's not exactly 9 digits
-        return ssn;
-      }
-
-
-      const TotalBrokerFee = parseFloat(fundingInfo.brokerFeePaidByClient || '0') + parseFloat(fundingInfo.brokerFeePaidByFunder || '0');
-      const feesDeducted =
-        parseFloat(fundingInfo.originationFee || '0') +
-        parseFloat(fundingInfo.brokerFeePaidByClient || '0') +
-        parseFloat(fundingInfo.amountPaidToPriorMcaFundingReFi || '0') +
-        parseFloat(fundingInfo.thirdPartyPayment || '0');
-
-      // Calculate average monthly revenue from client
-      const averageMonthlyRevenue = client?.businessMonthlyRevenue
-        ? client.businessMonthlyRevenue.toFixed(2)
-        : '0';
-
-      // Calculate payment dates from termsOffer
-      const now = new Date();
-      const currentMonth = now.getMonth() + 1;
-      const currentYear = now.getFullYear();
-      // Use offerExpiryDate or calculate from current date
-      const paymentDate = termsOffer?.offerExpiryDate ? new Date(termsOffer.offerExpiryDate) : now;
-      const paymentMonth = paymentDate.getMonth() + 1;
-      const paymentDay = paymentDate.getDate();
-      const paymentYear = paymentMonth < currentMonth ? currentYear + 1 : currentYear;
-
-      function formatDate(date: Date | string | null | undefined) {
-        if (!date) return '';
-        const dateObj = date instanceof Date ? date : new Date(date);
-        // Check if date is valid
-        if (isNaN(dateObj.getTime())) return '';
-        return dateObj.toLocaleDateString("en-US");
-      }
-
-
-      const NetFundProvided = (parseFloat(fundingInfo.revenuePurchased || '0') - feesDeducted).toFixed(2);
-
-      // Get client from businessInfo relation or application.client
-      const businessInfoClients = Array.isArray(businessInfo?.client) ? businessInfo.client : [];
-      const primaryClient = businessInfoClients[0] || client;
-
-      const tabValueMap: Record<string, string> = {
-        amountFinanced: withDollar(finalCalculations.amountFinanced || ''),
-        financeCharge: withDollar(finalCalculations.financeCharge || ''),
-        recipientFunds: withDollar(finalCalculations.recipientFunds || ''),
-        purchasePrice: withDollar(fundingInfo.purchasePrice || ''),
-        revenuePurchased: withDollar(fundingInfo.revenuePurchased || ''),
-        NetFundProvided: withDollar(NetFundProvided) || '',
-        brokerFeePaidByClient: withDollar(fundingInfo.brokerFeePaidByClient || ''),
-        brokerFeePaidByFunder: withDollar(fundingInfo.brokerFeePaidByFunder || ''),
-        totalBrokerFee: withDollar(TotalBrokerFee.toString() || ''),
-        feesDeducted: withDollar(feesDeducted.toString() || ''),
-        frequency: (businessInfo.frequency)?.toUpperCase() || '',
-        state: getStateAbbreviation(businessInfo.state || ''),
-        clientstate: getStateAbbreviation(primaryClient?.businessState || ''),
-        city: (primaryClient?.businessCity)?.toUpperCase() || '',
-        zip: (primaryClient?.businessZipCode) || '',
-
-        estimatedDailyPayment: withDollar(
-          termsOffer?.numberOfPayments && termsOffer.numberOfPayments > 0
-            ? (parseFloat(fundingInfo.revenuePurchased || '0') / termsOffer.numberOfPayments).toFixed(2)
-            : ''
-        ),
-        estimatedWeeklyPayment: withDollar(
-          termsOffer?.numberOfPayments && termsOffer.numberOfPayments > 0
-            ? (parseFloat(fundingInfo.revenuePurchased || '0') / termsOffer.numberOfPayments).toFixed(2)
-            : ''
-        ),
-
-        contactstate: getStateAbbreviation(primaryClient?.ownerState || primaryClient?.businessState || ''),
-        contactcity: (primaryClient?.ownerCity || primaryClient?.businessCity)?.toUpperCase() || '',
-        contactzip: (primaryClient?.ownerZipCode || primaryClient?.businessZipCode) || '',
-        funderName: (businessInfo.funderName)?.toUpperCase() || '',
-        estimatedTotalPaymentAmount: withDollar(finalCalculations.estimatedTotalPaymentAmount || ''),
-        estimatedMonthlyCost: withDollar(finalCalculations.estimatedMonthlyCost || ''),
-        estimatedPayment: withDollar(finalCalculations.estimatedPayment || ''),
-
-        estimatedTerm: ` ${(String(businessInfo.frequency || '').toLowerCase() === 'daily' ? `${(parseFloat(finalCalculations.estimatedTerm) * 5) || ''} Days` :
-          `${finalCalculations.estimatedTerm || ''} Weeks`)?.toUpperCase() || ''}`,
-        estimatedAnnualPercentageRate: formatPercentage(finalCalculations.estimatedAnnualPercentageRate || ''),
-        specifiedPercentage: formatPercentage(finalCalculations.specifiedPercentage || ''),
-        clientName1: (primaryClient?.ownerFirstName)?.toUpperCase() || '',
-        clientBusinessName1: (primaryClient?.businessName)?.toUpperCase() || '',
-        clientBusinessAddress1: (primaryClient?.businessAddress1)?.toUpperCase() || '',
-        clientContactAddress1: (primaryClient?.businessAddress2)?.toUpperCase() || '',
-        driverLicenceNumber1: primaryClient?.ownerSsn || '',
-
-        clientName2: (businessInfoClients[1]?.ownerFirstName || '').toUpperCase(),
-        clientBusinessName2: (businessInfoClients[1]?.businessName || '').toUpperCase(),
-        clientBusinessAddress2: (businessInfoClients[1]?.businessAddress1 || '').toUpperCase(),
-        clientContactAddress2: (businessInfoClients[1]?.businessAddress2 || '').toUpperCase(),
-        driverLicenceNumber2: businessInfoClients[1]?.ownerSsn || '',
-
-        // Use client directly from Client model
-        clientBusinessEmail1: (primaryClient?.businessEmail || ''),
-        clientBusinessEmail2: (businessInfoClients[1]?.businessEmail || ''),
-
-        // Bank details from BankDetail relation on Application (if included)
-        clientBankName1: '',
-        clientAccountHolderName1: '',
-        clientAccountNumber1: '',
-        clientRoutingNumber1: '',
-
-        clientBankName2: '',
-        clientAccountHolderName2: '',
-        clientAccountNumber2: '',
-        clientRoutingNumber2: '',
-
-        einNumber1: formatEinNumber(primaryClient?.businessEinNumber || ''),
-        ssnNumber1: formatSsnNumber(primaryClient?.ownerSsn || ''),
-        typeOfEntity1: (primaryClient?.businessEntityType || ''),
-        dba1: '',
-
-        einNumber2: formatEinNumber(businessInfoClients[1]?.businessEinNumber || ''),
-        ssnNumber2: formatSsnNumber(businessInfoClients[1]?.ownerSsn || ''),
-        typeOfEntity2: (businessInfoClients[1]?.businessEntityType || ''),
-        dba2: '',
-
-        paymentTerms: formatPercentage(finalCalculations.paymentTerms || ''),
-        //  averageMonthlyRevenue: withDollar(application.paymentDays.merchantMonthlyRevenue),
-        averageMonthlyRevenue: withDollar(averageMonthlyRevenue),
-        firstPaymentDate: paymentDay != null && paymentMonth != null && paymentYear != null
-          ? `${String(paymentDay).padStart(2, '0')}/${String(paymentMonth).padStart(2, '0')}/${paymentYear}`
-          : '',
-
-        payoff: (businessInfo.payoff)?.toUpperCase() || '',
-        addendum: businessInfo.addendum || false,
-        epo: businessInfo.epo || false,
-        ach: businessInfo.ach || false,
-        increasedPercentage: formatPercentage((parseFloat(finalCalculations.paymentTerms || '0') * 2).toString()),
-        originationFee: withDollar(fundingInfo.originationFee || ''),
-        paidToPriorMca: withDollar(fundingInfo.amountPaidToPriorMcaFundingReFi || '0'),
-        paidToThirdParty: withDollar(fundingInfo.thirdPartyPayment || '0'),
-      };
-
-      const addendumTabValuesList = addendums.map((addendum: any) => {
-        return {
-          clientBusinessName1: (addendum?.legalName1 || '').toUpperCase(),
-
-          clientBusinessAddress1: (primaryClient?.businessAddress1)?.toUpperCase() || '',
-
-          clientContactAddress1: (primaryClient?.businessAddress2 || '').toUpperCase(),
-
-          clientBusinessEmail1: addendum?.businessEmail1 || primaryClient?.businessEmail || '',
-
-          // Bank details would come from BankDetail relation if needed
-          clientBankName1: '',
-          clientAccountHolderName1: '',
-          clientAccountNumber1: '',
-          clientRoutingNumber1: '',
-
-          state1: getStateAbbreviation(primaryClient?.businessState || ''),
-          city1: (primaryClient?.businessCity)?.toUpperCase() || '',
-          zip1: (primaryClient?.businessZipCode) || '',
-          einNumber1: formatEinNumber(addendum?.ein1 || primaryClient?.businessEinNumber || ''),
-          ssnNumber1: formatSsnNumber(primaryClient?.ownerSsn || ''),
-          dba1: addendum?.dba1 || '',
-          typeOfEntity1: addendum?.typeOfEntity1 || primaryClient?.businessEntityType || '',
-
-        };
-      });
-
-      const achTabValuesList = achs.map((ach: any) => {
-        return {
-          clientBankName: ach?.bankName || '',
-          clientAccountHolderName: ach?.accountHolderName || '',
-          clientAccountNumber: ach?.accountNumber || '',
-          clientRoutingNumber: ach?.routingNumber || '',
-          paymentAmount: withDollar(ach?.paymentAmount || ''),
-          frequency: (ach?.frequency || '').toUpperCase(),
-          purchasePrice: withDollar(fundingInfo.purchasePrice || ''),
-          clientBusinessName: (primaryClient?.ownerFirstName)?.toUpperCase() || '',
-        };
-      });
-      const epoTabValuesList = epos.map((epo: any) => {
-        return {
-          clientBusinessName1: (primaryClient?.businessName)?.toUpperCase() || '',
-          clientName1: (primaryClient?.ownerFirstName)?.toUpperCase() || '',
-          clientBusinessName2: (businessInfoClients[1]?.businessName || '').toUpperCase(),
-          earlyPayoffAmount1: withDollar(epo.amountReceived1 || "0"),
-          earlyPayoffAmount2: withDollar(epo.amountReceived2 || "0"),
-          earlyPayoffAmount3: withDollar(epo.amountReceived3 || "0"),
-
-          earlyPayoffDate1: formatDate(epo.receivedDate1),
-          earlyPayoffDate2: formatDate(epo.receivedDate2),
-          earlyPayoffDate3: formatDate(epo.receivedDate3),
-          purchasePrice: withDollar(fundingInfo.purchasePrice || ''),
-        };
-      });
-
-      const funderTextTabs = (funderConfig?.textTabs || []).map((tab: any) => {
-        const calculatedPage = tab.pageNumber ? (parseInt(tab.pageNumber) + (funderStartPage - 1)) : funderStartPage;
-        return {
-          tabLabel: tab.tabLabel,
-          value: tabValueMap[tab.tabLabel] || '',
-          documentId: funderConfig.documentId,
-          pageNumber: calculatedPage.toString(),
-          xPosition: tab.x,
-          yPosition: tab.y,
-          fontSize: 'Size7',
-          bold: "true"
-        };
-      }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount);
-
-      const payoffTextTabs = (payoffConfig?.textTabs || []).map(tab => {
-        const calculatedPage = tab.pageNumber ? (parseInt(tab.pageNumber) + payoffStartPage - 1) : payoffStartPage;
-        return {
-          tabLabel: tab.tabLabel,
-          value: tabValueMap[tab.tabLabel] || '',
-          documentId: payoffConfig.documentId,
-          pageNumber: calculatedPage.toString(),
-          xPosition: tab.x,
-          yPosition: tab.y,
-          fontSize: 'Size7',
-          bold: "true"
-        };
-      }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount);
-
-      const addendumTextTabs = hasAddendums
-        ? addendums.flatMap((addendum: any, index: number) => {
-          const tabValues = addendumTabValuesList[index];
-          return (addendumConfig?.textTabs || []).map(tab => ({
-            tabLabel: `${tab.tabLabel}_${index + 1}`,
-            value: tabValues[tab.tabLabel] || '',
-            documentId: addendumConfig.documentId,
-            pageNumber: (addendumStartPage! + index).toString(),
-            xPosition: tab.x,
-            yPosition: tab.y,
-            fontSize: 'Size7',
-            bold: "true"
-          }));
-        })
-        : [];
-
-      const epoTextTabs = hasEpo
-        ? epos.flatMap((epo: any, index: number) => {
-          const tabValues = epoTabValuesList[index];
-          return (epoConfig?.textTabs || []).map(tab => ({
-            tabLabel: `${tab.tabLabel}_${index + 1}`,
-            value: tabValues[tab.tabLabel] || '',
-            documentId: epoConfig.documentId,
-            pageNumber: (epoStartPage! + index).toString(),
-            xPosition: tab.x,
-            yPosition: tab.y,
-            fontSize: 'Size7',
-            bold: "true"
-          }));
-        })
-        : [];
-      const achTextTabs = hasAch
-        ? achs.flatMap((ach: any, index: number) => {
-          const tabValues = achTabValuesList[index];
-          return (achConfig?.textTabs || []).map(tab => ({
-            tabLabel: `${tab.tabLabel}_${index + 1}`,
-            value: tabValues[tab.tabLabel] || '',
-            documentId: achConfig.documentId,
-            pageNumber: (achStartPage! + index).toString(),
-            xPosition: tab.x,
-            yPosition: tab.y,
-            fontSize: 'Size7',
-            bold: "true"
-          }));
-        })
-        : [];
-
-
-      const textTabs = [
-        ...(stateConfig?.textTabs || []).map(tab => {
-          const pageNum = parseInt(tab.pageNumber || stateConfig!.pageNumber || '1');
-          return {
-            tabLabel: tab.tabLabel,
-            value: tabValueMap[tab.tabLabel] || '',
-            documentId: stateConfig!.documentId,
-            pageNumber: pageNum.toString(),
-            xPosition: tab.x,
-            yPosition: tab.y,
-            fontSize: 'Size7',
-            bold: "true"
-          };
-        }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-        ...funderTextTabs,
-        ...payoffTextTabs,
-        ...addendumTextTabs.filter((tab: any) => parseInt(tab.pageNumber) <= maxPageCount),
-        ...epoTextTabs.filter((tab: any) => parseInt(tab.pageNumber) <= maxPageCount),
-        ...achTextTabs.filter((tab: any) => parseInt(tab.pageNumber) <= maxPageCount),
-      ];
-
-      const ccRecipients = (ccEmails || []).map((email, index) => {
-        return ({
-          email,
-          name: email.split('@')[0],
-          recipientId: `${index + 2}`,
-          routingOrder: '1',
-        })
-      });
-
-      // console.log("----------ccRecipients-------", ccRecipients)
-
-      let currentAddendumPage = addendumStartPage!;
-
-      const mapTabsForDuplicates = (items: any[], config: any, startPage: number, tabKey: string) => {
-        if (!items || items.length === 0 || !config?.[tabKey]) return [];
-        return items.flatMap((item, index) =>
-          config[tabKey].map((tab: any) => ({
-            documentId: config.documentId,
-            pageNumber: (startPage + index).toString(),
-            xPosition: tab.x,
-            yPosition: tab.y,
-          }))
-        );
-      };
-
-      const envelopeDefinition = {
-        emailSubject: 'Please sign this document',
-        documents: [
-          {
-            documentBase64: cleanedBase64,
-            name: 'Document',
-            fileExtension: 'pdf',
-            documentId: stateConfig?.documentId || funderConfig.documentId,
-          },
-        ],
-
-
-        recipients: {
-          signers: [
-            {
-              // Fix 7: Ensure client email fallback
-              email: recipientEmail || client?.businessEmail || '',
-              name: (recipientEmail || client?.businessEmail || '').split('@')[0],
-              recipientId: '1',
-              routingOrder: '1',
-
-              tabs: {
-                signHereTabs: [
-                  ...(stateConfig?.signHere || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (stateStartPage - 1))
-                      : stateStartPage;
-                    return {
-                      documentId: stateConfig!.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...(funderConfig.signHere || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (funderStartPage - 1))
-                      : funderStartPage;
-                    return {
-                      documentId: funderConfig.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...(payoffConfig?.signHere || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (payoffStartPage - 1))
-                      : payoffStartPage;
-                    return {
-                      documentId: payoffConfig.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-
-                  ...mapTabsForDuplicates(addendums, effectiveAddendumConfig, addendumStartPage!, 'signHere')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...mapTabsForDuplicates(epos, effectiveEpoConfig, epoStartPage!, 'signHere')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...mapTabsForDuplicates(achs, effectiveAchConfig, achStartPage!, 'signHere')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                ],
-
-                dateSignedTabs: [
-                  ...(stateConfig?.dateTabs || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (stateStartPage - 1))
-                      : stateStartPage;
-                    return {
-                      documentId: stateConfig!.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...(funderConfig.dateTabs || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (funderStartPage - 1))
-                      : funderStartPage;
-                    return {
-                      documentId: funderConfig.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...(payoffConfig?.dateTabs || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (payoffStartPage - 1))
-                      : payoffStartPage;
-                    return {
-                      documentId: payoffConfig.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-
-                  ...mapTabsForDuplicates(addendums, effectiveAddendumConfig, addendumStartPage!, 'dateTabs')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...mapTabsForDuplicates(epos, effectiveEpoConfig, epoStartPage!, 'dateTabs')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...mapTabsForDuplicates(achs, effectiveAchConfig, achStartPage!, 'dateTabs')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                ],
-
-                initialHereTabs: [
-                  ...(stateConfig?.initialHereTabs || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (stateStartPage - 1))
-                      : stateStartPage;
-                    return {
-                      documentId: stateConfig!.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...(funderConfig.initialHereTabs || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (funderStartPage - 1))
-                      : funderStartPage;
-                    return {
-                      documentId: funderConfig.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...(payoffConfig?.initialHereTabs || []).map(tab => {
-                    const pageNum = tab.pageNumber
-                      ? (parseInt(tab.pageNumber) + (payoffStartPage - 1))
-                      : payoffStartPage;
-                    return {
-                      documentId: payoffConfig.documentId,
-                      pageNumber: pageNum.toString(),
-                      xPosition: tab.x,
-                      yPosition: tab.y,
-                    };
-                  }).filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-
-                  ...mapTabsForDuplicates(addendums, effectiveAddendumConfig, addendumStartPage!, 'initialHereTabs')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...mapTabsForDuplicates(epos, effectiveEpoConfig, epoStartPage!, 'initialHereTabs')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                  ...mapTabsForDuplicates(achs, effectiveAchConfig, achStartPage!, 'initialHereTabs')
-                    .filter(tab => parseInt(tab.pageNumber) <= maxPageCount),
-                ],
-
-                textTabs,
-              },
-            },
-          ],
-          carbonCopies: ccRecipients,
-        },
-        status: 'created', // This creates a draft envelope
-        eventNotification: {
-          url: 'https://www.management.fusiontecz.com/mca/docusign/webhook',
-          loggingEnabled: true,
-          requireAcknowledgment: true,
-          useSoapInterface: false,
-          includeCertificateWithSoap: false,
-          signMessageWithX509Cert: false,
-          includeDocuments: false,
-          includeEnvelopeVoidReason: true,
-          includeTimeZone: true,
-          envelopeEvents: [
-            { envelopeEventStatusCode: 'sent' },
-            { envelopeEventStatusCode: 'delivered' },
-            { envelopeEventStatusCode: 'completed' },
-            { envelopeEventStatusCode: 'declined' },
-            { envelopeEventStatusCode: 'voided' },
-          ],
-        },
-        customFields: {
-          textCustomFields: [
-            { name: 'amountFinanced', value: withDollar(finalCalculations.amountFinanced || '') },
-            { name: 'financeCharge', value: withDollar(finalCalculations.financeCharge || '') },
-            { name: 'estimatedTotalPaymentAmount', value: withDollar(finalCalculations.estimatedTotalPaymentAmount || '') },
-            { name: 'estimatedMonthlyCost', value: withDollar(finalCalculations.estimatedMonthlyCost || '') },
-            { name: 'estimatedPayment', value: withDollar(finalCalculations.estimatedPayment || '') },
-            {
-              name: 'estimatedTerm', value: ` ${(String(businessInfo.frequency || '').toLowerCase() === 'daily' ? `${finalCalculations.estimatedTerm * 5 || ''} Days` :
-                `${finalCalculations.estimatedTerm || ''} Weeks`)?.toUpperCase() || ''}`
-            },
-            { name: 'estimatedAnnualPercentageRate', value: formatPercentage(finalCalculations.estimatedAnnualPercentageRate || '') },
-            { name: 'clientBusinessName', value: client?.businessName || '' },
-            { name: 'clientBusinessAddress', value: client?.businessAddress1 || '' },
-            { name: 'clientContactAddress', value: client?.businessAddress2 || '' },
-            { name: 'clientBusinessEmail', value: client?.businessEmail || '' },
-            { name: 'einNumber', value: client?.businessEinNumber || '' },
-          ],
-        },
-      };
-
-      const response = await axios.post(
-        `${baseUri}/v2.1/accounts/${user.docusignAccountId}/envelopes`,
-        envelopeDefinition,
-        {
-          headers: {
-            Authorization: `Bearer ${user.docusignAccessToken}`,
-            'Content-Type': 'application/json',
-          },
-        },
-
+        if (!value) return null;
+        return { id, value };
+      })
+      .filter((f): f is PrefillField => f != null);
+  }
+
+  /**
+   * PUT text tab values on envelope recipient tabs (DocuSign rejects text tab PUT on documents/{id}/tabs).
+   */
+  private async putEnvelopeTextTabsInChunks(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    tabsPath: string,
+    textTabs: Array<{ tabId: string; value: string }>,
+  ): Promise<number> {
+    if (!textTabs.length) return 0;
+    const CHUNK_SIZE = 20;
+    let applied = 0;
+    for (let i = 0; i < textTabs.length; i += CHUNK_SIZE) {
+      const chunk = textTabs.slice(i, i + CHUNK_SIZE).map((t) => ({
+        tabId: t.tabId,
+        value: t.value,
+        locked: 'true',
+      }));
+      await client.put(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/${tabsPath}`,
+        { textTabs: chunk },
+      );
+      applied += chunk.length;
+    }
+    return applied;
+  }
+
+  /**
+   * Post-create prefill: map CRM ids → envelope tabIds, update via recipient tabs API only.
+   */
+  private async applyPrefillToEnvelope(
+    _userId: string,
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    templateId: string | undefined,
+    prefillFields?: PrefillField[],
+  ): Promise<{ applied: number; attempted: number }> {
+    const fields = this.sanitizePrefillFieldsForDocuSign(prefillFields);
+    if (!fields.length) return { applied: 0, attempted: 0 };
+
+    const recipientsRes = await client.get(
+      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
+    );
+    const signers = recipientsRes.data?.signers || [];
+    if (!signers.length) {
+      console.warn(`[DocuSign] prefill skipped: no signers on envelope ${envelopeId}`);
+      return { applied: 0, attempted: fields.length };
+    }
+
+    let envelopeDocTabs: DocusignTextTabRef[] = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) await this.sleep(2000);
+      envelopeDocTabs = await this.fetchEnvelopeDocumentTextTabs(
+        client,
+        accountId,
+        envelopeId,
+      );
+      if (envelopeDocTabs.length) break;
+    }
+
+    let templateTabs: DocusignTextTabRef[] = [];
+    if (templateId) {
+      templateTabs = await this.fetchAllTemplateTextTabs(client, accountId, templateId);
+    }
+
+    let totalApplied = 0;
+    const updatedTabIds = new Set<string>();
+
+    for (const signer of signers) {
+      const recipientId = String(signer.recipientId || '');
+      if (!recipientId) continue;
+
+      const recipientTabs = await this.fetchEnvelopeSignerTextTabs(
+        client,
+        accountId,
+        envelopeId,
+        recipientId,
       );
 
-      if (application?.id && response.data?.envelopeId) {
-        // Before creating new document, expire any previous ones
-        await (this.prisma as any).document.updateMany({
-          where: { applicationId: application.id },
-          data: { status: 'expired' },
-        });
+      let matched = matchPrefillFieldsToTextTabs(fields, recipientTabs);
+      if (!matched.length && envelopeDocTabs.length) {
+        matched = matchPrefillFieldsToTextTabs(fields, envelopeDocTabs);
+      }
+      if (!matched.length && templateTabs.length) {
+        matched = matchPrefillFieldsToTextTabs(fields, templateTabs);
+      }
 
-        // Now create a fresh document record
-        // Note: Document.userId is Int, so use user.userId (numeric) instead of userId (UUID string)
-        await (this.prisma as any).document.createMany({
+      const tabIdCatalog =
+        recipientTabs.length > 0
+          ? recipientTabs
+          : envelopeDocTabs.length > 0
+            ? envelopeDocTabs
+            : templateTabs;
+      const tabsForUpdate = mapMatchedTabsToEnvelopeTabIds(matched, tabIdCatalog);
+      const pending = tabsForUpdate.filter((t) => !updatedTabIds.has(t.tabId));
+      if (!pending.length) continue;
+
+      try {
+        const n = await this.putEnvelopeTextTabsInChunks(
+          client,
+          accountId,
+          envelopeId,
+          `recipients/${recipientId}/tabs`,
+          pending,
+        );
+        totalApplied += n;
+        for (const t of pending) updatedTabIds.add(t.tabId);
+        console.log(
+          `[DocuSign] prefill recipient ${recipientId}: ${n} tab(s) on envelope ${envelopeId}`,
+        );
+      } catch (recipientErr) {
+        this.logDocusignApiError(`recipient ${recipientId} tabs`, recipientErr);
+      }
+    }
+
+    const docTabsForUpdate = mapMatchedTabsToEnvelopeTabIds(
+      matchPrefillFieldsToTextTabs(fields, envelopeDocTabs),
+      envelopeDocTabs,
+    ).filter((t) => !updatedTabIds.has(t.tabId));
+
+    if (docTabsForUpdate.length) {
+      for (const signer of signers) {
+        const recipientId = String(signer.recipientId || '');
+        if (!recipientId) continue;
+        const pending = docTabsForUpdate.filter((t) => !updatedTabIds.has(t.tabId));
+        if (!pending.length) break;
+        try {
+          const n = await this.putEnvelopeTextTabsInChunks(
+            client,
+            accountId,
+            envelopeId,
+            `recipients/${recipientId}/tabs`,
+            pending,
+          );
+          totalApplied += n;
+          for (const t of pending) updatedTabIds.add(t.tabId);
+          console.log(
+            `[DocuSign] prefill recipient ${recipientId} (doc tab catalog): ${n} tab(s) on envelope ${envelopeId}`,
+          );
+        } catch (recipientErr) {
+          this.logDocusignApiError(`recipient ${recipientId} doc-tab fallback`, recipientErr);
+        }
+      }
+    }
+
+    if (!totalApplied) {
+      const labelSample = collectTabLabels(
+        [...envelopeDocTabs, ...templateTabs],
+        25,
+      );
+      console.warn(
+        `[DocuSign] prefill: no envelope tabs updated (${fields.length} CRM fields). ` +
+          `DocuSign field labels sample: ${labelSample.join(', ') || '(none — set Data Labels on PDF fields)'}`,
+      );
+    }
+
+    return { applied: totalApplied, attempted: fields.length };
+  }
+
+  private async addEnvelopeCarbonCopies(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    ccEmails?: string[],
+  ) {
+    const carbonCopies = this.buildCarbonCopies(ccEmails);
+    if (!carbonCopies.length) return;
+    try {
+      await client.put(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
+        { carbonCopies },
+      );
+    } catch (err) {
+      console.warn('[DocuSign] addEnvelopeCarbonCopies failed:', err);
+    }
+  }
+
+  private normalizeSignerRoles(roles: SignerRoleInput[]): Array<{
+    roleName: string;
+    name: string;
+    email: string;
+    routingOrder: string;
+  }> {
+    const defaultRole = DOCUSIGN_DEFAULT_ROLE_NAME;
+    return roles
+      .map((r, idx) => ({
+        roleName: String(
+          r.roleName || r.signerRole || defaultRole || `Signer ${idx + 1}`,
+        ).trim(),
+        name: String(r.signerName || '').trim(),
+        email: String(r.signerEmail || '').trim(),
+        routingOrder: String(r.signerOrder ?? idx + 1),
+      }))
+      .filter((r) => r.email);
+  }
+
+  private async buildTemplateRolesForSend(
+    client: AxiosInstance,
+    accountId: string,
+    templateId: string,
+    roles: SignerRoleInput[],
+    textTabs: Array<{ tabLabel: string; value: string; tabId?: string }>,
+    preloadedRoleNames?: string[],
+  ) {
+    const signers = this.normalizeSignerRoles(roles);
+    if (!signers.length) {
+      throw new BadRequestException('At least one signer with a valid email is required.');
+    }
+
+    const templateRoleNames =
+      preloadedRoleNames?.length ?
+        preloadedRoleNames
+      : await this.getTemplateSignerRoleNames(client, accountId, templateId);
+
+    return signers.map((s, idx) => {
+      const roleName =
+        templateRoleNames[idx] ||
+        templateRoleNames[0] ||
+        s.roleName ||
+        DOCUSIGN_DEFAULT_ROLE_NAME;
+
+      return {
+        roleName: String(roleName).trim(),
+        name: s.name || s.email.split('@')[0],
+        email: s.email,
+        tabs:
+          idx === 0 && textTabs.length
+            ? {
+                textTabs: textTabs.map((t) => ({
+                  ...(t.tabId
+                    ? { tabId: t.tabId, tabLabel: t.tabLabel, value: t.value }
+                    : { tabLabel: t.tabLabel, value: t.value }),
+                  locked: 'true',
+                })),
+              }
+            : undefined,
+      };
+    });
+  }
+
+  private buildCarbonCopies(ccEmails?: string[]) {
+    return [...new Set((ccEmails || []).map((e) => String(e).trim()).filter(Boolean))].map(
+      (email, i) => ({
+        email,
+        name: email.split('@')[0],
+        recipientId: String(200 + i),
+        routingOrder: '1',
+      }),
+    );
+  }
+
+  private async linkEnvelopeToApplication(
+    userId: string,
+    applicationId: string,
+    envelopeId: string,
+  ) {
+    if (!userId?.trim()) {
+      throw new BadRequestException(
+        'Cannot link DocuSign envelope: authenticated user id is missing.',
+      );
+    }
+    const userRecord = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { userId: true },
+    });
+    if (!userRecord?.userId) {
+      throw new BadRequestException(
+        'Cannot link DocuSign envelope: CRM user record not found for this session.',
+      );
+    }
+
+    await prisma.document.upsert({
+      where: { applicationId },
+      create: {
+        applicationId,
+        envelopeId: String(envelopeId),
+        status: 'draft',
+        userId: userRecord.userId,
+      },
+      update: {
+        envelopeId: String(envelopeId),
+        status: 'draft',
+        sentAt: null,
+        completedAt: null,
+      },
+    });
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Per-envelope Connect config so lifecycle events fire even when account Connect
+   * only subscribes to Sent (common misconfiguration).
+   */
+  private buildEnvelopeConnectNotification(): Record<string, unknown> | null {
+    const url = resolveDocusignWebhookUrl();
+    if (!url) {
+      console.warn(
+        '[DocuSign] DOCUSIGN_WEBHOOK_URL not set — envelope will not register Connect callbacks. ' +
+          'Set DOCUSIGN_WEBHOOK_URL or CRM_API_URL (…/api/v1/uploads) in .env.',
+      );
+      return null;
+    }
+
+    const notification: Record<string, unknown> = {
+      url,
+      loggingEnabled: 'true',
+      requireAcknowledgment: 'true',
+      includeDocuments: 'false',
+      eventData: {
+        version: 'restv2.1',
+        format: 'json',
+        includeData: ['recipients', 'custom_fields'],
+      },
+      envelopeEvents: [
+        { envelopeEventStatusCode: 'Sent', includeDocuments: 'false' },
+        { envelopeEventStatusCode: 'Delivered', includeDocuments: 'false' },
+        { envelopeEventStatusCode: 'Completed', includeDocuments: 'false' },
+        { envelopeEventStatusCode: 'Declined', includeDocuments: 'false' },
+        { envelopeEventStatusCode: 'Voided', includeDocuments: 'false' },
+      ],
+      recipientEvents: [
+        { recipientEventStatusCode: 'Sent', includeDocuments: 'false' },
+        { recipientEventStatusCode: 'Delivered', includeDocuments: 'false' },
+        { recipientEventStatusCode: 'Completed', includeDocuments: 'false' },
+        { recipientEventStatusCode: 'Declined', includeDocuments: 'false' },
+      ],
+    };
+
+    if (DOCUSIGN_WEBHOOK_BASIC_USER && DOCUSIGN_WEBHOOK_BASIC_PASSWORD) {
+      (notification as any).authenticationType = 'basic';
+      (notification as any).userName = DOCUSIGN_WEBHOOK_BASIC_USER;
+      (notification as any).password = DOCUSIGN_WEBHOOK_BASIC_PASSWORD;
+    }
+
+    return notification;
+  }
+
+  private async applySigningStatusUpdate(
+    envelopeId: string,
+    incomingResolved: string,
+    applicationId: string | null,
+    existingDoc?: { status?: string | null; sentAt?: Date | null; applicationId?: string } | null,
+  ) {
+    const status = mergeWithExistingEnvelopeStatus(existingDoc?.status, incomingResolved);
+    if (!status) return status;
+
+    const updateData: Record<string, unknown> = { status };
+    if (status === 'sent') {
+      updateData.sentAt = existingDoc?.sentAt ?? new Date();
+    } else if (status === 'completed') {
+      updateData.completedAt = new Date();
+    }
+
+    await prisma.document.updateMany({
+      where: { envelopeId: String(envelopeId) },
+      data: updateData as any,
+    });
+
+    const appId = applicationId || existingDoc?.applicationId || null;
+    if (appId) {
+      await this.syncContractSigningStatus(String(appId), status);
+    }
+    return status;
+  }
+
+  private async syncContractSigningStatus(applicationId: string, internalStatus: string) {
+    const appId = String(applicationId || '').trim();
+    if (!appId) return;
+    const contractStatus = internalEnvelopeStatusToContractStatusDbValue(internalStatus);
+    if (!contractStatus) return;
+    await prisma.contract.updateMany({
+      where: { applicationId: appId },
+      data: { status: contractStatus as any },
+    });
+    await this.syncApplicationWorkflowOnContractSigning(appId, internalStatus);
+  }
+
+  /** Move deal to Contract Signed when fully signed; keep Contract Out while awaiting signature. */
+  private async syncApplicationWorkflowOnContractSigning(
+    applicationId: string,
+    internalStatus: string,
+  ) {
+    const appId = String(applicationId || '').trim();
+    if (!appId) return;
+    const status = String(internalStatus || '').trim().toLowerCase();
+
+    const normalizeQueueKey = (queue: string | null | undefined) =>
+      String(queue ?? '')
+        .trim()
+        .replace(/[\s_-]+/g, '')
+        .toLowerCase();
+
+    const postSignedQueueKeys = new Set([
+      'contractsigned',
+      'signedcontracts',
+      'final',
+      'fundingcall',
+      'disbursment',
+      'disbursement',
+      'funded',
+    ]);
+
+    if (status === 'completed') {
+      await prisma.application.updateMany({
+        where: { id: appId },
+        data: {
+          currentQueue: 'Contract Signed',
+          currentState: 'SIGNED_CONTRACTS',
+        },
+      });
+      return;
+    }
+
+    if (['sent', 'viewed', 'signed'].includes(status)) {
+      const app = await prisma.application.findUnique({
+        where: { id: appId },
+        select: { currentQueue: true },
+      });
+      const qKey = normalizeQueueKey(app?.currentQueue);
+      if (!postSignedQueueKeys.has(qKey)) {
+        await prisma.application.updateMany({
+          where: { id: appId },
           data: {
-            applicationId: application.id,
-            envelopeId: response.data.envelopeId,
-            status: response.data.status || 'created',
-            userId: user.userId, // Use numeric userId from User model
+            currentQueue: 'Contract Out',
+            currentState: 'Contract Out',
           },
         });
       }
+    }
+  }
 
-      // console.log("enevelop defination ---------------", envelopeDefinition)
+  /** After auto-send: mark linked `Document` row and `Contract.status` as SENT. */
+  private async markEnvelopeSent(applicationId: string, envelopeId: string) {
+    const appId = String(applicationId || '').trim();
+    if (!appId) return;
+    await prisma.document.updateMany({
+      where: { envelopeId: String(envelopeId), applicationId: appId },
+      data: { status: 'sent', sentAt: new Date() } as any,
+    });
+    await this.syncContractSigningStatus(appId, 'sent');
+  }
 
-      return response.data;
-    } catch (error: any) {
-      if (error.response) {
-        if (error.response.status === 401) {
-          throw new UnauthorizedException('DocuSign authentication failed. Please reconnect your DocuSign account.');
+  private async getEnvelopeStatus(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+  ): Promise<string> {
+    try {
+      const res = await client.get(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}`,
+      );
+      return String(res.data?.status || '').toLowerCase();
+    } catch {
+      return '';
+    }
+  }
+
+  /** Longest non-empty text-tab value on the envelope (used to verify PDF embed). */
+  private async getEnvelopePrefillSampleValue(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+  ): Promise<string | null> {
+    let best = '';
+    const consider = (raw: string) => {
+      const v = String(raw || '').trim();
+      if (v.length > best.length) best = v;
+    };
+    const sampleReady = () => best.length >= 4;
+
+    try {
+      const rec = await client.get(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
+      );
+      for (const signer of rec.data?.signers || []) {
+        const recipientId = String(signer.recipientId || '');
+        if (!recipientId) continue;
+        const tabsRes = await client.get(
+          `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${recipientId}/tabs`,
+        );
+        for (const tab of tabsRes.data?.textTabs || []) {
+          consider(String(tab.value ?? ''));
         }
+        if (sampleReady()) return best;
+      }
+    } catch (err) {
+      console.warn('[DocuSign] getEnvelopePrefillSampleValue (recipients) failed:', err);
+    }
 
-        if (error.response.status === 400) {
-          throw new BadRequestException(`DocuSign validation error: ${JSON.stringify(error.response.data)}`);
+    if (!sampleReady()) {
+      for (const tab of await this.fetchEnvelopeDocumentTextTabs(
+        client,
+        accountId,
+        envelopeId,
+      )) {
+        consider(String(tab.value ?? ''));
+        if (sampleReady()) break;
+      }
+    }
+
+    return sampleReady() ? best : null;
+  }
+
+  private async downloadEnvelopeCombinedPdf(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    showChanges: boolean,
+  ): Promise<Buffer | null> {
+    try {
+      const res = await client.get(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/combined`,
+        {
+          responseType: 'arraybuffer',
+          params: showChanges ? { show_changes: 'true' } : undefined,
+        },
+      );
+      const buf = Buffer.from(res.data);
+      return buf?.length ? buf : null;
+    } catch (err) {
+      console.warn('[DocuSign] download combined PDF failed:', err);
+      return null;
+    }
+  }
+
+  /** Fallback when combined PDF is unavailable — first content document only. */
+  private async downloadEnvelopeFirstContentPdf(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    showChanges: boolean,
+  ): Promise<Buffer | null> {
+    try {
+      const docsRes = await client.get(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents`,
+      );
+      const docs = docsRes.data?.envelopeDocuments || docsRes.data?.documents || [];
+      const contentDocs = this.filterEnvelopeContentDocuments(
+        docs.length ? docs : [{ documentId: '1' }],
+      );
+      const docId = String(
+        (contentDocs[0] || { documentId: '1' }).documentId ?? '1',
+      );
+      const res = await client.get(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/documents/${docId}`,
+        {
+          responseType: 'arraybuffer',
+          params: showChanges ? { show_changes: 'true' } : undefined,
+        },
+      );
+      const buf = Buffer.from(res.data);
+      return buf?.length ? buf : null;
+    } catch (err) {
+      console.warn('[DocuSign] download first content PDF failed:', err);
+      return null;
+    }
+  }
+
+  private pdfBufferIncludesText(buf: Buffer, text: string): boolean {
+    const needle = String(text || '').trim();
+    if (needle.length < 4) return false;
+    if (buf.includes(Buffer.from(needle, 'utf8'))) return true;
+    const compact = needle.replace(/\s+/g, '');
+    if (compact.length >= 4 && buf.includes(Buffer.from(compact, 'utf8'))) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Download envelope PDF (combined, then first content doc as fallback).
+   * Completed envelopes use a clean PDF; draft/sent use show_changes first so tab values are visible.
+   */
+  private async downloadEnvelopePdfBuffer(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    knownStatus?: string,
+  ): Promise<Buffer | null> {
+    const downloadPdf = async (showChanges: boolean) =>
+      (await this.downloadEnvelopeCombinedPdf(
+        client,
+        accountId,
+        envelopeId,
+        showChanges,
+      )) ??
+      (await this.downloadEnvelopeFirstContentPdf(
+        client,
+        accountId,
+        envelopeId,
+        showChanges,
+      ));
+
+    const status =
+      knownStatus || (await this.getEnvelopeStatus(client, accountId, envelopeId));
+    if (status === 'completed') {
+      return downloadPdf(false);
+    }
+
+    // Before signing completes, DocuSign usually only embeds prefill in show_changes PDFs.
+    const withChanges = await downloadPdf(true);
+    if (withChanges) {
+      return withChanges;
+    }
+
+    return downloadPdf(false);
+  }
+
+  private async emailPrefilledContractPdfToCcRecipients(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    ccEmails: string[] | undefined | null,
+    subjectBase: string,
+  ): Promise<{ emailed: string[] }> {
+    const list = [...new Set((ccEmails || []).map((e) => String(e).trim()).filter(Boolean))];
+    if (!list.length) return { emailed: [] };
+
+    if (!isOutboundSmtpConfigured()) {
+      console.warn('[DocuSign] CC prefilled PDF email skipped: SMTP not configured.');
+      return { emailed: [] };
+    }
+
+    await this.sleep(5000);
+    const pdf = await this.downloadEnvelopePdfBuffer(client, accountId, envelopeId);
+    if (!pdf?.length) {
+      console.warn(`[DocuSign] No PDF for envelope ${envelopeId}; CC email skipped.`);
+      return { emailed: [] };
+    }
+
+    const subject = subjectBase.trim() ? `${subjectBase.trim()} ` : 'Contract';
+    const emailed: string[] = [];
+    for (const to of list) {
+      try {
+        await sendMail({
+          to,
+          subject,
+          html: '',
+          attachments: [
+            {
+              filename: 'contract-prefilled.pdf',
+              content: pdf,
+              contentType: 'application/pdf',
+            },
+          ],
+        });
+        emailed.push(to);
+      } catch (err) {
+        console.error(`[DocuSign] Failed to email prefilled PDF to ${to}:`, err);
+      }
+    }
+    return { emailed };
+  }
+
+  private async createSenderViewUrl(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    returnUrl: string,
+  ): Promise<string> {
+    const res = await client.post(
+      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/views/sender`,
+      { returnUrl },
+    );
+    const url = res.data?.url;
+    if (!url) throw new BadRequestException('DocuSign did not return sender view URL');
+    return url;
+  }
+
+  private async finalizeEnvelopeFlow(
+    userId: string,
+    envelopeId: string,
+    options: {
+      applicationId?: string;
+      redirectUrl?: string;
+      ccEmails?: string[];
+      title?: string;
+      prefillFields?: PrefillField[];
+      templateId?: string;
+      autoSend?: boolean;
+      createTimePrefillTabCount?: number;
+      client: AxiosInstance;
+      accountId: string;
+    },
+  ) {
+    const appId = String(options.applicationId || '').trim();
+    if (appId) {
+      await this.linkEnvelopeToApplication(userId, appId, envelopeId);
+    }
+
+    let prefillApplied = {
+      applied: 0,
+      attempted: 0,
+      atCreate: 0,
+      atPostCreate: 0,
+    };
+    if (options.prefillFields?.length) {
+      const post = await this.applyPrefillToEnvelope(
+        userId,
+        options.client,
+        options.accountId,
+        envelopeId,
+        options.templateId,
+        options.prefillFields,
+      );
+      prefillApplied = {
+        applied: Math.max(post.applied, options.createTimePrefillTabCount ?? 0),
+        attempted: post.attempted,
+        atCreate: options.createTimePrefillTabCount ?? 0,
+        atPostCreate: post.applied,
+      };
+    }
+
+    const autoSend =
+      options.autoSend !== false &&
+      (options.autoSend === true || DOCUSIGN_AUTO_SEND_ENVELOPE);
+
+    if (options.ccEmails?.length) {
+      await this.addEnvelopeCarbonCopies(
+        options.client,
+        options.accountId,
+        envelopeId,
+        options.ccEmails,
+      );
+    }
+
+    let ccPrefilledEmail: { emailed: string[] } | null = null;
+    if (options.ccEmails?.length && autoSend) {
+      ccPrefilledEmail = await this.emailPrefilledContractPdfToCcRecipients(
+        options.client,
+        options.accountId,
+        envelopeId,
+        options.ccEmails,
+        options.title || 'Contract',
+      );
+    }
+
+    let envelopeSigners: Array<{ roleName?: string; email?: string; name?: string }> = [];
+    try {
+      const rec = await options.client.get(
+        `/v2.1/accounts/${options.accountId}/envelopes/${envelopeId}/recipients`,
+      );
+      envelopeSigners = (rec.data?.signers || []).map((s: any) => ({
+        roleName: s.roleName,
+        email: s.email,
+        name: s.name,
+      }));
+    } catch {
+      /* omit */
+    }
+
+    let envelopeStatus: 'created' | 'sent' = 'created';
+    if (prefillApplied.applied > 0) {
+      await this.sleep(autoSend ? 4000 : 3000);
+    }
+    if (autoSend) {
+      try {
+        await options.client.put(
+          `/v2.1/accounts/${options.accountId}/envelopes/${envelopeId}`,
+          { status: 'sent' },
+        );
+        envelopeStatus = 'sent';
+        if (prefillApplied.applied > 0) {
+          await this.sleep(6000);
         }
+        if (appId) {
+          await this.markEnvelopeSent(appId, envelopeId);
+        } else {
+          await prisma.document.updateMany({
+            where: { envelopeId: String(envelopeId) },
+            data: { status: 'sent', sentAt: new Date() } as any,
+          });
+        }
+      } catch (sendErr) {
+        console.error('[DocuSign] auto-send failed:', sendErr);
+      }
+    }
+
+    const returnUrl =
+      options.redirectUrl ||
+      process.env.DOCUSIGN_SENDER_RETURN_URL ||
+      'https://www.docusign.com';
+
+    let sendUrl: string | null = null;
+    if (!autoSend) {
+      try {
+        sendUrl = await this.createSenderViewUrl(
+          options.client,
+          options.accountId,
+          envelopeId,
+          returnUrl,
+        );
+      } catch (senderViewErr) {
+        console.warn(
+          `[DocuSign] Sender view URL skipped for envelope ${envelopeId} (draft PDF preview still works):`,
+          senderViewErr,
+        );
+      }
+    }
+
+    const message =
+      envelopeStatus === 'sent'
+        ? 'Contract sent via DocuSign; signing email delivered to the signer.'
+        : 'Envelope created in DocuSign; open sender view to review and send.';
+
+    return {
+      success: true,
+      documentId: envelopeId,
+      envelopeId,
+      sendUrl,
+      message,
+      data: {
+        prefillFieldCount: options.prefillFields?.length ?? 0,
+        prefillTabsApplied: prefillApplied.applied,
+        prefillTabsAtCreate: prefillApplied.atCreate,
+        prefillTabsAtPostCreate: prefillApplied.atPostCreate,
+        envelopeStatus,
+        autoSend,
+        envelopeSigners,
+        ccPrefilledEmail,
+        nextStep:
+          envelopeStatus === 'sent'
+            ? 'Signers were emailed by DocuSign.'
+            : 'Open sendUrl, confirm prefilled fields, then click Send in DocuSign to email signers.',
+      },
+    };
+  }
+
+  // ─── Template ID resolution (reuses BoldSignTemplate table) ───────────────
+
+  private normalizeTemplateLookupKey(value: string | null | undefined): string | undefined {
+    const v = String(value ?? '').trim().toLowerCase();
+    return v || undefined;
+  }
+
+  async resolveTemplateIdsFromDb(filters: {
+    state?: string | null;
+    frequency?: string | null;
+    type?: string | null;
+  }): Promise<string[]> {
+    const state = this.normalizeTemplateLookupKey(filters.state);
+    const frequency = this.normalizeTemplateLookupKey(filters.frequency);
+    const type = this.normalizeTemplateLookupKey(filters.type);
+
+    const where: Prisma.BoldSignTemplateWhereInput = {};
+    if (state) where.state = state;
+    if (frequency) where.frequency = frequency;
+    if (type) where.type = type;
+
+    const rows = await prisma.boldSignTemplate.findMany({
+      where,
+      select: { templateId: true },
+    });
+    return [...new Set(rows.map((r) => String(r.templateId).trim()).filter(Boolean))];
+  }
+
+  // ─── Send single template ────────────────────────────────────────────────────
+
+  async sendTemplate(
+    userId: string,
+    options: {
+      templateId?: string;
+      redirectUrl?: string;
+      title?: string;
+      message?: string;
+      roles?: SignerRoleInput[];
+      signerName?: string;
+      signerEmail?: string;
+      prefillFields?: PrefillField[];
+      ccEmails?: string[];
+      applicationId?: string;
+      reminderSettings?: {
+        enableAutoReminder?: boolean;
+        reminderDays?: number;
+        reminderCount?: number;
+      };
+      /** When true (or DOCUSIGN_AUTO_SEND_ENVELOPE), emails signers without opening sender view. */
+      autoSend?: boolean;
+    },
+  ) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const templateId = options.templateId || DOCUSIGN_DEFAULT_TEMPLATE_ID;
+    if (!templateId) {
+      throw new BadRequestException('templateId is required (set DOCUSIGN_DEFAULT_TEMPLATE_ID).');
+    }
+
+    let roles: SignerRoleInput[] = options.roles?.length
+      ? options.roles
+      : [
+          {
+            signerName: options.signerName || '',
+            signerEmail: options.signerEmail || '',
+            roleName: DOCUSIGN_DEFAULT_ROLE_NAME,
+          },
+        ];
+
+    const templateDef = await this.fetchTemplateDefinition(client, accountId, templateId);
+    const textTabs = await this.buildTextTabsForPrefill(
+      client,
+      accountId,
+      templateId,
+      options.prefillFields,
+      templateDef.textTabs,
+    );
+    const templateRoles = await this.buildTemplateRolesForSend(
+      client,
+      accountId,
+      templateId,
+      roles,
+      textTabs,
+      templateDef.roleNames,
+    );
+    const createTimePrefillTabCount = textTabs.length;
+    const envelopeDefinition: Record<string, unknown> = {
+      status: 'created',
+      emailSubject: options.title || 'Please sign this document',
+      emailBlurb: options.message || '',
+      templateId,
+      templateRoles,
+    };
+
+    if (options.reminderSettings?.enableAutoReminder !== false) {
+      (envelopeDefinition as any).notification = {
+        reminders: {
+          reminderEnabled: 'true',
+          reminderDelay: String(options.reminderSettings?.reminderDays ?? 3),
+          reminderFrequency: String(options.reminderSettings?.reminderCount ?? 5),
+        },
+      };
+    }
+
+    const appIdForEnvelope = String(options.applicationId || '').trim();
+    if (appIdForEnvelope) {
+      (envelopeDefinition as any).customFields = {
+        textCustomFields: [
+          { name: 'crmApplicationId', value: appIdForEnvelope, show: 'false' },
+        ],
+      };
+    }
+
+    const connectNotification = this.buildEnvelopeConnectNotification();
+    if (connectNotification) {
+      (envelopeDefinition as any).eventNotification = connectNotification;
+    }
+
+    try {
+      const createRes = await client.post(
+        `/v2.1/accounts/${accountId}/envelopes`,
+        envelopeDefinition,
+      );
+      const envelopeId = createRes.data?.envelopeId;
+      if (!envelopeId) {
+        throw new BadRequestException('DocuSign did not return envelopeId');
       }
 
-      throw new BadRequestException('Failed to create draft envelope: ' + error.message);
+      await this.assertEnvelopeHasSigners(client, accountId, envelopeId, templateId);
+
+      return this.finalizeEnvelopeFlow(userId, envelopeId, {
+        applicationId: options.applicationId,
+        redirectUrl: options.redirectUrl,
+        ccEmails: options.ccEmails,
+        title: options.title,
+        prefillFields: options.prefillFields,
+        templateId,
+        autoSend: options.autoSend,
+        createTimePrefillTabCount,
+        client,
+        accountId,
+      });
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        clearDocusignJwtCache();
+        throw new ServiceConfigException(
+          'DocuSign API rejected credentials. Check JWT key, impersonated user, and admin consent.',
+        );
+      }
+      if (error?.response?.data) {
+        throw new BadRequestException(`DocuSign error: ${JSON.stringify(error.response.data)}`);
+      }
+      throw new BadRequestException('Failed to send template: ' + (error?.message || error));
     }
+  }
+
+  // ─── Merge multiple templates (composite) ───────────────────────────────────
+
+  async mergeAndSendTemplates(
+    userId: string,
+    options: {
+      templates?: Array<{ templateId: string }>;
+      templateIds?: string[];
+      contractTemplateFilters?: {
+        state?: string | null;
+        frequency?: string | null;
+        type?: string | null;
+      };
+      roles: SignerRoleInput[];
+      prefillFields?: PrefillField[];
+      redirectUrl?: string;
+      applicationId?: string;
+      ccEmails?: string[];
+      title?: string;
+      message?: string;
+      autoSend?: boolean;
+    },
+  ) {
+    if (!options?.roles?.length) {
+      throw new BadRequestException('At least one role is required');
+    }
+
+    let templateIds: string[] = [];
+    if (options.templateIds?.length) {
+      templateIds = options.templateIds.map((id) => String(id).trim()).filter(Boolean);
+    } else if (options.contractTemplateFilters) {
+      templateIds = await this.resolveTemplateIdsFromDb(options.contractTemplateFilters);
+    } else if (options.templates?.length) {
+      templateIds = options.templates.map((t) => String(t.templateId).trim()).filter(Boolean);
+    }
+
+    if (!templateIds.length) {
+      throw new BadRequestException(
+        'No DocuSign template IDs to merge. Provide templateIds or contractTemplateFilters.',
+      );
+    }
+
+    if (templateIds.length === 1) {
+      return this.sendTemplate(userId, {
+        templateId: templateIds[0],
+        roles: options.roles,
+        prefillFields: options.prefillFields,
+        redirectUrl: options.redirectUrl,
+        applicationId: options.applicationId,
+        ccEmails: options.ccEmails,
+        title: options.title,
+        message: options.message,
+        autoSend: options.autoSend,
+      });
+    }
+
+    const { client, accountId } = await this.getAuthContext(userId);
+    const textTabs = await this.buildTextTabsForPrefill(
+      client,
+      accountId,
+      templateIds[0],
+      options.prefillFields,
+    );
+    const signers = this.normalizeSignerRoles(options.roles);
+    if (!signers.length) {
+      throw new BadRequestException('At least one signer with a valid email is required.');
+    }
+
+    const primarySigner = signers[0];
+    const templateRoleNames = await this.getTemplateSignerRoleNames(
+      client,
+      accountId,
+      templateIds[0],
+    );
+    const roleName =
+      templateRoleNames[0] || primarySigner.roleName || DOCUSIGN_DEFAULT_ROLE_NAME;
+    const carbonCopies = this.buildCarbonCopies(options.ccEmails);
+
+    const compositeTemplates = templateIds.map((tid, idx) => ({
+      compositeTemplateId: String(idx + 1),
+      serverTemplates: [{ sequence: '1', templateId: tid }],
+      inlineTemplates: [
+        {
+          sequence: String(idx + 1),
+          recipients: {
+            signers: [
+              {
+                roleName,
+                name: primarySigner.name || primarySigner.email.split('@')[0],
+                email: primarySigner.email,
+                recipientId: '1',
+                routingOrder: String(primarySigner.routingOrder || idx + 1),
+                ...(idx === 0 && textTabs.length ? { tabs: { textTabs } } : {}),
+              },
+            ],
+            ...(idx === 0 && carbonCopies.length ? { carbonCopies } : {}),
+          },
+        },
+      ],
+    }));
+
+    const envelopeDefinition: Record<string, unknown> = {
+      status: 'created',
+      emailSubject: options.title || 'Please sign this document',
+      emailBlurb: options.message || '',
+      compositeTemplates,
+    };
+
+    const appId = String(options.applicationId || '').trim();
+    if (appId) {
+      (envelopeDefinition as any).customFields = {
+        textCustomFields: [
+          { name: 'crmApplicationId', value: appId, show: 'false' },
+        ],
+      };
+    }
+
+    const connectNotification = this.buildEnvelopeConnectNotification();
+    if (connectNotification) {
+      (envelopeDefinition as any).eventNotification = connectNotification;
+    }
+
+    try {
+      const createRes = await client.post(
+        `/v2.1/accounts/${accountId}/envelopes`,
+        envelopeDefinition,
+      );
+      const envelopeId = createRes.data?.envelopeId;
+      if (!envelopeId) {
+        throw new BadRequestException('DocuSign did not return envelopeId from composite merge');
+      }
+
+      const result = await this.finalizeEnvelopeFlow(userId, envelopeId, {
+        applicationId: options.applicationId,
+        redirectUrl: options.redirectUrl,
+        ccEmails: options.ccEmails,
+        title: options.title,
+        prefillFields: options.prefillFields,
+        templateId: templateIds[0],
+        autoSend: options.autoSend,
+        client,
+        accountId,
+      });
+
+      return {
+        ...result,
+        data: {
+          ...(result.data as object),
+          templateIds,
+          merge: createRes.data,
+        },
+      };
+    } catch (error: any) {
+      if (error?.response?.status === 401) {
+        clearDocusignJwtCache();
+        throw new ServiceConfigException(
+          'DocuSign API rejected credentials. Check JWT key, impersonated user, and admin consent.',
+        );
+      }
+      if (error?.response?.data) {
+        throw new BadRequestException(`DocuSign error: ${JSON.stringify(error.response.data)}`);
+      }
+      throw new BadRequestException('Failed to merge and send templates: ' + (error?.message || error));
+    }
+  }
+
+  /**
+   * Updates default recipients on a DocuSign template (does not create an envelope).
+   */
+  async addRecipientsToTemplate(
+    userId: string,
+    options: {
+      templateId: string;
+      roles: SignerRoleInput[];
+      title?: string;
+      message?: string;
+      ccEmails?: string[];
+    },
+  ) {
+    const templateId = String(options.templateId || '').trim();
+    if (!templateId) {
+      throw new BadRequestException('templateId is required');
+    }
+
+    const signers = this.normalizeSignerRoles(options.roles);
+    if (!signers.length) {
+      throw new BadRequestException('At least one signer with a valid email is required.');
+    }
+
+    const { client, accountId } = await this.getAuthContext(userId);
+
+    const existingRes = await client.get(
+      `/v2.1/accounts/${accountId}/templates/${templateId}/recipients`,
+    );
+    const existingSigners = existingRes.data?.signers || [];
+
+    const updatedSigners = signers.map((s, idx) => {
+      const existing = existingSigners.find(
+        (es: { roleName?: string }) =>
+          String(es.roleName || '').toLowerCase() === s.roleName.toLowerCase(),
+      ) || existingSigners[idx];
+      const roleName = String(existing?.roleName || s.roleName).trim();
+      return {
+        ...(existing || {}),
+        roleName,
+        name: s.name || s.email.split('@')[0],
+        email: s.email,
+        routingOrder: s.routingOrder || String(idx + 1),
+        recipientId: existing?.recipientId || String(idx + 1),
+      };
+    });
+
+    const carbonCopies = this.buildCarbonCopies(options.ccEmails);
+
+    try {
+      const updateRes = await client.put(
+        `/v2.1/accounts/${accountId}/templates/${templateId}/recipients`,
+        {
+          signers: updatedSigners,
+          ...(carbonCopies.length ? { carbonCopies } : {}),
+        },
+      );
+      return {
+        success: true,
+        templateId,
+        message: 'Template recipients updated in DocuSign.',
+        data: updateRes.data,
+      };
+    } catch (error: any) {
+      if (error?.response?.data) {
+        throw new BadRequestException(`DocuSign error: ${JSON.stringify(error.response.data)}`);
+      }
+      throw new BadRequestException(
+        'Failed to update template recipients: ' + (error?.message || error),
+      );
+    }
+  }
+
+  async prefillFormFields(
+    userId: string,
+    documentId: string,
+    fields: PrefillField[],
+  ) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const result = await this.applyPrefillToEnvelope(
+      userId,
+      client,
+      accountId,
+      documentId,
+      undefined,
+      fields,
+    );
+    if (!result.applied) {
+      throw new BadRequestException(
+        'No DocuSign form fields matched the provided prefill ids for this envelope.',
+      );
+    }
+    return result;
+  }
+
+  async getEmbeddedRequestUrl(userId: string, documentId: string, redirectUrl: string) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const url = await this.createSenderViewUrl(client, accountId, documentId, redirectUrl);
+    return { sendUrl: url, url };
+  }
+
+  async getEmbeddedSignLink(
+    userId: string,
+    envelopeId: string,
+    signerEmail: string,
+    returnUrl: string,
+  ) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const res = await client.post(
+      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/views/recipient`,
+      {
+        returnUrl,
+        authenticationMethod: 'email',
+        email: signerEmail,
+        userName: signerEmail.split('@')[0],
+      },
+    );
+    return res.data;
+  }
+
+  async voidDocument(userId: string, documentId: string, reason: string) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    await client.put(`/v2.1/accounts/${accountId}/envelopes/${documentId}`, {
+      status: 'voided',
+      voidedReason: reason || 'Voided by user',
+    });
+    await prisma.document.updateMany({
+      where: { envelopeId: documentId },
+      data: { status: 'revoked' },
+    });
+    return { success: true };
+  }
+
+  async getDocumentProperties(userId: string, documentId: string) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const res = await client.get(
+      `/v2.1/accounts/${accountId}/envelopes/${documentId}`,
+    );
+    return res.data;
+  }
+
+  async getEnvelopeIdForApplication(applicationUuid: string): Promise<string | null> {
+    const row = await prisma.document.findUnique({
+      where: { applicationId: applicationUuid },
+      select: { envelopeId: true },
+    });
+    const id = row?.envelopeId ? String(row.envelopeId).trim() : '';
+    return id || null;
+  }
+
+  async downloadDocumentPdfForApplication(userId: string, applicationUuid: string) {
+    const envelopeId = await this.getEnvelopeIdForApplication(applicationUuid);
+    if (!envelopeId) {
+      throw new BadRequestException(
+        'No DocuSign envelope is linked to this application yet. Send to DocuSign first.',
+      );
+    }
+    return this.downloadDocumentPdfByEnvelopeId(userId, envelopeId);
+  }
+
+  async downloadDocumentPdfByEnvelopeId(userId: string, envelopeId: string) {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) {
+      throw new BadRequestException('envelopeId is required');
+    }
+    const { client, accountId } = await this.getAuthContext(userId);
+    const status = await this.getEnvelopeStatus(client, accountId, eid);
+    let buf = await this.downloadEnvelopePdfBuffer(client, accountId, eid, status);
+    if (!buf?.length) {
+      await this.sleep(2000);
+      buf = await this.downloadEnvelopePdfBuffer(client, accountId, eid, status);
+    }
+    if (!buf?.length) {
+      throw new BadRequestException('Could not download PDF from DocuSign');
+    }
+    return buf;
+  }
+
+  async downloadTemplatePdf(userId: string, templateId: string) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const listRes = await client.get(
+      `/v2.1/accounts/${accountId}/templates/${templateId}/documents`,
+    );
+    const docs = listRes.data?.templateDocuments || listRes.data?.documents || [];
+    const docId = docs[0]?.documentId || '1';
+    const res = await client.get(
+      `/v2.1/accounts/${accountId}/templates/${templateId}/documents/${docId}`,
+      { responseType: 'arraybuffer' },
+    );
+    return Buffer.from(res.data);
+  }
+
+  async downloadSignedPdf(userId: string, documentId: string) {
+    return this.downloadDocumentPdfByEnvelopeId(userId, documentId);
+  }
+
+  async fetchSignedDocumentPdf(userId: string, envelopeId: string) {
+    return this.downloadSignedPdf(userId, envelopeId);
+  }
+
+  async listDocuments(userId: string, page = 1, pageSize = 10) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const fromDate = new Date();
+    fromDate.setMonth(fromDate.getMonth() - 6);
+    const res = await client.get(`/v2.1/accounts/${accountId}/envelopes`, {
+      params: {
+        from_date: fromDate.toISOString(),
+        count: pageSize,
+        start_position: (page - 1) * pageSize,
+      },
+    });
+    return res.data;
+  }
+
+  async getTemplateRecipients(userId: string, templateId?: string) {
+    const { client, accountId } = await this.getAuthContext(userId);
+    const tid = templateId || DOCUSIGN_DEFAULT_TEMPLATE_ID;
+    if (!tid) {
+      throw new BadRequestException('templateId is required');
+    }
+
+    const res = await client.get(
+      `/v2.1/accounts/${accountId}/templates/${tid}/recipients`,
+    );
+    const signers = res.data?.signers || [];
+    const roles = signers.map((s: any, idx: number) => ({
+      roleIndex: idx + 1,
+      roleName: s.roleName || `Role-${idx + 1}`,
+      signerName: s.name || '',
+      signerEmail: s.email || '',
+      signerOrder: s.routingOrder ? Number(s.routingOrder) : idx + 1,
+    }));
+
+    return {
+      success: true,
+      templateId: tid,
+      roles,
+      raw: res.data,
+    };
   }
 
   async getSenderViewUrl(userId: string, envelopeId: string, returnUrl: string) {
-    const userResult = await this.prisma.user.findUnique({
-      where: { id: userId },
+    const { client, accountId } = await this.getAuthContext(userId);
+    const url = await this.createSenderViewUrl(client, accountId, envelopeId, returnUrl);
+    return { url };
+  }
+
+  async sendEnvelope(
+    userId: string,
+    envelopeId: string,
+    options?: { applicationId?: string },
+  ) {
+    const eid = String(envelopeId || '').trim();
+    if (!eid) {
+      throw new BadRequestException('envelopeId is required');
+    }
+    const { client, accountId } = await this.getAuthContext(userId);
+    const priorStatus = await this.getEnvelopeStatus(client, accountId, eid);
+    if (priorStatus === 'sent' || priorStatus === 'completed') {
+      const appId = String(options?.applicationId || '').trim();
+      if (appId) {
+        await this.markEnvelopeSent(appId, eid);
+      }
+      return { envelopeId: eid, status: priorStatus, alreadySent: true };
+    }
+
+    const res = await client.put(`/v2.1/accounts/${accountId}/envelopes/${eid}`, {
+      status: 'sent',
     });
-    let user: any = userResult;
+    const appId = String(options?.applicationId || '').trim();
+    if (appId) {
+      await this.markEnvelopeSent(appId, eid);
+    } else {
+      await prisma.document.updateMany({
+        where: { envelopeId: eid },
+        data: { status: 'sent', sentAt: new Date() } as any,
+      });
+    }
+    return {
+      envelopeId: eid,
+      status: res.data?.status || 'sent',
+      alreadySent: false,
+    };
+  }
 
-    if (!user?.docusignAccessToken) {
-      throw new UnauthorizedException('DocuSign not connected');
+  // ─── Webhook (DocuSign Connect) ──────────────────────────────────────────────
+
+  verifyWebhookBasicAuth(authHeader: string | undefined): boolean {
+    if (!DOCUSIGN_WEBHOOK_BASIC_USER || !DOCUSIGN_WEBHOOK_BASIC_PASSWORD) {
+      return true;
+    }
+    if (!authHeader?.startsWith('Basic ')) return false;
+    const token = authHeader.split(' ')[1];
+    const expected = Buffer.from(
+      `${DOCUSIGN_WEBHOOK_BASIC_USER}:${DOCUSIGN_WEBHOOK_BASIC_PASSWORD}`,
+    ).toString('base64');
+    return token === expected;
+  }
+
+  async processWebhookEvent(rawBody: unknown) {
+    const body = parseDocusignWebhookBody(rawBody) as any;
+    const envelopeId = extractDocusignEnvelopeId(body);
+    const eventName = extractDocusignConnectEventName(body);
+
+    if (!envelopeId) {
+      console.warn('[DocuSign] webhook: missing envelopeId', {
+        hasBody: !!rawBody,
+        event: eventName,
+      });
+      return;
     }
 
-    const isTokenExpired = user.docusignTokenExpiry &&
-      new Date(user.docusignTokenExpiry).getTime() - 5 * 60 * 1000 < Date.now();
-
-    if (isTokenExpired && user.docusignRefreshToken) {
-      try {
-        await this.refreshToken(userId);
-        const updatedUser = await this.prisma.user.findUnique({
-          where: { id: userId },
-        }) as any;
-        if (!updatedUser?.docusignAccessToken) {
-          throw new Error('Failed to refresh token');
-        }
-        user = updatedUser;
-      } catch (error) {
-        throw new UnauthorizedException('DocuSign token expired and refresh failed');
-      }
+    const incomingResolved = resolveDocusignWebhookEnvelopeStatus(body);
+    if (!incomingResolved) {
+      console.warn('[DocuSign] webhook: unrecognized status', {
+        envelopeId,
+        event: eventName,
+        status: body?.data?.envelopeSummary?.status ?? body?.data?.status,
+        recipientStatus: body?.data?.recipientStatus,
+      });
+      return;
     }
 
-    try {
-      if (!user.docusignAccountId || !user.docusignBaseUri) {
-        throw new UnauthorizedException('DocuSign account information missing. Please reconnect your DocuSign account.');
-      }
-      let baseUri = user.docusignBaseUri;
-      if (!baseUri.endsWith('/restapi')) {
-        baseUri = baseUri.replace(/\/+$/, '') + '/restapi';
-      }
-      const response = await axios.post(
-        `${baseUri}/v2.1/accounts/${user.docusignAccountId}/envelopes/${envelopeId}/views/sender`,
-        { returnUrl },
-        {
-          headers: {
-            Authorization: `Bearer ${user.docusignAccessToken}`,
-            'Content-Type': 'application/json',
-          },
-        },
+    const existingDoc = await prisma.document.findFirst({
+      where: { envelopeId: String(envelopeId) },
+    });
+
+    const customFields = body?.data?.customFields as
+      | { textCustomFields?: Array<{ name?: string; value?: string }> }
+      | undefined;
+    let applicationId =
+      customFields?.textCustomFields?.find?.(
+        (f) => f.name === 'crmApplicationId',
+      )?.value || null;
+
+    if (!applicationId && existingDoc?.applicationId) {
+      applicationId = existingDoc.applicationId;
+    }
+
+    const status = await this.applySigningStatusUpdate(
+      envelopeId,
+      incomingResolved,
+      applicationId,
+      existingDoc,
+    );
+
+    console.info('[DocuSign] webhook processed', {
+      envelopeId,
+      event: eventName,
+      incoming: incomingResolved,
+      stored: status,
+      applicationId: applicationId || existingDoc?.applicationId,
+    });
+  }
+
+  /** Poll DocuSign for current envelope status (fallback when Connect misses events). */
+  async syncEnvelopeStatusFromDocusign(
+    userId: string,
+    options: { applicationId?: string; envelopeId?: string },
+  ) {
+    let envelopeId = String(options.envelopeId || '').trim();
+    const applicationId = String(options.applicationId || '').trim();
+
+    if (!envelopeId && applicationId) {
+      envelopeId = (await this.getEnvelopeIdForApplication(applicationId)) || '';
+    }
+    if (!envelopeId) {
+      throw new BadRequestException(
+        'No DocuSign envelope linked. Provide envelopeId or applicationId.',
       );
-
-      return response.data;
-    } catch (error: any) {
-      if (error?.response) {
-        if (error.response.status === 401) {
-          throw new UnauthorizedException('DocuSign authentication failed. Please reconnect your DocuSign account.');
-        }
-
-        if (error.response.status === 400) {
-          throw new BadRequestException(`DocuSign validation error: ${JSON.stringify(error.response.data)}`);
-        }
-      }
-
-      throw new BadRequestException('Failed to get sender view URL: ' + (error?.message || error));
     }
+
+    const { client, accountId } = await this.getAuthContext(userId);
+    const res = await client.get(
+      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}`,
+    );
+    const dsStatus = res.data?.status;
+    const incomingResolved = mapDocusignEnvelopeStatus(dsStatus);
+    if (!incomingResolved) {
+      throw new BadRequestException(
+        `DocuSign returned unrecognized envelope status: ${String(dsStatus)}`,
+      );
+    }
+
+    const existingDoc = await prisma.document.findFirst({
+      where: { envelopeId: String(envelopeId) },
+    });
+
+    const appId = applicationId || existingDoc?.applicationId || null;
+    const status = await this.applySigningStatusUpdate(
+      envelopeId,
+      incomingResolved,
+      appId,
+      existingDoc,
+    );
+
+    return {
+      envelopeId,
+      applicationId: appId,
+      docusignStatus: dsStatus,
+      internalStatus: status,
+      contractStatus: status
+        ? internalEnvelopeStatusToContractStatusDbValue(status)
+        : null,
+    };
+  }
+
+  /** @deprecated Legacy PDF+tabs path — use sendTemplate / mergeAndSendTemplates */
+  async createDraftEnvelope(
+    userId: string,
+    _documentBase64: string,
+    recipientEmail: string,
+    _state: string,
+    application: { id: string },
+    _termsOffer: unknown,
+    ccEmails: string[] = [],
+  ) {
+    return this.sendTemplate(userId, {
+      templateId: DOCUSIGN_DEFAULT_TEMPLATE_ID,
+      roles: [
+        {
+          signerEmail: recipientEmail,
+          signerName: recipientEmail.split('@')[0],
+        },
+      ],
+      ccEmails,
+      applicationId: application?.id,
+    });
   }
 
   async updateDocumentStatusFromWebhook(body: any) {
-    // Support both old and new webhook formats
-    let envelopeId: string | undefined;
-    let status: string | undefined;
-
-    if (body?.envelopeStatus) {
-      // Old format
-      envelopeId = body.envelopeStatus.envelopeId;
-      status = body.envelopeStatus.status;
-    } else if (body?.data && body?.event) {
-      // New format
-      envelopeId = body.data.envelopeId;
-      status = body.event;
-      // Trim 'envelope-' prefix if present
-      if (status && status.startsWith('envelope-')) {
-        status = status.replace('envelope-', '');
-      }
-    }
-
-    if (!envelopeId || !status) return;
-
-    // If event is 'sent', update sentAt to now and set application's isDocument to true
-    if (status === 'sent') {
-      // Update sentAt to now
-      await (this.prisma as any).document.updateMany({
-        where: { envelopeId },
-        data: {
-          status,
-          sentAt: new Date(),
-        },
-      });
-      // Get the document to find applicationId
-      const document: any = await (this.prisma as any).document.findUnique({ where: { envelopeId } });
-      // if (document?.applicationId) {
-      //   await this.prisma.application.update({
-      //     where: { id: document.applicationId },
-      //     data: { isDocument: true },
-      //   });
-      // }
-      return;
-    }
-
-    // If event is 'completed', update completedAt to now
-    if (status === 'completed') {
-      await (this.prisma as any).document.updateMany({
-        where: { envelopeId },
-        data: {
-          status,
-          completedAt: new Date(),
-        },
-      });
-      return;
-    }
-
-    await (this.prisma as any).document.updateMany({
-      where: { envelopeId },
-      data: {
-        status
-      },
-    });
+    return this.processWebhookEvent(body);
   }
-
-  async fetchSignedDocumentPdf(userId: string, envelopeId: string): Promise<Buffer> {
-    // Get user and check/refresh token
-    let user: any = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user?.docusignAccessToken) {
-      throw new UnauthorizedException('DocuSign not connected');
-    }
-    const isTokenExpired = user.docusignTokenExpiry &&
-      new Date(user.docusignTokenExpiry).getTime() - 5 * 60 * 1000 < Date.now();
-    let accessToken = user.docusignAccessToken;
-    if (isTokenExpired && user.docusignRefreshToken) {
-      try {
-        await this.refreshToken(userId);
-        // Only fetch user again if refresh succeeded
-        user = await this.prisma.user.findUnique({ where: { id: userId } }) as any;
-        if (!user?.docusignAccessToken) {
-          throw new UnauthorizedException('DocuSign token refresh failed');
-        }
-        accessToken = user.docusignAccessToken;
-      } catch (err: any) {
-        throw new UnauthorizedException('DocuSign token refresh failed: ' + (err?.message || err));
-      }
-    }
-    if (!user.docusignAccountId || !user.docusignBaseUri) {
-      throw new UnauthorizedException('DocuSign account information missing. Please reconnect your DocuSign account.');
-    }
-    // Ensure /restapi is present in base_uri
-    let baseUri = user.docusignBaseUri;
-
-
-    if (!baseUri.endsWith('/restapi')) {
-      baseUri = baseUri.replace(/\/+$/, '') + '/restapi';
-    }
-    // Fetch PDF from DocuSign
-    const response = await axios.get(
-      `${baseUri}/v2.1/accounts/${user.docusignAccountId}/envelopes/${envelopeId}/documents/combined`,
-      {
-        responseType: 'arraybuffer',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-    // Ensure the result is a Buffer
-    return Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data);
-  }
-} 
+}

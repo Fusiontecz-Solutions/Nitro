@@ -1,51 +1,69 @@
-import { Router } from "express";
+import express, { Router } from 'express';
+import { authenticateToken } from '../../middleware/authMiddleware';
 import {
   connectDocusign,
+  getDocusignAuthStatus,
+  getDocusignConsentUrl,
   docusignCallback,
+  sendTemplate,
+  addRecipientsToTemplate,
+  prefillFormFields,
+  getEmbeddedRequestUrl,
+  getEmbeddedSignLink,
+  voidDocument,
+  getDocumentProperties,
+  downloadSignedPdf,
+  downloadPrefilledPdfByApplication,
+  downloadTemplatePdf,
+  listDocuments,
+  docusignWebhook,
+  syncDocusignEnvelopeStatus,
+  mergeAndSendTemplates,
+  getTemplateRecipients,
   createDraftEnvelope,
   getSenderView,
   sendEnvelope,
-  docusignWebhook,
   getSignedPdf,
-} from "./docusign.controller";
-
-import { authenticateToken } from "../../middleware/authMiddleware";
+} from './docusign.controller';
 
 const router = Router();
 
-/**
- * OAuth connect
- */
-router.get("/connect", authenticateToken, connectDocusign);
+router.get('/auth/status', authenticateToken, getDocusignAuthStatus);
+router.get('/consent-url', authenticateToken, getDocusignConsentUrl);
+router.get('/connect', authenticateToken, connectDocusign);
+router.get('/callback', docusignCallback);
 
-/**
- * OAuth callback (DocuSign redirects here)
- */
-router.get("/callback", docusignCallback);
+router.post('/send-template', authenticateToken, sendTemplate);
+router.post('/add-template-recipients', authenticateToken, addRecipientsToTemplate);
+router.get('/template/recipients', authenticateToken, getTemplateRecipients);
+router.patch('/prefill-fields', authenticateToken, prefillFormFields);
+router.post('/merge-and-send', authenticateToken, mergeAndSendTemplates);
+router.post('/embedded-request-url', authenticateToken, getEmbeddedRequestUrl);
+router.post('/embedded-sign-link', authenticateToken, getEmbeddedSignLink);
+router.post('/void-document', authenticateToken, voidDocument);
+router.get('/document-properties/:documentId', authenticateToken, getDocumentProperties);
+router.get(
+  '/prefilled-pdf/application/:applicationId',
+  authenticateToken,
+  downloadPrefilledPdfByApplication,
+);
+router.get('/template/:templateId/download', authenticateToken, downloadTemplatePdf);
+router.get('/download/:documentId', authenticateToken, downloadSignedPdf);
+router.get('/signed-pdf/:envelopeId', authenticateToken, getSignedPdf);
+router.get('/list', authenticateToken, listDocuments);
 
-/**
- * Create draft envelope
- */
-router.post("/create-draft-envelope", authenticateToken, createDraftEnvelope);
+/** Accept JSON or legacy XML Connect payloads (global express.json skips XML). */
+const docusignWebhookBody = express.text({
+  type: ['application/json', 'application/xml', 'text/xml', 'text/*', '*/*'],
+  limit: '10mb',
+});
 
-/**
- * Open DocuSign sender editor
- */
-router.post("/sender-view", authenticateToken, getSenderView);
+router.post('/webhook', docusignWebhookBody, docusignWebhook);
+router.post('/sync-envelope-status', authenticateToken, syncDocusignEnvelopeStatus);
 
-/**
- * Send envelope
- */
-router.post("/send-envelope", authenticateToken, sendEnvelope);
-
-/**
- * DocuSign webhook
- */
-router.post("/webhook", docusignWebhook);
-
-/**
- * Download signed PDF
- */
-router.get("/signed-pdf/:envelopeId", authenticateToken, getSignedPdf);
+/** Legacy aliases */
+router.post('/create-draft-envelope', authenticateToken, createDraftEnvelope);
+router.post('/sender-view', authenticateToken, getSenderView);
+router.post('/send-envelope', authenticateToken, sendEnvelope);
 
 export default router;

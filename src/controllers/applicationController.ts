@@ -431,15 +431,32 @@ const normalizeWorkflowQueueKeyForDisbursement = (queue: string | null | undefin
         .toLowerCase();
 
 const QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT = new Set([
-    'agent',
-    'underwriter',
-    'finalunderwriter',
-    'contracted',
-    'contractout',
-    'contractsout',
     'final',
     'fundingcall',
+    'contractsigned',
+    'signedcontracts',
 ]);
+
+async function applicationHasFullySignedContract(applicationId: string): Promise<boolean> {
+    const contract = await prisma.contract.findFirst({
+        where: { applicationId: String(applicationId).trim() },
+        select: {
+            status: true,
+            application: {
+                select: {
+                    document: { select: { status: true } },
+                },
+            },
+        },
+    });
+    if (!contract) return false;
+    const cs = String(contract.status ?? '').trim().toUpperCase();
+    if (cs === 'COMPLETED' || cs === 'SIGNED') return true;
+    const docStatus = String(contract.application?.document?.status ?? '')
+        .trim()
+        .toLowerCase();
+    return docStatus === 'completed';
+}
 
 const shouldSetApplicationQueueToDisbursement = (currentQueue: string | null | undefined) =>
     QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT.has(normalizeWorkflowQueueKeyForDisbursement(currentQueue));
@@ -2494,17 +2511,40 @@ class ApplicationController {
                         queueKey === 'disbursement' ||
                         shouldSetApplicationQueueToDisbursement(application.currentQueue)
                     ) {
+                        if (!(await applicationHasFullySignedContract(application.id))) {
+                            return res.status(400).json({
+                                success: false,
+                                message:
+                                    'Cannot move to Disbursement until the contract is fully signed in DocuSign.',
+                            });
+                        }
                         data.currentQueue = 'Disbursement';
                         if (currentState === undefined) {
                             data.currentState = ApplicationState.DISBURSMENT;
                         }
                     }
                 } else if (currentQueue === 'Funded') {
-                    if (queueKey === 'disbursement' || queueKey === 'funded') {
-                        data.currentQueue = 'Funded';
-                        if (currentState === undefined) {
-                            data.currentState = ApplicationState.FUNDED;
-                        }
+                    const mayMarkFunded =
+                        queueKey === 'disbursement' ||
+                        queueKey === 'funded' ||
+                        shouldSetApplicationQueueToDisbursement(application.currentQueue);
+                    if (!mayMarkFunded) {
+                        return res.status(400).json({
+                            success: false,
+                            message:
+                                'Cannot mark as Funded from this stage. Confirm disbursement first or complete Contract Signed / Funding Call steps.',
+                        });
+                    }
+                    if (!(await applicationHasFullySignedContract(application.id))) {
+                        return res.status(400).json({
+                            success: false,
+                            message:
+                                'Cannot mark as funded until the contract is fully signed in DocuSign.',
+                        });
+                    }
+                    data.currentQueue = 'Funded';
+                    if (currentState === undefined) {
+                        data.currentState = ApplicationState.FUNDED;
                     }
                 } else {
                     data.currentQueue = currentQueue;
@@ -2605,7 +2645,7 @@ class ApplicationController {
                 if (fromQueue === 'Funded') {
                     return res.status(400).json({
                         success: false,
-                        message: `Cannot mark as Funded unless the application is in Disbursement (current queue: "${application.currentQueue}").`,
+                        message: `Cannot mark as Funded from queue "${application.currentQueue}". Confirm disbursement or complete prior funding steps first.`,
                     });
                 }
                 return res.status(400).json({

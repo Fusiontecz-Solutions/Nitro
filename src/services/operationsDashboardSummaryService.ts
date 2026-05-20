@@ -201,14 +201,21 @@ export async function listOperationsDashboardRecentCases(
     const mode = viewerMode(authUser);
     const filterMode: OperationsStatusFilterMode = mode === 'queue' ? 'queue' : 'legacy';
     const isSuperAdmin = isSuperAdminRole(authUser?.role);
+    const roleUpper = String(authUser?.role ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/-/g, '_');
+    const isOperations = roleUpper === 'OPERATIONS';
     const recentDealsWhere = isSuperAdmin
         ? {
-            OR: [
-                buildOperationsStatusFilterWhere('Funded', filterMode),
-                buildOperationsStatusFilterWhere('Disbursment', filterMode),
-            ],
-        }
-        : buildOperationsStatusFilterWhere('Contracted', filterMode);
+              OR: [
+                  buildOperationsStatusFilterWhere('Funded', filterMode),
+                  buildOperationsStatusFilterWhere('Disbursment', filterMode),
+              ],
+          }
+        : isOperations
+          ? buildOperationsStatusFilterWhere('Contract_Signed', filterMode)
+          : buildOperationsStatusFilterWhere('Contracted', filterMode);
     const where = combineWhere(visibilityBase, recentDealsWhere);
     const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 500) : 200;
 

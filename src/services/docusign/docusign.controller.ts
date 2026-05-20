@@ -1,145 +1,433 @@
-import type { Request, Response } from "express";
-import { DocusignService } from "./docusign.service";
-import prisma from "../../config/prismaClient";
+import type { Request, Response } from 'express';
+import { DocusignService } from './docusign.service';
+
+const docusignService = new DocusignService();
+
+export const getDocusignAuthStatus = async (_req: Request, res: Response) => {
+  try {
+    return res.json(docusignService.getConnectionStatus());
+  } catch (error: any) {
+    return res.status(500).json({ message: error?.message || 'Failed to get DocuSign status' });
+  }
+};
+
+/** JWT admin consent link (open in browser as impersonated DocuSign user). */
+export const getDocusignConsentUrl = async (_req: Request, res: Response) => {
+  try {
+    const consentUrl = docusignService.getJwtConsentUrl();
+    return res.json({
+      consentUrl,
+      redirectUriNote:
+        'Add this redirect URI under Apps and Keys → Woodmere CRM → Additional settings → Redirect URIs: ' +
+        'https://developers.docusign.com/platform/auth/consent',
+      loginAsNote:
+        'Sign in as the same user as DOCUSIGN_IMPERSONATED_USER_ID (your dev@ account) before approving.',
+    });
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ message: error?.message || 'Failed to build consent URL' });
+  }
+};
 
 export const connectDocusign = async (req: Request, res: Response) => {
   try {
+    const status = docusignService.getConnectionStatus();
+    if (status.mode === 'jwt') {
+      return res.json({
+        authUrl: null,
+        ...status,
+        message: 'DocuSign is configured with server JWT. No user connection required.',
+      });
+    }
     const userId = (req as any).user.id;
-
-    const state = userId.toString();
-    const authUrl = new DocusignService().getAuthUrl(state);
-
-    return res.json({ authUrl });
+    const authUrl = docusignService.getAuthUrl(userId);
+    return res.json({ authUrl, ...status });
   } catch (error: any) {
-    return res.status(500).json({ message: error.message });
+    return res.status(error.status || 500).json({ message: error.message });
   }
 };
 
 export const docusignCallback = async (req: Request, res: Response) => {
   try {
     const { code, state } = req.query;
-
     if (!code || !state) {
-      return res.status(400).json({ message: "Missing code or state" });
+      return res.status(400).json({ message: 'Missing code or state' });
+    }
+    const result = await docusignService.handleCallback(code as string, state as string);
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(500).json({ message: error?.message || 'DocuSign callback failed' });
+  }
+};
+
+export const sendTemplate = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    const {
+      templateId,
+      redirectUrl,
+      title,
+      message,
+      roles,
+      signerName,
+      signerEmail,
+      reminderSettings,
+      prefillFields,
+      ccEmails,
+      applicationId,
+      autoSend,
+    } = req.body;
+
+    if (!roles?.length && (!signerName || !signerEmail)) {
+      return res.status(400).json({
+        message: 'Missing required fields: provide roles array or signerName & signerEmail',
+      });
     }
 
-    const userId = state as string;
-
-    const result = await new DocusignService().handleCallback(
-      code as string,
-      userId
-    );
+    const result = await docusignService.sendTemplate(userId, {
+      templateId,
+      redirectUrl,
+      title,
+      message,
+      roles,
+      signerName,
+      signerEmail,
+      reminderSettings,
+      prefillFields,
+      ccEmails: ccEmails || [],
+      applicationId,
+      autoSend: autoSend === false ? false : undefined,
+    });
 
     return res.json(result);
   } catch (error: any) {
-    return res.status(500).json({
-      message: error?.message || "DocuSign callback failed",
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to send template',
     });
   }
 };
 
-
-export const createDraftEnvelope = async (req: Request, res: Response) => {
+export const addRecipientsToTemplate = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
+    const { templateId, roles, title, message, ccEmails } = req.body;
 
-    const {
-      documentBase64,
-      recipientEmail,
-      applicationId,
-      termsOffer,
+    if (!templateId) {
+      return res.status(400).json({ message: 'templateId is required' });
+    }
+    if (!roles?.length) {
+      return res.status(400).json({ message: 'roles is required' });
+    }
+
+    const result = await docusignService.addRecipientsToTemplate(userId, {
+      templateId,
+      roles,
+      title,
+      message,
       ccEmails,
-      isResend
+    });
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to add recipients to template',
+    });
+  }
+};
+
+export const getTemplateRecipients = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    const templateId = req.query.templateId as string | undefined;
+    const result = await docusignService.getTemplateRecipients(userId, templateId);
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to fetch template recipients',
+    });
+  }
+};
+
+export const prefillFormFields = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { documentId, fields } = req.body;
+
+    if (!documentId) {
+      return res.status(400).json({ message: 'Missing required field: documentId' });
+    }
+    if (!fields?.length) {
+      return res.status(400).json({ message: 'fields must be a non-empty array' });
+    }
+
+    const result = await docusignService.prefillFormFields(userId, documentId, fields);
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to prefill form fields',
+    });
+  }
+};
+
+export const getEmbeddedRequestUrl = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { documentId, redirectUrl } = req.body;
+    if (!documentId || !redirectUrl) {
+      return res.status(400).json({ message: 'Missing documentId and redirectUrl' });
+    }
+    const result = await docusignService.getEmbeddedRequestUrl(userId, documentId, redirectUrl);
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+export const getEmbeddedSignLink = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { documentId, signerEmail, redirectUrl } = req.body;
+    if (!documentId || !signerEmail || !redirectUrl) {
+      return res.status(400).json({
+        message: 'Missing documentId, signerEmail, or redirectUrl',
+      });
+    }
+    const result = await docusignService.getEmbeddedSignLink(
+      userId,
+      documentId,
+      signerEmail,
+      redirectUrl,
+    );
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+export const voidDocument = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { documentId, reason } = req.body;
+    if (!documentId) {
+      return res.status(400).json({ message: 'Missing documentId' });
+    }
+    const result = await docusignService.voidDocument(
+      userId,
+      documentId,
+      reason || 'Voided by user',
+    );
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+export const getDocumentProperties = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { documentId } = req.params;
+    const result = await docusignService.getDocumentProperties(userId, documentId);
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+export const downloadPrefilledPdfByApplication = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { applicationId } = req.params;
+    if (!applicationId?.trim()) {
+      return res.status(400).json({ message: 'applicationId is required' });
+    }
+    const pdfBuffer = await docusignService.downloadDocumentPdfForApplication(
+      userId,
+      String(applicationId).trim(),
+    );
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="prefilled-contract-${String(applicationId).trim()}.pdf"`,
+    );
+    return res.send(pdfBuffer);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error.message || 'Failed to fetch prefilled PDF',
+    });
+  }
+};
+
+export const downloadTemplatePdf = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { templateId } = req.params;
+    if (!templateId?.trim()) {
+      return res.status(400).json({ message: 'templateId is required' });
+    }
+    const pdfBuffer = await docusignService.downloadTemplatePdf(
+      userId,
+      String(templateId).trim(),
+    );
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="template-${String(templateId).trim()}.pdf"`,
+    );
+    return res.send(pdfBuffer);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error.message || 'Failed to fetch template PDF',
+    });
+  }
+};
+
+export const downloadSignedPdf = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { documentId } = req.params;
+    const pdfBuffer = await docusignService.downloadSignedPdf(userId, documentId);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="signed-document-${documentId}.pdf"`,
+    );
+    return res.send(pdfBuffer);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error.message || 'Failed to fetch PDF',
+    });
+  }
+};
+
+export const getSignedPdf = downloadSignedPdf;
+
+export const listDocuments = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const page = parseInt(req.query.page as string) || 1;
+    const pageSize = parseInt(req.query.pageSize as string) || 10;
+    const result = await docusignService.listDocuments(userId, page, pageSize);
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+export const mergeAndSendTemplates = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    const {
+      templates,
+      templateIds,
+      contractTemplateFilters,
+      roles,
+      prefillFields,
+      redirectUrl,
+      applicationId,
+      ccEmails,
+      title,
+      message,
+      autoSend,
     } = req.body;
 
-    console.log("documentBase64", documentBase64);
-    console.log("recipientEmail", recipientEmail);
-    console.log("applicationId", applicationId);
-    console.log("termsOffer", termsOffer);
-    console.log("ccEmails", ccEmails);
-    console.log("isResend", isResend);
+    const hasTemplates = Array.isArray(templates) && templates.length > 0;
+    const hasTemplateIds = Array.isArray(templateIds) && templateIds.length > 0;
+    const hasFilters =
+      contractTemplateFilters &&
+      typeof contractTemplateFilters === 'object' &&
+      ['state', 'frequency', 'type'].some((k) => {
+        const v = (contractTemplateFilters as Record<string, unknown>)[k];
+        return v != null && String(v).trim() !== '';
+      });
 
-    if (!documentBase64 || !recipientEmail || !applicationId) {
+    if (!hasTemplates && !hasTemplateIds && !hasFilters) {
       return res.status(400).json({
         message:
-          "Missing required fields: documentBase64, recipientEmail, applicationId",
+          'Provide templateIds, templates, or contractTemplateFilters (state/frequency/type).',
       });
     }
+    if (!roles?.length) {
+      return res.status(400).json({ message: 'roles is required' });
+    }
 
-    const application = await prisma.application.findUnique({
-      where: { id: applicationId },
-      include: {
-        client: true,
-        termsOffers: true,
-        OfferDecision: true,
-        positions: true,
-        FundingInfo: true,
-      },
+    const result = await docusignService.mergeAndSendTemplates(userId, {
+      templates,
+      templateIds,
+      contractTemplateFilters,
+      roles,
+      prefillFields,
+      redirectUrl,
+      applicationId,
+      ccEmails: ccEmails || [],
+      title,
+      message,
+      autoSend: autoSend === false ? false : autoSend === true ? true : undefined,
     });
-    console.log("application", application);
-
-    if (!application) {
-      return res.status(404).json({
-        message: "Application not found"
-      });
-    }
-
-    let finalTermsOffer = termsOffer;
-
-    if (!finalTermsOffer && application?.termsOffers?.length) {
-      finalTermsOffer = application.termsOffers.at(-1);
-    }
-
-    if (!finalTermsOffer) {
-      return res.status(400).json({
-        message: "TermsOffer not found for this application",
-      });
-    }
-
-    const state =
-      application.client?.businessState ??
-      application.client?.ownerState ??
-      "";
-
-    const result = await new DocusignService().createDraftEnvelope(
-      userId,
-      documentBase64,
-      recipientEmail,
-      state,
-      application,
-      finalTermsOffer,
-      ccEmails || [],
-      isResend || false
-    );
 
     return res.json(result);
   } catch (error: any) {
-    console.error("DocuSign createDraftEnvelope error:", error);
-
-    return res.status(500).json({
-      message: error?.message || "Failed to create draft envelope",
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to merge and send templates',
     });
   }
+};
+
+export const docusignWebhook = async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization as string | undefined;
+    if (!docusignService.verifyWebhookBasicAuth(authHeader)) {
+      return res.status(401).json({ message: 'Invalid webhook credentials' });
+    }
+
+    res.send('OK');
+    const rawBody =
+      typeof req.body === 'string'
+        ? req.body
+        : req.body && typeof req.body === 'object'
+          ? req.body
+          : '';
+    docusignService.processWebhookEvent(rawBody).catch((error) => {
+      console.error('DocuSign webhook background error:', error);
+    });
+    return;
+  } catch (error: any) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+/** POST /docusign/sync-envelope-status — poll DocuSign when Connect did not fire. */
+export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    const { applicationId, envelopeId } = req.body || {};
+    if (!applicationId && !envelopeId) {
+      return res.status(400).json({
+        message: 'applicationId or envelopeId is required',
+      });
+    }
+    const result = await docusignService.syncEnvelopeStatusFromDocusign(userId, {
+      applicationId,
+      envelopeId,
+    });
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({
+      message: error?.message || 'Failed to sync envelope status',
+    });
+  }
+};
+
+/** Legacy endpoints */
+export const createDraftEnvelope = async (req: Request, res: Response) => {
+  return sendTemplate(req, res);
 };
 
 export const getSenderView = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-
     const { envelopeId, returnUrl } = req.body;
-
     if (!envelopeId || !returnUrl) {
-      return res.status(400).json({
-        message: "Missing required fields: envelopeId and returnUrl",
-      });
+      return res.status(400).json({ message: 'Missing envelopeId and returnUrl' });
     }
-
-    const result = await new DocusignService().getSenderViewUrl(
-      userId,
-      envelopeId,
-      returnUrl
-    );
-
+    const result = await docusignService.getSenderViewUrl(userId, envelopeId, returnUrl);
     return res.json(result);
   } catch (error: any) {
     return res.status(500).json({ message: error.message });
@@ -149,71 +437,15 @@ export const getSenderView = async (req: Request, res: Response) => {
 export const sendEnvelope = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId } = req.body;
-
+    const { envelopeId, applicationId } = req.body;
     if (!envelopeId) {
-      return res.status(400).json({
-        message: "Missing required field: envelopeId",
-      });
+      return res.status(400).json({ message: 'Missing envelopeId' });
     }
-
-    const result = await new DocusignService().sendEnvelope(userId, envelopeId);
-
+    const result = await docusignService.sendEnvelope(userId, String(envelopeId), {
+      applicationId: applicationId ? String(applicationId) : undefined,
+    });
     return res.json(result);
   } catch (error: any) {
-    return res.status(500).json({ message: error.message });
-  }
-};
-
-export const docusignWebhook = async (req: Request, res: Response) => {
-  try {
-    const authHeader = req.headers.authorization;
-
-    const expectedUsername = "info";
-    const expectedPassword = "Test@#123";
-
-    const expectedToken = Buffer.from(
-      `${expectedUsername}:${expectedPassword}`
-    ).toString("base64");
-
-    if (!authHeader || !authHeader.startsWith("Basic ")) {
-      return res.status(401).json({ message: "Missing basic auth header" });
-    }
-
-    const token = authHeader.split(" ")[1];
-
-    if (token !== expectedToken) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    await new DocusignService().updateDocumentStatusFromWebhook(req.body);
-
-    return res.send("OK");
-  } catch (error: any) {
-    return res.status(500).json({ message: error.message });
-  }
-};
-
-export const getSignedPdf = async (req: Request, res: Response) => {
-  try {
-    const userId = (req as any).user.id;
-    const { envelopeId } = req.params;
-
-    const pdfBuffer = await new DocusignService().fetchSignedDocumentPdf(
-      userId,
-      envelopeId
-    );
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="signed-document-${envelopeId}.pdf"`
-    );
-
-    return res.send(pdfBuffer);
-  } catch (error: any) {
-    return res.status(500).json({
-      message: error.message || "Failed to fetch PDF",
-    });
+    return res.status(error.status || 500).json({ message: error.message });
   }
 };
