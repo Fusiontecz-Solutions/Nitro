@@ -82,7 +82,6 @@ import {
     DOCUSIGN_DEFAULT_SIGNER_ROLE,
 } from "./contractdata/docusignTemplateConfig";
 import {
-    firstNonEmptyString,
     getTemplateRoleEmailFromRow,
     getTemplateRoleLabel,
     getTemplateRoleNameFromRow,
@@ -1150,7 +1149,7 @@ export default function ContractTab({
             ) {
                 toast.warning(
                     "Contract sent, but DocuSign field labels did not match CRM prefill ids. Signer may need to fill fields manually. Check template Data Labels in DocuSign Admin.",
-                    { duration: 8000 },
+                    { autoClose: 8000 },
                 );
             }
 
@@ -1201,7 +1200,7 @@ export default function ContractTab({
                 toast.success("Contract generated successfully.");
                 throw new Error(msg);
             }
-            failDocuSignEnvelope(msg);
+            return failDocuSignEnvelope(msg);
         } finally {
             setCreatingEnvelope(false);
         }
