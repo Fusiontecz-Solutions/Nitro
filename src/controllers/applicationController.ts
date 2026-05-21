@@ -13,6 +13,7 @@ import {
     assertReadyToCreateNewClientFromPdf,
     type AuthenticatedUser,
 } from '../services/applicationService';
+import { allocateNextDealId, withAllocatedDealId } from '../services/nextDealIdService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import {
     aggregateApplicationStats,
@@ -808,44 +809,47 @@ class ApplicationController {
             const creationQueue = roleUpper === 'AGENT' ? WORKFLOW_QUEUES.AGENT : undefined;
             const creationState = roleUpper === 'AGENT' ? ApplicationState.PENDING : undefined;
 
-            const application = await prisma.application.create({
-                data: applicationCreateUncheckedData({
-                    priority,
-                    type,
-                    salesRepresentativeId: String(salesRepresentative),
-                    clientId: clientRecord.id,
-                    note: note || '',
-                    loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                    commissionPercentage: commissionPercentageFromIso,
-                    createdById,
-                    referringAgentId: effectiveReferringAgentId,
-                    isoId: normalizedIsoId,
-                    currentQueue: creationQueue,
-                    currentState: creationState,
-                    files: uploadedFiles.length
-                        ? {
-                            createMany: {
-                                data: uploadedFiles.map((f) => ({
-                                    url: f.url,
-                                    publicId: f.publicId,
-                                    originalName: f.originalName,
-                                    mimeType: f.mimeType,
-                                    size: f.size,
-                                    uploadedAt: f.uploadedAt,
-                                })),
-                            },
-                        }
-                        : undefined,
+            const application = await withAllocatedDealId((dealId, tx) =>
+                tx.application.create({
+                    data: applicationCreateUncheckedData({
+                        priority,
+                        type,
+                        salesRepresentativeId: String(salesRepresentative),
+                        clientId: clientRecord.id,
+                        note: note || '',
+                        loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
+                        commissionPercentage: commissionPercentageFromIso,
+                        createdById,
+                        referringAgentId: effectiveReferringAgentId,
+                        isoId: normalizedIsoId,
+                        currentQueue: creationQueue,
+                        currentState: creationState,
+                        dealId,
+                        files: uploadedFiles.length
+                            ? {
+                                createMany: {
+                                    data: uploadedFiles.map((f) => ({
+                                        url: f.url,
+                                        publicId: f.publicId,
+                                        originalName: f.originalName,
+                                        mimeType: f.mimeType,
+                                        size: f.size,
+                                        uploadedAt: f.uploadedAt,
+                                    })),
+                                },
+                            }
+                            : undefined,
+                    }),
+                    include: {
+                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        client: true,
+                        iso: true,
+                        files: true,
+                    },
                 }),
-                include: {
-                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    client: true,
-                    iso: true,
-                    files: true,
-                },
-            });
+            );
 
             const populatedApplication = mapApplicationToApi(application);
 
@@ -4182,29 +4186,32 @@ class ApplicationController {
                 // Case 1: Client already exists → create application only
                 createdClient = clientRecord;
 
-                createdApplication = await prisma.application.create({
-                    data: applicationCreateUncheckedData({
-                        priority: 'High',
-                        type: applicationTypeForCreate,
-                        salesRepresentativeId: currentUserId,
-                        referringAgentId: currentUserId,
-                        clientId: createdClient.id,
-                        isoId: validatedIsoId,
-                        commissionPercentage: commissionPercentageFromIso,
-                        loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                        createdById: currentUserId,
-                        currentQueue: pdfAgentCreationQueue,
-                        currentState: pdfAgentCreationState,
+                createdApplication = await withAllocatedDealId((dealId, tx) =>
+                    tx.application.create({
+                        data: applicationCreateUncheckedData({
+                            priority: 'High',
+                            type: applicationTypeForCreate,
+                            salesRepresentativeId: currentUserId,
+                            referringAgentId: currentUserId,
+                            clientId: createdClient.id,
+                            isoId: validatedIsoId,
+                            commissionPercentage: commissionPercentageFromIso,
+                            loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
+                            createdById: currentUserId,
+                            currentQueue: pdfAgentCreationQueue,
+                            currentState: pdfAgentCreationState,
+                            dealId,
+                        }),
+                        include: {
+                            referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                            salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                            createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                            client: true,
+                            iso: true,
+                            files: true,
+                        },
                     }),
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
-                });
+                );
 
                 await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, pdfOriginalName);
                 const applicationAfterPdf = await prisma.application.findUnique({
@@ -4303,6 +4310,8 @@ class ApplicationController {
 
             // Case 2: Client does not exist → create client + application atomically
             const result = await prisma.$transaction(async (tx) => {
+                const dealId = await allocateNextDealId(tx);
+
                 const newClient = await tx.client.create({
                     data: {
                         businessName: business.business_name || business.dba_name || null,
@@ -4357,6 +4366,7 @@ class ApplicationController {
                         createdById: currentUserId,
                         currentQueue: pdfAgentCreationQueue,
                         currentState: pdfAgentCreationState,
+                        dealId,
                     }),
                     include: {
                         referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
