@@ -25,7 +25,6 @@ import {
     mergeAndSendBoldSignTemplates,
     sendBoldSignTemplate,
 } from "@/redux/actions/boldSignActions";
-import { axiosPost } from "@/redux/axios";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import {
