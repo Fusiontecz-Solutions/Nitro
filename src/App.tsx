@@ -24,6 +24,7 @@ function AppContent() {
         autoClose={4000}
         draggable
         theme={resolvedTheme === 'dark' ? 'dark' : 'light'}
+        style={{ zIndex: 10050 }}
       />
     </>
   );

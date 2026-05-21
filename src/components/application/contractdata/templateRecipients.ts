@@ -91,6 +91,81 @@ export function getTemplateRoleEmailFromRow(row: Record<string, unknown>): strin
     );
 }
 
+import { DOCUSIGN_DEFAULT_SIGNER_ROLE } from "./docusignTemplateConfig";
+
+/** Role payload for `/docusign/send-template` and sync-envelope-cc. */
+export type DocuSignTemplateRolePayload = {
+    roleIndex: number;
+    signerName: string;
+    signerOrder: number;
+    signerEmail: string;
+    signerRole: string;
+    privateMessage?: string;
+    authenticationCode?: string;
+    authenticationType?: "AccessCode";
+    deliveryMode?: "Email";
+    signerType?: "signer";
+    locale?: "EN";
+};
+
+/** Map template recipient rows + application client email to DocuSign signer roles. */
+export function buildBoldSignRolesFromTemplateRecipients(
+    templateRoles: Array<Record<string, unknown>>,
+    applicationSignerEmail: string,
+    applicationSignerName: string,
+): DocuSignTemplateRolePayload[] {
+    const appEmail = applicationSignerEmail.trim();
+    const common = {
+        privateMessage: "Kindly sign this article",
+        authenticationCode: "1234",
+        authenticationType: "AccessCode" as const,
+        deliveryMode: "Email" as const,
+        signerType: "signer" as const,
+        locale: "EN" as const,
+    };
+
+    if (templateRoles.length === 0) {
+        if (!appEmail) {
+            return [];
+        }
+        return [
+            {
+                roleIndex: 1,
+                signerName: applicationSignerName,
+                signerOrder: 1,
+                signerEmail: appEmail,
+                signerRole: DOCUSIGN_DEFAULT_SIGNER_ROLE,
+                ...common,
+            },
+        ];
+    }
+
+    return templateRoles.map((r, idx) => {
+        const row = r as Record<string, unknown>;
+        const templateEmail = getTemplateRoleEmailFromRow(row);
+        const signerEmail = templateEmail || (idx === 0 ? appEmail : "");
+        const templatePersonName = getTemplateRoleNameFromRow(row);
+        const signerName =
+            templatePersonName ||
+            (idx === 0 ? applicationSignerName : `Signer ${idx + 1}`);
+        const roleLabel = getTemplateRoleLabel(row) || `Role ${idx + 1}`;
+        const roleIndexRaw = row.roleIndex ?? row.RoleIndex;
+        const roleIndex =
+            typeof roleIndexRaw === "number" && Number.isFinite(roleIndexRaw)
+                ? roleIndexRaw
+                : idx + 1;
+
+        return {
+            roleIndex,
+            signerName,
+            signerOrder: idx + 1,
+            signerEmail,
+            signerRole: roleLabel,
+            ...common,
+        };
+    });
+}
+
 export function getTemplateRoleNameFromRow(row: Record<string, unknown>): string {
     const nestedSigner =
         row.signer && typeof row.signer === "object"

@@ -32,6 +32,10 @@ export interface BuildContractPrefillFieldsArgs {
     purchaseAmount?: string;
     purchasePercent?: string;
     remittance?: string;
+    /** Payment frequency (e.g. Daily, Weekly). DocuSign data label: `frequency`; BoldSign may use `paymentTerms`. */
+    frequency?: string;
+    /** Net cash to merchant (advance − fees − refinance). DocuSign data label: `net_to_merchant`. */
+    netToMerchant?: string;
 
     clientName?: string;
     owner1GuarantorName?: string;
@@ -164,6 +168,9 @@ const FIELD_IDS = {
     purchaseAmount: ["purchase_amount"],
     purchasePercent: ["purchase_percent"],
     remittance: ["remittance"],
+    frequency: ["frequency", "paymentTerms"],
+    /** DocuSign: `net_to_merchant`; BoldSign template tabs often use `NetFundProvided`. */
+    netToMerchant: ["net_to_merchant", "NetFundProvided"],
 
     clientName: ["client_name"],
     owner1GuarantorName: ["owner1_guarantor_name"],
@@ -302,6 +309,8 @@ function normalizePrefillValueForUsFormat(id: string, value: string): string {
         k.includes("amount") ||
         k.includes("price") ||
         k.includes("fees") ||
+        k.includes("netfund") ||
+        k.includes("net_fund") ||
         k.includes("transaction_fee") ||
         /^epo_amount_received_\d+$/.test(k) ||
         k === "purchase_percent"
@@ -393,7 +402,8 @@ export const buildContractPrefillFields = ({
     purchaseAmount = "",
     purchasePercent = "",
     remittance = "",
-
+    frequency = "",
+    netToMerchant = "",
 
     clientName = "",
     owner1GuarantorName = "",
@@ -520,6 +530,8 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.purchaseAmount, "Purchase Amount", purchaseAmount),
         ...mapIds(FIELD_IDS.purchasePercent, "Purchase Percent", purchasePercent),
         ...mapIds(FIELD_IDS.remittance, "Remittance", remittance),
+        ...mapIds(FIELD_IDS.frequency, "Frequency", frequency),
+        ...mapIds(FIELD_IDS.netToMerchant, "Net to merchant", netToMerchant),
         ...mapIds(FIELD_IDS.clientName, "Client Name", clientName),
         ...mapIds(FIELD_IDS.owner1GuarantorName, "Owner1 Guarantor Name", owner1GuarantorName),
         ...mapIds(FIELD_IDS.owner2GuarantorName, "Owner2 Guarantor Name", owner2GuarantorName),
@@ -755,10 +767,129 @@ const MONEY_STRING_PREFILL_KEYS: readonly (keyof BuildContractPrefillFieldsArgs)
     "purchasePrice",
     "purchaseAmount",
     "purchasePercent",
+    "netToMerchant",
     "appendixUnderwritingFees",
     "addendumDatedPrincipalOwnerAmount",
     "addendumDatedPrincipalOwnerAmount2",
 ];
+
+export type NetToMerchantPrefillSources = {
+    offerDecision?: Record<string, unknown> | null;
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+};
+
+function offerDecisionEffectiveRecordForNet(
+    odRoot: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+    if (!odRoot || typeof odRoot !== "object") return null;
+    const inner = odRoot.offer;
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+        return inner as Record<string, unknown>;
+    }
+    return odRoot;
+}
+
+/**
+ * Net to merchant = max(0, advance − fees − refinance) — same as Collections "Net funding".
+ */
+export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources): number | undefined {
+    const app = sources.application;
+    const contract = sources.contract;
+    const odRoot =
+        sources.offerDecision ??
+        (contract?.offer as Record<string, unknown> | undefined) ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+
+    const advance =
+        coerceToFiniteNumber(contract?.purchaseAmount) ??
+        coerceToFiniteNumber(terms0?.approvedAmount) ??
+        coerceToFiniteNumber(odEff?.offer) ??
+        coerceToFiniteNumber(odEff?.approvedAmount) ??
+        coerceToFiniteNumber(odRoot?.offer) ??
+        coerceToFiniteNumber(odRoot?.approvedAmount) ??
+        coerceToFiniteNumber(app?.loanAmount);
+
+    if (advance === undefined || !(advance > 0)) return undefined;
+
+    const fees =
+        coerceToFiniteNumber(odRoot?.fees) ??
+        coerceToFiniteNumber(odEff?.fees) ??
+        0;
+    const refinance =
+        coerceToFiniteNumber(odRoot?.refinanceAmount) ??
+        coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
+        coerceToFiniteNumber(odEff?.refinanceAmount) ??
+        coerceToFiniteNumber(odEff?.RefinanceAmount) ??
+        0;
+
+    return Math.max(0, advance - fees - refinance);
+}
+
+export function formatNetToMerchantPrefillValue(amount: number | undefined): string {
+    if (amount === undefined || !Number.isFinite(amount)) return "";
+    return truncateDecimalPrefill(amount);
+}
+
+/** Human-readable payment frequency for contract / DocuSign prefill. */
+export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources): string {
+    const app = sources.application;
+    const contract = sources.contract;
+    const odRoot =
+        sources.offerDecision ??
+        (contract?.offer as Record<string, unknown> | undefined) ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+
+    const raw =
+        str(contract?.frequency) ||
+        str(odRoot?.frequency) ||
+        str(odEff?.frequency) ||
+        str(terms0?.frequency) ||
+        str(app?.frequency);
+    if (!raw) return "";
+
+    const normalized = raw.replace(/_/g, " ").trim();
+    if (!normalized) return "";
+    return normalized
+        .split(/\s+/)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(" ");
+}
+
+/** One row per label in deal review UI (signing APIs still receive every field id). */
+export function dedupePrefillFieldsByLabel(fields: ContractPrefillField[]): ContractPrefillField[] {
+    const seen = new Set<string>();
+    const out: ContractPrefillField[] = [];
+    for (const f of fields) {
+        const key = String(f.label || f.id || "")
+            .trim()
+            .toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(f);
+    }
+    return out;
+}
 
 /** When merged args still carry serialized decimals (`1400.00000000000`), coerce numeric fields to truncated two decimals. */
 function coerceNumericPrefillMoneyStrings(obj: Partial<BuildContractPrefillFieldsArgs>): void {
@@ -1024,6 +1155,14 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
     const purchasePrice = firstTruncateDecimal(row.purchasePrice, offer?.totalRemit, row.totalAmount);
     const purchasePercent =
         firstTruncateDecimal(row.purchasePercent, offer?.rate) || str(row.purchasePercent);
+    const netToMerchant =
+        str(row.netToMerchant) ||
+        formatNetToMerchantPrefillValue(
+            computeNetToMerchantDollars({ contract: row, offerDecision: offer }),
+        );
+    const frequency =
+        str(row.frequency) ||
+        resolveOfferFrequencyLabel({ contract: row, offerDecision: offer });
 
     const agreementDatePrefill =
         prefillIsoDate(row.agreementDate) || prefillIsoDate(row.contractDate);
@@ -1054,6 +1193,8 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         purchasePrice,
         purchaseAmount,
         purchasePercent,
+        frequency,
+        netToMerchant,
         remittance:
             str(row.remittance) || "",
         clientName: str(row.clientName),
@@ -1178,7 +1319,79 @@ export function getSignerRecipientEmailForContract(
         "",
     ).trim();
     if (fromContract) return fromContract;
+
+    const app = application as Record<string, unknown> | null | undefined;
+    const nestedClient =
+        (c as { application?: { client?: Record<string, unknown> } } | null)?.application
+            ?.client ?? app?.client;
+    if (nestedClient && typeof nestedClient === "object") {
+        const nestedEmail = String(
+            (nestedClient as { businessEmail?: string; ownerEmail?: string }).businessEmail ||
+                (nestedClient as { businessEmail?: string; ownerEmail?: string }).ownerEmail ||
+                "",
+        ).trim();
+        if (nestedEmail) return nestedEmail;
+    }
+
     return String(getApplicationPrimaryRecipientEmail(application) || "").trim();
+}
+
+export type DocuSignSignerEmailSource =
+    | "contract"
+    | "client"
+    | "template"
+    | "owner"
+    | null;
+
+/**
+ * Email used to send the DocuSign signing request (not CC).
+ * CC chips in the footer are separate — they do not count as the signer.
+ */
+export function resolveEffectiveDocuSignSignerEmail(
+    application: unknown,
+    contract: Record<string, unknown> | null | undefined,
+    templateRoleRows?: Array<Record<string, unknown>>,
+    extraSignerEmails?: string[],
+): { email: string; source: DocuSignSignerEmailSource } {
+    const fromContractField = String(
+        (contract as Record<string, unknown> | null)?.clientEmail ??
+            (contract as Record<string, unknown> | null)?.client_email ??
+            "",
+    ).trim();
+    const crm = getSignerRecipientEmailForContract(application, contract).trim();
+    if (crm) {
+        return {
+            email: crm,
+            source: fromContractField ? "contract" : "client",
+        };
+    }
+
+    for (const row of templateRoleRows ?? []) {
+        const label = String(
+            (row as { roleName?: string; signerRole?: string }).roleName ??
+                (row as { roleName?: string; signerRole?: string }).signerRole ??
+                "",
+        )
+            .trim()
+            .toLowerCase();
+        if (label.includes("guarantor")) continue;
+        const templateEmail = String(
+            (row as { signerEmail?: string; email?: string; SignerEmail?: string }).signerEmail ??
+                (row as { signerEmail?: string; email?: string }).email ??
+                (row as { SignerEmail?: string }).SignerEmail ??
+                "",
+        ).trim();
+        if (templateEmail) {
+            return { email: templateEmail, source: "template" };
+        }
+    }
+
+    for (const raw of extraSignerEmails ?? []) {
+        const em = String(raw || "").trim();
+        if (em) return { email: em, source: "owner" };
+    }
+
+    return { email: "", source: null };
 }
 
 export function getApplicationPrimaryRecipientName(anyApp: unknown): string {
@@ -1196,7 +1409,11 @@ export function getApplicationPrimaryRecipientName(anyApp: unknown): string {
  */
 export function getContractPrefillEditDefaultsFromApplication(
     anyApp: unknown,
-    options?: { agreementDate?: string; contractRecords?: ContractPrefillContractRecords },
+    options?: {
+        agreementDate?: string;
+        contractRecords?: ContractPrefillContractRecords;
+        offerDecision?: Record<string, unknown> | null;
+    },
 ): Partial<BuildContractPrefillFieldsArgs> & { customerName: string; agreementDate: string } {
     const rec = options?.contractRecords;
     const clientArgs = getApplicationClientPrefillArgs(anyApp);
@@ -1220,14 +1437,18 @@ export function getContractPrefillEditDefaultsFromApplication(
         str(contractPartial.agreementDate);
 
 
-    console.log("customerName", customerName);
-    console.log("agreementDate", agreementDate);
-    console.log("recordPartial", recordPartial);
-    console.log("clientArgs", clientArgs);
-    console.log("contractPartial", contractPartial);
-    // console.log("options", options);
-    // console.log("ownerFallback", ownerFallback);
-
+    const netComputed = formatNetToMerchantPrefillValue(
+        computeNetToMerchantDollars({
+            application: anyApp as Record<string, unknown> | undefined,
+            contract: rec?.contract ?? null,
+            offerDecision: options?.offerDecision ?? null,
+        }),
+    );
+    const frequencyComputed = resolveOfferFrequencyLabel({
+        application: anyApp as Record<string, unknown> | undefined,
+        contract: rec?.contract ?? null,
+        offerDecision: options?.offerDecision ?? null,
+    });
 
     return {
         /** Application-derived defaults first, then persisted Contract / ACH / Addendum rows (preferred). */
@@ -1235,6 +1456,12 @@ export function getContractPrefillEditDefaultsFromApplication(
         ...recordPartial,
         customerName,
         agreementDate,
+        ...(str(recordPartial.frequency) || !frequencyComputed
+            ? {}
+            : { frequency: frequencyComputed }),
+        ...(str(recordPartial.netToMerchant) || !netComputed
+            ? {}
+            : { netToMerchant: netComputed }),
     };
 }
 
@@ -1250,14 +1477,37 @@ export function buildContractPrefillFieldsFromApplication(
         agreementDate?: string;
         contractRecords?: ContractPrefillContractRecords;
         overrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+        offerDecision?: Record<string, unknown> | null;
     },
 ): ContractPrefillField[] {
     const rec = options?.contractRecords;
-    const baseMerged = getContractPrefillEditDefaultsFromApplication(anyApp, options);
+    const baseMerged = getContractPrefillEditDefaultsFromApplication(anyApp, {
+        agreementDate: options?.agreementDate,
+        contractRecords: rec,
+        offerDecision: options?.offerDecision ?? null,
+    });
     const merged: Partial<BuildContractPrefillFieldsArgs> = {
         ...baseMerged,
         ...(options?.overrides ?? {}),
     };
+    if (!str(merged.frequency)) {
+        const freq = resolveOfferFrequencyLabel({
+            application: anyApp as Record<string, unknown> | undefined,
+            contract: rec?.contract ?? null,
+            offerDecision: options?.offerDecision ?? null,
+        });
+        if (freq) merged.frequency = freq;
+    }
+    if (!str(merged.netToMerchant)) {
+        const computed = formatNetToMerchantPrefillValue(
+            computeNetToMerchantDollars({
+                application: anyApp as Record<string, unknown> | undefined,
+                contract: rec?.contract ?? null,
+                offerDecision: options?.offerDecision ?? null,
+            }),
+        );
+        if (computed) merged.netToMerchant = computed;
+    }
     coerceNumericPrefillMoneyStrings(merged);
     const customerName = str(merged.customerName) || "Signer";
     const legalName = str(merged.legalName) || customerName;

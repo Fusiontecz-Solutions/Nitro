@@ -91,6 +91,8 @@ const FIELD_LABELS = {
     purchaseAmount: "Purchase amount",
     purchasePercent: "Purchase percent",
     remittance: "Remittance",
+    frequency: "Frequency",
+    netToMerchant: "Net to merchant",
     clientName: "Client name",
     owner1GuarantorName: "Owner 1 / guarantor name",
     owner2GuarantorName: "Owner 2 / guarantor name",
@@ -232,9 +234,17 @@ const CONTRACT_PREFILL_SECTIONS: {
         {
             id: "financial",
             title: "Purchase & remittance",
-            description: "Purchase price, purchased amount, percent, remittance (financial terms box).",
+            description:
+                "Purchase price, purchased amount, percent, remittance, and net to merchant (advance − fees − refinance).",
             Icon: DollarSign,
-            keys: ["purchasePrice", "purchaseAmount", "purchasePercent", "remittance"],
+            keys: [
+                "purchasePrice",
+                "purchaseAmount",
+                "purchasePercent",
+                "remittance",
+                "frequency",
+                "netToMerchant",
+            ],
         },
         {
             id: "owners_exhibit",
@@ -452,6 +462,7 @@ const MONEY_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "purchasePrice",
     "purchaseAmount",
     "remittance",
+    "netToMerchant",
     "appendixUnderwritingFees",
     "addendumDatedPrincipalOwnerAmount",
     "addendumDatedPrincipalOwnerAmount2",
@@ -598,6 +609,27 @@ function validatePrefillValues(values: Record<keyof BuildContractPrefillFieldsAr
     return err;
 }
 
+function messageFromSaveError(error: unknown, fallback: string): string {
+    if (typeof error === "string" && error.trim()) return error.trim();
+    if (error && typeof error === "object") {
+        const o = error as Record<string, unknown>;
+        if (typeof o.message === "string" && o.message.trim()) return o.message.trim();
+        if (typeof o.payload === "string" && o.payload.trim()) return o.payload.trim();
+        const nested = o.response as { data?: { message?: unknown } } | undefined;
+        if (nested?.data && typeof nested.data.message === "string" && nested.data.message.trim()) {
+            return nested.data.message.trim();
+        }
+    }
+    return fallback;
+}
+
+function firstSectionIdWithFieldErrors(errors: FieldErrors): string | null {
+    for (const section of CONTRACT_PREFILL_SECTIONS) {
+        if (section.keys.some((key) => Boolean(errors[key]))) return section.id;
+    }
+    return null;
+}
+
 export type ContractPrefillEditFormProps = {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -616,6 +648,8 @@ export type ContractPrefillEditFormProps = {
     contractRecords?: ContractPrefillContractRecords;
     /** Shown in agreement date field when empty (e.g. today). */
     agreementDatePlaceholder?: string;
+    /** Loaded offer decision — used to auto-calculate net to merchant when not overridden. */
+    offerDecision?: Record<string, unknown> | null;
     readOnly?: boolean;
     /** Merged into `contractPrefillOverrides` on save; preserved when clearing main prefill (document template field map). */
     additionalContractPrefillJson?: Record<string, unknown> | null;
@@ -635,6 +669,7 @@ export function ContractPrefillEditForm({
     applicationUuid = null,
     contractRecords,
     agreementDatePlaceholder = "",
+    offerDecision = null,
     readOnly = false,
     additionalContractPrefillJson = null,
 }: ContractPrefillEditFormProps) {
@@ -642,6 +677,7 @@ export function ContractPrefillEditForm({
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
     const [saving, setSaving] = useState(false);
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+    const [saveError, setSaveError] = useState<string | null>(null);
     const [activeSectionId, setActiveSectionId] = useState(CONTRACT_PREFILL_SECTIONS[0]?.id ?? "rpa_merchant");
 
     const agreementDateForDefaults = agreementDatePlaceholder || "";
@@ -650,6 +686,7 @@ export function ContractPrefillEditForm({
         const defaults = getContractPrefillEditDefaultsFromApplication(applicationData, {
             agreementDate: agreementDateForDefaults,
             contractRecords,
+            offerDecision,
         });
         const persisted =
             persistedPrefillOverrides === undefined
@@ -658,7 +695,7 @@ export function ContractPrefillEditForm({
                     ({} as Partial<BuildContractPrefillFieldsArgs>));
         setValues(mergeFormState({ ...defaults, ...persisted }));
         setFieldErrors({});
-    }, [applicationData, contractRecords, agreementDateForDefaults, persistedPrefillOverrides]);
+    }, [applicationData, contractRecords, agreementDateForDefaults, persistedPrefillOverrides, offerDecision]);
 
     /** Stable ref so `resetFromSources` stays current without widening effect deps below. */
     const resetFromSourcesRef = useRef(resetFromSources);
@@ -692,7 +729,10 @@ export function ContractPrefillEditForm({
     }, [open, persistedPrefillOverrides]);
 
     useEffect(() => {
-        if (!open) setFieldErrors({});
+        if (!open) {
+            setFieldErrors({});
+            setSaveError(null);
+        }
     }, [open]);
 
     useEffect(() => {
@@ -708,15 +748,26 @@ export function ContractPrefillEditForm({
         : null;
 
     const handleSave = async () => {
+        setSaveError(null);
         const cid = parsePositiveContractId(contractId);
         if (cid == null) {
-            toast.error("Cannot save: open or create a contract for this application first.");
+            const msg = "Cannot save: open or create a contract for this application first.";
+            setSaveError(msg);
+            toast.error(msg);
             return;
         }
         const validation = validatePrefillValues(values);
         if (Object.keys(validation).length > 0) {
             setFieldErrors(validation);
-            toast.error("Fix the highlighted fields, then save again.");
+            const firstSection = firstSectionIdWithFieldErrors(validation);
+            if (firstSection) setActiveSectionId(firstSection);
+            const count = Object.keys(validation).length;
+            const msg =
+                count === 1
+                    ? "Fix the highlighted field, then save again."
+                    : `Fix ${count} highlighted fields, then save again.`;
+            setSaveError(msg);
+            toast.error(msg);
             return;
         }
         setFieldErrors({});
@@ -752,17 +803,21 @@ export function ContractPrefillEditForm({
             } else {
                 onPersistedPrefillChange?.(payload as Partial<BuildContractPrefillFieldsArgs>);
             }
+            setSaveError(null);
             toast.success("Contract prefill fields saved.");
             onOpenChange(false);
         } catch (e) {
             console.error(e);
-            toast.error("Failed to save contract prefill fields.");
+            const msg = messageFromSaveError(e, "Failed to save contract prefill fields.");
+            setSaveError(msg);
+            toast.error(msg);
         } finally {
             setSaving(false);
         }
     };
 
     const handleClearOverrides = async () => {
+        setSaveError(null);
         const cid = parsePositiveContractId(contractId);
         if (cid == null || readOnly) return;
         setSaving(true);
@@ -799,10 +854,13 @@ export function ContractPrefillEditForm({
                 onPersistedPrefillChange?.(null);
             }
             resetFromSources();
+            setSaveError(null);
             toast.success("Saved overrides cleared; DocuSign will use application data again.");
         } catch (e) {
             console.error(e);
-            toast.error("Failed to clear overrides.");
+            const msg = messageFromSaveError(e, "Failed to clear overrides.");
+            setSaveError(msg);
+            toast.error(msg);
         } finally {
             setSaving(false);
         }
@@ -810,6 +868,7 @@ export function ContractPrefillEditForm({
 
     const setField = (key: keyof BuildContractPrefillFieldsArgs, v: string) => {
         setValues((prev) => ({ ...prev, [key]: v }));
+        setSaveError(null);
         setFieldErrors((prev) => {
             if (!prev[key]) return prev;
             const next = { ...prev };
@@ -840,6 +899,15 @@ export function ContractPrefillEditForm({
                         </div>
                     </div>
                 </DialogHeader>
+
+                {saveError ? (
+                    <div
+                        className="mx-6 mt-3 shrink-0 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                        role="alert"
+                    >
+                        {saveError}
+                    </div>
+                ) : null}
 
                 {/* Mobile: section picker */}
                 <div className="border-b border-slate-200 px-4 py-3 md:hidden dark:border-slate-700">
