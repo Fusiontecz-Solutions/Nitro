@@ -1194,16 +1194,6 @@ const PDFViewerModal = ({
     const buildDocuSignPdfCacheKey = (envelopeId: string) =>
         `${envelopeId}:${docuSignPdfCacheSuffixRef.current}`;
 
-    const linkedAddendumTemplateIdForDraft = useMemo(
-        () =>
-            String(
-                linkedAddendumMapping?.template?.templateId ??
-                    linkedAddendumMapping?.templateId ??
-                    "",
-            ).trim(),
-        [linkedAddendumMapping],
-    );
-
     const loadPrefilledPdfFromDocuSign = useCallback(
         async (
             overrideEnvelopeId?: string,
@@ -2094,6 +2084,7 @@ const PDFViewerModal = ({
 
                 if (nowSent && !contractWasSentRef.current) {
                     contractWasSentRef.current = true;
+                    setSentAt(new Date());
                     const cc = pendingCcForSentRef.current.length
                         ? pendingCcForSentRef.current
                         : ccEmailsRef.current;
@@ -2144,6 +2135,7 @@ const PDFViewerModal = ({
             contractWasSentRef.current = false;
             prevContractStatusRef.current = "";
             pendingCcForSentRef.current = [];
+            setSentAt(null);
             return;
         }
         if (contractModalWasOpenRef.current) return;

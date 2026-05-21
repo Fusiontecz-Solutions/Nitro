@@ -81,9 +81,6 @@ import {
 } from "./contractdata/docusignTemplateConfig";
 import {
     buildBoldSignRolesFromTemplateRecipients,
-    getTemplateRoleEmailFromRow,
-    getTemplateRoleLabel,
-    getTemplateRoleNameFromRow,
     parseBoldSignTemplateRolesFromRecipientsPayload,
 } from "./contractdata/templateRecipients";
 import {
@@ -1179,30 +1176,6 @@ export default function ContractTab({
             prefillFieldCount: result.prefillFieldCount,
             sendUrl: result.sendUrl ?? null,
         };
-    };
-
-    const sendDocuSignEnvelope = async (payload: {
-        envelopeId: string;
-        ccEmails: string[];
-    }) => {
-        if (!applicationUuid) {
-            throw new Error("Missing application ID.");
-        }
-        const envelopeId = String(payload.envelopeId || "").trim();
-        if (!envelopeId) {
-            throw new Error("Missing DocuSign envelope ID.");
-        }
-        setCreatingEnvelope(true);
-        try {
-            await axiosPost("/docusign/send-envelope", {
-                envelopeId,
-                applicationId: String(applicationUuid),
-                ccEmails: payload.ccEmails,
-            });
-            toast.success("Contract sent via DocuSign. Signing emails were delivered to signers.");
-        } finally {
-            setCreatingEnvelope(false);
-        }
     };
 
     const appendStructuredNote = (sectionLabel: string, payload: unknown) => {
