@@ -23,6 +23,7 @@ import {
   createDraftEnvelope,
   getSenderView,
   sendEnvelope,
+  syncEnvelopeCc,
   getSignedPdf,
 } from './docusign.controller';
 
@@ -65,5 +66,6 @@ router.post('/sync-envelope-status', authenticateToken, syncDocusignEnvelopeStat
 router.post('/create-draft-envelope', authenticateToken, createDraftEnvelope);
 router.post('/sender-view', authenticateToken, getSenderView);
 router.post('/send-envelope', authenticateToken, sendEnvelope);
+router.post('/sync-envelope-cc', authenticateToken, syncEnvelopeCc);
 
 export default router;

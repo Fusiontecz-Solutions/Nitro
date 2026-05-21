@@ -397,7 +397,7 @@ export const docusignWebhook = async (req: Request, res: Response) => {
 export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
-    const { applicationId, envelopeId } = req.body || {};
+    const { applicationId, envelopeId, ccEmails } = req.body || {};
     if (!applicationId && !envelopeId) {
       return res.status(400).json({
         message: 'applicationId or envelopeId is required',
@@ -406,6 +406,7 @@ export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) =>
     const result = await docusignService.syncEnvelopeStatusFromDocusign(userId, {
       applicationId,
       envelopeId,
+      ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
     });
     return res.json(result);
   } catch (error: any) {
@@ -423,27 +424,59 @@ export const createDraftEnvelope = async (req: Request, res: Response) => {
 export const getSenderView = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId, returnUrl } = req.body;
+    const { envelopeId, returnUrl, ccEmails, applicationId, signerEmail, signerName, roles } =
+      req.body;
     if (!envelopeId || !returnUrl) {
       return res.status(400).json({ message: 'Missing envelopeId and returnUrl' });
     }
-    const result = await docusignService.getSenderViewUrl(userId, envelopeId, returnUrl);
+    const result = await docusignService.getSenderViewUrl(userId, envelopeId, returnUrl, {
+      ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
+      applicationId: applicationId ? String(applicationId) : undefined,
+      signerEmail: signerEmail ? String(signerEmail) : undefined,
+      signerName: signerName ? String(signerName) : undefined,
+      roles: Array.isArray(roles) ? roles : undefined,
+    });
     return res.json(result);
   } catch (error: any) {
-    return res.status(500).json({ message: error.message });
+    return res.status(error.status || 500).json({ message: error.message });
   }
 };
 
 export const sendEnvelope = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId, applicationId } = req.body;
+    const { envelopeId, applicationId, ccEmails, title } = req.body;
     if (!envelopeId) {
       return res.status(400).json({ message: 'Missing envelopeId' });
     }
     const result = await docusignService.sendEnvelope(userId, String(envelopeId), {
       applicationId: applicationId ? String(applicationId) : undefined,
+      ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
+      title: title ? String(title) : undefined,
     });
+    return res.json(result);
+  } catch (error: any) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+export const syncEnvelopeCc = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user.id;
+    const { envelopeId, ccEmails, applicationId, signerEmail, signerName, roles } =
+      req.body;
+    if (!envelopeId) {
+      return res.status(400).json({ message: 'Missing envelopeId' });
+    }
+    const result = await docusignService.syncEnvelopeCcEmails(
+      userId,
+      String(envelopeId),
+      Array.isArray(ccEmails) ? ccEmails : [],
+      applicationId ? String(applicationId) : undefined,
+      signerEmail ? String(signerEmail) : undefined,
+      signerName ? String(signerName) : undefined,
+      Array.isArray(roles) ? roles : undefined,
+    );
     return res.json(result);
   } catch (error: any) {
     return res.status(error.status || 500).json({ message: error.message });

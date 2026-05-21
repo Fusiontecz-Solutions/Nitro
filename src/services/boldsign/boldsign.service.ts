@@ -123,6 +123,12 @@ function formatDate(date: Date | string | null | undefined): string {
  * snake_case while templates use different casing — without this, most values are dropped and
  * CC/signer PDFs look "empty" except rare matches (e.g. entity_type).
  */
+/** CRM prefill ids → alternate normalized keys on BoldSign templates (e.g. snake_case vs PascalCase). */
+const BOLDSIGN_PREFILL_CRM_ID_ALIASES: Record<string, string[]> = {
+  net_to_merchant: ['netfundprovided'],
+  frequency: ['paymentterms'],
+};
+
 function buildBoldSignPrefillCanonicalIdMap(data: unknown): Map<string, string> | null {
   const map = new Map<string, string>();
   const registerKeysForCanonical = (canonical: string): void => {
@@ -1065,7 +1071,12 @@ export class BoldSignService {
           const before = mappedFields.length;
           const resolveCanonical = (crmId: string): string | undefined => {
             const k = crmId.trim().toLowerCase();
-            const variants = [k, k.replace(/\s+/g, '_'), k.replace(/_/g, ' ')];
+            const variants = [
+              k,
+              k.replace(/\s+/g, '_'),
+              k.replace(/_/g, ' '),
+              ...(BOLDSIGN_PREFILL_CRM_ID_ALIASES[k] ?? []),
+            ];
             for (const v of variants) {
               const hit = idMap.get(v);
               if (hit) return hit;
