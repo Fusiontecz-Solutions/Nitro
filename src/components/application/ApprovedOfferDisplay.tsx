@@ -30,9 +30,10 @@ const MetricCell = ({
   </div>
 );
 
-type Frequency = "Daily" | "Weekly" | "Monthly" | "";
+type Frequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly" | "";
 
 const WEEKLY_TO_MONTHLY_FACTOR = 4.2;
+const BIWEEKLY_TO_MONTHLY_FACTOR = 2.1;
 
 function computeFallbackAvgNetCredit(
   bankTables?: Array<{ rows?: Array<{ netCredit?: number | string | null }> }>,
@@ -108,9 +109,11 @@ export const ApprovedOfferDisplay: React.FC<ApprovedOfferDisplayProps> = ({
     const freqForDisplay: Frequency =
       frequency === "Weekly"
         ? "Weekly"
-        : frequency === "Monthly"
-          ? "Monthly"
-          : "Daily";
+        : frequency === "Bi-Weekly"
+          ? "Bi-Weekly"
+          : frequency === "Monthly"
+            ? "Monthly"
+            : "Daily";
 
     const derivedPerPeriodFromOffer =
       Number.isFinite(totalRepaymentNum) &&
@@ -126,7 +129,9 @@ export const ApprovedOfferDisplay: React.FC<ApprovedOfferDisplayProps> = ({
           : derivedPerPeriodFromOffer * 22
         : freqForDisplay === "Weekly"
           ? derivedPerPeriodFromOffer * WEEKLY_TO_MONTHLY_FACTOR
-          : derivedPerPeriodFromOffer;
+          : freqForDisplay === "Bi-Weekly"
+            ? derivedPerPeriodFromOffer * BIWEEKLY_TO_MONTHLY_FACTOR
+            : derivedPerPeriodFromOffer;
 
     const derivedOurMonthlyRepay =
       Number.isFinite(monthlyRepayNum) && monthlyRepayNum > 0

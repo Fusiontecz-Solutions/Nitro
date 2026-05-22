@@ -147,6 +147,40 @@ export function inferOperationsListStatusFromApplication(
   return null;
 }
 
+/**
+ * Whether the Disbursement tab may be opened for this application.
+ * Requires Funding Call stage or later (Disbursement / Funded), using the same
+ * queue / status / state signals as {@link inferOperationsListStatusFromApplication}.
+ */
+export function isApplicationAtOrPastFundingCallForDisbursement(
+  currentQueue: string | null | undefined,
+  options?: { explicitStatus?: string | null; currentState?: string | null },
+): boolean {
+  const inferred = inferOperationsListStatusFromApplication(currentQueue, options);
+  if (
+    inferred === "Funding Call" ||
+    inferred === "Disbursment" ||
+    inferred === "Funded"
+  ) {
+    return true;
+  }
+
+  const st = normalizePipelineKey(options?.explicitStatus);
+  const state = normalizePipelineKey(options?.currentState);
+
+  if (st === "fundingcall" || (st.includes("funding") && st.includes("call"))) {
+    return true;
+  }
+  if (
+    state === "fundingcall" ||
+    (state.includes("funding") && state.includes("call"))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 export function operationsDashboardStatusTitle(
   status: OperationsApplicationsListStatus,
 ): string {

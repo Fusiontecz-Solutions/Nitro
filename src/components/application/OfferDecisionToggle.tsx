@@ -6,12 +6,17 @@ import React, {
   useState,
 } from "react";
 import { formatNumberUS } from "@/lib/utils";
+import { deriveOfferRepaymentStack } from "@/lib/offerRepaymentCalculations";
+import {
+  OFFER_DECISION_UPDATED_EVENT,
+  offerDecisionUpdateMatchesApplication,
+} from "@/lib/offerDecisionSync";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
 import MyNotes from "./MyNotes";
 import { ApprovedOfferDisplay } from "./ApprovedOfferDisplay";
 
-type Frequency = "Daily" | "Weekly" | "Monthly" | "";
+type Frequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly" | "";
 
 export interface OfferFormValue {
   position: string;
@@ -104,6 +109,9 @@ function isSameOfferForm(a: OfferFormValue, b: OfferFormValue): boolean {
 const DEFAULT_OFFER_RATE = "1.499";
 const DEFAULT_FEES_PERCENT = "10";
 const WEEKLY_TO_MONTHLY_FACTOR = 4.2;
+// Bi-Weekly = 26 payments/yr ÷ 12 months ≈ 2.166. Kept proportional to the
+// project's WEEKLY_TO_MONTHLY_FACTOR (4.2 instead of 4.333) by halving it.
+const BIWEEKLY_TO_MONTHLY_FACTOR = 2.1;
 
 const DEFAULT_FORM_STATE: OfferFormValue = {
   position: "",
@@ -332,6 +340,70 @@ async function checkAndCorrectWithLanguageTool(
   }
 }
 
+/** Map GET/POST offer-decision payload into form state; fill repay/monthly when missing. */
+function mapApiOfferDecisionToLocalData(
+  apiData: Record<string, unknown>,
+  prev: OfferFormValue,
+): OfferFormValue {
+  const loadedFeesPercent = feesDollarsToPercent(
+    apiData.offer,
+    apiData.rate,
+    apiData.fees,
+  );
+
+  let next: OfferFormValue = {
+    ...prev,
+    position: apiData.position != null ? String(apiData.position) : "",
+    offer: apiData.offer != null ? formatNumberUS(apiData.offer) : "",
+    rate:
+      apiData.rate != null
+        ? formatNumberUS(apiData.rate)
+        : DEFAULT_OFFER_RATE,
+    term: apiData.term != null ? String(apiData.term) : "",
+    frequency: (apiData.frequency as Frequency) ?? "",
+    daysWeeks:
+      apiData.repayPerPeriod != null
+        ? formatNumberUS(apiData.repayPerPeriod)
+        : "",
+    monthlyPayment:
+      apiData.monthlyPayment != null
+        ? formatNumberUS(apiData.monthlyPayment)
+        : "",
+    fees:
+      loadedFeesPercent != null
+        ? formatNumberUS(loadedFeesPercent)
+        : prev.fees,
+    ourRemit:
+      apiData.ourRemit != null ? formatNumberUS(apiData.ourRemit) : "",
+    totalRemit:
+      apiData.totalRemit != null
+        ? formatNumberUS(apiData.totalRemit)
+        : "",
+  };
+
+  const offerNum = parseNum(next.offer);
+  const rateNum = parseNum(next.rate);
+  const termStr = next.term.trim();
+
+  if (offerNum > 0 && rateNum > 0 && termStr) {
+    const stack = deriveOfferRepaymentStack({
+      advance: offerNum,
+      factorRate: rateNum,
+      term: termStr,
+      frequency: next.frequency || "Daily",
+    });
+    if (stack) {
+      next = {
+        ...next,
+        daysWeeks: formatNumberUS(stack.perPeriodPayment),
+        monthlyPayment: formatNumberUS(stack.monthlyPayment),
+      };
+    }
+  }
+
+  return next;
+}
+
 const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
   const {
     positions,
@@ -376,6 +448,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
   const [editingApprovedOffer, setEditingApprovedOffer] = useState(false);
   /** Snapshot of offer fields when opening edit on an already-approved offer (for Cancel). */
   const offerSnapshotBeforeEditRef = useRef<OfferFormValue | null>(null);
+  const editingApprovedOfferRef = useRef(false);
 
   const lastChangedFieldRef = useRef<
     | "offer"
@@ -452,115 +525,103 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     }
   }, [applicationId]);
 
+  const applyOfferDecisionApiData = useCallback(
+    (apiData: Record<string, unknown>) => {
+      const decisionValue = (apiData?.decision ??
+        apiData?.status ??
+        apiData?.offerDecision ??
+        apiData?.offer_status ??
+        null) as string | null;
+
+      const normalizedDecision =
+        decisionValue === "approved" || decisionValue === "declined"
+          ? decisionValue
+          : null;
+      setPersistedDecision(normalizedDecision);
+
+      if (decisionValue === "declined") {
+        hasManualOurRemitRef.current = false;
+        lastChangedFieldRef.current = null;
+        setShowApproveForm(false);
+        setEditingApprovedOffer(false);
+        setLocalData({ ...DEFAULT_FORM_STATE });
+        return;
+      }
+
+      setEditingApprovedOffer(false);
+      lastChangedFieldRef.current = null;
+      hasManualOurRemitRef.current = false;
+
+      setLocalData((prev) =>
+        mapApiOfferDecisionToLocalData(apiData, prev),
+      );
+
+      if (disabled) {
+        const apiOurRemit = apiData.ourRemit ?? "";
+        hasManualOurRemitRef.current =
+          apiOurRemit != null && String(apiOurRemit).trim() !== "";
+      }
+    },
+    [disabled],
+  );
+
+  const reloadOfferDecision = useCallback(async () => {
+    if (!applicationId) return;
+
+    setIsOfferDecisionLoading(true);
+
+    try {
+      const res = await axiosGet(`/offer-decisions`, {
+        params: { application: applicationId },
+      });
+      const apiData = (res.data && res.data.data) || null;
+      if (!apiData) {
+        setPersistedDecision(null);
+        return;
+      }
+
+      applyOfferDecisionApiData(apiData as Record<string, unknown>);
+    } catch (error: unknown) {
+      console.error("Failed to load existing offer decision:", error);
+      toast.error("Failed to load offer decision.");
+      setPersistedDecision(null);
+    } finally {
+      setIsOfferDecisionLoading(false);
+    }
+  }, [applicationId, applyOfferDecisionApiData]);
+
   // Load existing offer decision for this application (if any)
   useEffect(() => {
-    const loadExistingDecision = async () => {
-      if (!applicationId) return;
+    void reloadOfferDecision();
+  }, [reloadOfferDecision]);
 
-      setIsOfferDecisionLoading(true);
-
-      try {
-        const res = await axiosGet(`/offer-decisions`, {
-          params: { application: applicationId },
-        });
-        const apiData = (res.data && res.data.data) || null;
-        if (!apiData) {
-          // No saved decision for this application yet
-          setPersistedDecision(null);
-          setIsOfferDecisionLoading(false);
-          return;
-        }
-
-        // If this application was previously declined, clear the editable fields.
-        // (Backend field name may vary, so we check a few common aliases.)
-        const decisionValue = (apiData?.decision ??
-          apiData?.status ??
-          apiData?.offerDecision ??
-          apiData?.offer_status ??
-          null) as string | null;
-
-        const normalizedDecision =
-          decisionValue === "approved" || decisionValue === "declined"
-            ? decisionValue
-            : null;
-        setPersistedDecision(normalizedDecision);
-
-        if (decisionValue === "declined") {
-          hasManualOurRemitRef.current = false;
-          lastChangedFieldRef.current = null;
-          setShowApproveForm(false);
-          setEditingApprovedOffer(false);
-          setLocalData({ ...DEFAULT_FORM_STATE });
-          setIsOfferDecisionLoading(false);
-          return;
-        }
-
-        setEditingApprovedOffer(false);
-
-        const loadedFeesPercent = feesDollarsToPercent(
-          apiData.offer,
-          apiData.rate,
-          apiData.fees,
-        );
-
-        setLocalData((prev) => ({
-          ...prev,
-          position: apiData.position ?? "",
-          offer: apiData.offer != null ? formatNumberUS(apiData.offer) : "",
-          rate:
-            apiData.rate != null
-              ? formatNumberUS(apiData.rate)
-              : DEFAULT_OFFER_RATE,
-          term: apiData.term != null ? String(apiData.term) : "",
-          frequency: apiData.frequency ?? "",
-          daysWeeks:
-            apiData.repayPerPeriod != null
-              ? formatNumberUS(apiData.repayPerPeriod)
-              : "",
-          monthlyPayment:
-            apiData.monthlyPayment != null
-              ? formatNumberUS(apiData.monthlyPayment)
-              : "",
-          fees:
-            loadedFeesPercent != null
-              ? formatNumberUS(loadedFeesPercent)
-              : prev.fees,
-          ourRemit:
-            apiData.ourRemit != null ? formatNumberUS(apiData.ourRemit) : "",
-          totalRemit:
-            apiData.totalRemit != null
-              ? formatNumberUS(apiData.totalRemit)
-              : "",
-          // Notes / declineReason are optional; load if you later wire them
-        }));
-
-        // In read-only/disabled mode, treat the persisted ourRemit as the source of truth.
-        if (disabled) {
-          const apiOurRemit = apiData.ourRemit ?? "";
-          hasManualOurRemitRef.current =
-            apiOurRemit != null && String(apiOurRemit).trim() !== "";
-          lastChangedFieldRef.current = null;
-        }
-
-        setIsOfferDecisionLoading(false);
-      } catch (error: any) {
-        // eslint-disable-next-line no-console
-        console.error("Failed to load existing offer decision:", error);
-
-        toast.error("Failed to load offer decision.");
-        setPersistedDecision(null);
-        setIsOfferDecisionLoading(false);
+  // Real-time sync when approval modal (or elsewhere) saves offer-decision
+  useEffect(() => {
+    const onOfferDecisionUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+      if (!offerDecisionUpdateMatchesApplication(detail?.applicationId, applicationId)) {
+        return;
       }
+      if (editingApprovedOfferRef.current) return;
+      void reloadOfferDecision();
     };
 
-    loadExistingDecision();
-  }, [applicationId, disabled]);
+    window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+    return () => {
+      window.removeEventListener(
+        OFFER_DECISION_UPDATED_EVENT,
+        onOfferDecisionUpdated,
+      );
+    };
+  }, [applicationId, reloadOfferDecision]);
 
   const formOpen = showApproveForm || !!forceShowForm;
 
   useEffect(() => {
     onFormOpenChange?.(formOpen);
   }, [formOpen, onFormOpenChange]);
+
+  editingApprovedOfferRef.current = editingApprovedOffer;
 
   const effectiveDecision = offerDecision ?? persistedDecision;
   const offerInputsLocked =
@@ -600,14 +661,34 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     [inputsDisabled],
   );
 
+  const derivedRepaymentStack = useMemo(() => {
+    const offerNum = parseNum(localData.offer);
+    const rateNum = parseNum(localData.rate);
+    const termStr = localData.term.trim();
+    if (!termStr || offerNum <= 0 || rateNum <= 0) return null;
+    return deriveOfferRepaymentStack({
+      advance: offerNum,
+      factorRate: rateNum,
+      term: termStr,
+      frequency: localData.frequency || "Daily",
+    });
+  }, [
+    localData.offer,
+    localData.rate,
+    localData.term,
+    localData.frequency,
+  ]);
+
   // --- Remit calculation helpers ---
 
   const ourRemitCalc = useMemo(() => {
-    const monthlyRepayNum = parseNum(localData.monthlyPayment);
+    const monthlyRepayNum =
+      derivedRepaymentStack?.monthlyPayment ??
+      parseNum(localData.monthlyPayment);
     if (!Number.isFinite(monthlyRepayNum) || monthlyRepayNum <= 0) return 0;
     if (!Number.isFinite(avgNetCredit) || avgNetCredit <= 0) return 0;
     return (monthlyRepayNum / avgNetCredit) * 100;
-  }, [localData.monthlyPayment, avgNetCredit]);
+  }, [derivedRepaymentStack, localData.monthlyPayment, avgNetCredit]);
 
   const ourRemitNumber = parseNum(localData.ourRemit);
 
@@ -712,9 +793,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     const freqForCalc: Frequency =
       frequency === "Weekly"
         ? "Weekly"
-        : frequency === "Monthly"
-          ? "Monthly"
-          : "Daily";
+        : frequency === "Bi-Weekly"
+          ? "Bi-Weekly"
+          : frequency === "Monthly"
+            ? "Monthly"
+            : "Daily";
 
     // --- Case A: user edits Our Remit (solve for monthly and offer) ---
     if (
@@ -733,7 +816,9 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
           ? (termNum < 22 ? newMonthlyNum / termNum : newMonthlyNum / 22)
           : freqForCalc === "Weekly"
             ? newMonthlyNum / WEEKLY_TO_MONTHLY_FACTOR
-            : newMonthlyNum;
+            : freqForCalc === "Bi-Weekly"
+              ? newMonthlyNum / BIWEEKLY_TO_MONTHLY_FACTOR
+              : newMonthlyNum;
       const totalRepayment = perPeriodFromMonthly * termNum;
       const newOfferNum = totalRepayment / rateNum;
 
@@ -749,6 +834,8 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         perPeriodPayment = newMonthlyNum / 22;
       } else if (freqForCalc === "Weekly") {
         perPeriodPayment = newMonthlyNum / WEEKLY_TO_MONTHLY_FACTOR;
+      } else if (freqForCalc === "Bi-Weekly") {
+        perPeriodPayment = newMonthlyNum / BIWEEKLY_TO_MONTHLY_FACTOR;
       } else {
         perPeriodPayment = newMonthlyNum;
       }
@@ -784,9 +871,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       const freqMonthly: Frequency =
         frequency === "Weekly"
           ? "Weekly"
-          : frequency === "Monthly"
-            ? "Monthly"
-            : "Daily";
+          : frequency === "Bi-Weekly"
+            ? "Bi-Weekly"
+            : frequency === "Monthly"
+              ? "Monthly"
+              : "Daily";
 
       // Current project model:
       // Daily: if term < 22, monthly equals total repayment; else repay * 22.
@@ -797,7 +886,9 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
             : monthlyNum / 22
           : freqMonthly === "Weekly"
             ? monthlyNum / WEEKLY_TO_MONTHLY_FACTOR
-            : monthlyNum;
+            : freqMonthly === "Bi-Weekly"
+              ? monthlyNum / BIWEEKLY_TO_MONTHLY_FACTOR
+              : monthlyNum;
       const totalRepayment = perPeriodPayment * termNum;
 
       const newOfferNum = totalRepayment / rateNum;
@@ -841,9 +932,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       const freqDays: Frequency =
         frequency === "Weekly"
           ? "Weekly"
-          : frequency === "Monthly"
-            ? "Monthly"
-            : "Daily";
+          : frequency === "Bi-Weekly"
+            ? "Bi-Weekly"
+            : frequency === "Monthly"
+              ? "Monthly"
+              : "Daily";
 
       // daysWeeksNum is the per‑period payment
       const totalRepayment = daysWeeksNum * termNum;
@@ -859,6 +952,8 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         newMonthlyNumForRemit = termNum < 22 ? totalRepayment : daysWeeksNum * 22;
       } else if (freqDays === "Weekly") {
         newMonthlyNumForRemit = daysWeeksNum * WEEKLY_TO_MONTHLY_FACTOR;
+      } else if (freqDays === "Bi-Weekly") {
+        newMonthlyNumForRemit = daysWeeksNum * BIWEEKLY_TO_MONTHLY_FACTOR;
       } else {
         newMonthlyNumForRemit = daysWeeksNum;
       }
@@ -920,41 +1015,26 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       hasManualOurRemitRef.current = false;
       lastChangedFieldRef.current = null;
 
-      const totalRepayment = offerNum * rateNum;
-      const freqMain: Frequency =
-        frequency === "Weekly"
-          ? "Weekly"
-          : frequency === "Monthly"
-            ? "Monthly"
-            : "Daily";
+      const stack = deriveOfferRepaymentStack({
+        advance: offerNum,
+        factorRate: rateNum,
+        term: String(termNum),
+        frequency: frequency || "Daily",
+      });
 
-      let newDaysWeeks = "";
-      let newMonthlyNum = 0;
+      if (!stack) return;
 
-      if (freqMain === "Daily") {
-        const dailyPayment = totalRepayment / termNum;
-        newDaysWeeks = formatNumberUS(dailyPayment);
-        newMonthlyNum = termNum < 22 ? dailyPayment * termNum : dailyPayment * 22;
-      } else if (freqMain === "Weekly") {
-        const weeklyPayment = totalRepayment / termNum;
-        newDaysWeeks = formatNumberUS(weeklyPayment);
-        newMonthlyNum = weeklyPayment * WEEKLY_TO_MONTHLY_FACTOR;
-      } else {
-        const monthlyPay = totalRepayment / termNum;
-        newDaysWeeks = formatNumberUS(monthlyPay);
-        newMonthlyNum = monthlyPay;
-      }
-
-      const newMonthlyPayment = formatNumberUS(newMonthlyNum);
+      const newDaysWeeks = formatNumberUS(stack.perPeriodPayment);
+      const newMonthlyPayment = formatNumberUS(stack.monthlyPayment);
 
       const shouldSetOurRemit =
         lastChanged !== "ourRemit" &&
-        newMonthlyNum > 0 &&
+        stack.monthlyPayment > 0 &&
         Number.isFinite(avgNetCreditNum) &&
         avgNetCreditNum > 0;
 
       const autoOurRemitStr = shouldSetOurRemit
-        ? formatNumberUS((newMonthlyNum / avgNetCreditNum) * 100)
+        ? formatNumberUS((stack.monthlyPayment / avgNetCreditNum) * 100)
         : null;
 
       lastAutoCalcRef.current = {
@@ -1160,6 +1240,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     if (
       freq !== "Daily" &&
       freq !== "Weekly" &&
+      freq !== "Bi-Weekly" &&
       freq !== "Monthly"
     ) {
       return false;
@@ -1293,21 +1374,19 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     onCancelEdit?.();
   };
 
-  const offerNumForDisplay = parseNum(localData.offer);
-  const rateNumForDisplay = parseNum(localData.rate);
-
-  const totalRepaymentNum =
-    Number.isFinite(offerNumForDisplay) &&
-    offerNumForDisplay > 0 &&
-    Number.isFinite(rateNumForDisplay) &&
-    rateNumForDisplay > 0
-      ? offerNumForDisplay * rateNumForDisplay
-      : NaN;
-
-  // Total repayment (offer × rate) for display in "Repayment" field
   const totalRepaymentDisplay =
-    Number.isFinite(totalRepaymentNum) && totalRepaymentNum > 0
-      ? formatNumberUS(totalRepaymentNum)
+    derivedRepaymentStack && derivedRepaymentStack.payback > 0
+      ? formatNumberUS(derivedRepaymentStack.payback)
+      : "";
+
+  const perPeriodRepayDisplay =
+    derivedRepaymentStack && derivedRepaymentStack.perPeriodPayment > 0
+      ? formatNumberUS(derivedRepaymentStack.perPeriodPayment)
+      : "";
+
+  const monthlyPaymentDisplay =
+    derivedRepaymentStack && derivedRepaymentStack.monthlyPayment > 0
+      ? formatNumberUS(derivedRepaymentStack.monthlyPayment)
       : "";
 
   return (
@@ -1399,9 +1478,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         Repay
                       </span>
                       <span className="text-left text-[15px] font-bold tabular-nums text-slate-900 dark:text-slate-100">
-                        {localData.daysWeeks.trim()
-                          ? `$ ${localData.daysWeeks}`
-                          : "—"}
+                        {perPeriodRepayDisplay
+                          ? `$ ${perPeriodRepayDisplay}`
+                          : localData.daysWeeks.trim()
+                            ? `$ ${localData.daysWeeks}`
+                            : "—"}
                       </span>
                     </div>
                     <div className="grid min-h-[56px] grid-cols-[12rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-white px-4 py-4 dark:border-slate-700 dark:bg-[#141517] md:border-r md:[&:nth-child(3n)]:border-r-0">
@@ -1409,9 +1490,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         Monthly payment
                       </span>
                       <span className="text-left text-[15px] font-bold tabular-nums text-slate-900 dark:text-slate-100">
-                        {localData.monthlyPayment.trim()
-                          ? `$ ${localData.monthlyPayment}`
-                          : "—"}
+                        {monthlyPaymentDisplay
+                          ? `$ ${monthlyPaymentDisplay}`
+                          : localData.monthlyPayment.trim()
+                            ? `$ ${localData.monthlyPayment}`
+                            : "—"}
                       </span>
                     </div>
                     <div className="grid min-h-[56px] grid-cols-[7.5rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-white px-4 py-4 dark:border-slate-700 dark:bg-[#141517] md:border-r md:[&:nth-child(3n)]:border-r-0">
@@ -1520,6 +1603,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         <option value="">Select</option>
                         <option value="Daily">Daily</option>
                         <option value="Weekly">Weekly</option>
+                        <option value="Bi-Weekly">Bi-Weekly</option>
                         <option value="Monthly">Monthly</option>
                       </select>
                     </div>

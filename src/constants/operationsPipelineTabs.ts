@@ -1,7 +1,9 @@
 import type { OperationsApplicationsListStatus } from "@/constants/operationsDashboardApplications";
 
-/** Full operations funding-pipeline tab order (left → right). */
-export const OPERATIONS_PIPELINE_TABS: { id: string; label: string }[] = [
+export type PipelineTab = { id: string; label: string };
+
+/** Full pipeline for Super Admin — includes Bank Analysis after Documents and Final + Funding Call between Contract and Disbursement. */
+export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
   { id: "bank-analysis", label: "BANK ANALYSIS" },
@@ -12,6 +14,19 @@ export const OPERATIONS_PIPELINE_TABS: { id: string; label: string }[] = [
   { id: "disbursement", label: "DISBURSEMENT" },
 ];
 
+/**
+ * Operations pipeline: same flow but **no** Final or Funding Call tabs.
+ * Dashboard buckets named Final / Funding Call still resolve to the full Operations strip
+ * (overview → disbursement) via `getOperationsTabsForDashboardEntry`.
+ */
+export const OPERATIONS_PIPELINE_TABS: PipelineTab[] = [
+  { id: "overview", label: "OVERVIEW" },
+  { id: "documents", label: "DOCUMENTS" },
+  { id: "decision-making", label: "DECISION MAKING" },
+  { id: "contract", label: "CONTRACT" },
+  { id: "disbursement", label: "DISBURSEMENT" },
+];
+
 const TAB_INDEX = {
   contract: OPERATIONS_PIPELINE_TABS.findIndex((t) => t.id === "contract"),
   final: OPERATIONS_PIPELINE_TABS.findIndex((t) => t.id === "final"),
@@ -19,21 +34,22 @@ const TAB_INDEX = {
 } as const;
 
 /**
- * Visible pipeline tabs for Operations / Super Admin from `?operationsStatus=…`
+ * Visible pipeline tabs for **Operations** from `?operationsStatus=…`
  * (dashboard card, sidebar, or inferred stage when opening from “all” cases).
  *
+ * Uses {@link OPERATIONS_PIPELINE_TABS} (no Final / Funding Call tab IDs).
+ *
  * - Agent → OVERVIEW, DOCUMENTS
- * - Underwriter → through DECISION MAKING
+ * - Underwriter → through CONTRACT (first four tabs)
  * - Final Underwriter → DECISION MAKING, CONTRACT
- * - Contract pending / contracted / signed contracts → through CONTRACT
- * - Final → through FINAL
- * - Funding Call → through FUNDING CALL
- * - Funded / Disbursment → full strip through DISBURSEMENT
- * - No / unknown status → full pipeline
+ * - Contract pending / … → through CONTRACT
+ * - Final / Funding Call buckets → full Operations strip (those tabs are not shown individually)
+ * - Funded / Disbursment → full strip
+ * - No / unknown status → full Operations strip
  */
 export function getOperationsTabsForDashboardEntry(
   status: OperationsApplicationsListStatus | null,
-): { id: string; label: string }[] {
+): PipelineTab[] {
   const full = OPERATIONS_PIPELINE_TABS;
 
   if (!status) {

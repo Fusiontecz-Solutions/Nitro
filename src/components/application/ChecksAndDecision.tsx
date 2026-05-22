@@ -353,6 +353,15 @@ const ChecksAndDecision = ({
                 isFinalUnderwriter={isFinalUnderwriter}
                 onProceedToContract={onProceedToContract}
                 resendApprovalEmail={shouldResendApprovalMail}
+                onOfferUpdated={() => {
+                    if (isFinalUnderwriter && applicationUuid) {
+                        dispatch(
+                            getApplicationActivityLogs(
+                                paramApplicationId ?? applicationUuid,
+                            ),
+                        );
+                    }
+                }}
             />
 
             {/* Request Missing Documents Modal */}

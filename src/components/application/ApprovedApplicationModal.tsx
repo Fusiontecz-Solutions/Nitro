@@ -29,6 +29,8 @@ interface ApprovedApplicationModalProps {
     onProceedToContract?: () => void;
     /** When true, send the "offer updated" resend template to ISO. */
     resendApprovalEmail?: boolean;
+    /** Called after the FINAL_UNDERWRITER successfully confirms/updates the offer. */
+    onOfferUpdated?: () => void;
 }
 
 interface ApprovalFormValues {
@@ -96,6 +98,7 @@ const ApprovedApplicationModal = ({
     isFinalUnderwriter,
     onProceedToContract,
     resendApprovalEmail,
+    onOfferUpdated,
 }: ApprovedApplicationModalProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const { data: applicationData } = useSelector((state: RootState) => state.applicationDetail);
@@ -552,6 +555,7 @@ const ApprovedApplicationModal = ({
                                             isLoading: false,
                                             autoClose: 3000,
                                         });
+                                        onOfferUpdated?.();
                                     } catch (emailError) {
                                         console.error("Failed to send approval email:", emailError);
                                         toast.update(toastId, {

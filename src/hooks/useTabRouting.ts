@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 
-export type TabOption = { id: string; label: string };
+export type TabOption = { id: string; label: string; disabled?: boolean };
 
 /**
  * Keeps a Tab UI fully URL-driven.

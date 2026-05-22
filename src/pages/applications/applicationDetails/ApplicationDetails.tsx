@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from "react-router";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
+import AgentDealIsoTag from "@/components/application/AgentDealIsoTag";
 import ApplicationBasicDetails from "@/components/application/ApplicationBasicDetails";
 import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
@@ -24,7 +25,6 @@ import {
   getApplicationByApplicationId,
   getApplicationById,
   updateApplicationQueue,
-  claimUnderwriterDeal,
 } from "@/redux/actions/applicationActions";
 import {
   isNumericApplicationRouteParam,
@@ -37,13 +37,17 @@ import { toast } from "react-toastify";
 import { Final } from "@/pages/case/Final";
 import { FundingCall } from "@/pages/case/FundingCall";
 import { Disbursement } from "@/pages/case/Disbursment";
-import { useTabRouting } from "@/hooks/useTabRouting";
+import { useTabRouting, type TabOption } from "@/hooks/useTabRouting";
 import {
   inferOperationsListStatusFromApplication,
+  isApplicationAtOrPastFundingCallForDisbursement,
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
 } from "@/constants/operationsDashboardApplications";
-import { getOperationsTabsForDashboardEntry } from "@/constants/operationsPipelineTabs";
+import {
+  getOperationsTabsForDashboardEntry,
+  SUPER_ADMIN_PIPELINE_TABS,
+} from "@/constants/operationsPipelineTabs";
 import { useTabAccess } from "@/hooks/useTabAccess.ts";
 import FinalUnderwriterApplicationSummary from "@/components/application/FinalUnderwriterApplicationSummary";
 import ApplicationSheetActivityLog from "@/components/application/ApplicationSheetActivityLog";
@@ -57,7 +61,6 @@ const ApplicationDetails = () => {
     const [searchParams] = useSearchParams();
     const [sendingToUnderwriter, setSendingToUnderwriter] = useState(false);
     const [agentSentToUnderwriter, setAgentSentToUnderwriter] = useState(false);
-    const [claimingDeal, setClaimingDeal] = useState(false);
     const [auditLogOpen, setAuditLogOpen] = useState(false);
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
@@ -123,22 +126,6 @@ const ApplicationDetails = () => {
         roleKey === "OPERATIONS" ||
         roleKey === "SUPER_ADMIN" ||
         roleKey === "SUPERADMIN";
-
-    /** Same normalization as `queueKey` below — used before `normalizeWorkflowToken` is declared. */
-    const uwQueueNormForClaim =
-        typeof queue === "string" ? queue.trim().toLowerCase().replace(/\s+/g, " ") : "";
-    const viewerUserId = String(
-        user?._id ?? (user as { id?: string } | undefined)?.id ?? "",
-    ).trim();
-    const claimedByUnderwriterId =
-        (applicationData as { claimedByUnderwriterId?: string | null } | null)?.claimedByUnderwriterId ??
-        null;
-    /** Primary underwriter in Underwriter queue: no other tabs or edits until claimed. */
-    const underwriterQueueLocked =
-        roleKey === "UNDERWRITER" &&
-        uwQueueNormForClaim === "underwriter" &&
-        (!claimedByUnderwriterId ||
-            String(claimedByUnderwriterId) !== viewerUserId);
     /** Operations + Super Admin use the same funding-pipeline tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
         roleKey === 'OPERATIONS' ||
@@ -162,15 +149,18 @@ const ApplicationDetails = () => {
      * URL `operationsStatus` wins when set to a known stage.
      * Otherwise infer from the loaded app (e.g. deep link from Operations dashboard with a hint).
      *
-     * OPERATIONS opening from the main Applications list (no stage query, or `all`) should see the
-     * full tab strip including Final / Funding / Disbursement; early tabs stay read-only via
-     * `isOperationsReadOnlyPipelineTab`.
+     * SUPER_ADMIN always sees the full pipeline strip (Overview → Disbursement), ignoring stage trim.
+     * OPERATIONS opening from the main Applications list (no stage query, or `all`) sees the full
+     * strip for that stage set; Operations early tabs stay read-only via `isOperationsReadOnlyPipelineTab`.
      */
     const effectiveOperationsStatus = useMemo(() => {
         if (!useOperationsPipelineTabs) return null;
         const trimmedOpsStatus = operationsStatusQueryRaw?.trim() ?? "";
+        /** Same as Operations: browsing Applications / “all” without a stage should show the full pipeline strip. */
         const operationsOpenedWithoutStageFilter =
-            roleKey === "OPERATIONS" &&
+            (roleKey === "OPERATIONS" ||
+                roleKey === "SUPER_ADMIN" ||
+                roleKey === "SUPERADMIN") &&
             (!trimmedOpsStatus ||
                 trimmedOpsStatus.toLowerCase() ===
                     OPERATIONS_APPLICATIONS_LIST_ALL_QUERY);
@@ -205,7 +195,7 @@ const ApplicationDetails = () => {
         },
         []
     );
-
+    
     // Determine tabs based on status and user role
     const getTabs = () => {
         const isCompleted = status?.toLowerCase() === 'completed';
@@ -234,16 +224,12 @@ const ApplicationDetails = () => {
             ];
         }
         
-        // Primary UNDERWRITER (not Final UW): overview-only until the deal is claimed in Underwriter queue
-        if (roleKey === "UNDERWRITER") {
-            if (underwriterQueueLocked) {
-                return [{ id: "overview", label: "OVERVIEW" }];
-            }
+        // UNDERWRITER (not final): full underwriter tabs
+        if (isUnderwriter) {
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
                 { id: "bank-analysis", label: "BANK ANALYSIS" },
-                { id: "checks", label: "CHECKS" },
                 { id: "decision-making", label: "DECISION MAKING" },
             ];
         }
@@ -272,34 +258,45 @@ const ApplicationDetails = () => {
         ];
     };
 
-    const tabs = useMemo(() => {
-        let list: { id: string; label: string }[];
-        if (isSuperAdmin) {
-            // Super Admin always sees the full funding-pipeline tab strip
-            // (Overview → Disbursement) regardless of dashboard entry stage.
-            list = getOperationsTabsForDashboardEntry(null);
-        } else if (useOperationsPipelineTabs) {
-            list = getOperationsTabsForDashboardEntry(effectiveOperationsStatus);
+    const tabs = useMemo((): TabOption[] => {
+        let list: TabOption[];
+        if (useOperationsPipelineTabs) {
+            list = isSuperAdmin
+                ? [...SUPER_ADMIN_PIPELINE_TABS]
+                : getOperationsTabsForDashboardEntry(effectiveOperationsStatus);
         } else {
             list = getTabs();
-        }
-        if (roleKey === "OPERATIONS") {
-            list = list.filter((t) => t.id !== "bank-analysis");
         }
         return list;
     }, [
         effectiveOperationsStatus,
         useOperationsPipelineTabs,
+        isSuperAdmin,
         status,
         explicitStatus,
         queue,
         currentState,
         isFinalUnderwriter,
         isUnderwriter,
-        roleKey,
-        isSuperAdmin,
-        underwriterQueueLocked,
     ]);
+
+    const canSelectOperationsDisbursementTab = useMemo(
+        () =>
+            isApplicationAtOrPastFundingCallForDisbursement(queue, {
+                explicitStatus,
+                currentState,
+            }),
+        [queue, explicitStatus, currentState],
+    );
+
+    const tabsForOperationsUi = useMemo(() => {
+        if (!useOperationsPipelineTabs) return tabs;
+        return tabs.map((t) =>
+            t.id === "disbursement" && !canSelectOperationsDisbursementTab
+                ? { ...t, disabled: true as const }
+                : t,
+        );
+    }, [tabs, useOperationsPipelineTabs, canSelectOperationsDisbursementTab]);
 
     const defaultTabForRouting = useMemo(
         () => tabs[0]?.id ?? "overview",
@@ -332,41 +329,6 @@ const ApplicationDetails = () => {
         }
     }, [applicationId, dispatch]);
 
-    const handleClaimUnderwriterDeal = useCallback(async () => {
-        if (!applicationUuid || !underwriterQueueLocked) return;
-        setClaimingDeal(true);
-        const toastId = toast.loading("Claiming deal…");
-        try {
-            await dispatch(
-                claimUnderwriterDeal({ applicationId: String(applicationUuid) }),
-            ).unwrap();
-            toast.update(toastId, {
-                render: "Deal claimed — you can continue underwriting.",
-                type: "success",
-                isLoading: false,
-                autoClose: 2500,
-            });
-            refetchApplicationDetail();
-        } catch (err: unknown) {
-            const msg =
-                (err as { message?: string })?.message ||
-                "Could not claim this deal. It may already be claimed by someone else.";
-            toast.update(toastId, {
-                render: msg,
-                type: "error",
-                isLoading: false,
-                autoClose: 4000,
-            });
-        } finally {
-            setClaimingDeal(false);
-        }
-    }, [
-        applicationUuid,
-        dispatch,
-        refetchApplicationDetail,
-        underwriterQueueLocked,
-    ]);
-
     const { activeTab, handleTabChange } = useTabRouting(
         tabs,
         applicationId,
@@ -374,19 +336,49 @@ const ApplicationDetails = () => {
         { isTabsReady, clampInvalidUrlTab: true },
     );
 
-    /** OPERATIONS: no uploads/edits from overview through contract (later tabs unchanged). */
+    useEffect(() => {
+        if (!isTabsReady || !useOperationsPipelineTabs) return;
+        if (activeTab !== "disbursement") return;
+        if (canSelectOperationsDisbursementTab) return;
+        if (!applicationId) return;
+        const fallback =
+            tabs.find((t) => t.id !== "disbursement")?.id ?? defaultTabForRouting;
+        handleTabChange(fallback);
+    }, [
+        isTabsReady,
+        useOperationsPipelineTabs,
+        activeTab,
+        canSelectOperationsDisbursementTab,
+        applicationId,
+        tabs,
+        defaultTabForRouting,
+        handleTabChange,
+    ]);
+
+    const handleOperationsTabChange = useCallback(
+        (next: string) => {
+            const row = tabsForOperationsUi.find((t) => t.id === next);
+            if (row?.disabled) return;
+            handleTabChange(next);
+        },
+        [tabsForOperationsUi, handleTabChange],
+    );
+
+    /**
+     * OPERATIONS: read-only on pipeline tabs except Decision Making, where offer/positions
+     * may be edited like underwriters (other early tabs and contract stay read-only).
+     */
     const OPERATIONS_READ_ONLY_PIPELINE_TAB_IDS = useMemo(
         () =>
             new Set([
                 "overview",
                 "documents",
-                "bank-analysis",
-                "decision-making",
                 "contract",
                 "approval",
             ]),
         [],
     );
+    
     const isWorkflowRole =
         roleKey === "AGENT" ||
         roleKey === "UNDERWRITER" ||
@@ -397,11 +389,14 @@ const ApplicationDetails = () => {
         (roleKey === "OPERATIONS" &&
             OPERATIONS_READ_ONLY_PIPELINE_TAB_IDS.has(activeTab)) ||
         isViewOnlyBrowse;
-    /** Overview → contract (inclusive): no edits for Operations / view-only browse / unclaimed UW deal. */
+    /** Most pipeline stages: no edits for Operations (Decision Making excluded below) / view-only browse. */
     const pipelineStageReadOnly =
-        isOperationsReadOnlyPipelineTab || isViewOnlyBrowse || underwriterQueueLocked;
-    /** OPERATIONS may comment; block composer for view-only browse or unclaimed Underwriter deal. */
-    const commentsReadOnly = isViewOnlyBrowse || underwriterQueueLocked;
+        isOperationsReadOnlyPipelineTab || isViewOnlyBrowse;
+    /** Offer + positions on Decision Making (underwriters; Operations only when that tab is editable). */
+    const canEditDecisionMakingFinalValues =
+        (isUnderwriter || roleKey === "OPERATIONS") && !pipelineStageReadOnly;
+    /** OPERATIONS may comment; only block composer for `?viewOnly=1` browse links. */
+    const commentsReadOnly = isViewOnlyBrowse;
     const disableDecisionMakingFundingUpload =
         isViewOnlyBrowse || !isFundingUploaderRole;
     const normalizeWorkflowToken = (value: unknown) =>
@@ -450,12 +445,16 @@ const ApplicationDetails = () => {
 
     const changeTabScrollTop = useCallback(
         (tabId: string) => {
+            if (useOperationsPipelineTabs) {
+                const target = tabsForOperationsUi.find((t) => t.id === tabId);
+                if (target?.disabled) return;
+            }
             handleTabChange(tabId);
             requestAnimationFrame(() => {
                 window.scrollTo({ top: 0, left: 0, behavior: "auto" });
             });
         },
-        [handleTabChange],
+        [useOperationsPipelineTabs, tabsForOperationsUi, handleTabChange],
     );
 
     const { isAllowed, fallbackComponent } = useTabAccess(tabs, activeTab);
@@ -463,11 +462,24 @@ const ApplicationDetails = () => {
     const showAccessDenied = isTabsReady && !isAllowed;
 
     const tabStepFooter = useMemo(() => {
-        if (!canRenderTabContent || tabs.length < 2) return null;
-        const idx = tabs.findIndex((t) => t.id === activeTab);
+        if (!canRenderTabContent || tabsForOperationsUi.length < 2) return null;
+        const ui = tabsForOperationsUi;
+        const idx = ui.findIndex((t) => t.id === activeTab);
         if (idx < 0) return null;
-        const prevTab = idx > 0 ? tabs[idx - 1] : null;
-        const nextTab = idx < tabs.length - 1 ? tabs[idx + 1] : null;
+        let prevTab: (typeof ui)[number] | null = null;
+        for (let i = idx - 1; i >= 0; i--) {
+            if (!ui[i]?.disabled) {
+                prevTab = ui[i]!;
+                break;
+            }
+        }
+        let nextTab: (typeof ui)[number] | null = null;
+        for (let i = idx + 1; i < ui.length; i++) {
+            if (!ui[i]?.disabled) {
+                nextTab = ui[i]!;
+                break;
+            }
+        }
         return (
             <div className="mt-8 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-6">
                 <Button
@@ -492,7 +504,7 @@ const ApplicationDetails = () => {
                 </Button>
             </div>
         );
-    }, [canRenderTabContent, tabs, activeTab, changeTabScrollTop]);
+    }, [canRenderTabContent, tabsForOperationsUi, activeTab, changeTabScrollTop]);
 
     // Fetch application data when in edit mode.
     // Guard against redundant network calls (helps refresh/navigation latency).
@@ -719,16 +731,25 @@ const ApplicationDetails = () => {
                     </Tabs>
                 ) : null}
                 {!isFinalUnderwriter && (
-                <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+                <Tabs
+                    value={activeTab}
+                    onValueChange={
+                        useOperationsPipelineTabs
+                            ? handleOperationsTabChange
+                            : handleTabChange
+                    }
+                    className="w-full"
+                >
                     <div className="flex flex-wrap items-center justify-between gap-4">
                     <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex items-center">
-                        {tabs.map((tab, index) => {
+                        {tabsForOperationsUi.map((tab, index) => {
                             const isActive = activeTab === tab.id;
+                            const isDisabled = Boolean(tab.disabled);
                             const isFirst = index === 0;
-                            const isLast = index === tabs.length - 1;
+                            const isLast = index === tabsForOperationsUi.length - 1;
 
                             // Calculate z-index - active tab should be on top, earlier tabs have higher z-index
-                            const zIndex = isActive ? 10 : tabs.length - index;
+                            const zIndex = isActive ? 10 : tabsForOperationsUi.length - index;
 
                             // ClipPath for the tab shape
                             const clipPath = isFirst
@@ -756,7 +777,12 @@ const ApplicationDetails = () => {
                                     {/* Tab content with slight inset to show border */}
                                     <TabsTrigger
                                         value={tab.id}
-                                        className="relative cursor-pointer px-8 py-2 text-sm font-bold border-0 shadow-none transition-all duration-200 rounded-none"
+                                        disabled={isDisabled}
+                                        className={`relative px-8 py-2 text-sm font-bold border-0 shadow-none transition-all duration-200 rounded-none ${
+                                            isDisabled
+                                                ? "cursor-not-allowed opacity-45"
+                                                : "cursor-pointer"
+                                        }`}
                                         style={{
                                             backgroundColor: isDark
                                                 ? (isActive ? '#5AACEA' : '#374151')
@@ -784,31 +810,8 @@ const ApplicationDetails = () => {
                         <>
                             <TabsContent value="overview" className="mt-6">
                                 <>
-                                    {underwriterQueueLocked ? (
-                                        <div className="mb-6 rounded-lg border border-amber-500/35 bg-amber-500/10 p-4 dark:border-amber-400/25 dark:bg-amber-500/15">
-                                            <p className="text-sm font-semibold text-foreground">
-                                                Claim this deal to continue
-                                            </p>
-                                            <p className="mt-1 text-sm text-muted-foreground">
-                                                Until you claim it, only this overview is available — no documents,
-                                                bank analysis, checks, or decision-making. Another underwriter may have
-                                                already claimed it from the queue.
-                                            </p>
-                                            <Button
-                                                type="button"
-                                                className="mt-4 bg-[#151357] text-white hover:bg-[#151357]/90 dark:bg-[#6BB8EA] dark:hover:bg-[#52A6DF]"
-                                                disabled={
-                                                    claimingDeal ||
-                                                    !applicationUuid ||
-                                                    !viewerUserId
-                                                }
-                                                onClick={() => void handleClaimUnderwriterDeal()}
-                                            >
-                                                {claimingDeal ? "Claiming…" : "Claim deal"}
-                                            </Button>
-                                        </div>
-                                    ) : null}
                                     <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
+                                    {isAgent ? <AgentDealIsoTag applicationId={applicationId} /> : null}
                                     <ApplicationBasicDetails applicationId={applicationId} />
                                     {canShowSendToUnderwriterButton ? (
                                         <div className="flex justify-end mb-4">
@@ -822,12 +825,7 @@ const ApplicationDetails = () => {
                                             </Button>
                                         </div>
                                     ) : null}
-                                    <div className="mt-6">
-                                        <CommentSection
-                                            isUnderwriter={isUnderwriter}
-                                            readOnly={commentsReadOnly}
-                                        />
-                                    </div>
+                                    <div className="mt-6"><CommentSection isUnderwriter={isUnderwriter} readOnly={commentsReadOnly} /></div>
                                 </>
                             </TabsContent>
 
@@ -932,18 +930,15 @@ const ApplicationDetails = () => {
                                 <div className="mt-6">
                                     <DecisionMakeFinalValues
                                         applicationId={applicationId}
-                                        allowOfferEdit={
-                                            isUnderwriter && !pipelineStageReadOnly
-                                        }
-                                        allowPositionsEdit={
-                                            isUnderwriter && !pipelineStageReadOnly
-                                        }
+                                        allowOfferEdit={canEditDecisionMakingFinalValues}
+                                        allowPositionsEdit={canEditDecisionMakingFinalValues}
                                         positionsDisableDelete
                                         positionsDisableCreate={
-                                            isUnderwriter && !pipelineStageReadOnly
+                                            canEditDecisionMakingFinalValues
                                         }
                                         betweenOfferAndPositions={
-                                            isUnderwriter ? (
+                                            (isUnderwriter ||
+                                                roleKey === "OPERATIONS") ? (
                                                 <BankAnalysisTable
                                                     disableDelete
                                                     disableCreate={

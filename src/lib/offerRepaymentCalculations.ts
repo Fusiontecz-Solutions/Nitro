@@ -3,7 +3,7 @@
  * advance = offer, factorRate = rate, payback = total repayment, daily = per-period payment.
  */
 
-export type OfferFrequency = "Daily" | "Weekly" | "Monthly";
+export type OfferFrequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly";
 
 export type OfferCalcDriverField =
   | "advance"
@@ -30,6 +30,9 @@ export type OfferCalcResult = Pick<
 };
 
 const WEEKLY_TO_MONTHLY_FACTOR = 4.2;
+// Bi-Weekly = every 2 weeks → ~26 payments/year ÷ 12 months ≈ 2.166.
+// Kept consistent with the project's WEEKLY_TO_MONTHLY_FACTOR (4.2) by halving it.
+const BIWEEKLY_TO_MONTHLY_FACTOR = 2.1;
 
 function roundMoney(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -46,6 +49,9 @@ function parseTerm(term: string): number {
 function normalizeFrequency(frequency: string): OfferFrequency {
   const f = String(frequency ?? "").trim();
   if (f === "Weekly") return "Weekly";
+  if (f === "Bi-Weekly" || f === "BiWeekly" || f === "Biweekly") {
+    return "Bi-Weekly";
+  }
   if (f === "Monthly") return "Monthly";
   return "Daily";
 }
@@ -139,7 +145,12 @@ export function computeMonthlyPayment(input: {
   const totalRepayment = input.payback;
   if (totalRepayment <= 0) return 0;
 
-  const perPeriodPayment = totalRepayment / termNum;
+  const perPeriodPayment = computePerPeriodPayment({
+    payback: totalRepayment,
+    term: input.term,
+  });
+  if (perPeriodPayment <= 0) return 0;
+
   const freq = normalizeFrequency(input.frequency);
 
   if (freq === "Daily") {
@@ -149,6 +160,9 @@ export function computeMonthlyPayment(input: {
   }
   if (freq === "Weekly") {
     return roundMoney(perPeriodPayment * WEEKLY_TO_MONTHLY_FACTOR);
+  }
+  if (freq === "Bi-Weekly") {
+    return roundMoney(perPeriodPayment * BIWEEKLY_TO_MONTHLY_FACTOR);
   }
   return roundMoney(perPeriodPayment);
 }
@@ -288,4 +302,57 @@ export function recalculateOfferFields(
   return null;
 }
 
-export { WEEKLY_TO_MONTHLY_FACTOR, parseTerm, normalizeFrequency };
+/** Canonical stack: payback = offer × rate; repay = payback ÷ term; monthly from frequency rules. */
+export type OfferRepaymentStack = {
+  advance: number;
+  factorRate: number;
+  payback: number;
+  perPeriodPayment: number;
+  monthlyPayment: number;
+};
+
+export function deriveOfferRepaymentStack(input: {
+  advance: number;
+  factorRate: number;
+  term: string;
+  frequency: string;
+}): OfferRepaymentStack | null {
+  const termNum = parseTerm(input.term);
+  const offerNum = input.advance;
+  const rateNum = input.factorRate;
+
+  if (
+    !Number.isFinite(offerNum) ||
+    offerNum <= 0 ||
+    !hasValidRateTerm(rateNum, termNum)
+  ) {
+    return null;
+  }
+
+  const payback = roundMoney(offerNum * rateNum);
+  const perPeriodPayment = computePerPeriodPayment({
+    payback,
+    term: input.term,
+  });
+  const monthlyPayment = computeMonthlyPayment({
+    payback,
+    term: input.term,
+    frequency: input.frequency,
+  });
+
+  return {
+    advance: offerNum,
+    factorRate: rateNum,
+    payback,
+    perPeriodPayment,
+    monthlyPayment,
+  };
+}
+
+export {
+  WEEKLY_TO_MONTHLY_FACTOR,
+  BIWEEKLY_TO_MONTHLY_FACTOR,
+  parseTerm,
+  normalizeFrequency,
+  roundMoney,
+};
