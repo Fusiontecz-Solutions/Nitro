@@ -55,6 +55,7 @@ import type { RootState } from "@/redux/store";
 import { PaymentHistoryDashboard } from '../pages/payment/PaymentHistoryDashboard';
 import { DetailedPayments } from '../pages/payment/DetailedPayments';
 import PaymentDealById from '../pages/payment/PaymentDealById';
+import FailedTransactions from '../pages/payment/FailedTransactions';
 import Cases from '../pages/case/Cases';
 import { CasesDashboard } from '../pages/case/CasesDashboard';
 import UserSetting from '../pages/Userssettings/UserSetting';
@@ -66,6 +67,7 @@ import DealPipeline from '../pages/Dealpipeline/DealPipeline';
 import DealbyId from '../pages/Dealpipeline/DealbyId';
 import NotificationDashboard from '../pages/NotificationDashboard/NotificationDashboard';
 import LetterGeneratorDealById from '../pages/letterGenerator/LetterGeneratorDealById';
+// import TemplatePlayground from '../pages/templates/TemplatePlayground';
 import { applicationsPageLoader } from './applicationsLoader';
 import {
   normalizeRoleKey,
@@ -149,13 +151,15 @@ const SyndicatorAdminSyndicatorRouteGuard: React.FC<{ children: React.ReactNode 
 
 const DashboardEntry: React.FC = () => {
     const { data } = useSelector((state: RootState) => state.login);
-    const userRole =
-        data?.user?.role || (typeof window !== "undefined" ? localStorage.getItem("role") : "") || "";
+    const normalizedRole = normalizeRoleKey(resolveEffectiveRole(data?.user));
+
+    // ACCOUNTS role has no real dashboard; the payments page IS their landing screen.
+    if (normalizedRole === "ACCOUNTS") {
+        return <Navigate to="/payments" replace />;
+    }
 
     const useOperationsDashboard =
-        userRole === "OPERATIONS" ||
-        userRole === "SUPER_ADMIN" ||
-        userRole === "SUPERADMIN";
+        normalizedRole === "OPERATIONS" || normalizedRole === "SUPER_ADMIN";
 
     if (useOperationsDashboard) {
         return <OperationsDashboard />;
@@ -276,6 +280,7 @@ const Routes: RouteObject[] = [
             { path: 'activity-logs', element: <ActivityLogs /> },
             { path: 'payments', element: <PaymentHistoryDashboard /> },
             { path: 'payments/details', element: <DetailedPayments /> },
+            { path: 'payments/failed-transactions', element: <FailedTransactions /> },
             {
                 path: 'payments/:paymentDealId',
                 element: <PaymentDealById />,

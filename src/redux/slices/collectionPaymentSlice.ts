@@ -57,16 +57,21 @@ export const collectionPaymentsSlice = createSlice({
         const rows = action.payload?.data ?? [];
         const normalizedRows = Array.isArray(rows) ? [...rows] : [];
         sortCollectionPaymentRowsNewestFirst(normalizedRows);
-        const dealView = (action.payload as { dealView?: DealCollectionsView | null })?.dealView ?? null;
+        const payload = action.payload as { dealView?: DealCollectionsView | null };
+        const hasDealViewInPayload = payload != null && 'dealView' in payload;
         if (applicationId) {
           state.data[applicationId] = normalizedRows;
           state.fetched[applicationId] = true;
-          if (dealView !== undefined) state.dealViewByKey[applicationId] = dealView;
+          if (hasDealViewInPayload) {
+            state.dealViewByKey[applicationId] = payload.dealView ?? null;
+          }
         }
         if (dealId) {
           state.data[dealId] = normalizedRows;
           state.fetched[dealId] = true;
-          if (dealView !== undefined) state.dealViewByKey[dealId] = dealView;
+          if (hasDealViewInPayload) {
+            state.dealViewByKey[dealId] = payload.dealView ?? null;
+          }
         }
       })
       .addCase(getCollectionPayments.rejected, (state, action) => {

@@ -14,6 +14,7 @@ const ROLE_TAB_LABELS: Record<string, string> = {
   FINAL_UNDERWRITER: 'Final Underwriters',
   SYNDICATORS: 'Syndicators',
   ACCOUNTANT: 'Accountant',
+  ACCOUNTS: 'Accounts',
   ADMIN: 'Admin',
   OPERATIONS: 'Operations',
   SUPER_ADMIN: 'Super Admin',

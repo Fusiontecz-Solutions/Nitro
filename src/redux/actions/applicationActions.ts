@@ -416,6 +416,121 @@ export const getApplicationsByIsoId = createAsyncThunk(
     }
 );
 
+export type SaveSchedulePaymentTrackingPayload = {
+    paymentStartDate: string;
+    effectiveStartDate: string;
+    dealId?: string | null;
+    paymentSchedule: Array<{
+        index: number;
+        date: string;
+        amount: number;
+        label: string;
+    }>;
+};
+
+export type ScheduleTrackingDisplayStatus = 'clear' | 'bounced' | 'upcoming';
+
+export type ScheduleTrackingSummaryStat = { count: number; sum: number };
+
+export type ScheduleTrackingSummary = Record<
+    'all' | ScheduleTrackingDisplayStatus,
+    ScheduleTrackingSummaryStat
+>;
+
+export type SchedulePaymentTrackingRow = {
+    id: string;
+    applicationId: string;
+    dealId: string | null;
+    batchId: string;
+    paymentNumber: number;
+    scheduledDate: string;
+    amount: number;
+    label: string | null;
+    paymentStartDate: string | null;
+    effectiveStartDate: string | null;
+    status: string;
+    confirmedById: string | null;
+    createdAt: string;
+    updatedAt: string;
+    /** Compared on the server against collection payments (paid → clear, failed → bounced). */
+    trackingStatus: ScheduleTrackingDisplayStatus;
+};
+
+/**
+ * Fetch SchedulePaymentTracking rows for an application (defaults to active SCHEDULED rows).
+ * `status: 'all'` returns every row across batches (scheduled + superseded + cancelled).
+ */
+export const getSchedulePaymentTracking = createAsyncThunk(
+    'application/getSchedulePaymentTracking',
+    async (
+        {
+            id,
+            status,
+            batchId,
+            dealId,
+        }: {
+            id: string;
+            status?: 'scheduled' | 'superseded' | 'cancelled' | 'all';
+            batchId?: string;
+            dealId?: string;
+        },
+        { rejectWithValue },
+    ) => {
+        try {
+            const query = new URLSearchParams();
+            if (status) query.append('status', status);
+            if (batchId) query.append('batchId', batchId);
+            if (dealId?.trim()) query.append('dealId', dealId.trim());
+            const qs = query.toString();
+            const response = await axiosGet(
+                `/applications/${encodeURIComponent(id)}/schedule-payment-tracking${qs ? `?${qs}` : ''}`,
+            );
+            return response.data as {
+                success: boolean;
+                payments: SchedulePaymentTrackingRow[];
+                summary: ScheduleTrackingSummary;
+            };
+        } catch (error: unknown) {
+            const err = error as { response?: { data?: { message?: string } } };
+            return rejectWithValue(
+                err.response?.data?.message || 'Failed to fetch payment schedule',
+            );
+        }
+    },
+);
+
+/** Persist disbursement review payment schedule (replaces active SCHEDULED rows). */
+export const saveSchedulePaymentTracking = createAsyncThunk(
+    'application/saveSchedulePaymentTracking',
+    async (
+        { id, data }: { id: string; data: SaveSchedulePaymentTrackingPayload },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPut(
+                `/applications/${encodeURIComponent(id)}/schedule-payment-tracking`,
+                {
+                    paymentStartDate: data.paymentStartDate,
+                    effectiveStartDate: data.effectiveStartDate,
+                    dealId: data.dealId ?? undefined,
+                    paymentSchedule: data.paymentSchedule.map((row) => ({
+                        paymentNumber: row.index,
+                        scheduledDate: row.date,
+                        amount: row.amount,
+                        label: row.label,
+                    })),
+                },
+            );
+            return response.data;
+        } catch (error: unknown) {
+            const err = error as { response?: { data?: { message?: string } } };
+            return rejectWithValue(
+                err.response?.data?.message || 'Failed to save payment schedule',
+            );
+        }
+    },
+);
+
 // Update application
 export const updateApplication = createAsyncThunk(
     'application/update',

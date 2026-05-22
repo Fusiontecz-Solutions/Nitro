@@ -33,6 +33,7 @@ import { syndicatorMustNotAccessPath } from '@/lib/syndicatorAdminRoutes';
 import { stopMicWarmTracks } from '@/voice/microphoneWarmup';
 
 export default function LoginPage() {
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);

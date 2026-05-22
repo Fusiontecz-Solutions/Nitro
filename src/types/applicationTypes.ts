@@ -85,6 +85,8 @@ export interface Application {
     claimedByUnderwriterId?: string | null;
     claimedAt?: string | null;
     claimedByUnderwriter?: ApplicationUserLite | null;
+    /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"). */
+    category?: string | null;
     createdAt?: string;
     updatedAt?: string;
 }
@@ -125,6 +127,12 @@ export interface UpdateApplicationPayload {
     underwriterApproval?: boolean;
     approvedAt?: string;
     commissionPercentage?: number;
+    /** Dollar commission stored on the application row (`Application.commissionAmount`). */
+    commissionAmount?: number | null;
+    /** Links the deal to an ISO; backend validates and syncs commission from the ISO record. */
+    isoId?: string | null;
+    /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"); pass null/"" to clear. */
+    category?: string | null;
 }
 
 export interface UpdateQueuePayload {

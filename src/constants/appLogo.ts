@@ -1,13 +1,22 @@
-import appLogoSrc from "@/assets/black_logo.svg";
+import appLogoLightSrc from "@/assets/black_logo.svg";
 import appLogoDarkSrc from "@/assets/white_logo.svg";
+import appShortIconSrc from "@/assets/black_logo.svg";
+import appShortIconDarkSrc from "@/assets/white_logo.svg";
 
-/** Resolved URL for the primary app logo (light backgrounds). */
-export const APP_LOGO_SRC = appLogoSrc;
 
-/** Resolved URL for the app logo on dark backgrounds / dark theme. */
+/** Long logo on light backgrounds. */
+export const APP_LOGO_SRC = appLogoLightSrc;
+
+/** Long logo on dark backgrounds. */
 export const APP_LOGO_DARK_SRC = appLogoDarkSrc;
 
-/** Pick logo URL for the current theme (sidebar, auth, etc.). */
+/** Favicon / collapsed sidebar / any small square mark. */
+export const APP_SHORT_ICON_SRC = appShortIconSrc;
+
+/** Favicon / collapsed sidebar / any small square mark. */
+export const APP_SHORT_ICON_DARK_SRC = appShortIconDarkSrc;
+
+/** Pick long logo URL for the current theme (sidebar expanded, auth headers, etc.). */
 export function resolveAppLogoSrc(isDark: boolean): string {
-  return isDark ? appLogoDarkSrc : appLogoSrc;
+  return isDark ? appLogoDarkSrc : appLogoLightSrc;
 }

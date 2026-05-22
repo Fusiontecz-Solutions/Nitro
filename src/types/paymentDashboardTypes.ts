@@ -10,6 +10,15 @@ export type ZeroGapDealRow = {
   gapAmount: number;
 };
 
+/**
+ * Failed Payment KPI summary — sum of |amount| + transaction count
+ * across CollectionPayment rows with `status = DEBIT`.
+ */
+export type FailedPaymentDebitSummary = {
+  totalAmount: number;
+  count: number;
+};
+
 export type PaymentDashboardCards = {
   dueToday: number;
   dueNext7Days: number;
@@ -18,6 +27,8 @@ export type PaymentDashboardCards = {
   totalDues: number;
   recovered: number;
   defaults: number;
+  /** Failed Payment KPI based on CollectionPayment rows with status = DEBIT (sum + count). */
+  failedPayment?: FailedPaymentDebitSummary;
   totalDeals: number;
   activeDeals: number;
   collectionEfficiency: number;

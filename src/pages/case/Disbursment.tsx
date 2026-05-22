@@ -7,22 +7,16 @@ import type { AppDispatch, RootState } from "@/redux/store";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import {
   getApplicationByApplicationId,
+  saveSchedulePaymentTracking,
   updateApplication,
   sendFundedEmail,
 } from "@/redux/actions/applicationActions";
-import { getByApplicationIdContract } from "@/redux/actions/contractActions";
 import { clearBankDetails } from "@/redux/slices/bankDetailSlice";
 import { toast } from "react-toastify";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { ChevronRight, CreditCard } from "lucide-react";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
+import DealReviewDialog, {
+  type DealReviewConfirmContext,
+} from "./DealReviewDialog";
 
 const normalizeWorkflowQueueKey = (queue: string | null | undefined) =>
   String(queue ?? "")
@@ -31,22 +25,13 @@ const normalizeWorkflowQueueKey = (queue: string | null | undefined) =>
     .toLowerCase();
 
 const QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT = new Set([
+  "agent",
+  "underwriter",
+  "finalunderwriter",
+  "contracted",
   "final",
   "fundingcall",
-  "contractsigned",
-  "signedcontracts",
 ]);
-
-const isContractFullySigned = (
-  contractStatus: unknown,
-  documentStatus?: unknown,
-) => {
-  const cs = String(contractStatus ?? "").trim().toUpperCase();
-  const ds = String(documentStatus ?? "").trim().toLowerCase();
-  if (cs === "COMPLETED" || cs === "SIGNED") return true;
-  if (ds === "completed") return true;
-  return false;
-};
 
 const shouldSetApplicationQueueToDisbursement = (
   currentQueue: string | null | undefined
@@ -86,13 +71,9 @@ export const Disbursement = ({
   const [selectedBankId, setSelectedBankId] = useState<string>("");
   const [fetchingBankDetails, setFetchingBankDetails] =
     useState<boolean>(false);
-  const [showPaymentProcessDialog, setShowPaymentProcessDialog] =
-    useState(false);
+  const [showDealReviewDialog, setShowDealReviewDialog] = useState(false);
   const [queueUpdatePending, setQueueUpdatePending] = useState(false);
   const [markFundedPending, setMarkFundedPending] = useState(false);
-  const [contractStatus, setContractStatus] = useState<string | null>(null);
-  const [documentStatus, setDocumentStatus] = useState<string | null>(null);
-  const [contractStatusLoading, setContractStatusLoading] = useState(false);
 
   const { data: applicationDetailData } = useSelector(
     (state: RootState) => state.applicationDetail
@@ -115,52 +96,14 @@ export const Disbursement = ({
     [effectiveQueue]
   );
   const isApplicationFunded = effectiveQueueKey === "funded";
-  const contractFullySigned = isContractFullySigned(contractStatus, documentStatus);
-  const isContractSignedQueue =
-    effectiveQueueKey === "contractsigned" || effectiveQueueKey === "signedcontracts";
-  const canProceedWithFunding =
-    contractFullySigned &&
-    (effectiveQueueKey === "disbursement" ||
-      effectiveQueueKey === "funded" ||
-      shouldSetApplicationQueueToDisbursement(effectiveQueue));
+  const isAtDisbursementQueue =
+    effectiveQueueKey === "disbursement" || effectiveQueueKey === "disbursment";
 
   useEffect(() => {
-    const lookupId =
-      applicationRecordId ?? applicationId ?? summaryApplicationId;
-    if (!lookupId) {
-      setContractStatus(null);
-      setDocumentStatus(null);
-      return;
+    if (isApplicationFunded) {
+      navigate("/payments", { replace: true });
     }
-    let cancelled = false;
-    setContractStatusLoading(true);
-    void dispatch(getByApplicationIdContract(String(lookupId)))
-      .unwrap()
-      .then((res) => {
-        if (cancelled) return;
-        const contract = (res as { data?: Record<string, unknown> })?.data ?? res;
-        const c = contract as {
-          status?: unknown;
-          application?: { document?: { status?: unknown } };
-        };
-        setContractStatus(String(c?.status ?? ""));
-        setDocumentStatus(
-          String(c?.application?.document?.status ?? ""),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setContractStatus(null);
-          setDocumentStatus(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setContractStatusLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [applicationId, summaryApplicationId, applicationRecordId, dispatch]);
+  }, [isApplicationFunded, navigate]);
 
   const [form, setForm] = useState({
     bankName: "",
@@ -213,63 +156,77 @@ export const Disbursement = ({
   const hasBankAccounts = bankDetails?.length > 0;
   const showLoading = loading || fetchingBankDetails;
 
-  const handleConfirmDisbursement = async () => {
-    const qKey = normalizeWorkflowQueueKey(effectiveQueue);
+  const handleOpenConfirmDisbursement = () => {
+    setShowDealReviewDialog(true);
+  };
 
-    if (!contractFullySigned) {
-      toast.error(
-        "The contract must be fully signed in DocuSign before disbursement or funding.",
-      );
+  const handleConfirmDisbursement = async (
+    schedule?: DealReviewConfirmContext,
+  ) => {
+    if (isAtDisbursementQueue) {
+      setShowDealReviewDialog(false);
+      toast.info("Disbursement is already confirmed. Use Mark as funded to continue.");
       return;
     }
 
-    if (effectiveRecordId) {
-      try {
-        setQueueUpdatePending(true);
-        if (qKey === "disbursement") {
-          await dispatch(
-            updateApplication({
-              id: effectiveRecordId,
-              data: { currentQueue: "Funded", currentState: "Funded" },
-            })
-          ).unwrap();
-        } else if (shouldSetApplicationQueueToDisbursement(effectiveQueue)) {
-          await dispatch(
-            updateApplication({
-              id: effectiveRecordId,
-              data: {
-                currentQueue: "Disbursement",
-                currentState: "Disbursement",
-              },
-            })
-          ).unwrap();
-        }
-        const refetchAppId = summaryApplicationId ?? applicationId;
-        if (refetchAppId) {
-          void dispatch(getApplicationByApplicationId(String(refetchAppId)));
-        }
-      } catch {
-        toast.error("Could not update application queue. Please try again.");
-        return;
-      } finally {
-        setQueueUpdatePending(false);
-      }
+    if (!effectiveRecordId) {
+      toast.error("Application record is not loaded.");
+      return;
     }
 
-    const appIdForEmail = summaryApplicationId ?? applicationId;
-    if (appIdForEmail && qKey === "disbursement") {
-      try {
-        await dispatch(sendFundedEmail(appIdForEmail)).unwrap();
-      } catch (e) {
-        toast.error(
-          typeof e === "string"
-            ? e
-            : "Could not queue funded notification email."
-        );
-      }
+    if (!schedule?.paymentSchedule?.length) {
+      toast.error("Payment schedule is missing. Set a start date and term in the offer.");
+      return;
     }
 
-    setShowPaymentProcessDialog(true);
+    if (!shouldSetApplicationQueueToDisbursement(effectiveQueue)) {
+      toast.error("This application cannot be moved to disbursement from its current stage.");
+      return;
+    }
+
+    const dealId =
+      (applicationDetailData as { dealId?: string | null } | null)?.dealId ??
+      null;
+
+    try {
+      setQueueUpdatePending(true);
+      await dispatch(
+        saveSchedulePaymentTracking({
+          id: effectiveRecordId,
+          data: {
+            paymentStartDate: schedule.paymentStartDate,
+            effectiveStartDate: schedule.effectiveStartDate,
+            dealId,
+            paymentSchedule: schedule.paymentSchedule,
+          },
+        }),
+      ).unwrap();
+      await dispatch(
+        updateApplication({
+          id: effectiveRecordId,
+          data: {
+            currentQueue: "Disbursement",
+            currentState: "Disbursement",
+          },
+        })
+      ).unwrap();
+      const refetchAppId = summaryApplicationId ?? applicationId;
+      if (refetchAppId) {
+        void dispatch(getApplicationByApplicationId(String(refetchAppId)));
+      }
+      setShowDealReviewDialog(false);
+      toast.success("Disbursement confirmed. You can now mark the application as funded.");
+    } catch (err: unknown) {
+      const message =
+        typeof err === "string"
+          ? err
+          : (err as { message?: string })?.message;
+      toast.error(
+        message || "Could not confirm disbursement. Please try again.",
+      );
+    } finally {
+      setQueueUpdatePending(false);
+    }
   };
 
   const handleMarkAsFunded = async () => {
@@ -277,55 +234,45 @@ export const Disbursement = ({
       toast.error("Application record is not loaded.");
       return;
     }
-    if (!contractFullySigned) {
-      toast.error(
-        "The contract must be fully signed in DocuSign before marking this deal as funded.",
-      );
+    if (!isAtDisbursementQueue) {
+      toast.error("Please confirm disbursement before marking as funded.");
       return;
     }
+    if (isApplicationFunded) {
+      navigate("/payments", { replace: true });
+      return;
+    }
+
     try {
       setMarkFundedPending(true);
-      const updated = await dispatch(
+      await dispatch(
         updateApplication({
           id: effectiveRecordId,
           data: { currentQueue: "Funded", currentState: "Funded" },
         })
       ).unwrap();
-      const updatedQueue = normalizeWorkflowQueueKey(
-        (updated as { data?: { currentQueue?: string } })?.data?.currentQueue ??
-          (updated as { currentQueue?: string })?.currentQueue,
-      );
-      if (updatedQueue !== "funded") {
-        toast.error(
-          "Funded status was not saved. Confirm disbursement first or refresh and try again.",
-        );
-        return;
-      }
-      const refetchAppId = summaryApplicationId ?? applicationId;
-      if (refetchAppId) {
-        await dispatch(getApplicationByApplicationId(String(refetchAppId))).unwrap();
-      }
+
       const appIdForEmail = summaryApplicationId ?? applicationId;
       if (appIdForEmail) {
         try {
-          await dispatch(sendFundedEmail(String(appIdForEmail))).unwrap();
+          await dispatch(sendFundedEmail(appIdForEmail)).unwrap();
         } catch (e) {
           toast.error(
             typeof e === "string"
               ? e
-              : "Deal marked funded, but the funded notification email could not be sent.",
+              : "Could not queue funded notification email."
           );
         }
       }
+
+      const refetchAppId = summaryApplicationId ?? applicationId;
+      if (refetchAppId) {
+        void dispatch(getApplicationByApplicationId(String(refetchAppId)));
+      }
       toast.success("Application marked as funded.");
-      navigate("/payments");
-    } catch (err: unknown) {
-      const msg =
-        typeof err === "string"
-          ? err
-          : (err as { message?: string })?.message ??
-            "Could not mark application as funded. Please try again.";
-      toast.error(msg);
+      navigate("/payments", { replace: true });
+    } catch {
+      toast.error("Could not mark application as funded. Please try again.");
     } finally {
       setMarkFundedPending(false);
     }
@@ -457,14 +404,6 @@ export const Disbursement = ({
             </p>
           </div>
 
-          {!contractStatusLoading && !contractFullySigned ? (
-            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
-              {isContractSignedQueue
-                ? "This deal is in Contract Signed, but DocuSign has not synced a completed signature yet. Open the contract modal on the Sent step and click Refresh status, or wait for DocuSign to finish syncing."
-                : "This deal cannot be funded until the contract is fully signed in DocuSign. It should appear under Contract Out until signing completes, then move to Contract Signed automatically."}
-            </div>
-          ) : null}
-
           {/* Actions */}
           <div className="mt-8 flex flex-wrap justify-end gap-3">
             <button
@@ -478,11 +417,15 @@ export const Disbursement = ({
               className="px-4 py-2.5 text-xs cursor-pointer md:text-sm font-semibold text-emerald-800 border border-emerald-200 bg-emerald-50 rounded-md hover:bg-emerald-100 transition-colors disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-900/50 dark:disabled:hover:bg-emerald-950/40"
               disabled={
                 !effectiveRecordId ||
+                !isAtDisbursementQueue ||
                 markFundedPending ||
                 queueUpdatePending ||
-                isApplicationFunded ||
-                contractStatusLoading ||
-                !canProceedWithFunding
+                isApplicationFunded
+              }
+              title={
+                !isAtDisbursementQueue
+                  ? "Confirm disbursement first"
+                  : undefined
               }
               onClick={() => void handleMarkAsFunded()}
             >
@@ -496,10 +439,15 @@ export const Disbursement = ({
                 showLoading ||
                 queueUpdatePending ||
                 markFundedPending ||
-                contractStatusLoading ||
-                !canProceedWithFunding
+                isApplicationFunded ||
+                isAtDisbursementQueue
               }
-              onClick={() => void handleConfirmDisbursement()}
+              title={
+                isAtDisbursementQueue
+                  ? "Disbursement already confirmed"
+                  : undefined
+              }
+              onClick={handleOpenConfirmDisbursement}
             >
               {queueUpdatePending ? "Updating…" : "Confirm Disbursement"}
             </button>
@@ -507,52 +455,15 @@ export const Disbursement = ({
         </div>
       </div>
 
-      <Dialog
-      open={showPaymentProcessDialog}
-      onOpenChange={setShowPaymentProcessDialog}
-    >
-      <DialogContent className="sm:max-w-[400px] p-0 overflow-hidden border-none bg-white shadow-2xl dark:bg-[#141517]">
-        {/* Subtle decorative top bar */}
-        <div className="h-1.5 w-full bg-gradient-to-r from-blue-400 via-blue-600 to-indigo-600" />
-        
-        <div className="p-8 dark:bg-transparent">
-          <DialogHeader className="flex flex-col items-center text-center space-y-4">
-            {/* Animated Icon Container */}
-            <div className="relative flex items-center justify-center w-16 h-16 bg-blue-50 rounded-full mb-2 dark:bg-blue-950">
-              <CreditCard className="w-8 h-8 text-blue-600 dark:text-blue-400" />
-              <div className="absolute inset-0 rounded-full border-2 border-blue-600 border-t-transparent animate-spin dark:border-blue-400" />
-            </div>
-
-            <DialogTitle className="text-xl font-bold text-slate-900 dark:text-slate-100">
-              Processing Payment
-            </DialogTitle>
-            
-            <DialogDescription className="text-slate-500 text-balance leading-relaxed dark:text-slate-400">
-              We are currently finalizing your transaction for <span className="font-semibold text-slate-800 dark:text-slate-200">"Actum"</span>. 
-              Please do not refresh the page.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="mt-8 space-y-3">
-            <Button
-              type="button"
-              className="w-full bg-[#1e60a3] hover:bg-[#1e60a3] cursor-pointer text-white font-bold py-6 rounded-xl shadow-lg shadow-blue-200/50 transition-all active:scale-[0.98] flex items-center justify-center gap-2 dark:shadow-blue-950/40"
-              onClick={() => {
-                setShowPaymentProcessDialog(false);
-                navigate("/payments");
-              }}
-            >
-              Continue to Payment Dashboard
-              <ChevronRight size={18} />
-            </Button>
-            
-            <p className="text-[11px] text-center text-slate-400 font-medium uppercase tracking-widest dark:text-slate-500">
-              Secure Encrypted Transaction
-            </p>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+      <DealReviewDialog
+        open={showDealReviewDialog}
+        onOpenChange={setShowDealReviewDialog}
+        applicationId={summaryApplicationId ?? applicationId ?? null}
+        applicationRecordId={effectiveRecordId}
+        confirming={queueUpdatePending}
+        onConfirm={handleConfirmDisbursement}
+        preload
+      />
     </div>
   );
 };

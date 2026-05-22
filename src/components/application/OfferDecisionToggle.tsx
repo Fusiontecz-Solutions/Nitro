@@ -230,6 +230,42 @@ function sanitizeDecimalInput(value: string): string {
   return s;
 }
 
+/**
+ * Fees in the UI are entered as a percentage (e.g. "10" meaning 10%), but the
+ * backend column `OfferDecision.fees` stores the actual dollar amount of fees
+ * (consistent with how `collectionPaymentFinancials` and the bulk Excel
+ * ingest treat the column). Conversion factor is `payback = offer * rate`.
+ */
+function feesPercentToDollars(
+  offer: unknown,
+  rate: unknown,
+  feesPercent: unknown,
+): number | null {
+  const offerN = parseNum(offer);
+  const rateN = parseNum(rate);
+  const pctN = parseNum(feesPercent);
+  if (!Number.isFinite(offerN) || offerN <= 0) return null;
+  if (!Number.isFinite(rateN) || rateN <= 0) return null;
+  if (!Number.isFinite(pctN) || pctN <= 0) return null;
+  return (offerN * rateN * pctN) / 100;
+}
+
+function feesDollarsToPercent(
+  offer: unknown,
+  rate: unknown,
+  feesDollars: unknown,
+): number | null {
+  const offerN = parseNum(offer);
+  const rateN = parseNum(rate);
+  const dollarsN = parseNum(feesDollars);
+  if (!Number.isFinite(offerN) || offerN <= 0) return null;
+  if (!Number.isFinite(rateN) || rateN <= 0) return null;
+  if (!Number.isFinite(dollarsN) || dollarsN <= 0) return null;
+  const payback = offerN * rateN;
+  if (payback <= 0) return null;
+  return (dollarsN / payback) * 100;
+}
+
 function computeFallbackAvgNetCredit(
   bankTables?: Array<{ rows?: Array<{ netCredit?: number | string | null }> }>,
 ): number | null {
@@ -461,6 +497,12 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
 
         setEditingApprovedOffer(false);
 
+        const loadedFeesPercent = feesDollarsToPercent(
+          apiData.offer,
+          apiData.rate,
+          apiData.fees,
+        );
+
         setLocalData((prev) => ({
           ...prev,
           position: apiData.position ?? "",
@@ -479,7 +521,10 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
             apiData.monthlyPayment != null
               ? formatNumberUS(apiData.monthlyPayment)
               : "",
-          fees: apiData.fees != null ? formatNumberUS(apiData.fees) : "",
+          fees:
+            loadedFeesPercent != null
+              ? formatNumberUS(loadedFeesPercent)
+              : prev.fees,
           ourRemit:
             apiData.ourRemit != null ? formatNumberUS(apiData.ourRemit) : "",
           totalRemit:
@@ -1142,6 +1187,12 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     try {
       setIsApproveLoading(true);
 
+      const feesDollarsForDb = feesPercentToDollars(
+        localData.offer,
+        localData.rate,
+        localData.fees,
+      );
+
       const payload = {
         applicationId,
         decision: "approved" as const,
@@ -1152,7 +1203,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         frequency: localData.frequency || null,
         repayPerPeriod: parseNum(localData.daysWeeks) || null,
         monthlyPayment: parseNum(localData.monthlyPayment) || null,
-        fees: parseNum(localData.fees) || null,
+        fees: feesDollarsForDb,
         ourRemit: parseNum(localData.ourRemit) || null,
         totalRemit: parseNum(localData.totalRemit) || null,
       };
@@ -1161,6 +1212,12 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       const saved = (saveRes?.data && saveRes.data.data) || null;
 
       if (saved) {
+        const savedFeesPercent = feesDollarsToPercent(
+          saved.offer,
+          saved.rate,
+          saved.fees,
+        );
+
         setLocalData((prev) => ({
           ...prev,
           position: saved.position ?? "",
@@ -1179,7 +1236,10 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
             saved.monthlyPayment != null
               ? formatNumberUS(saved.monthlyPayment)
               : "",
-          fees: saved.fees != null ? formatNumberUS(saved.fees) : "",
+          fees:
+            savedFeesPercent != null
+              ? formatNumberUS(savedFeesPercent)
+              : prev.fees,
           ourRemit:
             saved.ourRemit != null ? formatNumberUS(saved.ourRemit) : "",
           totalRemit:
@@ -1460,7 +1520,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         <option value="">Select</option>
                         <option value="Daily">Daily</option>
                         <option value="Weekly">Weekly</option>
-                        {/* <option value="Monthly">Monthly</option> */}
+                        <option value="Monthly">Monthly</option>
                       </select>
                     </div>
                     <div className="grid min-h-[56px] grid-cols-[7.5rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-white px-4 py-3 dark:border-slate-700 dark:bg-[#141517] md:border-r md:[&:nth-child(3n)]:border-r-0">

@@ -31,7 +31,7 @@ import {
 import uploadIcon from '../../../assets/folder.svg'
 
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+// import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
     Select,
@@ -54,7 +54,8 @@ import {
 } from '@/components/ui/table'
 import { useTheme } from '@/context/ThemeContext'
 import PDFViewerDocsModal from '@/components/application/PDFViewerDocsModal'
-import { cn } from '@/lib/utils'
+import { cn, formatNumberUSForInput, parseNumberUS } from '@/lib/utils'
+import { UsCurrencyInput } from '@/components/ui/us-currency-input'
 
 // Types
 interface UploadedFile {
@@ -82,7 +83,15 @@ const applicationSchema = yup.object({
     referringAgent: yup.string().default(''),
     salesRepresentative: yup.string().required('Sales Representative is required'),
     client: yup.string().required('Client is required'),
-    loanAmount: yup.string().default('').nullable(),
+    loanAmount: yup
+        .string()
+        .default('')
+        .nullable()
+        .test('valid-loan-amount', 'Enter a valid loan amount', (value) => {
+            if (!value || !String(value).trim()) return true
+            const n = parseNumberUS(value)
+            return !Number.isNaN(n) && n >= 0
+        }),
     // note: yup.string().default(''),
 })
 
@@ -245,7 +254,10 @@ const CreateApplication = () => {
             referringAgent: referringAgentId,
             salesRepresentative: salesRepId,
             client: clientId,
-            loanAmount: applicationData.loanAmount != null ? String(applicationData.loanAmount) : '',
+            loanAmount:
+                applicationData.loanAmount != null
+                    ? formatNumberUSForInput(String(applicationData.loanAmount))
+                    : '',
             // note: applicationData.note || '',
         }
 
@@ -488,7 +500,11 @@ const CreateApplication = () => {
     const onSubmit: SubmitHandler<ApplicationFormValues> = (data) => {
         const payload = {
             ...data,
-            loanAmount: data.loanAmount ? (typeof data.loanAmount === 'string' ? parseFloat(data.loanAmount.replace(/[^0-9.-]+/g, '')) : data.loanAmount) : null,
+            loanAmount: (() => {
+                if (!data.loanAmount || !String(data.loanAmount).trim()) return null
+                const n = parseNumberUS(data.loanAmount)
+                return Number.isNaN(n) ? null : n
+            })(),
         }
         if (isEditMode && applicationData) {
             const id = applicationData._id
@@ -779,16 +795,21 @@ const CreateApplication = () => {
                                             control={control}
                                             name="loanAmount"
                                             render={({ field }) => (
-                                                <Input
-                                                    {...field}
-                                                    type="number"
-                                                    min={0}
-                                                    step={0.01}
-                                                    placeholder="e.g. 250000"
+                                                <UsCurrencyInput
+                                                    value={field.value ?? ''}
+                                                    onChange={field.onChange}
+                                                    onBlur={field.onBlur}
+                                                    name={field.name}
+                                                    ref={field.ref}
                                                     className={`h-9 w-full rounded-md bg-background border ${isDark ? 'border-[#374151]' : 'border-[#E5E7EB]'}`}
                                                 />
                                             )}
                                         />
+                                        {errors.loanAmount && (
+                                            <p className="text-xs text-red-500 mt-1">
+                                                {errors.loanAmount.message}
+                                            </p>
+                                        )}
                                     </div>
 
                                     {/* Add / Auto-Create — invisible label mirrors Client row so h-9 buttons line up with Select/Input */}

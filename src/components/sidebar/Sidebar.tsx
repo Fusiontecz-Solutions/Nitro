@@ -40,7 +40,7 @@ import { clearPaymentDashboard } from "@/redux/slices/paymentDashboardSlice";
 import { resetOperationsDashboard } from "@/redux/slices/operationsDashboardSlice";
 import { clearVoiceMicSessionFlags } from "@/voice/microphoneWarmup";
 import { toast } from "react-toastify";
-import { resolveAppLogoSrc } from "@/constants/appLogo";
+import { APP_SHORT_ICON_SRC, APP_SHORT_ICON_DARK_SRC ,resolveAppLogoSrc } from "@/constants/appLogo";
 import { useTheme } from "@/context/ThemeContext";
 import { useEffect, useMemo, useRef, type ComponentType } from "react";
 import type { Notification } from "@/redux/slices/notificationSlice";
@@ -194,6 +194,15 @@ const operationsSections: SidebarNavSection[] = [
   },
 ];
 
+const accountsSections: SidebarNavSection[] = [
+  {
+    title: "",
+    items: [
+      { label: "Accountant", url: "/payments", icon: Payments },
+    ],
+  },
+];
+
 const uwSections: SidebarNavSection[] = [
   {
     title: "",
@@ -279,6 +288,7 @@ const superAdminSections: SidebarNavSection[] = [
     items: [
       { label: "Dashboard", url: "/", icon: Dashboard },
       { label: "Notifications", url: "/notifications", icon: Notifications },
+      { label: "Deals Pipeline", url: "/deal-pipeline", icon: LinearScaleIcon },
       { label: "Clients", url: "/clients", icon: People },
       { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
     ],
@@ -286,7 +296,6 @@ const superAdminSections: SidebarNavSection[] = [
   {
     title: "DEAL PIPELINE",
     items: [
-      // { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
       { label: "Agent", url: "/applications", operationsStatus: "Agent", icon: PersonIcon },
       { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon },
       {
@@ -318,14 +327,22 @@ const superAdminSections: SidebarNavSection[] = [
     ],
   },
   {
-    title: "OPERATIONS",
+    title: "MANAGEMENT",
     items: [
+      { label: "Agents", url: "/agents", icon: PersonIcon },
+      { label: "Underwriters", url: "/underwriters", icon: ContentPasteSearchIcon },
+      { label: "Final Underwriters", url: "/final-underwriters", icon: People },
       { label: "Syndicators", url: "/syndicators/dashboard", icon: SyndicatorsSidebarIcon },
-      { label: "Accountant", url: "/payments", icon: Payments },
-      { label: "Commission", url: "/commission-portal", icon: BarChart },
     ],
   },
-
+  {
+    title: "OPERATIONS",
+    items: [
+      { label: "Accountant", url: "/payments", icon: Payments },
+      { label: "Commission", url: "/commission-portal", icon: BarChart },
+      { label: "Reports", url: "/reports", icon: Description },
+    ],
+  },
   {
     title: "COMMUNICATIONS",
     items: [
@@ -333,15 +350,13 @@ const superAdminSections: SidebarNavSection[] = [
       { label: "Team Chat", url: "/team-chat", icon: Chat },
     ],
   },
-
   {
-    title: "INVITE",
+    title: "ACCOUNT",
     items: [
       { label: "Invite Members", url: "/settings", icon: PersonAddAlt1Icon },
+      { label: "Settings", url: "/user-setting", icon: Settings },
     ],
   },
-
-
 ];
 
 function getRoleSections(role: string): SidebarNavSection[] {
@@ -359,6 +374,8 @@ function getRoleSections(role: string): SidebarNavSection[] {
       return finalUnderwriterSections;
     case "UNDERWRITER":
       return uwSections;
+    case "ACCOUNTS":
+      return accountsSections;
     default:
       return agentSections;
   }
@@ -487,12 +504,20 @@ const Sidebar = () => {
         data-sidebar-scrollbar="default"
       >
         <SidebarHeader className="p-4 mt-5 pb-3 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-2">
-          <div className="flex w-full justify-center">
-            <img
-              src={resolveAppLogoSrc(isDark)}
-              alt="Company logo"
-              className={`block object-contain object-center ${isCollapsed ? "h-8 w-8 shrink-0" : "h-24 w-auto max-w-[min(100%,280px)]"}`}
-            />
+          <div className="flex items-center justify-between">
+            <div className="flex flex-col justify-center leading-tight">
+              <img
+                src={
+                  isCollapsed
+                    ? isDark
+                      ? APP_SHORT_ICON_DARK_SRC
+                      : APP_SHORT_ICON_SRC
+                    : resolveAppLogoSrc(isDark)
+                }
+                alt="Company logo"
+                className={`block object-contain ${isCollapsed ? "h-8 w-8 shrink-0" : "h-26 w-auto max-w-full"}`}
+              />
+            </div>
           </div>
           <p className={mainSidebarTitleClass}>Main</p>
         </SidebarHeader>

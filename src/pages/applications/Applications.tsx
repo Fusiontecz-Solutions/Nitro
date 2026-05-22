@@ -107,6 +107,8 @@ import {
   filterApplicationsBySearchQuery,
 } from "@/lib/applicationTableSearch";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
+import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
+import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
 import {
   normalizeRoleKey,
   resolveEffectiveRole,
@@ -247,6 +249,8 @@ const Applications = () => {
   const [statusFilter, setStatusFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).statusFilter,
   );
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
@@ -276,6 +280,7 @@ const Applications = () => {
     totalRows: number;
     processedRows: number;
     successCount: number;
+    updatedCount: number;
     failedCount: number;
     message?: string;
   }>({
@@ -283,6 +288,7 @@ const Applications = () => {
     totalRows: 0,
     processedRows: 0,
     successCount: 0,
+    updatedCount: 0,
     failedCount: 0,
   });
   const isBulkDeleteRef = useRef(false);
@@ -1107,10 +1113,14 @@ const Applications = () => {
       searchTerm: "",
       dashboardStateFilter,
       statusFilter,
+      typeFilter,
+      priorityFilter,
     });
   }, [
     dashboardStateFilter,
     statusFilter,
+    typeFilter,
+    priorityFilter,
     showUwDealPoolUi,
     underwriterPoolTab,
   ]);
@@ -1353,7 +1363,7 @@ const Applications = () => {
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [searchTerm]);
+  }, [searchTerm, typeFilter, priorityFilter]);
 
   // static -----------------------------------------------
   const [user, setUser] = useState<user>();
@@ -1429,6 +1439,7 @@ const Applications = () => {
           totalRows: 0,
           processedRows: 0,
           successCount: 0,
+          updatedCount: 0,
           failedCount: 0,
           message: "Upload started...",
         });
@@ -1445,31 +1456,76 @@ const Applications = () => {
           throw new Error("Bulk upload job could not be started.");
         }
 
-        let attempts = 0;
-        const maxAttempts = 1200; // ~20 min @ 1s
-        while (attempts < maxAttempts) {
-          attempts += 1;
-          await new Promise((resolve) => window.setTimeout(resolve, 1000));
-          const progressRes = await axiosGet(
-            `/applications/bulk-upload-excel/progress/${encodeURIComponent(jobId)}`,
-          );
-          const progress = progressRes?.data?.data;
-          if (!progress) continue;
+        // Polling design notes:
+        // - No hard attempts cap. The job lives on the server (sliding TTL) and the sheet may
+        //   contain thousands of rows; we keep polling until the server reports terminal status.
+        // - Transient poll failures (network blip, brief 5xx) MUST NOT mark the upload as failed —
+        //   the BE is likely still working. We tolerate a generous run of consecutive poll
+        //   failures and only give up if the BE truly seems unreachable for an extended period.
+        // - We also bail out if the BE makes no progress for a long stretch (stuck job).
+        const POLL_INTERVAL_MS = 2000;
+        const MAX_CONSECUTIVE_POLL_FAILURES = 30; // ~1 min of full outage
+        const NO_PROGRESS_TIMEOUT_MS = 1000 * 60 * 15; // 15 min with zero forward motion
+        let consecutiveFailures = 0;
+        let lastProgressMs = Date.now();
+        let lastProcessedRows = -1;
+        let finished = false;
+
+        while (!finished) {
+          await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
+
+          let progress: any = null;
+          try {
+            const progressRes = await axiosGet(
+              `/applications/bulk-upload-excel/progress/${encodeURIComponent(jobId)}`,
+            );
+            progress = progressRes?.data?.data;
+            consecutiveFailures = 0;
+          } catch (pollErr) {
+            consecutiveFailures += 1;
+            console.warn(
+              `[Bulk upload] progress poll failed (${consecutiveFailures}/${MAX_CONSECUTIVE_POLL_FAILURES})`,
+              pollErr,
+            );
+            if (consecutiveFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+              throw new Error(
+                "Lost contact with the server while the bulk upload was running. Please check the applications list — the import may still be in progress on the server.",
+              );
+            }
+            continue;
+          }
+
+          if (!progress) {
+            // Server hasn't published the first heartbeat yet; keep waiting without resetting
+            // the no-progress timer.
+            continue;
+          }
+
+          const processedRows = Number(progress.processedRows) || 0;
+          if (processedRows !== lastProcessedRows) {
+            lastProcessedRows = processedRows;
+            lastProgressMs = Date.now();
+          }
 
           setBulkUploadProgress({
             status: progress.status,
             totalRows: Number(progress.totalRows) || 0,
-            processedRows: Number(progress.processedRows) || 0,
+            processedRows,
             successCount: Number(progress.successCount) || 0,
+            updatedCount: Number(progress.updatedCount) || 0,
             failedCount: Number(progress.failedCount) || 0,
             message: progress.message,
           });
 
           if (progress.status === "completed") {
-            toast.success(
-              progress.message ||
-                `Imported ${progress.successCount} of ${progress.totalRows} row(s).`,
-            );
+            const insertedNum = Number(progress.successCount) || 0;
+            const updatedNum = Number(progress.updatedCount) || 0;
+            const totalNum = Number(progress.totalRows) || 0;
+            const fallbackMessage =
+              insertedNum === 0 && updatedNum === 0
+                ? `No applications were imported from ${totalNum} row(s).`
+                : `Inserted ${insertedNum}, updated ${updatedNum} of ${totalNum} row(s).`;
+            toast.success(progress.message || fallbackMessage);
             if (Array.isArray(progress.errors) && progress.errors.length) {
               console.warn("[Bulk upload] row issues", progress.errors);
               toast.warning(
@@ -1477,16 +1533,19 @@ const Applications = () => {
               );
             }
             await applicationsListQuery.refetch();
+            finished = true;
             break;
           }
 
           if (progress.status === "failed") {
             throw new Error(progress.message || "Bulk upload failed.");
           }
-        }
 
-        if (attempts >= maxAttempts) {
-          throw new Error("Bulk upload is taking too long. Please check again.");
+          if (Date.now() - lastProgressMs > NO_PROGRESS_TIMEOUT_MS) {
+            throw new Error(
+              "Bulk upload appears stuck (no progress for 15 minutes). The job may still be running on the server — check the applications list before retrying.",
+            );
+          }
         }
       } catch (err: unknown) {
         const msg =
@@ -1817,7 +1876,8 @@ const Applications = () => {
                     <p className="text-xs text-muted-foreground">
                       Processed {bulkUploadProgress.processedRows}/
                       {bulkUploadProgress.totalRows || "?"} | Inserted{" "}
-                      {bulkUploadProgress.successCount} | Failed{" "}
+                      {bulkUploadProgress.successCount} | Updated{" "}
+                      {bulkUploadProgress.updatedCount} | Failed{" "}
                       {bulkUploadProgress.failedCount}
                     </p>
                   )}
@@ -1935,7 +1995,7 @@ const Applications = () => {
       )}
 
       <div className="mt-4 flex flex-col lg:flex-row items-stretch lg:items-center gap-3 justify-between">
-        <div className="flex items-center gap-3 w-full lg:max-w-[520px]">
+        <div className="flex items-center gap-3 w-full lg:max-w-[680px]">
           {showOperationsFilterBack && (
             <Button
               type="button"
@@ -2023,11 +2083,25 @@ const Applications = () => {
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
-          <div className="relative flex-1">
+          <ApplicationTypeFilterDropdown
+            value={typeFilter}
+            onChange={(next: string) => {
+              setTypeFilter(next);
+              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+            }}
+          />
+          <ApplicationPriorityFilterDropdown
+            value={priorityFilter}
+            onChange={(next: string) => {
+              setPriorityFilter(next);
+              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+            }}
+          />
+          <div className="relative min-w-[12rem] flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
               placeholder="Search by Deal ID, Name, Email, ISO..."
-              className="pl-9 h-10 bg-card"
+              className="pl-9 h-10 w-full bg-card"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />

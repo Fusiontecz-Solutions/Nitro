@@ -15,6 +15,7 @@ import Agent from './Agent';
 import FINALUNDERWRITER from './FINALUNDERWRITER';
 import UNDERWRITER from './UNDERWRITER';
 import Syndicators from './Syndicators';
+import Accounts from './Accounts';
 import AddUserModal from './AddUserModal';
 
 const FALLBACK_ROLES = [
@@ -26,6 +27,7 @@ const FALLBACK_ROLES = [
     name: "Final Underwriters",
   },
   { id: "SYNDICATORS", roleName: "Syndicators", name: "Syndicators" },
+  { id: "ACCOUNTS", roleName: "Accounts", name: "Accounts" },
 ];
 
 const ROLE_ID_TO_COMPONENT: Record<string, React.ComponentType<{ users: any[]; loading: boolean; error: string | null }>> = {
@@ -34,6 +36,7 @@ const ROLE_ID_TO_COMPONENT: Record<string, React.ComponentType<{ users: any[]; l
   FINAL_UNDERWRITER: FINALUNDERWRITER,
   SYNDICATORS: Syndicators,
   SYNDICATOR: Syndicators,
+  ACCOUNTS: Accounts,
   ACCOUNTANT: Agent,
   ADMIN: Agent,
   SUPER_ADMIN: Agent,
@@ -103,7 +106,7 @@ export default function Settings() {
       <div className="w-full mx-auto">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <h1 className="text-[22px] font-semibold tracking-tight text-foreground">
-            Settings
+            Invite Members
           </h1>
           {isAdmin && (
             <Button

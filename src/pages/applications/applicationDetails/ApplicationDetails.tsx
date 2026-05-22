@@ -274,7 +274,11 @@ const ApplicationDetails = () => {
 
     const tabs = useMemo(() => {
         let list: { id: string; label: string }[];
-        if (useOperationsPipelineTabs) {
+        if (isSuperAdmin) {
+            // Super Admin always sees the full funding-pipeline tab strip
+            // (Overview → Disbursement) regardless of dashboard entry stage.
+            list = getOperationsTabsForDashboardEntry(null);
+        } else if (useOperationsPipelineTabs) {
             list = getOperationsTabsForDashboardEntry(effectiveOperationsStatus);
         } else {
             list = getTabs();
@@ -293,6 +297,7 @@ const ApplicationDetails = () => {
         isFinalUnderwriter,
         isUnderwriter,
         roleKey,
+        isSuperAdmin,
         underwriterQueueLocked,
     ]);
 

@@ -1,7 +1,11 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { isAxiosError } from 'axios';
 import { axiosGet } from '../axios';
-import type { MoneyFlowPoint, PaymentDashboardData } from '@/types/paymentDashboardTypes';
+import type {
+    FailedPaymentDebitSummary,
+    MoneyFlowPoint,
+    PaymentDashboardData,
+} from '@/types/paymentDashboardTypes';
 
 /** Aggregates all funded deals + payments in one request — allow longer than default 25s. */
 const PAYMENT_DASHBOARD_REQUEST_TIMEOUT_MS = 180_000;
@@ -50,6 +54,17 @@ function cardOptionalNumber(raw: Record<string, unknown>, key: string): number |
     return Number.isFinite(n) ? n : undefined;
 }
 
+/** Normalize backend `cards.failedPayment` (DEBIT-based) — returns undefined when payload omits it. */
+function normalizeFailedPaymentDebit(value: unknown): FailedPaymentDebitSummary | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const o = value as Record<string, unknown>;
+    const totalAmountRaw = Number(o.totalAmount);
+    const countRaw = Number(o.count);
+    const totalAmount = Number.isFinite(totalAmountRaw) ? totalAmountRaw : 0;
+    const count = Number.isFinite(countRaw) ? Math.max(0, Math.round(countRaw)) : 0;
+    return { totalAmount, count };
+}
+
 /** Merge API payload with safe defaults so cards/charts never flicker with undefined. */
 export function normalizePaymentDashboardData(raw: unknown): PaymentDashboardData {
     const root = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
@@ -68,6 +83,7 @@ export function normalizePaymentDashboardData(raw: unknown): PaymentDashboardDat
     const dealsWithPositiveGap = cardOptionalNumber(cardsRaw, 'dealsWithPositiveGap');
     const dealsWithNegativeGap = cardOptionalNumber(cardsRaw, 'dealsWithNegativeGap');
     const dealsWithZeroGap = cardOptionalNumber(cardsRaw, 'dealsWithZeroGap');
+    const failedPayment = normalizeFailedPaymentDebit(cardsRaw.failedPayment);
 
     return {
 cards: {
@@ -92,6 +108,7 @@ cards: {
                 ? { dealsWithNegativeGap: Math.round(dealsWithNegativeGap) }
                 : {}),
             ...(dealsWithZeroGap !== undefined ? { dealsWithZeroGap: Math.round(dealsWithZeroGap) } : {}),
+            ...(failedPayment !== undefined ? { failedPayment } : {}),
         },
         moneyFlow: {
             monthly: normalizeMoneyFlowPoints(mfRaw.monthly),

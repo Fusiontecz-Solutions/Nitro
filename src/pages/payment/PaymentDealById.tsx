@@ -5,11 +5,19 @@ import { ArrowLeft, Loader2 } from "lucide-react";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { store } from "@/redux/store";
-import { getApplicationById } from "@/redux/actions/applicationActions";
+import {
+  getApplicationByApplicationId,
+  getApplicationById,
+} from "@/redux/actions/applicationActions";
 import { getCollectionPayments } from "@/redux/actions/collectionPaymentActions";
 import {
-  applicationPrimaryKey,
-  resolvePaymentDealApplicationId,
+  applicationMatchesPaymentRoute,
+  buildCollectionPaymentsQuery,
+  collectionPaymentsCacheKey,
+  parsePaymentDealRouteParam,
+  resolveApplicationDealId,
+  resolveNumericApplicationId,
+  resolvePrismaApplicationUuid,
 } from "@/lib/paymentDealApplicationId";
 
 import ApplicationSummary from "@/components/application/ApplicationSummary";
@@ -40,6 +48,7 @@ type TabId =
   | "actionLogs"
   | "communication"
   | "syndication";
+  
 
 const tabs: { id: TabId; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -58,9 +67,8 @@ export default function PaymentDealById() {
   const dispatch = useDispatch<AppDispatch>();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
 
-  /** Backend GET application expects Prisma `id` (UUID). Params may be numeric deal ids — only use param when it is a UUID. */
-  const applicationId = useMemo(
-    () => resolvePaymentDealApplicationId(paymentDealId),
+  const routeRef = useMemo(
+    () => parsePaymentDealRouteParam(paymentDealId),
     [paymentDealId],
   );
 
@@ -68,47 +76,95 @@ export default function PaymentDealById() {
     (state: RootState) => state.applicationDetail,
   );
 
-  /** Warm collections + deal view before the user opens the Collections tab (same args as `Transactions`). */
-  const prefetchCollectionParams = useMemo(() => {
-    const app = applicationData as {
-      id?: string;
-      _id?: string;
-      dealId?: string;
-      dealID?: string;
-      deal_id?: string;
-    } | null;
-    if (!app) return null;
-    const primaryApplicationId = String(app.id ?? app._id ?? "").trim();
-    const applicationDealId = String(
-      app.dealId ?? app.dealID ?? app.deal_id ?? "",
-    ).trim();
-    if (!primaryApplicationId && !applicationDealId) return null;
-    return {
-      applicationId: primaryApplicationId || applicationDealId,
-      dealId: applicationDealId || undefined,
-      includeDealView: true,
-    } as const;
-  }, [applicationData]);
+  const applicationUuid = useMemo(
+    () => resolvePrismaApplicationUuid(applicationData),
+    [applicationData],
+  );
 
-  const collectionsAlreadyFetched = useSelector((state: RootState) => {
-    const mongo = prefetchCollectionParams?.applicationId;
-    if (!mongo) return false;
-    return Boolean(state.collectionPayments.fetched[mongo]);
-  });
+  const routeCollectionQuery = useMemo(() => {
+    const routeUuid = routeRef.kind === "uuid" ? routeRef.value : "";
+    const routeNumeric =
+      routeRef.kind === "numericApplicationId" ? routeRef.value : "";
+    const routeDeal = routeRef.kind === "dealId" ? routeRef.value : "";
+    return buildCollectionPaymentsQuery({
+      prismaApplicationUuid: resolvePrismaApplicationUuid(applicationData) || routeUuid,
+      numericApplicationId:
+        resolveNumericApplicationId(applicationData) || routeNumeric,
+      dealId: resolveApplicationDealId(applicationData) || routeDeal,
+    });
+  }, [applicationData, routeRef]);
+
+  const collectionsCacheKey = useMemo(
+    () =>
+      collectionPaymentsCacheKey({
+        prismaApplicationUuid:
+          resolvePrismaApplicationUuid(applicationData) ||
+          (routeRef.kind === "uuid" ? routeRef.value : ""),
+        numericApplicationId:
+          resolveNumericApplicationId(applicationData) ||
+          (routeRef.kind === "numericApplicationId" ? routeRef.value : ""),
+        dealId:
+          resolveApplicationDealId(applicationData) ||
+          (routeRef.kind === "dealId" ? routeRef.value : ""),
+      }),
+    [applicationData, routeRef],
+  );
+
+  const collectionsAlreadyFetched = useSelector((state: RootState) =>
+    collectionsCacheKey
+      ? Boolean(state.collectionPayments.fetched[collectionsCacheKey])
+      : false,
+  );
 
   useEffect(() => {
-    if (!prefetchCollectionParams || collectionsAlreadyFetched) return;
-    dispatch(getCollectionPayments(prefetchCollectionParams));
-  }, [dispatch, prefetchCollectionParams, collectionsAlreadyFetched]);
+    if (!collectionsCacheKey || collectionsAlreadyFetched) return;
+    dispatch(
+      getCollectionPayments({
+        ...routeCollectionQuery,
+        includeDealView: true,
+      }),
+    );
+  }, [
+    dispatch,
+    collectionsCacheKey,
+    routeCollectionQuery,
+    collectionsAlreadyFetched,
+  ]);
 
   useEffect(() => {
+    if (routeRef.kind === "empty") return;
     const { data, error: detailError } = store.getState().applicationDetail;
-    const pk = applicationPrimaryKey(data);
-    if (pk === applicationId && data != null && !detailError) {
+    if (data != null && applicationMatchesPaymentRoute(data, routeRef) && !detailError) {
       return;
     }
-    dispatch(getApplicationById(applicationId));
-  }, [dispatch, applicationId]);
+
+    if (routeRef.kind === "uuid") {
+      dispatch(getApplicationById(routeRef.value));
+      return;
+    }
+    if (routeRef.kind === "numericApplicationId") {
+      dispatch(getApplicationByApplicationId(routeRef.value));
+      return;
+    }
+
+    void dispatch(
+      getCollectionPayments({
+        applicationId: "",
+        dealId: routeRef.value,
+        includeDealView: true,
+      }),
+    )
+      .unwrap()
+      .then((result) => {
+        const viewUuid = (
+          result as { dealView?: { viewApplicationId?: string } | null }
+        )?.dealView?.viewApplicationId;
+        if (viewUuid) dispatch(getApplicationById(viewUuid));
+      })
+      .catch(() => {
+        /* Collections tab surfaces fetch errors; overview may stay empty for unknown deal ids. */
+      });
+  }, [dispatch, routeRef]);
 
   useEffect(() => {
     prefetchPaymentTemplates();
@@ -143,7 +199,7 @@ export default function PaymentDealById() {
                 onClick={() => navigate(-1)}
                 className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-all hover:border-[#276D9C]/40 hover:text-[#276D9C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/30 focus-visible:ring-offset-2 dark:border-white/10 dark:bg-white/[0.04]"
                 aria-label="Go back"
-                title="Go back"
+                title="Go Back"
               >
                 <ArrowLeft className="h-5 w-5 transition-transform group-hover:-translate-x-0.5" />
               </button>
@@ -204,7 +260,7 @@ export default function PaymentDealById() {
                   <div className="decision-making-deal-pipeline">
                     <ApplicationSummary />
                     <ApplicationBasicDetails
-                      applicationId={applicationId}
+                      applicationId={applicationUuid || paymentDealId || ""}
                     />
                     <div className="mt-6">
                       <UploadedDocuments />
@@ -221,7 +277,7 @@ export default function PaymentDealById() {
                     <div className="mt-6 flex w-full flex-row gap-4">
                       <ChecksAndDecision hideUnderwritingDecision />
                       <div className="w-[50%]">
-                        <MyNotes applicationId={applicationId} />
+                        <MyNotes applicationId={applicationUuid || paymentDealId || ""} />
                       </div>
                     </div>
                   </div>
@@ -250,7 +306,7 @@ export default function PaymentDealById() {
                 )}
                 {showOverview && (
                   <ApplicationSyndicationTab
-                    applicationId={applicationId}
+                    applicationId={applicationUuid || paymentDealId || ""}
                     dealHints={syndicationDealHints}
                   />
                 )}

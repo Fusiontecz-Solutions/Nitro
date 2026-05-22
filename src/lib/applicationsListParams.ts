@@ -27,6 +27,36 @@ export function pipelineStatusFilterToApiFields(
 
 export const DEFAULT_APPLICATIONS_PAGE_SIZE = 10;
 
+/** Application `type` field — matches create form + operations bypass intake. */
+export const APPLICATION_TYPE_FILTER_OPTIONS = [
+  { label: "New Application", value: "New" },
+  { label: "Renewal", value: "Renewal" },
+  { label: "Modification", value: "Modification" },
+  { label: "Bypass", value: "Bypass" },
+] as const;
+
+export function applicationTypeFilterLabel(typeFilter: string): string {
+  if (typeFilter === "all") return "All types";
+  const match = APPLICATION_TYPE_FILTER_OPTIONS.find((o) => o.value === typeFilter);
+  return match?.label ?? typeFilter;
+}
+
+/** Application `priority` field — matches create form options. */
+export const APPLICATION_PRIORITY_FILTER_OPTIONS = [
+  { label: "Low", value: "Low" },
+  { label: "Medium", value: "Medium" },
+  { label: "High", value: "High" },
+  { label: "Urgent", value: "Urgent" },
+] as const;
+
+export function applicationPriorityFilterLabel(priorityFilter: string): string {
+  if (priorityFilter === "all") return "All priorities";
+  const match = APPLICATION_PRIORITY_FILTER_OPTIONS.find(
+    (o) => o.value === priorityFilter,
+  );
+  return match?.label ?? priorityFilter;
+}
+
 /** Default ordering for the main applications table (newest first). */
 export const APPLICATIONS_LIST_DEFAULT_SORT: Pick<
   GetApplicationsParams,
@@ -61,6 +91,10 @@ export function buildApplicationsListParams(options: {
   searchTerm: string;
   dashboardStateFilter: string;
   statusFilter: string;
+  /** `all` or application type value (New, Renewal, …). */
+  typeFilter?: string;
+  /** `all` or priority value (Low, Medium, High, Urgent). */
+  priorityFilter?: string;
   /** UNDERWRITER: server-side pool / my-claimed (Underwriter queue only). Overrides queue dropdown. */
   underwriterClaim?: "unclaimed" | "mine";
 }): GetApplicationsParams {
@@ -72,6 +106,12 @@ export function buildApplicationsListParams(options: {
   };
   if (options.searchTerm) {
     params.search = options.searchTerm;
+  }
+  if (options.typeFilter && options.typeFilter !== "all") {
+    params.type = options.typeFilter;
+  }
+  if (options.priorityFilter && options.priorityFilter !== "all") {
+    params.priority = options.priorityFilter;
   }
   if (options.underwriterClaim) {
     params.underwriterClaim = options.underwriterClaim;

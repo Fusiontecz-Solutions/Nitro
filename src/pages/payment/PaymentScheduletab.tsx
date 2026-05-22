@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   ChevronsLeft,
@@ -6,7 +6,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Pencil,
-  Plus,
   Loader2,
   Eye,
   Trash2,
@@ -41,6 +40,12 @@ import {
   extractDealTokensFromText,
   normalizeDealIdToken,
 } from "./paymentDealIdUtils";
+
+const SchedulePaymentTrackingLauncher = lazy(() =>
+  import("./SchedulePaymentTrackingModal").then((m) => ({
+    default: m.SchedulePaymentTrackingLauncher,
+  })),
+);
 
 const paymentStatusBadge: Record<
   PaymentStatus,
@@ -108,6 +113,81 @@ function rowStatusLc(p: PaymentRow): string {
   return String(p.status ?? "").trim().toLowerCase();
 }
 
+/** `YYYY-MM-DD` key from any parseable date string; falls back to the raw value so missing dates don't pair across rows. */
+function normalizeDateKey(dateStr: string | undefined | null): string {
+  const t = (dateStr ?? "").trim();
+  if (!t) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const d = new Date(t);
+  if (Number.isNaN(d.getTime())) return t;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Two-decimal numeric key so `15` and `15.00` group together. */
+function amountKey(n: number | undefined | null): string {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toFixed(2) : "0.00";
+}
+
+/**
+ * Pairs same-day same-amount debit/credit-paid rows into a single FAILED row.
+ *
+ * The resulting Failed row always inherits the **debit's** description — the credit leg is
+ * the offsetting bank refund (typically carrying generic ACH return text like `…ROC… CCD …`
+ * that doesn't describe the actual deal payment). If the debit's note is blank, the row is
+ * left blank rather than leaking the refund's text, so the Failed tab consistently shows the
+ * originating transaction's description.
+ *
+ * Unpaired rows pass through unchanged so Paid/Debit tabs still show truly one-sided activity.
+ */
+function pairDebitCreditAsFailed(list: PaymentRow[]): PaymentRow[] {
+  if (list.length < 2) return list;
+
+  const groups = new Map<string, PaymentRow[]>();
+  for (const p of list) {
+    const key = `${normalizeDateKey(p.date)}|${amountKey(p.amount)}`;
+    const arr = groups.get(key);
+    if (arr) arr.push(p);
+    else groups.set(key, [p]);
+  }
+
+  const out: PaymentRow[] = [];
+  for (const group of groups.values()) {
+    if (group.length < 2) {
+      out.push(...group);
+      continue;
+    }
+    const debits: PaymentRow[] = [];
+    const credits: PaymentRow[] = [];
+    const others: PaymentRow[] = [];
+    for (const p of group) {
+      const s = rowStatusLc(p);
+      if (s === "debit") debits.push(p);
+      else if (s === "credit" || s === "paid") credits.push(p);
+      else others.push(p);
+    }
+
+    const pairCount = Math.min(debits.length, credits.length);
+    for (let i = 0; i < pairCount; i++) {
+      const debit = debits[i];
+      out.push({
+        ...debit,
+        status: "failed",
+        note: debit.note ?? "",
+      });
+    }
+    for (let i = pairCount; i < debits.length; i++) out.push(debits[i]);
+    for (let i = pairCount; i < credits.length; i++) out.push(credits[i]);
+    out.push(...others);
+  }
+
+  out.sort((a, b) => (a.payNum ?? 0) - (b.payNum ?? 0));
+  return out;
+}
+
 /** Compact page list so the footer does not render 40+ buttons in one row. */
 function getVisiblePages(
   current: number,
@@ -130,6 +210,11 @@ type PaymentScheduletabProps = {
   selectedAcct: string;
   /** Deal id from the open application (`dealId` / `dealID`). Scopes transactions to CollectionPayment rows for this deal only. */
   applicationDealId?: string;
+  /**
+   * Prisma `Application.id` (UUID) or numeric `applicationId` of the open application.
+   * Used to fetch `SchedulePaymentTracking` rows via `GET /applications/:id/schedule-payment-tracking`.
+   */
+  applicationId?: string;
   /** True while GET `/collection-payments` is in flight and there are no rows yet (avoids an empty table flash). */
   isRowsLoading?: boolean;
   isDark: boolean;
@@ -155,6 +240,7 @@ function PaymentScheduletab({
   schedules,
   selectedAcct,
   applicationDealId,
+  applicationId,
   isRowsLoading = false,
   isDark,
   onCreatePayment,
@@ -211,23 +297,33 @@ function PaymentScheduletab({
     });
   }, [acct, applicationDealId]);
 
-  /** Tabs follow API `status` — GET /collection-payments applies debit↔incoming pairing on the server. */
+  /**
+   * Same-day same-amount debit+credit (or debit+paid) rows are collapsed into a single FAILED row
+   * carrying the debit's description. This restores the prior behavior where a returned credit
+   * cancels its triggering debit instead of showing both halves of the round-trip separately.
+   */
+  const pairedPayments = useMemo(
+    () => pairDebitCreditAsFailed(dealScopedPayments),
+    [dealScopedPayments]
+  );
+
+  /** Tabs run against the paired list so paired halves no longer leak into Paid/Debit tabs. */
   const filteredPayments = useMemo(() => {
     if (!acct) return [];
     if (activeFilterTab === "paid") {
-      return dealScopedPayments.filter((p) => {
+      return pairedPayments.filter((p) => {
         const st = rowStatusLc(p);
         return st === "credit" || st === "paid";
       });
     }
     if (activeFilterTab === "failed") {
-      return dealScopedPayments.filter((p) => rowStatusLc(p) === "failed");
+      return pairedPayments.filter((p) => rowStatusLc(p) === "failed");
     }
     if (activeFilterTab === "debit") {
-      return dealScopedPayments.filter((p) => rowStatusLc(p) === "debit");
+      return pairedPayments.filter((p) => rowStatusLc(p) === "debit");
     }
-    return dealScopedPayments;
-  }, [acct, activeFilterTab, dealScopedPayments]);
+    return pairedPayments;
+  }, [acct, activeFilterTab, pairedPayments]);
 
   const pageSize = 6;
   const [currentPage, setCurrentPage] = useState(1);
@@ -331,7 +427,7 @@ function PaymentScheduletab({
         <div className="space-y-1">
           <h2 className="text-xl font-bold tracking-tight">Transaction</h2>
           <p className="text-sm text-muted-foreground">
-            Filter and update payments for{" "}
+            Filter and update Transactions for{" "}
             <span className="font-semibold text-foreground">{acct.deal}</span>.
           </p>
         </div>
@@ -352,17 +448,23 @@ function PaymentScheduletab({
           </Button> */}
 
 
-          <Button
-            type="button"
-            className="h-10 gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
-            onClick={() => {
-              setNewPayment({ amount: "", date: getTodayInputDate(), note: "", status: "manual" });
-              setShowAddPayment(true);
-            }}
+          <Suspense
+            fallback={
+              <Button
+                type="button"
+                className="h-10 gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+                disabled
+              >
+                Track Schedule Payments
+              </Button>
+            }
           >
-            <Plus className="h-4 w-4" />
-            Schedule Payment
-          </Button>
+            <SchedulePaymentTrackingLauncher
+              applicationId={applicationId}
+              applicationDealId={applicationDealId}
+              isDark={isDark}
+            />
+          </Suspense>
 
           <Button
             type="button"
@@ -437,7 +539,7 @@ function PaymentScheduletab({
                 >
                   <div className="flex flex-col items-center justify-center gap-3">
                     <Loader2 className="h-8 w-8 animate-spin text-[#276D9C]" aria-hidden />
-                    <span>Loading payments…</span>
+                    <span>Loading paymentsâ€¦</span>
                   </div>
                 </TableCell>
               </TableRow>
@@ -485,7 +587,7 @@ function PaymentScheduletab({
                   })()}
                 </TableCell>
                 <TableCell className="max-w-[220px] truncate text-muted-foreground" title={p.note}>
-                  {p.note?.trim() ? p.note : "—"}
+                  {p.note?.trim() ? p.note : "â€”"}
                 </TableCell>
                 <TableCell className="text-left">
                   <div className="inline-flex items-center gap-2">
@@ -591,7 +693,7 @@ function PaymentScheduletab({
                       className="shrink-0 px-1.5 text-muted-foreground"
                       aria-hidden
                     >
-                      …
+                      â€¦
                     </span>
                   );
                 }
@@ -755,7 +857,7 @@ function PaymentScheduletab({
               <div className="rounded-xl border border-border/60 bg-background/40 p-4">
                 <div className="text-sm font-semibold">{showUpdateModal.refId}</div>
                 <div className="mt-1 text-sm text-muted-foreground">
-                  {formatDateMonthDayYear(showUpdateModal.date, showUpdateModal.date)} ·{" "}
+                  {formatDateMonthDayYear(showUpdateModal.date, showUpdateModal.date)} Â·{" "}
                   {formatCurrencyFull(showUpdateModal.amount)}
                 </div>
               </div>
@@ -859,6 +961,7 @@ function PaymentScheduletab({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </>
   );
 }
