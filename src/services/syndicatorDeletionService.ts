@@ -8,7 +8,7 @@ async function deleteUserAuthTokens(tx: Prisma.TransactionClient, userId: string
 }
 
 /**
- * Clears FK / join data that would block deleting a Syndicator row (implicit application M-N,
+ * Clears FK join data that would block deleting a Syndicator row (implicit application M-N,
  * details rows without Prisma FK cascade, notifications without cascade).
  */
 export async function detachSyndicatorGraph(
