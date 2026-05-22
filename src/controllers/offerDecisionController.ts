@@ -160,13 +160,16 @@ class OfferDecisionController {
         return s;
       };
 
-      const data: any = {
+      const parseFrequencyForPrisma = (f: unknown): string | null =>
+        f != null && String(f).trim() !== '' ? String(f).trim() : null;
+
+      const createData: any = {
         decision: String(decision),
         position: position ?? null,
         offer: parseNumber(offer),
         rate: parseNumber(rate),
         term: parseTermForPrisma(term),
-        frequency: frequency != null && String(frequency).trim() !== '' ? String(frequency).trim() : null,
+        frequency: parseFrequencyForPrisma(frequency),
         repayPerPeriod: parseNumber(repayPerPeriod),
         monthlyPayment: parseNumber(monthlyPayment),
         fees: parseNumber(fees),
@@ -176,13 +179,31 @@ class OfferDecisionController {
         declineReason: null,
       };
 
+      /** Partial update: only fields sent in the body are written (preserves position, ourRemit, etc.). */
+      const body = req.body as Record<string, unknown>;
+      const updateData: any = {
+        decision: String(decision),
+        declineReason: null,
+      };
+      if ('position' in body) updateData.position = position ?? null;
+      if ('offer' in body) updateData.offer = parseNumber(offer);
+      if ('rate' in body) updateData.rate = parseNumber(rate);
+      if ('term' in body) updateData.term = parseTermForPrisma(term);
+      if ('frequency' in body) updateData.frequency = parseFrequencyForPrisma(frequency);
+      if ('repayPerPeriod' in body) updateData.repayPerPeriod = parseNumber(repayPerPeriod);
+      if ('monthlyPayment' in body) updateData.monthlyPayment = parseNumber(monthlyPayment);
+      if ('fees' in body) updateData.fees = parseNumber(fees);
+      if ('ourRemit' in body) updateData.ourRemit = parseNumber(ourRemit);
+      if ('totalRemit' in body) updateData.totalRemit = parseNumber(totalRemit);
+      if ('refinanceAmount' in body) updateData.refinanceAmount = parseNumber(refinanceAmount);
+
       const result = await prisma.offerDecision.upsert({
         where: { applicationId: app.id },
         create: {
           applicationId: app.id,
-          ...data,
+          ...createData,
         },
-        update: data,
+        update: updateData,
       });
 
       /**
@@ -192,7 +213,8 @@ class OfferDecisionController {
        *   commissionAmount = offer * (Application.commissionPercentage / 100)
        * If the offer is missing/zero we clear the column instead of leaving stale data.
        */
-      const offerForCommission = data.offer;
+      const offerForCommission =
+        result.offer != null ? Number(result.offer) : parseNumber(offer);
       const commissionPercentage = Number(app.commissionPercentage ?? 0);
       const newCommissionAmount =
         offerForCommission != null && Number.isFinite(offerForCommission)
