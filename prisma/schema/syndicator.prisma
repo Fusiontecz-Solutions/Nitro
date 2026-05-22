@@ -93,30 +93,24 @@ model Syndicator {
   SyndicatorPaymentSetting    SyndicatorPaymentSetting?
   SyndicatorSetting           SyndicatorSetting?
   transactionHistory          SyndicatorTransaction[]
-  SyndicatorWalletTransaction   SyndicatorWalletTransaction[]
-  SyndicatorWithdrawalRequest     SyndicatorWithdrawalRequest[]
-  applications                  Application[]                 @relation("ApplicationSyndicators")
-}
-
-enum SyndicatorWithdrawalRequestStatus {
-  PENDING
-  APPROVED
-  DECLINED
+  SyndicatorWalletTransaction SyndicatorWalletTransaction[]
+  SyndicatorWithdrawalRequest SyndicatorWithdrawalRequest[]
+  applications                Application[]                 @relation("ApplicationSyndicators")
 }
 
 model SyndicatorWithdrawalRequest {
-  id                 Int                               @id @default(autoincrement())
-  syndicatorId       Int
-  amount             Decimal                           @db.Decimal(14, 2)
-  transactionType    String?
-  comment            String?
-  payoutDate         DateTime?
-  status             SyndicatorWithdrawalRequestStatus @default(PENDING)
-  reviewedAt         DateTime?
-  reviewedByUserId   String?                           @db.Uuid
-  createdAt          DateTime                          @default(now())
-  updatedAt          DateTime                          @updatedAt
-  syndicator         Syndicator                        @relation(fields: [syndicatorId], references: [id], onDelete: Cascade)
+  id               Int                               @id @default(autoincrement())
+  syndicatorId     Int
+  amount           Decimal                           @db.Decimal(14, 2)
+  transactionType  String?
+  comment          String?
+  payoutDate       DateTime?
+  status           SyndicatorWithdrawalRequestStatus @default(PENDING)
+  reviewedAt       DateTime?
+  reviewedByUserId String?                           @db.Uuid
+  createdAt        DateTime                          @default(now())
+  updatedAt        DateTime                          @updatedAt
+  syndicator       Syndicator                        @relation(fields: [syndicatorId], references: [id], onDelete: Cascade)
 
   @@index([syndicatorId, status])
 }
@@ -304,6 +298,12 @@ model SyndicatorBankInformation {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
   syndicator        Syndicator  @relation(fields: [syndicatorId], references: [id], onDelete: Cascade)
+}
+
+enum SyndicatorWithdrawalRequestStatus {
+  PENDING
+  APPROVED
+  DECLINED
 }
 
 enum SyndicateStatus {

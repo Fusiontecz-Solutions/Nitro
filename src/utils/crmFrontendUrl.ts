@@ -39,12 +39,35 @@ function normalizeToOrigin(raw: string): string | undefined {
 }
 
 /**
+ * Pick the first defined env var, return its normalized origin (or undefined).
+ * Used to honor an explicit `FRONTEND_URL` override regardless of `NODE_ENV`.
+ */
+function pickExplicitFrontendUrlEnv(): string | undefined {
+    const candidates = [
+        process.env.FRONTEND_URL,
+    ];
+    for (const raw of candidates) {
+        const t = String(raw || '').trim();
+        if (!t) continue;
+        const normalized = normalizeToOrigin(t);
+        if (normalized && normalized.length > 0) return normalized;
+    }
+    return undefined;
+}
+
+/**
  * Absolute origin for links in emails (must be the **frontend** host where `/public/...` routes exist).
  *
- * - **Local (`NODE_ENV` ≠ `production`):** uses `LOCAL_FRONTEND_URL` or `DEV_FRONTEND_URL`, otherwise
- *   `http://localhost:5173`. Production-style vars (`CRM_API_URL`, `PUBLIC_SITE_ORIGIN`, etc.) are not used,
- *   so local emails always point at your dev SPA.
- * - **Production:** prefers the origin derived from **`CRM_API_URL`**, then `PUBLIC_SITE_ORIGIN`, `FRONTEND_URL`, etc.
+ * Resolution order (applies in both dev and prod so a single env flip controls email links):
+ *   1. Explicit override: `FRONTEND_URL` / `PUBLIC_FRONTEND_URL` / `APP_FRONTEND_URL`.
+ *   2. **Local (`NODE_ENV` ≠ `production`):** `LOCAL_FRONTEND_URL` / `DEV_FRONTEND_URL`,
+ *      otherwise `http://localhost:5173`.
+ *   3. **Production:** origin derived from `CRM_API_URL`, then `PUBLIC_SITE_ORIGIN`,
+ *      `APP_APPLICATION_URL`, `CLIENT_PORTAL_URL`, etc.
+ *
+ * To switch the approval-email link between local and live, set `FRONTEND_URL` in `.env`:
+ *   - Local:  `FRONTEND_URL=http://localhost:5173`
+ *   - Live:   `FRONTEND_URL=https://www.barclays.finexusai.com`
  */
 /**
  * Base URL for Decision Logic email links (`/decision-logic?token=...`).
@@ -76,6 +99,9 @@ export function resolveDecisionLogicInvitationBaseUrl(): string {
 
 export function resolveCrmFrontendBaseUrl(): string | undefined {
   const inProd = process.env.NODE_ENV === 'production';
+
+  const explicit = pickExplicitFrontendUrlEnv();
+  if (explicit) return explicit;
 
   if (!inProd) {
     const devLocal = String(

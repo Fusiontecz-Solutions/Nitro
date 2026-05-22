@@ -9,23 +9,23 @@ model Disclosure {
 }
 
 model Contract {
-  id                             Int                    @id @default(autoincrement())
-  clientId                       String?                @db.Uuid
-  applicationId                  String?                @unique @db.Uuid
-  offerId                        String                 @unique @db.Uuid
-  contractNumber                 String                 @unique @default(cuid())
-  contractDate                   DateTime               @default(now())
+  id                             Int                               @id @default(autoincrement())
+  clientId                       String?                           @db.Uuid
+  applicationId                  String?                           @unique @db.Uuid
+  offerId                        String                            @unique @db.Uuid
+  contractNumber                 String                            @unique @default(cuid())
+  contractDate                   DateTime                          @default(now())
   startDate                      DateTime
   endDate                        DateTime
   contractLenght                 Int
   approvedAmount                 Float
   totalAmount                    Float
-  createdAt                      DateTime               @default(now())
-  updatedAt                      DateTime               @updatedAt
-  createdById                    String                 @db.Uuid
+  createdAt                      DateTime                          @default(now())
+  updatedAt                      DateTime                          @updatedAt
+  createdById                    String                            @db.Uuid
   agreementDate                  DateTime
-  paymentBankId                  String                 @db.Uuid
-  status                         ContractStatus         @default(DRAFT)
+  paymentBankId                  String                            @db.Uuid
+  status                         ContractStatus                    @default(DRAFT)
   funderName                     String?
   state                          String?
   /// BoldSign contract prefill overrides (flat string map); edited in CRM Deal Review prefill form.
@@ -72,12 +72,13 @@ model Contract {
   securityTaxEin                 String?
   achs                           ACH[]
   addendums                      Addendum[]
-  application                    Application?           @relation(fields: [applicationId], references: [id])
-  client                         Client?                @relation(fields: [clientId], references: [id])
-  createdBy                      User                   @relation("ContractCreatedBy", fields: [createdById], references: [id])
-  offer                          OfferDecision          @relation(fields: [offerId], references: [id], onDelete: Cascade)
-  paymentBank                    BankDetail             @relation(fields: [paymentBankId], references: [id])
+  application                    Application?                      @relation(fields: [applicationId], references: [id])
+  client                         Client?                           @relation(fields: [clientId], references: [id])
+  createdBy                      User                              @relation("ContractCreatedBy", fields: [createdById], references: [id])
+  offer                          OfferDecision                     @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  paymentBank                    BankDetail                        @relation(fields: [paymentBankId], references: [id])
   clients                        ContractClient[]
+  templateMappings               ContractDocumentTemplateMapping[]
   guarantors                     ContractGuarantor[]
   owners                         ContractOwner[]
   disclosure                     Disclosure?
@@ -89,34 +90,28 @@ model Contract {
   repaymentSchedules             RepaymentSchedule[]
   repaymentsTrasactions          RepaymentTransaction[]
   termsOffers                    TermsOffer[]
-  templateMappings               ContractDocumentTemplateMapping[]
 }
 
 model BoldSignTemplate {
-  name       String
-  type       String
-  state      String?
-  templateId String
-  createdAt  DateTime @default(now())
-  frequency  String?
-  id         String   @id @default(uuid()) @db.Uuid
+  name                     String
+  type                     String
+  state                    String?
+  templateId               String?
+  createdAt                DateTime                          @default(now())
+  frequency                String?
+  id                       String                            @id @default(uuid()) @db.Uuid
   contractTemplateMappings ContractDocumentTemplateMapping[]
 }
 
 model ContractDocumentTemplateMapping {
-  id          String @id @default(uuid()) @db.Uuid
-
-  contractId  Int
-  templateId  String @db.Uuid
-
+  id           String           @id @default(uuid()) @db.Uuid
+  contractId   Int
+  templateId   String           @db.Uuid
   documentType String
   order        Int
-
-  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
-
-  template BoldSignTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
+  createdAt    DateTime         @default(now())
+  contract     Contract         @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  template     BoldSignTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
 }
 
 model ContractClient {

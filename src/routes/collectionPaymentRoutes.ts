@@ -7,6 +7,14 @@ const router = express.Router();
 router.use(authenticateToken);
 
 router.get('/dashboard', collectionPaymentController.dashboard.bind(collectionPaymentController));
+router.get(
+  '/failed-transactions/summary',
+  collectionPaymentController.failedTransactionsSummary.bind(collectionPaymentController),
+);
+router.get(
+  '/failed-transactions',
+  collectionPaymentController.failedTransactions.bind(collectionPaymentController),
+);
 router.get('/financials', collectionPaymentController.financials.bind(collectionPaymentController));
 router.post(
   '/balances',

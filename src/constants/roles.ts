@@ -8,6 +8,7 @@ export const ROLES = [
   'UNDERWRITER',
   'FINAL_UNDERWRITER',
   'ACCOUNTANT',
+  'ACCOUNTS',
   'ADMIN',
   'OPERATIONS',
   'SYNDICATOR',

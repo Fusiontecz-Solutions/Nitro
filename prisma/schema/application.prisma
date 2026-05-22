@@ -22,10 +22,10 @@ model User {
   docusignTokenExpiry        DateTime?
   googleRefreshToken         String?
   accessTokens               AccessToken[]
+  underwriterClaimedApps     Application[]                 @relation("ApplicationClaimedByUnderwriter")
   createdApplications        Application[]                 @relation("ApplicationCreatedBy")
   referringApplications      Application[]                 @relation("ApplicationReferringAgent")
   salesApplications          Application[]                 @relation("ApplicationSalesRep")
-  underwriterClaimedApps     Application[]                @relation("ApplicationClaimedByUnderwriter")
   ApplicationActivityLog     ApplicationActivityLog[]
   applicationQuestionUpdates ApplicationQuestionResponse[] @relation("ApplicationQuestionUpdatedBy")
   BankAnalysis               BankAnalysis[]
@@ -56,6 +56,7 @@ model User {
   paymentMailLogsCreated     PaymentMailLog[]              @relation("PaymentMailLogCreatedBy")
   PaymentTemplate            PaymentTemplate[]
   positions                  Position[]
+  SchedulePaymentTracking    SchedulePaymentTracking[]
   syndicator                 Syndicator?
   termsOffers                TermsOffer[]
   typingIndicators           TypingIndicator[]
@@ -184,6 +185,10 @@ model Application {
   dealDisplayName          String?
   dealId                   String?
   status                   String?
+  claimedByUnderwriterId   String?                       @db.Uuid
+  claimedAt                DateTime?
+  category                 String?
+  claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
   client                   Client                        @relation(fields: [clientId], references: [id])
   createdBy                User?                         @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
   iso                      Iso?                          @relation(fields: [isoId], references: [id])
@@ -218,12 +223,10 @@ model Application {
   paymentMailLogs          PaymentMailLog[]
   positions                Position[]
   PublicApprovalToken      PublicApprovalToken[]
+  SchedulePaymentTracking  SchedulePaymentTracking[]
   scheduledRePayments      ScheduledRePayment[]
   termsOffers              TermsOffer[]
   syndicator               Syndicator[]                  @relation("ApplicationSyndicators")
-  claimedByUnderwriterId   String?                       @db.Uuid
-  claimedAt                DateTime?
-  claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
 
   @@index([isoId])
   @@index([dealId])
@@ -234,6 +237,7 @@ model Application {
   @@index([createdById])
   @@index([claimedByUnderwriterId])
   @@index([currentQueue, claimedByUnderwriterId])
+  @@index([category])
 }
 
 /// Per-application DocuSign / contract business fields (1:1 with Application)
@@ -942,6 +946,7 @@ enum Role {
   OPERATIONS
   SYNDICATOR
   SUPER_ADMIN
+  ACCOUNTS
 }
 
 enum RequestStatus {

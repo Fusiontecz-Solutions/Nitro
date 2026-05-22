@@ -13,7 +13,6 @@ import {
     assertReadyToCreateNewClientFromPdf,
     type AuthenticatedUser,
 } from '../services/applicationService';
-import { allocateNextDealId, withAllocatedDealId } from '../services/nextDealIdService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import {
     aggregateApplicationStats,
@@ -50,6 +49,7 @@ import {
 import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
+import { generateNextDealId } from '../utils/generateNextDealId';
 import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import {
     createApplicationActivityLog,
@@ -113,10 +113,18 @@ type BulkUploadJobStatus = 'processing' | 'completed' | 'failed';
 type BulkUploadJob = {
     id: string;
     createdAtMs: number;
+    /**
+     * Refreshed every time the job state changes (progress tick, completion, failure).
+     * Used by `cleanupExpiredBulkUploadJobs` to skip jobs that are still making progress and to
+     * give completed jobs a long enough window for the UI to fetch the final result.
+     */
+    updatedAtMs: number;
     status: BulkUploadJobStatus;
     totalRows: number;
     processedRows: number;
     successCount: number;
+    /** Rows that updated an existing application by matching deal id. */
+    updatedCount: number;
     failedCount: number;
     currentExcelRowNumber?: number;
     message?: string;
@@ -125,18 +133,54 @@ type BulkUploadJob = {
 };
 
 const bulkUploadJobs = new Map<string, BulkUploadJob>();
-const BULK_UPLOAD_JOB_TTL_MS = 1000 * 60 * 30;
+
+/**
+ * How long to retain a completed/failed job in memory after its last update so the polling UI can
+ * read the final result. Generously sized (4h) to survive long sheets and brief client absences.
+ */
+const BULK_UPLOAD_TERMINAL_JOB_TTL_MS = 1000 * 60 * 60 * 4;
+/**
+ * Idle threshold for a `processing` job. If nothing has been touched in this window we treat the
+ * job as orphaned (e.g. the server restarted between polls) and reap it. Otherwise running jobs
+ * are kept alive indefinitely, which is required for sheets with thousands of rows.
+ */
+const BULK_UPLOAD_PROCESSING_IDLE_TTL_MS = 1000 * 60 * 60 * 6;
 
 function cleanupExpiredBulkUploadJobs(nowMs = Date.now()) {
     for (const [jobId, job] of bulkUploadJobs.entries()) {
-        if (nowMs - job.createdAtMs > BULK_UPLOAD_JOB_TTL_MS) {
+        const lastTouched = job.updatedAtMs || job.createdAtMs;
+        const ttl =
+            job.status === 'processing'
+                ? BULK_UPLOAD_PROCESSING_IDLE_TTL_MS
+                : BULK_UPLOAD_TERMINAL_JOB_TTL_MS;
+        if (nowMs - lastTouched > ttl) {
             bulkUploadJobs.delete(jobId);
         }
     }
 }
 
+/** Stamp the job's last-touched timestamp so the cleanup sweep treats it as alive. */
+function touchBulkUploadJob(job: BulkUploadJob): void {
+    job.updatedAtMs = Date.now();
+}
+
 function createBulkUploadJobId(): string {
     return `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Human-friendly summary line shown in toasts / progress for bulk upload outcomes. */
+function buildBulkUploadCompletionMessage(insertedCount: number, updatedCount: number): string {
+    if (insertedCount === 0 && updatedCount === 0) {
+        return 'No applications were imported.';
+    }
+    const parts: string[] = [];
+    if (insertedCount > 0) {
+        parts.push(`Inserted ${insertedCount} application(s)`);
+    }
+    if (updatedCount > 0) {
+        parts.push(`updated ${updatedCount} application(s)`);
+    }
+    return `${parts.join(' and ')}.`;
 }
 
 export const normalizePDFText = (text: string) => {
@@ -432,32 +476,15 @@ const normalizeWorkflowQueueKeyForDisbursement = (queue: string | null | undefin
         .toLowerCase();
 
 const QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT = new Set([
+    'agent',
+    'underwriter',
+    'finalunderwriter',
+    'contracted',
+    'contractout',
+    'contractsout',
     'final',
     'fundingcall',
-    'contractsigned',
-    'signedcontracts',
 ]);
-
-async function applicationHasFullySignedContract(applicationId: string): Promise<boolean> {
-    const contract = await prisma.contract.findFirst({
-        where: { applicationId: String(applicationId).trim() },
-        select: {
-            status: true,
-            application: {
-                select: {
-                    document: { select: { status: true } },
-                },
-            },
-        },
-    });
-    if (!contract) return false;
-    const cs = String(contract.status ?? '').trim().toUpperCase();
-    if (cs === 'COMPLETED' || cs === 'SIGNED') return true;
-    const docStatus = String(contract.application?.document?.status ?? '')
-        .trim()
-        .toLowerCase();
-    return docStatus === 'completed';
-}
 
 const shouldSetApplicationQueueToDisbursement = (currentQueue: string | null | undefined) =>
     QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT.has(normalizeWorkflowQueueKeyForDisbursement(currentQueue));
@@ -809,47 +836,47 @@ class ApplicationController {
             const creationQueue = roleUpper === 'AGENT' ? WORKFLOW_QUEUES.AGENT : undefined;
             const creationState = roleUpper === 'AGENT' ? ApplicationState.PENDING : undefined;
 
-            const application = await withAllocatedDealId((dealId, tx) =>
-                tx.application.create({
-                    data: applicationCreateUncheckedData({
-                        priority,
-                        type,
-                        salesRepresentativeId: String(salesRepresentative),
-                        clientId: clientRecord.id,
-                        note: note || '',
-                        loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                        commissionPercentage: commissionPercentageFromIso,
-                        createdById,
-                        referringAgentId: effectiveReferringAgentId,
-                        isoId: normalizedIsoId,
-                        currentQueue: creationQueue,
-                        currentState: creationState,
-                        dealId,
-                        files: uploadedFiles.length
-                            ? {
-                                createMany: {
-                                    data: uploadedFiles.map((f) => ({
-                                        url: f.url,
-                                        publicId: f.publicId,
-                                        originalName: f.originalName,
-                                        mimeType: f.mimeType,
-                                        size: f.size,
-                                        uploadedAt: f.uploadedAt,
-                                    })),
-                                },
-                            }
-                            : undefined,
-                    }),
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
+            const nextDealId = await generateNextDealId();
+
+            const application = await prisma.application.create({
+                data: applicationCreateUncheckedData({
+                    priority,
+                    type,
+                    salesRepresentativeId: String(salesRepresentative),
+                    clientId: clientRecord.id,
+                    note: note || '',
+                    loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
+                    commissionPercentage: commissionPercentageFromIso,
+                    createdById,
+                    referringAgentId: effectiveReferringAgentId,
+                    isoId: normalizedIsoId,
+                    currentQueue: creationQueue,
+                    currentState: creationState,
+                    dealId: nextDealId,
+                    files: uploadedFiles.length
+                        ? {
+                            createMany: {
+                                data: uploadedFiles.map((f) => ({
+                                    url: f.url,
+                                    publicId: f.publicId,
+                                    originalName: f.originalName,
+                                    mimeType: f.mimeType,
+                                    size: f.size,
+                                    uploadedAt: f.uploadedAt,
+                                })),
+                            },
+                        }
+                        : undefined,
                 }),
-            );
+                include: {
+                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    client: true,
+                    iso: true,
+                    files: true,
+                },
+            });
 
             const populatedApplication = mapApplicationToApi(application);
 
@@ -2436,6 +2463,7 @@ class ApplicationController {
                 status,
                 isoId,
                 commissionPercentage,
+                category,
             } = req.body;
             const authUser = getAuthenticatedUser(req);
 
@@ -2515,40 +2543,17 @@ class ApplicationController {
                         queueKey === 'disbursement' ||
                         shouldSetApplicationQueueToDisbursement(application.currentQueue)
                     ) {
-                        if (!(await applicationHasFullySignedContract(application.id))) {
-                            return res.status(400).json({
-                                success: false,
-                                message:
-                                    'Cannot move to Disbursement until the contract is fully signed in DocuSign.',
-                            });
-                        }
                         data.currentQueue = 'Disbursement';
                         if (currentState === undefined) {
                             data.currentState = ApplicationState.DISBURSMENT;
                         }
                     }
                 } else if (currentQueue === 'Funded') {
-                    const mayMarkFunded =
-                        queueKey === 'disbursement' ||
-                        queueKey === 'funded' ||
-                        shouldSetApplicationQueueToDisbursement(application.currentQueue);
-                    if (!mayMarkFunded) {
-                        return res.status(400).json({
-                            success: false,
-                            message:
-                                'Cannot mark as Funded from this stage. Confirm disbursement first or complete Contract Signed / Funding Call steps.',
-                        });
-                    }
-                    if (!(await applicationHasFullySignedContract(application.id))) {
-                        return res.status(400).json({
-                            success: false,
-                            message:
-                                'Cannot mark as funded until the contract is fully signed in DocuSign.',
-                        });
-                    }
-                    data.currentQueue = 'Funded';
-                    if (currentState === undefined) {
-                        data.currentState = ApplicationState.FUNDED;
+                    if (queueKey === 'disbursement' || queueKey === 'funded') {
+                        data.currentQueue = 'Funded';
+                        if (currentState === undefined) {
+                            data.currentState = ApplicationState.FUNDED;
+                        }
                     }
                 } else {
                     data.currentQueue = currentQueue;
@@ -2609,6 +2614,7 @@ class ApplicationController {
                         'OPERATIONS',
                         'FINAL_UNDERWRITER',
                         'ACCOUNTANT',
+                        'ACCOUNTS',
                     ].includes(roleUpper);
                     if (canSendToFu) {
                         data.currentQueue = WORKFLOW_QUEUES.FINAL_UNDERWRITER;
@@ -2638,6 +2644,15 @@ class ApplicationController {
                 data.commissionPercentage = raw;
             }
 
+            if (category !== undefined) {
+                if (category === null) {
+                    data.category = null;
+                } else {
+                    const trimmedCategory = String(category).trim();
+                    data.category = trimmedCategory.length > 0 ? trimmedCategory : null;
+                }
+            }
+
             if (Object.keys(data).length === 0) {
                 const fromQueue = currentQueue !== undefined ? String(currentQueue) : '';
                 if (fromQueue === 'Disbursement') {
@@ -2649,7 +2664,7 @@ class ApplicationController {
                 if (fromQueue === 'Funded') {
                     return res.status(400).json({
                         success: false,
-                        message: `Cannot mark as Funded from queue "${application.currentQueue}". Confirm disbursement or complete prior funding steps first.`,
+                        message: `Cannot mark as Funded unless the application is in Disbursement (current queue: "${application.currentQueue}").`,
                     });
                 }
                 return res.status(400).json({
@@ -4186,32 +4201,32 @@ class ApplicationController {
                 // Case 1: Client already exists → create application only
                 createdClient = clientRecord;
 
-                createdApplication = await withAllocatedDealId((dealId, tx) =>
-                    tx.application.create({
-                        data: applicationCreateUncheckedData({
-                            priority: 'High',
-                            type: applicationTypeForCreate,
-                            salesRepresentativeId: currentUserId,
-                            referringAgentId: currentUserId,
-                            clientId: createdClient.id,
-                            isoId: validatedIsoId,
-                            commissionPercentage: commissionPercentageFromIso,
-                            loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
-                            createdById: currentUserId,
-                            currentQueue: pdfAgentCreationQueue,
-                            currentState: pdfAgentCreationState,
-                            dealId,
-                        }),
-                        include: {
-                            referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                            salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                            createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                            client: true,
-                            iso: true,
-                            files: true,
-                        },
+                const nextDealIdExisting = await generateNextDealId();
+
+                createdApplication = await prisma.application.create({
+                    data: applicationCreateUncheckedData({
+                        priority: 'High',
+                        type: applicationTypeForCreate,
+                        salesRepresentativeId: currentUserId,
+                        referringAgentId: currentUserId,
+                        clientId: createdClient.id,
+                        isoId: validatedIsoId,
+                        commissionPercentage: commissionPercentageFromIso,
+                        loanAmount: !isNaN(loanAmountNum as number) ? (loanAmountNum as number) : null,
+                        createdById: currentUserId,
+                        currentQueue: pdfAgentCreationQueue,
+                        currentState: pdfAgentCreationState,
+                        dealId: nextDealIdExisting,
                     }),
-                );
+                    include: {
+                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        client: true,
+                        iso: true,
+                        files: true,
+                    },
+                });
 
                 await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, pdfOriginalName);
                 const applicationAfterPdf = await prisma.application.findUnique({
@@ -4310,8 +4325,6 @@ class ApplicationController {
 
             // Case 2: Client does not exist → create client + application atomically
             const result = await prisma.$transaction(async (tx) => {
-                const dealId = await allocateNextDealId(tx);
-
                 const newClient = await tx.client.create({
                     data: {
                         businessName: business.business_name || business.dba_name || null,
@@ -4353,6 +4366,8 @@ class ApplicationController {
                     },
                 });
 
+                const nextDealIdNew = await generateNextDealId(tx);
+
                 const newApplication = await tx.application.create({
                     data: applicationCreateUncheckedData({
                         priority: 'High',
@@ -4366,7 +4381,7 @@ class ApplicationController {
                         createdById: currentUserId,
                         currentQueue: pdfAgentCreationQueue,
                         currentState: pdfAgentCreationState,
-                        dealId,
+                        dealId: nextDealIdNew,
                     }),
                     include: {
                         referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -5678,6 +5693,7 @@ class ApplicationController {
                 where: whereClause,
                 include: {
                     client: true,
+                    files: { select: { originalName: true, size: true } },
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
                 },
             });
@@ -5728,7 +5744,10 @@ class ApplicationController {
                 },
             });
 
-            const mapped = duplicates.map((app) => {
+            const mapDuplicateRow = (
+                app: (typeof duplicates)[number],
+                matchWith: string[],
+            ) => {
                 const dupClient: any = app.client;
                 const agent = app.createdBy as any;
                 const agentName = agent
@@ -5740,17 +5759,6 @@ class ApplicationController {
                     status = 'Approved';
                 } else if (app.currentQueue === 'Declined' || app.currentState === ApplicationState.CANCELLED) {
                     status = 'Rejected';
-                }
-
-                const matchWith: string[] = [];
-                if (businessName && dupClient?.businessName && dupClient.businessName === businessName) {
-                    matchWith.push('Business name');
-                }
-                if (ein && dupClient?.businessEinNumber && dupClient.businessEinNumber === ein) {
-                    matchWith.push('EIN');
-                }
-                if (ssn && dupClient?.ownerSsn && dupClient.ownerSsn === ssn) {
-                    matchWith.push('SSN');
                 }
 
                 return {
@@ -5765,7 +5773,54 @@ class ApplicationController {
                     ownerSsn: dupClient?.ownerSsn || null,
                     matchWith,
                 };
-            });
+            };
+
+            const byId = new Map<string, ReturnType<typeof mapDuplicateRow>>();
+
+            for (const app of duplicates) {
+                const matchWith: string[] = [];
+                const dupClient: any = app.client;
+                if (businessName && dupClient?.businessName && dupClient.businessName === businessName) {
+                    matchWith.push('Business name');
+                }
+                if (ein && dupClient?.businessEinNumber && dupClient.businessEinNumber === ein) {
+                    matchWith.push('EIN');
+                }
+                if (ssn && dupClient?.ownerSsn && dupClient.ownerSsn === ssn) {
+                    matchWith.push('SSN');
+                }
+                byId.set(app.id, mapDuplicateRow(app, matchWith));
+            }
+
+            const { findSamePdfFileApplications, pickPrimaryPdfFile, readPdfFileDedupeDays } =
+                await import('../services/pdfFileDedupeService');
+            const pdfSig = pickPrimaryPdfFile(applicationRecord.files);
+            const createdById = applicationRecord.createdById;
+            if (pdfSig && createdById) {
+                const dedupeDays = readPdfFileDedupeDays();
+                const samePdfApps = await findSamePdfFileApplications({
+                    excludeApplicationId: applicationRecord.id,
+                    createdById,
+                    file: pdfSig,
+                    referenceCreatedAt: applicationRecord.createdAt,
+                    dedupeDays,
+                });
+                const pdfMatchLabel = `Same PDF file (within ${dedupeDays} days)`;
+                for (const app of samePdfApps) {
+                    const existing = byId.get(app.id);
+                    if (existing) {
+                        if (!existing.matchWith.includes(pdfMatchLabel)) {
+                            existing.matchWith.push(pdfMatchLabel);
+                        }
+                    } else {
+                        byId.set(app.id, mapDuplicateRow(app, [pdfMatchLabel]));
+                    }
+                }
+            }
+
+            const mapped = Array.from(byId.values()).sort(
+                (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime(),
+            );
 
             return res.status(200).json({
                 success: true,
@@ -5799,10 +5854,7 @@ class ApplicationController {
 
             return res.status(200).json({
                 success: true,
-                message:
-                    summary.successCount > 0
-                        ? `Imported ${summary.successCount} application(s).`
-                        : 'No applications were imported.',
+                message: buildBulkUploadCompletionMessage(summary.successCount, summary.updatedCount),
                 data: summary,
             });
         } catch (error: any) {
@@ -5831,13 +5883,16 @@ class ApplicationController {
             }
 
             const jobId = createBulkUploadJobId();
+            const nowMs = Date.now();
             const initialJob: BulkUploadJob = {
                 id: jobId,
-                createdAtMs: Date.now(),
+                createdAtMs: nowMs,
+                updatedAtMs: nowMs,
                 status: 'processing',
                 totalRows: 0,
                 processedRows: 0,
                 successCount: 0,
+                updatedCount: 0,
                 failedCount: 0,
                 errors: [],
             };
@@ -5852,38 +5907,66 @@ class ApplicationController {
                     job.failedCount = parseErrors.length;
                     job.errors = [...parseErrors];
                     job.processedRows = parseErrors.length;
+                    touchBulkUploadJob(job);
+                    console.log(
+                        `[bulk-import] job ${jobId}: parsed ${rows.length} row(s), ${parseErrors.length} parse error(s); starting ingest`,
+                    );
 
+                    let lastLogProcessed = 0;
                     const ingestSummary = await ingestApplicationBulkRows(rows, userId, (progress) => {
                         const runningJob = bulkUploadJobs.get(jobId);
                         if (!runningJob) return;
                         runningJob.totalRows = progress.totalRows;
                         runningJob.processedRows = progress.processedRows;
                         runningJob.successCount = progress.successCount;
+                        runningJob.updatedCount = progress.updatedCount;
                         runningJob.failedCount = progress.failedCount + parseErrors.length;
                         runningJob.currentExcelRowNumber = progress.currentExcelRowNumber;
+                        touchBulkUploadJob(runningJob);
+
+                        // Server-side heartbeat every 50 rows so long imports leave a breadcrumb
+                        // trail in the logs.
+                        if (progress.processedRows - lastLogProcessed >= 50) {
+                            lastLogProcessed = progress.processedRows;
+                            console.log(
+                                `[bulk-import] job ${jobId}: ${progress.processedRows}/${progress.totalRows} processed (` +
+                                    `inserted=${progress.successCount}, updated=${progress.updatedCount}, failed=${progress.failedCount})`,
+                            );
+                        }
                     });
 
                     const mergedErrors = [...parseErrors, ...ingestSummary.errors];
                     const finalSummary: BulkImportSummary = {
                         totalRows: rows.length,
                         successCount: ingestSummary.successCount,
+                        updatedCount: ingestSummary.updatedCount,
                         failedCount: mergedErrors.length,
                         errors: mergedErrors,
                     };
                     job.result = finalSummary;
                     job.status = 'completed';
                     job.successCount = finalSummary.successCount;
+                    job.updatedCount = finalSummary.updatedCount;
                     job.failedCount = finalSummary.failedCount;
                     job.processedRows = finalSummary.totalRows;
                     job.currentExcelRowNumber = undefined;
                     job.errors = mergedErrors;
-                    job.message =
-                        finalSummary.successCount > 0
-                            ? `Imported ${finalSummary.successCount} application(s).`
-                            : 'No applications were imported.';
+                    job.message = buildBulkUploadCompletionMessage(
+                        finalSummary.successCount,
+                        finalSummary.updatedCount,
+                    );
+                    touchBulkUploadJob(job);
+                    console.log(
+                        `[bulk-import] job ${jobId}: completed — inserted=${finalSummary.successCount}, updated=${finalSummary.updatedCount}, failed=${finalSummary.failedCount}/${finalSummary.totalRows}`,
+                    );
                 } catch (error: any) {
                     job.status = 'failed';
                     job.message = error?.message || 'Bulk upload failed';
+                    touchBulkUploadJob(job);
+                    console.error(
+                        `[bulk-import] job ${jobId}: fatal error — ${job.message}`,
+                        error,
+                    );
                 }
             })();
 
@@ -5920,6 +6003,7 @@ class ApplicationController {
                 totalRows: job.totalRows,
                 processedRows: job.processedRows,
                 successCount: job.successCount,
+                updatedCount: job.updatedCount,
                 failedCount: job.failedCount,
                 currentExcelRowNumber: job.currentExcelRowNumber,
                 message: job.message,

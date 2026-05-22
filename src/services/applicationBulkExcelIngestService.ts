@@ -21,11 +21,117 @@ class SkipRowIngestError extends Error {
     }
 }
 
-async function applicationExistsByDealId(
+/**
+ * Sleep for the given milliseconds. Used between retry attempts for transient DB errors.
+ */
+function sleepMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Best-effort detection for transient database errors that are safe to retry. Covers Prisma's
+ * connection / pool exhaustion / serialization codes as well as the textual fallbacks for raw
+ * `pg` connection drops that surface from Neon's serverless driver under load.
+ */
+function isRetryableDbError(err: unknown): boolean {
+    if (!err) return false;
+    const anyErr = err as { code?: unknown; message?: unknown; name?: unknown };
+    const code = typeof anyErr.code === 'string' ? anyErr.code : '';
+    const name = typeof anyErr.name === 'string' ? anyErr.name : '';
+    const message =
+        typeof anyErr.message === 'string' ? anyErr.message.toLowerCase() : '';
+
+    // Prisma error codes that are safe to retry.
+    if (
+        code === 'P1001' || // Can't reach DB server
+        code === 'P1002' || // DB server timed out
+        code === 'P1008' || // Operations timed out
+        code === 'P1017' || // Server closed the connection
+        code === 'P2024' || // Connection pool timeout
+        code === 'P2034' // Transaction failed due to write conflict / serialization
+    ) {
+        return true;
+    }
+
+    // Postgres-level transient codes (serialization failure / deadlock).
+    if (code === '40001' || code === '40P01' || code === '57P01' || code === '57P03') {
+        return true;
+    }
+
+    if (
+        name === 'PrismaClientRustPanicError' ||
+        name === 'PrismaClientInitializationError'
+    ) {
+        return true;
+    }
+
+    if (!message) return false;
+    return (
+        message.includes('connection') ||
+        message.includes('terminated unexpectedly') ||
+        message.includes('econnreset') ||
+        message.includes('etimedout') ||
+        message.includes('socket hang up') ||
+        message.includes('connection pool') ||
+        message.includes('connection terminated') ||
+        message.includes('write conflict') ||
+        message.includes('deadlock detected')
+    );
+}
+
+/**
+ * Wrap a database operation so transient connection / serialization failures are retried with
+ * exponential backoff. Non-retryable errors are re-thrown immediately so they still surface as
+ * row-level errors in the import summary.
+ */
+async function withDbRetry<T>(
+    op: () => Promise<T>,
+    opts: { maxAttempts?: number; baseDelayMs?: number; label?: string } = {},
+): Promise<T> {
+    const maxAttempts = opts.maxAttempts ?? 5;
+    const baseDelayMs = opts.baseDelayMs ?? 250;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+            return await op();
+        } catch (err) {
+            lastErr = err;
+            if (attempt >= maxAttempts || !isRetryableDbError(err)) {
+                throw err;
+            }
+            const delay = baseDelayMs * 2 ** (attempt - 1);
+            const jitter = Math.floor(Math.random() * baseDelayMs);
+            if (opts.label) {
+                console.warn(
+                    `[bulk-import] transient DB error during ${opts.label} (attempt ${attempt}/${maxAttempts}); retrying in ${
+                        delay + jitter
+                    }ms`,
+                    err instanceof Error ? err.message : err,
+                );
+            }
+            await sleepMs(delay + jitter);
+        }
+    }
+    throw lastErr;
+}
+
+type ExistingAppLookup = {
+    id: string;
+    clientId: string;
+    isoId: string | null;
+    dealId: string | null;
+    note: string | null;
+};
+
+/**
+ * Find an existing application by deal id. We accept legacy rows that only carry the deal id in
+ * the `note` marker (`[DEAL_ID:xxx]`), in addition to the canonical `dealId` column.
+ */
+async function findApplicationByDealId(
     db: Pick<typeof prisma, 'application'> | DbTx,
     dealIdNormalized: string,
-): Promise<boolean> {
-    if (!dealIdNormalized) return false;
+): Promise<ExistingAppLookup | null> {
+    if (!dealIdNormalized) return null;
     const dealIdMarker = `[DEAL_ID:${dealIdNormalized}]`;
     const existing = await db.application.findFirst({
         where: {
@@ -35,9 +141,9 @@ async function applicationExistsByDealId(
                 { note: { contains: dealIdNormalized, mode: 'insensitive' } },
             ],
         },
-        select: { id: true },
+        select: { id: true, clientId: true, isoId: true, dealId: true, note: true },
     });
-    return Boolean(existing);
+    return existing as ExistingAppLookup | null;
 }
 
 export type BulkImportRowError = {
@@ -50,6 +156,8 @@ export type BulkImportRowError = {
 export type BulkImportSummary = {
     totalRows: number;
     successCount: number;
+    /** Rows that matched an existing application by deal id and were updated in place. */
+    updatedCount: number;
     failedCount: number;
     errors: BulkImportRowError[];
 };
@@ -58,6 +166,8 @@ export type BulkImportProgress = {
     totalRows: number;
     processedRows: number;
     successCount: number;
+    /** Rows that matched an existing application by deal id and were updated in place. */
+    updatedCount: number;
     failedCount: number;
     currentExcelRowNumber?: number;
 };
@@ -447,7 +557,11 @@ export function parseApplicationBulkSheet(buffer: Buffer): {
 }
 
 /**
- * Inserts applications (and related rows) from parsed sheet rows. One transaction per row so a failure never leaves a half-inserted graph.
+ * Inserts applications (and related rows) from parsed sheet rows, or updates an existing application
+ * in place when its deal id already exists. One transaction per row so a failure never leaves a
+ * half-inserted graph. Updates preserve the application's current `clientId` (we never re-parent an
+ * existing application to a different client) and only overwrite fields that have an explicit value
+ * in the sheet — empty cells leave existing values untouched.
  */
 export async function ingestApplicationBulkRows(
     rows: Record<string, unknown>[],
@@ -456,17 +570,23 @@ export async function ingestApplicationBulkRows(
 ): Promise<BulkImportSummary> {
     const errors: BulkImportRowError[] = [];
     let successCount = 0;
+    let updatedCount = 0;
     const dealIdsSeenInBatch = new Set<string>();
     const clientCache = new Map<string, string>();
 
     for (const raw of rows) {
         const excelRowNumber = Number(raw.__excelRow) || 0;
-        const emitProgress = (currentSuccess: number, currentFailed: number) => {
+        const emitProgress = (
+            currentSuccess: number,
+            currentUpdated: number,
+            currentFailed: number,
+        ) => {
             if (!onProgress) return;
             onProgress({
                 totalRows: rows.length,
-                processedRows: currentSuccess + currentFailed,
+                processedRows: currentSuccess + currentUpdated + currentFailed,
                 successCount: currentSuccess,
+                updatedCount: currentUpdated,
                 failedCount: currentFailed,
                 currentExcelRowNumber: excelRowNumber || undefined,
             });
@@ -478,7 +598,7 @@ export async function ingestApplicationBulkRows(
                 message: 'Missing deal name — row skipped.',
                 dealId: trimStr(raw.dealId) || null,
             });
-            emitProgress(successCount, errors.length);
+            emitProgress(successCount, updatedCount, errors.length);
             continue;
         }
 
@@ -489,7 +609,7 @@ export async function ingestApplicationBulkRows(
                 message: 'Missing deal id — row skipped.',
                 dealName: dealNameTrim,
             });
-            emitProgress(successCount, errors.length);
+            emitProgress(successCount, updatedCount, errors.length);
             continue;
         }
 
@@ -501,53 +621,159 @@ export async function ingestApplicationBulkRows(
                 dealId: dealIdKey,
                 dealName: dealNameTrim,
             });
-            emitProgress(successCount, errors.length);
+            emitProgress(successCount, updatedCount, errors.length);
             continue;
         }
 
-        if (await applicationExistsByDealId(prisma, dealIdKey)) {
-            errors.push({
-                excelRowNumber,
-                message: 'An application with this deal id already exists — row skipped (no client or application created).',
-                dealId: dealIdKey,
-                dealName: dealNameTrim,
-            });
-            emitProgress(successCount, errors.length);
-            continue;
-        }
-
-        const createdAt = parseExcelDate(raw.date);
-        if (!createdAt) {
-            errors.push({
-                excelRowNumber,
-                message: 'Invalid or missing date — row skipped.',
-                dealId: dealIdKey,
-                dealName: dealNameTrim,
-            });
-            emitProgress(successCount, errors.length);
-            continue;
-        }
-
-        const typeVal = strOrNA(raw.type);
-        const offerNum = parseMoneyToNumber(raw.offer);
-        const feesNum = parseMoneyToNumber(raw.fees);
-        const rateNum = parseRateToNumber(raw.rate);
-        const commissionNum = parseMoneyToNumber(raw.commission) ?? 0;
-        const isoCell = trimStr(raw.iso);
-        const termStored = normalizeTermForOfferDecision(raw.term);
-        const frequencyStored = frequencySpecToStored(deriveFrequency(trimStr(raw.term)));
-        const repayPerPeriodNum = parseMoneyToNumber(raw.repayPerPeriod);
-        const refinanceAmountNum = parseMoneyToNumber(raw.refinanceAmount);
-
+        // Everything below this point must NEVER throw out of the loop — a transient DB blip on
+        // row N must not stop the import of rows N+1..end. Any error is captured into `errors`
+        // and the loop continues. Retryable errors (Neon connection drops, pool timeouts, etc.)
+        // are retried automatically by `withDbRetry` before being recorded as a row failure.
         try {
-            await prisma.$transaction(
-                async (tx) => {
-                    if (await applicationExistsByDealId(tx, dealIdKey)) {
-                        throw new SkipRowIngestError(
-                            'An application with this deal id already exists — row skipped (no client or application created).',
-                        );
+            const existingApp = await withDbRetry(
+                () => findApplicationByDealId(prisma, dealIdKey),
+                { label: `findApplicationByDealId(row ${excelRowNumber})` },
+            );
+
+            const createdAt = parseExcelDate(raw.date);
+            // Date is only mandatory when creating a brand-new application; updates can omit it
+            // and we'll keep the previous `createdAt` intact.
+            if (!existingApp && !createdAt) {
+                errors.push({
+                    excelRowNumber,
+                    message: 'Invalid or missing date — row skipped.',
+                    dealId: dealIdKey,
+                    dealName: dealNameTrim,
+                });
+                emitProgress(successCount, updatedCount, errors.length);
+                continue;
+            }
+
+            const typeRaw = trimStr(raw.type);
+            const typeVal = typeRaw || NA;
+            const offerNum = parseMoneyToNumber(raw.offer);
+            const feesNum = parseMoneyToNumber(raw.fees);
+            const rateNum = parseRateToNumber(raw.rate);
+            const commissionRaw = trimStr(raw.commission);
+            const commissionParsed = commissionRaw
+                ? parseMoneyToNumber(raw.commission)
+                : null;
+            const commissionNumForCreate = commissionParsed ?? 0;
+            const isoCell = trimStr(raw.iso);
+            const termRaw = trimStr(raw.term);
+            const termStored = normalizeTermForOfferDecision(raw.term);
+            const frequencyStored = frequencySpecToStored(deriveFrequency(termRaw));
+            const repayPerPeriodNum = parseMoneyToNumber(raw.repayPerPeriod);
+            const refinanceAmountNum = parseMoneyToNumber(raw.refinanceAmount);
+
+            const wasUpdate = await withDbRetry(
+                () => prisma.$transaction(
+                    async (tx): Promise<boolean> => {
+                    // Re-check inside the transaction to avoid a duplicate-create race between the
+                    // initial lookup and now (e.g. two concurrent imports).
+                    const txExisting = await findApplicationByDealId(tx, dealIdKey);
+
+                    if (txExisting) {
+                        // UPDATE path: refresh the matched application in place. We never move the
+                        // application to a different client and we leave any user-authored `note`
+                        // text alone (only ensuring the `[DEAL_ID:xxx]` marker exists).
+                        const updateData: Record<string, unknown> = {
+                            dealId: dealIdKey,
+                            dealDisplayName: dealNameTrim,
+                        };
+
+                        if (typeRaw) updateData.type = typeVal;
+                        if (offerNum != null) updateData.loanAmount = offerNum;
+                        if (commissionParsed != null) updateData.commissionAmount = commissionParsed;
+                        if (createdAt) updateData.createdAt = createdAt;
+
+                        // Ensure the deal-id marker is present in `note` so future lookups by the
+                        // legacy `note`-marker path keep working. Existing user content is kept.
+                        const dealIdMarker = `[DEAL_ID:${dealIdKey}]`;
+                        const currentNote = txExisting.note ?? '';
+                        if (!currentNote.toLowerCase().includes(dealIdMarker.toLowerCase())) {
+                            updateData.note = currentNote
+                                ? `${currentNote}\n${dealIdMarker}`
+                                : dealIdMarker;
+                        }
+
+                        let payoutIsoId: string | null = null;
+                        if (isoCell) {
+                            const placeholderIso = await getOrCreatePlaceholderIso(tx);
+                            const isoResolved = await resolveIso(tx, isoCell, placeholderIso.id);
+                            updateData.isoId = isoResolved.isPlaceholder ? null : isoResolved.id;
+                            payoutIsoId = isoResolved.id;
+                        }
+
+                        await tx.application.update({
+                            where: { id: txExisting.id },
+                            data: updateData,
+                        });
+
+                        // OfferDecision is 1:1 with Application — upsert keeps the same row.
+                        // For updates, only overwrite columns that have an explicit value in the sheet
+                        // so empty cells don't blank out real data. The `create` branch keeps the
+                        // legacy default-to-0 behavior for newly minted decision rows.
+                        const offerUpdate: Record<string, unknown> = {
+                            decision: 'IMPORTED',
+                        };
+                        if (offerNum != null) offerUpdate.offer = offerNum;
+                        if (feesNum != null) offerUpdate.fees = feesNum;
+                        if (rateNum != null) offerUpdate.rate = rateNum;
+                        if (termRaw) {
+                            offerUpdate.term = termStored;
+                            offerUpdate.frequency = frequencyStored;
+                        }
+                        if (repayPerPeriodNum != null) {
+                            offerUpdate.repayPerPeriod = repayPerPeriodNum;
+                        }
+                        if (refinanceAmountNum != null) {
+                            offerUpdate.refinanceAmount = refinanceAmountNum;
+                        }
+
+                        await tx.offerDecision.upsert({
+                            where: { applicationId: txExisting.id },
+                            update: offerUpdate,
+                            create: {
+                                applicationId: txExisting.id,
+                                decision: 'IMPORTED',
+                                offer: offerNum ?? 0,
+                                rate: rateNum,
+                                fees: feesNum ?? 0,
+                                term: termStored,
+                                frequency: frequencyStored,
+                                repayPerPeriod: repayPerPeriodNum,
+                                refinanceAmount: refinanceAmountNum,
+                            },
+                        });
+
+                        // Make sure the new iso has a payout row, but don't delete other payouts
+                        // (an application may legitimately have multiple iso payouts).
+                        if (payoutIsoId) {
+                            await tx.isoApplicationPayout.upsert({
+                                where: {
+                                    isoId_applicationId: {
+                                        isoId: payoutIsoId,
+                                        applicationId: txExisting.id,
+                                    },
+                                },
+                                update: {},
+                                create: {
+                                    isoId: payoutIsoId,
+                                    applicationId: txExisting.id,
+                                },
+                            });
+                        }
+
+                        return true;
                     }
 
+                    // CREATE path (no existing match).
+                    if (!createdAt) {
+                        // Defensive — should have been filtered above, but the transaction may have
+                        // raced with another import that deleted the previous match.
+                        throw new SkipRowIngestError('Invalid or missing date — row skipped.');
+                    }
                     const placeholderIso = await getOrCreatePlaceholderIso(tx);
                     const clientId = await ensureClientByDealName(tx, dealNameTrim, actorUserId, clientCache);
 
@@ -566,7 +792,7 @@ export async function ingestApplicationBulkRows(
                             loanAmount: offerNum ?? null,
                             note: noteWithDealId,
                             commissionPercentage: 0,
-                            commissionAmount: commissionNum,
+                            commissionAmount: commissionNumForCreate,
                             dealId: dealIdKey,
                             dealDisplayName: dealNameTrim,
                             currentQueue: 'Funded',
@@ -592,20 +818,28 @@ export async function ingestApplicationBulkRows(
                         },
                     });
 
-                    const payoutIsoId = isoResolved.id;
                     await tx.isoApplicationPayout.create({
                         data: {
-                            isoId: payoutIsoId,
+                            isoId: isoResolved.id,
                             applicationId: application.id,
                         },
                     });
+                    return false;
                 },
-                { maxWait: 20_000, timeout: 60_000 },
+                // Per-row transaction budget: under load Neon can take a while to allocate a
+                // connection, so we give each row plenty of headroom rather than fail the whole job.
+                { maxWait: 60_000, timeout: 120_000 },
+                ),
+                { label: `row ${excelRowNumber} transaction`, maxAttempts: 4 },
             );
 
             dealIdsSeenInBatch.add(dealIdDedupeKey);
-            successCount += 1;
-            emitProgress(successCount, errors.length);
+            if (wasUpdate) {
+                updatedCount += 1;
+            } else {
+                successCount += 1;
+            }
+            emitProgress(successCount, updatedCount, errors.length);
         } catch (e) {
             if (e instanceof SkipRowIngestError) {
                 errors.push({
@@ -614,7 +848,7 @@ export async function ingestApplicationBulkRows(
                     dealId: dealIdKey,
                     dealName: dealNameTrim,
                 });
-                emitProgress(successCount, errors.length);
+                emitProgress(successCount, updatedCount, errors.length);
                 continue;
             }
             const msg = e instanceof Error ? e.message : String(e);
@@ -624,13 +858,20 @@ export async function ingestApplicationBulkRows(
                 dealId: dealIdKey,
                 dealName: dealNameTrim,
             });
-            emitProgress(successCount, errors.length);
+            emitProgress(successCount, updatedCount, errors.length);
+            // Defensive: if a single row blows up with something extraordinary (e.g. an OOM-ish
+            // crash, an unexpected throw from a helper), log and continue so the import never
+            // stalls on row N.
+            if (!(e instanceof Error)) {
+                console.warn('[bulk-import] row error (non-Error):', e);
+            }
         }
     }
 
     return {
         totalRows: rows.length,
         successCount,
+        updatedCount,
         failedCount: errors.length,
         errors,
     };
@@ -645,6 +886,7 @@ export async function processApplicationBulkExcelBuffer(
         return {
             totalRows: 0,
             successCount: 0,
+            updatedCount: 0,
             failedCount: parseErrors.length,
             errors: parseErrors,
         };
@@ -654,6 +896,7 @@ export async function processApplicationBulkExcelBuffer(
     return {
         totalRows: rows.length,
         successCount: ingest.successCount,
+        updatedCount: ingest.updatedCount,
         failedCount: mergedErrors.length,
         errors: mergedErrors,
     };

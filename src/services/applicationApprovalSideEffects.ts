@@ -31,6 +31,7 @@ const CRM_INTERNAL_NOTIFY_ROLES = [
     'UNDERWRITER',
     'FINAL_UNDERWRITER',
     'ACCOUNTANT',
+    'ACCOUNTS',
 ] as const;
 
 interface RecipientUser {

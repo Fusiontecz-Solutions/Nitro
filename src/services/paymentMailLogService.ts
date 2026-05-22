@@ -51,7 +51,7 @@ async function assertApplicationMailLogAccess(applicationId: string, user: Authe
   }
 
   const role = (user?.role ?? '').toString().trim().toUpperCase().replace(/-/g, '_');
-  const isElevated = ['ADMIN', 'SUPER_ADMIN', 'UNDERWRITER', 'FINAL_UNDERWRITER', 'ACCOUNTANT', 'OPERATIONS'].includes(
+  const isElevated = ['ADMIN', 'SUPER_ADMIN', 'UNDERWRITER', 'FINAL_UNDERWRITER', 'ACCOUNTANT', 'ACCOUNTS', 'OPERATIONS'].includes(
     role,
   );
   const isAgent = role === 'AGENT';

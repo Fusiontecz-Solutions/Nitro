@@ -1,6 +1,11 @@
 import type { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { CollectionPaymentSource, CollectionPaymentStatus, Prisma } from '@prisma/client';
+import {
+  CollectionPayment,
+  CollectionPaymentSource,
+  CollectionPaymentStatus,
+  Prisma,
+} from '@prisma/client';
 import * as XLSX from 'xlsx';
 import prisma from '../config/prismaClient';
 import {
@@ -27,6 +32,11 @@ import {
   buildApplicationStatsBucketWhere,
   buildFundedApplicationWhereForPaybackTotals,
 } from '../services/applicationStatsBucketWhere';
+import {
+  extractReturnCodeFromDescription,
+  parseTransactionStatusValue,
+} from '../utils/achReturnCodeFromDescription';
+import { getPreviewSheetDescription } from '../utils/previewSheetDebitCredit';
 
 const STATUS_MAP_TO_DB: Record<string, CollectionPaymentStatus | undefined> = {
   paid: CollectionPaymentStatus.PAID,
@@ -223,7 +233,672 @@ const parsePreviewAmount = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+function formatFailedTxUsd2(n: number): string {
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Matches dashboard-style `"$ 12,345.67"` for failed-transactions summary. */
+function formatFailedSummaryMoney(n: number): string {
+  return `$ ${formatFailedTxUsd2(n)}`;
+}
+
+/**
+ * Calendar day shown in failed-transaction lists (`YYYY-MM-DD`) — same priority as
+ * {@link mapPrismaPaymentToFailedTxRow} `displayDateYmd` so filters match visible dates.
+ */
+function collectionPaymentDisplayYmd(p: {
+  processedDate: Date | null;
+  Date: Date | null;
+  scheduledDate: Date;
+  createdAt: Date;
+}): string {
+  const processedDate = p.processedDate
+    ? new Date(p.processedDate).toISOString().slice(0, 10)
+    : null;
+  const paymentDate = p.Date ? new Date(p.Date).toISOString().slice(0, 10) : null;
+  const scheduledDate = p.scheduledDate
+    ? new Date(p.scheduledDate).toISOString().slice(0, 10)
+    : null;
+  return (
+    processedDate ??
+    paymentDate ??
+    scheduledDate ??
+    new Date(p.createdAt).toISOString().slice(0, 10)
+  );
+}
+
+type FailedTxDateQuery =
+  | { kind: 'none' }
+  | { kind: 'exact'; ymd: string }
+  | { kind: 'ym'; ym: string }
+  | { kind: 'y'; year: number }
+  | { kind: 'range'; fromYmd: string; toYmd: string };
+
+function parseIntQueryBounded(raw: unknown, min: number, max: number): number | null {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s) return null;
+  const n = Number.parseInt(s, 10);
+  if (!Number.isFinite(n) || n < min || n > max) return null;
+  return n;
+}
+
+/**
+ * Parses date filter for failed-transactions. Recognized query params (in priority order):
+ *   1) `?fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD` — inclusive range (either side may be omitted)
+ *   2) `?date=YYYY-MM-DD` — single calendar day
+ *   3) `?year=&month=&day=` — single calendar day (legacy)
+ */
+function parseFailedTransactionsDateQuery(req: Request): FailedTxDateQuery {
+  const fromRaw = typeof req.query.fromDate === 'string' ? req.query.fromDate.trim() : '';
+  const toRaw = typeof req.query.toDate === 'string' ? req.query.toDate.trim() : '';
+  const fromOk = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw);
+  const toOk = /^\d{4}-\d{2}-\d{2}$/.test(toRaw);
+  if (fromOk && toOk) {
+    const [lo, hi] = fromRaw <= toRaw ? [fromRaw, toRaw] : [toRaw, fromRaw];
+    return { kind: 'range', fromYmd: lo, toYmd: hi };
+  }
+  if (fromOk) return { kind: 'range', fromYmd: fromRaw, toYmd: fromRaw };
+  if (toOk) return { kind: 'range', fromYmd: toRaw, toYmd: toRaw };
+
+  const dateRaw = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateRaw)) {
+    return { kind: 'exact', ymd: dateRaw };
+  }
+  const y = parseIntQueryBounded(req.query.year, 2000, 2100);
+  if (y == null) return { kind: 'none' };
+  const m = parseIntQueryBounded(req.query.month, 1, 12);
+  if (m == null) return { kind: 'y', year: y };
+  const d = parseIntQueryBounded(req.query.day, 1, 31);
+  if (d == null) return { kind: 'ym', ym: `${y}-${pad2(m)}` };
+  return { kind: 'exact', ymd: `${y}-${pad2(m)}-${pad2(d)}` };
+}
+
+function paymentMatchesFailedDateQuery(
+  p: {
+    processedDate: Date | null;
+    Date: Date | null;
+    scheduledDate: Date;
+    createdAt: Date;
+  },
+  q: FailedTxDateQuery,
+): boolean {
+  if (q.kind === 'none') return true;
+  const ymd = collectionPaymentDisplayYmd(p);
+  if (q.kind === 'exact') return ymd === q.ymd;
+  if (q.kind === 'ym') return ymd.slice(0, 7) === q.ym;
+  if (q.kind === 'range') return ymd >= q.fromYmd && ymd <= q.toYmd;
+  return ymd.slice(0, 4) === String(q.year);
+}
+
+/** Loads collection payments in chunks of applications (not one giant `IN` list). */
+const FAILED_TX_APP_BATCH = 100;
+const FAILED_TX_BATCH_CONCURRENCY = 8;
+const FAILED_TX_COHORT_CACHE_TTL_MS = 120_000;
+
+const FAILED_TX_PAYMENT_ORDER_BY = [
+  { paymentNumber: 'asc' as const },
+  { scheduledDate: 'asc' as const },
+  { createdAt: 'asc' as const },
+];
+
+const FAILED_TX_PAYMENT_SELECT = {
+  id: true,
+  applicationId: true,
+  dealId: true,
+  paymentNumber: true,
+  scheduledDate: true,
+  processedDate: true,
+  Date: true,
+  amount: true,
+  status: true,
+  notes: true,
+  referenceNumber: true,
+  createdAt: true,
+  transactionStatus: true,
+} satisfies Prisma.CollectionPaymentSelect;
+
+type FailedTxPaymentRow = Prisma.CollectionPaymentGetPayload<{
+  select: typeof FAILED_TX_PAYMENT_SELECT;
+}>;
+
+const failedTxCohortCache = new Map<
+  string,
+  { storedAt: number; apps: FailedTxCohortApp[] }
+>();
+
+type FailedTxCohortApp = {
+  id: string;
+  applicationId: number | null;
+  dealId: string | null;
+  note: string | null;
+  client: { businessName: string } | null;
+};
+
+type FailedTxRow = {
+  id: string;
+  amount: number;
+  rawAmount: number;
+  scheduledDate: string | null;
+  processedDate: string | null;
+  paymentDate: string | null;
+  displayDateYmd: string;
+  displayDebit: string;
+  notes: string;
+  referenceNumber: string | null;
+  status: string;
+  transactionStatus: string | null;
+  createdAt: Date;
+};
+
+type FailedTxDealBundle = {
+  app: FailedTxCohortApp;
+  failedRows: FailedTxRow[];
+  failedAmount: number;
+};
+
+function buildFailedTxCohortApplicationWhere(
+  searchRaw: string,
+): Prisma.ApplicationWhereInput | null {
+  const fundedWhere = buildApplicationStatsBucketWhere('funded');
+  if (!fundedWhere) return null;
+  const applicationFilter: Prisma.ApplicationWhereInput = { ...fundedWhere };
+  if (searchRaw.length > 0) {
+    const searchToken = normalizeDealIdToken(searchRaw);
+    applicationFilter.AND = [
+      {
+        OR: [
+          { dealId: { contains: searchRaw, mode: 'insensitive' } },
+          {
+            note: {
+              contains: `[DEAL_ID:${searchRaw}]`,
+              mode: 'insensitive',
+            },
+          },
+          { client: { businessName: { contains: searchRaw, mode: 'insensitive' } } },
+          ...(searchToken.length > 0
+            ? [
+                { dealId: { contains: searchToken, mode: 'insensitive' } } as const,
+                {
+                  note: {
+                    contains: `[DEAL_ID:${searchToken}]`,
+                    mode: 'insensitive',
+                  },
+                } as const,
+              ]
+            : []),
+        ],
+      },
+    ];
+  }
+  return applicationFilter;
+}
+
+function pruneFailedTxCohortCache() {
+  const now = Date.now();
+  for (const [k, v] of failedTxCohortCache) {
+    if (now - v.storedAt > FAILED_TX_COHORT_CACHE_TTL_MS) {
+      failedTxCohortCache.delete(k);
+    }
+  }
+}
+
+async function loadFailedTxCohortApps(searchRaw: string): Promise<FailedTxCohortApp[]> {
+  pruneFailedTxCohortCache();
+  const hit = failedTxCohortCache.get(searchRaw);
+  if (hit && Date.now() - hit.storedAt < FAILED_TX_COHORT_CACHE_TTL_MS) {
+    return hit.apps;
+  }
+  const applicationFilter = buildFailedTxCohortApplicationWhere(searchRaw);
+  if (!applicationFilter) return [];
+  const apps = (await prisma.application.findMany({
+    where: applicationFilter,
+    select: {
+      id: true,
+      applicationId: true,
+      dealId: true,
+      note: true,
+      client: { select: { businessName: true } },
+    },
+    orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+  })) as FailedTxCohortApp[];
+  failedTxCohortCache.set(searchRaw, { storedAt: Date.now(), apps });
+  return apps;
+}
+
+function utcDayStart(ymd: string): Date {
+  return new Date(`${ymd}T00:00:00.000Z`);
+}
+
+function utcDayEndInclusive(ymd: string): Date {
+  return new Date(`${ymd}T23:59:59.999Z`);
+}
+
+/** Best-effort SQL date window before strict in-memory pairing (reduces rows read). */
+function buildFailedTxPaymentsPrefilter(
+  dateQuery: FailedTxDateQuery,
+): Prisma.CollectionPaymentWhereInput | undefined {
+  if (dateQuery.kind === 'none' || dateQuery.kind === 'y') return undefined;
+
+  const dateFieldOr = (from: Date, to: Date): Prisma.CollectionPaymentWhereInput[] => [
+    { processedDate: { gte: from, lte: to } },
+    { Date: { gte: from, lte: to } },
+    { scheduledDate: { gte: from, lte: to } },
+  ];
+
+  if (dateQuery.kind === 'exact') {
+    return { OR: dateFieldOr(utcDayStart(dateQuery.ymd), utcDayEndInclusive(dateQuery.ymd)) };
+  }
+  if (dateQuery.kind === 'ym') {
+    const [y, m] = dateQuery.ym.split('-').map(Number);
+    const from = new Date(Date.UTC(y, m - 1, 1));
+    const to = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+    return { OR: dateFieldOr(from, to) };
+  }
+  if (dateQuery.kind === 'range') {
+    return {
+      OR: dateFieldOr(utcDayStart(dateQuery.fromYmd), utcDayEndInclusive(dateQuery.toYmd)),
+    };
+  }
+  return undefined;
+}
+
+function failedTxBatchCacheKey(batchIds: string[], dealIds: string[]): string {
+  return `${[...batchIds].sort().join(',')}|${[...dealIds].sort().join(',')}`;
+}
+
+/** Deal token on Application — `dealId` column or `[DEAL_ID:…]` in note. */
+function resolveFailedTxAppDealId(app: FailedTxCohortApp): string | null {
+  const fromCol = String(app.dealId ?? '').trim();
+  if (fromCol) return fromCol;
+  const markerMatch = String(app.note ?? '').match(/\[DEAL_ID:([^\]]+)\]/i);
+  return markerMatch?.[1]?.trim() || null;
+}
+
+function paymentMatchesFailedTxApp(
+  payment: FailedTxPaymentRow,
+  app: FailedTxCohortApp,
+): boolean {
+  if (payment.applicationId === app.id) return true;
+  return paymentBelongsToApplicationDeal(payment, resolveFailedTxAppDealId(app));
+}
+
+async function fetchPaymentsForFailedTxBatch(
+  batch: FailedTxCohortApp[],
+  dateQuery: FailedTxDateQuery,
+  paymentCache?: Map<string, FailedTxPaymentRow[]>,
+): Promise<FailedTxPaymentRow[]> {
+  const batchIds = batch.map((a) => a.id);
+  const dealIds = [
+    ...new Set(
+      batch
+        .map((a) => resolveFailedTxAppDealId(a))
+        .filter((d): d is string => Boolean(d)),
+    ),
+  ];
+  const cacheKey = failedTxBatchCacheKey(batchIds, dealIds);
+  const cached = paymentCache?.get(cacheKey);
+  if (cached) return cached;
+
+  const datePrefilter = buildFailedTxPaymentsPrefilter(dateQuery);
+  const matchClauses: Prisma.CollectionPaymentWhereInput[] = [
+    { applicationId: { in: batchIds } },
+  ];
+  if (dealIds.length > 0) {
+    matchClauses.push({ dealId: { in: dealIds, mode: 'insensitive' } });
+  }
+
+  const payments = await prisma.collectionPayment.findMany({
+    where: {
+      AND: [{ OR: matchClauses }, ...(datePrefilter ? [datePrefilter] : [])],
+    },
+    select: FAILED_TX_PAYMENT_SELECT,
+    orderBy: FAILED_TX_PAYMENT_ORDER_BY,
+  });
+
+  paymentCache?.set(cacheKey, payments);
+  return payments;
+}
+
+function batchToFailedTxBundles(
+  batch: FailedTxCohortApp[],
+  payments: FailedTxPaymentRow[],
+  dateQuery: FailedTxDateQuery,
+): FailedTxDealBundle[] {
+  const assignedPaymentIds = new Set<string>();
+
+  const bundles: FailedTxDealBundle[] = [];
+  for (const app of batch) {
+    const group = payments.filter(
+      (p) => !assignedPaymentIds.has(p.id) && paymentMatchesFailedTxApp(p, app),
+    );
+    for (const p of group) assignedPaymentIds.add(p.id);
+    const fails = getStrictFailedPaymentsForApp(group, dateQuery);
+    if (!fails.length) continue;
+    let dealFailedAmount = 0;
+    const failedRows: FailedTxRow[] = [];
+    for (const p of fails) {
+      const row = mapPrismaPaymentToFailedTxRow(p);
+      failedRows.push(row);
+      dealFailedAmount += row.amount;
+    }
+    failedRows.sort((a, b) => {
+      const da = `${b.processedDate ?? b.paymentDate ?? b.scheduledDate ?? ''}`.localeCompare(
+        `${a.processedDate ?? a.paymentDate ?? a.scheduledDate ?? ''}`,
+      );
+      if (da !== 0) return da;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    });
+    bundles.push({
+      app,
+      failedRows,
+      failedAmount: Number(dealFailedAmount.toFixed(2)),
+    });
+  }
+  return bundles;
+}
+
+async function processFailedTxBatch(
+  batch: FailedTxCohortApp[],
+  dateQuery: FailedTxDateQuery,
+  paymentCache?: Map<string, FailedTxPaymentRow[]>,
+): Promise<FailedTxDealBundle[]> {
+  if (!batch.length) return [];
+  const payments = await fetchPaymentsForFailedTxBatch(batch, dateQuery, paymentCache);
+  return batchToFailedTxBundles(batch, payments, dateQuery);
+}
+
+function summarizeFailedTxBundles(bundles: FailedTxDealBundle[]): {
+  totalAmount: number;
+  totalCount: number;
+  dealCount: number;
+  totalAmountDisplay: string;
+  totalCountDisplay: string;
+  dealCountDisplay: string;
+} {
+  let portfolioTotalAmount = 0;
+  let portfolioTotalCount = 0;
+  for (const b of bundles) {
+    portfolioTotalCount += b.failedRows.length;
+    portfolioTotalAmount += b.failedAmount;
+  }
+  const summaryTotal = Number(portfolioTotalAmount.toFixed(2));
+  return {
+    totalAmount: summaryTotal,
+    totalCount: portfolioTotalCount,
+    dealCount: bundles.length,
+    totalAmountDisplay: formatFailedSummaryMoney(summaryTotal),
+    totalCountDisplay: portfolioTotalCount.toLocaleString('en-US'),
+    dealCountDisplay: bundles.length.toLocaleString('en-US'),
+  };
+}
+
+async function paginateFailedTxDeals(
+  cohortApps: FailedTxCohortApp[],
+  dateQuery: FailedTxDateQuery,
+  page: number,
+  pageSize: number,
+  paymentCache: Map<string, FailedTxPaymentRow[]>,
+): Promise<{ pageBundles: FailedTxDealBundle[]; hasNextPage: boolean }> {
+  const skip = Math.max(0, (page - 1) * pageSize);
+  const pageBundles: FailedTxDealBundle[] = [];
+  let dealIdx = -1;
+  let hasNextPage = false;
+
+  for (let i = 0; i < cohortApps.length; i += FAILED_TX_APP_BATCH) {
+    const batch = cohortApps.slice(i, i + FAILED_TX_APP_BATCH);
+    const bundles = await processFailedTxBatch(batch, dateQuery, paymentCache);
+    for (const deal of bundles) {
+      dealIdx++;
+      if (dealIdx < skip) continue;
+      if (pageBundles.length < pageSize) {
+        pageBundles.push(deal);
+        continue;
+      }
+      hasNextPage = true;
+      return { pageBundles, hasNextPage };
+    }
+  }
+  return { pageBundles, hasNextPage };
+}
+
+async function collectAllFailedTxBundlesParallel(
+  cohortApps: FailedTxCohortApp[],
+  dateQuery: FailedTxDateQuery,
+  paymentCache: Map<string, FailedTxPaymentRow[]>,
+): Promise<FailedTxDealBundle[]> {
+  const batches: FailedTxCohortApp[][] = [];
+  for (let i = 0; i < cohortApps.length; i += FAILED_TX_APP_BATCH) {
+    batches.push(cohortApps.slice(i, i + FAILED_TX_APP_BATCH));
+  }
+
+  const all: FailedTxDealBundle[] = [];
+  for (let i = 0; i < batches.length; i += FAILED_TX_BATCH_CONCURRENCY) {
+    const chunk = batches.slice(i, i + FAILED_TX_BATCH_CONCURRENCY);
+    const results = await Promise.all(
+      chunk.map((batch) => processFailedTxBatch(batch, dateQuery, paymentCache)),
+    );
+    for (const bundles of results) {
+      all.push(...bundles);
+    }
+  }
+  return all;
+}
+
+function getStrictFailedPaymentsForApp(
+  payments: FailedTxPaymentRow[],
+  dateQuery: FailedTxDateQuery,
+): FailedTxPaymentRow[] {
+  if (!payments.length) return [];
+  const filtered = applyStrictTransactionFiltering(payments);
+  const failsAll = filtered.filter((p) => p.status === CollectionPaymentStatus.FAILED);
+  return failsAll.filter((p) => paymentMatchesFailedDateQuery(p, dateQuery));
+}
+
+function mapPrismaPaymentToFailedTxRow(payment: FailedTxPaymentRow): FailedTxRow {
+  const absAmount = Math.abs(toNum(payment.amount));
+  const amountFixed = Number(absAmount.toFixed(2));
+  const rawFixed = Number(toNum(payment.amount).toFixed(2));
+  const scheduledDate = payment.scheduledDate
+    ? new Date(payment.scheduledDate).toISOString().slice(0, 10)
+    : null;
+  const processedDate = payment.processedDate
+    ? new Date(payment.processedDate).toISOString().slice(0, 10)
+    : null;
+  const paymentDate = payment.Date ? new Date(payment.Date).toISOString().slice(0, 10) : null;
+  const displayDateYmd = collectionPaymentDisplayYmd(payment);
+  const displayDebit = absAmount > 0 ? formatFailedTxUsd2(amountFixed) : '—';
+  return {
+    id: payment.id,
+    amount: amountFixed,
+    rawAmount: rawFixed,
+    scheduledDate,
+    processedDate,
+    paymentDate,
+    displayDateYmd,
+    displayDebit,
+    notes: payment.notes ?? '',
+    referenceNumber: payment.referenceNumber ?? null,
+    status: STATUS_MAP_TO_API[payment.status] ?? 'failed',
+    transactionStatus: (() => {
+      const stored =
+        typeof payment.transactionStatus === 'string' && payment.transactionStatus.trim() !== ''
+          ? parseTransactionStatusValue(payment.transactionStatus)
+          : null;
+      if (stored) return stored;
+      return extractReturnCodeFromDescription(payment.notes ?? '');
+    })(),
+    createdAt: payment.createdAt,
+  };
+}
+
+
+function serializeFailedTxDealBundle(
+  bundle: FailedTxDealBundle,
+  economics?: {
+    paybackAmount: number;
+    grossRepaidDealEconomics: number;
+  } | null,
+) {
+  const markerMatch = String(bundle.app.note ?? '').match(/\[DEAL_ID:([^\]]+)\]/i);
+  const resolvedDealId =
+    String(bundle.app.dealId ?? '').trim() || markerMatch?.[1]?.trim() || '';
+  const displayDealId =
+    resolvedDealId.trim() ||
+    `App-${bundle.app.applicationId != null ? String(bundle.app.applicationId) : '—'}`;
+
+  const paybackAmount =
+    economics != null && Number.isFinite(economics.paybackAmount)
+      ? Number(Number(economics.paybackAmount).toFixed(2))
+      : null;
+  const balanceDue =
+    economics != null && paybackAmount != null
+      ? Math.max(
+          balanceDueLikeTransactionsPage(
+            economics.paybackAmount,
+            economics.grossRepaidDealEconomics,
+          ),
+          0,
+        )
+      : null;
+
+  return {
+    applicationId: bundle.app.id,
+    applicationDisplayId: bundle.app.applicationId,
+    dealId: resolvedDealId || null,
+    displayDealId,
+    businessName: bundle.app.client?.businessName ?? '',
+    failedAmount: bundle.failedAmount,
+    failedCount: bundle.failedRows.length,
+    transactions: bundle.failedRows,
+    paybackAmount,
+    balanceDue,
+    paybackAmountDisplay:
+      paybackAmount != null ? formatFailedSummaryMoney(paybackAmount) : null,
+    balanceDueDisplay: balanceDue != null ? formatFailedSummaryMoney(balanceDue) : null,
+  };
+}
+
+async function serializeFailedTxDealBundlesWithEconomics(bundles: FailedTxDealBundle[]) {
+  const appIds = bundles.map((b) => b.app.id);
+  const economicsRows =
+    appIds.length > 0 ? await getBalancesForApplicationIds(prisma, appIds) : [];
+  const economicsByAppId = new Map(
+    economicsRows.map((row) => [row.applicationId, row]),
+  );
+  return bundles.map((bundle) =>
+    serializeFailedTxDealBundle(bundle, economicsByAppId.get(bundle.app.id) ?? null),
+  );
+}
+
+const FAILED_TX_SUMMARY_TTL_MS = 60_000;
+
+type FailedTxSummaryPayload = {
+  success: true;
+  summary: {
+    totalAmount: number;
+    totalCount: number;
+    dealCount: number;
+    totalAmountDisplay: string;
+    totalCountDisplay: string;
+    dealCountDisplay: string;
+  };
+};
+
+const failedTxSummaryCache = new Map<
+  string,
+  { storedAt: number; payload: FailedTxSummaryPayload }
+>();
+
+function buildFailedTxSummaryCacheKey(req: Request): string {
+  const searchRaw =
+    typeof req.query.search === 'string' ? req.query.search.trim() : '';
+  const date = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+  const year = typeof req.query.year === 'string' ? req.query.year.trim() : '';
+  const month = typeof req.query.month === 'string' ? req.query.month.trim() : '';
+  const day = typeof req.query.day === 'string' ? req.query.day.trim() : '';
+  const fromDate =
+    typeof req.query.fromDate === 'string' ? req.query.fromDate.trim() : '';
+  const toDate = typeof req.query.toDate === 'string' ? req.query.toDate.trim() : '';
+  return JSON.stringify({ searchRaw, date, year, month, day, fromDate, toDate });
+}
+
+function pruneExpiredFailedTxSummaryCache() {
+  const now = Date.now();
+  for (const [k, v] of failedTxSummaryCache) {
+    if (now - v.storedAt > FAILED_TX_SUMMARY_TTL_MS) {
+      failedTxSummaryCache.delete(k);
+    }
+  }
+}
+
+async function aggregateFailedTransactionsPortfolioSummary(
+  cohortApps: FailedTxCohortApp[],
+  dateQuery: FailedTxDateQuery,
+  paymentCache?: Map<string, FailedTxPaymentRow[]>,
+): Promise<{
+  totalAmount: number;
+  totalCount: number;
+  dealCount: number;
+  totalAmountDisplay: string;
+  totalCountDisplay: string;
+  dealCountDisplay: string;
+}> {
+  const cache = paymentCache ?? new Map<string, FailedTxPaymentRow[]>();
+  const bundles = await collectAllFailedTxBundlesParallel(cohortApps, dateQuery, cache);
+  return summarizeFailedTxBundles(bundles);
+}
+
 class CollectionPaymentController {
+  private static readonly APPLICATION_UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  /** Resolve Application rows for GET /collection-payments — UUID, numeric applicationId, or dealId. */
+  private async resolveListApplicationScope(params: {
+    applicationIdRaw: string;
+    dealIdRaw: string;
+  }): Promise<Array<{ id: string; applicationId: number; createdAt: Date }>> {
+    const dealId = String(params.dealIdRaw ?? '').trim();
+    if (dealId) {
+      const byDeal = await this.findApplicationsForDealId(dealId);
+      if (byDeal.length) return byDeal;
+    }
+
+    const applicationIdRaw = String(params.applicationIdRaw ?? '').trim();
+    if (!applicationIdRaw) return [];
+
+    if (CollectionPaymentController.APPLICATION_UUID_RE.test(applicationIdRaw)) {
+      const byUuid = await prisma.application.findUnique({
+        where: { id: applicationIdRaw },
+        select: { id: true, applicationId: true, createdAt: true },
+      });
+      return byUuid ? [byUuid] : [];
+    }
+
+    if (/^\d+$/.test(applicationIdRaw)) {
+      const num = Number(applicationIdRaw);
+      if (Number.isFinite(num) && num > 0) {
+        const byDisplay = await prisma.application.findMany({
+          where: { applicationId: num },
+          select: { id: true, applicationId: true, createdAt: true },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (byDisplay.length) return byDisplay;
+      }
+    }
+
+    const resolvedDealId = await this.resolveDealIdFromQuery({
+      applicationIdRaw,
+      dealIdRaw: '',
+    });
+    if (resolvedDealId) {
+      return this.findApplicationsForDealId(resolvedDealId);
+    }
+
+    return [];
+  }
+
   private async resolveDealIdFromQuery(params: {
     applicationIdRaw: string;
     dealIdRaw: string;
@@ -232,10 +907,15 @@ class CollectionPaymentController {
     if (dealIdRaw) return dealIdRaw;
     if (!applicationIdRaw) return null;
 
-    const byUuid = await prisma.application.findUnique({
-      where: { id: applicationIdRaw },
-      select: { dealId: true, note: true },
-    });
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    let byUuid: { dealId: string | null; note: string | null } | null = null;
+    if (uuidRe.test(applicationIdRaw)) {
+      byUuid = await prisma.application.findUnique({
+        where: { id: applicationIdRaw },
+        select: { dealId: true, note: true },
+      });
+    }
     if (byUuid?.dealId?.trim()) return byUuid.dealId.trim();
 
     const markerMatch = String(byUuid?.note ?? '').match(/\[DEAL_ID:([^\]]+)\]/i);
@@ -473,24 +1153,23 @@ class CollectionPaymentController {
           .json({ success: false, message: 'applicationId or dealId query parameter is required' });
       }
 
-      const resolvedDealId = await this.resolveDealIdFromQuery({
+      const matchedApps = await this.resolveListApplicationScope({
         applicationIdRaw: applicationId,
         dealIdRaw: dealId,
       });
-      if (!resolvedDealId) {
+      if (!matchedApps.length) {
         return res.status(404).json({ success: false, message: 'Application/deal not found' });
       }
 
-      const matchedApps = await this.findApplicationsForDealId(resolvedDealId);
       let matchedIds = matchedApps.map((app) => app.id);
-        if (!matchedIds.length) {
-          const targetToken = normalizeDealIdToken(resolvedDealId);
-          if (targetToken) {
-            const tokenMatchedApps =
-              await this.findApplicationsByNormalizedDealIdToken(targetToken);
-            matchedIds = tokenMatchedApps.map((app) => app.id);
-          }
+      if (!matchedIds.length && dealId) {
+        const targetToken = normalizeDealIdToken(dealId);
+        if (targetToken) {
+          const tokenMatchedApps =
+            await this.findApplicationsByNormalizedDealIdToken(targetToken);
+          matchedIds = tokenMatchedApps.map((app) => app.id);
         }
+      }
       const payments = await prisma.collectionPayment.findMany({
         where: {
           applicationId: matchedIds.length
@@ -1140,7 +1819,7 @@ class CollectionPaymentController {
       const invalidRows = totalRows - validRows;
 
       /** Full `rowData` for every scanned row so the preview grid can list the whole sheet (within the row cap). */
-      const previewRows = lightRows.map((meta) => {
+      const previewRowsBase = lightRows.map((meta) => {
         const row = rows[meta.rowNumber - 2] ?? {};
         const rowData = excelHeaders.reduce<Record<string, string>>((acc, header) => {
           const cellValue = row[header];
@@ -1159,6 +1838,15 @@ class CollectionPaymentController {
           validationStatus: meta.dealId ? ('valid' as const) : ('invalid' as const),
           isDuplicate: Boolean(meta.dealId && duplicateDealIdSet.has(meta.dealId)),
           rowData,
+        };
+      });
+
+      const previewRows = previewRowsBase.map((row) => {
+        const description = getPreviewSheetDescription(row.rowData, row.description);
+        const transactionStatus = extractReturnCodeFromDescription(description);
+        return {
+          ...row,
+          transactionStatus: transactionStatus ?? null,
         };
       });
 
@@ -1190,6 +1878,7 @@ class CollectionPaymentController {
           rowNumber?: unknown;
           dealId?: unknown;
           description?: unknown;
+          transactionStatus?: unknown;
           rowData?: Record<string, unknown>;
         }>;
       };
@@ -1269,6 +1958,10 @@ class CollectionPaymentController {
             '',
         ).trim();
 
+        const transactionStatus =
+          parseTransactionStatusValue(tx.transactionStatus) ??
+          extractReturnCodeFromDescription(description);
+
         preparedRows.push({
           applicationId: app.id,
           dealId: app.dealId?.trim() || mappedDealId,
@@ -1278,6 +1971,7 @@ class CollectionPaymentController {
           status,
           source: CollectionPaymentSource.MANUAL,
           notes: description,
+          ...(transactionStatus ? { transactionStatus } : {}),
         });
       });
 
@@ -1394,6 +2088,154 @@ class CollectionPaymentController {
     }
   }
 
+  /**
+   * Paginated failed deals. Loads collection payments in **batches of applications**
+   * (see `FAILED_TX_APP_BATCH`) instead of one query for the entire cohort. Iteration stops
+   * once the requested page is filled plus one deal to detect `hasNextPage`.
+   *
+   * Uses the same strict filtering rules as the payment dashboard (see
+   * {@link applyStrictTransactionFiltering}).
+   *
+   * Query: `search`, `page` (1-based), `pageSize` (default 10, max 50), date params as documented
+   * on {@link parseFailedTransactionsDateQuery}.
+   *
+   * Pass `includeSummary=1` to return portfolio KPI cards in the same response (page 1 loads faster).
+   * Pagination uses `hasNextPage` / `hasPreviousPage` when `total` is unknown without a full scan.
+   */
+  async failedTransactions(req: Request, res: Response) {
+    try {
+      const searchRaw =
+        typeof req.query.search === 'string' ? req.query.search.trim() : '';
+      const pageRaw = Number(req.query.page ?? 1);
+      const pageSizeRaw = Number(req.query.pageSize ?? 10);
+      const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+      const pageSize =
+        Number.isFinite(pageSizeRaw) && pageSizeRaw > 0
+          ? Math.min(Math.max(Math.floor(pageSizeRaw), 1), 50)
+          : 10;
+      const includeSummary =
+        req.query.includeSummary === '1' || req.query.includeSummary === 'true';
+
+      const dateQuery = parseFailedTransactionsDateQuery(req);
+      if (!buildFailedTxCohortApplicationWhere(searchRaw)) {
+        return res
+          .status(500)
+          .json({ success: false, message: 'Funded cohort scope unavailable' });
+      }
+
+      const cohortApps = await loadFailedTxCohortApps(searchRaw);
+
+      if (!cohortApps.length) {
+        const emptySummary = {
+          totalAmount: 0,
+          totalCount: 0,
+          dealCount: 0,
+          totalAmountDisplay: formatFailedSummaryMoney(0),
+          totalCountDisplay: '0',
+          dealCountDisplay: '0',
+        };
+        return res.status(200).json({
+          success: true,
+          data: [],
+          summary: includeSummary ? emptySummary : null,
+          pagination: {
+            page: 1,
+            pageSize,
+            total: 0,
+            totalPages: 0,
+            hasNextPage: false,
+            hasPreviousPage: false,
+          },
+        });
+      }
+
+      const paymentCache = new Map<string, FailedTxPaymentRow[]>();
+
+      const [{ pageBundles, hasNextPage }, summary] = await Promise.all([
+        paginateFailedTxDeals(cohortApps, dateQuery, page, pageSize, paymentCache),
+        includeSummary
+          ? collectAllFailedTxBundlesParallel(cohortApps, dateQuery, paymentCache).then(
+              summarizeFailedTxBundles,
+            )
+          : Promise.resolve(null),
+      ]);
+
+      const data = await serializeFailedTxDealBundlesWithEconomics(pageBundles);
+
+      return res.status(200).json({
+        success: true,
+        data,
+        summary,
+        pagination: {
+          page,
+          pageSize,
+          total: null,
+          totalPages: null,
+          hasNextPage,
+          hasPreviousPage: page > 1,
+        },
+      });
+    } catch (error) {
+      console.error('Failed transactions list error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  /**
+   * Portfolio-wide failed payment totals for dashboard cards. Same `search` / date query params as
+   * {@link failedTransactions}; walks the cohort in batched payment queries.
+   */
+  async failedTransactionsSummary(req: Request, res: Response) {
+    try {
+      const cacheKey = buildFailedTxSummaryCacheKey(req);
+      pruneExpiredFailedTxSummaryCache();
+      const hit = failedTxSummaryCache.get(cacheKey);
+      if (hit && Date.now() - hit.storedAt < FAILED_TX_SUMMARY_TTL_MS) {
+        return res.status(200).json(hit.payload);
+      }
+
+      const searchRaw =
+        typeof req.query.search === 'string' ? req.query.search.trim() : '';
+      const dateQuery = parseFailedTransactionsDateQuery(req);
+      const applicationFilter = buildFailedTxCohortApplicationWhere(searchRaw);
+      if (!applicationFilter) {
+        return res
+          .status(500)
+          .json({ success: false, message: 'Funded cohort scope unavailable' });
+      }
+
+      const cohortApps = await loadFailedTxCohortApps(searchRaw);
+
+      let payload: FailedTxSummaryPayload;
+
+      if (!cohortApps.length) {
+        payload = {
+          success: true,
+          summary: {
+            totalAmount: 0,
+            totalCount: 0,
+            dealCount: 0,
+            totalAmountDisplay: formatFailedSummaryMoney(0),
+            totalCountDisplay: '0',
+            dealCountDisplay: '0',
+          },
+        };
+      } else {
+        const summary = await aggregateFailedTransactionsPortfolioSummary(
+          cohortApps,
+          dateQuery,
+        );
+        payload = { success: true, summary };
+      }
+
+      failedTxSummaryCache.set(cacheKey, { storedAt: Date.now(), payload });
+      return res.status(200).json(payload);
+    } catch (error) {
+      console.error('Failed transactions summary error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
   async dashboard(req: Request, res: Response) {
     try {
       const now = new Date();
@@ -1457,9 +2299,12 @@ class CollectionPaymentController {
       const totalPayback = sumTotalPaybackOfferTimesRateFromOfferDecisionRows(appsForPaybackPortfolioTotal);
 
       const appIds = disbursementApps.map((app) => app.id);
+      // Failed Payment KPI card uses CollectionPayment rows with status = DEBIT:
+      // total |amount| + transaction count (portfolio-wide, not restricted to funded cohort).
       const debitDefaultsAggregate = await prisma.collectionPayment.aggregate({
         where: { status: CollectionPaymentStatus.DEBIT },
         _sum: { amount: true },
+        _count: { _all: true },
       });
       const payments = appIds.length
         ? await prisma.collectionPayment.findMany({
@@ -1567,6 +2412,8 @@ class CollectionPaymentController {
         0,
       );
       defaults = Math.abs(toNum(debitDefaultsAggregate._sum.amount));
+      const failedPaymentDebitCount = Number(debitDefaultsAggregate._count?._all ?? 0) || 0;
+      const failedPaymentDebitTotal = defaults;
 
       // Portfolio: funded + net funding; Above Principal = Σ signed gaps = Σ(positive) − Σ(|negative|) (same as Payment History StatCard).
       let fundedPortfolioTotal = 0;
@@ -1759,6 +2606,11 @@ class CollectionPaymentController {
             totalPayback: Number(totalPayback.toFixed(2)),
             recovered: Number(recovered.toFixed(2)),
             defaults: Number(defaults.toFixed(2)),
+            // Failed Payment KPI: total |amount| + count of CollectionPayment rows with status = DEBIT.
+            failedPayment: {
+              totalAmount: Number(failedPaymentDebitTotal.toFixed(2)),
+              count: failedPaymentDebitCount,
+            },
             totalDeals: disbursementApps.length,
             activeDeals: disbursementApps.length,
             collectionEfficiency,

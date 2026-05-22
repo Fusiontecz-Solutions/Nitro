@@ -3,6 +3,7 @@ import multer from 'multer';
 import { authenticateToken } from '../middleware/authMiddleware';
 import { requireRoles } from '../middleware/requireRoles';
 import applicationController from '../controllers/applicationController';
+import schedulePaymentTrackingController from '../controllers/schedulePaymentTrackingController';
 
 const router = express.Router();
 
@@ -163,6 +164,16 @@ router.get('/:id/activity-logs', applicationController.getActivityLogs.bind(appl
 // Payment workspace: mail send history (persisted)
 router.get('/:id/payment-mail-logs', applicationController.getPaymentMailLogs.bind(applicationController));
 router.post('/:id/payment-mail-logs', applicationController.createPaymentMailLog.bind(applicationController));
+
+// Disbursement review: planned debit schedule (persisted on confirm)
+router.get(
+    '/:id/schedule-payment-tracking',
+    schedulePaymentTrackingController.listForApplication.bind(schedulePaymentTrackingController),
+);
+router.put(
+    '/:id/schedule-payment-tracking',
+    schedulePaymentTrackingController.replaceForApplication.bind(schedulePaymentTrackingController),
+);
 
 // Duplicate applications (dedupes) - UW/Admin only
 router.get('/:id/duplicates', applicationController.getDuplicates.bind(applicationController));

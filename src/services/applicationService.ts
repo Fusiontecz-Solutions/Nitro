@@ -7,8 +7,7 @@ import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
 import { extractPdfPlainTextForParsing } from './pdfIngestionService';
 import { normalizeOcrTextForParsing } from './ocrFieldExtraction';
 import { logExtractedBusinessDataCsv } from './csvConverter';
-import { allocateNextDealId, withAllocatedDealId } from './nextDealIdService';
-import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
+import { generateNextDealId } from '../utils/generateNextDealId';
 
 export type UserRole = Role;
 
@@ -26,10 +25,12 @@ function normalizeRole(role: string | UserRole | null | undefined): UserRole | n
         'UNDERWRITER',
         'FINAL_UNDERWRITER',
         'ACCOUNTANT',
+        'ACCOUNTS',
         'ADMIN',
         'SUPER_ADMIN',
         'OPERATIONS',
     ];
+
     return (valid as string[]).includes(normalized) ? (normalized as UserRole) : null;
 }
 
@@ -173,6 +174,8 @@ export interface CreatePdfApplicationOptions {
      * skips PDF text extraction and parsing inside this helper.
      */
     preParsedData?: unknown;
+    /** Gmail cron: one Claude call per PDF (no business-name retry). */
+    skipClaudeBusinessNameRetry?: boolean;
 }
 
 /** Thrown when parsed PDF data cannot satisfy Prisma for a *new* client (e.g. missing business name). */
@@ -323,26 +326,26 @@ export async function createClientAndApplicationFromPDFBuffer(
             where: { id: clientRecord.id },
         });
 
+        const nextDealIdExisting = await generateNextDealId();
+
         // Client already exists → create application only
-        const createdApplication = await withAllocatedDealId((dealId, tx) =>
-            tx.application.create({
-                data: applicationCreateUncheckedData({
-                    priority: 'High',
-                    type: 'New',
-                    salesRepresentativeId: userId,
-                    referringAgentId: userId,
-                    clientId: clientRecord.id,
-                    isoId: isoId || null,
-                    commissionPercentage: commissionPercentageFromIso,
-                    loanAmount: loanAmountNum != null && !isNaN(loanAmountNum) ? loanAmountNum : null,
-                    createdById: userId,
-                    currentQueue: agentCreationQueue,
-                    currentState: agentCreationState,
-                    dealId,
-                }),
-                include: applicationWithFilesInclude,
-            }),
-        );
+        const createdApplication = await prisma.application.create({
+            data: {
+                priority: 'High',
+                type: 'New',
+                salesRepresentativeId: userId,
+                referringAgentId: userId,
+                clientId: clientRecord.id,
+                isoId: isoId || null,
+                commissionPercentage: commissionPercentageFromIso,
+                loanAmount: loanAmountNum != null && !isNaN(loanAmountNum) ? loanAmountNum : null,
+                createdById: userId,
+                currentQueue: agentCreationQueue,
+                currentState: agentCreationState,
+                dealId: nextDealIdExisting,
+            },
+            include: applicationWithFilesInclude,
+        });
 
         if (Buffer.isBuffer(pdfBuffer)) {
             await attachBufferAsApplicationFile(createdApplication.id, pdfBuffer, storedPdfName);
@@ -370,8 +373,6 @@ export async function createClientAndApplicationFromPDFBuffer(
 
     // Client does not exist → create client + application atomically
     const result = await prisma.$transaction(async (tx) => {
-        const dealId = await allocateNextDealId(tx);
-
         const businessNameFallback =
             String(business.business_name || '').trim() ||
             String(business.dba_name || '').trim() ||
@@ -417,8 +418,10 @@ export async function createClientAndApplicationFromPDFBuffer(
             },
         });
 
+        const nextDealIdNewClient = await generateNextDealId(tx);
+
         const newApplication = await tx.application.create({
-            data: applicationCreateUncheckedData({
+            data: {
                 priority: 'High',
                 type: 'New',
                 salesRepresentativeId: userId,
@@ -430,8 +433,8 @@ export async function createClientAndApplicationFromPDFBuffer(
                 createdById: userId,
                 currentQueue: agentCreationQueue,
                 currentState: agentCreationState,
-                dealId,
-            }),
+                dealId: nextDealIdNewClient,
+            },
             include: applicationWithFilesInclude,
         });
 

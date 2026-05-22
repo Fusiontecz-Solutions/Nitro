@@ -54,6 +54,63 @@ export function resolveTransactionDateKey(p: {
   return calendarDateKeyUTC(new Date(raw));
 }
 
+/**
+ * Date key aligned with `mapPaymentToApi` / Transactions `resolveTransactionDate` (ISO `YYYY-MM-DD`).
+ */
+export function installmentMatchDateKey(raw: Date | string | null | undefined): string | null {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    const m = raw.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  }
+  const d = raw instanceof Date ? raw : new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Calendar date shown in Collections → Transactions (`scheduledDate` first, same as the FE).
+ * Column dates only — never parsed from `notes` — so weekly installments with the same amount
+ * do not cross-match via memo text (e.g. "May 14" inside a description).
+ */
+export function resolveCollectionPaymentUiDateKey(p: {
+  scheduledDate?: Date | null;
+  Date?: Date | null;
+  processedDate?: Date | null;
+  createdAt?: Date;
+}): string | null {
+  const raw = p.scheduledDate ?? p.Date ?? p.processedDate ?? p.createdAt ?? null;
+  return installmentMatchDateKey(raw);
+}
+
+/** Every populated date column on a collection row (for debit↔credit pairing only). */
+export function collectionPaymentColumnDateKeys(p: {
+  scheduledDate?: Date | null;
+  Date?: Date | null;
+  processedDate?: Date | null;
+  returnDate?: Date | null;
+  createdAt?: Date;
+}): Set<string> {
+  const keys = new Set<string>();
+  for (const col of [p.scheduledDate, p.Date, p.processedDate, p.returnDate, p.createdAt]) {
+    const k = installmentMatchDateKey(col);
+    if (k) keys.add(k);
+  }
+  return keys;
+}
+
+function collectionDateKeysOverlap(a: Set<string>, b: Set<string>): boolean {
+  for (const k of a) {
+    if (b.has(k)) return true;
+  }
+  return false;
+}
+
+/** Absolute amount rounded to cents — debits may be stored negative. */
+export function collectionAmountMatchKey(amount: Prisma.Decimal | number): string {
+  return Math.abs(toFiniteAmount(amount)).toFixed(2);
+}
+
 /** Distinct YYYY-MM-DD keys from every populated date column (pairs debit/credit when “same day” spans fields). */
 export function allResolveTransactionDateKeys(p: {
   Date?: Date | null;
@@ -440,6 +497,186 @@ export function buildRepaidRowsFromCollectionPayments(
   }
 
   return out;
+}
+
+type UiMatchPaymentShape = {
+  id: string;
+  status: CollectionPaymentStatus;
+  amount: Prisma.Decimal | number;
+  scheduledDate?: Date | null;
+  Date?: Date | null;
+  processedDate?: Date | null;
+  returnDate?: Date | null;
+  createdAt?: Date;
+  notes?: string | null;
+};
+
+function isIncomingForUiDebitPairing(
+  status: CollectionPaymentStatus,
+  signedAmount: number,
+): boolean {
+  return (
+    status === CollectionPaymentStatus.CREDIT ||
+    status === CollectionPaymentStatus.PAID ||
+    (status === CollectionPaymentStatus.MANUAL && signedAmount > 0)
+  );
+}
+
+/**
+ * Pair DEBIT with incoming rows when |amount| matches and any date column overlaps.
+ * Mirrors `pairDebitCreditAsFailed` on the Transactions tab without memo-date pairing.
+ */
+export function pairDebitCreditWithColumnDateOverlap<T extends UiMatchPaymentShape>(
+  payments: T[],
+): T[] {
+  if (payments.length < 2) return payments;
+
+  const debits: T[] = [];
+  const incoming: T[] = [];
+  const others: T[] = [];
+
+  for (const payment of payments) {
+    const signed = toFiniteAmount(payment.amount);
+    if (payment.status === CollectionPaymentStatus.DEBIT) {
+      debits.push(payment);
+    } else if (isIncomingForUiDebitPairing(payment.status, signed)) {
+      incoming.push(payment);
+    } else {
+      others.push(payment);
+    }
+  }
+
+  const usedIncomingIds = new Set<string>();
+  const out: T[] = [];
+
+  for (const debit of debits) {
+    const debitDates = collectionPaymentColumnDateKeys(debit);
+    const amtKey = collectionAmountMatchKey(debit.amount);
+    const match = incoming.find(
+      (inc) =>
+        !usedIncomingIds.has(inc.id) &&
+        collectionAmountMatchKey(inc.amount) === amtKey &&
+        collectionDateKeysOverlap(debitDates, collectionPaymentColumnDateKeys(inc)),
+    );
+    if (match) {
+      usedIncomingIds.add(match.id);
+      out.push({ ...debit, status: CollectionPaymentStatus.FAILED });
+    } else {
+      out.push(debit);
+    }
+  }
+
+  for (const inc of incoming) {
+    if (!usedIncomingIds.has(inc.id)) out.push(inc);
+  }
+  out.push(...others);
+  return out;
+}
+
+/**
+ * Same calendar day + same |amount|: pair DEBIT with CREDIT/PAID into one FAILED row.
+ * Mirrors `pairDebitCreditAsFailed` in `PaymentScheduletab.tsx` (display date + amount only).
+ */
+export function pairDebitCreditForUiMatch<T extends UiMatchPaymentShape>(payments: T[]): T[] {
+  if (payments.length < 2) return payments;
+
+  const withoutGroupKey: T[] = [];
+  const groups = new Map<string, T[]>();
+
+  for (const payment of payments) {
+    const dateKey = resolveCollectionPaymentUiDateKey(payment);
+    if (!dateKey) {
+      withoutGroupKey.push(payment);
+      continue;
+    }
+    const key = `${dateKey}|${collectionAmountMatchKey(payment.amount)}`;
+    const arr = groups.get(key);
+    if (arr) arr.push(payment);
+    else groups.set(key, [payment]);
+  }
+
+  const out: T[] = [...withoutGroupKey];
+
+  for (const group of groups.values()) {
+    out.push(...pairDebitCreditWithColumnDateOverlap(group));
+  }
+
+  return out;
+}
+
+export type ScheduleDayCollectionStatus = 'clear' | 'bounced';
+
+/** Resolve clear vs bounced for collection rows tied to one schedule installment date. */
+export function resolveScheduleDayCollectionStatus<T extends UiMatchPaymentShape>(
+  dayRows: T[],
+): ScheduleDayCollectionStatus | null {
+  if (dayRows.length === 0) return null;
+
+  const shaped = pairDebitCreditWithColumnDateOverlap(dayRows);
+  let hasBounced = false;
+  let hasClear = false;
+
+  for (const row of shaped) {
+    if (
+      row.status === CollectionPaymentStatus.FAILED ||
+      row.status === CollectionPaymentStatus.DEBIT
+    ) {
+      hasBounced = true;
+    } else if (
+      row.status === CollectionPaymentStatus.CREDIT ||
+      row.status === CollectionPaymentStatus.PAID
+    ) {
+      hasClear = true;
+    }
+  }
+
+  if (hasBounced) return 'bounced';
+  if (hasClear) return 'clear';
+  return null;
+}
+
+/** Deal-scoped collection rows for schedule tracking (no strict memo-date filter). */
+export function filterCollectionPaymentsForScheduleMatch<T extends UiMatchPaymentShape>(
+  payments: T[],
+  applicationDealId: string | null | undefined,
+): T[] {
+  return filterCollectionPaymentsForApplicationDeal(payments, applicationDealId);
+}
+
+/**
+ * Collection rows for one schedule installment: primary match on Transactions display date,
+ * plus debit/incoming legs whose other date columns include the installment day (ACH returns).
+ */
+export function selectCollectionRowsForScheduleInstallment<T extends UiMatchPaymentShape>(
+  scoped: T[],
+  installmentDate: string,
+  amountKey: string,
+  usedCollectionIds: Set<string>,
+): T[] {
+  const displayMatches: T[] = [];
+  const pairingExtras: T[] = [];
+
+  for (const payment of scoped) {
+    if (usedCollectionIds.has(payment.id)) continue;
+    if (collectionAmountMatchKey(payment.amount) !== amountKey) continue;
+
+    const displayDate = resolveCollectionPaymentUiDateKey(payment);
+    if (displayDate === installmentDate) {
+      displayMatches.push(payment);
+      continue;
+    }
+
+    if (!collectionPaymentColumnDateKeys(payment).has(installmentDate)) continue;
+
+    const signed = toFiniteAmount(payment.amount);
+    const isDebit = payment.status === CollectionPaymentStatus.DEBIT;
+    const isIncoming = isIncomingForDebitPairingStatus(payment.status, signed);
+    if (isDebit || isIncoming) {
+      pairingExtras.push(payment);
+    }
+  }
+
+  return [...displayMatches, ...pairingExtras];
 }
 
 export type StrictTransactionFilterOptions = {

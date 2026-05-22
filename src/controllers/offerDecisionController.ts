@@ -185,6 +185,33 @@ class OfferDecisionController {
         update: data,
       });
 
+      /**
+       * Mirror the saved offer onto `Application.commissionAmount` using the ISO commission
+       * percentage that is already stamped on the application at link/create time.
+       * Formula matches the read path used in `isoCommission.controller.ts#getMyDeals`:
+       *   commissionAmount = offer * (Application.commissionPercentage / 100)
+       * If the offer is missing/zero we clear the column instead of leaving stale data.
+       */
+      const offerForCommission = data.offer;
+      const commissionPercentage = Number(app.commissionPercentage ?? 0);
+      const newCommissionAmount =
+        offerForCommission != null && Number.isFinite(offerForCommission)
+          ? (Number(offerForCommission) * commissionPercentage) / 100
+          : null;
+
+      try {
+        await prisma.application.update({
+          where: { id: app.id },
+          data: { commissionAmount: newCommissionAmount },
+        });
+      } catch (commissionErr) {
+        // Don't fail the offer save if mirroring the commission amount fails.
+        console.error(
+          'OfferDecision upsert: failed to update Application.commissionAmount',
+          commissionErr,
+        );
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Offer decision saved successfully',
@@ -244,6 +271,23 @@ class OfferDecisionController {
           declineReason: reason,
         },
       });
+
+      /**
+       * On decline there is no approved offer amount, so the mirrored
+       * `Application.commissionAmount` (computed from the offer) must be cleared
+       * to avoid stale values after a previously-approved offer is declined.
+       */
+      try {
+        await prisma.application.update({
+          where: { id: app.id },
+          data: { commissionAmount: null },
+        });
+      } catch (commissionErr) {
+        console.error(
+          'OfferDecision decline: failed to clear Application.commissionAmount',
+          commissionErr,
+        );
+      }
 
       return res.status(200).json({
         success: true,
