@@ -62,7 +62,7 @@ type SidebarNavItem = {
   label: string;
   url: string;
   icon: SidebarNavIcon;
-  /** When set, links to `/applications` with `fromDashboard=operations` and this `operationsStatus`. */
+  /** When set, links to `/applications``fromDashboard=operations` and this `operationsStatus`. */
   operationsStatus?: string;
 };
 
