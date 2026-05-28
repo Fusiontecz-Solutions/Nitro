@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { useParams } from "react-router"
 import { Card, CardContent } from "../ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table"
 import { Button } from "../ui/button"
@@ -20,6 +21,7 @@ type UploadedDocumentsProps = {
 }
 
 const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocumentsProps) => {
+    const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>()
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
     const [uploadedFiles, setUploadedFiles] = useState<ApplicationFiles[]>([])
@@ -42,33 +44,20 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
 
     const dispatch: AppDispatch = useDispatch()
 
-    // When an applicationId prop is provided (from ApplicationSheetFiles),
-    // make sure we load that application into applicationDetail so files are available.
+    const effectiveApplicationId = applicationId ?? routeApplicationId
+
+    // Keep cached first paint, then always refresh detail once for this application
+    // so `files` are present even when list-cache rows were partial.
+    const lastFetchedApplicationIdRef = useRef<string | null>(null)
     useEffect(() => {
-        if (!applicationId) return
+        if (!effectiveApplicationId) return
+        const requestedKey = String(effectiveApplicationId)
+        if (lastFetchedApplicationIdRef.current === requestedKey) return
+        lastFetchedApplicationIdRef.current = requestedKey
 
-        // If we already have the correct application loaded, skip refetch
-        const currentKey =
-            applicationData?.applicationId != null
-                ? String(applicationData.applicationId)
-                : applicationData?._id
-
-        if (currentKey && String(currentKey) === String(applicationId)) {
-            return
-        }
-
-        // Treat the prop as business applicationId (what the sheet passes, e.g. "1")
-        dispatch(getApplicationByApplicationId(applicationId))
-    }, [applicationId, applicationData?.applicationId, applicationData?._id, dispatch])
-
-    // If an applicationId prop is provided (from sheet), ensure we have
-    // the matching application loaded into applicationDetail.
-
-    useEffect(() => {
-        if (!applicationId) return;
-
-        dispatch(getApplicationByApplicationId(applicationId));
-    }, [applicationId, dispatch]);
+        // Treat this as business applicationId (numeric id in route and preview sheet).
+        dispatch(getApplicationByApplicationId(requestedKey))
+    }, [effectiveApplicationId, dispatch])
 
     useEffect(() => {
         if (applicationData?.files) {
@@ -126,7 +115,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
 
         // Refresh the application (and its files) using the business applicationId if available,
         // otherwise fall back to the applicationId prop coming from the sheet.
-        const refreshKey = applicationData.applicationId ?? applicationId
+        const refreshKey = applicationData.applicationId ?? effectiveApplicationId
         if (refreshKey != null) {
             await dispatch(getApplicationByApplicationId(refreshKey))
         }
@@ -169,7 +158,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
             setSelectedFiles([])
 
             // Refresh the application and its files
-            const refreshKey = applicationData.applicationId ?? applicationId
+            const refreshKey = applicationData.applicationId ?? effectiveApplicationId
             if (refreshKey != null) {
                 await dispatch(getApplicationByApplicationId(refreshKey))
             }
