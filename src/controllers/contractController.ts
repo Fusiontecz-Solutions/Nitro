@@ -83,8 +83,6 @@ class ContractController {
       const data = await contractService.getByIdContract(id);
       if (!data) return res.status(404).json({ success: false, message: 'Contract not found' });
 
-      console.log("data by getByIdContracttttttttttttt",data);
-
       return res.status(200).json({ success: true, data });
     } catch (error: any) {
       console.error('Get contract by id error:', error);

@@ -1269,8 +1269,10 @@ class ApplicationController {
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
 
-            const pageNum = Number(page);
-            const limitNum = Number(limit);
+            const pageNum = Math.max(1, Number(page) || 1);
+            const parsedLimit = Math.max(1, Number(limit) || 10);
+            /** Prevent accidental multi-thousand row pulls; use aggregate endpoints for dashboard totals. */
+            const limitNum = Math.min(parsedLimit, 500);
             const skip = (pageNum - 1) * limitNum;
             const useLitePayload = String(lite ?? '').trim() === '1';
 
@@ -1411,7 +1413,7 @@ class ApplicationController {
 
             if (search) {
                 const searchStr = String(search);
-                where.OR = [
+                const searchOr: Prisma.ApplicationWhereInput[] = [
                     { type: { contains: searchStr, mode: 'insensitive' } },
                     { note: { contains: searchStr, mode: 'insensitive' } },
                     {
@@ -1426,6 +1428,15 @@ class ApplicationController {
                         },
                     },
                 ];
+                if (String(statsBucket ?? '').trim().toLowerCase() === 'funded') {
+                    searchOr.push(
+                        { dealId: { contains: searchStr, mode: 'insensitive' } },
+                    );
+                    if (/^\d+$/.test(searchStr)) {
+                        searchOr.push({ applicationId: Number(searchStr) });
+                    }
+                }
+                where.OR = searchOr;
             }
 
             if (

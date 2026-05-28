@@ -8,7 +8,7 @@ import axios from 'axios';
  * - AVOCHATO_AUTH_ID — Settings → API Access
  * - AVOCHATO_AUTH_SECRET
  * - AVOCHATO_API_BASE_URL — optional, default `https://www.avochato.com`
- * - AVOCHATO_SUBDOMAIN — optional default inbox subdomain when API key spans multiple inboxes
+ * - AVOCHATO_SUBDOMAIN — optional default inbox subdomain when API key spans multiple inboxes (or pass `subdomain` in `POST /avochato-voice/call-token`; frontend may set `VITE_AVOCHATO_SUBDOMAIN` for Communication → Calling).
  */
 
 const DEFAULT_BASE = 'https://www.avochato.com';
@@ -63,14 +63,23 @@ export async function requestAvochatoCallToken(options?: {
   });
 
   if (http.status >= 400) {
-    const err = new Error(`Avochato HTTP ${http.status}`);
+    const body = http.data as { message?: string; status?: unknown };
+    const detail =
+      typeof body?.message === 'string' && body.message.trim() ? `: ${body.message.trim()}` : '';
+    const err = new Error(`Avochato HTTP ${http.status}${detail}`);
     (err as NodeJS.ErrnoException).code = 'AVOCHATO_HTTP';
     throw err;
   }
 
   const data = http.data;
   if (data.status != null && data.status !== 200) {
-    const err = new Error(`Avochato API error (${data.status})`);
+    const msg =
+      typeof (data as { message?: unknown }).message === 'string'
+        ? String((data as { message: string }).message).trim()
+        : '';
+    const err = new Error(
+      msg ? `Avochato API error (${data.status}): ${msg}` : `Avochato API error (${data.status})`,
+    );
     (err as NodeJS.ErrnoException).code = 'AVOCHATO_HTTP';
     throw err;
   }

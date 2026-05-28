@@ -1,18 +1,20 @@
 /**
- * Run manually when PaymentTemplate is empty: npx ts-node src/scripts/seedPayoffWireTemplate.ts
- * Requires DATABASE_URL (same as the API).
+ * List payment templates in the database.
+ * Manage templates via Payments → Templates in the app (or POST /api/v1/payment-templates).
+ *
+ * Usage: npx ts-node src/scripts/seedPayoffWireTemplate.ts
  */
 import prisma from '../config/prismaClient';
-import { ensurePayoffWireTemplate } from '../bootstrap/ensurePayoffWireTemplate';
-import { ensureZeroBalanceLetterTemplate } from '../bootstrap/ensureZeroBalanceLetterTemplate';
 
 void (async () => {
   try {
     await prisma.$connect();
-    await ensurePayoffWireTemplate();
-    await ensureZeroBalanceLetterTemplate();
-    const count = await prisma.paymentTemplate.count();
-    console.log(`PaymentTemplate rows: ${count}`);
+    const rows = await prisma.paymentTemplate.findMany({
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, name: true, category: true, updatedAt: true },
+    });
+    console.log(`PaymentTemplate rows: ${rows.length}`);
+    console.log(JSON.stringify(rows, null, 2));
   } catch (e) {
     console.error(e);
     process.exitCode = 1;
