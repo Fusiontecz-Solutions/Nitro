@@ -1,4 +1,8 @@
-import type { ContractPrefillField } from "./Contract";
+import type { BuildContractPrefillFieldsArgs, ContractPrefillField } from "./Contract";
+import {
+    getContractPrefillEditDefaultsFromApplication,
+    resolveBalanceTransferMerchantContext,
+} from "./Contract";
 import {
     buildBalanceTransferSheetContractPrefillFields,
     type BalanceTransferSheetContractPrefillFields,
@@ -66,6 +70,25 @@ function disclosureDummyContext(): StateDisclosureContext {
     };
 }
 
+/** Same merge order as Deal Review / main contract prefill edit (app → contract row → saved overrides). */
+function buildEffectiveContractForTemplatePrefill(options: {
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+    agreementDate?: string;
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+}): Record<string, unknown> {
+    const contract = options.contract ?? {};
+    const merged = getContractPrefillEditDefaultsFromApplication(options.application ?? null, {
+        agreementDate: options.agreementDate,
+        contractRecords: { contract },
+    });
+    return {
+        ...merged,
+        ...contract,
+        ...(options.mainPrefillOverrides ?? {}),
+    };
+}
+
 function mergeFieldRows(
     allDefs: ContractPrefillField[],
     computed: ContractPrefillField[],
@@ -75,8 +98,8 @@ function mergeFieldRows(
     const saved = savedForRow ?? {};
     return allDefs.map((def) => {
         const fromSaved = saved[def.id];
-        if (fromSaved !== undefined) {
-            return { id: def.id, label: def.label, value: String(fromSaved) };
+        if (fromSaved !== undefined && String(fromSaved).trim() !== "") {
+            return { id: def.id, label: def.label, value: String(fromSaved).trim() };
         }
         return {
             id: def.id,
@@ -131,19 +154,20 @@ function dotBalanceTransfer(): BalanceTransferSheetContractPrefillFields {
 function buildBalanceTransferComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
+    application: Record<string, unknown> | null,
 ): ContractPrefillField[] {
-    const c = contract ?? {};
-    const line = [str(c.businessAddress), str(c.businessAddressCity), str(c.businessAddressState), str(c.businessAddressZip)]
-        .filter(Boolean)
-        .join(", ");
+    const merchant = resolveBalanceTransferMerchantContext(contract, application, {
+        recipientName: sctx.recipientName,
+        recipientAddress: sctx.recipientAddress,
+    });
     return buildBalanceTransferSheetContractPrefillFields({
-        clientName: str(c.clientName) || sctx.recipientName,
-        businessName: str(c.legalName) || str(c.customerName),
-        clientDba: str(c.doingBusinessAs) || str(c.dba),
-        physicalAddress: line || sctx.recipientAddress,
+        clientName: merchant.clientName,
+        businessName: merchant.businessName,
+        clientDba: merchant.clientDba,
+        physicalAddress: merchant.physicalAddress,
         date: sctx.signatureDate,
-        clientNameBy: str(c.clientName) || sctx.recipientName,
-        clientLegalName: str(c.legalName) || str(c.customerName) || sctx.recipientName,
+        clientNameBy: merchant.clientNameBy,
+        clientLegalName: merchant.clientLegalName,
     });
 }
 
@@ -314,10 +338,11 @@ function addendumComputed(
     kind: AddendumKind,
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
+    application: Record<string, unknown> | null,
 ): ContractPrefillField[] {
     switch (kind) {
         case "balance_transfer_sheet":
-            return buildBalanceTransferComputed(contract, sctx);
+            return buildBalanceTransferComputed(contract, sctx, application);
         case "barclays_buyout_blank":
             return buildBarclaysBuyoutComputed(contract, sctx);
         case "barclays_flex":
@@ -358,10 +383,19 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
     agreementDate?: string;
+    /** Main contract prefill overrides (excludes per-mapping blob); same source as Deal Review. */
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     savedOverridesForMapping?: Record<string, string> | null;
 }): ContractPrefillField[] {
-    const sctx = buildStateDisclosurePrefillContextFromContract({
+    const effectiveContract = buildEffectiveContractForTemplatePrefill({
         contract: options.contract ?? null,
+        application: options.application ?? null,
+        agreementDate: options.agreementDate,
+        mainPrefillOverrides: options.mainPrefillOverrides,
+    });
+
+    const sctx = buildStateDisclosurePrefillContextFromContract({
+        contract: effectiveContract,
         application: options.application ?? null,
         agreementDate: options.agreementDate,
     });
@@ -380,7 +414,12 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     const addendum = resolveAddendumKind(norm);
     if (addendum) {
         const all = addendumAllDefs(addendum);
-        const computed = addendumComputed(addendum, options.contract ?? null, sctx);
+        const computed = addendumComputed(
+            addendum,
+            effectiveContract,
+            sctx,
+            options.application ?? null,
+        );
         return mergeFieldRows(all, computed, options.savedOverridesForMapping);
     }
 
@@ -390,8 +429,20 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
 export function applyDocumentTemplateMappingPrefillOverrides(args: {
     prefillFieldsPayload: Array<{ id: string; value: string }>;
     mergedTemplateIds: string[];
-    templateMappingRows: Array<{ id: string; template?: { templateId?: string } | null }>;
+    templateMappingRows: Array<{
+        id: string;
+        template?: {
+            templateId?: string;
+            name?: string | null;
+            state?: string | null;
+            frequency?: string | null;
+        } | null;
+    }>;
     contractPrefillOverridesRaw: unknown;
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+    agreementDate?: string;
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
 }): Array<{ id: string; value: string }> {
     const blob = parseDocumentTemplatePrefillByMappingId(args.contractPrefillOverridesRaw);
     const mergedSet = new Set(args.mergedTemplateIds.map((x) => String(x).trim()).filter(Boolean));
@@ -401,11 +452,20 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         const tid = String(row.template?.templateId ?? "").trim();
         if (!tid || !mergedSet.has(tid)) continue;
         const perMap = blob[row.id];
-        if (!perMap) continue;
-        for (const [fieldId, val] of Object.entries(perMap)) {
-            const v = String(val ?? "").trim();
+        const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
+            templateName: row.template?.name ?? null,
+            templateState: row.template?.state ?? null,
+            templateFrequency: row.template?.frequency ?? null,
+            contract: args.contract ?? null,
+            application: args.application ?? null,
+            agreementDate: args.agreementDate,
+            mainPrefillOverrides: args.mainPrefillOverrides,
+            savedOverridesForMapping: perMap ?? null,
+        });
+        for (const field of computedRows) {
+            const v = String(field.value ?? "").trim();
             if (!v) continue;
-            byId.set(fieldId, { id: fieldId, value: v });
+            byId.set(field.id, { id: field.id, value: v });
         }
     }
     return Array.from(byId.values());

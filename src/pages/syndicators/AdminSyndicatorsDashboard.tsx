@@ -328,8 +328,6 @@ export default function AdminSyndicatorsDashboard() {
 
   const filteredColorsSyndicateInvested = [COLORS[0], COLORS[COLORS.length - 1]];
 
-  const applicationsRoute = '/applications';
-
   if (loading) {
     return (
       <div className="w-full space-y-4 px-4 pb-4 pt-6">
@@ -386,18 +384,7 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              navigate(applicationsRoute);
-            }
-          }}
-          onClick={() => navigate(applicationsRoute)}
-          className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
-        >
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="TOTAL INVESTMENT"
@@ -414,18 +401,7 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              navigate(applicationsRoute);
-            }
-          }}
-          onClick={() => navigate(applicationsRoute)}
-          className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
-        >
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="EXPECTED RTR"
@@ -442,18 +418,7 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              navigate(applicationsRoute);
-            }
-          }}
-          onClick={() => navigate(applicationsRoute)}
-          className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
-        >
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="TOTAL REMAINING"

@@ -40,6 +40,7 @@ import {
 } from "@/redux/actions/applicationActions";
 import type { ApplicationStatsData } from "@/redux/actions/applicationActions";
 import {
+  resetApplicationsListForFetch,
   hydrateApplicationsListFromCache,
   resetDeleteApplication,
 } from "@/redux/slices/applicationSlice";
@@ -59,6 +60,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { DataTableContent, DataTablePagination } from "@/components/DataTable";
+import { isListBlockingLoad } from "@/lib/listLoading";
 import {
   Dialog,
   DialogContent,
@@ -91,9 +93,11 @@ import {
   parseApplicationsListRouteFilters,
   buildApplicationsListParams,
   APPLICATIONS_LIST_DEFAULT_SORT,
+  DEFAULT_APPLICATIONS_PAGE_SIZE,
   pipelineStatusFilterToApiFields,
 } from "@/lib/applicationsListParams";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
+import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
 import {
   CONTRACT_OUT_QUEUE_BADGE_CLASS,
   isContractOutQueueBadgeLabel,
@@ -102,10 +106,6 @@ import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
-import {
-  APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-  filterApplicationsBySearchQuery,
-} from "@/lib/applicationTableSearch";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
 import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
 import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
@@ -246,6 +246,7 @@ const Applications = () => {
 
   // Local state (URL-derived defaults avoid a blank frame before the first list fetch)
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).statusFilter,
   );
@@ -254,6 +255,12 @@ const Applications = () => {
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
+
+  /** Ops stage from URL only — stale `dashboardStateFilter` must not filter the main list. */
+  const effectiveDashboardStateFilter = isOperationsDashboardView
+    ? dashboardStateFilter
+    : "";
+
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(true);
   /** Primary underwriter inbox: unclaimed pool vs deals you claimed (Underwriter queue only). */
   const [underwriterPoolTab, setUnderwriterPoolTab] = useState<"queue" | "my">(
@@ -300,7 +307,7 @@ const Applications = () => {
   const [rowSelection, setRowSelection] = useState({});
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
-    pageSize: 10,
+    pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
   });
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<string[]>([]);
   const [prevMonthStats, setPrevMonthStats] =
@@ -611,6 +618,8 @@ const Applications = () => {
     return "bg-yellow-100 text-yellow-700";
   }, []);
 
+  const applicationsListRefetchRef = useRef<(() => Promise<unknown>) | null>(null);
+
   const handleUwClaimDeal = useCallback(
     async (app: Application) => {
       const id = app._id ?? (app as { id?: string }).id;
@@ -618,6 +627,7 @@ const Applications = () => {
       try {
         setClaimBusyAppId(String(id));
         await dispatch(claimUnderwriterDeal({ applicationId: String(id) })).unwrap();
+        await applicationsListRefetchRef.current?.();
         toast.success("Deal claimed");
         if (showUwDealPoolUi) {
           void fetchUwDealPoolStats().catch((err: unknown) => {
@@ -658,6 +668,7 @@ const Applications = () => {
         qs.set("operationsStatus", dashboardStateFilter);
       }
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      prefetchApplicationDetail(id);
       navigate(`/application-details/${id}${suffix}`);
     },
     [dashboardStateFilter, navigate],
@@ -1036,28 +1047,17 @@ const Applications = () => {
     handleUwClaimDeal,
   ]);
 
-  const filteredApplications = useMemo(() => {
-    const searched = filterApplicationsBySearchQuery(applications, searchTerm);
-    return [...searched].sort((a, b) => {
-      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+  const tableRows = applications ?? [];
 
-      // Primary sort: newest created applications first.
-      if (aTime !== bTime) return bTime - aTime;
-
-      // Stable tie-breaker: larger applicationId first when available.
-      const aId = Number(a.applicationId ?? 0);
-      const bId = Number(b.applicationId ?? 0);
-      if (Number.isFinite(aId) && Number.isFinite(bId)) return bId - aId;
-      return 0;
-    });
-  }, [applications, searchTerm]);
-
-  const totalItems = filteredApplications.length;
+  const totalItems = apiPagination?.total ?? tableRows.length;
+  const pageCount =
+    apiPagination?.totalPages ??
+    Math.max(1, Math.ceil(totalItems / pagination.pageSize) || 1);
 
   const table = useReactTable({
-    data: filteredApplications,
+    data: tableRows,
     columns,
+    pageCount,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
@@ -1067,7 +1067,7 @@ const Applications = () => {
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
-    manualPagination: false,
+    manualPagination: true,
     state: {
       sorting,
       columnFilters,
@@ -1098,9 +1098,9 @@ const Applications = () => {
   const listRequestParamsForKey = useMemo((): GetApplicationsParams => {
     if (showUwDealPoolUi) {
       return buildApplicationsListParams({
-        pageIndex: 0,
-        pageSize: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-        searchTerm: "",
+        pageIndex: pagination.pageIndex,
+        pageSize: pagination.pageSize,
+        searchTerm: debouncedSearchTerm,
         dashboardStateFilter: "",
         statusFilter: "all",
         underwriterClaim:
@@ -1108,43 +1108,34 @@ const Applications = () => {
       });
     }
     return buildApplicationsListParams({
-      pageIndex: 0,
-      pageSize: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-      searchTerm: "",
-      dashboardStateFilter,
+      pageIndex: pagination.pageIndex,
+      pageSize: pagination.pageSize,
+      searchTerm: debouncedSearchTerm,
+      dashboardStateFilter: effectiveDashboardStateFilter,
       statusFilter,
       typeFilter,
       priorityFilter,
+      useDashboardStageFilter: isOperationsDashboardView,
     });
   }, [
-    dashboardStateFilter,
+    effectiveDashboardStateFilter,
     statusFilter,
     typeFilter,
     priorityFilter,
     showUwDealPoolUi,
     underwriterPoolTab,
+    isOperationsDashboardView,
+    pagination.pageIndex,
+    pagination.pageSize,
+    debouncedSearchTerm,
   ]);
-
-  /**
-   * Super Admin deal-stage clicks must always pull fresh backend-filtered rows.
-   * We bypass list cache and clear stale rows so users see a loader until the
-   * new stage payload arrives.
-   */
-  const shouldForceFreshStageData =
-    isOperationsDashboardView && sessionRoleKey === "SUPER_ADMIN";
 
   const listFetchParams = useMemo(
     (): GetApplicationsParams => ({
       ...listRequestParamsForKey,
-      ...(shouldForceFreshStageData
-        ? {
-          skipListCache: true,
-          skipListCacheRead: true,
-          clearListOnFetch: true,
-        }
-        : {}),
+      clearListOnFetch: true,
     }),
-    [listRequestParamsForKey, shouldForceFreshStageData],
+    [listRequestParamsForKey],
   );
 
   const listFetchKey = useMemo(
@@ -1152,78 +1143,60 @@ const Applications = () => {
     [listFetchParams],
   );
 
-  const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
+  const {
+    refetch: refetchApplicationsList,
+    isPending: applicationsListQueryPending,
+    isFetching: applicationsListQueryFetching,
+  } = useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
   });
 
-  const fetchApplications = useCallback(async () => {
-    await applicationsListQuery.refetch();
-  }, [applicationsListQuery]);
+  const applicationsListBlockingLoad = isListBlockingLoad({
+    rowCount: tableRows.length,
+    loading,
+    isRefreshing,
+    isFetching: applicationsListQueryPending || applicationsListQueryFetching,
+    awaitingFirstLoad: !isListFilterInitialized,
+  });
 
-  /** Sync one-time refresh flag cleanup after query-triggered fetch. */
+  const fetchApplications = useCallback(async () => {
+    await refetchApplicationsList();
+  }, [refetchApplicationsList]);
+
+  applicationsListRefetchRef.current = refetchApplicationsList;
+
+  /** After create/edit redirect, refetch list and clear navigation state. */
   useEffect(() => {
     if (!isListFilterInitialized) return;
     const refreshList = Boolean(
       (location.state as { refreshApplicationsList?: boolean } | null)
         ?.refreshApplicationsList,
     );
-    if (refreshList) {
-      navigate(
-        { pathname: location.pathname, search: location.search },
-        { replace: true, state: {} },
-      );
-    }
+    if (!refreshList) return;
+    void refetchApplicationsList();
+    navigate(
+      { pathname: location.pathname, search: location.search },
+      { replace: true, state: {} },
+    );
   }, [
-    fetchApplications,
+    refetchApplicationsList,
     isListFilterInitialized,
-    listFetchKey,
     location.pathname,
     location.search,
     location.state,
     navigate,
   ]);
 
+  /** Swap list rows when the filter key changes — never show the previous stage while loading. */
   useEffect(() => {
     if (!isListFilterInitialized) return;
-    if (dashboardStateFilter) return;
-    if (sessionRoleKey === "UNDERWRITER" && !isOperationsDashboardView) {
-      prefetchApplicationsList({
-        page: 1,
-        limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-        ...APPLICATIONS_LIST_DEFAULT_SORT,
-        lite: true,
-        underwriterClaim: "unclaimed",
-      });
-      prefetchApplicationsList({
-        page: 1,
-        limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-        ...APPLICATIONS_LIST_DEFAULT_SORT,
-        lite: true,
-        underwriterClaim: "mine",
-      });
+    const cached = getCachedApplicationsList(listFetchKey);
+    if (cached) {
+      dispatch(hydrateApplicationsListFromCache(cached));
       return;
     }
-
-    const commonParams = {
-      page: 1,
-      limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-      ...APPLICATIONS_LIST_DEFAULT_SORT,
-      lite: true as const,
-    };
-
-    prefetchApplicationsList(commonParams);
-    APPLICATIONS_QUEUE_FILTER_OPTIONS.forEach((opt) => {
-      prefetchApplicationsList({
-        ...commonParams,
-        ...pipelineStatusFilterToApiFields(opt.value),
-      });
-    });
-  }, [
-    dashboardStateFilter,
-    isListFilterInitialized,
-    sessionRoleKey,
-    isOperationsDashboardView,
-  ]);
+    dispatch(resetApplicationsListForFetch());
+  }, [dispatch, isListFilterInitialized, listFetchKey]);
 
   // Initialize list filter from dashboard query params
   useEffect(() => {
@@ -1232,8 +1205,14 @@ const Applications = () => {
       query.get("operationsStatus") || query.get("currentState");
     const fromDashboard = query.get("fromDashboard");
 
-    if (fromDashboard === "operations" && operationsStatusFromQuery) {
-      const normalizedState = normalizeDashboardState(operationsStatusFromQuery);
+    const opsStatusRaw = operationsStatusFromQuery?.trim() ?? "";
+    const opsStatusIsAll =
+      opsStatusRaw.toLowerCase() === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY;
+
+    if (fromDashboard === "operations" && operationsStatusFromQuery && !opsStatusIsAll) {
+      const normalizedState =
+        normalizeOperationsDashboardStatusParam(operationsStatusFromQuery) ??
+        operationsStatusFromQuery.trim();
       setDashboardStateFilter(normalizedState);
       setStatusFilter("all");
 
@@ -1246,8 +1225,20 @@ const Applications = () => {
       return;
     }
 
+    if (fromDashboard === "operations" && opsStatusIsAll) {
+      setDashboardStateFilter(OPERATIONS_APPLICATIONS_LIST_ALL_QUERY);
+      setStatusFilter("all");
+
+      if (pagination.pageIndex !== 0) {
+        setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+        return;
+      }
+
+      setIsListFilterInitialized(true);
+      return;
+    }
+
     setDashboardStateFilter("");
-    setStatusFilter("all");
 
     if (pagination.pageIndex !== 0) {
       setPagination((prev) => ({ ...prev, pageIndex: 0 }));
@@ -1323,11 +1314,6 @@ const Applications = () => {
     fetchUwDealPoolStats,
   ]);
 
-  // Fetch stats for dashboard
-  useEffect(() => {
-    dispatch(getApplicationStats());
-  }, [dispatch]);
-
   // Handle delete success/error (single delete only; bulk delete shows one toast in handleBulkDelete)
   useEffect(() => {
     if (deleteSuccess) {
@@ -1362,8 +1348,20 @@ const Applications = () => {
   ]);
 
   useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 400);
+    return () => window.clearTimeout(t);
+  }, [searchTerm]);
+
+  useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [searchTerm, typeFilter, priorityFilter]);
+  }, [
+    debouncedSearchTerm,
+    typeFilter,
+    priorityFilter,
+    statusFilter,
+    dashboardStateFilter,
+    underwriterPoolTab,
+  ]);
 
   // static -----------------------------------------------
   const [user, setUser] = useState<user>();
@@ -1532,7 +1530,7 @@ const Applications = () => {
                 `${progress.errors.length} row(s) could not be imported. Open the browser console for details.`,
               );
             }
-            await applicationsListQuery.refetch();
+            await refetchApplicationsList();
             finished = true;
             break;
           }
@@ -1564,7 +1562,7 @@ const Applications = () => {
         resetInput();
       }
     },
-    [applicationsListQuery],
+    [refetchApplicationsList],
   );
 
   const pipelineFilterButtonLabel = useMemo(() => {
@@ -1807,10 +1805,6 @@ const Applications = () => {
     uwDealPoolStats,
     uwDealPoolPrevStats,
   ]);
-
-  useEffect(() => {
-    stats.forEach((c) => prefetchBrowseFromStatCard(c.title));
-  }, [prefetchBrowseFromStatCard, stats]);
 
   const statsGridCols =
     stats.length === 5 ? "xl:grid-cols-5" : "xl:grid-cols-4";
@@ -2063,8 +2057,10 @@ const Applications = () => {
               <DropdownMenuContent align="start">
                 <DropdownMenuItem
                   onClick={() => {
+                    setDashboardStateFilter("");
                     setStatusFilter("all");
                     setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                    navigate({ pathname: "/applications", search: "" }, { replace: true });
                   }}
                 >
                   All
@@ -2073,8 +2069,10 @@ const Applications = () => {
                   <DropdownMenuItem
                     key={opt.value}
                     onClick={() => {
+                      setDashboardStateFilter("");
                       setStatusFilter(opt.value);
                       setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                      navigate({ pathname: "/applications", search: "" }, { replace: true });
                     }}
                   >
                     {opt.label}
@@ -2209,26 +2207,22 @@ const Applications = () => {
             <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable] min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
               <DataTableContent
                 table={table}
-                loading={loading && !(applications?.length)}
+                loading={applicationsListBlockingLoad}
                 loadingMessage="Loading applications..."
                 emptyMessage={
-                  (applications?.length ?? 0) > 0 &&
-                    filteredApplications.length === 0 &&
-                    searchTerm.trim()
+                  debouncedSearchTerm.trim()
                     ? "No matching applications"
                     : "No applications found"
                 }
                 emptySubMessage={
-                  (applications?.length ?? 0) > 0 &&
-                    filteredApplications.length === 0 &&
-                    searchTerm.trim()
+                  debouncedSearchTerm.trim()
                     ? "Try a different search term"
                     : "Try adjusting your search or filter criteria"
                 }
                 onRowClick={(row) => handleNavigateToApplication(row.original)}
               />
             </div>
-          ) : loading && !(applications?.length) ? (
+          ) : applicationsListBlockingLoad ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 p-3 md:p-4 animate-pulse">
               {Array.from({ length: 8 }).map((_, idx) => (
                 <div
@@ -2250,15 +2244,6 @@ const Applications = () => {
               <p className="font-medium text-[#687182]">No applications found</p>
               <p className="text-sm text-muted-foreground mt-1">
                 Try adjusting your search or filter criteria
-              </p>
-            </div>
-          ) : !filteredApplications.length ? (
-            <div className="flex flex-col items-center justify-center py-16 px-4 text-center rounded-xl">
-              <p className="font-medium text-[#687182]">No matching applications</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                {searchTerm.trim()
-                  ? "Try a different search term"
-                  : "Try adjusting your search or filter criteria"}
               </p>
             </div>
           ) : (
@@ -2417,7 +2402,7 @@ const Applications = () => {
         </div>
 
         {/* Pagination */}
-        {applications && applications.length > 0 && (
+        {totalItems > 0 && (
           <DataTablePagination
             table={table}
             totalItems={totalItems}

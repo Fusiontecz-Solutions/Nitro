@@ -12,7 +12,10 @@ import { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } fr
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { deleteApplication } from "@/redux/actions/applicationActions";
-import { clearApplications, resetDeleteApplication } from "@/redux/slices/applicationSlice";
+import {
+  resetApplicationsListForFetch,
+  resetDeleteApplication,
+} from "@/redux/slices/applicationSlice";
 import { toast } from "react-toastify";
 import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
 import {
@@ -28,6 +31,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import { DataTableContent, DataTablePagination } from "@/components/DataTable";
+import { isListBlockingLoad } from "@/lib/listLoading";
 import { useTheme } from "@/context/ThemeContext";
 import {
   CONTRACT_OUT_QUEUE_BADGE_CLASS,
@@ -41,13 +45,9 @@ import { formatCurrency, formatDate as formatDateUtil } from "@/lib/utils";
 import { getClientByClientId } from "@/redux/actions/clientActions";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import {
-  APPLICATIONS_LIST_DEFAULT_SORT,
-  pipelineStatusFilterToApiFields,
+  buildApplicationsListParams,
+  DEFAULT_APPLICATIONS_PAGE_SIZE,
 } from "@/lib/applicationsListParams";
-import {
-  APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-  filterApplicationsBySearchQuery,
-} from "@/lib/applicationTableSearch";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 
@@ -88,6 +88,7 @@ export default function ApplicationsBrowsePage() {
 
   const [viewOnlyMode, setViewOnlyMode] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [statsBucketFilter, setStatsBucketFilter] = useState("");
   const [underwriterClaimFilter, setUnderwriterClaimFilter] = useState<
@@ -101,7 +102,7 @@ export default function ApplicationsBrowsePage() {
   const [rowSelection, setRowSelection] = useState({});
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
-    pageSize: 10,
+    pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
   });
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<string[]>([]);
   const [viewApplication, setViewApplication] = useState<Application | null>(null);
@@ -111,6 +112,7 @@ export default function ApplicationsBrowsePage() {
     loading,
     isRefreshing,
     data: applications,
+    pagination: apiPagination,
     error,
   } = useSelector((state: RootState) => state.applications);
 
@@ -432,15 +434,16 @@ export default function ApplicationsBrowsePage() {
     viewOnlyMode,
   ]);
 
-  const filteredApplications = useMemo(
-    () => filterApplicationsBySearchQuery(applications, searchTerm),
-    [applications, searchTerm],
-  );
-  const totalItems = filteredApplications.length;
+  const tableRows = applications ?? [];
+  const totalItems = apiPagination?.total ?? tableRows.length;
+  const pageCount =
+    apiPagination?.totalPages ??
+    Math.max(1, Math.ceil(totalItems / pagination.pageSize) || 1);
 
   const table = useReactTable({
-    data: filteredApplications,
+    data: tableRows,
     columns,
+    pageCount,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
@@ -450,7 +453,7 @@ export default function ApplicationsBrowsePage() {
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
-    manualPagination: false,
+    manualPagination: true,
     state: {
       sorting,
       columnFilters,
@@ -472,12 +475,16 @@ export default function ApplicationsBrowsePage() {
   }, [rowSelection]);
 
   const listFetchParams = useMemo((): GetApplicationsParams => {
+    const base = buildApplicationsListParams({
+      pageIndex: pagination.pageIndex,
+      pageSize: pagination.pageSize,
+      searchTerm: debouncedSearchTerm,
+      dashboardStateFilter: "",
+      statusFilter: statsBucketFilter ? "all" : statusFilter,
+    });
     const params: GetApplicationsParams = {
-      page: 1,
-      limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-      ...APPLICATIONS_LIST_DEFAULT_SORT,
+      ...base,
       lite: true,
-      // Dashboard drilldowns must always render fresh status results.
       skipListCache: true,
       skipListCacheRead: true,
       clearListOnFetch: true,
@@ -487,25 +494,34 @@ export default function ApplicationsBrowsePage() {
     }
     if (statsBucketFilter) {
       params.statsBucket = statsBucketFilter;
-      return params;
-    }
-    if (statusFilter !== "all") {
-      Object.assign(params, pipelineStatusFilterToApiFields(statusFilter));
+      delete params.currentQueue;
+      delete params.operationsStatus;
     }
     return params;
-  }, [statusFilter, statsBucketFilter, underwriterClaimFilter]);
+  }, [
+    statusFilter,
+    statsBucketFilter,
+    underwriterClaimFilter,
+    pagination.pageIndex,
+    pagination.pageSize,
+    debouncedSearchTerm,
+  ]);
 
-  const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
+  const {
+    refetch: refetchApplicationsList,
+    isPending: applicationsListQueryPending,
+    isFetching: applicationsListQueryFetching,
+  } = useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
   });
 
   const fetchApplications = useCallback(async () => {
-    await applicationsListQuery.refetch();
-  }, [applicationsListQuery]);
+    await refetchApplicationsList();
+  }, [refetchApplicationsList]);
 
   useLayoutEffect(() => {
     // Prevent stale rows from flashing while a new drilldown status is loading.
-    dispatch(clearApplications());
+    dispatch(resetApplicationsListForFetch());
     setIsListFilterInitialized(false);
     const query = new URLSearchParams(location.search);
     setViewOnlyMode(query.get("viewOnly") === "1");
@@ -526,22 +542,14 @@ export default function ApplicationsBrowsePage() {
 
     if (pagination.pageIndex !== 0) {
       setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-      return;
     }
-    setIsListFilterInitialized(true);
   }, [dispatch, location.search]);
 
+  /** Enable list fetch once pagination is on page 1 (after URL-driven reset above). */
   useEffect(() => {
-    if (isListFilterInitialized) return;
-    if (!statsBucketFilter && !underwriterClaimFilter) return;
     if (pagination.pageIndex !== 0) return;
     setIsListFilterInitialized(true);
-  }, [
-    isListFilterInitialized,
-    statsBucketFilter,
-    underwriterClaimFilter,
-    pagination.pageIndex,
-  ]);
+  }, [pagination.pageIndex]);
 
   const handleBulkDelete = useCallback(async () => {
     const idsToDelete = selectedApplicationIds.filter(
@@ -603,8 +611,13 @@ export default function ApplicationsBrowsePage() {
   }, [deleteSuccess, deleteError, dispatch, fetchApplications]);
 
   useEffect(() => {
-    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+    const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 400);
+    return () => window.clearTimeout(t);
   }, [searchTerm]);
+
+  useEffect(() => {
+    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+  }, [debouncedSearchTerm, statusFilter, statsBucketFilter, underwriterClaimFilter]);
 
   const pipelineLabel = useMemo(() => {
     if (statusFilter === "all") return "All";
@@ -633,7 +646,13 @@ export default function ApplicationsBrowsePage() {
     navigate(-1);
   }, [navigate]);
 
-  const listLoading = loading || isRefreshing || applicationsListQuery.isFetching;
+  const listBlockingLoad = isListBlockingLoad({
+    rowCount: applications?.length ?? 0,
+    loading,
+    isRefreshing,
+    isFetching: applicationsListQueryPending || applicationsListQueryFetching,
+    awaitingFirstLoad: !isListFilterInitialized,
+  });
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
@@ -749,19 +768,15 @@ export default function ApplicationsBrowsePage() {
           <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable] min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
             <DataTableContent
               table={table}
-              loading={listLoading && !(applications?.length)}
+              loading={listBlockingLoad}
               loadingMessage="Loading applications..."
               emptyMessage={
-                (applications?.length ?? 0) > 0 &&
-                  filteredApplications.length === 0 &&
-                  searchTerm.trim()
+                debouncedSearchTerm.trim()
                   ? "No matching applications"
                   : "No applications found"
               }
               emptySubMessage={
-                (applications?.length ?? 0) > 0 &&
-                  filteredApplications.length === 0 &&
-                  searchTerm.trim()
+                debouncedSearchTerm.trim()
                   ? "Try a different search term"
                   : "Try adjusting your search or filter criteria"
               }
@@ -770,7 +785,7 @@ export default function ApplicationsBrowsePage() {
           </div>
         </div>
 
-        {!listLoading && applications && applications.length > 0 && (
+        {!listBlockingLoad && totalItems > 0 && (
           <DataTablePagination
             table={table}
             totalItems={totalItems}

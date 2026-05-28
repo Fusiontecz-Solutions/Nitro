@@ -83,7 +83,6 @@ import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
-import { normalizeStateToken } from "@/lib/applicationStatsPredicates";
 import {
   buildApplicationsBrowseUrl,
   DASHBOARD_APPLICATION_STATS_BUCKET,
@@ -563,11 +562,6 @@ export default function DashboardPage() {
   const { data: statsData } = useSelector(
     (state: RootState) => state.applicationStats,
   );
-  const { data: applicationsList, loading: applicationsLoading } =
-    useSelector((state: RootState) => state.applications);
-  const applicationsPagination = useSelector(
-    (state: RootState) => state.applications.pagination,
-  );
   const dashboardLoginUserRole = useSelector(
     (state: RootState) => state.login.data?.user?.role ?? "",
   );
@@ -649,16 +643,72 @@ export default function DashboardPage() {
     return formatCurrency(amount);
   }, []);
 
-  // Load applications for dashboard trend chart (backend getAll has no hard cap on limit)
+  const [dashboardRoleApps, setDashboardRoleApps] = useState<Application[]>([]);
+  const [dashboardRoleAppsTotal, setDashboardRoleAppsTotal] = useState(0);
+  const [dashboardRoleAppsLoading, setDashboardRoleAppsLoading] = useState(false);
+
+  /** Role-scoped list for funnel + recent table (DB-filtered, all pages). */
   useEffect(() => {
-    dispatch(
+    const roleKey = String(dashboardLoginUserRole || localStorage.getItem("role") || "")
+      .toUpperCase()
+      .replace(/-/g, "_");
+    if (roleKey === "ADMIN" || roleKey === "SUPER_ADMIN" || roleKey === "SUPERADMIN") {
+      setDashboardRoleApps([]);
+      setDashboardRoleAppsTotal(0);
+      return;
+    }
+    const queueByRole: Record<string, string> = {
+      AGENT: "Agent",
+      UNDERWRITER: "Underwriter",
+      FINAL_UNDERWRITER: "Final Underwriter",
+    };
+    const queue = queueByRole[roleKey];
+    if (!queue) {
+      setDashboardRoleApps([]);
+      setDashboardRoleAppsTotal(0);
+      return;
+    }
+    let cancelled = false;
+    setDashboardRoleAppsLoading(true);
+    void dispatch(
       getApplications({
         page: 1,
-        limit: 5000,
+        limit: 500,
+        lite: true,
+        currentQueue: queue,
         sortBy: "createdAt",
         sortOrder: "desc",
+        fetchAllPages: true,
+        skipListCache: true,
+        skipListCacheRead: true,
       }),
-    );
+    )
+      .unwrap()
+      .then((res) => {
+        if (!cancelled) {
+          const rows = Array.isArray(res?.data) ? res.data : [];
+          setDashboardRoleApps(rows);
+          const total =
+            Number(res?.pagination?.totalItems ?? res?.pagination?.total) ||
+            rows.length;
+          setDashboardRoleAppsTotal(total);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDashboardRoleApps([]);
+          setDashboardRoleAppsTotal(0);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDashboardRoleAppsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch, dashboardLoginUserRole]);
+
+  useEffect(() => {
     dispatch(
       getTermsOffers({
         limit: 500,
@@ -863,251 +913,17 @@ export default function DashboardPage() {
     [startDate, endDate],
   );
 
-  type DashboardTrendRow = {
-    dealStatus: "Approved" | "Funded" | "Declined";
-    applicationAmount: number;
-    date: string;
-  };
-
-  const dashboardTrendRows: DashboardTrendRow[] = useMemo(() => {
-    const apps = (applicationsList as Application[] | undefined) ?? [];
-
-    const rows: DashboardTrendRow[] = [];
-
-    apps.forEach((app) => {
-      const createdAt = app.createdAt ? new Date(app.createdAt) : null;
-      if (!createdAt || Number.isNaN(createdAt.getTime())) return;
-      if (!filterByDateRange(createdAt)) return;
-
-      const toAmount = (value: unknown): number => {
-        if (value == null) return 0;
-        if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-        if (typeof value === "string") {
-          const parsed = Number(value.replace(/[^0-9.-]/g, ""));
-          return Number.isFinite(parsed) ? parsed : 0;
-        }
-        return 0;
-      };
-      const appAny = app as Application & {
-        requestedAmount?: unknown;
-        amountFunded?: unknown;
-        approvedAmount?: unknown;
-        offerDecision?: { approvedAmount?: unknown; amountFunded?: unknown } | null;
-      };
-      const amountCandidates = [
-        appAny.loanAmount,
-        appAny.requestedAmount,
-        appAny.approvedAmount,
-        appAny.offerDecision?.approvedAmount,
-        appAny.offerDecision?.amountFunded,
-        appAny.amountFunded,
-      ];
-      const applicationAmount =
-        amountCandidates.map(toAmount).find((v) => Number.isFinite(v) && v > 0) ?? 0;
-
-      // Dashboard trend uses application current state buckets with amount totals.
-      const currentStateToken = normalizeStateToken(
-        // Prefer raw backend state token so chart buckets match dashboard stats/cards.
-        app.statsCurrentState ?? app.currentState ?? app.state ?? "",
-      );
-      let dealStatus: "Approved" | "Funded" | "Declined" | null = null;
-      if (currentStateToken === "APPROVED") {
-        dealStatus = "Approved";
-      } else if (
-        currentStateToken === "FUNDED" ||
-        currentStateToken === "COMPLETED" ||
-        currentStateToken === "DISBURSEMENT" ||
-        currentStateToken === "DISBURSMENT"
-      ) {
-        dealStatus = "Funded";
-      } else if (currentStateToken === "DECLINED" || currentStateToken === "REJECTED") {
-        dealStatus = "Declined";
-      }
-      if (!dealStatus) return;
-
-      const date = app.createdAt || new Date().toISOString();
-
-      rows.push({
-        dealStatus,
-        applicationAmount,
-        date,
-      });
-    });
-
-    return rows;
-  }, [applicationsList, filterByDateRange]);
-
+  /** Monthly trend chart uses `/applications/stats/trend` aggregates only (no client row sampling). */
   const filteredTrendData = useMemo(() => {
-    const periodData: {
-      [key: string]: {
-        name: string;
-        approved: number;
-        funded: number;
-        declined: number;
-        dateKey: string;
-      };
-    } = {};
-
-    const rows = dashboardTrendRows || [];
-    if (rows.length === 0 && !startDate && !endDate) return [];
-
-    const parseDateOnly = (value: string | null) => {
-      if (!value) return null;
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) return null;
-      d.setHours(0, 0, 0, 0);
-      return d;
-    };
-
-    const start = parseDateOnly(startDate || null);
-    const end = parseDateOnly(endDate || null);
-
-    // If user hasn't picked a range, default to current month.
-    const fallback = getCurrentMonthDateRange();
-    const rangeStart = start ?? fallback.startDateObj;
-    const rangeEnd = (() => {
-      const e = end ?? fallback.endDateObj;
-      const normalized = new Date(e);
-      normalized.setHours(23, 59, 59, 999);
-      return normalized;
-    })();
-
-    const formatYmd = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-        d.getDate(),
-      ).padStart(2, "0")}`;
-
-    const sameMonth =
-      rangeStart.getFullYear() === rangeEnd.getFullYear() &&
-      rangeStart.getMonth() === rangeEnd.getMonth();
-
-    if (trendView === "monthly") {
-      const d = new Date(rangeStart);
-      d.setHours(0, 0, 0, 0);
-      while (d <= rangeEnd) {
-        const periodKey = formatYmd(d);
-        const label = sameMonth
-          ? String(d.getDate())
-          : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-        periodData[periodKey] = {
-          name: label,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-        d.setDate(d.getDate() + 1);
-      }
-    } else if (trendView === "weekly") {
-      const d = new Date(rangeStart);
-      d.setDate(d.getDate() - d.getDay()); // Sunday
-      d.setHours(0, 0, 0, 0);
-      while (d <= rangeEnd) {
-        const weekStart = new Date(d);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        weekEnd.setHours(23, 59, 59, 999);
-        const periodKey = formatYmd(weekStart);
-        const periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
-        periodData[periodKey] = {
-          name: periodLabel,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-        d.setDate(d.getDate() + 7);
-      }
-    } else if (trendView === "yearly") {
-      // Pre-init all months that intersect the selected range (can span years).
-      const d = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
-      d.setHours(0, 0, 0, 0);
-      const endMonth = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
-      endMonth.setHours(0, 0, 0, 0);
-      while (d <= endMonth) {
-        const periodKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-          2,
-          "0",
-        )}`;
-        const periodLabel = d.toLocaleDateString("en-US", { month: "short" });
-        periodData[periodKey] = {
-          name: periodLabel,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-        d.setMonth(d.getMonth() + 1);
-      }
-    }
-
-    rows.forEach((row) => {
-      const date = new Date(row.date);
-      if (isNaN(date.getTime())) return;
-      if (!filterByDateRange(date)) return;
-
-      let periodKey = "";
-      let periodLabel = "";
-
-      if (trendView === "monthly") {
-        periodKey = `${date.getFullYear()}-${String(
-          date.getMonth() + 1,
-        ).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-        periodLabel = sameMonth
-          ? String(date.getDate())
-          : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      } else if (trendView === "weekly") {
-        const weekStart = new Date(date);
-        weekStart.setDate(date.getDate() - date.getDay());
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        periodKey = `${weekStart.getFullYear()}-${String(
-          weekStart.getMonth() + 1,
-        ).padStart(2, "0")}-${String(weekStart.getDate()).padStart(2, "0")}`;
-        periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
-      } else {
-        const monthKey = `${date.getFullYear()}-${String(
-          date.getMonth() + 1,
-        ).padStart(2, "0")}`;
-        periodKey = monthKey;
-        periodLabel = date.toLocaleDateString("en-US", { month: "short" });
-      }
-
-      if (!periodData[periodKey]) {
-        periodData[periodKey] = {
-          name: periodLabel,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-      }
-
-      if (row.dealStatus === "Approved") {
-        periodData[periodKey].approved += row.applicationAmount;
-      } else if (row.dealStatus === "Funded") {
-        periodData[periodKey].funded += row.applicationAmount;
-      } else if (row.dealStatus === "Declined") {
-        periodData[periodKey].declined += row.applicationAmount;
-      }
-    });
-
-    return Object.values(periodData).sort((a, b) =>
-      a.dateKey.localeCompare(b.dateKey),
-    );
-  }, [dashboardTrendRows, trendView, startDate, endDate, filterByDateRange]);
+    const trendFromApi = (trendData as Array<Record<string, unknown>>).map((p, idx) => ({
+      name: String(p.name ?? p.period ?? ""),
+      approved: Number(p.approved) || 0,
+      funded: Number(p.funded) || 0,
+      declined: Number(p.declined ?? p.rejected) || 0,
+      dateKey: String(p.dateKey ?? p.name ?? p.period ?? idx),
+    }));
+    return trendFromApi.sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
+  }, [trendData]);
 
   const trendChartYMax = useMemo(() => {
     let max = 0;
@@ -1558,13 +1374,12 @@ export default function DashboardPage() {
   }, [statsForDashboardCards, prevMonthStats, formatMoney]);
 
   const clientPipelineFunnel = useMemo(() => {
-    const apps = (applicationsList as Application[] | undefined) ?? [];
-    return buildPipelineFunnelFromApps(apps, pipelineView);
-  }, [applicationsList, pipelineView]);
+    return buildPipelineFunnelFromApps(dashboardRoleApps, pipelineView);
+  }, [dashboardRoleApps, pipelineView]);
 
   /** Latest N applications filtered by role queue (agent/underwriter/final underwriter). */
   const latestDashboardApplications = useMemo(() => {
-    const apps = (applicationsList as Application[] | undefined) ?? [];
+    const apps = dashboardRoleApps;
 
     const normalizeQueueToken = (value: unknown): string =>
       String(value ?? "")
@@ -1597,7 +1412,7 @@ export default function DashboardPage() {
         return tb - ta;
       })
       .slice(0, DASHBOARD_RECENT_APPLICATIONS_LIMIT);
-  }, [applicationsList, dashboardLoginUserRole]);
+  }, [dashboardRoleApps, dashboardLoginUserRole]);
 
   const formatDateForRecentAppsTable = useCallback((dateString?: string) => {
     return formatDateUtil(dateString ?? "", "-");
@@ -2053,9 +1868,7 @@ export default function DashboardPage() {
   const surfaceBase = isDark ? 'bg-[#1e293b] border-[#334155]' : 'bg-white border-[#e5eef5]';
 
   const recentAppsFooterTotal =
-    applicationsPagination?.total != null && applicationsPagination.total > 0
-      ? applicationsPagination.total
-      : ((applicationsList as Application[] | undefined) ?? []).length;
+    dashboardRoleAppsTotal > 0 ? dashboardRoleAppsTotal : dashboardRoleApps.length;
   const recentAppsDisplayedCount = latestDashboardApplications.length;
 
   const dashboardRecentApplicationsSection = (
@@ -2109,7 +1922,7 @@ export default function DashboardPage() {
         </div>
         <div className="p-1">
           <div className="overflow-x-auto rounded-xl">
-            {applicationsLoading && latestDashboardApplications.length === 0 ? (
+            {dashboardRoleAppsLoading && latestDashboardApplications.length === 0 ? (
               <div className="flex items-center justify-center py-20">
                 <Loader2 className="h-8 w-8 animate-spin text-primary shrink-0" />
                 <span className="ml-2 text-muted-foreground">Loading applications...</span>

@@ -32,6 +32,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { formatDate as formatDateUtil } from "@/lib/utils";
+import { isListBlockingLoad } from "@/lib/listLoading";
 import {
   getClients,
   deleteClient,
@@ -501,6 +502,12 @@ export default function Clients() {
     ],
     [deleteLoading, formatDate, handleDelete, navigate],
   );
+
+  const clientsListBlockingLoad = isListBlockingLoad({
+    rowCount: clients?.length ?? 0,
+    loading,
+    awaitingFirstLoad: apiPagination == null,
+  });
 
   // Calculate total items and page count for server-side pagination
   const totalItems = apiPagination?.total || clients?.length || 0;
@@ -974,7 +981,7 @@ export default function Clients() {
             <div className="overflow-x-auto">
               <DataTableContent
                 table={table}
-                loading={loading}
+                loading={clientsListBlockingLoad}
                 loadingMessage="Loading clients..."
                 emptyMessage="No clients found"
                 emptySubMessage="Try adjusting your search or filter criteria"

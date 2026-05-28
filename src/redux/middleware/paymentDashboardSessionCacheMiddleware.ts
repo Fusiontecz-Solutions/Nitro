@@ -4,7 +4,7 @@ import type { PaymentDashboardData } from '@/types/paymentDashboardTypes';
 import type { FundedDealBalanceApiRow } from '@/lib/collectionPaymentDashboardApi';
 import { getPaymentDashboard } from '@/redux/actions/paymentDashboardActions';
 import { fetchPaymentDashboardFundedDeals } from '@/redux/actions/paymentDashboardCohortActions';
-import { fetchPaymentDashboardMoney } from '@/redux/actions/paymentDashboardMoneyActions';
+import { fetchPaymentDashboardCreditDebitTrend } from '@/redux/actions/paymentDashboardTrendActions';
 import { writePaymentDashboardSessionCache } from '@/lib/paymentDashboardSessionCache';
 
 /** Narrow store shape — avoid importing `RootState` from `store.ts` (circular with this middleware). */
@@ -52,7 +52,7 @@ export const paymentDashboardSessionCacheMiddleware: Middleware =
         if (
             getPaymentDashboard.fulfilled.match(action) ||
             fetchPaymentDashboardFundedDeals.fulfilled.match(action) ||
-            fetchPaymentDashboardMoney.fulfilled.match(action)
+            fetchPaymentDashboardCreditDebitTrend.fulfilled.match(action)
         ) {
             persistPaymentDashboardState(api.getState() as PaymentDashboardCacheStoreState);
         }

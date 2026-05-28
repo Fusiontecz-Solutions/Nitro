@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useSocket } from '@/context/SocketContext';
 import { fetchConversations, fetchMessages, createConversation } from '@/redux/actions/chatActions';
+import { useChatMessagesRestFallback } from '@/hooks/useChatMessagesRestFallback';
 import {
   addConversation,
   addMessage,
@@ -84,15 +85,7 @@ export function useTeamChat() {
     dispatch(setUnreadCount({ conversationId, count: 0 }));
   }, [conversationId, dispatch]);
 
-  // Periodic refetch for real-time reliability
-  useEffect(() => {
-    if (!conversationId || !socket) return;
-    const interval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-      dispatch(fetchMessages({ conversationId }));
-    }, 8000);
-    return () => clearInterval(interval);
-  }, [conversationId, socket, dispatch]);
+  useChatMessagesRestFallback(conversationId);
 
   // Scroll to bottom when messages change
   useEffect(() => {

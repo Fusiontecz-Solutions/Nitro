@@ -59,8 +59,9 @@ import BusinessInfoModal from "./BusinessInfoModal";
 import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Landmark, Loader2 } from "lucide-react";
+import { Info, Landmark, Loader2 } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
+import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import { axiosGet } from "@/redux/axios";
 // import { US_STATES } from "@/constants/usStates";
 import {
@@ -74,7 +75,10 @@ import {
     type ContractPrefillContractRecords,
 } from "./contractdata/Contract";
 import { buildBoldSignMergeRolesForStateTemplateMerge } from "./contractdata/boldSignMergeRoles";
-import { applyDocumentTemplateMappingPrefillOverrides } from "./contractdata/documentTemplateMappingPrefill";
+import {
+    applyDocumentTemplateMappingPrefillOverrides,
+    DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+} from "./contractdata/documentTemplateMappingPrefill";
 import {
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
 } from "./contractdata/docusignTemplateConfig";
@@ -102,6 +106,17 @@ const parseMaybeNumber = (value: unknown): number | null => {
 };
 
 const CONTRACT_VALUES_SECTION = "CONTRACT_VALUES";
+
+const isContractFullySigned = (
+    contractStatus: unknown,
+    documentStatus?: unknown,
+) => {
+    const cs = String(contractStatus ?? "").trim().toUpperCase();
+    const ds = String(documentStatus ?? "").trim().toLowerCase();
+    if (cs === "COMPLETED" || cs === "SIGNED") return true;
+    if (ds === "completed") return true;
+    return false;
+};
 
 /** BoldSign 400 when signers are rejected; show success toast instead of raw validation noise. */
 function isBoldSignMissingSignerMessage(message: string): boolean {
@@ -239,6 +254,10 @@ export default function ContractTab({
         null,
     );
     const [creatingEnvelope, setCreatingEnvelope] = useState(false);
+    const [viewingSignedContract, setViewingSignedContract] = useState(false);
+    const [signedPdfPreviewOpen, setSignedPdfPreviewOpen] = useState(false);
+    const [signedPdfPreviewUrl, setSignedPdfPreviewUrl] = useState<string | null>(null);
+    const [signedPdfPreviewName, setSignedPdfPreviewName] = useState("Signed contract.pdf");
     const [fetchedContract, setFetchedContract] = useState<any | null>(null);
 
     const appId =
@@ -609,6 +628,7 @@ export default function ContractTab({
                 return false;
             }
             setSelectedContractId(byAppContractId);
+            setFetchedContract(contract);
             setPdfUrl(templateUrl);
             setPdfName(globalTemplateName || "Contract.pdf");
             const linkedEnvelopeId = String(
@@ -619,6 +639,90 @@ export default function ContractTab({
             return true;
         } catch {
             return false;
+        }
+    };
+
+    const closeSignedPdfPreview = () => {
+        setSignedPdfPreviewOpen(false);
+        setSignedPdfPreviewUrl((prev) => {
+            if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+            return null;
+        });
+    };
+
+    const handleViewSignedContract = async () => {
+        if (!applicationUuid) {
+            toast.error("Missing application ID.");
+            return;
+        }
+
+        setViewingSignedContract(true);
+        try {
+            let contract = fetchedContract;
+            if (!contract) {
+                const byApp = await dispatch(
+                    getByApplicationIdContract(String(applicationUuid)),
+                ).unwrap();
+                contract = (byApp as any)?.data ?? byApp;
+                setFetchedContract(contract);
+            }
+
+            const contractId = Number((contract as any)?.id);
+            if (!Number.isFinite(contractId) || contractId <= 0) {
+                toast.info("No contract is available to view.");
+                return;
+            }
+
+            const documentStatus = (contract as any)?.application?.document?.status;
+            if (!isContractFullySigned((contract as any)?.status, documentStatus)) {
+                toast.info("The contract is not fully signed yet.");
+                return;
+            }
+
+            const envelopeId = String(
+                (contract as any)?.application?.document?.envelopeId ?? "",
+            ).trim();
+            if (!envelopeId) {
+                toast.error(
+                    "No DocuSign envelope found. Refresh contract status after signing completes.",
+                );
+                return;
+            }
+
+            const res = await axiosGet(
+                `/docusign/download/${encodeURIComponent(envelopeId)}`,
+                { responseType: "blob", timeout: 120000 },
+            );
+            const blob =
+                res.data instanceof Blob
+                    ? res.data
+                    : new Blob([res.data], { type: "application/pdf" });
+            if (!blob.size) {
+                toast.error("DocuSign returned an empty PDF.");
+                return;
+            }
+
+            const objectUrl = URL.createObjectURL(blob);
+            const fileLabel = String(
+                (applicationData as { applicationId?: unknown })?.applicationId ??
+                    applicationUuid,
+            ).replace(/[^\w.-]+/g, "_");
+            const fileName = `signed-contract-${fileLabel}.pdf`;
+            setSignedPdfPreviewUrl((prev) => {
+                if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+                return objectUrl;
+            });
+            setSignedPdfPreviewName(fileName);
+            setSignedPdfPreviewOpen(true);
+        } catch (err: unknown) {
+            const msg =
+                (err as { response?: { data?: { message?: string } }; message?: string })
+                    ?.response?.data?.message ||
+                (err as { message?: string })?.message ||
+                "Could not load the signed contract.";
+            toast.error(String(msg));
+        } finally {
+            setViewingSignedContract(false);
         }
     };
 
@@ -969,14 +1073,32 @@ export default function ContractTab({
                         );
                         const mapRows = (mapRes?.data?.data ?? []) as Array<{
                             id: string;
-                            template?: { templateId?: string } | null;
+                            template?: {
+                                templateId?: string;
+                                name?: string | null;
+                                state?: string | null;
+                                frequency?: string | null;
+                            } | null;
                         }>;
+                        const rawOverrides = (latestContract as { contractPrefillOverrides?: unknown })
+                            ?.contractPrefillOverrides;
+                        const mainOverrides = normalizeContractPrefillOverrides(rawOverrides);
+                        const mainPrefillForTemplates = mainOverrides
+                            ? (() => {
+                                  const o = { ...mainOverrides } as Record<string, unknown>;
+                                  delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+                                  return o as Partial<BuildContractPrefillFieldsArgs>;
+                              })()
+                            : null;
                         prefillFieldsPayload = applyDocumentTemplateMappingPrefillOverrides({
                             prefillFieldsPayload,
                             mergedTemplateIds,
                             templateMappingRows: Array.isArray(mapRows) ? mapRows : [],
-                            contractPrefillOverridesRaw: (latestContract as { contractPrefillOverrides?: unknown })
-                                ?.contractPrefillOverrides,
+                            contractPrefillOverridesRaw: rawOverrides,
+                            contract: latestContract as Record<string, unknown>,
+                            application: applicationData as unknown as Record<string, unknown>,
+                            agreementDate: formatDate(new Date()),
+                            mainPrefillOverrides: mainPrefillForTemplates,
                         });
                     }
                 } catch (mapErr) {
@@ -1762,9 +1884,37 @@ export default function ContractTab({
                                         {fetchedContract?.offer?.factorRate ?? "—"}
                                     </TableCell>
                                     <TableCell>
-                                        <span className={statusBadgeClass}>
-                                            {String(fetchedContract?.status || "Generated")}
-                                        </span>
+                                        <div className="flex items-center gap-1.5">
+                                            <span className={statusBadgeClass}>
+                                                {String(fetchedContract?.status || "Generated")}
+                                            </span>
+                                            {isContractFullySigned(
+                                                fetchedContract?.status,
+                                                fetchedContract?.application?.document?.status,
+                                            ) ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    onClick={() => void handleViewSignedContract()}
+                                                    disabled={viewingSignedContract}
+                                                    className={`h-7 w-7 shrink-0 ${isDark
+                                                        ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                                        : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                        }`}
+                                                    title="View signed contract"
+                                                >
+                                                    {viewingSignedContract ? (
+                                                        <Loader2
+                                                            className="h-3.5 w-3.5 animate-spin"
+                                                            aria-hidden
+                                                        />
+                                                    ) : (
+                                                        <Info className="h-3.5 w-3.5" aria-hidden />
+                                                    )}
+                                                </Button>
+                                            ) : null}
+                                        </div>
                                     </TableCell>
                                 </TableRow>
                             ) : (
@@ -1970,6 +2120,14 @@ export default function ContractTab({
                 onPrepareDocuSignDraft={
                     isReadOnly ? undefined : (payload) => prepareDocuSignDraft(payload)
                 }
+            />
+
+            <PDFViewerDocsModal
+                isOpen={signedPdfPreviewOpen}
+                onClose={closeSignedPdfPreview}
+                fileUrl={signedPdfPreviewUrl}
+                fileName={signedPdfPreviewName}
+                showPrintButton
             />
         </div>
     );

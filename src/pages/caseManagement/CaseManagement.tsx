@@ -9,10 +9,8 @@ import { Search, LayoutGrid } from 'lucide-react';
 import KanbanBoard from '@/components/caseManagement/KanbanBoard';
 import type { Application } from '@/types/applicationTypes';
 import { toast } from 'react-toastify';
-import {
-    APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-    filterApplicationsBySearchQuery,
-} from '@/lib/applicationTableSearch';
+import { filterApplicationsBySearchQuery } from '@/lib/applicationTableSearch';
+import { isListBlockingLoad } from '@/lib/listLoading';
 
 // Status configuration matching the screenshot
 const STATUSES: Array<{ id: string; label: string; color: string }> = [
@@ -34,13 +32,27 @@ const CaseManagement = () => {
     const [searchTerm, setSearchTerm] = useState('');
 
     // Get applications from Redux
-    const { loading, data: applications } = useSelector(
+    const { loading, isRefreshing, data: applications } = useSelector(
         (state: RootState) => state.applications
     );
 
-    // Fetch applications on mount
+    const kanbanBlockingLoad = isListBlockingLoad({
+        rowCount: applications?.length ?? 0,
+        loading,
+        isRefreshing,
+    });
+
+    // Fetch all kanban cards (paginated merge) — accurate column counts, not a single-page cap.
     useEffect(() => {
-        dispatch(getApplications({ page: 1, limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT }));
+        dispatch(
+            getApplications({
+                page: 1,
+                limit: 500,
+                lite: true,
+                fetchAllPages: true,
+                skipListCache: true,
+            }),
+        );
     }, [dispatch]);
 
     // Map status back to queue and state
@@ -282,7 +294,7 @@ const CaseManagement = () => {
                     <KanbanBoard
                         applicationsByStatus={applicationsByStatus}
                         statuses={STATUSES}
-                        loading={loading}
+                        loading={kanbanBlockingLoad}
                         onCardClick={(applicationId) => {
                             navigate(`/application-details/${applicationId}`);
                         }}

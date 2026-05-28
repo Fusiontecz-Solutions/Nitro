@@ -1,6 +1,5 @@
 import { DASHBOARD_APPLICATION_STATS_BUCKET } from "@/constants/dashboardApplicationsNavigation";
-import { APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT } from "@/lib/applicationTableSearch";
-import { APPLICATIONS_LIST_DEFAULT_SORT } from "@/lib/applicationsListParams";
+import { APPLICATIONS_LIST_DEFAULT_SORT, DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
 import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
 
 /** Matches backend funded cohort for payment dashboard lists. */
@@ -17,19 +16,27 @@ function normalizeStatus(value: unknown): string {
     .replace(/\s+/g, " ");
 }
 
+export type PaymentFundedDealsListArg = {
+  page: number;
+  limit?: number;
+  search?: string;
+};
+
 /**
- * Funded deals need `termsOffers` + OfferDecision for payback math — not available on `lite` lists.
- * Same page size cap as Applications client search; extended timeout for heavier includes.
+ * Server-paginated funded cohort for the payment dashboard deals table.
+ * Balances are embedded by the applications list API when `statsBucket=funded`.
  */
-export function paymentFundedDealsListParams(): GetApplicationsParams {
+export function paymentFundedDealsListParams(
+  arg: PaymentFundedDealsListArg,
+): GetApplicationsParams {
   return {
-    page: 1,
-    limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
+    page: Math.max(1, arg.page),
+    limit: arg.limit ?? DEFAULT_APPLICATIONS_PAGE_SIZE,
+    ...(arg.search?.trim() ? { search: arg.search.trim() } : {}),
     ...APPLICATIONS_LIST_DEFAULT_SORT,
     statsBucket: DASHBOARD_APPLICATION_STATS_BUCKET.FUNDED,
     skipListCacheRead: true,
     skipListCache: true,
-    requestTimeoutMs: 120_000,
-    fetchAllPages: true,
+    requestTimeoutMs: 60_000,
   };
 }

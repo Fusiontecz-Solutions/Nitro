@@ -10,22 +10,26 @@ import {
 } from "@/lib/sessionRole";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import {
-    getApplicationStats,
-    prefetchApplicationsList,
-} from "@/redux/actions/applicationActions";
+import { getApplicationStats } from "@/redux/actions/applicationActions";
 import {
     fetchOperationsDashboardSummary,
     fetchOperationsDashboardRecentCases,
 } from "@/redux/actions/operationsDashboardActions";
 import { getPaymentDashboard } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
-import { fetchPaymentDashboardMoney } from "@/redux/actions/paymentDashboardMoneyActions";
+import { fetchPaymentDashboardCreditDebitTrend } from "@/redux/actions/paymentDashboardTrendActions";
+import { DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
 import { OnlineStatusSync } from "@/components/chat/OnlineStatusSync";
 import RealtimeNotificationsListener from "@/components/notifications/RealtimeNotificationsListener";
+import NotificationsSync from "@/components/notifications/NotificationsSync";
+import {
+    isApplicationStatsWarmRoute,
+    isOpsDashboardWarmRoute,
+    isPaymentsRoute,
+} from "@/lib/shellPrefetchRoutes";
+import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
 import { axiosGet } from "@/redux/axios";
 import { toast } from "react-toastify";
-import { APPLICATIONS_LIST_DEFAULT_SORT } from "@/lib/applicationsListParams";
 
 interface DecodedToken {
     role: string;
@@ -36,18 +40,6 @@ interface DecodedToken {
 }
 
 const FINAL_UNDERWRITER_ROLE = 'FINAL_UNDERWRITER';
-
-/** Super Admin sidebar deal-pipeline stages — warm list cache after login. */
-const SUPER_ADMIN_PIPELINE_OPERATIONS_STATUSES = [
-    "Agent",
-    "Underwriter",
-    "Final Underwriter",
-    "Contracted",
-    "Final",
-    "Funding Call",
-    "Disbursment",
-    "Funded",
-] as const;
 
 const allowedPathsForUnderwriter = (pathname: string): boolean => {
     if (pathname === '/') return true;
@@ -68,10 +60,22 @@ const RootLayout = () => {
     const dispatch = useDispatch<AppDispatch>();
     const isPublicRoute = location.pathname.startsWith('/public/');
     const { data } = useSelector((state: RootState) => state.login);
-    const paymentCohort = useSelector((state: RootState) => state.paymentDashboardCohort);
     const statsData = useSelector((state: RootState) => state.applicationStats.data);
     const statsLoading = useSelector((state: RootState) => state.applicationStats.loading);
     const statsRefreshing = useSelector((state: RootState) => state.applicationStats.isRefreshing);
+    const opsDashboard = useSelector((state: RootState) => state.operationsDashboard);
+    const paymentCohortFetched = useSelector(
+        (state: RootState) => state.paymentDashboardCohort.fetched,
+    );
+    const paymentCohortInFlight = useSelector(
+        (state: RootState) => state.paymentDashboardCohort.loading,
+    );
+    const paymentDashboardFetched = useSelector(
+        (state: RootState) => state.paymentDashboard.data,
+    );
+    const paymentDashboardLoading = useSelector(
+        (state: RootState) => state.paymentDashboard.loading,
+    );
 
     const userRole = useMemo(
         () => resolveEffectiveRole(data?.user),
@@ -123,57 +127,96 @@ const RootLayout = () => {
         }
     }, [navigate, isPublicRoute, location.pathname, location.search]);
 
-    // Prefetch dashboard application stats once per authenticated shell; skip if login already triggered a fetch.
+    const pathname = location.pathname;
+
+    // Application stats only on dashboard / applications routes (not every authenticated page).
     useEffect(() => {
         if (isPublicRoute) return;
         const token = localStorage.getItem("token");
         if (!token) return;
+        if (!isApplicationStatsWarmRoute(pathname)) return;
         if (statsData != null || statsLoading || statsRefreshing) return;
         dispatch(getApplicationStats());
-    }, [dispatch, isPublicRoute, statsData, statsLoading, statsRefreshing]);
+    }, [
+        dispatch,
+        isPublicRoute,
+        pathname,
+        statsData,
+        statsLoading,
+        statsRefreshing,
+    ]);
 
-    // Prefetch Operations dashboards for roles that use them.
+    // Operations dashboard APIs only on routes that render that dashboard.
     useEffect(() => {
         if (isPublicRoute) return;
         if (!localStorage.getItem("token")) return;
-        const opsOrSuper =
-            normalizedRole === "OPERATIONS" ||
-            normalizedRole === "SUPER_ADMIN";
-        if (!opsOrSuper) return;
-        void dispatch(fetchOperationsDashboardSummary());
-        void dispatch(fetchOperationsDashboardRecentCases());
-    }, [dispatch, isPublicRoute, normalizedRole]);
-
-    // Warm payment dashboard APIs after login so `/payments` can render from Redux immediately.
-    useEffect(() => {
-        if (isPublicRoute) return;
-        if (!localStorage.getItem("token")) return;
-        void dispatch(getPaymentDashboard());
-        void dispatch(fetchPaymentDashboardFundedDeals());
-    }, [dispatch, isPublicRoute]);
-
-    // After funded cohort is ready, load per-deal balances + collection rows into Redux.
-    useEffect(() => {
-        if (isPublicRoute) return;
-        if (!localStorage.getItem("token")) return;
-        if (!paymentCohort.fetched) return;
-        void dispatch(fetchPaymentDashboardMoney());
-    }, [dispatch, isPublicRoute, paymentCohort.fetched, paymentCohort.data]);
-
-    // Warm `/applications?operationsStatus=…` responses so first pipeline click is often instant.
-    useEffect(() => {
-        if (isPublicRoute) return;
-        if (!localStorage.getItem("token")) return;
-        if (normalizedRole !== "SUPER_ADMIN") return;
-        for (const operationsStatus of SUPER_ADMIN_PIPELINE_OPERATIONS_STATUSES) {
-            prefetchApplicationsList({
-                page: 1,
-                limit: 10,
-                operationsStatus,
-                ...APPLICATIONS_LIST_DEFAULT_SORT,
-            });
+        if (!isOpsDashboardWarmRoute(pathname, normalizedRole)) return;
+        if (
+            opsDashboard.hasLoadedSummaryOnce &&
+            isShellPrefetchFresh(opsDashboard.lastSummaryFetchedAt)
+        ) {
+            // Counts come from parallel DB aggregates — no refetch needed.
+        } else {
+            void dispatch(fetchOperationsDashboardSummary());
         }
-    }, [isPublicRoute, normalizedRole]);
+        if (
+            opsDashboard.hasLoadedRecentOnce &&
+            isShellPrefetchFresh(opsDashboard.lastRecentFetchedAt)
+        ) {
+            // Keep recent list snapshot.
+        } else {
+            void dispatch(fetchOperationsDashboardRecentCases());
+        }
+    }, [
+        dispatch,
+        isPublicRoute,
+        pathname,
+        normalizedRole,
+        opsDashboard.hasLoadedSummaryOnce,
+        opsDashboard.lastSummaryFetchedAt,
+        opsDashboard.hasLoadedRecentOnce,
+        opsDashboard.lastRecentFetchedAt,
+    ]);
+
+    // Payment dashboard warm-up only under `/payments`.
+    useEffect(() => {
+        if (isPublicRoute) return;
+        if (!localStorage.getItem("token")) return;
+        if (!isPaymentsRoute(pathname)) return;
+        if (!paymentDashboardFetched && !paymentDashboardLoading) {
+            void dispatch(getPaymentDashboard());
+        }
+        if (!paymentCohortFetched && !paymentCohortInFlight) {
+            void dispatch(
+                fetchPaymentDashboardFundedDeals({
+                    page: 1,
+                    limit: DEFAULT_APPLICATIONS_PAGE_SIZE,
+                }),
+            );
+        }
+    }, [
+        dispatch,
+        isPublicRoute,
+        pathname,
+        paymentDashboardFetched,
+        paymentDashboardLoading,
+        paymentCohortFetched,
+        paymentCohortInFlight,
+    ]);
+
+    useEffect(() => {
+        if (isPublicRoute) return;
+        if (!localStorage.getItem("token")) return;
+        if (!isPaymentsRoute(pathname)) return;
+        const year = new Date().getFullYear();
+        void dispatch(
+            fetchPaymentDashboardCreditDebitTrend({
+                view: "monthly",
+                year,
+                month: new Date().getMonth(),
+            }),
+        );
+    }, [dispatch, isPublicRoute, pathname]);
 
     useEffect(() => {
         if (isPublicRoute) return;
@@ -234,6 +277,7 @@ const RootLayout = () => {
             {currentUserId && (
                 <>
                     <OnlineStatusSync />
+                    <NotificationsSync />
                     <RealtimeNotificationsListener />
                     {/* <FloatingChatWidget currentUserId={currentUserId} /> */}
                 </>

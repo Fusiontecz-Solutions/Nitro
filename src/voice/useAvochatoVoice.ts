@@ -3,6 +3,53 @@ import { Device, type Call } from "@twilio/voice-sdk";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { markMicrophoneWarmedThisSession } from "@/voice/microphoneWarmup";
 
+/** Extra context for Voice SDK call errors (shown under the red banner). */
+function twilioCallErrorHint(raw: unknown): string {
+  const msg =
+    raw && typeof raw === "object" && "message" in raw ? String((raw as { message?: string }).message) : "";
+  const code =
+    raw && typeof raw === "object" && "code" in raw ? Number((raw as { code?: number }).code) : NaN;
+  const lower = msg.toLowerCase();
+
+  // Official: 31005 = signaling WebSocket closed unexpectedly (often firewall/VPN/DNS), not always "bad TwiML".
+  if (code === 31005) {
+    return (
+      " Twilio closed the Voice signaling connection (31005). Common causes: VPN or corporate firewall blocking WebRTC/WebSocket to Twilio (TCP 443), unstable Wi‑Fi/DNS, or the call ending from the network side. " +
+      "Try without VPN, another network, or allow Twilio Voice endpoints. " +
+      "If the disconnect happens the moment you dial, check Twilio Debugger for that call—the underlying reason is often a rejection or policy block, which may appear as a SIP/warning there."
+    );
+  }
+
+  if (code === 31002) {
+    return " The call was declined or rejected at the gateway (carrier block, invalid number, permissions, busy, etc.). Use Twilio Debugger on this call for the exact SIP/warning code.";
+  }
+
+  if (code === 31603 || lower.includes("decline")) {
+    return (
+      " Twilio received SIP 603 Decline from the called side/gateway. This is usually not an SDK failure. " +
+      "Common causes: destination/carrier declined, caller policy/permissions, wrong inbox/subdomain routing, or inactive provider account path. " +
+      "Open Twilio Debugger for this Call SID to see the exact reject reason."
+    );
+  }
+
+  if (
+    lower.includes("application error") ||
+    lower.includes("application has oc") ||
+    code === 12100 ||
+    code === 31001
+  ) {
+    return (
+      " Twilio could not use the Voice URL response (TwiML / application). Confirm AVOCHATO_SUBDOMAIN or VITE_AVOCHATO_SUBDOMAIN matches your Avochato inbox, enable browser calling for that inbox, and inspect Twilio Debugger for the failed Voice request/response."
+    );
+  }
+
+  if (code === 31009) {
+    return " No WebRTC transport available—often strict firewall blocking UDP media. See Twilio Voice network requirements; try another network or edge (VITE_TWILIO_VOICE_EDGE).";
+  }
+
+  return "";
+}
+
 export type AvochatoVoiceStatus = "idle" | "registering" | "in_call" | "error";
 
 async function fetchCallToken(subdomain?: string): Promise<string> {
@@ -119,9 +166,13 @@ export function useAvochatoVoice() {
     setStatus("registering");
     setError(null);
     const token = await fetchCallToken(subdomain);
+    const edgeOpt = String(import.meta.env.VITE_TWILIO_VOICE_EDGE ?? "").trim();
     const device = new Device(token, {
       logLevel: "error",
       closeProtection: true,
+      /** Surfaces real codes (e.g. 31002 decline) instead of lumping them into 31005. @see Twilio Voice JS SDK docs */
+      enableImprovedSignalingErrorPrecision: true,
+      ...(edgeOpt ? { edge: edgeOpt } : {}),
     });
 
     device.on("error", (err) => {
@@ -216,13 +267,33 @@ export function useAvochatoVoice() {
         hangUp();
         const call = await device.connect({
           params: {
+            // Twilio forwards these to the TwiML app's Voice URL — Avochato may expect one naming convention.
             To: to,
+            PhoneNumber: to,
           },
           rtcConstraints: { audio: true },
         });
         callRef.current = call;
         setStatus("in_call");
         setIsMuted(false);
+
+        call.on("error", (twilioErr) => {
+          const hint = twilioCallErrorHint(twilioErr);
+          const code =
+            twilioErr && typeof twilioErr === "object" && "code" in twilioErr
+              ? Number((twilioErr as { code?: number }).code)
+              : undefined;
+          const base =
+            twilioErr && typeof twilioErr === "object" && "message" in twilioErr
+              ? String((twilioErr as { message?: string }).message ?? "Call failed")
+              : "Call failed";
+          setError(
+            `${base}${hint}${code !== undefined && !Number.isNaN(code) ? ` (Twilio error ${code})` : ""}`,
+          );
+          setStatus("error");
+          callRef.current = null;
+          setIsMuted(false);
+        });
 
         call.on("disconnect", () => {
           callRef.current = null;

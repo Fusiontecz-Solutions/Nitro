@@ -1,8 +1,11 @@
 import type { Application } from "@/types/applicationTypes";
 
+/** Default page size for server-paginated application list tables. */
+export const APPLICATIONS_LIST_PAGE_SIZE = 10;
+
 /**
- * Max rows loaded for application list screens that use fast client-side search
- * (Gmail-style substring match on the loaded set).
+ * Legacy bulk fetch cap — only for specialized flows (e.g. payment funded cohort).
+ * List screens should use server pagination with {@link APPLICATIONS_LIST_PAGE_SIZE}.
  */
 export const APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT = 2000;
 

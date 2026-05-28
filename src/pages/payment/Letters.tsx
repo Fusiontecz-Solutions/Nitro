@@ -25,28 +25,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import {
-  PAYMENT_TEMPLATE_CATALOG,
-  TEMPLATE_CATEGORY_LABELS,
-  type TemplateCategory,
-} from "./paymentTemplateCatalog";
 import { appendPaymentMailLog } from "./paymentMailLogStorage";
 import {
   getPaymentTemplates,
+  readPaymentTemplatesCache,
+  TEMPLATE_CATEGORY_LABELS,
+  type TemplateCategory,
   type TemplateItem as ApiTemplateItem,
 } from "./paymentTemplateApi";
 import { sendGmailCompose } from "@/redux/actions/gmailActions";
-
-function catalogToApiTemplates(): ApiTemplateItem[] {
-  return PAYMENT_TEMPLATE_CATALOG.map((t) => ({
-    id: t.id,
-    name: t.name,
-    category: t.category,
-    variables: t.variables,
-    body: t.body,
-    status: t.status,
-  }));
-}
 import { cn, formatCurrency } from "@/lib/utils";
 import { FileText, Mail, RotateCcw, Send } from "lucide-react";
 
@@ -275,20 +262,20 @@ export default function Letters() {
   );
 
   const [templates, setTemplates] = useState<ApiTemplateItem[]>(
-    catalogToApiTemplates
+    () => readPaymentTemplatesCache() ?? []
   );
 
   useEffect(() => {
     let mounted = true;
     const loadTemplates = async () => {
       try {
-        const apiTemplates = await getPaymentTemplates();
+        const apiTemplates = await getPaymentTemplates(undefined, {
+          force: true,
+        });
         if (!mounted) return;
-        if (apiTemplates.length > 0) {
-          setTemplates(apiTemplates);
-        }
+        setTemplates(apiTemplates);
       } catch {
-        // Keep bundled catalog (or last good API list) if the request fails
+        // Keep session cache if the request fails
       }
     };
     void loadTemplates();

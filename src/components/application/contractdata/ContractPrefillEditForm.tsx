@@ -37,6 +37,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import {
+    finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
     type BuildContractPrefillFieldsArgs,
@@ -62,159 +63,188 @@ type LegacySnakeCasePrefillKey =
     | "ach_authorization_other_infomation";
 type ContractPrefillFormFieldKey = Exclude<keyof BuildContractPrefillFieldsArgs, LegacySnakeCasePrefillKey>;
 
+/** Field labels aligned with Deal Review + Offer decision (section title provides context). */
 const FIELD_LABELS = {
     customerName: "Customer / primary name",
     /** Kept for form state typing; not shown in sections — entity type is set on the template. */
     entityType: "Entity type",
     legalName: "Legal name",
-    doingBusinessAs: "Doing business as (DBA)",
-    businessAddress: "Business street address",
-    federalTaxIdEin: "Federal tax ID (EIN)",
+    doingBusinessAs: "DBA",
+    businessAddress: "Street",
+    federalTaxIdEin: "EIN",
     agreementDate: "Agreement date",
     state: "State of incorporation",
-    businessAddressCity: "Business city",
-    businessAddressState: "Business state",
-    businessAddressZip: "Business ZIP",
-    businessAddressContract: "Contract mailing address",
-    businessAddressContractCity: "Contract address city",
-    businessAddressContractState: "Contract address state",
-    businessAddressContractZip: "Contract address ZIP",
-    guarantorAddress: "Guarantor street address",
-    guarantorAddressCity: "Guarantor city",
-    guarantorAddressState: "Guarantor state",
-    guarantorAddressZip: "Guarantor ZIP",
-    clientEmail: "Client email",
-    guarantorEmail: "Guarantor email",
-    guarantorPhone: "Guarantor phone",
-    clientPhone: "Client phone",
-    purchasePrice: "Purchase price",
-    purchaseAmount: "Purchase amount",
-    purchasePercent: "Purchase percent",
-    remittance: "Remittance",
+    businessAddressCity: "City",
+    businessAddressState: "State",
+    businessAddressZip: "ZIP",
+    businessAddressContract: "Street",
+    businessAddressContractCity: "City",
+    businessAddressContractState: "State",
+    businessAddressContractZip: "ZIP",
+    guarantorAddress: "Street",
+    guarantorAddressCity: "City",
+    guarantorAddressState: "State",
+    guarantorAddressZip: "ZIP",
+    clientEmail: "Email",
+    guarantorEmail: "Email",
+    guarantorPhone: "Phone",
+    clientPhone: "Phone",
+    purchasePrice: "Payback amount",
+    purchaseAmount: "Offer amount",
+    purchasePercent: "Rate",
+    remittance: "Total remit",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
-    clientName: "Client name",
-    owner1GuarantorName: "Owner 1 / guarantor name",
-    owner2GuarantorName: "Owner 2 / guarantor name",
-    securityBusinessName: "Security — business name",
-    securityTaxEin: "Security — tax EIN",
-    securityDoingBusinessAs: "Security — DBA",
-    securityBusinessAddress: "Security — business address",
-    securityBusinessAddressCity: "Security — city",
-    securityBusinessAddressState: "Security — state",
-    securityBusinessAddressZip: "Security — ZIP",
-    securityGuarantor: "Security — guarantor",
-    guarantyClientName: "Guaranty — client name",
-    guarantySs: "Guaranty — SSN",
-    guarantySsDriverLicense: "Guaranty — SSN / driver license",
-    guarantyOwner1Name: "Guaranty — owner 1 name",
-    guarantyOwner1Ss: "Guaranty — owner 1 SSN",
-    guarantyOwner1DriverLicense: "Guaranty — owner 1 driver license",
-    guarantyOwner2Name: "Guaranty — owner 2 name",
-    guarantyOwner2DriverLicense: "Guaranty — owner 2 driver license",
-    guarantyOwner2Ss: "Guaranty — owner 2 SSN",
-    guarantyGuarantor1Name: "Guaranty — guarantor 1 name",
-    guarantyGuarantor1Ss: "Guaranty — guarantor 1 SSN",
-    guarantyGuarantor1DriverLicense: "Guaranty — guarantor 1 driver license",
-    guarantyGuarantor2Name: "Guaranty — guarantor 2 name",
-    guarantyGuarantor2Ss: "Guaranty — guarantor 2 SSN",
-    guarantyGuarantor2DriverLicense: "Guaranty — guarantor 2 driver license",
-    appendixUnderwritingFees: "Appendix — underwriting fees",
-    appendixClientName: "Appendix — client name",
-    authorizationApplication: "Authorization — application",
-    authorizationClientBankName: "Authorization — bank name",
-    authorizationClientBankRouting: "Authorization — routing number",
-    authorizationClientBankAccount: "Authorization — account number",
-    authorizationClientName: "Authorization — client name",
-    authorizationClientNamePrint: "Authorization — printed name",
-    authorizationClientTaxId: "Authorization — tax ID",
-    authorizationClientDate: "Authorization — date",
-    authorizedBusinessPhone: "Authorized business phone",
-    achAuthorizationAccountHolderName: "ACH — account holder name",
-    achAuthorizationAccountHolderDba: "ACH — DBA",
-    achAuthorizationAccountHolderPhone: "ACH — phone",
-    achAuthorizationAccountHolderAddress: "ACH — address",
-    achAuthorizationAccountHolderCity: "ACH — city",
-    achAuthorizationAccountHolderState: "ACH — state",
-    achAuthorizationAccountHolderZip: "ACH — ZIP",
-    achAuthorizationAccountHolderBankName: "ACH — bank name",
-    achAuthorizationAccountHolderBankBranchCity: "ACH — bank branch city",
-    achAuthorizationAccountHolderBankState: "ACH — bank state",
-    achAuthorizationAccountHolderBankZip: "ACH — bank ZIP",
-    achAuthorizationAccountHolderBankRoutingNumber: "ACH — routing number",
-    achAuthorizationAccountHolderBankAccountNumber: "ACH — account number",
-    achAuthorizationAccountHolderBankTransactionFee: "ACH — transaction fee",
-    achAuthorizationAccountHolderDate: "ACH — date",
-    achAuthorizationConcentAccountHolderName: "ACH Concent — account holder name",
-    achAuthorizationConcentAccountHolderDate: "ACH Concent — date",
-    achAuthorizationBankPortalWebsite: "ACH — bank portal website",
-    achAuthorizationUsername: "ACH — username",
-    achAuthorizationPassword: "ACH — password",
-    achAuthorizationSecurityQuestion1: "ACH — security question 1",
-    achAuthorizationSecurityAnswer1: "ACH — security answer 1",
-    achAuthorizationSecurityQuestion2: "ACH — security question 2",
-    achAuthorizationSecurityAnswer2: "ACH — security answer 2",
-    achAuthorizationSecurityQuestion3: "ACH — security question 3",
-    achAuthorizationSecurityAnswer3: "ACH — security answer 3",
-    achAuthorizationOtherInfomation: "ACH — other information",
-    achAuthorizationReferenceName1: "ACH — reference name 1",
-    achAuthorizationReferenceNumber1: "ACH — reference number 1",
-    achAuthorizationReferenceRelationship1: "ACH — reference relationship 1",
-    achAuthorizationReferenceName2: "ACH — reference name 2",
-    achAuthorizationReferenceNumber2: "ACH — reference number 2",
-    achAuthorizationReferenceRelationship2: "ACH — reference relationship 2",
-    achAuthorizationReferenceName3: "ACH — reference name 3",
-    achAuthorizationReferenceNumber3: "ACH — reference number 3",
-    achAuthorizationReferenceRelationship3: "ACH — reference relationship 3",
-    addendumDated: "Addendum — dated",
-    addendumDatedPrincipalOwner: "Addendum — principal owner",
-    addendumDatedPrincipalBusiness: "Addendum — principal business",
-    addendumDatedBusinessLocation: "Addendum — business location",
-    addendumDatedPrincipalState: "Addendum — principal state",
-    addendumDatedPrincipalOwnerAmount: "Addendum — principal amount",
-    addendumDatedPrincipalOwnerAmount2: "Addendum — principal amount 2",
-    addendumDatedPrincipalOwner1Name: "Addendum — owner 1 name",
-    addendumDatedPrincipalOwner1Date: "Addendum — owner 1 date",
-    addendumDatedPrincipalOwner2Name: "Addendum — owner 2 name",
-    addendumDatedPrincipalOwner2Date: "Addendum — owner 2 date",
-    exhibitOwnerName: "Exhibit — owner name",
+    clientName: "Name",
+    owner1GuarantorName: "Name",
+    owner2GuarantorName: "Name",
+    securityBusinessName: "Business name",
+    securityTaxEin: "Tax ID / EIN",
+    securityDoingBusinessAs: "DBA",
+    securityBusinessAddress: "Street",
+    securityBusinessAddressCity: "City",
+    securityBusinessAddressState: "State",
+    securityBusinessAddressZip: "ZIP",
+    securityGuarantor: "Guarantor",
+    guarantyClientName: "Name",
+    guarantySs: "SSN",
+    guarantySsDriverLicense: "Driver license",
+    guarantyOwner1Name: "Name",
+    guarantyOwner1Ss: "SSN",
+    guarantyOwner1DriverLicense: "Driver license",
+    guarantyOwner2Name: "Name",
+    guarantyOwner2DriverLicense: "Driver license",
+    guarantyOwner2Ss: "SSN",
+    guarantyGuarantor1Name: "Name",
+    guarantyGuarantor1Ss: "SSN",
+    guarantyGuarantor1DriverLicense: "Driver license",
+    guarantyGuarantor2Name: "Name",
+    guarantyGuarantor2Ss: "SSN",
+    guarantyGuarantor2DriverLicense: "Driver license",
+    appendixUnderwritingFees: "Underwriting fees (% or $; sent as $ on contract)",
+    appendixClientName: "Client name",
+    authorizationApplication: "Merchant name",
+    authorizationClientBankName: "Bank name",
+    authorizationClientBankRouting: "Routing number",
+    authorizationClientBankAccount: "Account number",
+    authorizationClientName: "Signer name",
+    authorizationClientNamePrint: "Printed name",
+    authorizationClientTaxId: "Tax ID / EIN",
+    authorizationClientDate: "Date",
+    authorizedBusinessPhone: "Business phone",
+    achAuthorizationAccountHolderName: "Name",
+    achAuthorizationAccountHolderDba: "DBA",
+    achAuthorizationAccountHolderPhone: "Phone",
+    achAuthorizationAccountHolderAddress: "Street",
+    achAuthorizationAccountHolderCity: "City",
+    achAuthorizationAccountHolderState: "State",
+    achAuthorizationAccountHolderZip: "ZIP",
+    achAuthorizationAccountHolderBankName: "Bank name",
+    achAuthorizationAccountHolderBankBranchCity: "Branch city",
+    achAuthorizationAccountHolderBankState: "Bank state",
+    achAuthorizationAccountHolderBankZip: "Bank ZIP",
+    achAuthorizationAccountHolderBankRoutingNumber: "Routing number",
+    achAuthorizationAccountHolderBankAccountNumber: "Account number",
+    achAuthorizationAccountHolderBankTransactionFee: "Transaction fee",
+    achAuthorizationAccountHolderDate: "Date",
+    achAuthorizationConcentAccountHolderName: "Name",
+    achAuthorizationConcentAccountHolderDate: "Date",
+    achAuthorizationBankPortalWebsite: "Bank portal URL",
+    achAuthorizationUsername: "Username",
+    achAuthorizationPassword: "Password",
+    achAuthorizationSecurityQuestion1: "Security question 1",
+    achAuthorizationSecurityAnswer1: "Security answer 1",
+    achAuthorizationSecurityQuestion2: "Security question 2",
+    achAuthorizationSecurityAnswer2: "Security answer 2",
+    achAuthorizationSecurityQuestion3: "Security question 3",
+    achAuthorizationSecurityAnswer3: "Security answer 3",
+    achAuthorizationOtherInfomation: "Other information",
+    achAuthorizationReferenceName1: "Name",
+    achAuthorizationReferenceNumber1: "Phone",
+    achAuthorizationReferenceRelationship1: "Relationship",
+    achAuthorizationReferenceName2: "Name",
+    achAuthorizationReferenceNumber2: "Phone",
+    achAuthorizationReferenceRelationship2: "Relationship",
+    achAuthorizationReferenceName3: "Name",
+    achAuthorizationReferenceNumber3: "Phone",
+    achAuthorizationReferenceRelationship3: "Relationship",
+    addendumDated: "Date",
+    addendumDatedPrincipalOwner: "Owner",
+    addendumDatedPrincipalBusiness: "Business",
+    addendumDatedBusinessLocation: "Business location",
+    addendumDatedPrincipalState: "State",
+    addendumDatedPrincipalOwnerAmount: "Offer amount",
+    addendumDatedPrincipalOwnerAmount2: "Payback amount",
+    addendumDatedPrincipalOwner1Name: "Name",
+    addendumDatedPrincipalOwner1Date: "Date",
+    addendumDatedPrincipalOwner2Name: "Name",
+    addendumDatedPrincipalOwner2Date: "Date",
+    exhibitOwnerName: "Exhibit owner",
 } as const satisfies Record<ContractPrefillFormFieldKey, string>;
+
+type ContractPrefillSectionGroup = {
+    /** Sub-heading inside the section (e.g. Client, Guarantor). */
+    heading?: string;
+    keys: ContractPrefillFormFieldKey[];
+};
+
+type ContractPrefillSection = {
+    id: string;
+    title: string;
+    description: string;
+    Icon: LucideIcon;
+    groups: ContractPrefillSectionGroup[];
+};
+
+function contractPrefillSectionKeys(section: ContractPrefillSection): ContractPrefillFormFieldKey[] {
+    return section.groups.flatMap((g) => g.keys);
+}
 
 /**
  * Document-aligned sections for the Barclays RPA stack (RPA → Security → Guaranty → Appendix → ACH → Addendum).
  * Order follows the contract PDF flow so users can verify fields section by section.
  */
-const CONTRACT_PREFILL_SECTIONS: {
-    id: string;
-    title: string;
-    description: string;
-    Icon: LucideIcon;
-    keys: (keyof BuildContractPrefillFieldsArgs)[];
-}[] = [
+const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "rpa_merchant",
             title: "RPA — Merchant & agreement",
             description: "Agreement date, legal name, state of inc., DBA, EIN, client / merchant name.",
             Icon: FileText,
-            keys: ["customerName", "agreementDate", "state", "legalName", "doingBusinessAs", "federalTaxIdEin", "clientName"],
+            groups: [
+                {
+                    keys: [
+                        "customerName",
+                        "agreementDate",
+                        "state",
+                        "legalName",
+                        "doingBusinessAs",
+                        "federalTaxIdEin",
+                        "clientName",
+                    ],
+                },
+            ],
         },
         {
             id: "business_address",
             title: "Business address",
             description: "Street, city, state, ZIP for the merchant location on page 1.",
             Icon: Building2,
-            keys: ["businessAddress", "businessAddressCity", "businessAddressState", "businessAddressZip"],
+            groups: [{ keys: ["businessAddress", "businessAddressCity", "businessAddressState", "businessAddressZip"] }],
         },
         {
             id: "contact_address",
             title: "Contact / mailing address",
             description: "Contract mailing address (contact address block on the agreement).",
             Icon: Mail,
-            keys: [
-                "businessAddressContract",
-                "businessAddressContractCity",
-                "businessAddressContractState",
-                "businessAddressContractZip",
+            groups: [
+                {
+                    keys: [
+                        "businessAddressContract",
+                        "businessAddressContractCity",
+                        "businessAddressContractState",
+                        "businessAddressContractZip",
+                    ],
+                },
             ],
         },
         {
@@ -222,51 +252,66 @@ const CONTRACT_PREFILL_SECTIONS: {
             title: "Guarantor address",
             description: "Guarantor(s) street, city, state, ZIP.",
             Icon: MapPin,
-            keys: ["guarantorAddress", "guarantorAddressCity", "guarantorAddressState", "guarantorAddressZip"],
+            groups: [{ keys: ["guarantorAddress", "guarantorAddressCity", "guarantorAddressState", "guarantorAddressZip"] }],
         },
         {
             id: "contact",
             title: "Emails & phones",
-            description: "Merchant and guarantor email and phone.",
+            description: "Merchant (client) and guarantor email and phone.",
             Icon: Phone,
-            keys: ["clientEmail", "clientPhone", "guarantorEmail", "guarantorPhone"],
+            groups: [
+                { heading: "Client", keys: ["clientEmail", "clientPhone"] },
+                { heading: "Guarantor", keys: ["guarantorEmail", "guarantorPhone"] },
+            ],
         },
         {
             id: "financial",
-            title: "Purchase & remittance",
+            title: "Offer & payback",
             description:
-                "Purchase price, purchased amount, percent, remittance, and net to merchant (advance − fees − refinance).",
+                "Offer amount, payback amount, rate, total remit, frequency, and net to merchant (advance − fees − refinance).",
             Icon: DollarSign,
-            keys: [
-                "purchasePrice",
-                "purchaseAmount",
-                "purchasePercent",
-                "remittance",
-                "frequency",
-                "netToMerchant",
+            groups: [
+                {
+                    keys: [
+                        "purchasePrice",
+                        "purchaseAmount",
+                        "purchasePercent",
+                        "remittance",
+                        "frequency",
+                        "netToMerchant",
+                    ],
+                },
             ],
         },
         {
             id: "owners_exhibit",
             title: "Owners & Exhibit A",
-            description: "Owner / merchant print lines and Exhibit A signature party.",
+            description: "Owner 1 / owner 2 names and Exhibit A signature party.",
             Icon: Users,
-            keys: ["owner1GuarantorName", "owner2GuarantorName", "exhibitOwnerName"],
+            groups: [
+                { heading: "Owner 1", keys: ["owner1GuarantorName"] },
+                { heading: "Owner 2", keys: ["owner2GuarantorName"] },
+                { heading: "Exhibit A", keys: ["exhibitOwnerName"] },
+            ],
         },
         {
             id: "security",
             title: "Security agreement",
             description: "Collateral schedule — business name, EIN, DBA, address, additional guarantor text.",
             Icon: Layers,
-            keys: [
-                "securityBusinessName",
-                "securityTaxEin",
-                "securityDoingBusinessAs",
-                "securityBusinessAddress",
-                "securityBusinessAddressCity",
-                "securityBusinessAddressState",
-                "securityBusinessAddressZip",
-                "securityGuarantor",
+            groups: [
+                {
+                    keys: [
+                        "securityBusinessName",
+                        "securityTaxEin",
+                        "securityDoingBusinessAs",
+                        "securityBusinessAddress",
+                        "securityBusinessAddressCity",
+                        "securityBusinessAddressState",
+                        "securityBusinessAddressZip",
+                        "securityGuarantor",
+                    ],
+                },
             ],
         },
         {
@@ -274,71 +319,96 @@ const CONTRACT_PREFILL_SECTIONS: {
             title: "Guaranty of performance",
             description: "Guaranty blocks — client, owners, guarantors; SSN and driver license lines.",
             Icon: Shield,
-            keys: [
-                "guarantyClientName",
-                "guarantySs",
-                "guarantySsDriverLicense",
-                "guarantyOwner1Name",
-                "guarantyOwner1Ss",
-                "guarantyOwner1DriverLicense",
-                "guarantyOwner2Name",
-                "guarantyOwner2DriverLicense",
-                "guarantyOwner2Ss",
-                "guarantyGuarantor1Name",
-                "guarantyGuarantor1Ss",
-                "guarantyGuarantor1DriverLicense",
-                "guarantyGuarantor2Name",
-                "guarantyGuarantor2Ss",
-                "guarantyGuarantor2DriverLicense",
+            groups: [
+                {
+                    heading: "Client",
+                    keys: ["guarantyClientName", "guarantySs", "guarantySsDriverLicense"],
+                },
+                {
+                    heading: "Owner 1",
+                    keys: ["guarantyOwner1Name", "guarantyOwner1Ss", "guarantyOwner1DriverLicense"],
+                },
+                {
+                    heading: "Owner 2",
+                    keys: ["guarantyOwner2Name", "guarantyOwner2Ss", "guarantyOwner2DriverLicense"],
+                },
+                {
+                    heading: "Guarantor 1",
+                    keys: ["guarantyGuarantor1Name", "guarantyGuarantor1Ss", "guarantyGuarantor1DriverLicense"],
+                },
+                {
+                    heading: "Guarantor 2",
+                    keys: ["guarantyGuarantor2Name", "guarantyGuarantor2Ss", "guarantyGuarantor2DriverLicense"],
+                },
             ],
         },
         {
             id: "appendix",
             title: "Appendix A — Fees",
-            description: "Underwriting fee amount and appendix acknowledgement name.",
+            description:
+                "Underwriting fee for Appendix A: enter a percent (e.g. 10 or 10%) and we send the dollar amount (percent × purchase amount) to DocuSign.",
             Icon: Receipt,
-            keys: ["appendixUnderwritingFees", "appendixClientName"],
+            groups: [{ keys: ["appendixUnderwritingFees", "appendixClientName"] }],
         },
         {
             id: "ach_direct_deposit",
             title: "ACH credit / direct deposit authorization",
-            description: "Authorization agreement — bank name, routing, account, merchant signatory, tax ID, date.",
+            description: "Merchant name on the authorization, then bank, signatory, tax ID, and date.",
             Icon: Landmark,
-            keys: [
-                "authorizationApplication",
-                "authorizationClientBankName",
-                "authorizationClientBankRouting",
-                "authorizationClientBankAccount",
-                "authorizationClientName",
-                "authorizationClientNamePrint",
-                "authorizationClientTaxId",
-                "authorizationClientDate",
-                "authorizedBusinessPhone",
+            groups: [
+                { heading: "Merchant", keys: ["authorizationApplication"] },
+                {
+                    keys: [
+                        "authorizationClientBankName",
+                        "authorizationClientBankRouting",
+                        "authorizationClientBankAccount",
+                        "authorizationClientName",
+                        "authorizationClientNamePrint",
+                        "authorizationClientTaxId",
+                        "authorizationClientDate",
+                        "authorizedBusinessPhone",
+                    ],
+                },
             ],
         },
         {
             id: "ach_account_bank",
             title: "ACH — Account & bank",
-            description: "Account holder, bank branch, routing, account number, transaction fee, dates.",
+            description: "Account holder, bank branch, routing, account number, transaction fee, consent signature.",
             Icon: Wallet,
-            keys: [
-                "achAuthorizationAccountHolderName",
-                "achAuthorizationAccountHolderDba",
-                "achAuthorizationAccountHolderPhone",
-                "achAuthorizationAccountHolderAddress",
-                "achAuthorizationAccountHolderCity",
-                "achAuthorizationAccountHolderState",
-                "achAuthorizationAccountHolderZip",
-                "achAuthorizationAccountHolderBankName",
-                "achAuthorizationAccountHolderBankBranchCity",
-                "achAuthorizationAccountHolderBankState",
-                "achAuthorizationAccountHolderBankZip",
-                "achAuthorizationAccountHolderBankRoutingNumber",
-                "achAuthorizationAccountHolderBankAccountNumber",
-                "achAuthorizationAccountHolderBankTransactionFee",
-                "achAuthorizationAccountHolderDate",
-                "achAuthorizationConcentAccountHolderName",
-                "achAuthorizationConcentAccountHolderDate",
+            groups: [
+                {
+                    heading: "Account holder",
+                    keys: [
+                        "achAuthorizationAccountHolderName",
+                        "achAuthorizationAccountHolderDba",
+                        "achAuthorizationAccountHolderPhone",
+                        "achAuthorizationAccountHolderAddress",
+                        "achAuthorizationAccountHolderCity",
+                        "achAuthorizationAccountHolderState",
+                        "achAuthorizationAccountHolderZip",
+                        "achAuthorizationAccountHolderDate",
+                    ],
+                },
+                {
+                    heading: "Bank",
+                    keys: [
+                        "achAuthorizationAccountHolderBankName",
+                        "achAuthorizationAccountHolderBankBranchCity",
+                        "achAuthorizationAccountHolderBankState",
+                        "achAuthorizationAccountHolderBankZip",
+                        "achAuthorizationAccountHolderBankRoutingNumber",
+                        "achAuthorizationAccountHolderBankAccountNumber",
+                        "achAuthorizationAccountHolderBankTransactionFee",
+                    ],
+                },
+                {
+                    heading: "Consent",
+                    keys: [
+                        "achAuthorizationConcentAccountHolderName",
+                        "achAuthorizationConcentAccountHolderDate",
+                    ],
+                },
             ],
         },
         {
@@ -346,45 +416,75 @@ const CONTRACT_PREFILL_SECTIONS: {
             title: "ACH — Portal & references",
             description: "Bank portal credentials, security Q&A, other notes, and three references.",
             Icon: Globe,
-            keys: [
-                "achAuthorizationBankPortalWebsite",
-                "achAuthorizationUsername",
-                "achAuthorizationPassword",
-                "achAuthorizationSecurityQuestion1",
-                "achAuthorizationSecurityAnswer1",
-                "achAuthorizationSecurityQuestion2",
-                "achAuthorizationSecurityAnswer2",
-                "achAuthorizationSecurityQuestion3",
-                "achAuthorizationSecurityAnswer3",
-                "achAuthorizationOtherInfomation",
-                "achAuthorizationReferenceName1",
-                "achAuthorizationReferenceNumber1",
-                "achAuthorizationReferenceRelationship1",
-                "achAuthorizationReferenceName2",
-                "achAuthorizationReferenceNumber2",
-                "achAuthorizationReferenceRelationship2",
-                "achAuthorizationReferenceName3",
-                "achAuthorizationReferenceNumber3",
-                "achAuthorizationReferenceRelationship3",
+            groups: [
+                {
+                    heading: "Online banking",
+                    keys: [
+                        "achAuthorizationBankPortalWebsite",
+                        "achAuthorizationUsername",
+                        "achAuthorizationPassword",
+                        "achAuthorizationSecurityQuestion1",
+                        "achAuthorizationSecurityAnswer1",
+                        "achAuthorizationSecurityQuestion2",
+                        "achAuthorizationSecurityAnswer2",
+                        "achAuthorizationSecurityQuestion3",
+                        "achAuthorizationSecurityAnswer3",
+                        "achAuthorizationOtherInfomation",
+                    ],
+                },
+                {
+                    heading: "Reference 1",
+                    keys: [
+                        "achAuthorizationReferenceName1",
+                        "achAuthorizationReferenceNumber1",
+                        "achAuthorizationReferenceRelationship1",
+                    ],
+                },
+                {
+                    heading: "Reference 2",
+                    keys: [
+                        "achAuthorizationReferenceName2",
+                        "achAuthorizationReferenceNumber2",
+                        "achAuthorizationReferenceRelationship2",
+                    ],
+                },
+                {
+                    heading: "Reference 3",
+                    keys: [
+                        "achAuthorizationReferenceName3",
+                        "achAuthorizationReferenceNumber3",
+                        "achAuthorizationReferenceRelationship3",
+                    ],
+                },
             ],
         },
         {
             id: "addendum",
             title: "Addendum to merchant agreement",
-            description: "Principal owner, business, amounts, owner signature lines.",
+            description: "Date, principal block (owner, business, state), offer / payback amounts, owner signature lines.",
             Icon: FilePenLine,
-            keys: [
-                "addendumDated",
-                "addendumDatedPrincipalOwner",
-                "addendumDatedPrincipalBusiness",
-                "addendumDatedBusinessLocation",
-                "addendumDatedPrincipalState",
-                "addendumDatedPrincipalOwnerAmount",
-                "addendumDatedPrincipalOwnerAmount2",
-                "addendumDatedPrincipalOwner1Name",
-                "addendumDatedPrincipalOwner1Date",
-                "addendumDatedPrincipalOwner2Name",
-                "addendumDatedPrincipalOwner2Date",
+            groups: [
+                {
+                    keys: ["addendumDated", "addendumDatedBusinessLocation"],
+                },
+                {
+                    heading: "Principal",
+                    keys: [
+                        "addendumDatedPrincipalOwner",
+                        "addendumDatedPrincipalBusiness",
+                        "addendumDatedPrincipalState",
+                        "addendumDatedPrincipalOwnerAmount",
+                        "addendumDatedPrincipalOwnerAmount2",
+                    ],
+                },
+                {
+                    heading: "Owner 1",
+                    keys: ["addendumDatedPrincipalOwner1Name", "addendumDatedPrincipalOwner1Date"],
+                },
+                {
+                    heading: "Owner 2",
+                    keys: ["addendumDatedPrincipalOwner2Name", "addendumDatedPrincipalOwner2Date"],
+                },
             ],
         },
     ];
@@ -625,7 +725,7 @@ function messageFromSaveError(error: unknown, fallback: string): string {
 
 function firstSectionIdWithFieldErrors(errors: FieldErrors): string | null {
     for (const section of CONTRACT_PREFILL_SECTIONS) {
-        if (section.keys.some((key) => Boolean(errors[key]))) return section.id;
+        if (contractPrefillSectionKeys(section).some((key) => Boolean(errors[key]))) return section.id;
     }
     return null;
 }
@@ -693,7 +793,15 @@ export function ContractPrefillEditForm({
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (normalizeContractPrefillOverrides(persistedPrefillOverrides) ??
                     ({} as Partial<BuildContractPrefillFieldsArgs>));
-        setValues(mergeFormState({ ...defaults, ...persisted }));
+        const merged = finalizeContractPrefillMoneyFields(
+            { ...defaults, ...persisted },
+            {
+                application: applicationData as Record<string, unknown> | undefined,
+                contract: contractRecords?.contract ?? null,
+                offerDecision: offerDecision ?? null,
+            },
+        );
+        setValues(mergeFormState(merged));
         setFieldErrors({});
     }, [applicationData, contractRecords, agreementDateForDefaults, persistedPrefillOverrides, offerDecision]);
 
@@ -977,33 +1085,52 @@ export function ContractPrefillEditForm({
                                         </div>
                                     </div>
                                 </div>
-                                <div className="grid gap-4 sm:grid-cols-2">
-                                    {activeSection.keys.map((key) => (
-                                        <div key={key} className="space-y-1.5">
-                                            <Label htmlFor={`prefill-${key}`} className="text-xs font-medium">
-                                                {FIELD_LABELS[key as keyof typeof FIELD_LABELS]}
-                                            </Label>
-                                            <Input
-                                                id={`prefill-${key}`}
-                                                type={isPasswordPrefillKey(key) ? "password" : "text"}
-                                                autoComplete={isPasswordPrefillKey(key) ? "new-password" : undefined}
-                                                value={values[key] ?? ""}
-                                                onChange={(e) => setField(key, e.target.value)}
-                                                disabled={readOnly}
-                                                aria-invalid={Boolean(fieldErrors[key])}
-                                                className={cn(
-                                                    "h-9 text-sm",
-                                                    fieldErrors[key] && "border-destructive focus-visible:ring-destructive",
-                                                )}
-                                                placeholder={
-                                                    key === "agreementDate" ? agreementDatePlaceholder : undefined
-                                                }
-                                            />
-                                            {fieldErrors[key] ? (
-                                                <p className="text-destructive text-xs" role="alert">
-                                                    {fieldErrors[key]}
-                                                </p>
+                                <div className="space-y-5">
+                                    {activeSection.groups.map((group, groupIdx) => (
+                                        <div
+                                            key={group.heading ?? `group-${groupIdx}`}
+                                            className={cn(group.heading && groupIdx > 0 && "mt-1 border-t border-slate-200/90 pt-4 dark:border-slate-600")}
+                                        >
+                                            {group.heading ? (
+                                                <h5 className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                    {group.heading}
+                                                </h5>
                                             ) : null}
+                                            <div className="grid gap-4 sm:grid-cols-2">
+                                                {group.keys.map((key) => (
+                                                    <div key={key} className="space-y-1.5">
+                                                        <Label htmlFor={`prefill-${key}`} className="text-xs font-medium">
+                                                            {FIELD_LABELS[key as keyof typeof FIELD_LABELS]}
+                                                        </Label>
+                                                        <Input
+                                                            id={`prefill-${key}`}
+                                                            type={isPasswordPrefillKey(key) ? "password" : "text"}
+                                                            autoComplete={
+                                                                isPasswordPrefillKey(key) ? "new-password" : undefined
+                                                            }
+                                                            value={values[key] ?? ""}
+                                                            onChange={(e) => setField(key, e.target.value)}
+                                                            disabled={readOnly}
+                                                            aria-invalid={Boolean(fieldErrors[key])}
+                                                            className={cn(
+                                                                "h-9 text-sm",
+                                                                fieldErrors[key] &&
+                                                                    "border-destructive focus-visible:ring-destructive",
+                                                            )}
+                                                            placeholder={
+                                                                key === "agreementDate"
+                                                                    ? agreementDatePlaceholder
+                                                                    : undefined
+                                                            }
+                                                        />
+                                                        {fieldErrors[key] ? (
+                                                            <p className="text-destructive text-xs" role="alert">
+                                                                {fieldErrors[key]}
+                                                            </p>
+                                                        ) : null}
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
                                     ))}
                                 </div>

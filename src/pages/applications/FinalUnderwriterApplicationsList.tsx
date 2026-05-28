@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, Search, Trash2 } from 'lucide-react';
 import DataTableContent from '@/components/DataTable/DataTableContent';
+import { isListBlockingLoad } from '@/lib/listLoading';
 import DataTablePagination from '@/components/DataTable/DataTablePagination';
 import { axiosGet } from '@/redux/axios';
 import { formatDate as formatDateUtil } from "@/lib/utils";
@@ -35,9 +36,9 @@ import {
     statCardTitleToApplicationsQuery,
 } from "@/constants/dashboardApplicationsNavigation";
 import {
-    APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-    filterApplicationsBySearchQuery,
-} from "@/lib/applicationTableSearch";
+    buildApplicationsListParams,
+    DEFAULT_APPLICATIONS_PAGE_SIZE,
+} from "@/lib/applicationsListParams";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
 import {
     CONTRACT_OUT_QUEUE_BADGE_CLASS,
@@ -94,6 +95,7 @@ export default function FinalUnderwriterApplicationsList() {
         loading,
         isRefreshing: applicationsRefreshing,
         data: applications,
+        pagination: apiPagination,
         error,
     } = useSelector((state: RootState) => state.applications);
     const { data: statsData, isRefreshing: statsRefreshing } = useSelector(
@@ -108,9 +110,10 @@ export default function FinalUnderwriterApplicationsList() {
 
     const [pagination, setPagination] = useState<PaginationState>({
         pageIndex: 0,
-        pageSize: 10,
+        pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
     });
     const [searchTerm, setSearchTerm] = useState("");
+    const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
     const [prevMonthStats, setPrevMonthStats] = useState<ApplicationStatsData | null>(null);
 
     const formatDate = useCallback((dateString?: string) => {
@@ -448,15 +451,21 @@ export default function FinalUnderwriterApplicationsList() {
         navigate,
     ]);
 
-    const filteredApplications = useMemo(
-        () => filterApplicationsBySearchQuery(applications, searchTerm),
-        [applications, searchTerm],
-    );
-    const totalItems = filteredApplications.length;
+    const tableRows = applications ?? [];
+    const applicationsListBlockingLoad = isListBlockingLoad({
+        rowCount: tableRows.length,
+        loading,
+        isRefreshing: applicationsRefreshing,
+    });
+    const totalItems = apiPagination?.total ?? tableRows.length;
+    const pageCount =
+        apiPagination?.totalPages ??
+        Math.max(1, Math.ceil(totalItems / pagination.pageSize) || 1);
 
     const table = useReactTable({
-        data: filteredApplications,
+        data: tableRows,
         columns,
+        pageCount,
         getCoreRowModel: getCoreRowModel(),
         getFilteredRowModel: getFilteredRowModel(),
         getPaginationRowModel: getPaginationRowModel(),
@@ -464,7 +473,7 @@ export default function FinalUnderwriterApplicationsList() {
             const next = typeof updater === 'function' ? updater(pagination) : updater;
             setPagination(next);
         },
-        manualPagination: false,
+        manualPagination: true,
         state: { pagination, rowSelection },
         onRowSelectionChange: setRowSelection,
         getRowId: (row) => row._id,
@@ -472,16 +481,31 @@ export default function FinalUnderwriterApplicationsList() {
 
     const fetchApplications = useCallback(() => {
         dispatch(
-            getApplications({
-                page: 1,
-                limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-            }),
+            getApplications(
+                buildApplicationsListParams({
+                    pageIndex: pagination.pageIndex,
+                    pageSize: pagination.pageSize,
+                    searchTerm: debouncedSearchTerm,
+                    dashboardStateFilter: "",
+                    statusFilter: "all",
+                }),
+            ),
         );
-    }, [dispatch]);
+    }, [
+        dispatch,
+        pagination.pageIndex,
+        pagination.pageSize,
+        debouncedSearchTerm,
+    ]);
+
+    useEffect(() => {
+        const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 400);
+        return () => window.clearTimeout(t);
+    }, [searchTerm]);
 
     useEffect(() => {
         setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-    }, [searchTerm]);
+    }, [debouncedSearchTerm]);
 
     const handleBulkDelete = useCallback(async () => {
         if (selectedApplicationIds.length === 0) return;
@@ -773,19 +797,15 @@ export default function FinalUnderwriterApplicationsList() {
                         <div className="overflow-x-auto rounded-xl">
                             <DataTableContent
                                 table={table}
-                                loading={loading && !(applications?.length)}
+                                loading={applicationsListBlockingLoad}
                                 loadingMessage="Loading applications..."
                                 emptyMessage={
-                                    (applications?.length ?? 0) > 0 &&
-                                        filteredApplications.length === 0 &&
-                                        searchTerm.trim()
+                                    debouncedSearchTerm.trim()
                                         ? "No matching applications"
                                         : "No applications found"
                                 }
                                 emptySubMessage={
-                                    (applications?.length ?? 0) > 0 &&
-                                        filteredApplications.length === 0 &&
-                                        searchTerm.trim()
+                                    debouncedSearchTerm.trim()
                                         ? "Try a different search term"
                                         : "Try adjusting your search or filter criteria"
                                 }
@@ -793,9 +813,7 @@ export default function FinalUnderwriterApplicationsList() {
                         </div>
                     </div>
 
-                    {applications &&
-                        applications.length > 0 &&
-                        filteredApplications.length > 0 && (
+                    {totalItems > 0 && (
                             <DataTablePagination
                                 table={table}
                                 totalItems={totalItems}

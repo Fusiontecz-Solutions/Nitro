@@ -44,6 +44,7 @@ import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
+import { isListBlockingLoad } from "@/lib/listLoading";
 
 const PAGE_SIZE = 20;
 
@@ -163,6 +164,13 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
         : listMode.kind === "stage"
           ? operationsDashboardStatusTitle(listMode.status)
           : "Applications";
+
+  const listBlockingLoad = isListBlockingLoad({
+    rowCount: data.length,
+    loading,
+    awaitingFirstLoad:
+      listMode.kind !== "invalid" && pagination == null && !error,
+  });
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(searchInput.trim()), 400);
@@ -362,14 +370,14 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
             </div>
           ) : null}
 
-          {loading && !error ? (
+          {listBlockingLoad && !error ? (
             <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
               <Loader2 className="h-6 w-6 animate-spin" />
               <span>Loading applications…</span>
             </div>
           ) : null}
 
-          {!loading && !error && data.length > 0 ? (
+          {!listBlockingLoad && !error && data.length > 0 ? (
             <AnimatePresence mode="wait">
               {viewMode === "list" ? (
                 <motion.div
@@ -497,7 +505,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
             </AnimatePresence>
           ) : null}
 
-          {!loading && !error && data.length === 0 ? (
+          {!listBlockingLoad && !error && data.length === 0 ? (
             <div className="px-6 py-10 text-center text-sm text-muted-foreground">
               No applications found
               {debouncedSearch
@@ -508,7 +516,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
             </div>
           ) : null}
 
-          {!loading && !error && data.length > 0 ? (
+          {!listBlockingLoad && !error && data.length > 0 ? (
             <div className="flex flex-col items-stretch justify-between gap-3 border-t border-border bg-accent/20 px-6 py-4 text-xs font-bold text-muted-foreground sm:flex-row sm:items-center">
               <span>
                 Showing {showingStart} to {showingEnd} of {totalItems} entries

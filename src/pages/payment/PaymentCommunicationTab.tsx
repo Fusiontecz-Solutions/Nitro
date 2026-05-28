@@ -98,6 +98,8 @@ export default function PaymentCommunicationTab() {
 
   const defaultDisplay = preferred ? formatUSPhoneNumber(preferred) || displayPhone(preferred) : "";
 
+  const avochatoSubdomain = String(import.meta.env.VITE_AVOCHATO_SUBDOMAIN ?? "").trim();
+
   if (loading && !applicationData) {
     return (
       <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
@@ -179,7 +181,12 @@ export default function PaymentCommunicationTab() {
               </p>
             )}
           </div>
-          <AvochatoCallSurface defaultPhone={preferred} isActive={mode === "calling"} embedded />
+          <AvochatoCallSurface
+            defaultPhone={preferred}
+            defaultSubdomain={avochatoSubdomain}
+            isActive={mode === "calling"}
+            embedded
+          />
         </div>
       )}
     </div>

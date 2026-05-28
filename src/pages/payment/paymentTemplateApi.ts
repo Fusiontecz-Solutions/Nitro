@@ -1,7 +1,19 @@
 import { axiosDelete, axiosGet, axiosPost, axiosPut } from "@/redux/axios";
 import type { ApiResponse } from "@/types/api.types";
+import {
+  CRM_CACHE_NS,
+  crmCacheClearNamespace,
+  crmCacheGet,
+  crmCacheSet,
+} from "@/lib/crmCache";
 
 export type TemplateCategory = "contract" | "email" | "letter";
+
+export const TEMPLATE_CATEGORY_LABELS: Record<TemplateCategory, string> = {
+  contract: "Contract",
+  email: "Email",
+  letter: "Letter",
+};
 
 export type TemplateItem = {
   id: string;
@@ -25,59 +37,28 @@ type CreateTemplatePayload = {
 type UpdateTemplatePayload = Partial<CreateTemplatePayload>;
 
 const BASE_PATH = "/payment-templates";
-const SESSION_STORAGE_KEY = "ihcrm.paymentTemplates.v1";
-
-/** `undefined` = never loaded; `[]` = loaded, empty list */
-let memoryTemplates: TemplateItem[] | undefined;
+const TEMPLATES_CACHE_KEY = "all";
 
 /** Coalesce parallel `getPaymentTemplates(..., { force: true })` calls (prefetch + tab mount). */
 let fetchAllInFlight: Promise<TemplateItem[]> | null = null;
 
-function persistToSession(list: TemplateItem[]) {
-  try {
-    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(list));
-  } catch {
-    /* ignore quota / private mode */
-  }
-}
-
-function loadFromSession(): TemplateItem[] | undefined {
-  try {
-    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
-    if (raw == null) return undefined;
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return undefined;
-    return parsed as TemplateItem[];
-  } catch {
-    return undefined;
-  }
-}
-
 /**
- * Synchronously read the last known full template list (memory, then session).
+ * Synchronously read the last known full template list (L1, hydrated from IndexedDB on boot).
  * `undefined` means no cache yet; `[]` is a valid cached empty list.
  */
 export function readPaymentTemplatesCache(): TemplateItem[] | undefined {
-  if (memoryTemplates !== undefined) return memoryTemplates;
-  const fromSession = loadFromSession();
-  if (fromSession !== undefined) {
-    memoryTemplates = fromSession;
-  }
-  return memoryTemplates;
+  return crmCacheGet<TemplateItem[]>(
+    CRM_CACHE_NS.PAYMENT_TEMPLATES,
+    TEMPLATES_CACHE_KEY,
+  );
 }
 
 export function writePaymentTemplatesCache(list: TemplateItem[]) {
-  memoryTemplates = list;
-  persistToSession(list);
+  crmCacheSet(CRM_CACHE_NS.PAYMENT_TEMPLATES, TEMPLATES_CACHE_KEY, list);
 }
 
 export function invalidatePaymentTemplatesCache() {
-  memoryTemplates = undefined;
-  try {
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
+  crmCacheClearNamespace(CRM_CACHE_NS.PAYMENT_TEMPLATES);
 }
 
 /** Warm the cache as soon as the payment deal shell mounts (before Templates tab). */

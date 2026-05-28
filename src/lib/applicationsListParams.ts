@@ -2,7 +2,6 @@ import {
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
 } from "@/constants/operationsDashboardApplications";
-import { APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT } from "@/lib/applicationTableSearch";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
 
 /**
@@ -97,6 +96,11 @@ export function buildApplicationsListParams(options: {
   priorityFilter?: string;
   /** UNDERWRITER: server-side pool / my-claimed (Underwriter queue only). Overrides queue dropdown. */
   underwriterClaim?: "unclaimed" | "mine";
+  /**
+   * When true (operations sidebar: `fromDashboard=operations`), `dashboardStateFilter`
+   * drives `operationsStatus`. When false, the pipeline dropdown (`statusFilter`) wins.
+   */
+  useDashboardStageFilter?: boolean;
 }): GetApplicationsParams {
   const params: GetApplicationsParams = {
     page: options.pageIndex + 1,
@@ -117,7 +121,8 @@ export function buildApplicationsListParams(options: {
     params.underwriterClaim = options.underwriterClaim;
     return params;
   }
-  if (options.dashboardStateFilter) {
+
+  if (options.useDashboardStageFilter && options.dashboardStateFilter) {
     const isAllPipeline =
       options.dashboardStateFilter === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY ||
       options.dashboardStateFilter.toLowerCase() === "all";
@@ -126,8 +131,19 @@ export function buildApplicationsListParams(options: {
     }
     return params;
   }
+
   if (options.statusFilter !== "all") {
     Object.assign(params, pipelineStatusFilterToApiFields(options.statusFilter));
+    return params;
+  }
+
+  if (options.dashboardStateFilter) {
+    const isAllPipeline =
+      options.dashboardStateFilter === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY ||
+      options.dashboardStateFilter.toLowerCase() === "all";
+    if (!isAllPipeline) {
+      params.operationsStatus = options.dashboardStateFilter;
+    }
   }
   return params;
 }
@@ -136,13 +152,17 @@ export function buildApplicationsListParams(options: {
 export function buildInitialApplicationsListParamsFromSearch(
   urlSearch: string,
 ): GetApplicationsParams {
+  const query = new URLSearchParams(urlSearch);
   const { dashboardStateFilter, statusFilter } =
     parseApplicationsListRouteFilters(urlSearch);
+  const useDashboardStageFilter =
+    query.get("fromDashboard") === "operations";
   return buildApplicationsListParams({
     pageIndex: 0,
-    pageSize: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
+    pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
     searchTerm: "",
     dashboardStateFilter,
     statusFilter,
+    useDashboardStageFilter,
   });
 }

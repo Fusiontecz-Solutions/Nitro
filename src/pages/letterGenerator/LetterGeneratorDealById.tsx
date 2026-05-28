@@ -1,10 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router";
 import { ArrowLeft, Loader2 } from "lucide-react";
-import { useDispatch, useSelector } from "react-redux";
-import type { AppDispatch, RootState } from "@/redux/store";
-import { getApplicationById } from "@/redux/actions/applicationActions";
-import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
+import { useApplicationDetailLoader } from "@/hooks/useApplicationDetailLoader";
 import { Button } from "@/components/ui/button";
 
 import Templates from "@/pages/payment/Templates";
@@ -32,7 +29,6 @@ const tabs: { id: TabId; label: string }[] = [
 export default function LetterGeneratorDealById() {
   const { letterGeneratorDealId } = useParams<{ letterGeneratorDealId: string }>();
   const navigate = useNavigate();
-  const dispatch = useDispatch<AppDispatch>();
   const [activeTab, setActiveTab] = useState<TabId>("templates");
 
   const applicationId = useMemo(() => {
@@ -46,17 +42,8 @@ export default function LetterGeneratorDealById() {
     }
   }, [letterGeneratorDealId]);
 
-  const { loading, data: applicationData, error } = useSelector(
-    (state: RootState) => state.applicationDetail,
-  );
-
-  useEffect(() => {
-    if (!applicationId) return;
-    dispatch(getApplicationById(applicationId));
-    return () => {
-      dispatch(clearApplicationDetail());
-    };
-  }, [dispatch, applicationId]);
+  const { loading, data: applicationData, error } =
+    useApplicationDetailLoader(applicationId || undefined);
 
   useEffect(() => {
     prefetchPaymentTemplates();
