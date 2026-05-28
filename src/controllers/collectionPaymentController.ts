@@ -37,6 +37,7 @@ import {
   parseTransactionStatusValue,
 } from '../utils/achReturnCodeFromDescription';
 import { getPreviewSheetDescription } from '../utils/previewSheetDebitCredit';
+import { computeCreditDebitTrend } from '../services/paymentDashboardCreditDebitTrend';
 
 const STATUS_MAP_TO_DB: Record<string, CollectionPaymentStatus | undefined> = {
   paid: CollectionPaymentStatus.PAID,
@@ -2236,14 +2237,38 @@ class CollectionPaymentController {
     }
   }
 
+  /**
+   * Debit vs credit trend for the payment dashboard chart — scoped by view/year/month.
+   * Loads only collection rows in the relevant date window (not the full portfolio).
+   */
+  async creditDebitTrend(req: Request, res: Response) {
+    try {
+      const result = await computeCreditDebitTrend(req.query as Record<string, unknown>);
+      if (!result) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid query: view (monthly|weekly|monthlyInYear|yearly), year, optional month (0-11 or all)',
+        });
+      }
+      return res.status(200).json({
+        success: true,
+        data: {
+          points: result.points,
+          yearOptions: result.yearOptions,
+        },
+      });
+    } catch (error) {
+      console.error('Credit/debit trend error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
   async dashboard(req: Request, res: Response) {
     try {
       const now = new Date();
       const todayStart = startOfDay(now);
       const todayEnd = endOfDay(now);
       const next7End = endOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7));
-      const yearStart = new Date(now.getFullYear(), 0, 1);
-
       /** Same cohort as Payment History `/applications?statsBucket=funded` (queue-led only — see `applicationStatsBucketWhere`). */
       const fundedDashboardWhere = buildApplicationStatsBucketWhere('funded');
       if (!fundedDashboardWhere) {
@@ -2306,19 +2331,23 @@ class CollectionPaymentController {
         _sum: { amount: true },
         _count: { _all: true },
       });
-      const payments = appIds.length
+      /** Due-today / next-7 only — avoids loading the full payment history for KPI cards. */
+      const duesPayments = appIds.length
         ? await prisma.collectionPayment.findMany({
-            where: { applicationId: { in: appIds } },
+            where: {
+              applicationId: { in: appIds },
+              OR: [
+                { status: CollectionPaymentStatus.DUE_TODAY },
+                { status: { in: Array.from(OPEN_DUE_STATUSES) } },
+              ],
+            },
             select: {
               id: true,
               applicationId: true,
               dealId: true,
               amount: true,
               status: true,
-              Date: true,
               scheduledDate: true,
-              processedDate: true,
-              notes: true,
             },
           })
         : [];
@@ -2326,18 +2355,9 @@ class CollectionPaymentController {
       const dealIdByApplicationIdDashboard = new Map(
         disbursementApps.map((a) => [a.id, a.dealId]),
       );
-      const paymentsForDashboardCharts = payments.filter((p) =>
+      const paymentsForDueCards = duesPayments.filter((p) =>
         paymentBelongsToApplicationDeal(p, dealIdByApplicationIdDashboard.get(p.applicationId)),
       );
-
-      const appAmountById = new Map<string, number>();
-      for (const app of disbursementApps) {
-        const loanAmount = toNum(app.loanAmount);
-        const offerDecision =
-          app.OfferDecision?.decision?.toLowerCase() === 'declined' ? 0 : toNum(app.OfferDecision?.offer);
-        const chosen = loanAmount > 0 ? loanAmount : offerDecision || loanAmount || 0;
-        appAmountById.set(app.id, chosen);
-      }
 
       let dueToday = 0;
       let dueNext7Days = 0;
@@ -2345,14 +2365,7 @@ class CollectionPaymentController {
       let recovered = 0;
       let defaults = 0;
 
-      const paymentsByApplicationId = new Map<string, typeof payments>();
-      for (const payment of paymentsForDashboardCharts) {
-        const list = paymentsByApplicationId.get(payment.applicationId);
-        if (list) list.push(payment);
-        else paymentsByApplicationId.set(payment.applicationId, [payment]);
-      }
-
-      for (const payment of paymentsForDashboardCharts) {
+      for (const payment of paymentsForDueCards) {
         const amount = toNum(payment.amount);
         const date = payment.scheduledDate ? new Date(payment.scheduledDate) : null;
         const status = payment.status;
@@ -2426,11 +2439,6 @@ class CollectionPaymentController {
       const zeroGapDealsPayload: Array<{ dealId: string; gapAmount: number }> = [];
       const GAP_CLASSIFY_EPS = 1e-6;
       for (const app of disbursementApps) {
-        const rawPayments = paymentsByApplicationId.get(app.id) ?? [];
-        const scopedPayments = filterCollectionPaymentsForApplicationDeal(
-          rawPayments,
-          app.dealId ?? null,
-        );
         const advanceNum = Math.max(getApprovedOfferAmountForDealBalance(app), 0);
         const od = app.OfferDecision ?? null;
         const feesAmount = feesForOfferDecision(od);
@@ -2450,9 +2458,7 @@ class CollectionPaymentController {
         );
 
         const bal = dealFinancialByAppId.get(app.id);
-        const grossRepaid = bal
-          ? bal.grossRepaidDealEconomics
-          : grossRepaidDealEconomicsFromPayments(scopedPayments);
+        const grossRepaid = bal?.grossRepaidDealEconomics ?? 0;
         const paybackAmt = bal?.paybackAmount ?? 0;
         const repaidCapped = repaidTowardPaybackExcludingSurplus(grossRepaid, paybackAmt);
         const gap = signedAbovePrincipalGap(repaidCapped, alreadyNetNum);
@@ -2478,123 +2484,6 @@ class CollectionPaymentController {
         abovePrincipalPositiveSum - abovePrincipalNegativeMagSum;
 
       const collectionEfficiency = totalDues > 0 ? Number(((recovered / totalDues) * 100).toFixed(1)) : 0;
-
-      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const yearlyMap = new Map<string, { inflow: number; outflow: number }>();
-      for (const month of monthNames) yearlyMap.set(month, { inflow: 0, outflow: 0 });
-
-      for (const payment of paymentsForDashboardCharts) {
-        const baseDate = payment.processedDate || payment.scheduledDate;
-        if (!baseDate) continue;
-        const d = new Date(baseDate);
-        if (d.getFullYear() !== now.getFullYear()) continue;
-        const month = monthNames[d.getMonth()];
-        const bucket = yearlyMap.get(month)!;
-        if (RECOVERED_STATUSES.has(payment.status)) bucket.inflow += toNum(payment.amount);
-      }
-
-      for (const app of disbursementApps) {
-        const d = new Date(app.updatedAt);
-        if (d < yearStart || d > now) continue;
-        const month = monthNames[d.getMonth()];
-        const bucket = yearlyMap.get(month)!;
-        bucket.outflow += appAmountById.get(app.id) || 0;
-      }
-
-      const yearly = monthNames.map((label) => ({
-        label,
-        inflow: Number((yearlyMap.get(label)?.inflow || 0).toFixed(2)),
-        outflow: Number((yearlyMap.get(label)?.outflow || 0).toFixed(2)),
-      }));
-
-      const currentMonth = now.getMonth();
-      const daysInMonth = new Date(now.getFullYear(), currentMonth + 1, 0).getDate();
-      const monthlyByDay = Array.from({ length: daysInMonth }, (_, i) => ({
-        label: String(i + 1),
-        inflow: 0,
-        outflow: 0,
-      }));
-
-      for (const payment of paymentsForDashboardCharts) {
-        const baseDate = payment.processedDate || payment.scheduledDate;
-        if (!baseDate || !RECOVERED_STATUSES.has(payment.status)) continue;
-        const d = new Date(baseDate);
-        if (d.getFullYear() === now.getFullYear() && d.getMonth() === currentMonth) {
-          const idx = d.getDate() - 1;
-          if (monthlyByDay[idx]) monthlyByDay[idx].inflow += toNum(payment.amount);
-        }
-      }
-
-      for (const app of disbursementApps) {
-        const d = new Date(app.updatedAt);
-        if (d.getFullYear() === now.getFullYear() && d.getMonth() === currentMonth) {
-          const idx = d.getDate() - 1;
-          if (monthlyByDay[idx]) monthlyByDay[idx].outflow += appAmountById.get(app.id) || 0;
-        }
-      }
-
-      /** Five rolling calendar weeks (Sun–Sat), oldest first — labels match payment dashboard chart (e.g. "Mar 29 - Apr 4"). */
-      const NUM_WEEKLY_BUCKETS = 5;
-      const startOfWeekSunday = (d: Date) => {
-        const s = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-        s.setDate(s.getDate() - s.getDay());
-        return s;
-      };
-      const formatWeekRangeLabel = (weekStart: Date, weekEnd: Date) => {
-        const opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' };
-        return `${weekStart.toLocaleDateString('en-US', opts)} - ${weekEnd.toLocaleDateString('en-US', opts)}`;
-      };
-      const thisWeekStart = startOfWeekSunday(now);
-      const weekly: { label: string; inflow: number; outflow: number }[] = [];
-      const weekStarts: Date[] = [];
-      for (let w = NUM_WEEKLY_BUCKETS - 1; w >= 0; w--) {
-        const ws = new Date(thisWeekStart);
-        ws.setDate(ws.getDate() - w * 7);
-        const we = new Date(ws);
-        we.setDate(we.getDate() + 6);
-        weekStarts.push(ws);
-        weekly.push({
-          label: formatWeekRangeLabel(ws, we),
-          inflow: 0,
-          outflow: 0,
-        });
-      }
-      const weekIndexForCalendarDate = (d: Date) => {
-        const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-        for (let i = 0; i < NUM_WEEKLY_BUCKETS; i++) {
-          const ws = weekStarts[i]!;
-          const we = new Date(ws);
-          we.setDate(we.getDate() + 6);
-          if (t >= ws && t <= we) return i;
-        }
-        return -1;
-      };
-      for (const payment of paymentsForDashboardCharts) {
-        const baseDate = payment.processedDate || payment.scheduledDate;
-        if (!baseDate || !RECOVERED_STATUSES.has(payment.status)) continue;
-        const d = new Date(baseDate);
-        const idx = weekIndexForCalendarDate(d);
-        if (idx >= 0) weekly[idx]!.inflow += toNum(payment.amount);
-      }
-      for (const app of disbursementApps) {
-        const d = new Date(app.updatedAt);
-        const idx = weekIndexForCalendarDate(d);
-        if (idx >= 0) weekly[idx]!.outflow += appAmountById.get(app.id) || 0;
-      }
-
-      // When there are no scoped collection rows for charts, money-flow inflow stays zero; card totals still use deal balance aggregation above.
-      const hasCollectionPaymentRecords = paymentsForDashboardCharts.length > 0;
-      if (!hasCollectionPaymentRecords) {
-        yearly.forEach((row) => {
-          row.inflow = 0;
-        });
-        monthlyByDay.forEach((row) => {
-          row.inflow = 0;
-        });
-        weekly.forEach((row) => {
-          row.inflow = 0;
-        });
-      }
 
       return res.status(200).json({
         success: true,
@@ -2625,17 +2514,9 @@ class CollectionPaymentController {
             zeroGapDeals: zeroGapDealsPayload,
           },
           moneyFlow: {
-            monthly: monthlyByDay.map((row) => ({
-              ...row,
-              inflow: Number(row.inflow.toFixed(2)),
-              outflow: Number(row.outflow.toFixed(2)),
-            })),
-            weekly: weekly.map((row) => ({
-              ...row,
-              inflow: Number(row.inflow.toFixed(2)),
-              outflow: Number(row.outflow.toFixed(2)),
-            })),
-            yearly,
+            monthly: [],
+            weekly: [],
+            yearly: [],
           },
         },
       });

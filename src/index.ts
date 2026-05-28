@@ -10,8 +10,6 @@ import cors from 'cors';
 import cloudinaryConnect from './config/cloudinary';
 import { initializeSocketIO } from './socket/index';
 import { testRedisConnection } from './config/redis';
-import { ensurePayoffWireTemplate } from './bootstrap/ensurePayoffWireTemplate';
-import { ensureZeroBalanceLetterTemplate } from './bootstrap/ensureZeroBalanceLetterTemplate';
 import { startCollectionPaymentUploadWorker } from './workers/collectionPaymentUploadWorker';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
 
@@ -112,15 +110,9 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-// Start the HTTP server after DB is ready (seed default templates)
+// Start the HTTP server after DB is ready
 void (async () => {
   await connectDB();
-  await ensurePayoffWireTemplate().catch((err) => {
-    console.error('ensurePayoffWireTemplate:', err);
-  });
-  await ensureZeroBalanceLetterTemplate().catch((err) => {
-    console.error('ensureZeroBalanceLetterTemplate:', err);
-  });
   httpServer.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
     console.log(`Socket.IO server initialized`);

@@ -11,8 +11,22 @@ export type DocusignTextTabRef = {
 const CRM_LABEL_TO_FIELD_ID: Record<string, string> = {
   legalname: 'client_legal_name',
   legal_name: 'client_legal_name',
-  businesslegalname: 'client_legal_name',
-  business_legal_name: 'client_legal_name',
+  /** Balance Transfer: Business Legal Name → entity legal name (not client_legal_name). */
+  businesslegalname: 'business_name',
+  business_legal_name: 'business_name',
+  businessname: 'business_name',
+  business_name: 'business_name',
+  /** Balance Transfer: Merchant Legal Name → CRM client_name. */
+  merchantlegalname: 'client_name',
+  merchant_legal_name: 'client_name',
+  merchantname: 'client_name',
+  merchant_name: 'client_name',
+  clientdba: 'client_dba',
+  client_dba: 'client_dba',
+  physicaladdress: 'physical_address',
+  physical_address: 'physical_address',
+  clientnameby: 'client_name_by',
+  client_name_by: 'client_name_by',
   businesssellerlegalname: 'client_legal_name',
   business_seller_legal_name: 'client_legal_name',
   sellerlegalname: 'client_legal_name',
@@ -37,6 +51,10 @@ const CRM_LABEL_TO_FIELD_ID: Record<string, string> = {
   purchase_amount: 'purchase_amount',
   businessaddress: 'business_address',
   business_address: 'business_address',
+  merchantbusinessaddress1: 'business_address',
+  merchantbusinessaddress: 'business_address',
+  merchantcontactaddress1: 'business_address_contract',
+  merchantcontactaddress: 'business_address_contract',
   businessaddresscity: 'business_address_city',
   businessaddressstate: 'business_address_state',
   businessaddresszip: 'business_address_zip',
@@ -55,6 +73,12 @@ const CRM_LABEL_TO_FIELD_ID: Record<string, string> = {
   nettomerchant: 'net_to_merchant',
   net_to_merchant: 'net_to_merchant',
   NetFundProvided: 'net_to_merchant',
+  appendixunderwritingfees: 'appendix_underwriting_fees',
+  appendix_underwriting_fees: 'appendix_underwriting_fees',
+  underwriterfee: 'appendix_underwriting_fees',
+  underwriter_fee: 'appendix_underwriting_fees',
+  underwriterfees: 'appendix_underwriting_fees',
+  underwriter_fees: 'appendix_underwriting_fees',
 };
 
 /** Normalize CRM / DocuSign field keys for fuzzy matching (snake_case, spaces, case). */

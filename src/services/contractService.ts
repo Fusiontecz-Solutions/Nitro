@@ -591,7 +591,7 @@ class ContractService {
       exhibitOwnerName: customerName || null,
       appendixClientName: legalName || null,
       appendixUnderwritingFees: firstNonEmptyString(offer?.fees) || null,
-      authorizationApplication: String(application?.applicationId ?? ''),
+      authorizationApplication: firstNonEmptyString(legalName, customerName) || null,
       authorizationClientDate: derivedAgreementDate.toISOString().slice(0, 10),
       authorizationClientName: customerName || null,
       authorizationClientNamePrint: customerName || null,
