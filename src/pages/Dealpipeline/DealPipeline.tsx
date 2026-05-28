@@ -44,6 +44,7 @@ import { formatCurrency } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTableContent, DataTablePagination } from "@/components/DataTable";
+import { isListBlockingLoad } from "@/lib/listLoading";
 
 type PipelineStage =
   | "agent"
@@ -522,7 +523,10 @@ export default function DealPipeline() {
     [],
   );
 
-  const listBlockingLoad = listLoading && stageDeals.length === 0;
+  const listBlockingLoad = isListBlockingLoad({
+    rowCount: stageDeals.length,
+    loading: listLoading,
+  });
 
   /**
    * One round-trip for all stage totals (same semantics as six separate list `totalItems` calls).

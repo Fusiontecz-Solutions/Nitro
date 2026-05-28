@@ -4,7 +4,7 @@ import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { getPaymentDashboard } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
-import { fetchPaymentDashboardMoney } from "@/redux/actions/paymentDashboardMoneyActions";
+import { fetchPaymentDashboardCreditDebitTrend } from "@/redux/actions/paymentDashboardTrendActions";
 import { updateApplication } from "@/redux/actions/applicationActions";
 import { axiosPost, axiosPostFormData } from "@/redux/axios";
 import type { FundedDealBalanceApiRow } from "@/lib/collectionPaymentDashboardApi";
@@ -26,14 +26,14 @@ import {
   type ColumnDef,
   type PaginationState,
   getCoreRowModel,
-  getPaginationRowModel,
   useReactTable,
 } from "@tanstack/react-table";
+import { DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
 import { useTheme } from "@/context/ThemeContext";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { isListBlockingLoad } from "@/lib/listLoading";
 import CreditDebitTrendChart from "./CreditDebitTrendChart";
 import {
-  collectDealTokensFromCollectionPaymentRow,
   filterCollectionPaymentsForApplicationDeal,
 } from "./paymentDealIdUtils";
 import {
@@ -253,7 +253,6 @@ function previewInitialTabFromBuckets(mapped: number, unmapped: number): "mapped
 }
 
 const PAID_STATUS_KEYWORDS = ["paid", "manual", "completed", "success", "settled", "received"];
-const DEBIT_STATUS_KEYWORDS = ["debit", "debited"];
 const INACTIVE_STATUS_KEYWORDS = [
   "completed",
   "cancelled",
@@ -285,29 +284,6 @@ const defaultDashboardData: PaymentDashboardData = {
 };
 
 const PAYMENT_DASHBOARD_PAGINATION_STORAGE_KEY = "paymentHistoryDashboard.pagination";
-
-function parseTransactionDate(value: unknown): Date | null {
-  if (!value) return null;
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-  const date = new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function startOfWeekSunday(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - d.getDay());
-  return d;
-}
-
-function endOfWeekSaturday(date: Date): Date {
-  const d = startOfWeekSunday(date);
-  d.setDate(d.getDate() + 6);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
 
 function parseMoney(value: unknown): number | null {
   if (value == null || value === "") return null;
@@ -685,41 +661,11 @@ function normalizeStatus(value: unknown): string {
     .trim();
 }
 
-/**
- * Labels collection rows for the dashboard trend chart (Debit vs Credit by date).
- * Matches `Transactions` repayment totals: credits/payments vs debits/failed (+ common upload status text).
- */
-function classifyCreditDebitTrendBucket(statusRaw: unknown): "credit" | "debit" | null {
-  const s = normalizeStatus(statusRaw);
-  if (!s) return null;
-  if (s === "credit" || s === "paid" || s === "manual") return "credit";
-  if (s === "debit" || s === "failed") return "debit";
-  if (DEBIT_STATUS_KEYWORDS.some((k) => s.includes(k))) return "debit";
-  if (PAID_STATUS_KEYWORDS.some((k) => s.includes(k))) return "credit";
-  return null;
-}
-
 function normalizeDealToken(value: unknown): string {
   return String(value ?? "")
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "");
-}
-
-function getTransactionDescription(row: Record<string, unknown>): string {
-  return String(row.notes ?? row.note ?? row.description ?? "").trim();
-}
-
-function formatTransactionDayKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-function extractLooseDealTokenFromDescription(text: string): string {
-  const match = text.match(/\b([A-Z]{1,4}\d{2,})\b/i);
-  return normalizeDealToken(match?.[1] ?? "");
 }
 
 const PREVIEW_ROW_DATE_HEADER_KEYS = new Set([
@@ -1342,15 +1288,14 @@ export const PaymentHistoryDashboard = () => {
     loading: cohortLoading,
     isRefreshing: cohortRefreshing,
     error: cohortError,
-    fetched: cohortFetched,
+    pagination: cohortPagination,
   } = useSelector((state: RootState) => state.paymentDashboardCohort);
   const {
-    loading: dashboardMoneyLoading,
-    error: dashboardMoneyError,
-    hydratedOnce: moneyDataHydratedOnce,
-    balancesByAppId,
-    paymentsByApp: dashboardPaymentsByApp,
-  } = useSelector((state: RootState) => state.paymentDashboardMoney);
+    loading: trendLoading,
+    points: trendPoints,
+    yearOptions: trendYearOptions,
+    error: trendError,
+  } = useSelector((state: RootState) => state.paymentDashboardTrend);
   const {
     data: dashboardData,
     loading: paymentDashboardApiLoading,
@@ -1360,14 +1305,6 @@ export const PaymentHistoryDashboard = () => {
   const dashboard = dashboardData ?? defaultDashboardData;
   /** First load with no session snapshot — show placeholders instead of zeros. */
   const statsValuePending = paymentDashboardApiLoading && dashboardData == null;
-
-  const dashboardBalancesByApp = useMemo(() => {
-    const m = new Map<string, FundedDealBalanceApiRow>();
-    Object.entries(balancesByAppId).forEach(([k, v]) =>
-      m.set(k, v as FundedDealBalanceApiRow),
-    );
-    return m;
-  }, [balancesByAppId]);
 
   /** Click-to-view: cleared when the deal route is active so the eye icon does not spin until navigation fully settles. */
   const [pendingViewDealId, setPendingViewDealId] = useState<string | null>(null);
@@ -1445,45 +1382,111 @@ export const PaymentHistoryDashboard = () => {
     [dispatch, paymentCategoryOverrides],
   );
 
-  /** Cohort + per-deal money + KPI stat cards (`/collection-payments/dashboard`) — needed after transaction writes. */
+  const [pagination, setPagination] = useState<PaginationState>(() => {
+    if (typeof window === "undefined") {
+      return { pageIndex: 0, pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE };
+    }
+    try {
+      const raw = window.sessionStorage.getItem(PAYMENT_DASHBOARD_PAGINATION_STORAGE_KEY);
+      if (!raw) return { pageIndex: 0, pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE };
+      const parsed = JSON.parse(raw) as Partial<PaginationState>;
+      const pageIndex =
+        typeof parsed.pageIndex === "number" && Number.isFinite(parsed.pageIndex)
+          ? Math.max(0, Math.floor(parsed.pageIndex))
+          : 0;
+      const pageSize =
+        typeof parsed.pageSize === "number" && Number.isFinite(parsed.pageSize) && parsed.pageSize > 0
+          ? Math.floor(parsed.pageSize)
+          : DEFAULT_APPLICATIONS_PAGE_SIZE;
+      return { pageIndex, pageSize };
+    } catch {
+      return { pageIndex: 0, pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE };
+    }
+  });
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 400);
+  const [moneyFlowView, setMoneyFlowView] = useState<MoneyFlowView>("monthly");
+  const [moneyFlowFilterYear, setMoneyFlowFilterYear] = useState<number>(new Date().getFullYear());
+  const [moneyFlowFilterMonth, setMoneyFlowFilterMonth] = useState<number | "all">(new Date().getMonth());
+
+  const fetchCohortPage = useCallback(() => {
+    void dispatch(
+      fetchPaymentDashboardFundedDeals({
+        page: pagination.pageIndex + 1,
+        limit: pagination.pageSize,
+        search: debouncedSearchTerm.trim() || undefined,
+      }),
+    );
+  }, [dispatch, pagination.pageIndex, pagination.pageSize, debouncedSearchTerm]);
+
+  const fetchTrendChart = useCallback(() => {
+    void dispatch(
+      fetchPaymentDashboardCreditDebitTrend({
+        view: moneyFlowView,
+        year: moneyFlowFilterYear,
+        month: moneyFlowFilterMonth,
+      }),
+    );
+  }, [dispatch, moneyFlowView, moneyFlowFilterYear, moneyFlowFilterMonth]);
+
+  /** KPI cards + current table page + chart — after transaction writes. */
   const refreshDashboardAfterTransactionWrites = useCallback(async () => {
     await Promise.all([
-      dispatch(fetchPaymentDashboardFundedDeals()).unwrap(),
-      dispatch(getPaymentDashboard()),
+      dispatch(getPaymentDashboard()).unwrap(),
+      dispatch(
+        fetchPaymentDashboardFundedDeals({
+          page: pagination.pageIndex + 1,
+          limit: pagination.pageSize,
+          search: debouncedSearchTerm.trim() || undefined,
+        }),
+      ).unwrap(),
+      dispatch(
+        fetchPaymentDashboardCreditDebitTrend({
+          view: moneyFlowView,
+          year: moneyFlowFilterYear,
+          month: moneyFlowFilterMonth,
+        }),
+      ).unwrap(),
     ]);
-    await dispatch(fetchPaymentDashboardMoney({ force: true }));
-  }, [dispatch]);
+  }, [
+    dispatch,
+    pagination.pageIndex,
+    pagination.pageSize,
+    debouncedSearchTerm,
+    moneyFlowView,
+    moneyFlowFilterYear,
+    moneyFlowFilterMonth,
+  ]);
 
-  /**
-   * Each SPA visit to `/payments` gets a new `location.key` — refetch so stat cards and deal rows
-   * stay current after preview, applications, or deal-detail navigation (Redux would otherwise keep prior snapshot).
-   */
   const lastPaymentsRouteKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (location.pathname !== "/payments") return;
     if (lastPaymentsRouteKeyRef.current === location.key) return;
     lastPaymentsRouteKeyRef.current = location.key;
     void dispatch(getPaymentDashboard());
-    if (cohortFetched) {
-      void dispatch(fetchPaymentDashboardMoney({ force: true }));
-    }
-    void dispatch(fetchPaymentDashboardFundedDeals())
-      .unwrap()
-      .finally(() => {
-        void dispatch(fetchPaymentDashboardMoney({ force: true }));
-      });
-  }, [dispatch, location.pathname, location.key, cohortFetched]);
+  }, [location.pathname, location.key, dispatch]);
 
-  const lastMoneyErrorToastRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!dashboardMoneyError) {
-      lastMoneyErrorToastRef.current = null;
+    if (location.pathname !== "/payments") return;
+    fetchCohortPage();
+  }, [location.pathname, fetchCohortPage]);
+
+  useEffect(() => {
+    if (location.pathname !== "/payments") return;
+    fetchTrendChart();
+  }, [location.pathname, fetchTrendChart]);
+
+  const lastTrendErrorToastRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!trendError) {
+      lastTrendErrorToastRef.current = null;
       return;
     }
-    if (lastMoneyErrorToastRef.current === dashboardMoneyError) return;
-    lastMoneyErrorToastRef.current = dashboardMoneyError;
-    toast.error(dashboardMoneyError);
-  }, [dashboardMoneyError]);
+    if (lastTrendErrorToastRef.current === trendError) return;
+    lastTrendErrorToastRef.current = trendError;
+    toast.error(trendError);
+  }, [trendError]);
 
   useEffect(() => {
     if (!pendingViewDealId) return;
@@ -1498,23 +1501,11 @@ export const PaymentHistoryDashboard = () => {
     return () => window.clearTimeout(t);
   }, [pendingViewDealId]);
 
-  const hasApplicationsRows = (cohortApplications?.length ?? 0) > 0;
-  const fundedAppsNeedFreshMoney =
-    (cohortApplications ?? []).filter(isFundedApplication).length > 0;
-  /**
-   * Only gate the deals table on the funded applications list. Fresh `/balances` + `/collection-payments`
-   * load in the background — blocking on them left the grid stuck on “Loading payment dashboard…” when those
-   * calls were slow or flaky; rows already render from app payload + fallbacks until money data arrives.
-   */
-  /** Empty cohort fetch in progress (no session snapshot) — avoid blocking when API returns 0 funded deals. */
-  const blockPaymentTableLoader = cohortLoading && !hasApplicationsRows && !cohortFetched;
-  const isSyncingDealFinancials =
-    hasApplicationsRows && fundedAppsNeedFreshMoney && dashboardMoneyLoading;
-  const showProminentMoneySync = isSyncingDealFinancials && !moneyDataHydratedOnce;
-  const showQuietMoneySync = isSyncingDealFinancials && moneyDataHydratedOnce;
-  const [moneyFlowView, setMoneyFlowView] = useState<MoneyFlowView>("monthly");
-  const [moneyFlowFilterYear, setMoneyFlowFilterYear] = useState<number>(new Date().getFullYear());
-  const [moneyFlowFilterMonth, setMoneyFlowFilterMonth] = useState<number | "all">(new Date().getMonth());
+  const blockPaymentTableLoader = isListBlockingLoad({
+    rowCount: cohortApplications?.length ?? 0,
+    loading: cohortLoading,
+    isRefreshing: cohortRefreshing,
+  });
   const [uploadingTransactions, setUploadingTransactions] = useState(false);
   const [transactionPreviewRows, setTransactionPreviewRows] = useState<TransactionPreviewRow[]>([]);
   const [transactionPreviewSummary, setTransactionPreviewSummary] = useState<{
@@ -1543,34 +1534,10 @@ export const PaymentHistoryDashboard = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const previewTableScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const moneyFlowYearOptions = useMemo(() => {
+    if (trendYearOptions.length > 0) return trendYearOptions;
     const currentYear = new Date().getFullYear();
-    const BASE_MONEY_FLOW_YEAR = 2023;
-    let maxYear = Math.max(currentYear, moneyFlowFilterYear);
-    (cohortApplications ?? [])
-      .filter(isFundedApplication)
-      .forEach((app) => {
-        const appId = String(app._id ?? (app as { id?: string }).id ?? "").trim();
-        if (!appId) return;
-        const collectionRows = dashboardPaymentsByApp[appId] ?? [];
-        collectionRows.forEach((item) => {
-          if (!item || typeof item !== "object") return;
-          const row = item as Record<string, unknown>;
-          const txDate =
-            parseTransactionDate(row.paymentDate) ??
-            parseTransactionDate(row.transactionDate) ??
-            parseTransactionDate(row.paidAt) ??
-            parseTransactionDate(row.scheduledDate) ??
-            parseTransactionDate(row.processedDate) ??
-            parseTransactionDate(row.date) ??
-            parseTransactionDate(row.createdAt) ??
-            parseTransactionDate(row.updatedAt);
-          if (!txDate) return;
-          maxYear = Math.max(maxYear, txDate.getFullYear());
-        });
-      });
-    const startYear = BASE_MONEY_FLOW_YEAR;
-    return Array.from({ length: maxYear - startYear + 1 }, (_, idx) => startYear + idx);
-  }, [cohortApplications, dashboardPaymentsByApp, moneyFlowFilterYear]);
+    return Array.from({ length: currentYear - 2023 + 1 }, (_, idx) => 2023 + idx);
+  }, [trendYearOptions]);
 
   useEffect(() => {
     if (moneyFlowYearOptions.length === 0) return;
@@ -1617,242 +1584,15 @@ export const PaymentHistoryDashboard = () => {
     }
   }, [moneyFlowFilterMonth, moneyFlowView]);
 
-  const creditDebitTrendByView = useMemo(() => {
-    const anchor = moneyFlowCalendarAnchor.date;
-    const currentYear = moneyFlowCalendarAnchor.year;
-    const currentMonth = moneyFlowCalendarAnchor.month;
-    const isAllMonthsMode = moneyFlowFilterMonth === "all";
-    const isYearAxisMode = moneyFlowView === "yearly" && isAllMonthsMode;
-    const daysInCurrentMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-    const monthlyInflowTotals = new Map<number, number>();
-    const monthlyOutflowTotals = new Map<number, number>();
-    const yearlyMonthInflowTotals = new Map<number, number>();
-    const yearlyMonthOutflowTotals = new Map<number, number>();
-    const yearlyAxisInflowTotals = new Map<number, number>();
-    const yearlyAxisOutflowTotals = new Map<number, number>();
-    const weeklyWindows =
-      moneyFlowFilterMonth === "all"
-        ? (() => {
-            const currentWeekStart = startOfWeekSunday(anchor);
-            return Array.from({ length: 5 }, (_, index) => {
-              const weekStart = new Date(currentWeekStart);
-              weekStart.setDate(currentWeekStart.getDate() - (4 - index) * 7);
-              const weekEnd = endOfWeekSaturday(weekStart);
-              return { weekStart, weekEnd, inflowTotal: 0, outflowTotal: 0 };
-            });
-          })()
-        : (() => {
-            const monthStart = new Date(currentYear, currentMonth, 1);
-            const monthEnd = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59, 999);
-            const firstWeekStart = startOfWeekSunday(monthStart);
-            const windows: Array<{
-              weekStart: Date;
-              weekEnd: Date;
-              inflowTotal: number;
-              outflowTotal: number;
-            }> = [];
-            let cursor = new Date(firstWeekStart);
-            while (cursor <= monthEnd) {
-              const weekStart = new Date(cursor);
-              const weekEnd = endOfWeekSaturday(weekStart);
-              windows.push({ weekStart, weekEnd, inflowTotal: 0, outflowTotal: 0 });
-              cursor.setDate(cursor.getDate() + 7);
-            }
-            return windows;
-          })();
-
-    type TrendTx = {
-      dealToken: string;
-      bucket: "credit" | "debit";
-      amount: number;
-      txDate: Date;
-      dayKey: string;
-    };
-
-    const trendTransactions: TrendTx[] = [];
-    (cohortApplications ?? [])
-      .filter(isFundedApplication)
-      .forEach((app) => {
-        const appId = String(app._id ?? (app as { id?: string }).id ?? "").trim();
-        if (!appId) return;
-        const appDealToken = normalizeDealToken((app as { dealId?: unknown }).dealId);
-        const collectionRows = dashboardPaymentsByApp[appId] ?? [];
-        collectionRows.forEach((item, rowIndex) => {
-          if (!item || typeof item !== "object") return;
-          const row = item as Record<string, unknown>;
-          const statusRaw =
-            row.status ?? row.paymentStatus ?? row.state ?? row.type ?? row.transactionType;
-          const bucket = classifyCreditDebitTrendBucket(statusRaw);
-          if (!bucket) return;
-
-          const amount =
-            parseMoney(row.amount) ??
-            parseMoney(row.paidAmount) ??
-            parseMoney(row.paymentAmount) ??
-            parseMoney(row.receivedAmount) ??
-            parseMoney(row.collectedAmount) ??
-            parseMoney(row.transactionAmount) ??
-            0;
-          if (!Number.isFinite(amount) || amount === 0) return;
-
-          const txDate =
-            parseTransactionDate(row.paymentDate) ??
-            parseTransactionDate(row.transactionDate) ??
-            parseTransactionDate(row.paidAt) ??
-            parseTransactionDate(row.scheduledDate) ??
-            parseTransactionDate(row.processedDate) ??
-            parseTransactionDate(row.date) ??
-            parseTransactionDate(row.createdAt) ??
-            parseTransactionDate(row.updatedAt);
-          if (!txDate) return;
-          if (!isYearAxisMode && txDate.getFullYear() !== moneyFlowFilterYear) return;
-          if (!isAllMonthsMode && txDate.getMonth() !== moneyFlowFilterMonth) return;
-
-          const explicitTokens = collectDealTokensFromCollectionPaymentRow(row);
-          const descriptionToken = extractLooseDealTokenFromDescription(getTransactionDescription(row));
-          const resolvedDealToken =
-            explicitTokens[0] || descriptionToken || appDealToken || `ROW-${appId}-${rowIndex}`;
-          trendTransactions.push({
-            dealToken: resolvedDealToken,
-            bucket,
-            amount: Math.abs(amount),
-            txDate,
-            dayKey: formatTransactionDayKey(txDate),
-          });
-        });
-      });
-
-    const applyToTrend = (txDate: Date, creditDelta: number, debitDelta: number) => {
-      if (txDate.getFullYear() === currentYear && txDate.getMonth() === currentMonth) {
-        const day = txDate.getDate();
-        monthlyInflowTotals.set(
-          day,
-          (monthlyInflowTotals.get(day) ?? 0) + creditDelta,
-        );
-        monthlyOutflowTotals.set(
-          day,
-          (monthlyOutflowTotals.get(day) ?? 0) + debitDelta,
-        );
-      }
-      if (txDate.getFullYear() === currentYear) {
-        const month = txDate.getMonth();
-        yearlyMonthInflowTotals.set(
-          month,
-          (yearlyMonthInflowTotals.get(month) ?? 0) + creditDelta,
-        );
-        yearlyMonthOutflowTotals.set(
-          month,
-          (yearlyMonthOutflowTotals.get(month) ?? 0) + debitDelta,
-        );
-      }
-      const year = txDate.getFullYear();
-      yearlyAxisInflowTotals.set(
-        year,
-        (yearlyAxisInflowTotals.get(year) ?? 0) + creditDelta,
-      );
-      yearlyAxisOutflowTotals.set(
-        year,
-        (yearlyAxisOutflowTotals.get(year) ?? 0) + debitDelta,
-      );
-      weeklyWindows.forEach((window) => {
-        if (txDate >= window.weekStart && txDate <= window.weekEnd) {
-          window.inflowTotal += creditDelta;
-          window.outflowTotal += debitDelta;
-        }
-      });
-    };
-
-    const txByDeal = new Map<string, TrendTx[]>();
-    trendTransactions.forEach((tx) => {
-      const list = txByDeal.get(tx.dealToken) ?? [];
-      list.push(tx);
-      txByDeal.set(tx.dealToken, list);
-    });
-
-    txByDeal.forEach((dealTxs) => {
-      const credits = dealTxs.filter((tx) => tx.bucket === "credit");
-      const debits = dealTxs.filter((tx) => tx.bucket === "debit");
-      const pairedCredits = new Array<boolean>(credits.length).fill(false);
-      const pairedDebits = new Array<boolean>(debits.length).fill(false);
-
-      credits.forEach((credit, creditIndex) => {
-        let matchIndex = debits.findIndex(
-          (debit, idx) => !pairedDebits[idx] && debit.dayKey === credit.dayKey,
-        );
-        if (matchIndex === -1) {
-          matchIndex = debits.findIndex((_, idx) => !pairedDebits[idx]);
-        }
-        if (matchIndex >= 0) {
-          pairedCredits[creditIndex] = true;
-          pairedDebits[matchIndex] = true;
-        }
-      });
-
-      credits.forEach((credit, idx) => {
-        if (pairedCredits[idx]) return;
-        applyToTrend(credit.txDate, credit.amount, 0);
-      });
-      debits.forEach((debit, idx) => {
-        if (pairedDebits[idx]) return;
-        applyToTrend(debit.txDate, 0, debit.amount);
-      });
-    });
-
-    const monthly = Array.from({ length: daysInCurrentMonth }, (_, idx) => ({
-      label: String(idx + 1),
-      inflow: monthlyInflowTotals.get(idx + 1) ?? 0,
-      outflow: monthlyOutflowTotals.get(idx + 1) ?? 0,
-    }));
-
-    const weekly = weeklyWindows.map((window) => ({
-      label: `${window.weekStart.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      })} - ${window.weekEnd.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
-      inflow: window.inflowTotal,
-      outflow: window.outflowTotal,
-    }));
-
-    const monthlyInYear = Array.from({ length: 12 }, (_, monthIndex) => ({
-      label: new Date(currentYear, monthIndex, 1).toLocaleDateString("en-US", { month: "short" }),
-      inflow: yearlyMonthInflowTotals.get(monthIndex) ?? 0,
-      outflow: yearlyMonthOutflowTotals.get(monthIndex) ?? 0,
-    }));
-
-    const yearly = isYearAxisMode
-      ? moneyFlowYearOptions.map((year) => ({
-          label: String(year),
-          inflow: yearlyAxisInflowTotals.get(year) ?? 0,
-          outflow: yearlyAxisOutflowTotals.get(year) ?? 0,
-        }))
-      : monthlyInYear;
-
-    return { monthly, weekly, monthlyInYear, yearly };
-  }, [
-    cohortApplications,
-    dashboardPaymentsByApp,
-    moneyFlowCalendarAnchor,
-    moneyFlowFilterMonth,
-    moneyFlowFilterYear,
-    moneyFlowView,
-    moneyFlowYearOptions,
-  ]);
-
-  const chartMoneyFlowData = useMemo(() => {
-    const sourceData =
-      moneyFlowView === "weekly"
-        ? creditDebitTrendByView.weekly
-        : moneyFlowView === "monthlyInYear"
-          ? creditDebitTrendByView.monthlyInYear
-        : moneyFlowView === "yearly"
-          ? creditDebitTrendByView.yearly
-          : creditDebitTrendByView.monthly;
-    return sourceData.map((point: MoneyFlowPoint) => ({
-      ...point,
-      inflow: Number(point?.inflow ?? 0),
-      outflow: Number(point?.outflow ?? 0),
-    }));
-  }, [moneyFlowView, creditDebitTrendByView]);
+  const chartMoneyFlowData = useMemo(
+    () =>
+      trendPoints.map((point: MoneyFlowPoint) => ({
+        ...point,
+        inflow: Number(point?.inflow ?? 0),
+        outflow: Number(point?.outflow ?? 0),
+      })),
+    [trendPoints],
+  );
 
   const moneyFlowSubtitle =
     moneyFlowView === "monthly"
@@ -2538,74 +2278,42 @@ export const PaymentHistoryDashboard = () => {
   }, []);
 
   const fundedDealsFinancials = useMemo(() => {
-    const list = cohortApplications ?? [];
     const rows: PaymentTransactionRow[] = [];
-
-    list
-      .filter(isFundedApplication)
-      .forEach((app) => {
-        const appId = String(app._id ?? (app as { id?: string }).id ?? "");
-        const collectionRows = dashboardPaymentsByApp[appId] ?? [];
-        const dealId = String(app.dealId ?? "").trim();
-        const bal = dashboardBalancesByApp.get(appId);
-        const freshBal =
-          bal != null
-            ? { paybackAmount: bal.paybackAmount, balanceDue: bal.balanceDue }
-            : null;
-        const row = mapDisbursementApplicationToRow(
-          app,
-          collectionRows,
-          dealId,
-          freshBal,
-        );
-        if (row.id.length === 0) return;
-        rows.push(row);
-      });
-
-    return {
-      rows,
-    };
-  }, [cohortApplications, dashboardPaymentsByApp, dashboardBalancesByApp]);
-
-  /**
-   * Portfolio-wide failed payment total — sum of |amount| across every collection row whose
-   * status normalizes to a "failed" variant (e.g. "failed", "Failed Payment", "payment failed").
-   * `failedTxnCount` is shown on the Failed Payment stat card (same corner slot as deal counts on other KPIs).
-   */
-  const failedPaymentsSummary = useMemo(() => {
-    let totalAmount = 0;
-    let failedTxnCount = 0;
     (cohortApplications ?? [])
       .filter(isFundedApplication)
       .forEach((app) => {
-        const appId = String(app._id ?? (app as { id?: string }).id ?? "").trim();
-        if (!appId) return;
-        const collectionRows = dashboardPaymentsByApp[appId] ?? [];
-        collectionRows.forEach((item) => {
-          if (!item || typeof item !== "object") return;
-          const row = item as Record<string, unknown>;
-          const statusRaw =
-            row.status ?? row.paymentStatus ?? row.state ?? row.type ?? row.transactionType;
-          const s = normalizeStatus(statusRaw);
-          if (!s || !s.includes("fail")) return;
-          const amount =
-            parseMoney(row.amount) ??
-            parseMoney(row.paidAmount) ??
-            parseMoney(row.paymentAmount) ??
-            parseMoney(row.receivedAmount) ??
-            parseMoney(row.collectedAmount) ??
-            parseMoney(row.transactionAmount) ??
-            0;
-          if (!Number.isFinite(amount)) return;
-          totalAmount += Math.abs(amount);
-          failedTxnCount += 1;
-        });
+        const dealId = String(app.dealId ?? "").trim();
+        const hasEmbedded =
+          app.collectionBalanceDue != null && app.collectionPaybackAmount != null;
+        const embeddedBal = hasEmbedded
+          ? {
+              paybackAmount: Number(app.collectionPaybackAmount),
+              balanceDue: Number(app.collectionBalanceDue),
+            }
+          : null;
+        const row = mapDisbursementApplicationToRow(app, [], dealId, embeddedBal);
+        if (row.id.length === 0) return;
+        rows.push(row);
       });
-    return {
-      totalAmount,
-      failedTxnCount,
-    };
-  }, [cohortApplications, dashboardPaymentsByApp]);
+    return { rows };
+  }, [cohortApplications]);
+
+  const dashboardBalancesByApp = useMemo(() => {
+    const m = new Map<string, FundedDealBalanceApiRow>();
+    (cohortApplications ?? []).forEach((app) => {
+      const appId = String(app._id ?? (app as { id?: string }).id ?? "").trim();
+      if (!appId || app.collectionPaybackAmount == null) return;
+      m.set(appId, {
+        applicationId: appId,
+        dealId: String(app.dealId ?? "").trim(),
+        paybackAmount: Number(app.collectionPaybackAmount),
+        balanceDue: Number(app.collectionBalanceDue ?? 0),
+        sumOfRepaid: Number(app.collectionSumOfRepaid ?? 0),
+        grossRepaidDealEconomics: Number(app.collectionGrossRepaidDealEconomics ?? 0),
+      });
+    });
+    return m;
+  }, [cohortApplications]);
 
   /** Normalized deal-id tokens detected in the test panel textarea (live, before user clicks Apply). */
   const testDealIdTokens = useMemo(
@@ -2627,7 +2335,7 @@ export const PaymentHistoryDashboard = () => {
 
     const result = aggregateStatCardsForCohort(cohortApplications, {
       filterDealIds: appliedTestDealIds,
-      dashboardPaymentsByApp,
+      dashboardPaymentsByApp: {},
       dashboardBalancesByApp,
     });
 
@@ -2648,31 +2356,7 @@ export const PaymentHistoryDashboard = () => {
       cards: result.cards,
       failed: result.failed,
     };
-  }, [appliedTestDealIds, cohortApplications, dashboardPaymentsByApp, dashboardBalancesByApp]);
-
-  /**
-   * Default StatCard totals recomputed on the front end over the **entire** funded cohort.
-   * Powers the top StatCards when the test panel is idle so the always-on numbers match the
-   * test recompute path.
-   *
-   * Returns `null` until the cohort + per-app payment/balance maps are loaded so the cards
-   * keep showing the backend-sourced values during the initial hydration (avoids a flash
-   * of zeros on first paint).
-   */
-  const cohortStatCardsRecomputed = useMemo(() => {
-    if (!cohortApplications || cohortApplications.length === 0) return null;
-
-    const result = aggregateStatCardsForCohort(cohortApplications, {
-      dashboardPaymentsByApp,
-      dashboardBalancesByApp,
-    });
-
-    return {
-      countedDealCount: result.countedDealCount,
-      cards: result.cards,
-      failed: result.failed,
-    };
-  }, [cohortApplications, dashboardPaymentsByApp, dashboardBalancesByApp]);
+  }, [appliedTestDealIds, cohortApplications, dashboardBalancesByApp]);
 
   const transactions: PaymentTransactionRow[] = useMemo(() => {
     if (Object.keys(paymentCategoryOverrides).length === 0) {
@@ -2684,98 +2368,30 @@ export const PaymentHistoryDashboard = () => {
     });
   }, [fundedDealsFinancials.rows, paymentCategoryOverrides]);
 
-  const [searchTerm, setSearchTerm] = useState("");
-  const debouncedSearchTerm = useDebouncedValue(searchTerm, 400);
-  const filteredTransactions = useMemo(() => {
-    if (!debouncedSearchTerm.trim()) return transactions;
-    const term = debouncedSearchTerm.trim().toLowerCase();
-    const exact = transactions.filter(
-      (tx) =>
-        tx.displayId.toLowerCase() === term || tx.id.toLowerCase() === term,
-    );
-    if (exact.length > 0) return exact;
-    return transactions.filter(
-      (tx) =>
-        tx.id.toLowerCase().includes(term) ||
-        tx.displayId.toLowerCase().includes(term) ||
-        tx.client.toLowerCase().includes(term) ||
-        (tx.category || "").toLowerCase().includes(term) ||
-        (tx.paymentCategory || "").toLowerCase().includes(term) ||
-        tx.status.toLowerCase().includes(term),
-    );
-  }, [debouncedSearchTerm, transactions]);
-
-  const totalFiltered = filteredTransactions.length;
-
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
-  const [pagination, setPagination] = useState<PaginationState>(() => {
-    if (typeof window === "undefined") {
-      return { pageIndex: 0, pageSize: 10 };
-    }
-    try {
-      const raw = window.sessionStorage.getItem(PAYMENT_DASHBOARD_PAGINATION_STORAGE_KEY);
-      if (!raw) return { pageIndex: 0, pageSize: 10 };
-      const parsed = JSON.parse(raw) as Partial<PaginationState>;
-      const pageIndex =
-        typeof parsed.pageIndex === "number" && Number.isFinite(parsed.pageIndex)
-          ? Math.max(0, Math.floor(parsed.pageIndex))
-          : 0;
-      const pageSize =
-        typeof parsed.pageSize === "number" && Number.isFinite(parsed.pageSize) && parsed.pageSize > 0
-          ? Math.floor(parsed.pageSize)
-          : 10;
-      return { pageIndex, pageSize };
-    } catch {
-      return { pageIndex: 0, pageSize: 10 };
-    }
-  });
+
+  const totalDealsFromApi = cohortPagination?.total ?? dashboard.cards.totalDeals ?? 0;
+  const pageCount = Math.max(
+    cohortPagination?.totalPages ??
+      (Math.ceil(totalDealsFromApi / pagination.pageSize) || 1),
+    1,
+  );
 
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
-  const totalDeals = dashboard.cards.totalDeals || transactions.length;
-  // Resolution order for the "X deals" sub-label under each StatCard:
-  //   1. Test panel is active → matched-count from the pasted IDs (with · test suffix).
-  //   2. Cohort recompute available → counted deals from the front-end recompute.
-  //   3. Fallback to whatever the backend dashboard endpoint reported (during initial load).
+  const totalDeals = totalDealsFromApi || dashboard.cards.totalDeals || 0;
   const kpiDealCountLabel = testModeCards
     ? `${testModeCards.matchedCount} ${testModeCards.matchedCount === 1 ? "deal" : "deals"} · test`
-    : cohortStatCardsRecomputed
-      ? `${cohortStatCardsRecomputed.countedDealCount} ${
-          cohortStatCardsRecomputed.countedDealCount === 1 ? "deal" : "deals"
-        }`
-      : `${totalDeals} ${totalDeals === 1 ? "deal" : "deals"}`;
-  /**
-   * Display-time card values resolution order (highest precedence first):
-   *   1. StatCard test panel active → use the user-pasted deal subset totals.
-   *   2. Front-end cohort recompute available → Funded / Net Funding / Above Principal / Recovered.
-   *   3. Backend payment-dashboard endpoint values — only used while the cohort + balances /
-   *      payments maps are still loading so we don't briefly flash zeros on first paint.
-   */
+    : `${totalDeals} ${totalDeals === 1 ? "deal" : "deals"}`;
   const displayFundedTotal =
-    testModeCards?.cards.fundedTotal
-    ?? cohortStatCardsRecomputed?.cards.fundedTotal
-    ?? dashboard.cards.fundedTotal
-    ?? 0;
+    testModeCards?.cards.fundedTotal ?? dashboard.cards.fundedTotal ?? 0;
   const displayNetFundingTotal =
-    testModeCards?.cards.netFundingTotal
-    ?? cohortStatCardsRecomputed?.cards.netFundingTotal
-    ?? dashboard.cards.netFundingTotal
-    ?? 0;
+    testModeCards?.cards.netFundingTotal ?? dashboard.cards.netFundingTotal ?? 0;
   const displayAbovePrincipalTotal =
-    testModeCards?.cards.abovePrincipalTotal
-    ?? cohortStatCardsRecomputed?.cards.abovePrincipalTotal
-    ?? dashboard.cards.abovePrincipalTotal
-    ?? 0;
+    testModeCards?.cards.abovePrincipalTotal ?? dashboard.cards.abovePrincipalTotal ?? 0;
   const displayRecoveredTotal =
-    testModeCards?.cards.recovered
-    ?? cohortStatCardsRecomputed?.cards.recovered
-    ?? dashboard.cards.recovered;
-  // Failed Payment KPI is sourced from the backend `cards.failedPayment` aggregate
-  // (sum of |amount| + count of CollectionPayment rows with status = DEBIT).
-  // We intentionally bypass the test-mode / cohort recompute paths here so the card
-  // matches the DB aggregate exactly — falls back to the prior frontend computation
-  // only while the backend payload has not loaded yet.
+    testModeCards?.cards.recovered ?? dashboard.cards.recovered;
   const backendFailedPayment = dashboard.cards.failedPayment;
   const displayFailedSummary = backendFailedPayment
     ? {
@@ -2784,13 +2400,10 @@ export const PaymentHistoryDashboard = () => {
       }
     : testModeCards
       ? testModeCards.failed
-      : cohortStatCardsRecomputed
-        ? cohortStatCardsRecomputed.failed
-        : failedPaymentsSummary;
+      : { totalAmount: 0, failedTxnCount: 0 };
   // Test totals + cohort recompute are computed locally — skip the loading skeleton in
   // either case so the recomputed result is shown immediately.
-  const statsValuePendingForDisplay =
-    testModeCards || cohortStatCardsRecomputed ? false : statsValuePending;
+  const statsValuePendingForDisplay = testModeCards ? false : statsValuePending;
   const activeDeals =
     dashboard.cards.activeDeals ||
     transactions.filter(
@@ -3032,10 +2645,11 @@ export const PaymentHistoryDashboard = () => {
   }, [navigate, pendingViewDealId, savingCategoryDealIds, handlePaymentCategoryChange]);
 
   const paymentDealsTable = useReactTable({
-    data: filteredTransactions,
+    data: transactions,
     columns: paymentDealColumns,
+    pageCount,
+    manualPagination: true,
     getCoreRowModel: getCoreRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
     onPaginationChange: setPagination,
     state: { pagination },
     getRowId: (row) => row.id,
@@ -3051,12 +2665,12 @@ export const PaymentHistoryDashboard = () => {
   }, [viewMode]);
 
   useEffect(() => {
-    const maxPageIndex = Math.max(Math.ceil(totalFiltered / pagination.pageSize) - 1, 0);
+    const maxPageIndex = Math.max(pageCount - 1, 0);
     setPagination((prev) => {
       if (prev.pageIndex <= maxPageIndex) return prev;
       return { ...prev, pageIndex: maxPageIndex };
     });
-  }, [pagination.pageSize, totalFiltered]);
+  }, [pageCount]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3744,7 +3358,7 @@ export const PaymentHistoryDashboard = () => {
         chartMoneyFlowData={chartMoneyFlowData}
         calendarYear={moneyFlowCalendarAnchor.year}
         calendarMonth={moneyFlowCalendarAnchor.month}
-        chartDataLoading={showProminentMoneySync}
+        chartDataLoading={trendLoading}
       />
    
 
@@ -3819,11 +3433,7 @@ export const PaymentHistoryDashboard = () => {
           <span className="text-xs text-muted-foreground">
             {blockPaymentTableLoader
               ? "Loading…"
-              : showProminentMoneySync
-                ? "Syncing balances & transactions…"
-                : showQuietMoneySync
-                  ? "Updating figures in the background…"
-                  : `${totalDeals} total in queue · ${activeDeals} active · Funded applications`}
+              : `${totalDeals} total in queue · ${activeDeals} active · Funded applications`}
           </span>
         </div>
 
@@ -3844,19 +3454,19 @@ export const PaymentHistoryDashboard = () => {
                 loading={false}
                 loadingMessage="Loading payment dashboard…"
                 emptyMessage={
-                  (transactions?.length ?? 0) > 0 && !filteredTransactions.length && debouncedSearchTerm.trim()
+                  debouncedSearchTerm.trim()
                     ? "No matching deals"
                     : "No deals found"
                 }
                 emptySubMessage={
-                  (transactions?.length ?? 0) > 0 && !filteredTransactions.length && debouncedSearchTerm.trim()
+                  debouncedSearchTerm.trim()
                     ? "Try a different search term"
                     : "No applications are currently in the Funded stage."
                 }
                 onRowClick={(row) => navigate(paymentDealPath(row.original.id))}
               />
             </div>
-          ) : !filteredTransactions.length ? (
+          ) : !transactions.length ? (
             <div className="flex flex-col items-center justify-center rounded-xl px-4 py-16 text-center">
               <p className="font-medium text-[#687182]">
                 {(transactions?.length ?? 0) > 0 && debouncedSearchTerm.trim()
@@ -4013,10 +3623,10 @@ export const PaymentHistoryDashboard = () => {
           )}
         </div>
 
-        {!blockPaymentTableLoader && filteredTransactions.length > 0 && (
+        {!blockPaymentTableLoader && totalDealsFromApi > 0 && (
           <DataTablePagination
             table={paymentDealsTable}
-            totalItems={totalFiltered}
+            totalItems={totalDealsFromApi}
             showSelectedCount={false}
           />
         )}

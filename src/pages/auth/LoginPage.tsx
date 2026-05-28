@@ -16,12 +16,6 @@ function safeAppReturnPath(raw: string | null): string | null {
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import type { AppDispatch, RootState } from '../../redux/store';
 import { login } from '../../redux/actions/authActions';
-import { getApplicationStats } from '../../redux/actions/applicationActions';
-import {
-  fetchOperationsDashboardSummary,
-  fetchOperationsDashboardRecentCases,
-} from '../../redux/actions/operationsDashboardActions';
-import { getPaymentDashboard } from '../../redux/actions/paymentDashboardActions';
 import { useDispatch, useSelector } from 'react-redux';
 import { toast } from 'react-toastify';
 
@@ -30,7 +24,6 @@ import { resolveAppLogoSrc } from '@/constants/appLogo';
 import { normalizeRoleKey } from '@/lib/sessionRole';
 import { useTheme } from '@/context/ThemeContext';
 import { syndicatorMustNotAccessPath } from '@/lib/syndicatorAdminRoutes';
-import { stopMicWarmTracks } from '@/voice/microphoneWarmup';
 
 export default function LoginPage() {
 
@@ -51,29 +44,10 @@ export default function LoginPage() {
     try {
       const result = await dispatch(login({ email, password, rememberMe })).unwrap();
       if (result.success) {
-        const micPromise =
-          typeof window !== "undefined" &&
-          window.isSecureContext &&
-          navigator.mediaDevices?.getUserMedia
-            ? navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-            : null;
-        void stopMicWarmTracks(micPromise, { markSessionWarmed: true });
         localStorage.setItem('token', result.token);
         localStorage.setItem('user', JSON.stringify(result.user));
         localStorage.setItem('role', result.user.role);
         toast.success(result?.message);
-
-        void dispatch(getApplicationStats());
-        const role = result.user.role;
-        if (
-          role === 'OPERATIONS' ||
-          role === 'SUPER_ADMIN' ||
-          role === 'SUPERADMIN'
-        ) {
-          void dispatch(fetchOperationsDashboardSummary());
-          void dispatch(fetchOperationsDashboardRecentCases());
-          void dispatch(getPaymentDashboard());
-        }
 
         const afterLogin = safeAppReturnPath(searchParams.get('returnUrl'));
         const roleKey = normalizeRoleKey(result.user.role ?? '');

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { RouterProvider, createBrowserRouter } from 'react-router';
 import { Provider } from 'react-redux';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -10,6 +10,9 @@ import Routes from './routes';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { TooltipProvider } from './components/ui/tooltip';
 import { SocketProvider } from './context/SocketContext';
+import { QUERY_STALE_TIME_MS } from '@/lib/queryDefaults';
+import { registerApplicationsListQueryInvalidator } from '@/lib/applicationsListQuerySync';
+import CrmCacheBootstrap from '@/components/cache/CrmCacheBootstrap';
 
 // Inner component that can access theme context
 function AppContent() {
@@ -36,7 +39,8 @@ function App() {
       new QueryClient({
         defaultOptions: {
           queries: {
-            refetchOnWindowFocus: true,
+            staleTime: QUERY_STALE_TIME_MS,
+            refetchOnWindowFocus: false,
             retry: 1,
           },
         },
@@ -44,11 +48,19 @@ function App() {
     [],
   );
 
+  useEffect(() => {
+    registerApplicationsListQueryInvalidator(() => {
+      void queryClient.invalidateQueries({ queryKey: ["applications-list"] });
+    });
+    return () => registerApplicationsListQueryInvalidator(null);
+  }, [queryClient]);
+
   return (
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
           <SocketProvider>
+            <CrmCacheBootstrap />
             <TooltipProvider>
               <AppContent />
             </TooltipProvider>

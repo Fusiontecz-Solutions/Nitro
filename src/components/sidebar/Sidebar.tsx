@@ -42,17 +42,16 @@ import { clearVoiceMicSessionFlags } from "@/voice/microphoneWarmup";
 import { toast } from "react-toastify";
 import { APP_SHORT_ICON_SRC, APP_SHORT_ICON_DARK_SRC ,resolveAppLogoSrc } from "@/constants/appLogo";
 import { useTheme } from "@/context/ThemeContext";
-import { useEffect, useMemo, useRef, type ComponentType } from "react";
+import { useMemo, type ComponentType } from "react";
 import type { Notification } from "@/redux/slices/notificationSlice";
-import { getNotifications } from "@/redux/actions/notificationActions";
 import {
   normalizeRoleKey,
   resolveEffectiveRole,
 } from "@/lib/sessionRole";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
-import { prefetchApplicationsList } from "@/redux/actions/applicationActions";
 import LinearScaleIcon from '@mui/icons-material/LinearScale';
-import { APPLICATIONS_LIST_DEFAULT_SORT } from "@/lib/applicationsListParams";
+import { clearCrmCacheOnLogout } from "@/lib/crmCache";
+import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
 // import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt';
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import PersonIcon from '@mui/icons-material/Person';
@@ -382,7 +381,6 @@ function getRoleSections(role: string): SidebarNavSection[] {
 }
 
 const Sidebar = () => {
-  const NOTIFICATIONS_POLL_INTERVAL_MS = 15000;
   const { state } = useSidebar();
   const { pathname } = useLocation();
   const [searchParams] = useSearchParams();
@@ -396,9 +394,7 @@ const Sidebar = () => {
   );
   const userRole = resolveEffectiveRole(data?.user);
   const normalizedRole = normalizeRoleKey(userRole);
-  const isSuperAdmin = normalizedRole === "SUPER_ADMIN";
   const dispatch: AppDispatch = useDispatch();
-  const isNotificationsFetchInFlightRef = useRef(false);
 
   const unreadNotificationCount = useMemo(
     () =>
@@ -406,48 +402,7 @@ const Sidebar = () => {
     [notifications],
   );
 
-  const notificationInboxParams = useMemo(
-    () => ({
-      limit: 50,
-      ...(isSuperAdmin ? { personalOnly: true as const } : {}),
-    }),
-    [isSuperAdmin],
-  );
-
-  useEffect(() => {
-    void dispatch(getNotifications(notificationInboxParams));
-  }, [dispatch, notificationInboxParams]);
-
-  useEffect(() => {
-    const pollNotifications = () => {
-      if (document.visibilityState !== "visible") return;
-      if (isNotificationsFetchInFlightRef.current) return;
-      isNotificationsFetchInFlightRef.current = true;
-      void dispatch(getNotifications(notificationInboxParams)).finally(() => {
-        isNotificationsFetchInFlightRef.current = false;
-      });
-    };
-
-    // Refresh quickly when user returns to the tab/window.
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        pollNotifications();
-      }
-    };
-
-    const intervalId = window.setInterval(
-      pollNotifications,
-      NOTIFICATIONS_POLL_INTERVAL_MS,
-    );
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [dispatch, notificationInboxParams]);
-
-  const sidebarSections: SidebarNavSection[] = isSuperAdmin
+  const sidebarSections: SidebarNavSection[] = normalizedRole === "SUPER_ADMIN"
     ? superAdminSections
     : getRoleSections(userRole);
 
@@ -470,6 +425,8 @@ const Sidebar = () => {
       dispatch(clearApplicationStats());
       dispatch(clearPaymentDashboard());
       dispatch(resetOperationsDashboard());
+      dispatch(clearApplicationDetail());
+      clearCrmCacheOnLogout();
       localStorage.removeItem("token");
       localStorage.removeItem("user");
       localStorage.removeItem("role");
@@ -557,8 +514,6 @@ const Sidebar = () => {
                             : pathname === item.url ||
                             pathname.startsWith(`${item.url}/`);
                     const isNotificationsLink = item.url === "/notifications";
-                    const isApplicationsListLink =
-                      !isPipeline && item.url === "/applications";
                     const showUnreadBadge =
                       isNotificationsLink && unreadNotificationCount > 0;
                     const badgeLabel =
@@ -580,42 +535,6 @@ const Sidebar = () => {
                           <Link
                             to={to}
                             className="flex w-full min-w-0 items-center gap-2 group-data-[collapsible=icon]:w-auto group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0"
-                            onMouseEnter={() => {
-                              if (isPipeline && pipelineStatus) {
-                                prefetchApplicationsList({
-                                  page: 1,
-                                  limit: 10,
-                                  operationsStatus: pipelineStatus,
-                                  ...APPLICATIONS_LIST_DEFAULT_SORT,
-                                });
-                                return;
-                              }
-                              if (isApplicationsListLink) {
-                                prefetchApplicationsList({
-                                  page: 1,
-                                  limit: 10,
-                                  ...APPLICATIONS_LIST_DEFAULT_SORT,
-                                });
-                              }
-                            }}
-                            onFocus={() => {
-                              if (isPipeline && pipelineStatus) {
-                                prefetchApplicationsList({
-                                  page: 1,
-                                  limit: 10,
-                                  operationsStatus: pipelineStatus,
-                                  ...APPLICATIONS_LIST_DEFAULT_SORT,
-                                });
-                                return;
-                              }
-                              if (isApplicationsListLink) {
-                                prefetchApplicationsList({
-                                  page: 1,
-                                  limit: 10,
-                                  ...APPLICATIONS_LIST_DEFAULT_SORT,
-                                });
-                              }
-                            }}
                           >
                             <span className="relative shrink-0">
                               <NavIcon icon={item.icon} />

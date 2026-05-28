@@ -65,7 +65,8 @@ import {
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
-import { AvochatoCallDialog } from "@/components/voice/AvochatoCallDialog";
+import { isListBlockingLoad } from "@/lib/listLoading";
+import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
 
 type SummaryCard = {
   label: string;
@@ -217,7 +218,16 @@ export const OperationsDashboard = () => {
     recentCases,
     recentLoading,
     recentError,
+    recentInFlight,
+    hasLoadedRecentOnce,
+    lastSummaryFetchedAt,
+    lastRecentFetchedAt,
   } = useSelector((state: RootState) => state.operationsDashboard);
+
+  const summaryPrefetchFresh =
+    hasLoadedSummaryOnce && isShellPrefetchFresh(lastSummaryFetchedAt);
+  const recentPrefetchFresh =
+    hasLoadedRecentOnce && isShellPrefetchFresh(lastRecentFetchedAt);
 
   /** First paint after login: avoid showing zeros while the summary API is still in flight. */
   const statCardsShowSkeleton =
@@ -251,11 +261,10 @@ export const OperationsDashboard = () => {
   useQuery({
     queryKey: ["operations-dashboard-summary", userRole],
     queryFn: async () => dispatch(fetchOperationsDashboardSummary()).unwrap(),
-    staleTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
-    refetchInterval: () =>
-      typeof document !== "undefined" && document.hidden ? false : 30_000,
+    enabled: !summaryPrefetchFresh,
+    staleTime: 60_000,
+    refetchOnMount: !summaryPrefetchFresh,
+    refetchOnWindowFocus: false,
   });
 
   const { data: monthlyTrendRows = [] } = useQuery<MonthlyTrendApiRow[]>({
@@ -272,21 +281,24 @@ export const OperationsDashboard = () => {
       const payload = response?.data ?? {};
       return Array.isArray(payload?.data) ? (payload.data as MonthlyTrendApiRow[]) : [];
     },
-    staleTime: 0,
-    refetchOnMount: "always",
+    refetchOnMount: true,
     refetchOnWindowFocus: true,
-    refetchInterval: () =>
-      typeof document !== "undefined" && document.hidden ? false : 30_000,
   });
 
-  useQuery({
+  const recentCasesQuery = useQuery({
     queryKey: ["operations-dashboard-recent-cases", userRole],
     queryFn: async () => dispatch(fetchOperationsDashboardRecentCases()).unwrap(),
-    staleTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
-    refetchInterval: () =>
-      typeof document !== "undefined" && document.hidden ? false : 30_000,
+    enabled: !recentPrefetchFresh,
+    staleTime: 60_000,
+    refetchOnMount: !recentPrefetchFresh,
+    refetchOnWindowFocus: false,
+  });
+
+  const recentCasesBlockingLoad = isListBlockingLoad({
+    rowCount: recentCases.length,
+    loading: recentLoading,
+    isFetching: recentCasesQuery.isPending || recentCasesQuery.isFetching,
+    awaitingFirstLoad: !hasLoadedRecentOnce && recentInFlight,
   });
 
   const summaryCards: SummaryCard[] = useMemo(
@@ -623,9 +635,6 @@ export const OperationsDashboard = () => {
             Track operational performance across cases, payments, risk in a single view.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <AvochatoCallDialog />
-        </div>
       </header>
 
       {summaryError ? (
@@ -913,7 +922,7 @@ export const OperationsDashboard = () => {
 
           <div className="p-1">
             <div className="overflow-x-auto rounded-xl">
-              {recentLoading && recentCases.length === 0 ? (
+              {recentCasesBlockingLoad ? (
                 <div className="flex items-center justify-center py-20">
                   <Loader2 className="h-8 w-8 animate-spin text-primary shrink-0" />
                   <span className="ml-2 text-muted-foreground">

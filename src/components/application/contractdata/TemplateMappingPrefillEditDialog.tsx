@@ -82,9 +82,17 @@ export function TemplateMappingPrefillEditDialog({
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
             agreementDate,
+            mainPrefillOverrides: mainPrefillOverrides ?? undefined,
             savedOverridesForMapping: saved,
         });
-    }, [row, documentTemplatePrefillByMappingId, resolvedContract, applicationData, agreementDate]);
+    }, [
+        row,
+        documentTemplatePrefillByMappingId,
+        resolvedContract,
+        applicationData,
+        agreementDate,
+        mainPrefillOverrides,
+    ]);
 
     useEffect(() => {
         if (!open || !row) return;
@@ -209,6 +217,18 @@ export function TemplateMappingPrefillEditDialog({
                                 fields here.
                             </p>
                         ) : (
+                            <>
+                            {/balance/i.test(titleName) && /transfer/i.test(titleName) ? (
+                                <p className="text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs leading-relaxed">
+                                    In DocuSign, set each field&apos;s <strong>Data Label</strong> to the id in
+                                    parentheses below (e.g. <span className="font-mono">business_name</span>,{" "}
+                                    <span className="font-mono">client_name</span>,{" "}
+                                    <span className="font-mono">client_dba</span>). Labels like
+                                    &quot;Merchant Legal Name&quot; also work if they normalize to{" "}
+                                    <span className="font-mono">merchant_legal_name</span> or{" "}
+                                    <span className="font-mono">client_name</span>.
+                                </p>
+                            ) : null}
                             <div className="grid gap-3 sm:grid-cols-1">
                                 {editorRows.map((r) => (
                                     <div key={r.id} className="space-y-1.5">
@@ -226,6 +246,7 @@ export function TemplateMappingPrefillEditDialog({
                                     </div>
                                 ))}
                             </div>
+                            </>
                         )}
                     </div>
                 </div>

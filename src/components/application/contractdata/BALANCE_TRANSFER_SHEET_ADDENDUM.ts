@@ -1,13 +1,14 @@
 import type { ContractPrefillField } from "./Contract";
 
+/** Include DocuSign/BoldSign tab labels used on Woodmere Balance Transfer templates. */
 const FIELD_IDS = {
-    clientName: ["client_name"],
-    businessName: ["business_name"],
-    clientDba: ["client_dba"],
-    physicalAddress: ["physical_address"],
-    date: ["date"],
-    clientNameBy: ["client_name_by"],
-    clientLegalName: ["client_legal_name"],
+    clientName: ["client_name", "merchant_legal_name", "merchantlegalname"],
+    businessName: ["business_name", "business_legal_name", "businesslegalname"],
+    clientDba: ["client_dba", "dba", "doing_business_as"],
+    physicalAddress: ["physical_address", "physicaladdress"],
+    date: ["date", "signature_date", "agreement_date"],
+    clientNameBy: ["client_name_by", "merchant_name", "merchantname", "customer_name"],
+    clientLegalName: ["client_legal_name", "legal_name", "legalname"],
 } as const;
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {

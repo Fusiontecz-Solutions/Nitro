@@ -14,7 +14,6 @@ import {
   getCoreRowModel,
   getFilteredRowModel,
   getSortedRowModel,
-  getPaginationRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
@@ -28,10 +27,7 @@ import { CONTRACT_SIGNED_QUEUE_BADGE_CLASS } from "@/lib/contractSignedQueueBadg
 import { formatCurrency } from "@/lib/utils";
 import { toast } from "react-toastify";
 import { formatDate as formatDateUtil } from "@/lib/utils";
-import {
-  APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
-  filterApplicationsBySearchQuery,
-} from "@/lib/applicationTableSearch";
+import { isListBlockingLoad } from "@/lib/listLoading";
 
 const Cases = () => {
   const navigate = useNavigate();
@@ -41,6 +37,7 @@ const Cases = () => {
 
   // Local state
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
 
   // TanStack Table state
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -57,7 +54,9 @@ const Cases = () => {
   // Redux state
   const {
     loading,
+    isRefreshing,
     data: applications,
+    pagination: apiPagination,
     error,
   } = useSelector((state: RootState) => state.applications);
   
@@ -288,16 +287,21 @@ const Cases = () => {
     [formatDate, getClientEmail, getClientName, getCaseStatus, navigate]
   );
 
-  const filteredApplications = useMemo(
-    () => filterApplicationsBySearchQuery(applications, searchTerm),
-    [applications, searchTerm],
-  );
-  const totalItems = filteredApplications.length;
+  const casesListBlockingLoad = isListBlockingLoad({
+    rowCount: applications?.length ?? 0,
+    loading,
+    isRefreshing,
+    awaitingFirstLoad: apiPagination == null && !error,
+  });
+
+  const tableRows = applications ?? [];
+  const totalItems = apiPagination?.total ?? tableRows.length;
+  const pageCount = Math.max(1, apiPagination?.totalPages ?? 1);
 
   const caseStats = useMemo(() => {
     const list = applications || [];
     const base = {
-      total: list.length,
+      total: apiPagination?.total ?? list.length,
       contracted: 0,
       funded: 0,
       approved: 0,
@@ -318,21 +322,21 @@ const Cases = () => {
       acc.declined += status === "Declined" ? 1 : 0;
       return acc;
     }, base);
-  }, [applications, getCaseStatus]);
+  }, [applications, apiPagination?.total, getCaseStatus]);
 
   const table = useReactTable({
-    data: filteredApplications,
+    data: tableRows,
     columns,
+    pageCount,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
-    manualPagination: false,
+    manualPagination: true,
     state: {
       sorting,
       columnFilters,
@@ -350,21 +354,27 @@ const Cases = () => {
   const fetchCases = useCallback(() => {
     dispatch(
       getApplications({
-        page: 1,
-        limit: APPLICATIONS_TABLE_CLIENT_FETCH_LIMIT,
+        page: pagination.pageIndex + 1,
+        limit: pagination.pageSize,
+        search: debouncedSearchTerm.trim() || undefined,
         operationsStatus: "Contracted",
+        lite: true,
       }),
     );
-  }, [dispatch]);
-
+  }, [dispatch, pagination.pageIndex, pagination.pageSize, debouncedSearchTerm]);
 
   useEffect(() => {
     fetchCases();
   }, [fetchCases]);
 
   useEffect(() => {
-    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+    const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 400);
+    return () => window.clearTimeout(t);
   }, [searchTerm]);
+
+  useEffect(() => {
+    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+  }, [debouncedSearchTerm]);
 
   // const handleDelete = useCallback(
   //   (id: string) => {
@@ -495,29 +505,13 @@ const Cases = () => {
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
-        {(applications?.length ?? 0) > 0 && (
+        {apiPagination?.total != null && apiPagination.total > 0 ? (
           <div className="text-xs md:text-sm text-muted-foreground text-right">
-            {searchTerm.trim() ? (
-              <>
-                <span className="font-semibold text-foreground">
-                  {filteredApplications.length}
-                </span>{" "}
-                match{filteredApplications.length === 1 ? "" : "es"} ·{" "}
-                <span className="font-semibold text-foreground">
-                  {applications?.length ?? 0}
-                </span>{" "}
-                loaded
-              </>
-            ) : (
-              <>
-                <span className="font-semibold text-foreground">
-                  {applications?.length ?? 0}
-                </span>{" "}
-                case{(applications?.length ?? 0) === 1 ? "" : "s"} loaded
-              </>
-            )}
+            <span className="font-semibold text-foreground">{apiPagination.total}</span>{" "}
+            contracted case{apiPagination.total === 1 ? "" : "s"}
+            {searchTerm.trim() ? " (search applied on server)" : ""}
           </div>
-        )}
+        ) : null}
       </div>
 
       {error && (
@@ -554,30 +548,21 @@ const Cases = () => {
           <div className="overflow-x-auto rounded-xl">
             <DataTableContent
               table={table}
-              loading={loading}
+              loading={casesListBlockingLoad}
               loadingMessage="Loading cases..."
               emptyMessage={
-                (applications?.length ?? 0) > 0 &&
-                filteredApplications.length === 0 &&
-                searchTerm.trim()
-                  ? "No matching cases"
-                  : "No cases found"
+                debouncedSearchTerm.trim() ? "No matching cases" : "No cases found"
               }
               emptySubMessage={
-                (applications?.length ?? 0) > 0 &&
-                filteredApplications.length === 0 &&
-                searchTerm.trim()
+                debouncedSearchTerm.trim()
                   ? "Try a different search term"
-                  : "Try adjusting your search criteria"
+                  : "No contracted applications match the current filters"
               }
             />
           </div>
         </div>
 
-        {!loading &&
-          applications &&
-          applications.length > 0 &&
-          filteredApplications.length > 0 && (
+        {!casesListBlockingLoad && tableRows.length > 0 && (
           <DataTablePagination
             table={table}
             totalItems={totalItems}

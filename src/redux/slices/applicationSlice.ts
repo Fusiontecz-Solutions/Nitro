@@ -19,6 +19,7 @@ import {
 } from '../actions/applicationActions';
 import type { ApplicationStatsData } from '../actions/applicationActions';
 import { sendDocumentRequest } from '../actions/notificationActions';
+import { writeApplicationDetailCache } from '@/lib/applicationDetailCache';
 
 function mergeApplicationDetailFromUpdate(
     state: { data: Application | null },
@@ -42,6 +43,7 @@ function mergeApplicationDetailFromUpdate(
         Number(curAid) === Number(upAid);
     if (idMatch || aidMatch) {
         state.data = { ...d, ...u } as Application;
+        writeApplicationDetailCache(state.data);
     }
 }
 
@@ -115,6 +117,15 @@ export const applicationsSlice = createSlice({
             state.loading = false;
             state.isRefreshing = false;
         },
+        /** Clear list rows before a new fetch without flashing an empty-state message. */
+        resetApplicationsListForFetch: (state) => {
+            state.data = [];
+            state.pagination = null;
+            state.error = null;
+            state.loading = true;
+            state.isRefreshing = false;
+            state.latestRequestId = null;
+        },
         /**
          * Apply a cached list response before `getApplications` runs so the first paint can show rows
          * and pending uses `isRefreshing` instead of a full-table loading state.
@@ -160,9 +171,13 @@ export const applicationsSlice = createSlice({
                 }
             })
             .addCase(getApplications.fulfilled, (state, action) => {
-                // Ignore out-of-order responses: after a newer fetch completes, `latestRequestId` is
-                // null, but an older in-flight response must not overwrite fresh data.
-                if (action.meta.requestId !== state.latestRequestId) {
+                // Ignore out-of-order responses when a newer fetch is in flight. When
+                // `latestRequestId` is null (after resetApplicationsListForFetch), accept the
+                // next completion so the table does not stay on "Loading…" with no network call.
+                const isStale =
+                    state.latestRequestId != null &&
+                    action.meta.requestId !== state.latestRequestId;
+                if (isStale) {
                     return;
                 }
                 state.loading = false;
@@ -180,7 +195,10 @@ export const applicationsSlice = createSlice({
                 state.latestRequestId = null;
             })
             .addCase(getApplications.rejected, (state, action) => {
-                if (action.meta.requestId !== state.latestRequestId) {
+                const isStale =
+                    state.latestRequestId != null &&
+                    action.meta.requestId !== state.latestRequestId;
+                if (isStale) {
                     return;
                 }
                 state.loading = false;
@@ -322,6 +340,12 @@ export const applicationDetailSlice = createSlice({
             state.loading = false;
             state.isRefreshing = false;
         },
+        setApplicationDetail: (state, action: PayloadAction<Application>) => {
+            state.data = action.payload;
+            state.error = null;
+            state.loading = false;
+            state.isRefreshing = false;
+        },
     },
     extraReducers: (builder) => {
         builder
@@ -349,7 +373,11 @@ export const applicationDetailSlice = createSlice({
                 state.loading = false;
                 state.isRefreshing = false;
                 state.error = null;
-                state.data = action.payload.data || action.payload;
+                const row =
+                    (action.payload as { data?: Application })?.data ??
+                    (action.payload as Application);
+                state.data = row;
+                if (row) writeApplicationDetailCache(row);
             })
             .addCase(getApplicationById.rejected, (state, action) => {
                 state.loading = false;
@@ -378,7 +406,11 @@ export const applicationDetailSlice = createSlice({
                 state.loading = false;
                 state.isRefreshing = false;
                 state.error = null;
-                state.data = action.payload.data || action.payload;
+                const row =
+                    (action.payload as { data?: Application })?.data ??
+                    (action.payload as Application);
+                state.data = row;
+                if (row) writeApplicationDetailCache(row);
             })
             .addCase(getApplicationByApplicationId.rejected, (state, action) => {
                 state.loading = false;
@@ -749,11 +781,16 @@ export const uploadDocumentsSlice = createSlice({
 });
 
 // Export actions
-export const { clearApplications, hydrateApplicationsListFromCache } =
+export const {
+    clearApplications,
+    resetApplicationsListForFetch,
+    hydrateApplicationsListFromCache,
+} =
     applicationsSlice.actions;
 export const { clearApplicationStats } = applicationStatsSlice.actions;
 export const { resetCreateApplication } = createApplicationSlice.actions;
-export const { clearApplicationDetail } = applicationDetailSlice.actions;
+export const { clearApplicationDetail, setApplicationDetail } =
+    applicationDetailSlice.actions;
 export const { clearClientApplications } = clientApplicationsSlice.actions;
 export const { clearIsoApplications } = isoApplicationsSlice.actions;
 export const { resetUpdateApplication } = updateApplicationSlice.actions;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -22,15 +22,10 @@ import { EXTERNAL_LINKS } from "@/config/externalLinks";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
-  getApplicationByApplicationId,
-  getApplicationById,
   updateApplicationQueue,
 } from "@/redux/actions/applicationActions";
-import {
-  isNumericApplicationRouteParam,
-  routeParamMatchesApplication,
-} from "@/lib/applicationRouteMatch";
-import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
+import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch";
+import { useApplicationDetailLoader } from "@/hooks/useApplicationDetailLoader";
 import { useTheme } from "@/context/ThemeContext";
 import type { user } from "@/redux/slices/authSlice";
 import { toast } from "react-toastify";
@@ -71,10 +66,11 @@ const ApplicationDetails = () => {
     const { loading, data } = useSelector((state: RootState) => state.login)
 
     const {
-        loading: applicationDetailLoading,
         data: applicationData,
+        loading: applicationDetailLoading,
         error: applicationDetailError,
-    } = useSelector((state: RootState) => state.applicationDetail);
+        refetch: refetchApplicationDetail,
+    } = useApplicationDetailLoader(applicationId);
 
     // Removed debug logging to avoid slowing down render on tab refresh.
 
@@ -320,15 +316,6 @@ const ApplicationDetails = () => {
 
     const isTabsReady = !isLoadingCurrentApplication && !showApplicationLoadError;
 
-    const refetchApplicationDetail = useCallback(() => {
-        if (!applicationId) return;
-        if (isNumericApplicationRouteParam(applicationId)) {
-            void dispatch(getApplicationByApplicationId(applicationId));
-        } else {
-            void dispatch(getApplicationById(applicationId));
-        }
-    }, [applicationId, dispatch]);
-
     const { activeTab, handleTabChange } = useTabRouting(
         tabs,
         applicationId,
@@ -506,13 +493,6 @@ const ApplicationDetails = () => {
         );
     }, [canRenderTabContent, tabsForOperationsUi, activeTab, changeTabScrollTop]);
 
-    // Fetch application data when in edit mode.
-    // Guard against redundant network calls (helps refresh/navigation latency).
-    const applicationDetailRef = useRef(applicationData);
-    useEffect(() => {
-        applicationDetailRef.current = applicationData;
-    }, [applicationData]);
-
     useEffect(() => {
         setAuditLogOpen(false);
     }, [applicationId]);
@@ -520,26 +500,6 @@ const ApplicationDetails = () => {
     useEffect(() => {
         setAgentSentToUnderwriter(false);
     }, [applicationId]);
-
-    useEffect(() => {
-        if (!applicationId) return;
-
-        const currentData = applicationDetailRef.current;
-        const shouldFetch =
-            !currentData ||
-            !routeParamMatchesApplication(applicationId, currentData);
-        if (shouldFetch) {
-            if (isNumericApplicationRouteParam(applicationId)) {
-                dispatch(getApplicationByApplicationId(applicationId));
-            } else {
-                dispatch(getApplicationById(applicationId));
-            }
-        }
-
-        return () => {
-            dispatch(clearApplicationDetail());
-        };
-    }, [applicationId, dispatch]);
 
     const handleSendToUnderwriter = async () => {
         if (!applicationUuid) return;

@@ -37,26 +37,12 @@ const NotificationDropdown = () => {
     // Get unread count
     const unreadCount = notifications?.filter((notif: Notification) => !notif.isRead).length || 0;
 
-    // Fetch notifications on initial page load
-    useEffect(() => {
-        dispatch(getNotifications(inboxParams));
-    }, [dispatch, inboxParams]);
-
-    // Refresh when dropdown opens
+    // Refresh when dropdown opens (inbox sync runs at app shell via NotificationsSync)
     useEffect(() => {
         if (open) {
             dispatch(getNotifications(inboxParams));
         }
     }, [open, dispatch, inboxParams]);
-
-    // Poll for new notifications every 30 seconds when tab is visible (socket + mount still deliver updates)
-    useEffect(() => {
-        const pollInterval = setInterval(() => {
-            if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-            dispatch(getNotifications(inboxParams));
-        }, 30000);
-        return () => clearInterval(pollInterval);
-    }, [dispatch, inboxParams]);
 
     const handleNotificationClick = async (notification: Notification) => {
         if (!notification.isRead) {

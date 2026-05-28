@@ -1,4 +1,4 @@
-import type { TemplateCategory } from "./paymentTemplateCatalog";
+import type { TemplateCategory } from "./paymentTemplateApi";
 import { axiosGet, axiosPost } from "@/redux/axios";
 
 const STORAGE_KEY = "inhouse-payment-mail-logs-v1";

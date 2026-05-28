@@ -6,7 +6,11 @@ import { useTheme } from '@/context/ThemeContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn, formatDate } from '@/lib/utils'
-import { getNotifications, markAllNotificationsAsRead } from '@/redux/actions/notificationActions'
+import {
+  getNotifications,
+  markAllNotificationsAsRead,
+} from '@/redux/actions/notificationActions'
+import { useNotificationsSync } from '@/hooks/useNotificationsSync'
 import type { AppDispatch, RootState } from '@/redux/store'
 import type { Notification } from '@/redux/slices/notificationSlice'
 import { markAllNotificationsReadOptimistic } from '@/redux/slices/notificationSlice'
@@ -260,22 +264,19 @@ export default function NotificationDashboard() {
     return filteredNotifications.slice(start, start + LIST_PAGE_SIZE)
   }, [filteredNotifications, listPage])
 
-  useEffect(() => {
-    if (isSuperAdmin) {
-      void fetchAdminFeed()
-      const poll = setInterval(() => {
-        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
-        void fetchAdminFeed()
-      }, 30000)
-      return () => clearInterval(poll)
-    }
-    dispatch(getNotifications({ limit: 50 }))
-    const poll = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
-      dispatch(getNotifications({ limit: 50 }))
-    }, 30000)
-    return () => clearInterval(poll)
-  }, [dispatch, isSuperAdmin, fetchAdminFeed])
+  useNotificationsSync(
+    { limit: 50 },
+    {
+      enabled: !isSuperAdmin,
+    },
+  )
+  useNotificationsSync(
+    { limit: 500 },
+    {
+      enabled: isSuperAdmin,
+      customFetch: fetchAdminFeed,
+    },
+  )
 
   useEffect(() => {
     if (filteredNotifications.length === 0) {

@@ -1,4 +1,9 @@
 import type { ContractPrefillField } from "./Contract";
+import {
+    getApplicationClientPrefillArgs,
+    getApplicationPrimaryRecipientName,
+    resolveAppendixUnderwritingFeesDollars,
+} from "./Contract";
 import { buildDailyCaliforniaContractPrefillFields } from "./daily_california";
 import { buildDailyConnecticutContractPrefillFields } from "./daily_connecticut";
 import { buildDailyFloridaContractPrefillFields } from "./Daily_florida";
@@ -298,7 +303,11 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     const purchasePercent = coerceFiniteNumber(
         contract.purchasePercent ?? offer?.rate ?? offer?.factorRate,
     );
-    const underwritingFees = coerceFiniteNumber(contract.appendixUnderwritingFees);
+    const underwritingFees =
+        resolveAppendixUnderwritingFeesDollars(
+            contract.appendixUnderwritingFees ?? offer?.fees,
+            purchaseAmount,
+        ) ?? coerceFiniteNumber(contract.appendixUnderwritingFees);
 
     /** Per-period payment lives on the TermsOffer / OfferDecision row. */
     const periodicPayment = coerceFiniteNumber(
@@ -355,10 +364,15 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         estimatedAnnualPercentageRate = formatPercent(purchasePercent);
     }
 
+    const appPrefill = getApplicationClientPrefillArgs(args.application);
+    const linkedClient = (contract.client ?? null) as Record<string, unknown> | null;
     const customerName =
         str(contract.customerName) ||
         str(contract.legalName) ||
-        str(contract.clientName);
+        str(contract.clientName) ||
+        str(appPrefill.customerName) ||
+        getApplicationPrimaryRecipientName(args.application) ||
+        str(linkedClient?.businessName);
 
     const businessAddressLine = [
         str(contract.businessAddress),
@@ -367,7 +381,15 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         str(contract.businessAddressZip),
     ]
         .filter(Boolean)
-        .join(", ");
+        .join(", ") ||
+        [
+            str(appPrefill.businessAddress),
+            str(appPrefill.businessAddressCity),
+            str(appPrefill.businessAddressState),
+            str(appPrefill.businessAddressZip),
+        ]
+            .filter(Boolean)
+            .join(", ");
 
     const signatureDate =
         formatUsDate(args.agreementDate) ||

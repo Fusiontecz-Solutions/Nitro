@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import {
   TEMPLATE_CATEGORY_LABELS,
   type TemplateCategory,
-} from "./paymentTemplateCatalog";
+} from "./paymentTemplateApi";
 import {
   fetchPaymentMailLogsForApplication,
   getPaymentMailLogs,

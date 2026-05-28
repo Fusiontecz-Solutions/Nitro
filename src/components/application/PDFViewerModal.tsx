@@ -79,7 +79,9 @@ import {
 import { toast } from "react-toastify";
 import {
     buildContractPrefillFieldsFromApplication,
-    dedupePrefillFieldsByLabel,
+    categorizeDealReviewPrefillFieldId,
+    dealReviewPrefillSubsection,
+    prepareDealReviewPrefillDisplay,
     CONTRACT_PREFILL_OVERRIDES_SECTION,
     getApplicationPrimaryRecipientName,
     getSignerRecipientEmailForContract,
@@ -111,6 +113,39 @@ import {
     parseBoldSignTemplateRolesFromRecipientsPayload,
 } from "./contractdata/templateRecipients";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
+
+/** Fingerprint of saved prefill used to invalidate a reused DocuSign draft after edits. */
+function docuSignPrefillDraftFingerprint(input: {
+    contractPrefillOverrides: Partial<BuildContractPrefillFieldsArgs> | null;
+    documentTemplatePrefillByMappingId: Record<string, Record<string, string>>;
+}): string {
+    return JSON.stringify({
+        o: input.contractPrefillOverrides ?? null,
+        d: input.documentTemplatePrefillByMappingId ?? {},
+    });
+}
+
+const DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS = {
+    /** Reused envelope — sender view is usually ready immediately. */
+    existing: [0, 800, 1600, 2600],
+    /** New envelope — DocuSign may need a moment before sender view is available. */
+    justCreated: [400, 1100, 2200, 3400],
+} as const;
+
+/**
+ * Open DocuSign in a new tab. Do not pass `noopener` on open — it returns `null` even when
+ * the tab opened, which wrongly triggered the pop-up-blocked fallback and a second button.
+ */
+function tryOpenDocuSignSenderUrl(senderUrl: string): boolean {
+    const opened = window.open(senderUrl, "_blank");
+    if (!opened) return false;
+    try {
+        opened.opener = null;
+    } catch {
+        /* ignore */
+    }
+    return true;
+}
 
 interface PDFViewerModalProps {
     isOpen: boolean;
@@ -271,26 +306,6 @@ function formatDisplayValueForUs(fieldKey: string, value: unknown): string {
 
 function formatOfferDecisionCell(label: string, value: unknown): string {
     return formatDisplayValueForUs(label, value);
-}
-
-/** Human-readable label for `Contract.status` (server updates via BoldSign webhooks). */
-/** Drop section title from row label when repeated (e.g. "Contract City" under "Contract Address" → "City"). */
-function formatDealReviewFieldLabel(label: string, category: string): string {
-    const rowLabel = String(label || "").trim();
-    const section = String(category || "").trim();
-    if (!rowLabel || !section) return rowLabel || section;
-
-    const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const words = section.split(/\s+/).filter(Boolean);
-    for (let n = words.length; n >= 1; n--) {
-        const prefix = words.slice(0, n).join(" ");
-        const re = new RegExp(`^${escape(prefix)}\\s+`, "i");
-        if (re.test(rowLabel)) {
-            const stripped = rowLabel.replace(re, "").trim();
-            if (stripped) return stripped;
-        }
-    }
-    return rowLabel;
 }
 
 function formatContractSigningStatusLabel(raw: unknown): string {
@@ -499,6 +514,8 @@ const PDFViewerModal = ({
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
     const [isSending, setIsSending] = useState(false);
+    /** Set when the browser blocks `window.open` after the draft URL is ready — user opens via button click. */
+    const [docuSignOpenUrl, setDocuSignOpenUrl] = useState<string | null>(null);
     type ContractWizardStep = "documents" | "info" | "summary" | "sent";
     const [activeStep, setActiveStep] = useState<ContractWizardStep>("documents");
     const [sentAt, setSentAt] = useState<Date | null>(null);
@@ -530,7 +547,6 @@ const PDFViewerModal = ({
     const [prefilledBoldSignPdfUrl, setPrefilledBoldSignPdfUrl] = useState<string | null>(null);
     const [prefilledBoldSignPdfLoading, setPrefilledBoldSignPdfLoading] = useState(false);
     const [prefilledBoldSignPdfHint, setPrefilledBoldSignPdfHint] = useState<string | null>(null);
-    const [draftDocuSignSenderUrl, setDraftDocuSignSenderUrl] = useState<string | null>(null);
     const [downloadingFilledContract, setDownloadingFilledContract] = useState(false);
     /** DocuSign envelope from last send or loaded contract — used before DB row is visible. */
     const [sessionEnvelopeId, setSessionEnvelopeId] = useState<string | null>(null);
@@ -939,6 +955,15 @@ const PDFViewerModal = ({
         return contractPrefillFromDb ?? undefined;
     }, [applicationData, contractPrefillFromDb, contractPrefillLoaded]);
 
+    const prefillDraftFingerprint = useMemo(
+        () =>
+            docuSignPrefillDraftFingerprint({
+                contractPrefillOverrides: contractPrefillFromDb,
+                documentTemplatePrefillByMappingId,
+            }),
+        [contractPrefillFromDb, documentTemplatePrefillByMappingId],
+    );
+
     const canEditContractPrefill = useMemo(
         () => Boolean(applicationIdForLookup),
         [applicationIdForLookup],
@@ -982,7 +1007,7 @@ const PDFViewerModal = ({
                 value: v,
             });
         }
-        return dedupePrefillFieldsByLabel(order.map((id) => byId.get(id)!));
+        return prepareDealReviewPrefillDisplay(order.map((id) => byId.get(id)!));
     }, [applicationData, prefillFieldsPreview, contractPrefillRecords, contractPrefillOverrides, offerDecisionData]);
 
     const offerDecisionSummaryRows = useMemo(() => {
@@ -1033,9 +1058,10 @@ const PDFViewerModal = ({
             setDocumentTemplatePrefillByMappingId({});
             setSelectedAddendumOption("");
             setSessionEnvelopeId(null);
-            setDraftDocuSignSenderUrl(null);
+            setDocuSignOpenUrl(null);
             draftPreparedAddendumIdRef.current = undefined;
             draftPreparedCcRef.current = null;
+            draftPreparedPrefillFingerprintRef.current = null;
             prefilledPdfCachedForEnvelopeRef.current = null;
             prefilledBoldSignPdfUrlRef.current = null;
             return;
@@ -1171,6 +1197,21 @@ const PDFViewerModal = ({
     const docuSignPdfCacheSuffixRef = useRef(docuSignPdfCacheSuffix);
     const draftPreparedAddendumIdRef = useRef<string | null | undefined>(undefined);
     const draftPreparedCcRef = useRef<string[] | null>(null);
+    const draftPreparedPrefillFingerprintRef = useRef<string | null>(null);
+
+    const invalidateDocuSignDraftSession = useCallback(() => {
+        setSessionEnvelopeId(null);
+        draftPreparedAddendumIdRef.current = undefined;
+        draftPreparedCcRef.current = null;
+        draftPreparedPrefillFingerprintRef.current = null;
+    }, []);
+
+    /** Saved prefill changed after a draft was prepared — force a new envelope on next Review & send. */
+    useEffect(() => {
+        const prepared = draftPreparedPrefillFingerprintRef.current;
+        if (prepared == null || prepared === prefillDraftFingerprint) return;
+        invalidateDocuSignDraftSession();
+    }, [prefillDraftFingerprint, invalidateDocuSignDraftSession]);
 
     const ccListsEqual = (a: string[], b: string[] | null) => {
         if (!b) return false;
@@ -1339,55 +1380,6 @@ const PDFViewerModal = ({
         );
     }, [applicationData, templateRoleRowsForSigner]);
 
-    const syncDocuSignCcToEnvelope = useCallback(
-        async (envelopeId: string, emails: string[]) => {
-            const list = [...new Set(emails.map((e) => String(e).trim()).filter(Boolean))];
-            const signerEmail = String(primarySignerEmailRef.current || "").trim();
-            const appId = applicationIdForLookupRef.current;
-            const roles = buildDocuSignRolesForSync();
-            if (!signerEmail && roles.every((r) => !String(r.signerEmail || "").trim())) {
-                return;
-            }
-            try {
-                const res = await axiosPost("/docusign/sync-envelope-cc", {
-                    envelopeId,
-                    ccEmails: list,
-                    roles,
-                    ...(appId ? { applicationId: appId } : {}),
-                    ...(signerEmail
-                        ? {
-                              signerEmail,
-                              signerName: getApplicationPrimaryRecipientName(applicationData),
-                          }
-                        : {}),
-                });
-                const signers = (res as { data?: { envelopeSigners?: Array<{ email?: string }> } })
-                    ?.data?.envelopeSigners;
-                if (signers?.length) {
-                    console.log("[DocuSign] envelope signers after sync:", signers);
-                }
-            } catch (err: unknown) {
-                const msg =
-                    (err as { response?: { data?: { message?: string } } })?.response?.data
-                        ?.message ||
-                    (err as Error)?.message ||
-                    "Failed to sync DocuSign recipients";
-                console.warn("[DocuSign] sync-envelope-cc failed:", err);
-                toast.error(String(msg));
-                throw err;
-            }
-        },
-        [applicationData, buildDocuSignRolesForSync],
-    );
-
-    const openDocuSignInNewTab = useCallback(
-        async (envelopeId: string, senderUrl: string) => {
-            await syncDocuSignCcToEnvelope(envelopeId, ccEmailsRef.current);
-            window.open(senderUrl, "_blank", "noopener,noreferrer");
-        },
-        [syncDocuSignCcToEnvelope],
-    );
-
     const fetchDocuSignSenderViewUrl = useCallback(
         async (envelopeId: string, ccForSync: string[]) => {
             const returnUrl =
@@ -1418,6 +1410,27 @@ const PDFViewerModal = ({
             }
         },
         [applicationData, buildDocuSignRolesForSync],
+    );
+
+    const fetchDocuSignSenderViewUrlWithRetry = useCallback(
+        async (
+            envelopeId: string,
+            ccForSync: string[],
+            justCreated: boolean,
+        ): Promise<string | null> => {
+            const delays = justCreated
+                ? DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS.justCreated
+                : DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS.existing;
+            for (const delay of delays) {
+                if (delay > 0) {
+                    await new Promise((r) => setTimeout(r, delay));
+                }
+                const url = await fetchDocuSignSenderViewUrl(envelopeId, ccForSync);
+                if (url) return url;
+            }
+            return null;
+        },
+        [fetchDocuSignSenderViewUrl],
     );
 
     /** Step 4: load DocuSign envelope PDF (sent → completed with signatures). */
@@ -1608,6 +1621,7 @@ const PDFViewerModal = ({
 
         try {
             setIsSending(true);
+            setDocuSignOpenUrl(null);
             const draft = ccEmailDraft.trim();
             let toSend = [...ccEmails];
             if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
@@ -1639,21 +1653,32 @@ const PDFViewerModal = ({
 
                 const addendumTemplateId = resolveAddendumTemplateIdForDocuSignMerge();
                 const sessionEnv = String(sessionEnvelopeId || "").trim() || null;
+                const prefillMatchesPreparedDraft =
+                    draftPreparedPrefillFingerprintRef.current === prefillDraftFingerprint;
                 /** Always create a fresh envelope when CC is set — reusing an old draft can keep broken recipients. */
                 const draftMatchesSelection =
                     toSend.length === 0 &&
                     Boolean(sessionEnv) &&
                     draftPreparedAddendumIdRef.current !== undefined &&
                     (draftPreparedAddendumIdRef.current || "") === (addendumTemplateId || "") &&
-                    ccListsEqual(toSend, draftPreparedCcRef.current);
+                    ccListsEqual(toSend, draftPreparedCcRef.current) &&
+                    prefillMatchesPreparedDraft;
 
                 let envelopeId = draftMatchesSelection ? sessionEnv : null;
-                let senderUrl: string | null = draftDocuSignSenderUrl;
+                let preparedSenderUrl: string | null = null;
 
                 if (!envelopeId) {
                     if (sessionEnv && toSend.length > 0) {
                         toast.info(
                             "Creating a new DocuSign draft so CC recipients are configured correctly with the signer.",
+                        );
+                    } else if (
+                        sessionEnv &&
+                        draftPreparedPrefillFingerprintRef.current != null &&
+                        !prefillMatchesPreparedDraft
+                    ) {
+                        toast.info(
+                            "Creating a new DocuSign draft with your updated prefill values.",
                         );
                     }
                     const prepared = await onPrepareDocuSignDraft({
@@ -1663,7 +1688,7 @@ const PDFViewerModal = ({
                     envelopeId = String(
                         (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
                     ).trim() || null;
-                    senderUrl =
+                    preparedSenderUrl =
                         String(
                             (prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "",
                         ).trim() || null;
@@ -1672,6 +1697,7 @@ const PDFViewerModal = ({
                         linkedEnvelopeIdRef.current = envelopeId;
                         draftPreparedAddendumIdRef.current = addendumTemplateId;
                         draftPreparedCcRef.current = [...toSend];
+                        draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
                     }
                 }
 
@@ -1682,25 +1708,32 @@ const PDFViewerModal = ({
                     return;
                 }
 
-                if (!senderUrl) {
-                    senderUrl = await fetchDocuSignSenderViewUrl(envelopeId, toSend);
-                }
+                const senderUrl = await fetchDocuSignSenderViewUrlWithRetry(
+                    envelopeId,
+                    toSend,
+                    Boolean(preparedSenderUrl),
+                );
                 if (!senderUrl) {
                     toast.error(
-                        "Draft envelope was created but DocuSign did not return a review URL. Try again in a moment.",
+                        "Draft envelope was created but DocuSign did not return a review URL yet. Wait a few seconds and click Review & send again.",
+                        { autoClose: 12000 },
                     );
                     return;
                 }
 
-                setDraftDocuSignSenderUrl(senderUrl);
                 pendingCcForSentRef.current = toSend;
 
-                try {
-                    await openDocuSignInNewTab(envelopeId, senderUrl);
-                } catch {
+                const opened = tryOpenDocuSignSenderUrl(senderUrl);
+                if (!opened) {
+                    setDocuSignOpenUrl(senderUrl);
+                    toast.info(
+                        "Your browser blocked the DocuSign tab. Click Open DocuSign below (or allow pop-ups for this site).",
+                        { autoClose: 12000 },
+                    );
                     return;
                 }
 
+                setDocuSignOpenUrl(null);
                 toast.success(
                     toSend.length
                         ? "DocuSign opened in a new tab. Click Send to email the signer. CC addresses will receive a prefilled contract copy by email once DocuSign marks the envelope sent."
@@ -4468,8 +4501,8 @@ const PDFViewerModal = ({
                                                             <div className="space-y-3">
                                                                 <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Owner Amounts</p>
                                                                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                                                    <Input className="bg-white" placeholder="Owner Amount 1" value={entry.principalOwnerAmount1} onChange={(e) => setAddendumEntries((prev) => prev.map((x) => (x.id === entry.id ? { ...x, principalOwnerAmount1: e.target.value } : x)))} />
-                                                                    <Input className="bg-white" placeholder="Owner Amount 2" value={entry.principalOwnerAmount2} onChange={(e) => setAddendumEntries((prev) => prev.map((x) => (x.id === entry.id ? { ...x, principalOwnerAmount2: e.target.value } : x)))} />
+                                                                    <Input className="bg-white" placeholder="Offer amount" value={entry.principalOwnerAmount1} onChange={(e) => setAddendumEntries((prev) => prev.map((x) => (x.id === entry.id ? { ...x, principalOwnerAmount1: e.target.value } : x)))} />
+                                                                    <Input className="bg-white" placeholder="Payback amount" value={entry.principalOwnerAmount2} onChange={(e) => setAddendumEntries((prev) => prev.map((x) => (x.id === entry.id ? { ...x, principalOwnerAmount2: e.target.value } : x)))} />
                                                                 </div>
                                                             </div>
 
@@ -5349,40 +5382,9 @@ const PDFViewerModal = ({
                                                         </p>
                                                     );
                                                 }
-                                                const categorize = (id: string): string => {
-                                                    const s = id.toLowerCase();
-                                                    if (s.startsWith("ach_")) return "ACH";
-                                                    if (s.startsWith("addendum_")) return "Addendum";
-                                                    if (s.startsWith("authorization_") || s.startsWith("authorized_")) return "Authorization";
-                                                    if (s.startsWith("appendix_")) return "Appendix";
-                                                    if (s.startsWith("security_")) return "Security";
-                                                    if (s.startsWith("guaranty_")) return "Guaranty";
-                                                    if (s.startsWith("guarantor_")) return "Guarantor";
-                                                    if (s.startsWith("business_address_contract")) return "Contract Address";
-                                                    if (s.startsWith("business_address_")) return "Business Address";
-                                                    if (s === "business_address") return "Business Address";
-                                                    if (
-                                                        s.startsWith("purchase_") ||
-                                                        s === "remittance" ||
-                                                        s === "frequency" ||
-                                                        s === "paymentterms" ||
-                                                        s === "net_to_merchant" ||
-                                                        s === "netfundprovided"
-                                                    )
-                                                        return "Deal Terms";
-                                                    if (
-                                                        s === "agreement_date" ||
-                                                        s === "entity_type" ||
-                                                        s === "federal_tax_id_ein" ||
-                                                        s === "state_of_inc" ||
-                                                        s === "doing_business_as"
-                                                    ) return "General";
-                                                    if (s.startsWith("client_") || s.includes("owner1_guarantor") || s.includes("owner2_guarantor")) return "Parties";
-                                                    return "Other";
-                                                };
                                                 const grouped: Record<string, typeof effectiveFields> = {};
                                                 for (const f of effectiveFields) {
-                                                    const cat = categorize(f.id);
+                                                    const cat = categorizeDealReviewPrefillFieldId(f.id);
                                                     if (!grouped[cat]) grouped[cat] = [];
                                                     grouped[cat].push(f);
                                                 }
@@ -5402,31 +5404,79 @@ const PDFViewerModal = ({
                                                     "Appendix",
                                                     "Other",
                                                 ];
-                                                // If any EPO-related fields appear in future (ids starting with epo_), map them to EPOs
-                                                if (!grouped["EPOs"]) {
-                                                    const epoFields = effectiveFields.filter(f => f.id.toLowerCase().startsWith("epo_"));
-                                                    if (epoFields.length) grouped["EPOs"] = epoFields;
-                                                }
-                                                return order
-                                                    .filter((k) => grouped[k]?.length)
-                                                    .map((cat) => (
+                                                const renderFieldRow = (field: (typeof effectiveFields)[number]) => (
+                                                    <Fragment key={field.id}>
+                                                        <div className="text-slate-500 dark:text-slate-400">
+                                                            {field.label}
+                                                        </div>
+                                                        <div className="font-medium break-all text-slate-900 dark:text-slate-100">
+                                                            {formatDisplayValueForUs(
+                                                                field.id || field.label || "",
+                                                                field.value,
+                                                            )}
+                                                        </div>
+                                                    </Fragment>
+                                                );
+                                                const renderCategoryBlock = (cat: string, fields: typeof effectiveFields) => {
+                                                    const subGrouped: Record<string, typeof effectiveFields> = {
+                                                        "": [],
+                                                    };
+                                                    for (const f of fields) {
+                                                        const sub =
+                                                            dealReviewPrefillSubsection(f.id, cat) ?? "";
+                                                        if (!subGrouped[sub]) subGrouped[sub] = [];
+                                                        subGrouped[sub].push(f);
+                                                    }
+                                                    const subOrder = [
+                                                        "",
+                                                        "Principal",
+                                                        "Entity slots",
+                                                        "Account holder",
+                                                        "Bank",
+                                                        "Consent",
+                                                        "References",
+                                                        "Online banking",
+                                                        "Address",
+                                                        "Contact",
+                                                        "Client",
+                                                        "Owner 1",
+                                                        "Owner 2",
+                                                        "General",
+                                                    ];
+                                                    return (
                                                         <div key={cat}>
-                                                            <div className="text-[11px] font-bold text-slate-600 uppercase mb-2">{cat}</div>
-                                                            <div className="grid grid-cols-2 gap-y-3 text-sm">
-                                                                {grouped[cat].map((field) => (
-                                                                    <Fragment key={`${cat}-${field.id}`}>
-                                                                        <div className="text-slate-500">{formatDealReviewFieldLabel(field.label || field.id, cat)}</div>
-                                                                        <div className="font-medium break-all">
-                                                                            {formatDisplayValueForUs(
-                                                                                field.id || field.label || "",
-                                                                                field.value,
+                                                            <div className="text-[11px] font-bold text-slate-600 dark:text-slate-300 uppercase mb-2">
+                                                                {cat}
+                                                            </div>
+                                                            {subOrder
+                                                                .filter((sub) => subGrouped[sub]?.length)
+                                                                .map((sub) => (
+                                                                    <div
+                                                                        key={`${cat}-${sub || "main"}`}
+                                                                        className={
+                                                                            sub
+                                                                                ? "mt-5 pt-3 border-t border-slate-200/90 dark:border-slate-600 mb-2"
+                                                                                : "mb-2"
+                                                                        }
+                                                                    >
+                                                                        {sub ? (
+                                                                            <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
+                                                                                {sub}
+                                                                            </div>
+                                                                        ) : null}
+                                                                        <div className="grid grid-cols-2 gap-y-3 gap-x-4 text-sm">
+                                                                            {subGrouped[sub].map((field) =>
+                                                                                renderFieldRow(field),
                                                                             )}
                                                                         </div>
-                                                                    </Fragment>
+                                                                    </div>
                                                                 ))}
-                                                            </div>
                                                         </div>
-                                                    ));
+                                                    );
+                                                };
+                                                return order
+                                                    .filter((k) => grouped[k]?.length)
+                                                    .map((cat) => renderCategoryBlock(cat, grouped[cat]!));
                                             })()}
                                         </div>
 
@@ -5916,7 +5966,13 @@ const PDFViewerModal = ({
                                 </Button>
                             </div>
                         </div>
-                        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-100 pt-2 dark:border-slate-700 lg:border-t-0 lg:pt-0">
+                        <div className="flex shrink-0 flex-col items-end gap-2 border-t border-slate-100 pt-2 dark:border-slate-700 lg:border-t-0 lg:pt-0">
+                            {docuSignOpenUrl && activeStep !== "sent" ? (
+                                <p className="max-w-md text-right text-xs text-amber-800 dark:text-amber-200">
+                                    Pop-up blocked. Click Open DocuSign to continue in a new tab.
+                                </p>
+                            ) : null}
+                            <div className="flex items-center justify-end gap-2">
                             <Button variant="ghost" className="h-9" onClick={onClose}>
                                 {activeStep === "sent" ? "Close" : "Cancel"}
                             </Button>
@@ -5927,15 +5983,40 @@ const PDFViewerModal = ({
                                     >
                                         Done
                                     </Button>
+                            ) : docuSignOpenUrl ? (
+                                <Button
+                                    type="button"
+                                    className="h-9 cursor-pointer bg-[#276D9C] px-6 text-white hover:bg-[#276D9C]/90"
+                                    onClick={() => {
+                                        const url = docuSignOpenUrl;
+                                        if (!url) return;
+                                        if (tryOpenDocuSignSenderUrl(url)) {
+                                            setDocuSignOpenUrl(null);
+                                            toast.success(
+                                                "DocuSign opened in a new tab. Click Send there when you are ready.",
+                                                { autoClose: 10000 },
+                                            );
+                                        } else {
+                                            void navigator.clipboard.writeText(url);
+                                            toast.error(
+                                                "Still blocked. Allow pop-ups or paste the copied link into your browser.",
+                                                { autoClose: 12000 },
+                                            );
+                                        }
+                                    }}
+                                >
+                                    Open DocuSign
+                                </Button>
                             ) : (
                                 <Button
                                     className="h-9 cursor-pointer bg-[#276D9C] px-6 text-white hover:bg-[#276D9C]/90"
                                     onClick={handleSend}
                                     disabled={isSending}
                                 >
-                                    {isSending ? "Opening DocuSign…" : "Review & send in DocuSign"}
+                                    {isSending ? "Preparing DocuSign…" : "Review & send in DocuSign"}
                                 </Button>
                             )}
+                            </div>
                         </div>
                     </div>
                 </DialogContent>
@@ -5947,7 +6028,10 @@ const PDFViewerModal = ({
                 contractId={effectiveContractId}
                 applicationUuid={applicationIdForLookup}
                 persistedPrefillOverrides={contractPrefillLoaded ? contractPrefillFromDb : undefined}
-                onPersistedPrefillChange={(next) => setContractPrefillFromDb(next ?? null)}
+                onPersistedPrefillChange={(next) => {
+                    setContractPrefillFromDb(next ?? null);
+                    invalidateDocuSignDraftSession();
+                }}
                 contractRecords={contractPrefillRecords}
                 agreementDatePlaceholder={formatDate(new Date())}
                 offerDecision={(offerDecisionData as Record<string, unknown> | null) ?? null}

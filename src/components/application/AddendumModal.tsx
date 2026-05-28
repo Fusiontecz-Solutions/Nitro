@@ -312,11 +312,11 @@ export default function AddendumModal({ open, onOpenChange, applicationId, onSav
                                                 <Input value={entry.principalState} onChange={(e) => updateEntry(entry.id, "principalState", e.target.value)} className={inputClass} placeholder="" />
                                             </div>
                                             <div className="space-y-1.5">
-                                                <Label className={`text-sm ${isDark ? "text-gray-400" : "text-[#687182]"}`}>Principal Owner Amount 1</Label>
+                                                <Label className={`text-sm ${isDark ? "text-gray-400" : "text-[#687182]"}`}>Offer amount</Label>
                                                 <Input value={entry.principalOwnerAmount1} onChange={(e) => updateEntry(entry.id, "principalOwnerAmount1", e.target.value)} className={inputClass} placeholder="" />
                                             </div>
                                             <div className="space-y-1.5">
-                                                <Label className={`text-sm ${isDark ? "text-gray-400" : "text-[#687182]"}`}>Principal Owner Amount 2</Label>
+                                                <Label className={`text-sm ${isDark ? "text-gray-400" : "text-[#687182]"}`}>Payback amount</Label>
                                                 <Input value={entry.principalOwnerAmount2} onChange={(e) => updateEntry(entry.id, "principalOwnerAmount2", e.target.value)} className={inputClass} placeholder="" />
                                             </div>
                                             <div className="space-y-1.5">

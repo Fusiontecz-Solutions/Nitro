@@ -1,7 +1,8 @@
 import { jwtDecode } from "jwt-decode";
 import type { OperationsDashboardRecentCase } from "@/redux/actions/operationsDashboardActions";
+import { CRM_CACHE_NS, crmCacheClearNamespace, crmCacheGet, crmCacheSet } from "@/lib/crmCache";
 
-const STORAGE_KEY = "ihcrm_ops_dashboard_v1";
+const NS = CRM_CACHE_NS.OPS_DASHBOARD;
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 type StoredBlob = {
@@ -69,15 +70,13 @@ export function readOperationsDashboardSession(): OperationsDashboardHydration |
   const userId = getTokenUserId();
   if (!userId) return null;
   try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as StoredBlob;
-    if (parsed.v !== 1 || parsed.userId !== userId) return null;
+    const parsed = crmCacheGet<StoredBlob>(NS, userId);
+    if (!parsed || parsed.v !== 1 || parsed.userId !== userId) return null;
     if (
       typeof parsed.savedAt !== "number" ||
       Date.now() - parsed.savedAt > MAX_CACHE_AGE_MS
     ) {
-      sessionStorage.removeItem(STORAGE_KEY);
+      crmCacheClearNamespace(NS);
       return null;
     }
     if (!parsed.summaryCounts || !parsed.caseStageCounts) return null;
@@ -129,19 +128,14 @@ export function persistOperationsDashboardSession(payload: {
       hasLoadedRecentOnce: payload.hasLoadedRecentOnce,
       recentCases: payload.recentCases.map((r) => normalizeRecentCase(r)),
     };
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(blob));
+    crmCacheSet(NS, payload.userId, blob);
   } catch {
     /* quota / private mode */
   }
 }
 
 export function clearOperationsDashboardSession(): void {
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
+  crmCacheClearNamespace(NS);
 }
 
 export { getTokenUserId };

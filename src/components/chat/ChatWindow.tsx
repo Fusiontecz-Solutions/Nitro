@@ -7,6 +7,7 @@ import type { RootState } from '@/redux/store';
 import type { AppDispatch } from '@/redux/store';
 import { useSocket } from '@/context/SocketContext';
 import { fetchMessages } from '@/redux/actions/chatActions';
+import { useChatMessagesRestFallback } from '@/hooks/useChatMessagesRestFallback';
 import {
   addMessage,
   setTyping,
@@ -54,15 +55,7 @@ export const ChatWindow = ({ conversationId, currentUserId, onClose, onSendMessa
     }
   }, [conversationId, dispatch]);
 
-  // Periodic refetch so receiver sees messages even if socket event was missed (e.g. joined room late)
-  useEffect(() => {
-    if (!conversationId || !socket) return;
-    const interval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-      dispatch(fetchMessages({ conversationId }));
-    }, 8000);
-    return () => clearInterval(interval);
-  }, [conversationId, socket, dispatch]);
+  useChatMessagesRestFallback(conversationId);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {

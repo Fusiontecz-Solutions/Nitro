@@ -30,6 +30,7 @@ import { clearApplicationStats } from '@/redux/slices/applicationSlice';
 import { clearPaymentDashboard } from '@/redux/slices/paymentDashboardSlice';
 import { resetOperationsDashboard } from '@/redux/slices/operationsDashboardSlice';
 import { clearVoiceMicSessionFlags } from '@/voice/microphoneWarmup';
+import { clearCrmCacheOnLogout } from '@/lib/crmCache';
 
 
 const IconButton = ({ icon, className = "", onClick }: { icon: React.ReactNode, className?: string, onClick?: React.MouseEventHandler<HTMLButtonElement> }) => (
@@ -407,6 +408,7 @@ const GmailPage = () => {
       dispatch(clearApplicationStats());
       dispatch(clearPaymentDashboard());
       dispatch(resetOperationsDashboard());
+      clearCrmCacheOnLogout();
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       localStorage.removeItem('role');

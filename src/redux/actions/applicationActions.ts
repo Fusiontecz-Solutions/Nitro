@@ -153,15 +153,6 @@ export const claimUnderwriterDeal = createAsyncThunk(
                 {},
             );
             invalidateApplicationsListCache();
-            await dispatch(
-                getApplications({
-                    page: 1,
-                    limit: 5000,
-                    sortBy: 'createdAt',
-                    sortOrder: 'desc',
-                    skipListCache: true,
-                }),
-            ).unwrap();
             return true;
         } catch (error: any) {
             console.error('Claim underwriter deal error:', error);
@@ -183,15 +174,6 @@ export const releaseUnderwriterDeal = createAsyncThunk(
                 {},
             );
             invalidateApplicationsListCache();
-            await dispatch(
-                getApplications({
-                    page: 1,
-                    limit: 5000,
-                    sortBy: 'createdAt',
-                    sortOrder: 'desc',
-                    skipListCache: true,
-                }),
-            ).unwrap();
             return true;
         } catch (error: any) {
             console.error('Release underwriter deal error:', error);

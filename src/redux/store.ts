@@ -100,6 +100,7 @@ import { offerDecisionSlice } from './slices/offerDecisionSlice';
 import { collectionPaymentsSlice } from './slices/collectionPaymentSlice';
 import { paymentDashboardSlice } from './slices/paymentDashboardSlice';
 import { paymentDashboardCohortSlice } from './slices/paymentDashboardCohortSlice';
+import { paymentDashboardTrendSlice } from './slices/paymentDashboardTrendSlice';
 import { paymentDashboardMoneySlice } from './slices/paymentDashboardMoneySlice';
 import { operationsApplicationsSlice } from './slices/operationsApplicationsSlice';
 import { operationsDashboardSlice } from './slices/operationsDashboardSlice';
@@ -285,6 +286,7 @@ export const store = configureStore({
         collectionPayments: collectionPaymentsSlice.reducer,
         paymentDashboard: paymentDashboardSlice.reducer,
         paymentDashboardCohort: paymentDashboardCohortSlice.reducer,
+        paymentDashboardTrend: paymentDashboardTrendSlice.reducer,
         paymentDashboardMoney: paymentDashboardMoneySlice.reducer,
         operationsApplications: operationsApplicationsSlice.reducer,
         operationsDashboard: operationsDashboardSlice.reducer,

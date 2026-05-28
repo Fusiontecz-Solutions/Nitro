@@ -1,6 +1,9 @@
 import type { Application } from '@/types/applicationTypes';
 import type { PaymentDashboardData } from '@/types/paymentDashboardTypes';
 import type { FundedDealBalanceApiRow } from '@/lib/collectionPaymentDashboardApi';
+import { CRM_CACHE_NS, crmCacheClearNamespace, crmCacheGet, crmCacheSet } from '@/lib/crmCache';
+
+const NS = CRM_CACHE_NS.PAYMENT_DASHBOARD;
 
 const CACHE_VERSION = 1 as const;
 
@@ -39,25 +42,11 @@ function cacheKeyForSession(): string {
     }
 }
 
-function safeParse(raw: string): PaymentDashboardSessionBundle | null {
-    try {
-        const parsed = JSON.parse(raw) as PaymentDashboardSessionBundle;
-        if (parsed?.v !== CACHE_VERSION) return null;
-        return parsed;
-    } catch {
-        return null;
-    }
-}
-
 export function readPaymentDashboardSessionCache(): PaymentDashboardSessionBundle | null {
     if (typeof window === 'undefined') return null;
-    try {
-        const raw = sessionStorage.getItem(cacheKeyForSession());
-        if (!raw) return null;
-        return safeParse(raw);
-    } catch {
-        return null;
-    }
+    const bundle = crmCacheGet<PaymentDashboardSessionBundle>(NS, cacheKeyForSession());
+    if (!bundle || bundle.v !== CACHE_VERSION) return null;
+    return bundle;
 }
 
 /** Merge the latest successful API slice into sessionStorage so refresh can restore instantly. */
@@ -86,59 +75,21 @@ export function writePaymentDashboardSessionCache(partial: {
     if (!hasAnything) return;
 
     const tryWrite = (b: PaymentDashboardSessionBundle) => {
-        sessionStorage.setItem(key, JSON.stringify(b));
+        crmCacheSet(NS, key, b);
     };
 
-    try {
-        tryWrite(bundle);
-    } catch (e) {
-        if (e instanceof DOMException && e.name === 'QuotaExceededError') {
-            try {
-                const slim: PaymentDashboardSessionBundle = {
-                    ...bundle,
-                    cohort:
-                        bundle.cohort && bundle.cohort.data.length > 400
-                            ? {
-                                  data: bundle.cohort.data.slice(0, 400),
-                                  pagination: bundle.cohort.pagination,
-                              }
-                            : bundle.cohort,
-                };
-                tryWrite(slim);
-            } catch {
-                try {
-                    tryWrite({
-                        v: CACHE_VERSION,
-                        savedAt: Date.now(),
-                        dashboard: bundle.dashboard,
-                        cohort: null,
-                        money: bundle.money,
-                    });
-                } catch {
-                    if (bundle.dashboard) {
-                        try {
-                            tryWrite({
-                                v: CACHE_VERSION,
-                                savedAt: Date.now(),
-                                dashboard: bundle.dashboard,
-                                cohort: null,
-                                money: null,
-                            });
-                        } catch {
-                            /* ignore */
-                        }
-                    }
-                }
-            }
-        }
+    tryWrite(bundle);
+    if (bundle.cohort && bundle.cohort.data.length > 400) {
+        tryWrite({
+            ...bundle,
+            cohort: {
+                data: bundle.cohort.data.slice(0, 400),
+                pagination: bundle.cohort.pagination,
+            },
+        });
     }
 }
 
 export function clearPaymentDashboardSessionCache(): void {
-    if (typeof window === 'undefined') return;
-    try {
-        sessionStorage.removeItem(cacheKeyForSession());
-    } catch {
-        /* ignore */
-    }
+    crmCacheClearNamespace(NS);
 }

@@ -1,10 +1,8 @@
-import { useEffect } from "react";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { useParams, useSearchParams } from "react-router";
-import { useDispatch, useSelector } from "react-redux";
-import type { AppDispatch, RootState } from "@/redux/store";
-import { getApplicationById } from "@/redux/actions/applicationActions";
-import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
+import { useSelector } from "react-redux";
+import type { RootState } from "@/redux/store";
+import { useApplicationDetailLoader } from "@/hooks/useApplicationDetailLoader";
 
 import ApplicationSummary from "@/components/application/ApplicationSummary";
 import ApplicationBasicDetails from "@/components/application/ApplicationBasicDetails";
@@ -33,8 +31,6 @@ export default function DealbyId() {
   const fromStage = searchParams.get("fromStage") ?? "";
   const hideEarlyPipelineFinancials = EARLY_PIPELINE_STAGES.has(fromStage);
   const hideFundingDocumentsForPipeline = DEAL_PIPELINE_STAGES.has(fromStage);
-  const dispatch = useDispatch<AppDispatch>();
-
   const userRole =
     useSelector((state: RootState) => state.login?.data?.user?.role) ||
     (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
@@ -42,17 +38,8 @@ export default function DealbyId() {
   const roleUpper = String(userRole || "").replace(/-/g, "_").toUpperCase();
   const isOperationsRole = roleUpper === "OPERATIONS";
 
-  const { loading, data: applicationData, error } = useSelector(
-    (state: RootState) => state.applicationDetail
-  );
-
-  useEffect(() => {
-    if (!dealId) return;
-    dispatch(getApplicationById(dealId));
-    return () => {
-      dispatch(clearApplicationDetail());
-    };
-  }, [dispatch, dealId]);
+  const { loading, data: applicationData, error } =
+    useApplicationDetailLoader(dealId);
 
   const ready = !loading && !!applicationData && !error;
 

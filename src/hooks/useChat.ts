@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useSocket } from '@/context/SocketContext';
 import { fetchMessages } from '@/redux/actions/chatActions';
+import { useChatMessagesRestFallback } from '@/hooks/useChatMessagesRestFallback';
 import {
   addMessage,
   setTyping,
@@ -48,14 +49,7 @@ export function useChat(conversationId: string | null) {
     dispatch(setUnreadCount({ conversationId, count: 0 }));
   }, [conversationId, dispatch]);
 
-  useEffect(() => {
-    if (!conversationId || !socket) return;
-    const interval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
-      dispatch(fetchMessages({ conversationId }));
-    }, 8000);
-    return () => clearInterval(interval);
-  }, [conversationId, socket, dispatch]);
+  useChatMessagesRestFallback(conversationId);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

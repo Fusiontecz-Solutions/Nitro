@@ -358,6 +358,15 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
     return `sms:${to}${q}`;
   }, [smsPhone, smsBody]);
 
+  const postAvochatoSms = async (phone: string, message: string) => {
+    await axiosPost("/avochato-messaging/messages", {
+      phone,
+      message,
+      markAddressed: true,
+      ...(subdomainTrim ? { subdomain: subdomainTrim } : {}),
+    });
+  };
+
   const sendInboxMessage = async () => {
     const phone = String(selectedInboxContact?.phone ?? "").trim();
     const text = compose.trim();
@@ -372,15 +381,38 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
     if (!text) return;
     setSendLoading(true);
     try {
-      await axiosPost("/avochato-messaging/messages", {
-        phone,
-        message: text,
-        markAddressed: true,
-        ...(subdomainTrim ? { subdomain: subdomainTrim } : {}),
-      });
+      await postAvochatoSms(phone, text);
       setCompose("");
       toast.success("Message sent");
       await loadConversation(selectedTicketId);
+    } catch (e: unknown) {
+      const data = (e as { response?: { data?: { message?: string } } })?.response?.data;
+      toast.error(typeof data?.message === "string" ? data.message : "Send failed");
+    } finally {
+      setSendLoading(false);
+    }
+  };
+
+  const sendComposeSms = async () => {
+    const phone = normalizeE164(smsPhone) || smsPhone.trim();
+    const text = smsBody.trim();
+    if (!phone) {
+      toast.error("Enter a phone number first.");
+      return;
+    }
+    if (!text) {
+      toast.error("Message cannot be empty.");
+      return;
+    }
+    setSendLoading(true);
+    try {
+      await postAvochatoSms(phone, text);
+      setSmsBody("");
+      toast.success("Message sent");
+      if (configured) {
+        setSelectedTicketId(null);
+        await loadTickets(1, false);
+      }
     } catch (e: unknown) {
       const data = (e as { response?: { data?: { message?: string } } })?.response?.data;
       toast.error(typeof data?.message === "string" ? data.message : "Send failed");
@@ -658,7 +690,9 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                     <p className="text-xs text-muted-foreground">{composerSubtitle}</p>
                   ) : null}
                   <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                    Write your message here, then copy it or open the SMS app on your phone.
+                    {configured
+                      ? "Send through your connected SMS inbox, or copy the message to use elsewhere."
+                      : "Write your message here, then copy it or open the SMS app on your phone."}
                   </p>
                 </div>
                 <div className="flex flex-1 flex-col gap-4 p-4 sm:p-5">
@@ -683,21 +717,42 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                       placeholder="Write your SMS…"
                       value={smsBody}
                       onChange={(e) => setSmsBody(e.target.value)}
+                      disabled={sendLoading}
                       rows={8}
                       className="min-h-[160px] resize-y"
                     />
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    {configured ? (
+                      <Button
+                        type="button"
+                        variant="default"
+                        className="gap-2 bg-[#276D9C] hover:bg-[#215a84]"
+                        disabled={!smsBody.trim() || !smsPhone.trim() || sendLoading}
+                        onClick={() => void sendComposeSms()}
+                      >
+                        {sendLoading ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden />
+                        ) : (
+                          <Send className="size-4" aria-hidden />
+                        )}
+                        Send
+                      </Button>
+                    ) : null}
                     <Button
                       type="button"
-                      variant="default"
-                      className="gap-2 bg-[#276D9C] hover:bg-[#215a84]"
+                      variant={configured ? "outline" : "default"}
+                      className={cn(
+                        "gap-2",
+                        !configured && "bg-[#276D9C] hover:bg-[#215a84]",
+                      )}
+                      disabled={sendLoading}
                       onClick={() => void copySmsDraft()}
                     >
                       <Copy className="size-4" aria-hidden />
                       Copy draft
                     </Button>
-                    {smsDeviceHref ? (
+                    {!configured && smsDeviceHref ? (
                       <Button type="button" variant="outline" asChild>
                         <a href={smsDeviceHref}>Open SMS app</a>
                       </Button>

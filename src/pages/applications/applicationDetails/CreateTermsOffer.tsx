@@ -14,7 +14,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import { createTermsOffer, updateTermsOffer, getTermsOfferById } from '@/redux/actions/termsOfferActions';
 import { resetCreateTermsOffer, resetUpdateTermsOffer } from '@/redux/slices/termsOfferSlice';
-import { getApplicationByApplicationId, getApplicationById } from '@/redux/actions/applicationActions';
+import { useApplicationDetailLoader } from '@/hooks/useApplicationDetailLoader';
 import { useEffect, useState } from 'react';
 import type { CreateTermsOfferPayload, UpdateTermsOfferPayload } from '@/types/termsOfferTypes';
 import { getPositions } from '@/redux/actions/positionActions';
@@ -123,24 +123,13 @@ const CreateTermsOffer = () => {
     const { loading: createLoading, success: createSuccess, error: createError } = useSelector((state: RootState) => state.createTermsOffer);
     const { loading: updateLoading, success: updateSuccess, error: updateError } = useSelector((state: RootState) => state.updateTermsOffer);
     const { data: termsOfferData, loading: termsOfferLoading } = useSelector((state: RootState) => state.termsOfferDetail);
-    const { data: applicationData } = useSelector((state: RootState) => state.applicationDetail);
+    const { data: applicationData } = useApplicationDetailLoader(applicationId);
     const positionsState = useSelector((state: RootState) => state.positions);
 
     // Use appropriate loading/success/error based on mode
     const loading = isEditMode ? updateLoading : createLoading;
     const success = isEditMode ? updateSuccess : createSuccess;
     const error = isEditMode ? updateError : createError;
-
-    // Fetch application details to get MongoDB _id
-    useEffect(() => {
-        if (applicationId) {
-            if (/^\d+$/.test(applicationId)) {
-                dispatch(getApplicationByApplicationId(applicationId));
-            } else {
-                dispatch(getApplicationById(applicationId));
-            }
-        }
-    }, [applicationId, dispatch]);
 
     // Set application MongoDB _id when application data is loaded
     useEffect(() => {

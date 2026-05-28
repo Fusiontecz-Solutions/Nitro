@@ -1,9 +1,11 @@
 /**
- * Session-scoped cache for Deal Pipeline `/applications` list responses so the table
+ * L1 + IndexedDB cache for Deal Pipeline `/applications` list responses so the table
  * can hydrate immediately on mount / stage switches (stale-while-revalidate).
  */
 
-const STORAGE_KEY = "ihcrm_deal_pipeline_lists_v1";
+import { CRM_CACHE_NS, crmCacheClearNamespace, crmCacheGet, crmCacheSet } from "@/lib/crmCache";
+
+const NS = CRM_CACHE_NS.DEAL_PIPELINE_LISTS;
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_ENTRIES = 40;
 
@@ -28,23 +30,18 @@ function entryKey(
   return `${operationsStatus}\0${page}\0${limit}\0${search}`;
 }
 
-function parseBlob(raw: string | null): StoredBlob | null {
-  if (!raw) return null;
-  try {
-    const p = JSON.parse(raw) as StoredBlob;
-    if (p.v !== 1 || typeof p.userId !== "string" || !p.entries || typeof p.entries !== "object") {
-      return null;
-    }
-    return p;
-  } catch {
-    return null;
-  }
-}
-
 function readBlob(userId: string): StoredBlob | null {
   if (typeof window === "undefined") return null;
-  const parsed = parseBlob(sessionStorage.getItem(STORAGE_KEY));
-  if (!parsed || parsed.userId !== userId) return null;
+  const parsed = crmCacheGet<StoredBlob>(NS, userId);
+  if (
+    !parsed ||
+    parsed.v !== 1 ||
+    parsed.userId !== userId ||
+    !parsed.entries ||
+    typeof parsed.entries !== "object"
+  ) {
+    return null;
+  }
   return parsed;
 }
 
@@ -73,11 +70,7 @@ export function readDealPipelineListCache(
   if (!e || !Array.isArray(e.raw)) return null;
   if (Date.now() - e.savedAt > MAX_CACHE_AGE_MS) {
     delete blob.entries[k];
-    try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(blob));
-    } catch {
-      /* ignore */
-    }
+    crmCacheSet(NS, userId, blob);
     return null;
   }
   return { raw: e.raw, total: Number(e.total) || 0 };
@@ -105,17 +98,12 @@ export function writeDealPipelineListCache(
       raw: JSON.parse(JSON.stringify(raw)) as unknown[],
     };
     evictOldest(blob.entries);
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(blob));
+    crmCacheSet(NS, userId, blob);
   } catch {
     /* quota / private mode */
   }
 }
 
 export function clearDealPipelineListCache(): void {
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
+  crmCacheClearNamespace(NS);
 }

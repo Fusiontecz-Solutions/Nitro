@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Printer } from "lucide-react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { toast } from "react-toastify";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
@@ -12,7 +14,7 @@ interface PDFViewerDocsModalProps {
     onClose: () => void;
     fileUrl: string | null | undefined; // Explicitly allow undefined
     fileName?: string | null | undefined; // Explicitly allow undefined
-    layout?: "contract";
+    showPrintButton?: boolean;
     onSendToBoldSign?: (ccEmails: string[]) => void;
     prefillFieldsPreview?: Array<{ id: string; label?: string; value: string }>;
     onSendToDocusign?: (ccEmails: string[]) => void;
@@ -75,13 +77,12 @@ const PDFViewerDocsModal = ({
     onClose,
     fileUrl,
     fileName = "Document",
-    layout = "contract",
+    showPrintButton = false,
     onSendToBoldSign,
     prefillFieldsPreview = [],
     onSendToDocusign,
 }: PDFViewerDocsModalProps) => {
     // Prevent linting errors for unused props
-    void layout;
     void onSendToBoldSign;
     void prefillFieldsPreview;
     void onSendToDocusign;
@@ -96,8 +97,26 @@ const PDFViewerDocsModal = ({
         ? fileName.trim() 
         : "Document Viewer";
 
-    // If the modal is closed or the URL is invalid/malformed, render NOTHING.
-    // This prevents the encodeURI error entirely.
+    const handlePrint = () => {
+        const printWindow = window.open(safeUrl, "_blank", "noopener,noreferrer");
+        if (!printWindow) {
+            toast.error("Popup blocked. Please allow popups to print the document.");
+            return;
+        }
+
+        const triggerPrint = () => {
+            try {
+                printWindow.focus();
+                printWindow.print();
+            } catch {
+                toast.error("Could not open print dialog.");
+            }
+        };
+
+        printWindow.onload = triggerPrint;
+        window.setTimeout(triggerPrint, 800);
+    };
+
     if (!isOpen || !isValidUrl) return null;
 
     return (
@@ -108,10 +127,23 @@ const PDFViewerDocsModal = ({
             }}
         >
             <DialogContent className="max-w-5xl h-[95vh] p-0 flex flex-col">
-                <DialogHeader className="p-3 pb-0 flex items-center justify-between">
-                    <DialogTitle className="text-black">
+                <DialogHeader className="p-3 pb-0 flex-row items-center justify-between space-y-0">
+                    <DialogTitle className="text-black truncate pr-2">
                         {safeFileName}
                     </DialogTitle>
+                    {showPrintButton ? (
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={handlePrint}
+                            className="h-8 w-8 shrink-0 mr-8"
+                            title="Print PDF"
+                            aria-label="Print PDF"
+                        >
+                            <Printer className="h-4 w-4" aria-hidden />
+                        </Button>
+                    ) : null}
                 </DialogHeader>
 
                 {/* PDF Viewer */}

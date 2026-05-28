@@ -1,57 +1,16 @@
-import type { GetApplicationsParams } from "@/types/applicationTypes";
+import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
 import { axiosGet } from "@/redux/axios";
-
-const TTL_MS = 60_000;
-const MAX_ENTRIES = 40;
-
-/** Survives full page reload so `/applications` can paint cached rows before the network returns. */
-const SESSION_STORAGE_PREFIX = "inhcrm.appsList.v1:";
-
-type CacheEntry = { at: number; data: unknown };
-
-const cache = new Map<string, CacheEntry>();
-
-function readSessionEntry(key: string): CacheEntry | undefined {
-  if (typeof sessionStorage === "undefined") return undefined;
-  try {
-    const raw = sessionStorage.getItem(SESSION_STORAGE_PREFIX + key);
-    if (!raw) return undefined;
-    const entry = JSON.parse(raw) as CacheEntry;
-    if (!entry || typeof entry.at !== "number") return undefined;
-    return entry;
-  } catch {
-    return undefined;
-  }
-}
-
-function writeSessionEntry(key: string, entry: CacheEntry) {
-  if (typeof sessionStorage === "undefined") return;
-  try {
-    sessionStorage.setItem(
-      SESSION_STORAGE_PREFIX + key,
-      JSON.stringify(entry),
-    );
-  } catch {
-    /* quota or private mode */
-  }
-}
-
-function removeSessionEntry(key: string) {
-  if (typeof sessionStorage === "undefined") return;
-  try {
-    sessionStorage.removeItem(SESSION_STORAGE_PREFIX + key);
-  } catch {
-    /* ignore */
-  }
-}
-
-function pruneIfNeeded() {
-  while (cache.size > MAX_ENTRIES) {
-    const first = cache.keys().next().value;
-    if (first === undefined) break;
-    cache.delete(first);
-  }
-}
+import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch";
+import { writeApplicationDetailCache } from "@/lib/applicationDetailCache";
+import {
+  CRM_CACHE_NS,
+  crmCacheClearNamespace,
+  crmCacheGet,
+  crmCacheGetFreshest,
+  crmCacheSet,
+  memoryEntriesForNamespace,
+} from "@/lib/crmCache";
+import { invalidateApplicationsListQueries } from "@/lib/applicationsListQuerySync";
 
 /** Stable key for list requests (defaults match `Applications` first-page fetch). */
 export function applicationsListParamsCacheKey(
@@ -109,27 +68,12 @@ export function buildApplicationsListUrl(
   return `/applications${q ? `?${q}` : ""}`;
 }
 
+const NS = CRM_CACHE_NS.APPLICATIONS_LIST;
+
 export function getCachedApplicationsList(
   key: string,
 ): unknown | undefined {
-  const entry = cache.get(key);
-  if (entry) {
-    if (Date.now() - entry.at > TTL_MS) {
-      cache.delete(key);
-      removeSessionEntry(key);
-    } else {
-      return entry.data;
-    }
-  }
-
-  const fromSession = readSessionEntry(key);
-  if (!fromSession) return undefined;
-  if (Date.now() - fromSession.at > TTL_MS) {
-    removeSessionEntry(key);
-    return undefined;
-  }
-  cache.set(key, fromSession);
-  return fromSession.data;
+  return crmCacheGet<unknown>(NS, key);
 }
 
 /**
@@ -137,58 +81,71 @@ export function getCachedApplicationsList(
  * Useful as a first-paint fallback when the exact filter key has no cache yet.
  */
 export function getMostRecentCachedApplicationsList(): unknown | undefined {
-  const now = Date.now();
-  let freshest: CacheEntry | undefined;
+  return crmCacheGetFreshest<unknown>(NS);
+}
 
-  for (const entry of cache.values()) {
-    if (now - entry.at > TTL_MS) continue;
-    if (!freshest || entry.at > freshest.at) {
-      freshest = entry;
-    }
+/** Rows from any cached list API payload (`{ data: [] }` or merged fetch-all). */
+export function extractApplicationsFromListPayload(
+  payload: unknown,
+): Application[] {
+  if (!payload || typeof payload !== "object") return [];
+  const body = payload as { data?: unknown };
+  if (!Array.isArray(body.data)) return [];
+  return body.data.filter(
+    (row): row is Application =>
+      row != null &&
+      typeof row === "object" &&
+      (Boolean((row as Application)._id) ||
+        Boolean((row as Application & { id?: string }).id) ||
+        (row as Application).applicationId != null),
+  );
+}
+
+/** Mirror list rows into per-application detail cache (L1 + IndexedDB). */
+function syncDetailCacheFromListPayload(payload: unknown) {
+  for (const app of extractApplicationsFromListPayload(payload)) {
+    writeApplicationDetailCache(app);
   }
+}
 
-  if (typeof sessionStorage !== "undefined") {
-    try {
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const key = sessionStorage.key(i);
-        if (!key || !key.startsWith(SESSION_STORAGE_PREFIX)) continue;
-        const raw = sessionStorage.getItem(key);
-        if (!raw) continue;
-        const entry = JSON.parse(raw) as CacheEntry;
-        if (!entry || typeof entry.at !== "number") continue;
-        if (now - entry.at > TTL_MS) continue;
-        if (!freshest || entry.at > freshest.at) {
-          freshest = entry;
-        }
+/**
+ * Find an application row in any non-expired cached list response.
+ * Used to open Application Details without a second GET when the list already loaded the row.
+ */
+export function findApplicationInListCache(
+  routeParam: string,
+): Application | undefined {
+  const key = String(routeParam).trim();
+  if (!key) return undefined;
+
+  const rows = memoryEntriesForNamespace(NS);
+  rows.sort((a, b) => b.entry.at - a.entry.at);
+
+  for (const { entry } of rows) {
+    for (const app of extractApplicationsFromListPayload(entry.data)) {
+      if (routeParamMatchesApplication(key, app)) {
+        return app;
       }
-    } catch {
-      /* ignore malformed or unavailable session storage */
     }
   }
-
-  return freshest?.data;
+  return undefined;
 }
 
 export function setCachedApplicationsList(key: string, data: unknown) {
-  const entry: CacheEntry = { at: Date.now(), data };
-  cache.set(key, entry);
-  writeSessionEntry(key, entry);
-  pruneIfNeeded();
+  crmCacheSet(NS, key, data);
+  syncDetailCacheFromListPayload(data);
+}
+
+/** After IndexedDB bootstrap, seed per-app detail keys from cached list blobs. */
+export function hydrateApplicationDetailCacheFromCachedLists() {
+  for (const { entry } of memoryEntriesForNamespace(NS)) {
+    syncDetailCacheFromListPayload(entry.data);
+  }
 }
 
 export function invalidateApplicationsListCache() {
-  cache.clear();
-  if (typeof sessionStorage === "undefined") return;
-  try {
-    const toRemove: string[] = [];
-    for (let i = 0; i < sessionStorage.length; i++) {
-      const k = sessionStorage.key(i);
-      if (k?.startsWith(SESSION_STORAGE_PREFIX)) toRemove.push(k);
-    }
-    toRemove.forEach((k) => sessionStorage.removeItem(k));
-  } catch {
-    /* ignore */
-  }
+  crmCacheClearNamespace(NS);
+  invalidateApplicationsListQueries();
 }
 
 /** Warm cache for deal-pipeline links (hover). Ignores errors. */
@@ -196,8 +153,7 @@ export function prefetchApplicationsList(
   params: GetApplicationsParams = {},
 ): void {
   const key = applicationsListParamsCacheKey(params);
-  const existing = cache.get(key);
-  if (existing && Date.now() - existing.at < TTL_MS) return;
+  if (getCachedApplicationsList(key) !== undefined) return;
   const url = buildApplicationsListUrl(params);
   void axiosGet(url)
     .then((res) => {
