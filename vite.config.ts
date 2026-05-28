@@ -10,6 +10,9 @@ export default defineConfig({
     include: ["stream-browserify", "buffer", "events"],
     exclude: ["lucide-react"],
   },
+  server: {
+    port: 2000,
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
