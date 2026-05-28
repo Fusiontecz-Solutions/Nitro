@@ -14,6 +14,7 @@ import { ensurePayoffWireTemplate } from './bootstrap/ensurePayoffWireTemplate';
 import { ensureZeroBalanceLetterTemplate } from './bootstrap/ensureZeroBalanceLetterTemplate';
 import { startCollectionPaymentUploadWorker } from './workers/collectionPaymentUploadWorker';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
+import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
 
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err);
@@ -83,7 +84,7 @@ app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.use('/api/v1', router);
+app.use('/api/v1', verifySuperAdminProxy, router);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
