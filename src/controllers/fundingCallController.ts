@@ -3,6 +3,10 @@ import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { sendFundingCallPendingEmail } from '../services/emailService';
+import {
+  isFundingCallStatusCallDone,
+  notifyOperationsDisbursementReady,
+} from '../services/fundingCallDisbursementSideEffects';
 
 /** Align with deal-pipeline queue labels (Agent, Underwriter, Final Underwriter, Contracted, Final). */
 const normalizeQueueKey = (queue: string | null | undefined) =>
@@ -83,6 +87,7 @@ class FundingCallController {
           message: 'Application and callStatus are required',
         });
       }
+      
 
       const applicationStr = String(application);
       let appRecord = null;
@@ -124,6 +129,7 @@ class FundingCallController {
         where: { applicationId: appRecord.id },
         orderBy: { createdAt: 'desc' },
       });
+      const previousCallStatus = latestExisting?.callStatus ?? null;
 
       let record;
 
@@ -194,10 +200,27 @@ class FundingCallController {
         );
       }
 
+      const callStatusStr = String(callStatus);
+      let operationsNotified = false;
+      if (
+        isFundingCallStatusCallDone(callStatusStr) &&
+        !isFundingCallStatusCallDone(previousCallStatus)
+      ) {
+        const notifyResult = await notifyOperationsDisbursementReady({
+          applicationId: appRecord.id,
+          createdById: String(createdBy),
+          skipIfAlreadyNotified: true,
+        });
+        operationsNotified = notifyResult.notified > 0;
+      }
+
       return res.status(201).json({
         success: true,
         message: 'Funding call saved successfully',
-        data: mapFundingCallToApi({ ...record, Application: applicationForResponse }),
+        data: {
+          ...mapFundingCallToApi({ ...record, Application: applicationForResponse }),
+          operationsNotified,
+        },
       });
     } catch (error) {
       console.error('Create funding call error:', error);

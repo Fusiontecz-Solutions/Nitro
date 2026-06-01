@@ -1,0 +1,17 @@
+/// Cached Super Admin platform KPIs (singleton row id = "platform").
+model SuperAdminPlateform {
+  id                        String   @id
+  clientCount               Int      @default(0)
+  isoCount                  Int      @default(0)
+  totalDealsCount           Int      @default(0)
+  fundedDealsCount          Int      @default(0)
+  commissionPortalDealCount Int      @default(0)
+  commissionDealsFunded     Int      @default(0)
+  totalCommission           Decimal  @default(0) @db.Decimal(18, 2)
+  deals                     Json?
+  commission                Json?
+  paymentCards              Json?
+  lastRefreshedAt           DateTime @default(now())
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+}

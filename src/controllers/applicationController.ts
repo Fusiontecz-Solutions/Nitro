@@ -14,6 +14,7 @@ import {
     type AuthenticatedUser,
 } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import { getApplicationStageAccessForUser } from '../services/applicationStageAccess';
 import {
     aggregateApplicationStats,
     aggregateApplicationMonthlyTrend,
@@ -22,7 +23,14 @@ import { classifyFundedApprovedRejected } from '../services/applicationStatsPred
 import {
     getApplicationStatsCache,
     setApplicationStatsCache,
+    invalidateAllApplicationStatsCache,
 } from '../services/applicationStatsCache';
+import { DashboardCacheKind, withDashboardCache } from '../services/dashboardCache';
+import {
+    aggregateDashboardPipelineFunnel,
+    aggregateApplicationTrendChart,
+    listDashboardRecentApplications,
+} from '../services/dashboardAggregatesService';
 import {
     aggregateOperationsDashboardSummary,
     listOperationsDashboardRecentCases,
@@ -38,6 +46,7 @@ import {
     type ApplicationStatsBucketWhereOptions,
 } from '../services/applicationStatsBucketWhere';
 import { getBalancesForApplicationIds } from '../services/collectionPaymentFinancials';
+import { applyContractCompletedSyncToApplicationRecord } from '../services/contractApplicationWorkflowSync';
 import {
     sendApplicationApprovalEmail,
     sendApplicationOfferUpdatedEmail,
@@ -490,7 +499,7 @@ const shouldSetApplicationQueueToDisbursement = (currentQueue: string | null | u
     QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT.has(normalizeWorkflowQueueKeyForDisbursement(currentQueue));
 
 // Helper to map Prisma Application (with includes) to the API shape previously returned by Mongoose
-const mapApplicationToApi = (app: any) => {
+export const mapApplicationToApi = (app: any) => {
     if (!app) return app;
 
     const {
@@ -743,6 +752,42 @@ const blockIfUnderwriterUnclaimedDeal = (
     return true;
 };
 
+/**
+ * Returns 403 when a workflow role (Agent/Underwriter/Final Underwriter) tries to
+ * mutate an application that has advanced past their stage. Non-workflow roles
+ * (Operations/Admin/Super Admin/Accountant/etc.) always pass through.
+ *
+ * Returns `true` when the request handler should `return` after the helper
+ * sent the 403 response.
+ */
+const sendPreviewOnlyForbidden = (
+    res: Response,
+    user: AuthenticatedUser | null | undefined,
+    application:
+        | { currentQueue?: string | null; currentState?: string | null }
+        | null
+        | undefined,
+): boolean => {
+    if (!application) return false;
+    const access = getApplicationStageAccessForUser(user, application);
+    if (access.isPreview) {
+        res.status(403).json({
+            success: false,
+            message:
+                access.reason ||
+                'This deal has moved past your stage and is read-only for your role.',
+            code: 'STAGE_PREVIEW_ONLY',
+            stageAccess: {
+                stageKey: access.stageKey,
+                nextStageLabel: access.nextStageLabel,
+                roleKey: access.roleKey,
+            },
+        });
+        return true;
+    }
+    return false;
+};
+
 class ApplicationController {
     // Create a new application
     async create(req: Request, res: Response) {
@@ -951,6 +996,8 @@ class ApplicationController {
             } catch (emailErr) {
                 console.error('Create application ISO email enqueue failed:', emailErr);
             }
+
+            invalidateAllApplicationStatsCache();
 
             return res.status(201).json({
                 success: true,
@@ -1270,9 +1317,7 @@ class ApplicationController {
                 : '';
 
             const pageNum = Math.max(1, Number(page) || 1);
-            const parsedLimit = Math.max(1, Number(limit) || 10);
-            /** Prevent accidental multi-thousand row pulls; use aggregate endpoints for dashboard totals. */
-            const limitNum = Math.min(parsedLimit, 500);
+            const limitNum = Math.min(Math.max(1, Number(limit) || 10), 500);
             const skip = (pageNum - 1) * limitNum;
             const useLitePayload = String(lite ?? '').trim() === '1';
 
@@ -1413,7 +1458,7 @@ class ApplicationController {
 
             if (search) {
                 const searchStr = String(search);
-                const searchOr: Prisma.ApplicationWhereInput[] = [
+                where.OR = [
                     { type: { contains: searchStr, mode: 'insensitive' } },
                     { note: { contains: searchStr, mode: 'insensitive' } },
                     {
@@ -1428,15 +1473,6 @@ class ApplicationController {
                         },
                     },
                 ];
-                if (String(statsBucket ?? '').trim().toLowerCase() === 'funded') {
-                    searchOr.push(
-                        { dealId: { contains: searchStr, mode: 'insensitive' } },
-                    );
-                    if (/^\d+$/.test(searchStr)) {
-                        searchOr.push({ applicationId: Number(searchStr) });
-                    }
-                }
-                where.OR = searchOr;
             }
 
             if (
@@ -1464,7 +1500,11 @@ class ApplicationController {
             }
 
             let orderByField: string = 'createdAt';
-            if (sortBy === 'createdAt' || sortBy === 'applicationId') {
+            if (
+                sortBy === 'createdAt' ||
+                sortBy === 'applicationId' ||
+                sortBy === 'updatedAt'
+            ) {
                 orderByField = String(sortBy);
             }
             const orderBy: Prisma.ApplicationOrderByWithRelationInput = {
@@ -1782,7 +1822,7 @@ class ApplicationController {
                 underwriterClaimParam ?? '',
             ].join('|');
 
-            const cached = getApplicationStatsCache(cacheKey);
+            const cached = await getApplicationStatsCache(cacheKey);
             if (cached) {
                 res.set('Cache-Control', 'private, max-age=5');
                 return res.status(200).json({
@@ -1799,7 +1839,7 @@ class ApplicationController {
                 underwriterClaim: underwriterClaimParam,
             });
 
-            setApplicationStatsCache(cacheKey, data);
+            await setApplicationStatsCache(cacheKey, data);
             res.set('Cache-Control', 'private, max-age=5');
 
             return res.status(200).json({
@@ -1827,7 +1867,13 @@ class ApplicationController {
                     message: 'Unauthorized',
                 });
             }
-            const data = await aggregateOperationsDashboardSummary(authUser);
+            const roleKey = String(authUser.role ?? '').trim();
+            const opsCacheKey = `${authUser.id}|${roleKey}`;
+            const data = await withDashboardCache(
+                DashboardCacheKind.OPS_SUMMARY,
+                opsCacheKey,
+                () => aggregateOperationsDashboardSummary(authUser),
+            );
             return res.status(200).json({
                 success: true,
                 data,
@@ -1840,6 +1886,7 @@ class ApplicationController {
             });
         }
     }
+
 
     /**
      * Operations dashboard recent list: backend-filtered contracted pipeline rows.
@@ -1855,7 +1902,13 @@ class ApplicationController {
             }
             const rawLimit = Number(req.query.limit);
             const limit = Number.isFinite(rawLimit) ? rawLimit : 200;
-            const data = await listOperationsDashboardRecentCases(authUser, limit);
+            const roleKey = String(authUser.role ?? '').trim();
+            const opsRecentKey = `${authUser.id}|${roleKey}|${limit}`;
+            const data = await withDashboardCache(
+                DashboardCacheKind.OPS_RECENT,
+                opsRecentKey,
+                () => listOperationsDashboardRecentCases(authUser, limit),
+            );
             return res.status(200).json({
                 success: true,
                 data,
@@ -1876,6 +1929,26 @@ class ApplicationController {
     async getAdminDashboardStats(req: Request, res: Response) {
         try {
             const authUser = getAuthenticatedUser(req);
+            const adminCached = await withDashboardCache(
+                DashboardCacheKind.ADMIN,
+                'global',
+                async () => this.buildAdminDashboardStatsPayload(authUser),
+            );
+            return res.status(200).json({
+                success: true,
+                data: adminCached,
+            });
+        } catch (error) {
+            console.error('Get admin dashboard stats error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Heavy admin dashboard aggregation (cached via Redis / memory). */
+    private async buildAdminDashboardStatsPayload(authUser: AuthenticatedUser | null) {
             const now = new Date();
             const last7Days = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
             last7Days.setHours(0, 0, 0, 0);
@@ -2154,51 +2227,37 @@ class ApplicationController {
                 advanceAmount: app.loanAmount ?? null,
             }));
 
-            return res.status(200).json({
-                success: true,
-                data: {
-                    users: {
-                        total: totalUsers,
-                        agents,
-                        underwriters,
-                        finalUnderwriters,
-                        operations,
-                        admins,
-                        clients: totalClients,
-                        syndicators: totalSyndicators,
-                    },
-                    applications: {
-                        funded,
-                        approved,
-                        rejected,
-                        pending,
-                        last7Days: {
-                            funded: fundedLast7,
-                            approved: approvedLast7,
-                            rejected: rejectedLast7,
-                            pending: pendingLast7,
-                        },
-                    },
-                    charts: {
-                        // For the frontend dropdown: you can use these three datasets
-                        // monthlyTrend: last 12 months
-                        // weeklyTrend: last 8 weeks (YYYY-Www)
-                        // yearlyTrend: by calendar year
-                        monthlyTrend,
-                        weeklyTrend,
-                        yearlyTrend,
-                        pipelineFunnel,
-                    },
-                    recentApplications,
+            return {
+                users: {
+                    total: totalUsers,
+                    agents,
+                    underwriters,
+                    finalUnderwriters,
+                    operations,
+                    admins,
+                    clients: totalClients,
+                    syndicators: totalSyndicators,
                 },
-            });
-        } catch (error) {
-            console.error('Get admin dashboard stats error:', error);
-            return res.status(500).json({
-                success: false,
-                message: 'Internal server error',
-            });
-        }
+                applications: {
+                    funded,
+                    approved,
+                    rejected,
+                    pending,
+                    last7Days: {
+                        funded: fundedLast7,
+                        approved: approvedLast7,
+                        rejected: rejectedLast7,
+                        pending: pendingLast7,
+                    },
+                },
+                charts: {
+                    monthlyTrend,
+                    weeklyTrend,
+                    yearlyTrend,
+                    pipelineFunnel,
+                },
+                recentApplications,
+            };
     }
 
     // Get single application by MongoDB ObjectId
@@ -2237,6 +2296,11 @@ class ApplicationController {
                     });
                 }
 
+                await applyContractCompletedSyncToApplicationRecord(
+                    prisma,
+                    applicationRecord,
+                    'application.getById.operations',
+                );
                 const application = mapApplicationToApi(applicationRecord);
 
                 return res.status(200).json({
@@ -2280,6 +2344,11 @@ class ApplicationController {
                 });
             }
 
+            await applyContractCompletedSyncToApplicationRecord(
+                prisma,
+                applicationRecord,
+                'application.getById',
+            );
             const application = mapApplicationToApi(applicationRecord);
 
             return res.status(200).json({
@@ -2329,6 +2398,11 @@ class ApplicationController {
                     });
                 }
 
+                await applyContractCompletedSyncToApplicationRecord(
+                    prisma,
+                    applicationRecord,
+                    'application.getByApplicationId.operations',
+                );
                 const application = mapApplicationToApi(applicationRecord);
 
                 return res.status(200).json({
@@ -2363,6 +2437,11 @@ class ApplicationController {
                 });
             }
 
+            await applyContractCompletedSyncToApplicationRecord(
+                prisma,
+                applicationRecord,
+                'application.getByApplicationId',
+            );
             const application = mapApplicationToApi(applicationRecord);
 
             return res.status(200).json({
@@ -2710,6 +2789,8 @@ class ApplicationController {
 
             const updatedApplication = mapApplicationToApi(updatedRecord);
 
+            invalidateAllApplicationStatsCache();
+
             return res.status(200).json({
                 success: true,
                 message: 'Application updated successfully',
@@ -3030,6 +3111,8 @@ class ApplicationController {
             } catch (notifError) {
                 console.error('Failed to create underwriter notification for queue update:', notifError);
             }
+
+            invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
                 success: true,
@@ -3374,6 +3457,8 @@ class ApplicationController {
                 console.error('Failed to create activity log for state update:', logError);
             }
 
+            invalidateAllApplicationStatsCache();
+
             return res.status(200).json({
                 success: true,
                 message: 'Application state updated successfully',
@@ -3671,6 +3756,8 @@ class ApplicationController {
                 });
             }
 
+            if (sendPreviewOnlyForbidden(res, authUser, application)) return;
+
             if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
                 return;
             }
@@ -3802,6 +3889,8 @@ class ApplicationController {
                     timeout: 120_000,
                 },
             );
+
+            invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
                 success: true,
@@ -5626,6 +5715,138 @@ class ApplicationController {
             });
         } catch (error: any) {
             console.error('Create payment mail log error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    async getDashboardPipelineFunnel(req: Request, res: Response) {
+        try {
+            const data = await withDashboardCache(
+                DashboardCacheKind.FUNNEL,
+                'global',
+                () => aggregateDashboardPipelineFunnel(),
+            );
+            return res.status(200).json({ success: true, data });
+        } catch (error) {
+            console.error('Get dashboard pipeline funnel error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    async getDashboardTrendChart(req: Request, res: Response) {
+        try {
+            const authUser = getAuthenticatedUser(req);
+            const currentUserRole = authUser?.role;
+            const { startDate, endDate, trendView } = req.query as {
+                startDate?: string;
+                endDate?: string;
+                trendView?: string;
+            };
+
+            let start: Date | null = null;
+            let end: Date | null = null;
+            if (startDate) {
+                const d = new Date(startDate);
+                if (!isNaN(d.getTime())) {
+                    d.setHours(0, 0, 0, 0);
+                    start = d;
+                }
+            }
+            if (endDate) {
+                const d = new Date(endDate);
+                if (!isNaN(d.getTime())) {
+                    d.setHours(23, 59, 59, 999);
+                    end = d;
+                }
+            }
+
+            const viewRaw = String(trendView ?? 'monthly').toLowerCase();
+            const trendViewNorm =
+                viewRaw === 'weekly' || viewRaw === 'yearly' ? viewRaw : 'monthly';
+
+            const rawUwClaim = req.query.underwriterClaim;
+            const uwClaimNorm =
+                rawUwClaim != null
+                    ? String(Array.isArray(rawUwClaim) ? rawUwClaim[0] : rawUwClaim)
+                          .trim()
+                          .toLowerCase()
+                    : '';
+            let underwriterClaimParam: 'unclaimed' | 'mine' | null = null;
+            if (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') {
+                underwriterClaimParam = uwClaimNorm;
+            }
+
+            const trendCacheKey = [
+                authUser?.id ?? 'none',
+                String(currentUserRole ?? ''),
+                start ? start.toISOString() : '',
+                end ? end.toISOString() : '',
+                trendViewNorm,
+                underwriterClaimParam ?? '',
+            ].join('|');
+
+            const data = await withDashboardCache(
+                DashboardCacheKind.TREND,
+                trendCacheKey,
+                () =>
+                    aggregateApplicationTrendChart({
+                        authUser,
+                        role: currentUserRole,
+                        startDate: start,
+                        endDate: end,
+                        trendView: trendViewNorm,
+                        underwriterClaim: underwriterClaimParam,
+                    }),
+            );
+
+            return res.status(200).json({ success: true, data });
+        } catch (error) {
+            console.error('Get dashboard trend chart error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    async getDashboardRecentApplications(req: Request, res: Response) {
+        try {
+            const authUser = getAuthenticatedUser(req);
+            if (!authUser) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+            const limitRaw = req.query.limit;
+            const limit = Number.isFinite(Number(limitRaw)) ? Number(limitRaw) : 10;
+            const roleKey = String(authUser.role ?? '').trim();
+            const recentCacheKey = `${authUser.id}|${roleKey}|${limit}`;
+            const cachedPayload = await withDashboardCache(
+                DashboardCacheKind.RECENT,
+                recentCacheKey,
+                async () => {
+                    const { applications, totalItems } = await listDashboardRecentApplications({
+                        authUser,
+                        role: authUser.role,
+                        limit,
+                    });
+                    return {
+                        data: applications.map((app) => mapApplicationToApi(app)),
+                        pagination: { totalItems },
+                    };
+                },
+            );
+            return res.status(200).json({
+                success: true,
+                data: cachedPayload.data,
+                pagination: cachedPayload.pagination,
+            });
+        } catch (error) {
+            console.error('Get dashboard recent applications error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',

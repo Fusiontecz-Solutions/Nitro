@@ -3,6 +3,7 @@ import './config/loadEnv';
 import 'reflect-metadata';
 import { createServer } from 'http';
 import { startCronJob } from './cron-job/crmGmailCronJob';
+import { startSuperAdminPlatformCronJob } from './cron-job/superAdminPlatformCronJob';
 import fileUpload from 'express-fileupload';
 import connectDB from './config/database';
 import router from './routes/index';
@@ -69,6 +70,7 @@ app.use((req, res, next) => {
 cloudinaryConnect();
 console.log('Starting CRM Email Bot...');
 startCronJob();
+startSuperAdminPlatformCronJob();
 // Test Redis connection
 testRedisConnection().catch(console.error);
 startCollectionPaymentUploadWorker();
@@ -82,6 +84,11 @@ app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Hybrid authentication gateway: every /api/v1 request first passes through
+// the Super Admin proxy verifier. If it carries valid x-super-admin-proxy +
+// x-super-admin-secret headers, `req.isSuperAdminProxy` is set and downstream
+// `authenticateToken` will skip tenant JWT validation and synthesize a
+// SUPER_ADMIN principal. Regular tenant-user requests are untouched.
 app.use('/api/v1', verifySuperAdminProxy, router);
 
 // 404 handler
@@ -111,7 +118,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-// Start the HTTP server after DB is ready
+// Start the HTTP server after DB is ready (seed default templates)
 void (async () => {
   await connectDB();
   httpServer.listen(PORT, () => {

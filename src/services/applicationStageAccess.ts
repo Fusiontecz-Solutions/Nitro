@@ -1,0 +1,180 @@
+/**
+ * Stage-aware role access for applications (server side).
+ *
+ * Mirrors `FE/src/lib/applicationStageAccess.ts` so a workflow role (Agent /
+ * Underwriter / Final Underwriter) can SEE deals that have advanced past their
+ * stage but cannot mutate them — they appear as preview only.
+ *
+ * Non-workflow roles (Operations, Admin, Super Admin, Accountant, etc.) are
+ * never locked out by stage and bypass the preview guard entirely.
+ */
+
+import type { AuthenticatedUser } from './applicationService';
+
+export type ApplicationStageMode = 'edit' | 'preview';
+
+export type ApplicationStageKey =
+    | 'AGENT'
+    | 'UNDERWRITER'
+    | 'FINAL_UNDERWRITER'
+    | 'POST_FINAL';
+
+export interface ApplicationStageAccess {
+    mode: ApplicationStageMode;
+    canEdit: boolean;
+    isPreview: boolean;
+    reason: string | null;
+    stageKey: ApplicationStageKey | null;
+    nextStageLabel: string | null;
+    roleKey: string;
+}
+
+const normalizeToken = (value: unknown): string =>
+    String(value ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '');
+
+const normalizeRoleKey = (value: unknown): string => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    let key = raw.toUpperCase().replace(/\s+/g, '_');
+    if (key === 'FINALUNDERWRITER') key = 'FINAL_UNDERWRITER';
+    if (key === 'SUPERADMIN') key = 'SUPER_ADMIN';
+    return key;
+};
+
+const AGENT_STAGE_TOKENS = new Set([
+    '',
+    'new',
+    'agent',
+    'onhold',
+    'review',
+    'draft',
+]);
+
+const UNDERWRITER_STAGE_TOKENS = new Set(['underwriter', 'underwriting']);
+
+const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
+    'finalunderwriter',
+    'finalreview',
+]);
+
+const POST_FINAL_STAGE_TOKENS = new Set([
+    'approved',
+    'declined',
+    'rejected',
+    'contracted',
+    'contractout',
+    'contractsout',
+    'contractsigned',
+    'signedcontracts',
+    'final',
+    'fundingcall',
+    'disbursment',
+    'disbursement',
+    'funded',
+    'completed',
+    'cancelled',
+]);
+
+const STAGE_FRIENDLY_LABEL: Record<ApplicationStageKey, string> = {
+    AGENT: 'Agent',
+    UNDERWRITER: 'Underwriter',
+    FINAL_UNDERWRITER: 'Final Underwriter',
+    POST_FINAL: 'Operations',
+};
+
+const STAGE_ORDER: Record<ApplicationStageKey, number> = {
+    AGENT: 0,
+    UNDERWRITER: 1,
+    FINAL_UNDERWRITER: 2,
+    POST_FINAL: 3,
+};
+
+const ROLE_OWNED_STAGE: Record<string, ApplicationStageKey> = {
+    AGENT: 'AGENT',
+    UNDERWRITER: 'UNDERWRITER',
+    FINAL_UNDERWRITER: 'FINAL_UNDERWRITER',
+};
+
+function resolveStageKey(
+    currentQueue: string | null | undefined,
+    currentState?: string | null | undefined,
+): ApplicationStageKey | null {
+    const queueToken = normalizeToken(currentQueue);
+    const stateToken = normalizeToken(currentState);
+
+    if (queueToken === 'finalunderwriter' && stateToken === 'approved') {
+        return 'POST_FINAL';
+    }
+    if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return 'POST_FINAL';
+    if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'FINAL_UNDERWRITER';
+    if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'UNDERWRITER';
+    if (AGENT_STAGE_TOKENS.has(queueToken)) return 'AGENT';
+
+    if (POST_FINAL_STAGE_TOKENS.has(stateToken)) return 'POST_FINAL';
+    return null;
+}
+
+export interface StageAccessInput {
+    role: string | null | undefined;
+    currentQueue: string | null | undefined;
+    currentState?: string | null | undefined;
+}
+
+export function getApplicationStageAccess(
+    input: StageAccessInput,
+): ApplicationStageAccess {
+    const roleKey = normalizeRoleKey(input.role);
+    const stageKey = resolveStageKey(input.currentQueue, input.currentState);
+
+    const baseEdit: ApplicationStageAccess = {
+        mode: 'edit',
+        canEdit: true,
+        isPreview: false,
+        reason: null,
+        stageKey,
+        nextStageLabel: null,
+        roleKey,
+    };
+
+    const ownedStage = ROLE_OWNED_STAGE[roleKey];
+    if (!ownedStage) return baseEdit;
+    if (!stageKey) return baseEdit;
+
+    if (STAGE_ORDER[stageKey] <= STAGE_ORDER[ownedStage]) {
+        return baseEdit;
+    }
+
+    const nextLabel = STAGE_FRIENDLY_LABEL[stageKey];
+    return {
+        ...baseEdit,
+        mode: 'preview',
+        canEdit: false,
+        isPreview: true,
+        nextStageLabel: nextLabel,
+        reason: `This deal has moved to ${nextLabel} — preview only for your role.`,
+    };
+}
+
+/**
+ * Resolves stage access for a given user against an application record.
+ * Accepts an arbitrary application-like object (Prisma row or mapped DTO).
+ */
+export function getApplicationStageAccessForUser(
+    user: AuthenticatedUser | null | undefined,
+    application:
+        | {
+            currentQueue?: string | null;
+            currentState?: string | null;
+        }
+        | null
+        | undefined,
+): ApplicationStageAccess {
+    return getApplicationStageAccess({
+        role: user?.role,
+        currentQueue: application?.currentQueue ?? null,
+        currentState: application?.currentState ?? null,
+    });
+}

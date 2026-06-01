@@ -22,6 +22,7 @@ const mapCommentToApi = (comment: any) => {
     ...rest
   } = comment;
 
+
   const mappedCreatedBy =
     createdBy &&
     ({
@@ -56,6 +57,7 @@ const mapCommentToApi = (comment: any) => {
     updatedAt,
   };
 };
+
 
 class CommentController {
   // Create a new comment on an application

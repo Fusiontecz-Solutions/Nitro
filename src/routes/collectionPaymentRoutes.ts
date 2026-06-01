@@ -8,6 +8,10 @@ router.use(authenticateToken);
 
 router.get('/dashboard', collectionPaymentController.dashboard.bind(collectionPaymentController));
 router.get(
+  '/financial-overview/summary',
+  collectionPaymentController.financialOverviewSummary.bind(collectionPaymentController),
+);
+router.get(
   '/dashboard/credit-debit-trend',
   collectionPaymentController.creditDebitTrend.bind(collectionPaymentController),
 );

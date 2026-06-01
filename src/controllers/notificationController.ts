@@ -1,6 +1,10 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import {
+    isFundingCallStatusCallDone,
+    notifyOperationsDisbursementReady,
+} from '../services/fundingCallDisbursementSideEffects';
 
 // Helper to map Prisma Application (with includes) to the API shape previously returned by Mongoose
 const mapApplicationToApi = (app: any) => {
@@ -548,6 +552,100 @@ class NotificationController {
         }
     }
 
+    /**
+     * Super Admin / Admin: manually notify Operations that disbursement may proceed
+     * (e.g. funding call already saved as Call Done). Also used by the Funding Call UI button.
+     */
+    async notifyOperationsDisbursement(req: Request, res: Response) {
+        try {
+            const createdBy = (req as any).user?.id;
+            if (!createdBy) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'User authentication required',
+                });
+            }
+
+            const role = String((req as any).user?.role || '').toUpperCase();
+            if (role !== 'SUPER_ADMIN' && role !== 'ADMIN') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only Super Admin or Admin can notify Operations for disbursement',
+                });
+            }
+
+            const { applicationId } = req.body;
+            if (!applicationId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application ID is required',
+                });
+            }
+
+            const applicationStr = String(applicationId);
+            let application = null;
+
+            if (/^\d+$/.test(applicationStr)) {
+                application = await prisma.application.findUnique({
+                    where: { applicationId: Number(applicationStr) },
+                });
+            } else {
+                application = await prisma.application.findUnique({
+                    where: { id: applicationStr },
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const latestFundingCall = await prisma.fundingCall.findFirst({
+                where: { applicationId: application.id },
+                orderBy: { createdAt: 'desc' },
+                select: { callStatus: true },
+            });
+
+            if (!isFundingCallStatusCallDone(latestFundingCall?.callStatus)) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        'Funding call must be saved with status "Call Done" before notifying Operations',
+                });
+            }
+
+            const result = await notifyOperationsDisbursementReady({
+                applicationId: application.id,
+                createdById: String(createdBy),
+                skipIfAlreadyNotified: false,
+            });
+
+            return res.status(201).json({
+                success: true,
+                message:
+                    result.notified > 0
+                        ? 'Operations notified successfully'
+                        : result.skipped
+                          ? 'Operations were already notified for this application'
+                          : 'No active Operations users available to notify',
+                data: {
+                    notified: result.notified,
+                    emailsSent: result.emailsSent,
+                    recipients: result.recipients,
+                    skipped: result.skipped,
+                },
+            });
+        } catch (error: any) {
+            console.error('Notify Operations disbursement error:', error?.message || error, error?.stack);
+            return res.status(500).json({
+                success: false,
+                message: error?.message || 'Internal server error',
+            });
+        }
+    }
+
     // Get notifications for a user
     async getNotifications(req: Request, res: Response) {
         try {
@@ -934,4 +1032,3 @@ class NotificationController {
 
 const notificationController = new NotificationController();
 export default notificationController;
-

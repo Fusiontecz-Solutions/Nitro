@@ -1,8 +1,8 @@
 import path from 'path';
 import sendMail, { isOutboundSmtpConfigured } from '../config/nodemailer';
 import {
-  resolveCrmFrontendBaseUrl,
-  resolveDecisionLogicInvitationBaseUrl,
+    resolveCrmFrontendBaseUrl,
+    resolveDecisionLogicInvitationBaseUrl,
 } from '../utils/crmFrontendUrl';
 
 /**
@@ -18,8 +18,8 @@ const BRAND_ASSETS_DIR = path.resolve(__dirname, '..', '..', 'public');
 const BRAND_LIGHT_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'barclays_transparent.png');
 const BRAND_DARK_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'barclays_dark_theme_logo.png');
 
-const BRAND_LIGHT_LOGO_CID = 'brand-logo-light@finexusai';
-const BRAND_DARK_LOGO_CID = 'brand-logo-dark@finexusai';
+const BRAND_LIGHT_LOGO_CID = 'brand-logo-light@Barclays Advance';
+const BRAND_DARK_LOGO_CID = 'brand-logo-dark@Barclays Advance';
 
 /**
  * Inline attachments (Content-ID) for the Barclays logo. Pass these to
@@ -59,7 +59,7 @@ export function buildBrandLogoAttachments(): Array<{
  * uses `<img>` (VML/Word layout) inside the `[if mso]` branch.
  *
  * Returns the table row markup only — callers paste it where the previous
- * `<span>FinexusAI</span>` row used to live.
+ * `<span>Barclays Advance</span>` row used to live.
  */
 function buildBrandHeaderRowHtml(): string {
     return `
@@ -94,7 +94,7 @@ function buildBrandHeaderRowHtml(): string {
                             <!--[if mso]>
                             <span style="line-height:normal; font-family: Arial, Helvetica, sans-serif; font-size: 1px; color:#ffffff">&nbsp;<br /></span>
                             <img src="cid:${BRAND_LIGHT_LOGO_CID}"
-                                 alt="Barclays"
+                                 alt="Barclays Advance"
                                  width="180"
                                  border="0"
                                  style="display:block; margin: 0 auto; width:180px; height:auto; border:0; outline:none;" />
@@ -354,7 +354,7 @@ export const buildApplicationApprovalEmailHtml = ({
                                         <p style="font-size: 15px; color: #666; line-height: 1.5;">
                                             We are pleased to inform you that your application for 
                                             <strong style="color: #0b71a9;">'${safeCompanyName}'</strong> 
-                                            has been pre-approved for a Barclays Advance!
+                                            has been pre-approved by <strong style="color: #0b71a9;">Barclays Advance</strong>!
                                         </p>
 
                                         <p style="font-size: 14px; color: #666; line-height: 1.5;">
@@ -551,6 +551,95 @@ export async function sendOperationsIsoApprovalAlertEmail({
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Operations ISO-approval alert email send failed:', { to: toTrimmed, error });
+        return false;
+    }
+}
+
+export interface OperationsDisbursementReadyEmailParams {
+    to: string;
+    operationsName: string;
+    applicationNumber: string;
+    clientName: string;
+    viewApplicationUrl?: string;
+}
+
+/** Operations alert when funding call is "Call Done" and disbursement can proceed. */
+export async function sendOperationsDisbursementReadyEmail({
+    to,
+    operationsName,
+    applicationNumber,
+    clientName,
+    viewApplicationUrl,
+}: OperationsDisbursementReadyEmailParams): Promise<boolean> {
+    const toTrimmed = String(to || '').trim();
+    if (!toTrimmed) {
+        console.warn('[email] Operations disbursement-ready alert skipped: empty recipient');
+        return false;
+    }
+
+    const safeOperationsName = String(operationsName || '').trim() || 'Operations Team';
+    const safeApplicationNumber = String(applicationNumber || '').trim() || 'N/A';
+    const safeClientName = String(clientName || '').trim() || 'Client';
+    const applicationHref = withApplicationDetailsOverviewHref(viewApplicationUrl);
+
+    const subject = `Funding call complete — proceed with disbursement (#${safeApplicationNumber})`;
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Disbursement Ready</title>
+    ${buildBrandHeaderStyles()}
+</head>
+<body style="margin:0; padding:0; background:#f4f7f9; font-family: Arial, Helvetica, sans-serif;">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+            <td style="padding: 20px 0;">
+                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background:#ffffff; border:1px solid #e5e7eb;">
+                    ${buildBrandHeaderRowHtml()}
+                    <tr>
+                        <td style="padding: 20px 24px 8px;">
+                            <h2 style="margin:0; color:#111827; font-size:22px;">Ready for Disbursement</h2>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 0 24px 20px; color:#374151; font-size:14px; line-height:1.6;">
+                            <p style="margin: 0 0 12px;">Hi ${safeOperationsName},</p>
+                            <p style="margin: 0 0 8px;">
+                                <strong>Application ID:</strong> #${safeApplicationNumber}
+                            </p>
+                            <p style="margin: 0 0 8px;">
+                                <strong>Client:</strong> ${safeClientName}
+                            </p>
+                            <p style="margin: 0 0 16px;">
+                                The funding call for this application is marked <strong>Call Done</strong>.
+                                You may now proceed with disbursement in the CRM.
+                            </p>
+                            ${
+                                applicationHref
+                                    ? `<p style="margin: 0;"><a href="${applicationHref}" style="color:#1E88E5;">Open disbursement in CRM</a></p>`
+                                    : ''
+                            }
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>`;
+
+    try {
+        await sendMail({
+            to: toTrimmed,
+            subject,
+            html,
+            attachments: buildBrandLogoAttachments(),
+        });
+        return true;
+    } catch (error) {
+        console.error('Operations disbursement-ready email send failed:', { to: toTrimmed, error });
         return false;
     }
 }
@@ -940,7 +1029,7 @@ export const buildApplicationFundedEmailHtml = ({
 
                                     
                                         <p style="font-size: 13px; color: #777; margin-top: 20px; line-height: 1.4;">
-                                            Thank you for choosing FinexusAI as your funding partner. We look forward to supporting your business growth!
+                                            Thank you for choosing Barclays Advance as your funding partner. We look forward to supporting your business growth!
                                         </p>
                                     </td>
                                 </tr>
@@ -1020,7 +1109,7 @@ export const buildApplicationSentToUnderwritingClientEmailHtml = ({
                                             </tr>
                                         </table>
                                         ${isPublicTokenLink
-            ? `<p style="font-size: 12px; color: #777; margin: 8px 0 0 0;">No FinexusAI login required. This personal link expires after 90 days; do not forward to anyone you do not trust.</p>`
+            ? `<p style="font-size: 12px; color: #777; margin: 8px 0 0 0;">No Barclays Advance CRM login required. This personal link expires after 90 days; do not forward to anyone you do not trust.</p>`
             : ''
         }`
         : `<p style="font-size: 13px; color: #777;">We could not generate a secure portal link. Please contact your representative for an updated link.</p>`;
@@ -1426,16 +1515,16 @@ export async function sendDecisionLogicEmail(
     if (!isOutboundSmtpConfigured()) {
         throw new Error(
             'Decision Logic invitation email cannot be sent: outbound mail is not configured. ' +
-                'Set SENDGRID_API_KEY (recommended: SendGrid SMTP via smtp.sendgrid.net, user "apikey") ' +
-                'or SMTP_AUTH_USER + SMTP_AUTH_PASS. Also set a verified From address: SMTP_FROM, MAIL_FROM, ' +
-                'SENDGRID_FROM_EMAIL, or SENDGRID_AUTH_USER.',
+            'Set SENDGRID_API_KEY (recommended: SendGrid SMTP via smtp.sendgrid.net, user "apikey") ' +
+            'or SMTP_AUTH_USER + SMTP_AUTH_PASS. Also set a verified From address: SMTP_FROM, MAIL_FROM, ' +
+            'SENDGRID_FROM_EMAIL, or SENDGRID_AUTH_USER.',
         );
     }
 
     const hostedOrigin = String(
         process.env.BARCLAYS_HOSTED_ORIGIN ||
-            process.env.DECISION_LOGIC_HOSTED_FALLBACK_ORIGIN ||
-            'https://barclays.finexusai.com',
+        process.env.DECISION_LOGIC_HOSTED_FALLBACK_ORIGIN ||
+            'https://barclays.Barclays Advance.com',
 
     )
         .trim()
@@ -1448,6 +1537,12 @@ export async function sendDecisionLogicEmail(
         ? `${base}/decision-logic?token=${encodeURIComponent(token)}`
         : `(configure a frontend base URL in env) token=${encodeURIComponent(token)}`;
     const hostedLink = `${hostedOrigin}/decision-logic?token=${encodeURIComponent(token)}`;
+    let hostedLinkHostname = 'hosted site';
+    try {
+        hostedLinkHostname = new URL(hostedOrigin).hostname;
+    } catch {
+        /* keep fallback label */
+    }
     const primaryHost = decisionLogicInvitationHostKey(base);
     const hostedHost = decisionLogicInvitationHostKey(hostedOrigin);
     const primaryIsHosted =

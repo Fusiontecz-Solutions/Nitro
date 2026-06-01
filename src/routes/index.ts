@@ -44,6 +44,7 @@ import syndicatorRoutes from './syndicatorRoutes';
 import applicationSyndicatorRoutes from './applicationSyndicatorRoutes';
 import avochatoVoiceRoutes from './avochatoVoiceRoutes';
 import avochatoMessagingRoutes from './avochatoMessagingRoutes';
+import superAdminPlatformRoutes from './superAdminPlatformRoutes';
 
 router.use('/auth', authRoutes);
 router.use('/roles', roleRoutes);
@@ -88,6 +89,7 @@ router.use('/syndicators', syndicatorRoutes);
 router.use('/application-syndicators', applicationSyndicatorRoutes);
 router.use('/avochato-voice', avochatoVoiceRoutes);
 router.use('/avochato-messaging', avochatoMessagingRoutes);
+router.use('/super-admin-platform', superAdminPlatformRoutes);
 
 // router.get('/google/test', async (req, res) => {
 //   try {
