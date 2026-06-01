@@ -1,15 +1,13 @@
 import type { Store } from '@reduxjs/toolkit';
-import { readPaymentDashboardSessionCache } from '@/lib/paymentDashboardSessionCache';
+import {
+    hydratePaymentDashboardCacheFromIdb,
+    readPaymentDashboardSessionCache,
+} from '@/lib/paymentDashboardSessionCache';
 import { hydratePaymentDashboardFromCache } from '@/redux/slices/paymentDashboardSlice';
 import { hydratePaymentDashboardCohortFromCache } from '@/redux/slices/paymentDashboardCohortSlice';
 import { hydratePaymentDashboardMoneyFromCache } from '@/redux/slices/paymentDashboardMoneySlice';
 
-/**
- * Synchronously restore the last session snapshot before React renders (F5 / hard refresh).
- * Eliminates multi-minute “all $0.00” empty states while slow APIs refetch in the background.
- */
-export function hydratePaymentDashboardFromSession(store: Store): void {
-    if (typeof window === 'undefined') return;
+function applySnapshotToStore(store: Store): void {
     const snap = readPaymentDashboardSessionCache();
     if (!snap) return;
 
@@ -32,4 +30,15 @@ export function hydratePaymentDashboardFromSession(store: Store): void {
             }),
         );
     }
+}
+
+/** @deprecated Prefer hydratePaymentDashboardFromIdb (async, IndexedDB). */
+export function hydratePaymentDashboardFromSession(store: Store): void {
+    applySnapshotToStore(store);
+}
+
+/** Restore payment dashboard from IndexedDB into Redux (after L1 warm). */
+export async function hydratePaymentDashboardFromIdb(store: Store): Promise<void> {
+    await hydratePaymentDashboardCacheFromIdb();
+    applySnapshotToStore(store);
 }

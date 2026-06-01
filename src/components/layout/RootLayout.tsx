@@ -15,9 +15,8 @@ import {
     fetchOperationsDashboardSummary,
     fetchOperationsDashboardRecentCases,
 } from "@/redux/actions/operationsDashboardActions";
-import { getPaymentDashboard } from "@/redux/actions/paymentDashboardActions";
+import { fetchPaymentFinancialOverviewSummary } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
-import { fetchPaymentDashboardCreditDebitTrend } from "@/redux/actions/paymentDashboardTrendActions";
 import { DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
 import { OnlineStatusSync } from "@/components/chat/OnlineStatusSync";
 import RealtimeNotificationsListener from "@/components/notifications/RealtimeNotificationsListener";
@@ -27,7 +26,7 @@ import {
     isOpsDashboardWarmRoute,
     isPaymentsRoute,
 } from "@/lib/shellPrefetchRoutes";
-import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
+import { isPrefetchFresh } from "@/lib/prefetchFreshness";
 import { axiosGet } from "@/redux/axios";
 import { toast } from "react-toastify";
 
@@ -153,7 +152,7 @@ const RootLayout = () => {
         if (!isOpsDashboardWarmRoute(pathname, normalizedRole)) return;
         if (
             opsDashboard.hasLoadedSummaryOnce &&
-            isShellPrefetchFresh(opsDashboard.lastSummaryFetchedAt)
+            isPrefetchFresh(opsDashboard.lastSummaryFetchedAt)
         ) {
             // Counts come from parallel DB aggregates — no refetch needed.
         } else {
@@ -161,7 +160,7 @@ const RootLayout = () => {
         }
         if (
             opsDashboard.hasLoadedRecentOnce &&
-            isShellPrefetchFresh(opsDashboard.lastRecentFetchedAt)
+            isPrefetchFresh(opsDashboard.lastRecentFetchedAt)
         ) {
             // Keep recent list snapshot.
         } else {
@@ -184,7 +183,12 @@ const RootLayout = () => {
         if (!localStorage.getItem("token")) return;
         if (!isPaymentsRoute(pathname)) return;
         if (!paymentDashboardFetched && !paymentDashboardLoading) {
-            void dispatch(getPaymentDashboard());
+            void dispatch(
+                fetchPaymentFinancialOverviewSummary({
+                    chartYear: new Date().getFullYear(),
+                    chartMonth: new Date().getMonth(),
+                }),
+            );
         }
         if (!paymentCohortFetched && !paymentCohortInFlight) {
             void dispatch(
@@ -203,20 +207,6 @@ const RootLayout = () => {
         paymentCohortFetched,
         paymentCohortInFlight,
     ]);
-
-    useEffect(() => {
-        if (isPublicRoute) return;
-        if (!localStorage.getItem("token")) return;
-        if (!isPaymentsRoute(pathname)) return;
-        const year = new Date().getFullYear();
-        void dispatch(
-            fetchPaymentDashboardCreditDebitTrend({
-                view: "monthly",
-                year,
-                month: new Date().getMonth(),
-            }),
-        );
-    }, [dispatch, isPublicRoute, pathname]);
 
     useEffect(() => {
         if (isPublicRoute) return;

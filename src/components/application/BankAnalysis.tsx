@@ -17,8 +17,6 @@ import OfferDecisionToggle from "./OfferDecisionToggle";
 import { axiosGet } from "@/redux/axios";
 import {
     getBankDetails,
-    // createBankDetail, 
-    // updateBankDetail
 } from "@/redux/actions/bankDetailActions";
 import {
     getMonths,

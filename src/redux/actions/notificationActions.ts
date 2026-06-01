@@ -46,6 +46,42 @@ export const notifyFinalUnderwriterOnAssignment = createAsyncThunk(
     }
 );
 
+export interface NotifyOperationsDisbursementPayload {
+    applicationId: string | number;
+}
+
+export interface NotifyOperationsDisbursementResponse {
+    notified: number;
+    emailsSent: number;
+    recipients: Array<{ id: string; name: string; email: string }>;
+}
+
+/**
+ * Super Admin → Operations: signals that the Funding Call is complete and
+ * Operations may proceed with disbursement. Backend persists a notification,
+ * pushes it via Socket.IO (so the bell updates immediately) and emails every
+ * active Operations user that has a verified address.
+ */
+export const notifyOperationsForDisbursement = createAsyncThunk(
+    'notification/notifyOperationsForDisbursement',
+    async (data: NotifyOperationsDisbursementPayload, { rejectWithValue }) => {
+        try {
+            const response = await axiosPost(
+                '/notifications/notify-operations-disbursement',
+                data,
+            );
+            return response.data;
+        } catch (error: any) {
+            const message =
+                error.response?.data?.message ||
+                error.message ||
+                'Failed to notify Operations for disbursement';
+            console.error('Notify Operations disbursement error:', message, error.response?.data);
+            return rejectWithValue(message);
+        }
+    },
+);
+
 // Get notifications for current user
 export const getNotifications = createAsyncThunk(
     'notification/getNotifications',

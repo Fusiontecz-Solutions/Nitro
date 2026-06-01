@@ -23,13 +23,17 @@ import {
  *     returned by GET /notifications, so the existing reducer can prepend it
  *     directly without an extra REST round-trip.
  *   - `meta.realtimeKind`: tag the UI uses to render context-specific in-app
- *     toasts (e.g. "ISO approved Application #X — you can now create the
- *     contract" for OPERATIONS users, click-through deep-link to the app).
+ *     toasts (e.g. ISO approval for OPERATIONS, contract completed for Super
+ *     Admin with a deep-link to the Final tab).
  *
  * Mounted once at the app root (inside SocketProvider) so it runs for every
  * authenticated user and never duplicates listeners.
  */
-type RealtimeKind = "iso_approval_for_operations" | "application_approved";
+type RealtimeKind =
+    | "iso_approval_for_operations"
+    | "application_approved"
+    | "contract_completed_for_super_admin"
+    | "funding_call_disbursement_ready";
 
 interface IncomingNotificationEvent {
     notification: Notification;
@@ -70,6 +74,8 @@ const RealtimeNotificationsListener = () => {
             const role = userRoleRef.current;
             const kind = event?.meta?.realtimeKind;
             const isOpsRecipient = role === "OPERATIONS";
+            const isSuperAdmin =
+                role === "SUPER_ADMIN" || role === "SUPERADMIN";
             const applicationLink = (() => {
                 if (event?.meta?.actionUrl) return event.meta.actionUrl;
                 const app = incoming.application;
@@ -79,6 +85,52 @@ const RealtimeNotificationsListener = () => {
                 }
                 return null;
             })();
+
+            if (kind === "funding_call_disbursement_ready" && isOpsRecipient) {
+                toast.success(
+                    () => (
+                        <div className="flex flex-col gap-1">
+                            <span className="font-semibold">{incoming.title}</span>
+                            <span className="text-sm">{incoming.message}</span>
+                            {applicationLink ? (
+                                <span className="text-xs underline mt-1">
+                                    Open Disbursement tab to continue
+                                </span>
+                            ) : null}
+                        </div>
+                    ),
+                    {
+                        autoClose: 8000,
+                        onClick: () => {
+                            if (applicationLink) navigate(applicationLink);
+                        },
+                    },
+                );
+                return;
+            }
+
+            if (kind === "contract_completed_for_super_admin" && isSuperAdmin) {
+                toast.success(
+                    () => (
+                        <div className="flex flex-col gap-1">
+                            <span className="font-semibold">{incoming.title}</span>
+                            <span className="text-sm">{incoming.message}</span>
+                            {applicationLink ? (
+                                <span className="text-xs underline mt-1">
+                                    Open Final tab to continue
+                                </span>
+                            ) : null}
+                        </div>
+                    ),
+                    {
+                        autoClose: 8000,
+                        onClick: () => {
+                            if (applicationLink) navigate(applicationLink);
+                        },
+                    },
+                );
+                return;
+            }
 
             // Operations users get a high-priority CTA toast; everyone else
             // gets a quiet info toast so they're aware without distraction.

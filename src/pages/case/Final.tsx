@@ -15,7 +15,9 @@ import { toast } from 'react-toastify';
 import ApplicationSummary from '@/components/application/ApplicationSummary';
 
 const textareaFieldClass =
-  'w-full border border-gray-200 rounded-md px-3 py-2.5 text-sm md:text-base text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-[#1e60a3]/40 focus:border-[#1e60a3] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:ring-sky-500/30 dark:focus:border-sky-500';
+  'w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-sm md:text-base text-gray-700 bg-white leading-5 focus:outline-none focus:ring-2 focus:ring-[#1e60a3]/40 focus:border-[#1e60a3] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:ring-sky-500/30 dark:focus:border-sky-500';
+const selectFieldClass =
+  'w-full cursor-pointer border border-gray-200 rounded-md px-2.5 py-1.5 text-sm md:text-base text-gray-700 bg-white leading-5 focus:outline-none focus:ring-2 focus:ring-[#1e60a3]/40 focus:border-[#1e60a3] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-sky-500/30 dark:focus:border-sky-500';
 
 const AutoResizeTextarea = ({
   value,
@@ -52,7 +54,7 @@ const AutoResizeTextarea = ({
       onChange={handleInput}
       onFocus={(e) => resize(e.currentTarget)}
       className={`${className ?? ''} resize-none overflow-hidden`.trim()}
-      style={{ minHeight: '44px' }}
+      style={{ minHeight: '34px' }}
     />
   );
 };
@@ -80,28 +82,48 @@ export const Final = ({ applicationId, onBack }: FinalProps) => {
 
   const formFields = [
     { key: 'nature_business', label: 'NATURE OF THE BUSINESS' },
-    { key: 'business_duration', label: 'HOW LONG IN BUSINESS' },
+    { key: 'business_duration', label: 'HOW LONG IN BUSINESS?' },
     { key: 'previous_experience', label: 'PREVIOUS EXPERIENCE' },
-    { key: 'existing_business_purchase', label: 'BOUGHT EXISTING OR ESTABLISHED' },
+    { key: 'existing_business_purchase', label: 'BOUGHT EXISTING OR ESTABLISHED?' },
     { key: 'ownership_percentage', label: 'PERCENTAGE OF OWNERSHIP' },
-    { key: 'location_count', label: 'HOW MANY LOCATIONS' },
-    { key: 'current_location_duration', label: 'HOW LONG IN CURRENT LOCATION' },
-    { key: 'lease_or_own', label: 'LEASE OR OWN - CURRENT' },
-    { key: 'relocation_plan', label: 'ANY PLANS TO RELOCATE' },
-    { key: 'employee_count', label: 'HOW MANY EMPLOYEES' },
+    { key: 'location_count', label: 'HOW MANY LOCATIONS?' },
+    { key: 'current_location_duration', label: 'HOW LONG IN CURRENT LOCATION?' },
+    { key: 'lease_or_own', label: 'LEASE OR OWN - CURRENT?' },
+    { key: 'relocation_plan', label: 'ANY PLANS TO RELOCATE?' },
+    { key: 'employee_count', label: 'HOW MANY EMPLOYEES?' },
     { key: 'payroll_type', label: 'PAYROLL TYPE' },
     { key: 'payroll_frequency', label: 'PAYROLL FREQUENCY' },
     { key: 'payroll_processor', label: 'PAYROLL PROCESSOR' },
-    { key: 'bank_accounts_count', label: 'HOW MANY BANK ACCTS FOR BIZ' },
-    { key: 'receivables_advertise', label: 'MAJORITY OF RECEIVABLES | ADVERTISE' },
+    { key: 'bank_accounts_count', label: 'HOW MANY BANK ACCTS FOR BIZ?' },
+    { key: 'receivables_advertise', label: 'MAJORITY OF RECEIVABLES | ADVERTISE?' },
     { key: 'use_of_funds', label: 'USE OF FUNDS' },
-    { key: 'purchase_agreement_read', label: 'DID YOU READ AND SIGNED OUR PURCHASE AGREEMENT' },
-    { key: 'understand_funding_fees', label: 'DO YOU UNDERSTAND THE FUNDING, AND AGREE WITH ALL OF THE FEES' },
-    { key: 'personal_guarantee_understood', label: 'DO YOU UNDERSTAND THE PERSONAL GUARANTEE ON OUR AGREEMENT' },
-    { key: 'afford_existing_positions', label: 'WILL YOUR BUSINESS BE ABLE TO COMFORTABLY AFFORD ALL EXISTING MCA POSITIONS' },
-    { key: 'additional_funding_mentioned', label: 'HAS iso MENTIONED ADDITIONAL FUNDING INCLUDING ALTERNATIVE LOC' },
-    { key: 'bankruptcy_last_6_months', label: 'HAVE YOU FILED FOR BK OR RESTRUCTURE THE LAST 6 MONTHS' },
-    { key: 'fraud_acknowledgement', label: 'DO YOU ACKNOWLEDGE THAT ANY FALSE STATEMENTS MAY CONSTITUTE FRAUD AND SUBJECT YOU TO LEGAL ACTION' },
+    { key: 'purchase_agreement_read', label: 'DID YOU READ AND SIGNED OUR PURCHASE AGREEMENT?' },
+    { key: 'understand_funding_fees', label: 'DO YOU UNDERSTAND THE FUNDING, AND AGREE WITH ALL OF THE FEES?' },
+    { key: 'personal_guarantee_understood', label: 'DO YOU UNDERSTAND THE PERSONAL GUARANTEE ON OUR AGREEMENT?' },
+    { key: 'afford_existing_positions', label: 'WILL YOUR BUSINESS BE ABLE TO COMFORTABLY AFFORD ALL EXISTING MCA POSITIONS?' },
+    { key: 'additional_funding_mentioned', label: 'HAS iso MENTIONED ADDITIONAL FUNDING INCLUDING ALTERNATIVE LOC?' },
+    { key: 'bankruptcy_last_6_months', label: 'HAVE YOU FILED FOR BK OR RESTRUCTURE THE LAST 6 MONTHS?' },
+    { key: 'fraud_acknowledgement', label: 'DO YOU ACKNOWLEDGE THAT ANY FALSE STATEMENTS MAY CONSTITUTE FRAUD AND SUBJECT YOU TO LEGAL ACTION?' },
+  ] as const;
+  const yesNoQuestionKeys = new Set<string>([
+    'existing_business_purchase',
+    'relocation_plan',
+    'purchase_agreement_read',
+    'understand_funding_fees',
+    'personal_guarantee_understood',
+    'afford_existing_positions',
+    'additional_funding_mentioned',
+    'bankruptcy_last_6_months',
+    'fraud_acknowledgement',
+  ]);
+  const payrollFrequencyOptions = ['Daily', 'Weekly', 'Bi-weekly', 'Monthly'] as const;
+  const leaseOrOwnOptions = ['Lease', 'Own'] as const;
+  const businessDurationOptions = [
+    'Less than 6 months',
+    '6-12 months',
+    '1-2 years',
+    '2-5 years',
+    '5+ years',
   ] as const;
 
   const answersForApplication =
@@ -198,32 +220,83 @@ export const Final = ({ applicationId, onBack }: FinalProps) => {
   // };
 
   return (
-    <div className="min-h-screen bg-gray-50 bg-transparent px-3 py-4 md:px-6 md:py-6 dark:bg-transparent">
-      <div className="max-w-8xl mx-auto flex flex-col gap-6">
+    <div className="min-h-screen bg-gray-50 bg-transparent px-3 py-3 md:px-5 md:py-5 dark:bg-transparent">
+      <div className="max-w-8xl mx-auto flex flex-col gap-4">
         <ApplicationSummary applicationId={applicationId} onBack={onBack} />
 
         {/* Form Section - Now its own white card */}
-        <div className="bg-white px-4 py-5 md:px-8 md:py-7 rounded-lg shadow-md dark:border dark:border-slate-700 dark:bg-[#141517] dark:shadow-lg dark:shadow-black/20">
-          <div className="mb-6 border-b border-gray-200 pb-3 dark:border-slate-700">
+        <div className="bg-white px-3 py-4 md:px-5 md:py-5 rounded-lg shadow-md dark:border dark:border-slate-700 dark:bg-[#141517] dark:shadow-lg dark:shadow-black/20">
+          <div className="mb-4 border-b border-gray-200 pb-2 dark:border-slate-700">
             <h2 className="text-sm md:text-md font-bold text-gray-700 dark:text-slate-100">
               Merchant Interview
             </h2>
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-10 gap-y-5">
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-x-4 gap-y-3">
             {formFields.map((field) => (
               <div
                 key={field.key}
-                className="flex flex-col gap-2 bg-gray-50/40 rounded-md px-3 py-3 dark:bg-slate-800/40"
+                className="flex flex-col gap-1.5 bg-gray-50/40 rounded-md px-2.5 py-2 dark:bg-slate-800/40"
               >
                 <label className="text-[11px] md:text-xs font-medium text-gray-700 uppercase tracking-wide leading-snug dark:text-slate-300">
                   {field.label}
                 </label>
                 <div className="flex items-start gap-2">
-                  <AutoResizeTextarea
-                    className={textareaFieldClass}
-                    value={(answersForApplication[field.key]?.answer as string) || ''}
-                    onChange={(val) => handleChange(field.key, field.label, val)}
-                  />
+                  {field.key === 'business_duration' ? (
+                    <select
+                      className={selectFieldClass}
+                      value={(answersForApplication[field.key]?.answer as string) || ''}
+                      onChange={(e) => handleChange(field.key, field.label, e.target.value)}
+                    >
+                      <option value="">Select</option>
+                      {businessDurationOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  ) : field.key === 'payroll_frequency' ? (
+                    <select
+                      className={selectFieldClass}
+                      value={(answersForApplication[field.key]?.answer as string) || ''}
+                      onChange={(e) => handleChange(field.key, field.label, e.target.value)}
+                    >
+                      <option value="">Select</option>
+                      {payrollFrequencyOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  ) : field.key === 'lease_or_own' ? (
+                    <select
+                      className={selectFieldClass}
+                      value={(answersForApplication[field.key]?.answer as string) || ''}
+                      onChange={(e) => handleChange(field.key, field.label, e.target.value)}
+                    >
+                      <option value="">Select</option>
+                      {leaseOrOwnOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  ) : yesNoQuestionKeys.has(field.key) ? (
+                    <select
+                      className={selectFieldClass}
+                      value={(answersForApplication[field.key]?.answer as string) || ''}
+                      onChange={(e) => handleChange(field.key, field.label, e.target.value)}
+                    >
+                      <option value="">Select</option>
+                      <option value="Yes">Yes</option>
+                      <option value="No">No</option>
+                    </select>
+                  ) : (
+                    <AutoResizeTextarea
+                      className={textareaFieldClass}
+                      value={(answersForApplication[field.key]?.answer as string) || ''}
+                      onChange={(val) => handleChange(field.key, field.label, val)}
+                    />
+                  )}
                   {/* <button
                     type="button"
                     onClick={() =>

@@ -12,10 +12,7 @@ import { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } fr
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { deleteApplication } from "@/redux/actions/applicationActions";
-import {
-  resetApplicationsListForFetch,
-  resetDeleteApplication,
-} from "@/redux/slices/applicationSlice";
+import { clearApplications, resetDeleteApplication } from "@/redux/slices/applicationSlice";
 import { toast } from "react-toastify";
 import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
 import {
@@ -26,12 +23,9 @@ import {
   type PaginationState,
   getCoreRowModel,
   getFilteredRowModel,
-  getSortedRowModel,
-  getPaginationRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import { DataTableContent, DataTablePagination } from "@/components/DataTable";
-import { isListBlockingLoad } from "@/lib/listLoading";
 import { useTheme } from "@/context/ThemeContext";
 import {
   CONTRACT_OUT_QUEUE_BADGE_CLASS,
@@ -46,10 +40,15 @@ import { getClientByClientId } from "@/redux/actions/clientActions";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import {
   buildApplicationsListParams,
-  DEFAULT_APPLICATIONS_PAGE_SIZE,
+  applicationsListSortFromTable,
 } from "@/lib/applicationsListParams";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
+import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
+import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
+import { isListBlockingLoad } from "@/lib/listLoading";
 
 const QUEUE_OPTIONS = [
   { label: "Agent", value: "Agent" },
@@ -62,6 +61,7 @@ const QUEUE_OPTIONS = [
   { label: "Disbursement", value: "Disbursment" },
   { label: "Funded", value: "Funded" },
 ] as const;
+
 
 const STATS_BUCKET_TITLE_MAP: Record<string, string> = {
   funded: "Funded",
@@ -88,8 +88,10 @@ export default function ApplicationsBrowsePage() {
 
   const [viewOnlyMode, setViewOnlyMode] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 350);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [priorityFilter, setPriorityFilter] = useState("all");
   const [statsBucketFilter, setStatsBucketFilter] = useState("");
   const [underwriterClaimFilter, setUnderwriterClaimFilter] = useState<
     "" | "unclaimed" | "mine"
@@ -102,7 +104,7 @@ export default function ApplicationsBrowsePage() {
   const [rowSelection, setRowSelection] = useState({});
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
-    pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
+    pageSize: 10,
   });
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<string[]>([]);
   const [viewApplication, setViewApplication] = useState<Application | null>(null);
@@ -154,10 +156,18 @@ export default function ApplicationsBrowsePage() {
       const qs = new URLSearchParams();
       if (viewOnlyMode) qs.set("viewOnly", "1");
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      navigate(`/application-details/${id}${suffix}`);
+      navigate(`/application-details/${id}${suffix}`, {
+        state: { applicationPreview: app },
+      });
     },
     [navigate, viewOnlyMode],
   );
+
+  const handlePrefetchApplicationDetail = useCallback((app: Application) => {
+    const id =
+      app.applicationId != null ? String(app.applicationId) : String(app._id ?? "");
+    if (id) prefetchApplicationDetail(id);
+  }, []);
 
   const formatDate = useCallback((dateString?: string) => {
     return formatDateUtil(dateString ?? "", "-");
@@ -290,6 +300,7 @@ export default function ApplicationsBrowsePage() {
     const dataColumns: ColumnDef<Application>[] = [
       {
         accessorKey: "applicationId",
+        enableSorting: true,
         header: () => (
           <div className="flex items-center gap-2">
             <span className="font-medium text-foreground">ID</span>
@@ -434,22 +445,19 @@ export default function ApplicationsBrowsePage() {
     viewOnlyMode,
   ]);
 
-  const tableRows = applications ?? [];
-  const totalItems = apiPagination?.total ?? tableRows.length;
+  const totalItems = apiPagination?.total ?? applications?.length ?? 0;
   const pageCount =
     apiPagination?.totalPages ??
-    Math.max(1, Math.ceil(totalItems / pagination.pageSize) || 1);
+    (Math.ceil(totalItems / pagination.pageSize) || 1);
 
   const table = useReactTable({
-    data: tableRows,
+    data: applications ?? [],
     columns,
     pageCount,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
@@ -475,27 +483,22 @@ export default function ApplicationsBrowsePage() {
   }, [rowSelection]);
 
   const listFetchParams = useMemo((): GetApplicationsParams => {
-    const base = buildApplicationsListParams({
+    const params = buildApplicationsListParams({
       pageIndex: pagination.pageIndex,
       pageSize: pagination.pageSize,
       searchTerm: debouncedSearchTerm,
       dashboardStateFilter: "",
       statusFilter: statsBucketFilter ? "all" : statusFilter,
+      statsBucket: statsBucketFilter || undefined,
+      underwriterClaim: underwriterClaimFilter || undefined,
+      ...applicationsListSortFromTable(sorting),
     });
-    const params: GetApplicationsParams = {
-      ...base,
-      lite: true,
-      skipListCache: true,
-      skipListCacheRead: true,
-      clearListOnFetch: true,
-    };
-    if (underwriterClaimFilter) {
-      params.underwriterClaim = underwriterClaimFilter;
+    params.clearListOnFetch = true;
+    if (typeFilter !== "all") {
+      params.type = typeFilter;
     }
-    if (statsBucketFilter) {
-      params.statsBucket = statsBucketFilter;
-      delete params.currentQueue;
-      delete params.operationsStatus;
+    if (priorityFilter !== "all") {
+      params.priority = priorityFilter;
     }
     return params;
   }, [
@@ -505,23 +508,20 @@ export default function ApplicationsBrowsePage() {
     pagination.pageIndex,
     pagination.pageSize,
     debouncedSearchTerm,
+    sorting,
   ]);
 
-  const {
-    refetch: refetchApplicationsList,
-    isPending: applicationsListQueryPending,
-    isFetching: applicationsListQueryFetching,
-  } = useApplicationsListQuery(listFetchParams, {
+  const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
   });
 
   const fetchApplications = useCallback(async () => {
-    await refetchApplicationsList();
-  }, [refetchApplicationsList]);
+    await applicationsListQuery.refetch();
+  }, [applicationsListQuery]);
 
   useLayoutEffect(() => {
     // Prevent stale rows from flashing while a new drilldown status is loading.
-    dispatch(resetApplicationsListForFetch());
+    dispatch(clearApplications());
     setIsListFilterInitialized(false);
     const query = new URLSearchParams(location.search);
     setViewOnlyMode(query.get("viewOnly") === "1");
@@ -542,14 +542,22 @@ export default function ApplicationsBrowsePage() {
 
     if (pagination.pageIndex !== 0) {
       setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+      return;
     }
+    setIsListFilterInitialized(true);
   }, [dispatch, location.search]);
 
-  /** Enable list fetch once pagination is on page 1 (after URL-driven reset above). */
   useEffect(() => {
+    if (isListFilterInitialized) return;
+    if (!statsBucketFilter && !underwriterClaimFilter) return;
     if (pagination.pageIndex !== 0) return;
     setIsListFilterInitialized(true);
-  }, [pagination.pageIndex]);
+  }, [
+    isListFilterInitialized,
+    statsBucketFilter,
+    underwriterClaimFilter,
+    pagination.pageIndex,
+  ]);
 
   const handleBulkDelete = useCallback(async () => {
     const idsToDelete = selectedApplicationIds.filter(
@@ -611,13 +619,12 @@ export default function ApplicationsBrowsePage() {
   }, [deleteSuccess, deleteError, dispatch, fetchApplications]);
 
   useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 400);
-    return () => window.clearTimeout(t);
-  }, [searchTerm]);
+    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+  }, [debouncedSearchTerm, statusFilter, statsBucketFilter, underwriterClaimFilter]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [debouncedSearchTerm, statusFilter, statsBucketFilter, underwriterClaimFilter]);
+  }, [sorting]);
 
   const pipelineLabel = useMemo(() => {
     if (statusFilter === "all") return "All";
@@ -650,8 +657,8 @@ export default function ApplicationsBrowsePage() {
     rowCount: applications?.length ?? 0,
     loading,
     isRefreshing,
-    isFetching: applicationsListQueryPending || applicationsListQueryFetching,
-    awaitingFirstLoad: !isListFilterInitialized,
+    isFetching: applicationsListQuery.isFetching,
+    awaitingFirstLoad: applicationsListQuery.isPending && !applications?.length,
   });
 
   return (
@@ -674,7 +681,7 @@ export default function ApplicationsBrowsePage() {
       </div>
 
       <div className="mt-4 flex flex-col md:flex-row items-stretch md:items-center gap-3 justify-between">
-        <div className="flex items-center gap-3 w-full md:max-w-[520px]">
+        <div className="flex items-center gap-3 w-full md:max-w-[680px]">
           <Button
             type="button"
             variant="outline"
@@ -722,11 +729,25 @@ export default function ApplicationsBrowsePage() {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <div className="relative flex-1">
+          <ApplicationTypeFilterDropdown
+            value={typeFilter}
+            onChange={(next) => {
+              setTypeFilter(next);
+              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+            }}
+          />
+          <ApplicationPriorityFilterDropdown
+            value={priorityFilter}
+            onChange={(next) => {
+              setPriorityFilter(next);
+              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+            }}
+          />
+          <div className="relative min-w-[12rem] flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
               placeholder="Search by name, email, ISO..."
-              className="pl-9 h-10 bg-card"
+              className="pl-9 h-10 w-full bg-card"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -781,11 +802,14 @@ export default function ApplicationsBrowsePage() {
                   : "Try adjusting your search or filter criteria"
               }
               onRowClick={(row) => handleNavigateToApplication(row.original)}
+              onRowMouseEnter={(row) =>
+                handlePrefetchApplicationDetail(row.original)
+              }
             />
           </div>
         </div>
 
-        {!listBlockingLoad && totalItems > 0 && (
+        {!listBlockingLoad && applications && applications.length > 0 && (
           <DataTablePagination
             table={table}
             totalItems={totalItems}

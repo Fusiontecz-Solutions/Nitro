@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { getNotifications } from "@/redux/actions/notificationActions";
-import { NOTIFICATIONS_FALLBACK_POLL_MS } from "@/lib/queryDefaults";
+import { NOTIFICATIONS_FALLBACK_POLL_MS } from "@/lib/querySyncConstants";
 import { useDisconnectAwareRestSync } from "@/hooks/useDisconnectAwareRestSync";
 
 export type NotificationInboxParams = {

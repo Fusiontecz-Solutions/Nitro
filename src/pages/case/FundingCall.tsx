@@ -1,15 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import MyNotes from '@/components/application/MyNotes';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import { createFundingCall, getFundingCalls } from '@/redux/actions/fundingCallActions';
 import { resetCreateFundingCall } from '@/redux/slices/fundingCallSlice';
+import { notifyOperationsForDisbursement } from '@/redux/actions/notificationActions';
+import { resetNotifyOperationsDisbursement } from '@/redux/slices/notificationSlice';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
+import { isFundingCallStatusCallDone } from '@/constants/operationsDashboardApplications';
 
 type FundingCallProps = {
   applicationId?: string;
-  /** Refetch application detail after save (e.g. when backend moves currentQueue to Funding Call). */
   onSaved?: () => void;
 };
 
@@ -20,6 +22,7 @@ interface CallFormState {
   followUpDate: string;
 }
 
+
 export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
   const dispatch = useDispatch<AppDispatch>();
   const { loading: saving, success, error } = useSelector(
@@ -28,6 +31,22 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
   const { data: existingCalls, loading: fetchingExistingCalls } = useSelector(
     (state: RootState) => state.fundingCalls,
   );
+  const {
+    loading: notifyingOps,
+    success: notifyOpsSuccess,
+    error: notifyOpsError,
+    data: notifyOpsData,
+  } = useSelector((state: RootState) => state.notifyOperationsDisbursement);
+  const loginUser = useSelector((state: RootState) => state.login.data?.user);
+
+  // Super Admin (and Admin as a safety hatch) are allowed to push the
+  // "Notify Operations" signal. Mirrors backend role enforcement.
+  const isSuperAdmin = useMemo(() => {
+    const role = String(loginUser?.role || localStorage.getItem('role') || '')
+      .toUpperCase()
+      .replace(/[\s_-]+/g, '');
+    return role === 'SUPERADMIN' || role === 'ADMIN';
+  }, [loginUser?.role]);
 
   const [form, setForm] = useState<CallFormState>({
     callStatus: '',
@@ -40,6 +59,11 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [errors, setErrors] = useState({ callStatus: false });
   const [showSuccess, setShowSuccess] = useState(false);
+  // `canNotifyOps` is enabled only after a successful save in this session OR
+  // when the latest persisted funding call already exists (re-visiting page).
+  const [canNotifyOps, setCanNotifyOps] = useState(false);
+  const [opsNotified, setOpsNotified] = useState(false);
+  const [showNotifyTooltip, setShowNotifyTooltip] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Calendar state
@@ -49,7 +73,7 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
 
   const options = ["Call Done", "Not Reachable", "Call Back Later", "Rejected", "Interested"];
 
-  const isBusy = saving || fetchingExistingCalls;
+  const isBusy = saving || fetchingExistingCalls || notifyingOps;
 
   useEffect(() => {
     if (isBusy) setShowSuccess(false);
@@ -77,7 +101,9 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
     }
   }, [applicationId, dispatch]);
 
-  // When existing calls load, populate form from latest entry
+  // When existing calls load, populate form from latest entry. A persisted
+  // funding call also means Super Admin can immediately notify Operations
+  // (e.g. when the page is re-opened after an earlier save).
   useEffect(() => {
     if (!existingCalls || existingCalls.length === 0) return;
     const latest = existingCalls[0];
@@ -90,6 +116,10 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
         ? new Date(latest.followUpDate).toLocaleDateString('en-US')
         : '',
     }));
+    setCanNotifyOps(true);
+    if (isFundingCallStatusCallDone(latest.callStatus)) {
+      setOpsNotified(true);
+    }
   }, [existingCalls]);
 
   const handleSelect = (status: string) => {
@@ -108,17 +138,62 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
   useEffect(() => {
     if (success) {
       setShowSuccess(true);
-      toast.success('Funding call saved successfully.');
+      setCanNotifyOps(true);
+      const callDone = isFundingCallStatusCallDone(form.callStatus);
+      if (callDone) {
+        setOpsNotified(true);
+        toast.success(
+          'Funding call saved. Operations has been notified to proceed with disbursement.',
+        );
+      } else {
+        setOpsNotified(false);
+        toast.success('Funding call saved successfully.');
+      }
+      if (applicationId) {
+        dispatch(getFundingCalls({ application: applicationId }));
+      }
       onSaved?.();
       dispatch(resetCreateFundingCall());
     }
-  }, [success, dispatch, onSaved]);
+  }, [success, dispatch, onSaved, form.callStatus, applicationId]);
 
   useEffect(() => {
     if (error) {
       toast.error(error);
     }
   }, [error]);
+
+  // React to notify-operations result (DB + socket push + email fan-out).
+  useEffect(() => {
+    if (!notifyOpsSuccess) return;
+    setOpsNotified(true);
+    const notified = notifyOpsData?.notified ?? 0;
+    const emails = notifyOpsData?.emailsSent ?? 0;
+    if (notified > 0) {
+      toast.success(
+        `Operations notified${emails > 0 ? ` (email sent to ${emails})` : ''}. You can now proceed with disbursement.`,
+      );
+    } else {
+      toast.info('No active Operations users available to notify.');
+    }
+    dispatch(resetNotifyOperationsDisbursement());
+  }, [notifyOpsSuccess, notifyOpsData, dispatch]);
+
+  useEffect(() => {
+    if (notifyOpsError) {
+      toast.error(notifyOpsError);
+      dispatch(resetNotifyOperationsDisbursement());
+    }
+  }, [notifyOpsError, dispatch]);
+
+  const handleNotifyOperations = () => {
+    if (!applicationId) {
+      toast.error('Application ID is missing — cannot notify Operations.');
+      return;
+    }
+    if (notifyingOps || opsNotified || !canNotifyOps) return;
+    dispatch(notifyOperationsForDisbursement({ applicationId }));
+  };
 
   const handleSave = () => {
     if (!form.callStatus) {
@@ -149,17 +224,39 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
         'dark:border-slate-700 dark:from-[#1c1d21] dark:to-[#141517] dark:shadow-[0_18px_35px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.25)]',
       )}
     >
-      {(fetchingExistingCalls || saving) && (
+      {(fetchingExistingCalls || saving || notifyingOps) && (
         <div
           className={cn(
             'mb-4 flex items-center gap-2.5 rounded-xl border px-3 py-3 text-[13px]',
             fetchingExistingCalls
               ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/45 dark:text-blue-200'
-              : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
+              : notifyingOps
+                ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
           )}
         >
-          <span>{saving ? '⏳' : '⏳'}</span>
-          {fetchingExistingCalls ? 'Loading existing call details...' : 'Saving... please wait'}
+          <span>⏳</span>
+          {fetchingExistingCalls
+            ? 'Loading existing call details...'
+            : notifyingOps
+              ? 'Sending notification to Operations...'
+              : 'Saving... please wait'}
+        </div>
+      )}
+
+      {opsNotified && (
+        <div
+          className={cn(
+            'mb-4 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-[13px] text-emerald-800',
+            'dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
+          )}
+        >
+          <span aria-hidden="true">✓</span>
+          <span>
+            Operations team has been notified. They will receive an in-app notification
+            {(notifyOpsData?.emailsSent ?? 0) > 0 ? ' and an email' : ''} to proceed with the
+            disbursement.
+          </span>
         </div>
       )}
 
@@ -411,7 +508,77 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
         <MyNotes applicationId={applicationId} />
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {isSuperAdmin && (
+          <div
+            className="relative"
+            onMouseEnter={() => setShowNotifyTooltip(true)}
+            onMouseLeave={() => setShowNotifyTooltip(false)}
+            onFocus={() => setShowNotifyTooltip(true)}
+            onBlur={() => setShowNotifyTooltip(false)}
+          >
+            <button
+              type="button"
+              onClick={handleNotifyOperations}
+              disabled={
+                !canNotifyOps ||
+                notifyingOps ||
+                isBusy ||
+                !isFundingCallStatusCallDone(form.callStatus)
+              }
+              aria-disabled={
+                !canNotifyOps ||
+                notifyingOps ||
+                isBusy ||
+                !isFundingCallStatusCallDone(form.callStatus)
+              }
+              aria-describedby="notify-ops-tooltip"
+              className={cn(
+                'group inline-flex items-center gap-2 rounded-full px-6 py-3 font-[550] text-sm transition',
+                opsNotified
+                  ? 'cursor-default border border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200'
+                  : canNotifyOps && !isBusy
+                    ? 'cursor-pointer border border-amber-300 bg-amber-50 text-amber-800 shadow-[0_8px_18px_rgba(245,158,11,0.25)] hover:bg-amber-100 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-900/40'
+                    : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500',
+              )}
+            >
+              <span aria-hidden="true" className="text-base leading-none">
+                {opsNotified ? '✓' : notifyingOps ? '⏳' : '🔔'}
+              </span>
+              <span>
+                {opsNotified
+                  ? 'Operations Notified'
+                  : notifyingOps
+                    ? 'Notifying Operations...'
+                    : 'Notify Operations'}
+              </span>
+            </button>
+
+            {showNotifyTooltip && (
+              <div
+                id="notify-ops-tooltip"
+                role="tooltip"
+                className={cn(
+                  'pointer-events-none absolute bottom-full right-0 z-50 mb-2 w-[280px] rounded-lg border border-slate-200 bg-slate-900 px-3 py-2 text-[12px] leading-snug text-white shadow-xl',
+                  'dark:border-slate-700 dark:bg-slate-800',
+                )}
+              >
+                {!canNotifyOps
+                  ? 'Save the funding call first to enable this.'
+                  : !isFundingCallStatusCallDone(form.callStatus)
+                    ? 'Set call status to "Call Done" and save — Operations are notified automatically. Use this button to send a reminder.'
+                    : opsNotified
+                      ? 'Operations have been notified. Use this button to send a reminder if needed.'
+                      : 'Save with status "Call Done" to notify Operations automatically, or click to notify now.'}
+                <span
+                  aria-hidden="true"
+                  className="absolute right-6 top-full -mt-px h-0 w-0 border-x-[6px] border-t-[6px] border-x-transparent border-t-slate-900 dark:border-t-slate-800"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
         <button
           type="button"
           onClick={handleSave}

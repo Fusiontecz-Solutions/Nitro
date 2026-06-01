@@ -4,6 +4,7 @@ import { axiosGet } from "../axios";
 export type OperationsDashboardRecentCase = {
   id: string;
   applicationId: string;
+  dealId: string;
   /** Mongo application id — required for preview sheet tabs (comments, files API, etc.). */
   applicationMongoId: string;
   /** Passed to `getClientByClientId` when opening the preview (numeric client id or client mongo id). */
@@ -65,9 +66,14 @@ export function mapRawApplicationToOperationsRecentCase(
   const createdRaw = application?.createdAt;
   const updatedRaw = application?.updatedAt;
 
+  const dealIdRaw = application?.dealId;
+  const dealId =
+    dealIdRaw != null && String(dealIdRaw).trim() ? String(dealIdRaw).trim() : "";
+
   return {
     id: applicationId != null ? `APP-${applicationId}` : `APP-${fallbackId}`,
     applicationId: applicationId != null ? String(applicationId) : "",
+    dealId,
     applicationMongoId,
     clientLookupId,
     merchant,

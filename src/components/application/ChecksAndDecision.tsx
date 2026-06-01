@@ -24,12 +24,15 @@ interface ChecksAndDecisionProps {
     onProceedToContract?: () => void;
     /** When true, hides the "Make Underwriting Decision" action buttons (e.g. deal pipeline read-only view). */
     hideUnderwritingDecision?: boolean;
+    /** When true, disables decision action buttons (stage preview / behind-current-deal view). */
+    previewMode?: boolean;
 }
 
 const ChecksAndDecision = ({
     isFinalUnderwriter,
     onProceedToContract,
     hideUnderwritingDecision,
+    previewMode,
 }: ChecksAndDecisionProps = {}) => {
     const { applicationId: paramApplicationId } = useParams<{ applicationId: string }>();
     const dispatch = useDispatch<AppDispatch>();
@@ -285,7 +288,7 @@ const ChecksAndDecision = ({
                     {/* Approved Button */}
                     <Button
                         onClick={() => setIsApprovalModalOpen(true)}
-                        disabled={isFinalUnderwriter ? false : disablePrimaryDecisionButton}
+                        disabled={previewMode || (isFinalUnderwriter ? false : disablePrimaryDecisionButton)}
                         className="rounded-sm bg-[#16A34A] hover:bg-green-700 text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">
@@ -303,7 +306,8 @@ const ChecksAndDecision = ({
                     {/* Send back for documents Button */}
                     <Button
                         onClick={() => setIsRequestDocumentsModalOpen(true)}
-                        className="rounded-sm bg-[#EAA95A] hover:bg-[#EAA95A]/90 text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden"
+                        disabled={previewMode}
+                        className="rounded-sm bg-[#EAA95A] hover:bg-[#EAA95A]/90 text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">Send back for documents</span>
                         <span className="text-xs font-normal opacity-90 whitespace-normal break-words w-full leading-snug px-1">Request additional documents</span>
@@ -312,7 +316,8 @@ const ChecksAndDecision = ({
                     {/* Decline Button */}
                     <Button
                         onClick={() => setIsRejectModalOpen(true)}
-                        className="rounded-sm bg-[#DC331D] hover:bg-[#DC331D]/90 text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden"
+                        disabled={previewMode}
+                        className="rounded-sm bg-[#DC331D] hover:bg-[#DC331D]/90 text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">Decline</span>
                         <span className="text-xs font-normal opacity-90 whitespace-normal break-words w-full leading-snug px-1">Decline this application</span>

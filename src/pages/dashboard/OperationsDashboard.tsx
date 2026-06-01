@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  DASHBOARD_STALE_MS,
+  dashboardRefetchWhenVisible,
+} from "@/lib/dashboardQueryDefaults";
+import {
   CheckCircle2,
   Clock,
   ShieldCheck,
@@ -65,8 +69,6 @@ import {
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
-import { isListBlockingLoad } from "@/lib/listLoading";
-import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
 
 type SummaryCard = {
   label: string;
@@ -147,6 +149,18 @@ const formatApplicationIdDisplay = (id: unknown) => {
   return Number.isFinite(n) ? Math.trunc(n).toLocaleString("en-US") : raw;
 };
 
+const formatRecentCaseIdDisplay = (
+  item: OperationsDashboardRecentCase,
+  preferDealId: boolean,
+) => {
+  if (preferDealId) {
+    const dealId = String(item.dealId ?? "").trim();
+    if (dealId) return dealId;
+  }
+  if (item.applicationId) return formatApplicationIdDisplay(item.applicationId);
+  return "—";
+};
+
 const normalizeQueueLabel = (value: unknown) =>
   String(value ?? "")
     .trim()
@@ -218,16 +232,7 @@ export const OperationsDashboard = () => {
     recentCases,
     recentLoading,
     recentError,
-    recentInFlight,
-    hasLoadedRecentOnce,
-    lastSummaryFetchedAt,
-    lastRecentFetchedAt,
   } = useSelector((state: RootState) => state.operationsDashboard);
-
-  const summaryPrefetchFresh =
-    hasLoadedSummaryOnce && isShellPrefetchFresh(lastSummaryFetchedAt);
-  const recentPrefetchFresh =
-    hasLoadedRecentOnce && isShellPrefetchFresh(lastRecentFetchedAt);
 
   /** First paint after login: avoid showing zeros while the summary API is still in flight. */
   const statCardsShowSkeleton =
@@ -261,10 +266,10 @@ export const OperationsDashboard = () => {
   useQuery({
     queryKey: ["operations-dashboard-summary", userRole],
     queryFn: async () => dispatch(fetchOperationsDashboardSummary()).unwrap(),
-    enabled: !summaryPrefetchFresh,
-    staleTime: 60_000,
-    refetchOnMount: !summaryPrefetchFresh,
-    refetchOnWindowFocus: false,
+    staleTime: DASHBOARD_STALE_MS,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchInterval: dashboardRefetchWhenVisible,
   });
 
   const { data: monthlyTrendRows = [] } = useQuery<MonthlyTrendApiRow[]>({
@@ -281,24 +286,19 @@ export const OperationsDashboard = () => {
       const payload = response?.data ?? {};
       return Array.isArray(payload?.data) ? (payload.data as MonthlyTrendApiRow[]) : [];
     },
-    refetchOnMount: true,
+    staleTime: DASHBOARD_STALE_MS,
+    refetchOnMount: "always",
     refetchOnWindowFocus: true,
+    refetchInterval: dashboardRefetchWhenVisible,
   });
 
-  const recentCasesQuery = useQuery({
+  useQuery({
     queryKey: ["operations-dashboard-recent-cases", userRole],
     queryFn: async () => dispatch(fetchOperationsDashboardRecentCases()).unwrap(),
-    enabled: !recentPrefetchFresh,
-    staleTime: 60_000,
-    refetchOnMount: !recentPrefetchFresh,
-    refetchOnWindowFocus: false,
-  });
-
-  const recentCasesBlockingLoad = isListBlockingLoad({
-    rowCount: recentCases.length,
-    loading: recentLoading,
-    isFetching: recentCasesQuery.isPending || recentCasesQuery.isFetching,
-    awaitingFirstLoad: !hasLoadedRecentOnce && recentInFlight,
+    staleTime: DASHBOARD_STALE_MS,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchInterval: dashboardRefetchWhenVisible,
   });
 
   const summaryCards: SummaryCard[] = useMemo(
@@ -355,16 +355,6 @@ export const OperationsDashboard = () => {
     ],
     [summaryCounts],
   );
-
-  /** Ops works post-signature only — hide Contract Pending / Contract Out queue cards. */
-  const summaryCardsForRole = useMemo(() => {
-    if (!isOperationsUser) return summaryCards;
-    return summaryCards.filter(
-      (card) =>
-        card.operationsStatus !== "Contract_Out" &&
-        card.operationsStatus !== "Contract_Pending",
-    );
-  }, [summaryCards, isOperationsUser]);
 
   /** Deal pipeline stages — aligned with Super Admin sidebar (DEAL PIPELINE). */
   const superAdminPipelineCards: SummaryCard[] = useMemo(
@@ -445,7 +435,7 @@ export const OperationsDashboard = () => {
       const qs = new URLSearchParams();
       qs.set(
         "operationsStatus",
-        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Signed" : "Contracted",
+        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Out" : "Contracted",
       );
       navigate(
         `/application-details/${recentCase.applicationId}?${qs.toString()}`,
@@ -589,8 +579,9 @@ export const OperationsDashboard = () => {
       });
     }
     if (isOperationsUser) {
-      // Recent-cases API is already scoped to Contract_Signed for OPERATIONS.
-      return recentCases;
+      return recentCases.filter((item) =>
+        isContractOutQueueBadgeLabel(String(item.status ?? "")),
+      );
     }
     return recentCases;
   }, [isOperationsUser, isSuperAdmin, recentCases]);
@@ -602,6 +593,7 @@ export const OperationsDashboard = () => {
       (item) =>
         item.id.toLowerCase().includes(term) ||
         item.applicationId.toLowerCase().includes(term) ||
+        String(item.dealId ?? "").toLowerCase().includes(term) ||
         item.merchant.toLowerCase().includes(term) ||
         item.status.toLowerCase().includes(term) ||
         (item.email ?? "").toLowerCase().includes(term),
@@ -654,7 +646,7 @@ export const OperationsDashboard = () => {
 
       {/* Summary cards — skeleton on first load; stale values kept while refreshing */}
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
-        {(isSuperAdmin ? superAdminPipelineCards : summaryCardsForRole).map((card) =>
+        {(isSuperAdmin ? superAdminPipelineCards : summaryCards).map((card) =>
           renderSummaryCard(card),
         )}
       </section>
@@ -847,14 +839,14 @@ export const OperationsDashboard = () => {
                 {isSuperAdmin
                   ? "Latest Funded Deals"
                   : isOperationsUser
-                    ? "Contract Signed Applications"
+                    ? "Contract Out Applications"
                     : "Recent Applications"}
               </span>
               <p className="mt-0.5 text-xs text-muted-foreground hidden sm:block">
                 {isSuperAdmin
                   ? "Most recently funded or disbursed deals."
                   : isOperationsUser
-                    ? "Deals with a fully signed contract — ready for Final, funding call, and disbursement."
+                    ? "Applications currently in the Contract Out queue."
                     : "Latest contracted applications."}
               </p>
               {recentError ? (
@@ -876,7 +868,7 @@ export const OperationsDashboard = () => {
                     isSuperAdmin
                       ? "Search funded deals..."
                       : isOperationsUser
-                        ? "Search contract signed..."
+                        ? "Search contract out..."
                         : "Search contracted..."
                   }
                   className="h-10 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#276D9C]/30"
@@ -922,7 +914,7 @@ export const OperationsDashboard = () => {
 
           <div className="p-1">
             <div className="overflow-x-auto rounded-xl">
-              {recentCasesBlockingLoad ? (
+              {recentLoading && recentCases.length === 0 ? (
                 <div className="flex items-center justify-center py-20">
                   <Loader2 className="h-8 w-8 animate-spin text-primary shrink-0" />
                   <span className="ml-2 text-muted-foreground">
@@ -934,7 +926,7 @@ export const OperationsDashboard = () => {
                   {isSuperAdmin
                     ? "No funded deals found."
                     : isOperationsUser
-                      ? "No contract signed applications found."
+                      ? "No contract out applications found."
                       : "No contracted applications found."}
                 </div>
               ) : recentCasesViewMode === "list" ? (
@@ -943,7 +935,7 @@ export const OperationsDashboard = () => {
                     <TableRow>
                       <TableHead className="px-6">
                         <span className="font-medium text-xs uppercase tracking-wide text-muted-foreground">
-                          ID
+                          {isSuperAdmin ? "Deal ID" : "ID"}
                         </span>
                       </TableHead>
                       <TableHead className="px-6">
@@ -1015,9 +1007,7 @@ export const OperationsDashboard = () => {
                         >
                           <TableCell className="px-6 text-[0.85rem] text-[#4B5563] dark:text-foreground">
                             <span className="font-semibold text-foreground">
-                              {item.applicationId
-                                ? formatApplicationIdDisplay(item.applicationId)
-                                : "-"}
+                              {formatRecentCaseIdDisplay(item, isSuperAdmin)}
                             </span>
                           </TableCell>
                           <TableCell className="px-6 text-[0.85rem] text-[#4B5563] dark:text-foreground">
@@ -1106,11 +1096,9 @@ export const OperationsDashboard = () => {
                                 {item.merchant}
                               </p>
                               <p className="text-xs text-muted-foreground mt-0.5">
-                                ID{" "}
+                                {isSuperAdmin ? "Deal ID" : "ID"}{" "}
                                 <span className="text-sky-600 font-medium">
-                                  {item.applicationId
-                                    ? formatApplicationIdDisplay(item.applicationId)
-                                    : "—"}
+                                  {formatRecentCaseIdDisplay(item, isSuperAdmin)}
                                 </span>
                               </p>
                             </div>

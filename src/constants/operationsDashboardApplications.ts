@@ -147,38 +147,69 @@ export function inferOperationsListStatusFromApplication(
   return null;
 }
 
-/**
- * Whether the Disbursement tab may be opened for this application.
- * Requires Funding Call stage or later (Disbursement / Funded), using the same
- * queue / status / state signals as {@link inferOperationsListStatusFromApplication}.
- */
-export function isApplicationAtOrPastFundingCallForDisbursement(
-  currentQueue: string | null | undefined,
-  options?: { explicitStatus?: string | null; currentState?: string | null },
+export function normalizeFundingCallStatus(
+  value: string | null | undefined,
+): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/[\s_-]+/g, "")
+    .toLowerCase();
+}
+
+/** Latest persisted funding call status is "Call Done" (case / spacing insensitive). */
+export function isFundingCallStatusCallDone(
+  value: string | null | undefined,
 ): boolean {
+  return normalizeFundingCallStatus(value) === "calldone";
+}
+
+/**
+ * Whether the Disbursement tab may be opened for Operations / Super Admin.
+ * Unlocks when funding call is Call Done, or the deal is already in Disbursement / Funded.
+ */
+export function canOpenDisbursementTab(
+  currentQueue: string | null | undefined,
+  options?: {
+    explicitStatus?: string | null;
+    currentState?: string | null;
+    latestFundingCallStatus?: string | null;
+  },
+): boolean {
+  if (isFundingCallStatusCallDone(options?.latestFundingCallStatus)) {
+    return true;
+  }
+
   const inferred = inferOperationsListStatusFromApplication(currentQueue, options);
-  if (
-    inferred === "Funding Call" ||
-    inferred === "Disbursment" ||
-    inferred === "Funded"
-  ) {
+  if (inferred === "Disbursment" || inferred === "Funded") {
     return true;
   }
 
   const st = normalizePipelineKey(options?.explicitStatus);
   const state = normalizePipelineKey(options?.currentState);
 
-  if (st === "fundingcall" || (st.includes("funding") && st.includes("call"))) {
-    return true;
-  }
+  if (st === "funded" || state === "funded") return true;
   if (
-    state === "fundingcall" ||
-    (state.includes("funding") && state.includes("call"))
+    st === "disbursment" ||
+    st === "disbursement" ||
+    state === "disbursment" ||
+    state === "disbursement"
   ) {
     return true;
   }
 
   return false;
+}
+
+/** @deprecated Use {@link canOpenDisbursementTab} — kept for existing imports. */
+export function isApplicationAtOrPastFundingCallForDisbursement(
+  currentQueue: string | null | undefined,
+  options?: {
+    explicitStatus?: string | null;
+    currentState?: string | null;
+    latestFundingCallStatus?: string | null;
+  },
+): boolean {
+  return canOpenDisbursementTab(currentQueue, options);
 }
 
 export function operationsDashboardStatusTitle(

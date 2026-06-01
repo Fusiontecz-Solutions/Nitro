@@ -257,6 +257,25 @@ export function parseNumberUS(value: unknown): number {
   return Number.isFinite(n) ? n : NaN
 }
 
+/** Max fraction digits for offer/factor rate (`OfferDecision.rate` is Decimal(18, 6)). */
+export const FACTOR_RATE_MAX_DECIMALS = 6
+
+/**
+ * Factor / sell rate for read-only display (e.g. 1.598). Does not force two decimals.
+ */
+export function formatFactorRateUS(value: unknown): string {
+  if (value === null || value === undefined) return ""
+  const num = parseNumberUS(value)
+  if (Number.isNaN(num)) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim()
+    return ""
+  }
+  return num.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: FACTOR_RATE_MAX_DECIMALS,
+  })
+}
+
 /**
  * US English number for read-only display: comma thousands, period decimal, always two fraction digits.
  */

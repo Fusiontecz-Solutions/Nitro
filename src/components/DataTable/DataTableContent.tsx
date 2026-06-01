@@ -22,6 +22,8 @@ interface DataTableContentProps<TData> {
     emptySubMessage?: string;
     /** Whole-row click (e.g. open record). Ignored when the click originates from interactive controls. */
     onRowClick?: (row: Row<TData>) => void;
+    /** Fired when the pointer enters a row (e.g. prefetch detail). */
+    onRowMouseEnter?: (row: Row<TData>) => void;
 }
 
 function isInteractiveTableClickTarget(target: EventTarget | null): boolean {
@@ -42,6 +44,7 @@ export default function DataTableContent<TData>({
     emptyMessage = "No data available",
     emptySubMessage,
     onRowClick,
+    onRowMouseEnter,
 }: DataTableContentProps<TData>) {
     if (loading) {
         return (
@@ -78,6 +81,7 @@ export default function DataTableContent<TData>({
                             data-state={row.getIsSelected() && "selected"}
                             tabIndex={onRowClick ? 0 : undefined}
                             className={`hover:bg-accent ${idx % 2 ? 'bg-muted/50' : ''} ${row.getIsSelected() ? 'bg-blue-50 dark:bg-blue-950' : ''} ${onRowClick ? "cursor-pointer" : ""}`}
+                            onMouseEnter={() => onRowMouseEnter?.(row)}
                             onClick={(e) => {
                                 if (!onRowClick) return;
                                 if (isInteractiveTableClickTarget(e.target)) return;
