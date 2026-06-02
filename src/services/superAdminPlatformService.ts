@@ -68,10 +68,33 @@ function mapRowToSnapshot(row: {
 }): SuperAdminPlatformSnapshot {
   const dealsJson = (row.deals ?? {}) as { total?: number; funded?: number };
   const commissionJson = (row.commission ?? {}) as SuperAdminPlatformSnapshot['commission'];
-  const paymentJson = (row.paymentCards ?? {}) as SuperAdminPlatformSnapshot['paymentCards'];
+  const paymentJson = (row.paymentCards ?? {}) as Partial<SuperAdminPlatformSnapshot['paymentCards']>;
+  const failedJson = (paymentJson.failedPayment ?? {}) as Partial<
+    SuperAdminPlatformSnapshot['paymentCards']['failedPayment']
+  >;
 
   const totalDealsCount = row.totalDealsCount;
   const fundedDealsCount = row.fundedDealsCount;
+
+  // jsonb does not preserve key insertion order, so rebuild paymentCards
+  // explicitly to keep a stable, predictable response shape.
+  const paymentCards: SuperAdminPlatformSnapshot['paymentCards'] = {
+    fundedTotal: Number(paymentJson.fundedTotal ?? 0),
+    netFundingTotal: Number(paymentJson.netFundingTotal ?? 0),
+    abovePrincipalTotal: Number(paymentJson.abovePrincipalTotal ?? 0),
+    recovered: Number(paymentJson.recovered ?? 0),
+    failedPayment: {
+      totalAmount: Number(failedJson.totalAmount ?? 0),
+      count: Number(failedJson.count ?? 0),
+    },
+    dueToday: Number(paymentJson.dueToday ?? 0),
+    dueNext7Days: Number(paymentJson.dueNext7Days ?? 0),
+    totalDues: Number(paymentJson.totalDues ?? 0),
+    totalPayback: Number(paymentJson.totalPayback ?? 0),
+    collectionEfficiency: Number(paymentJson.collectionEfficiency ?? 0),
+    totalDeals: Number(paymentJson.totalDeals ?? 0),
+    activeDeals: Number(paymentJson.activeDeals ?? 0),
+  };
 
   return {
     id: row.id,
@@ -88,7 +111,7 @@ function mapRowToSnapshot(row: {
     commissionDealsFunded: row.commissionDealsFunded,
     totalCommission: decimalToNumber(row.totalCommission),
     commission: commissionJson,
-    paymentCards: paymentJson,
+    paymentCards,
     lastRefreshedAt: row.lastRefreshedAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
