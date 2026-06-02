@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
     Building2,
@@ -40,10 +40,16 @@ import {
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
+    applyLiveBankDetailsToPrefillMerge,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./Contract";
-import { DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY } from "./documentTemplateMappingPrefill";
+import {
+    DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    getDocumentTemplatePrefillFieldRowsForEditor,
+    LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
+    stripDocumentTemplateBlobFromPrefillOverrides,
+} from "./documentTemplateMappingPrefill";
 import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
@@ -91,7 +97,7 @@ const FIELD_LABELS = {
     clientPhone: "Phone",
     purchasePrice: "Payback amount",
     purchaseAmount: "Offer amount",
-    purchasePercent: "Rate",
+    purchasePercent: "Specific Percentage",
     remittance: "Total remit",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
@@ -268,7 +274,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             id: "financial",
             title: "Offer & payback",
             description:
-                "Offer amount, payback amount, rate, total remit, frequency, and net to merchant (advance − fees − refinance).",
+                "Offer amount, payback amount, specific percentage, total remit, frequency, and net to merchant (advance − fees − refinance).",
             Icon: DollarSign,
             groups: [
                 {
@@ -558,6 +564,13 @@ const DATE_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "addendumDatedPrincipalOwner1Date",
     "addendumDatedPrincipalOwner2Date",
 ];
+/** Shown empty until the user saves a value in contract prefill overrides. */
+const REQUIRED_PREFILL_FIELD_KEYS = new Set<keyof BuildContractPrefillFieldsArgs>([
+    "customerName",
+    "purchasePercent",
+    "remittance",
+]);
+
 const MONEY_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "purchasePrice",
     "purchaseAmount",
@@ -691,8 +704,21 @@ function validatePrefillValues(values: Record<keyof BuildContractPrefillFieldsAr
         if (msg) err[key] = msg;
     }
 
-    const purchasePct = validatePercent(trimField(values, "purchasePercent"));
-    if (purchasePct) err.purchasePercent = purchasePct;
+    const purchasePctVal = trimField(values, "purchasePercent");
+    if (!purchasePctVal) {
+        err.purchasePercent = "Specific Percentage is required.";
+    } else {
+        const purchasePct = validatePercent(purchasePctVal);
+        if (purchasePct) err.purchasePercent = purchasePct;
+    }
+
+    const remitVal = trimField(values, "remittance");
+    if (!remitVal) {
+        err.remittance = "Total remit is required.";
+    } else {
+        const remitMsg = validateMoney(remitVal);
+        if (remitMsg) err.remittance = remitMsg;
+    }
 
     const stateInc = trimField(values, "state");
     if (stateInc.length === 2) {
@@ -730,6 +756,17 @@ function firstSectionIdWithFieldErrors(errors: FieldErrors): string | null {
     return null;
 }
 
+export type LinkedAddendumMappingRef = {
+    id: string;
+    templateId?: string;
+    template?: {
+        templateId?: string;
+        name?: string | null;
+        state?: string | null;
+        frequency?: string | null;
+    } | null;
+};
+
 export type ContractPrefillEditFormProps = {
     open: boolean;
     onOpenChange: (open: boolean) => void;
@@ -741,11 +778,20 @@ export type ContractPrefillEditFormProps = {
      * Omit or leave `undefined` until loaded so the form can merge application defaults + legacy note only in the parent.
      */
     persistedPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    /** Parent has finished loading contract prefill from the API. */
+    prefillOverridesReady?: boolean;
     /** Called after a successful save or clear so the parent can refresh Deal Review / BoldSign merge state. */
     onPersistedPrefillChange?: (next: Partial<BuildContractPrefillFieldsArgs> | null) => void;
+    /** Full save payload: main overrides (no mapping blob) + per-mapping addendum field map. */
+    onPersistedPrefillFullChange?: (
+        main: Partial<BuildContractPrefillFieldsArgs> | null,
+        documentTemplatePrefillByMappingId: Record<string, Record<string, string>>,
+    ) => void;
     /** Application UUID — used to reload the contract row after save so `contractPrefillOverrides` matches the DB. */
     applicationUuid?: string | null;
     contractRecords?: ContractPrefillContractRecords;
+    resolvedContract?: Record<string, unknown> | null;
+    linkedAddendumMapping?: LinkedAddendumMappingRef | null;
     /** Shown in agreement date field when empty (e.g. today). */
     agreementDatePlaceholder?: string;
     /** Loaded offer decision — used to auto-calculate net to merchant when not overridden. */
@@ -765,9 +811,13 @@ export function ContractPrefillEditForm({
     applicationData,
     contractId,
     persistedPrefillOverrides,
+    prefillOverridesReady = true,
     onPersistedPrefillChange,
+    onPersistedPrefillFullChange,
     applicationUuid = null,
     contractRecords,
+    resolvedContract = null,
+    linkedAddendumMapping = null,
     agreementDatePlaceholder = "",
     offerDecision = null,
     readOnly = false,
@@ -775,12 +825,79 @@ export function ContractPrefillEditForm({
 }: ContractPrefillEditFormProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
+    const [addendumFieldValues, setAddendumFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
     const [saveError, setSaveError] = useState<string | null>(null);
     const [activeSectionId, setActiveSectionId] = useState(CONTRACT_PREFILL_SECTIONS[0]?.id ?? "rpa_merchant");
 
     const agreementDateForDefaults = agreementDatePlaceholder || "";
+
+    const documentTemplatePrefillByMappingId = useMemo(() => {
+        const raw = additionalContractPrefillJson?.[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+        if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+        return raw as Record<string, Record<string, string>>;
+    }, [additionalContractPrefillJson]);
+
+    const strippedMainPrefillOverrides = useMemo(
+        () =>
+            stripDocumentTemplateBlobFromPrefillOverrides(
+                persistedPrefillOverrides === undefined
+                    ? undefined
+                    : (normalizeContractPrefillOverrides(persistedPrefillOverrides) ?? null),
+            ),
+        [persistedPrefillOverrides],
+    );
+
+    const addendumEditorRows = useMemo(() => {
+        if (!linkedAddendumMapping?.id) return [];
+        const saved = documentTemplatePrefillByMappingId[linkedAddendumMapping.id] ?? {};
+        return getDocumentTemplatePrefillFieldRowsForEditor({
+            templateId:
+                linkedAddendumMapping.template?.templateId ??
+                linkedAddendumMapping.templateId ??
+                null,
+            templateName: linkedAddendumMapping.template?.name ?? null,
+            templateState: linkedAddendumMapping.template?.state ?? null,
+            templateFrequency: linkedAddendumMapping.template?.frequency ?? null,
+            contract: resolvedContract ?? contractRecords?.contract ?? null,
+            application: applicationData as Record<string, unknown> | null,
+            agreementDate: agreementDateForDefaults,
+            mainPrefillOverrides: strippedMainPrefillOverrides ?? undefined,
+            savedOverridesForMapping: saved,
+        });
+    }, [
+        linkedAddendumMapping,
+        documentTemplatePrefillByMappingId,
+        resolvedContract,
+        contractRecords?.contract,
+        applicationData,
+        agreementDateForDefaults,
+        strippedMainPrefillOverrides,
+    ]);
+
+    const linkedAddendumSectionTitle = useMemo(() => {
+        const name =
+            linkedAddendumMapping?.template?.name?.trim() ||
+            linkedAddendumMapping?.template?.templateId ||
+            linkedAddendumMapping?.templateId ||
+            "Addendum";
+        return `Selected addendum — ${name}`;
+    }, [linkedAddendumMapping]);
+
+    const navSections = useMemo(() => {
+        const base = [...CONTRACT_PREFILL_SECTIONS];
+        if (linkedAddendumMapping && addendumEditorRows.length > 0) {
+            base.push({
+                id: LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
+                title: linkedAddendumSectionTitle,
+                description: "DocuSign addendum template fields merged when you send the contract.",
+                Icon: FilePenLine,
+                groups: [],
+            });
+        }
+        return base;
+    }, [linkedAddendumMapping, addendumEditorRows.length, linkedAddendumSectionTitle]);
 
     const resetFromSources = useCallback(() => {
         const defaults = getContractPrefillEditDefaultsFromApplication(applicationData, {
@@ -789,12 +906,11 @@ export function ContractPrefillEditForm({
             offerDecision,
         });
         const persisted =
-            persistedPrefillOverrides === undefined
+            strippedMainPrefillOverrides === undefined
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
-                : (normalizeContractPrefillOverrides(persistedPrefillOverrides) ??
-                    ({} as Partial<BuildContractPrefillFieldsArgs>));
+                : (strippedMainPrefillOverrides ?? ({} as Partial<BuildContractPrefillFieldsArgs>));
         const merged = finalizeContractPrefillMoneyFields(
-            { ...defaults, ...persisted },
+            applyLiveBankDetailsToPrefillMerge(defaults, { ...defaults, ...persisted }),
             {
                 application: applicationData as Record<string, unknown> | undefined,
                 contract: contractRecords?.contract ?? null,
@@ -803,38 +919,37 @@ export function ContractPrefillEditForm({
         );
         setValues(mergeFormState(merged));
         setFieldErrors({});
-    }, [applicationData, contractRecords, agreementDateForDefaults, persistedPrefillOverrides, offerDecision]);
+    }, [
+        applicationData,
+        contractRecords,
+        agreementDateForDefaults,
+        strippedMainPrefillOverrides,
+        offerDecision,
+    ]);
+
+    const resetAddendumFromSources = useCallback(() => {
+        setAddendumFieldValues(Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""])));
+    }, [addendumEditorRows]);
 
     /** Stable ref so `resetFromSources` stays current without widening effect deps below. */
     const resetFromSourcesRef = useRef(resetFromSources);
     resetFromSourcesRef.current = resetFromSources;
+    const resetAddendumFromSourcesRef = useRef(resetAddendumFromSources);
+    resetAddendumFromSourcesRef.current = resetAddendumFromSources;
 
-    /**
-     * Parents may pass `persistedPrefillOverrides=undefined` until the contract JSON is loaded. When we opened in
-     * that state, merge overrides once after load; ignore later `persisted`/Redux churn so edits aren't wiped mid-type.
-     */
-    const hydratePersistAfterLoadRef = useRef(false);
+    const openedHydratedRef = useRef(false);
 
     useEffect(() => {
         if (!open) {
-            hydratePersistAfterLoadRef.current = false;
+            openedHydratedRef.current = false;
             return;
         }
-        hydratePersistAfterLoadRef.current = persistedPrefillOverrides === undefined;
+        if (!prefillOverridesReady || persistedPrefillOverrides === undefined) return;
+        if (openedHydratedRef.current) return;
+        openedHydratedRef.current = true;
         resetFromSourcesRef.current();
-    }, [open]);
-
-    useEffect(() => {
-        if (
-            !open ||
-            persistedPrefillOverrides === undefined ||
-            !hydratePersistAfterLoadRef.current
-        ) {
-            return;
-        }
-        hydratePersistAfterLoadRef.current = false;
-        resetFromSourcesRef.current();
-    }, [open, persistedPrefillOverrides]);
+        resetAddendumFromSourcesRef.current();
+    }, [open, prefillOverridesReady, persistedPrefillOverrides]);
 
     useEffect(() => {
         if (!open) {
@@ -844,16 +959,16 @@ export function ContractPrefillEditForm({
     }, [open]);
 
     useEffect(() => {
-        if (open && CONTRACT_PREFILL_SECTIONS[0]?.id) {
-            setActiveSectionId(CONTRACT_PREFILL_SECTIONS[0].id);
+        if (open && navSections[0]?.id) {
+            setActiveSectionId(navSections[0].id);
         }
-    }, [open]);
+    }, [open, navSections]);
 
-    const activeSection = CONTRACT_PREFILL_SECTIONS.find((s) => s.id === activeSectionId) ?? CONTRACT_PREFILL_SECTIONS[0];
-    const activeIdx = CONTRACT_PREFILL_SECTIONS.findIndex((s) => s.id === activeSection.id);
-    const nextSection = activeIdx >= 0 && activeIdx < CONTRACT_PREFILL_SECTIONS.length - 1
-        ? CONTRACT_PREFILL_SECTIONS[activeIdx + 1]
-        : null;
+    const activeSection = navSections.find((s) => s.id === activeSectionId) ?? navSections[0];
+    const activeIdx = navSections.findIndex((s) => s.id === activeSection?.id);
+    const nextSection =
+        activeIdx >= 0 && activeIdx < navSections.length - 1 ? navSections[activeIdx + 1] : null;
+    const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
 
     const handleSave = async () => {
         setSaveError(null);
@@ -882,35 +997,64 @@ export function ContractPrefillEditForm({
         setSaving(true);
         try {
             const payload = toPayload(values);
-            const extras =
-                additionalContractPrefillJson && typeof additionalContractPrefillJson === "object"
-                    ? additionalContractPrefillJson
+            const existingBlob =
+                documentTemplatePrefillByMappingId && typeof documentTemplatePrefillByMappingId === "object"
+                    ? { ...documentTemplatePrefillByMappingId }
                     : {};
+            const nextBlob = { ...existingBlob };
+            if (linkedAddendumMapping?.id && addendumEditorRows.length > 0) {
+                nextBlob[linkedAddendumMapping.id] = { ...addendumFieldValues };
+            }
             const contractPrefillOverrides = {
                 ...(payload as Record<string, unknown>),
-                ...extras,
+                [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
             };
-            await dispatch(
+            const updateRes = await dispatch(
                 updateContract({
                     id: cid,
                     data: { contractPrefillOverrides },
                 }),
             ).unwrap();
             const appKey = String(applicationUuid ?? "").trim();
+            let rawOverrides: unknown =
+                (updateRes as { data?: { contractPrefillOverrides?: unknown } })?.data
+                    ?.contractPrefillOverrides ??
+                (updateRes as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides;
             if (appKey) {
                 try {
                     const res = await dispatch(getByApplicationIdContract(appKey)).unwrap();
                     const contract = (res as { data?: unknown })?.data ?? res;
-                    const fromDb = normalizeContractPrefillOverrides(
-                        (contract as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides,
-                    );
-                    onPersistedPrefillChange?.(fromDb ?? (payload as Partial<BuildContractPrefillFieldsArgs>));
+                    rawOverrides = (contract as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides;
                 } catch {
-                    onPersistedPrefillChange?.(payload as Partial<BuildContractPrefillFieldsArgs>);
+                    /* use update response */
                 }
-            } else {
-                onPersistedPrefillChange?.(payload as Partial<BuildContractPrefillFieldsArgs>);
             }
+            const parsedBlob = (() => {
+                if (rawOverrides == null || typeof rawOverrides !== "object" || Array.isArray(rawOverrides)) {
+                    return nextBlob;
+                }
+                const inner = (rawOverrides as Record<string, unknown>)[
+                    DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY
+                ];
+                if (inner == null || typeof inner !== "object" || Array.isArray(inner)) return nextBlob;
+                const out: Record<string, Record<string, string>> = {};
+                for (const [mappingId, row] of Object.entries(inner)) {
+                    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+                    out[mappingId] = Object.fromEntries(
+                        Object.entries(row as Record<string, unknown>).map(([k, v]) => [k, String(v ?? "")]),
+                    );
+                }
+                return out;
+            })();
+            const fromDb = stripDocumentTemplateBlobFromPrefillOverrides(
+                normalizeContractPrefillOverrides(rawOverrides) ??
+                    (payload as Partial<BuildContractPrefillFieldsArgs>),
+            );
+            onPersistedPrefillChange?.(fromDb ?? (payload as Partial<BuildContractPrefillFieldsArgs>));
+            onPersistedPrefillFullChange?.(
+                fromDb ?? (payload as Partial<BuildContractPrefillFieldsArgs>),
+                parsedBlob,
+            );
             setSaveError(null);
             toast.success("Contract prefill fields saved.");
             onOpenChange(false);
@@ -950,18 +1094,48 @@ export function ContractPrefillEditForm({
                 try {
                     const res = await dispatch(getByApplicationIdContract(appKey)).unwrap();
                     const contract = (res as { data?: unknown })?.data ?? res;
-                    onPersistedPrefillChange?.(
-                        normalizeContractPrefillOverrides(
-                            (contract as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides,
-                        ) ?? null,
+                    const raw = (contract as { contractPrefillOverrides?: unknown })?.contractPrefillOverrides;
+                    const main = stripDocumentTemplateBlobFromPrefillOverrides(
+                        normalizeContractPrefillOverrides(raw) ?? null,
                     );
+                    const blob = (() => {
+                        if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+                        const inner = (raw as Record<string, unknown>)[
+                            DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY
+                        ];
+                        if (inner == null || typeof inner !== "object" || Array.isArray(inner)) return {};
+                        const out: Record<string, Record<string, string>> = {};
+                        for (const [mappingId, row] of Object.entries(inner)) {
+                            if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+                            out[mappingId] = Object.fromEntries(
+                                Object.entries(row as Record<string, unknown>).map(([k, v]) => [
+                                    k,
+                                    String(v ?? ""),
+                                ]),
+                            );
+                        }
+                        return out;
+                    })();
+                    onPersistedPrefillChange?.(main);
+                    onPersistedPrefillFullChange?.(main, blob);
                 } catch {
                     onPersistedPrefillChange?.(null);
+                    onPersistedPrefillFullChange?.(null, preserveDoc ? (preserveDoc[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY] as Record<string, Record<string, string>>) ?? {} : {});
                 }
             } else {
                 onPersistedPrefillChange?.(null);
+                onPersistedPrefillFullChange?.(
+                    null,
+                    preserveDoc
+                        ? ((preserveDoc[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY] as Record<
+                              string,
+                              Record<string, string>
+                          >) ?? {})
+                        : {},
+                );
             }
             resetFromSources();
+            resetAddendumFromSources();
             setSaveError(null);
             toast.success("Saved overrides cleared; DocuSign will use application data again.");
         } catch (e) {
@@ -1027,7 +1201,7 @@ export function ContractPrefillEditForm({
                             <SelectValue placeholder="Choose section" />
                         </SelectTrigger>
                         <SelectContent position="popper" className="z-[10200] max-h-[min(70vh,420px)]">
-                            {CONTRACT_PREFILL_SECTIONS.map((s) => (
+                            {navSections.map((s) => (
                                 <SelectItem key={s.id} value={s.id}>
                                     {s.title}
                                 </SelectItem>
@@ -1046,7 +1220,7 @@ export function ContractPrefillEditForm({
                             <LayoutList className="h-3 w-3" aria-hidden />
                             Outline
                         </p>
-                        {CONTRACT_PREFILL_SECTIONS.map((s) => {
+                        {navSections.map((s) => {
                             const isActive = s.id === activeSectionId;
                             return (
                                 <button
@@ -1085,55 +1259,94 @@ export function ContractPrefillEditForm({
                                         </div>
                                     </div>
                                 </div>
-                                <div className="space-y-5">
-                                    {activeSection.groups.map((group, groupIdx) => (
-                                        <div
-                                            key={group.heading ?? `group-${groupIdx}`}
-                                            className={cn(group.heading && groupIdx > 0 && "mt-1 border-t border-slate-200/90 pt-4 dark:border-slate-600")}
-                                        >
-                                            {group.heading ? (
-                                                <h5 className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                    {group.heading}
-                                                </h5>
-                                            ) : null}
-                                            <div className="grid gap-4 sm:grid-cols-2">
-                                                {group.keys.map((key) => (
-                                                    <div key={key} className="space-y-1.5">
-                                                        <Label htmlFor={`prefill-${key}`} className="text-xs font-medium">
-                                                            {FIELD_LABELS[key as keyof typeof FIELD_LABELS]}
-                                                        </Label>
-                                                        <Input
-                                                            id={`prefill-${key}`}
-                                                            type={isPasswordPrefillKey(key) ? "password" : "text"}
-                                                            autoComplete={
-                                                                isPasswordPrefillKey(key) ? "new-password" : undefined
-                                                            }
-                                                            value={values[key] ?? ""}
-                                                            onChange={(e) => setField(key, e.target.value)}
-                                                            disabled={readOnly}
-                                                            aria-invalid={Boolean(fieldErrors[key])}
-                                                            className={cn(
-                                                                "h-9 text-sm",
-                                                                fieldErrors[key] &&
-                                                                    "border-destructive focus-visible:ring-destructive",
-                                                            )}
-                                                            placeholder={
-                                                                key === "agreementDate"
-                                                                    ? agreementDatePlaceholder
-                                                                    : undefined
-                                                            }
-                                                        />
-                                                        {fieldErrors[key] ? (
-                                                            <p className="text-destructive text-xs" role="alert">
-                                                                {fieldErrors[key]}
-                                                            </p>
-                                                        ) : null}
-                                                    </div>
-                                                ))}
+                                {isLinkedAddendumSection ? (
+                                    <div className="grid gap-4 sm:grid-cols-2">
+                                        {addendumEditorRows.map((row) => (
+                                            <div key={row.id} className="space-y-1.5">
+                                                <Label htmlFor={`addendum-prefill-${row.id}`} className="text-xs font-medium">
+                                                    {row.label}
+                                                </Label>
+                                                <Input
+                                                    id={`addendum-prefill-${row.id}`}
+                                                    value={addendumFieldValues[row.id] ?? ""}
+                                                    onChange={(e) =>
+                                                        setAddendumFieldValues((prev) => ({
+                                                            ...prev,
+                                                            [row.id]: e.target.value,
+                                                        }))
+                                                    }
+                                                    disabled={readOnly}
+                                                    className="h-9 text-sm"
+                                                />
                                             </div>
-                                        </div>
-                                    ))}
-                                </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="space-y-5">
+                                        {activeSection.groups.map((group, groupIdx) => (
+                                            <div
+                                                key={group.heading ?? `group-${groupIdx}`}
+                                                className={cn(
+                                                    group.heading &&
+                                                        groupIdx > 0 &&
+                                                        "mt-1 border-t border-slate-200/90 pt-4 dark:border-slate-600",
+                                                )}
+                                            >
+                                                {group.heading ? (
+                                                    <h5 className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                        {group.heading}
+                                                    </h5>
+                                                ) : null}
+                                                <div className="grid gap-4 sm:grid-cols-2">
+                                                    {group.keys.map((key) => (
+                                                        <div key={key} className="space-y-1.5">
+                                                            <Label
+                                                                htmlFor={`prefill-${key}`}
+                                                                className="text-xs font-medium"
+                                                            >
+                                                                {FIELD_LABELS[key as keyof typeof FIELD_LABELS]}
+                                                                {REQUIRED_PREFILL_FIELD_KEYS.has(key) ? (
+                                                                    <span className="text-destructive"> *</span>
+                                                                ) : null}
+                                                            </Label>
+                                                            <Input
+                                                                id={`prefill-${key}`}
+                                                                type={isPasswordPrefillKey(key) ? "password" : "text"}
+                                                                required={REQUIRED_PREFILL_FIELD_KEYS.has(key)}
+                                                                autoComplete={
+                                                                    isPasswordPrefillKey(key)
+                                                                        ? "new-password"
+                                                                        : undefined
+                                                                }
+                                                                value={values[key] ?? ""}
+                                                                onChange={(e) => setField(key, e.target.value)}
+                                                                disabled={readOnly}
+                                                                aria-invalid={Boolean(fieldErrors[key])}
+                                                                className={cn(
+                                                                    "h-9 text-sm",
+                                                                    fieldErrors[key] &&
+                                                                        "border-destructive focus-visible:ring-destructive",
+                                                                )}
+                                                                placeholder={
+                                                                    key === "agreementDate"
+                                                                        ? agreementDatePlaceholder
+                                                                        : key === "purchasePercent"
+                                                                          ? "Enter specific percentage"
+                                                                          : undefined
+                                                                }
+                                                            />
+                                                            {fieldErrors[key] ? (
+                                                                <p className="text-destructive text-xs" role="alert">
+                                                                    {fieldErrors[key]}
+                                                                </p>
+                                                            ) : null}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                                 {nextSection ? (
                                     <div className="flex justify-end pt-2">
                                         <Button

@@ -33,7 +33,7 @@ import {
   type TemplateCategory,
   type TemplateItem as ApiTemplateItem,
 } from "./paymentTemplateApi";
-import { sendGmailCompose } from "@/redux/actions/gmailActions";
+import { sendPaymentMail } from "@/redux/actions/paymentMailActions";
 import { cn, formatCurrency } from "@/lib/utils";
 import { FileText, Mail, RotateCcw, Send } from "lucide-react";
 
@@ -429,7 +429,7 @@ export default function Letters() {
         subject.trim() || `${selectedTemplate.name} - Deal #${dealLabel}`;
 
       await dispatch(
-        sendGmailCompose({
+        sendPaymentMail({
           to: recipient,
           subject: resolvedSubject,
           body: mergedBody,

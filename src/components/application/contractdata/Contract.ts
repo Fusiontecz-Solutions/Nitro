@@ -166,7 +166,7 @@ const FIELD_IDS = {
     clientPhone: ["client_phone"],
     purchasePrice: ["purchase_price"],
     purchaseAmount: ["purchase_amount"],
-    purchasePercent: ["purchase_percent"],
+    purchasePercent: ["purchase_percent", "specified_percentage"],
     remittance: ["remittance"],
     frequency: ["frequency", "paymentTerms"],
     /** DocuSign: `net_to_merchant`; BoldSign template tabs often use `NetFundProvided`. */
@@ -318,7 +318,9 @@ function normalizePrefillValueForUsFormat(id: string, value: string): string {
         k.includes("net_fund") ||
         k.includes("transaction_fee") ||
         /^epo_amount_received_\d+$/.test(k) ||
-        k === "purchase_percent"
+        k === "purchase_percent" ||
+        k === "specified_percentage" ||
+        k === "remittance"
     ) {
         return formatUsNumberString(value);
     }
@@ -533,7 +535,7 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.agreementDate, "Agreement Date", agreementDate),
         ...mapIds(FIELD_IDS.purchasePrice, "Purchase Price", purchasePrice),
         ...mapIds(FIELD_IDS.purchaseAmount, "Purchase Amount", purchaseAmount),
-        ...mapIds(FIELD_IDS.purchasePercent, "Purchase Percent", purchasePercent),
+        ...mapIds(FIELD_IDS.purchasePercent, "Specific Percentage", purchasePercent),
         ...mapIds(FIELD_IDS.remittance, "Remittance", remittance),
         ...mapIds(FIELD_IDS.frequency, "Frequency", frequency),
         ...mapIds(FIELD_IDS.netToMerchant, "Net to merchant", netToMerchant),
@@ -697,11 +699,39 @@ export const buildContractPrefillFields = ({
 export type ContractPrefillContractRecords = {
     contract?: Record<string, unknown> | null;
     ach?: Record<string, unknown> | null;
+    /** Latest application BankDetail (decrypted from API); wins over stale ACH for routing/account. */
+    bankDetail?: Record<string, unknown> | null;
     addendum?: Record<string, unknown> | null;
     epo?: Record<string, unknown> | null;
     owners?: Record<string, unknown>[] | null;
     guarantors?: Record<string, unknown>[] | null;
 };
+
+/** Prefill keys populated from live application bank details. */
+export const LIVE_BANK_PREFILL_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
+    "authorizationClientBankName",
+    "authorizationClientBankAccount",
+    "authorizationClientBankRouting",
+    "achAuthorizationAccountHolderBankName",
+    "achAuthorizationAccountHolderBankAccountNumber",
+    "achAuthorizationAccountHolderBankRoutingNumber",
+];
+
+/** Prefer non-empty bank values from defaults when persisted/ACH copies are empty or still encrypted. */
+export function applyLiveBankDetailsToPrefillMerge(
+    defaults: Partial<BuildContractPrefillFieldsArgs>,
+    merged: Partial<BuildContractPrefillFieldsArgs>,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const out = { ...merged };
+    for (const key of LIVE_BANK_PREFILL_KEYS) {
+        const fromDefaults = str(defaults[key]);
+        const current = str(out[key]);
+        if (fromDefaults && (!current || current.startsWith("enc:v1:"))) {
+            (out as Record<string, string>)[key] = fromDefaults;
+        }
+    }
+    return out;
+}
 
 function str(v: unknown): string {
     return String(v ?? "").trim();
@@ -837,7 +867,6 @@ function prefillIsoDate(value: unknown): string {
 const MONEY_STRING_PREFILL_KEYS: readonly (keyof BuildContractPrefillFieldsArgs)[] = [
     "purchasePrice",
     "purchaseAmount",
-    "purchasePercent",
     "netToMerchant",
     "appendixUnderwritingFees",
     "addendumDatedPrincipalOwnerAmount",
@@ -1042,6 +1071,55 @@ export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources)
         .join(" ");
 }
 
+const PAYMENT_FREQUENCY_LABELS = new Set([
+    "daily",
+    "weekly",
+    "monthly",
+    "biweekly",
+]);
+
+/** True when a stored remittance value is a payment cadence label, not a dollar amount. */
+export function looksLikePaymentFrequencyLabel(value: string): boolean {
+    const trimmed = String(value ?? "").trim();
+    if (!trimmed) return false;
+    const compact = trimmed.toLowerCase().replace(/[^a-z]/g, "");
+    if (PAYMENT_FREQUENCY_LABELS.has(compact)) return true;
+    return /^(daily|weekly|monthly|bi[-\s]?weekly)$/i.test(trimmed);
+}
+
+/**
+ * Total remit ($) for contract / DocuSign `remittance` tab — offer totalRemit or payback, never frequency.
+ */
+export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSources): string {
+    const app = sources.application;
+    const contract = sources.contract;
+    const odRoot =
+        sources.offerDecision ??
+        (contract?.offer as Record<string, unknown> | undefined) ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+
+    const stored = str(contract?.remittance);
+    if (stored) {
+        const freqLabel = resolveOfferFrequencyLabel(sources);
+        const sameAsFrequency =
+            freqLabel && stored.trim().toLowerCase() === freqLabel.trim().toLowerCase();
+        if (!sameAsFrequency && !looksLikePaymentFrequencyLabel(stored)) {
+            const asMoney = coerceToFiniteNumber(stored);
+            if (asMoney !== undefined) return truncateDecimalPrefill(asMoney);
+        }
+    }
+
+    const totalRemit =
+        coerceToFiniteNumber(odEff?.totalRemit) ??
+        coerceToFiniteNumber(odRoot?.totalRemit) ??
+        coerceToFiniteNumber(contract?.purchasePrice) ??
+        coerceToFiniteNumber(contract?.totalAmount);
+    return totalRemit !== undefined ? truncateDecimalPrefill(totalRemit) : "";
+}
+
 function normalizeDealReviewFieldId(id: string): string {
     return String(id ?? "")
         .trim()
@@ -1217,7 +1295,7 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
     if (category === "Deal Terms") {
         if (norm === "purchase_price") return PLATFORM_LABEL.paybackAmount;
         if (norm === "purchase_amount") return PLATFORM_LABEL.offerAmount;
-        if (norm === "purchase_percent") return PLATFORM_LABEL.rate;
+        if (norm === "purchase_percent" || norm === "specified_percentage") return PLATFORM_LABEL.specificPercentage;
         if (norm === "remittance") return PLATFORM_LABEL.totalRemit;
         if (norm === "frequency" || norm === "paymentterms") return PLATFORM_LABEL.frequency;
     }
@@ -1262,6 +1340,7 @@ export function categorizeDealReviewPrefillFieldId(id: string): string {
     if (s === "business_address") return "Business Address";
     if (
         s.startsWith("purchase_") ||
+        s === "specified_percentage" ||
         s === "remittance" ||
         s === "frequency" ||
         s === "paymentterms" ||
@@ -1370,7 +1449,8 @@ const PLATFORM_LABEL = {
     offerAmount: "Offer amount",
     paybackAmount: "Payback amount",
     totalRemit: "Total remit",
-    rate: "Rate",
+    rate: "Specific Percentage",
+    specificPercentage: "Specific Percentage",
     term: "Term",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
@@ -1457,7 +1537,8 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     business_address_contract_zip: "ZIP",
     purchase_price: PLATFORM_LABEL.paybackAmount,
     purchase_amount: PLATFORM_LABEL.offerAmount,
-    purchase_percent: PLATFORM_LABEL.rate,
+    purchase_percent: PLATFORM_LABEL.specificPercentage,
+    specified_percentage: PLATFORM_LABEL.specificPercentage,
     remittance: PLATFORM_LABEL.totalRemit,
     frequency: PLATFORM_LABEL.frequency,
     paymentterms: PLATFORM_LABEL.frequency,
@@ -1701,6 +1782,24 @@ function mergePrefillFieldsPreferFirst(...groups: ContractPrefillField[][]): Con
     return Array.from(map.values());
 }
 
+function bankDetailRowToPrefillPartial(
+    row: Record<string, unknown> | null | undefined,
+): Partial<BuildContractPrefillFieldsArgs> {
+    if (!row) return {};
+    const name = str(row.bankName);
+    const account = str(row.accountNumber);
+    const routing = str(row.routingNumber);
+    if (!name && !account && !routing) return {};
+    return {
+        achAuthorizationAccountHolderBankName: name,
+        achAuthorizationAccountHolderBankAccountNumber: account,
+        achAuthorizationAccountHolderBankRoutingNumber: routing,
+        authorizationClientBankName: name,
+        authorizationClientBankAccount: account,
+        authorizationClientBankRouting: routing,
+    };
+}
+
 function achRowToPrefillPartial(row: Record<string, unknown> | null | undefined): Partial<BuildContractPrefillFieldsArgs> {
     if (!row) return {};
     const out: Partial<BuildContractPrefillFieldsArgs> = {
@@ -1856,8 +1955,6 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
 
     const purchaseAmount = firstTruncateDecimal(row.purchaseAmount, offer?.offer, row.approvedAmount);
     const purchasePrice = firstTruncateDecimal(row.purchasePrice, offer?.totalRemit, row.totalAmount);
-    const purchasePercent =
-        firstTruncateDecimal(row.purchasePercent, offer?.rate) || str(row.purchasePercent);
     const netToMerchant =
         str(row.netToMerchant) ||
         formatNetToMerchantPrefillValue(
@@ -1895,11 +1992,9 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         clientPhone: str(row.clientPhone),
         purchasePrice,
         purchaseAmount,
-        purchasePercent,
         frequency,
         netToMerchant,
-        remittance:
-            str(row.remittance) || "",
+        remittance: resolveRemittancePrefillValue({ contract: row, offerDecision: offer }),
         clientName: str(row.clientName),
         securityBusinessName: str(row.securityBusinessName),
         securityTaxEin: str(row.securityTaxEin),
@@ -2223,6 +2318,7 @@ export function getContractPrefillEditDefaultsFromApplication(
         ...addendumRowToPrefillPartial(rec?.addendum ?? null),
         ...ownersToPrefillPartial(rec?.owners ?? null),
         ...guarantorsToPrefillPartial(rec?.guarantors ?? null),
+        ...bankDetailRowToPrefillPartial(rec?.bankDetail ?? null),
     };
     const ownerFallback = ownerFullName(rec?.owners?.[0]?.firstName, rec?.owners?.[0]?.lastName);
     const customerName =
@@ -2248,6 +2344,18 @@ export function getContractPrefillEditDefaultsFromApplication(
         contract: rec?.contract ?? null,
         offerDecision: options?.offerDecision ?? null,
     });
+    const remittanceSources: NetToMerchantPrefillSources = {
+        application: anyApp as Record<string, unknown> | undefined,
+        contract: rec?.contract ?? null,
+        offerDecision: options?.offerDecision ?? null,
+    };
+    const remittanceComputed = resolveRemittancePrefillValue(remittanceSources);
+    const storedRemittance = str(recordPartial.remittance);
+    const remittanceNeedsOverride =
+        !storedRemittance ||
+        looksLikePaymentFrequencyLabel(storedRemittance) ||
+        (frequencyComputed &&
+            storedRemittance.trim().toLowerCase() === frequencyComputed.trim().toLowerCase());
 
     return applyAppendixUnderwritingFeesAmount(
         applySplitAddressStreetFields({
@@ -2259,6 +2367,7 @@ export function getContractPrefillEditDefaultsFromApplication(
             ...(str(recordPartial.frequency) || !frequencyComputed
                 ? {}
                 : { frequency: frequencyComputed }),
+            ...(remittanceNeedsOverride && remittanceComputed ? { remittance: remittanceComputed } : {}),
             ...(str(recordPartial.netToMerchant) || !netComputed
                 ? {}
                 : { netToMerchant: netComputed }),
@@ -2316,6 +2425,21 @@ export function buildContractPrefillFieldsFromApplication(
             }),
         );
         if (computed) merged.netToMerchant = computed;
+    }
+    const remittanceSources: NetToMerchantPrefillSources = {
+        application: anyApp as Record<string, unknown> | undefined,
+        contract: rec?.contract ?? null,
+        offerDecision: options?.offerDecision ?? null,
+    };
+    const storedRemittance = str(merged.remittance);
+    const freqForRemit = str(merged.frequency) || resolveOfferFrequencyLabel(remittanceSources);
+    if (
+        !storedRemittance ||
+        looksLikePaymentFrequencyLabel(storedRemittance) ||
+        (freqForRemit && storedRemittance.trim().toLowerCase() === freqForRemit.trim().toLowerCase())
+    ) {
+        const remitComputed = resolveRemittancePrefillValue(remittanceSources);
+        if (remitComputed) merged.remittance = remitComputed;
     }
     const moneySources: NetToMerchantPrefillSources = {
         application: anyApp as Record<string, unknown> | undefined,

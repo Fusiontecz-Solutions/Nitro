@@ -76,6 +76,7 @@ export function TemplateMappingPrefillEditDialog({
         if (!row) return [];
         const saved = documentTemplatePrefillByMappingId[row.id] ?? {};
         return getDocumentTemplatePrefillFieldRowsForEditor({
+            templateId: row.template?.templateId ?? null,
             templateName: row.template?.name ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
@@ -233,8 +234,7 @@ export function TemplateMappingPrefillEditDialog({
                                 {editorRows.map((r) => (
                                     <div key={r.id} className="space-y-1.5">
                                         <Label htmlFor={`tmpl-field-${r.id}`} className="text-xs font-medium">
-                                            {r.label}{" "}
-                                            <span className="text-muted-foreground font-normal">({r.id})</span>
+                                            {r.label}
                                         </Label>
                                         <Input
                                             id={`tmpl-field-${r.id}`}

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
     AlertCircle,
     BadgeCheck,
@@ -76,6 +77,7 @@ import {
     getByIdContract,
     type UpdateContractData,
 } from "@/redux/actions/contractActions";
+import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import { toast } from "react-toastify";
 import {
     buildContractPrefillFieldsFromApplication,
@@ -95,7 +97,15 @@ import {
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-import { addRecipientsToBoldSignTemplate, getBoldSignTemplateRecipients } from "@/redux/actions/boldSignActions";
+
+/** Primary DocuSign actions in the contract modal footer (matches Review & send / Done). */
+const DOCUSIGN_PRIMARY_BTN_CLASS =
+    "h-9 shrink-0 cursor-pointer border-0 bg-[#276D9C] px-6 text-white shadow-sm hover:bg-[#276D9C]/90 focus-visible:ring-[#276D9C]/40";
+import {
+    addRecipientsToBoldSignTemplate,
+    getBoldSignTemplateRecipients,
+    voidBoldSignDocument,
+} from "@/redux/actions/boldSignActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { loadBoldSignCcEmailList, saveBoldSignCcEmailList } from "./boldsignCcList";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
@@ -103,6 +113,7 @@ import { TemplateMappingPrefillEditDialog } from "./contractdata/TemplateMapping
 import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     parseDocumentTemplatePrefillByMappingId,
+    stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./contractdata/documentTemplateMappingPrefill";
 import { DEFAULT_DOCUSIGN_TEMPLATE_ID } from "./contractdata/docusignTemplateConfig";
 import {
@@ -145,6 +156,27 @@ function tryOpenDocuSignSenderUrl(senderUrl: string): boolean {
         /* ignore */
     }
     return true;
+}
+
+function writeDocuSignLoadingTab(doc: Document): void {
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Opening DocuSign</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc;color:#334155}
+.box{text-align:center;padding:2rem}.spin{width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#276D9C;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 1rem}
+@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="spin"></div><p>Opening DocuSign…</p></div></body></html>`);
+    doc.close();
+}
+
+function writeDocuSignErrorTab(doc: Document, message: string): void {
+    const safe = String(message)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>DocuSign</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#fef2f2;color:#991b1b;padding:1rem}
+.box{max-width:28rem;text-align:center}</style></head><body><div class="box"><p><strong>Could not open DocuSign</strong></p><p>${safe}</p></div></body></html>`);
+    doc.close();
 }
 
 interface PDFViewerModalProps {
@@ -399,6 +431,48 @@ function isContractSigningFinished(
     );
 }
 
+function envelopeDocStatusIsTerminal(doc: Record<string, unknown> | null): boolean {
+    const docStatus = String(doc?.status ?? "").trim().toLowerCase();
+    return ["revoked", "voided", "declined", "expired", "completed"].includes(docStatus);
+}
+
+/** In-flight envelope (sent to signers, not completed or voided). */
+function canCancelDocuSignContract(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt: Date | null,
+): boolean {
+    const status = String(contract?.status ?? "").trim().toUpperCase();
+    if (["REVOKED", "DECLINED", "EXPIRED", "COMPLETED"].includes(status)) return false;
+    if (["SENT", "VIEWED", "SIGNED"].includes(status)) return true;
+
+    if (!isContractAlreadySent(contract, sessionSentAt)) return false;
+    const doc = pickContractEnvelopeDocument(contract);
+    if (envelopeDocStatusIsTerminal(doc)) return false;
+    if (status === "COMPLETED") return false;
+    if (["REVOKED", "DECLINED", "EXPIRED"].includes(status)) return false;
+    return true;
+}
+
+/** Open DocuSign to send — not while an active envelope is out for signature. */
+function canReviewAndSendToDocuSign(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt: Date | null,
+): boolean {
+    if (canCancelDocuSignContract(contract, sessionSentAt)) return false;
+    const status = String(contract?.status ?? "").trim().toUpperCase();
+    const doc = pickContractEnvelopeDocument(contract);
+    const docStatus = String(doc?.status ?? "").trim().toLowerCase();
+    if (status === "COMPLETED" || docStatus === "completed") return false;
+    if (
+        ["REVOKED", "DECLINED", "EXPIRED"].includes(status) ||
+        ["revoked", "voided", "declined", "expired"].includes(docStatus)
+    ) {
+        return true;
+    }
+    if (isContractAlreadySent(contract, sessionSentAt)) return false;
+    return true;
+}
+
 type PdfRightPaneTab = "template" | "docusign";
 
 /**
@@ -514,6 +588,7 @@ const PDFViewerModal = ({
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
     const [isSending, setIsSending] = useState(false);
+    const [isCancellingContract, setIsCancellingContract] = useState(false);
     /** Set when the browser blocks `window.open` after the draft URL is ready — user opens via button click. */
     const [docuSignOpenUrl, setDocuSignOpenUrl] = useState<string | null>(null);
     type ContractWizardStep = "documents" | "info" | "summary" | "sent";
@@ -774,6 +849,7 @@ const PDFViewerModal = ({
     const offerDecisionData = offerDecisionState?.data ?? null;
     const offerDecisionLoading = Boolean(offerDecisionState?.loading);
     const achListState = useSelector((state: RootState) => state.achList);
+    const bankDetailsList = useSelector((state: RootState) => state.bankDetails.data);
     const epoListState = useSelector((state: RootState) => state.epoList);
     const addendumListState = useSelector((state: RootState) => state.addendumList);
     const ownerListState = useSelector((state: RootState) => state.contractOwnerList);
@@ -929,9 +1005,25 @@ const PDFViewerModal = ({
     const contractPrefillRecords: ContractPrefillContractRecords = useMemo(() => {
         const firstRow = (data: unknown): Record<string, unknown> | null =>
             Array.isArray(data) && data.length ? (data[0] as Record<string, unknown>) : null;
+        const rows = Array.isArray(bankDetailsList) ? bankDetailsList : [];
+        const latestBank =
+            rows.length > 0
+                ? [...rows].sort((a, b) => {
+                      const ta = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime();
+                      const tb = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime();
+                      return ta - tb;
+                  })[0]
+                : null;
         return {
             contract: resolvedContract,
             ach: firstRow(achListState.data),
+            bankDetail: latestBank
+                ? {
+                      bankName: latestBank.bankName,
+                      accountNumber: latestBank.accountNumber,
+                      routingNumber: latestBank.routingNumber,
+                  }
+                : null,
             addendum: firstRow(addendumListState.data),
             epo: firstRow(epoListState.data),
             owners: Array.isArray(ownerListState.data) ? ownerListState.data : [],
@@ -939,6 +1031,7 @@ const PDFViewerModal = ({
         };
     }, [
         achListState.data,
+        bankDetailsList,
         addendumListState.data,
         epoListState.data,
         ownerListState.data,
@@ -982,12 +1075,24 @@ const PDFViewerModal = ({
         [resolvedContract],
     );
 
+    const canCancelSentContract = useMemo(
+        () => canCancelDocuSignContract(resolvedContract, sentAt),
+        [resolvedContract, sentAt],
+    );
+
+    const canReviewAndSendDocuSign = useMemo(
+        () => canReviewAndSendToDocuSign(resolvedContract, sentAt),
+        [resolvedContract, sentAt],
+    );
+
     /** Application client/businessInfo + contract ACH/addendum/EPO/owners/guarantors + optional preview overrides. */
     const dealReviewFields = useMemo(() => {
         const fromApp = buildContractPrefillFieldsFromApplication(applicationData, {
             agreementDate: formatDate(new Date()),
             contractRecords: contractPrefillRecords,
-            overrides: contractPrefillOverrides ?? undefined,
+            overrides:
+                stripDocumentTemplateBlobFromPrefillOverrides(contractPrefillOverrides ?? undefined) ??
+                undefined,
             offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
         });
         const byId = new Map<string, ContractPrefillField>();
@@ -1028,7 +1133,7 @@ const PDFViewerModal = ({
             row("Decision", od.decision),
             row("Position", od.position),
             row("Offer amount", firstOf("offer", "approvedAmount")),
-            row("Rate", od.rate),
+            row("Specific Percentage", od.rate),
             row("Term", firstOf("term", "termLength")),
             row("Frequency", od.frequency),
             row("Repay per period", firstOf("repayPerPeriod", "paymentAmount")),
@@ -1077,7 +1182,11 @@ const PDFViewerModal = ({
             setSelectedFunder(
                 pickFunderForSelect(rawFunder, DEFAULT_FUNDER_OPTIONS) || rawFunder,
             );
-            setContractPrefillFromDb(normalizeContractPrefillOverrides(c?.contractPrefillOverrides));
+            setContractPrefillFromDb(
+                stripDocumentTemplateBlobFromPrefillOverrides(
+                    normalizeContractPrefillOverrides(c?.contractPrefillOverrides),
+                ),
+            );
             setDocumentTemplatePrefillByMappingId(parseDocumentTemplatePrefillByMappingId(c?.contractPrefillOverrides));
             setContractPrefillLoaded(true);
         };
@@ -1616,12 +1725,74 @@ const PDFViewerModal = ({
         setCcEmailDraft("");
     };
 
+    const handleCancelContract = async () => {
+        const envelopeId = String(linkedEnvelopeIdRef.current || linkedEnvelopeId || "").trim();
+        if (!envelopeId) {
+            toast.error("No DocuSign envelope is linked to this contract.");
+            return;
+        }
+        const confirmed = window.confirm(
+            "Void this contract in DocuSign? Signers will no longer be able to sign. You can send a new contract afterward.",
+        );
+        if (!confirmed) return;
+
+        setIsCancellingContract(true);
+        try {
+            await dispatch(
+                voidBoldSignDocument({
+                    documentId: envelopeId,
+                    reason: "Cancelled by user from CRM",
+                }),
+            ).unwrap();
+            invalidateDocuSignDraftSession();
+            setDocuSignOpenUrl(null);
+            setSentAt(null);
+            contractWasSentRef.current = false;
+            pendingCcForSentRef.current = [];
+            invalidateDocuSignPdfCache();
+            setPrefilledBoldSignPdfUrl(null);
+            setPrefilledBoldSignPdfHint(null);
+            await refreshContractSigningState(false, {
+                syncDocuSign: true,
+                forceDocuSignSync: true,
+            });
+            if (activeStepRef.current === "sent") {
+                setActiveStep("summary");
+            }
+            toast.success(
+                "Contract voided in DocuSign. Use Review & send when you are ready to send again.",
+            );
+        } catch (error) {
+            console.error("Failed to cancel DocuSign contract:", error);
+            const msg = await parseApiErrorMessageFromAxios(error);
+            toast.error(msg || "Failed to void contract in DocuSign.");
+        } finally {
+            setIsCancellingContract(false);
+        }
+    };
+
     const handleSend = async () => {
         if (!fileUrl) return;
+        if (!canReviewAndSendToDocuSign(resolvedContract, sentAt)) {
+            toast.info(
+                "This contract is already out for signature. Void it in DocuSign before sending again.",
+            );
+            return;
+        }
 
+        let docuSignTab: Window | null = null;
         try {
-            setIsSending(true);
             setDocuSignOpenUrl(null);
+            docuSignTab = window.open("about:blank", "_blank");
+            if (docuSignTab) {
+                try {
+                    writeDocuSignLoadingTab(docuSignTab.document);
+                } catch {
+                    /* ignore */
+                }
+            }
+            flushSync(() => setIsSending(true));
+
             const draft = ccEmailDraft.trim();
             let toSend = [...ccEmails];
             if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
@@ -1639,15 +1810,29 @@ const PDFViewerModal = ({
             if (onPrepareDocuSignDraft) {
                 const signerEmail = String(docuSignSignerEmail.email || "").trim();
                 if (!signerEmail) {
-                    toast.error(
-                        "No signing email found. Set client email on the application or contract, or a default signer email on the DocuSign template. CC addresses are not signers.",
-                    );
+                    const msg =
+                        "No signing email found. Set client email on the application or contract, or a default signer email on the DocuSign template. CC addresses are not signers.";
+                    if (docuSignTab) {
+                        try {
+                            writeDocuSignErrorTab(docuSignTab.document, msg);
+                        } catch {
+                            /* ignore */
+                        }
+                    }
+                    toast.error(msg);
                     return;
                 }
                 if (selectedAddendumOption.startsWith("up:")) {
-                    toast.info(
-                        "Only DocuSign addendum templates can be merged with the contract. Clear the addendum dropdown or pick a DocuSign template.",
-                    );
+                    const msg =
+                        "Only DocuSign addendum templates can be merged with the contract. Clear the addendum dropdown or pick a DocuSign template.";
+                    if (docuSignTab) {
+                        try {
+                            writeDocuSignErrorTab(docuSignTab.document, msg);
+                        } catch {
+                            /* ignore */
+                        }
+                    }
+                    toast.info(msg);
                     return;
                 }
 
@@ -1702,9 +1887,16 @@ const PDFViewerModal = ({
                 }
 
                 if (!envelopeId) {
-                    toast.error(
-                        "Could not create the DocuSign draft. Check signers and template configuration.",
-                    );
+                    const msg =
+                        "Could not create the DocuSign draft. Check signers and template configuration.";
+                    if (docuSignTab) {
+                        try {
+                            writeDocuSignErrorTab(docuSignTab.document, msg);
+                        } catch {
+                            /* ignore */
+                        }
+                    }
+                    toast.error(msg);
                     return;
                 }
 
@@ -1714,14 +1906,36 @@ const PDFViewerModal = ({
                     Boolean(preparedSenderUrl),
                 );
                 if (!senderUrl) {
-                    toast.error(
-                        "Draft envelope was created but DocuSign did not return a review URL yet. Wait a few seconds and click Review & send again.",
-                        { autoClose: 12000 },
-                    );
+                    const msg =
+                        "Draft envelope was created but DocuSign did not return a review URL yet. Wait a few seconds and click Review & send again.";
+                    if (docuSignTab) {
+                        try {
+                            writeDocuSignErrorTab(docuSignTab.document, msg);
+                        } catch {
+                            /* ignore */
+                        }
+                    }
+                    toast.error(msg, { autoClose: 12000 });
                     return;
                 }
 
                 pendingCcForSentRef.current = toSend;
+
+                if (docuSignTab) {
+                    try {
+                        docuSignTab.location.href = senderUrl;
+                        setDocuSignOpenUrl(null);
+                        toast.success(
+                            toSend.length
+                                ? "DocuSign opened in a new tab. Click Send to email the signer. CC addresses will receive a prefilled contract copy by email once DocuSign marks the envelope sent."
+                                : "DocuSign opened in a new tab. Click Send there to email signers. This modal will move to step 4 (Sent) and refresh when DocuSign confirms the send.",
+                            { autoClose: 12000 },
+                        );
+                        return;
+                    } catch {
+                        /* fall through to popup-blocked fallback */
+                    }
+                }
 
                 const opened = tryOpenDocuSignSenderUrl(senderUrl);
                 if (!opened) {
@@ -1743,10 +1957,30 @@ const PDFViewerModal = ({
             } else if (onSendToDocusign) {
                 await onSendToDocusign(toSend);
             } else {
-                toast.error("DocuSign is not configured for this contract.");
+                const msg = "DocuSign is not configured for this contract.";
+                if (docuSignTab) {
+                    try {
+                        writeDocuSignErrorTab(docuSignTab.document, msg);
+                    } catch {
+                        /* ignore */
+                    }
+                }
+                toast.error(msg);
             }
         } catch (error) {
             console.error("Failed to open DocuSign draft:", error);
+            const msg =
+                error instanceof Error && error.message
+                    ? error.message
+                    : "Failed to open DocuSign. Try again.";
+            if (docuSignTab) {
+                try {
+                    writeDocuSignErrorTab(docuSignTab.document, msg);
+                } catch {
+                    /* ignore */
+                }
+            }
+            toast.error(msg);
         } finally {
             setIsSending(false);
         }
@@ -1955,7 +2189,11 @@ const PDFViewerModal = ({
             const res = await dispatch(getByApplicationIdContract(appId)).unwrap();
             const contract = (res as { data?: unknown })?.data ?? res;
             const c = contract as { contractPrefillOverrides?: unknown } | null;
-            setContractPrefillFromDb(normalizeContractPrefillOverrides(c?.contractPrefillOverrides));
+            setContractPrefillFromDb(
+                stripDocumentTemplateBlobFromPrefillOverrides(
+                    normalizeContractPrefillOverrides(c?.contractPrefillOverrides),
+                ),
+            );
             setDocumentTemplatePrefillByMappingId(parseDocumentTemplatePrefillByMappingId(c?.contractPrefillOverrides));
         } catch {
             /* ignore */
@@ -2343,10 +2581,6 @@ const PDFViewerModal = ({
         return o as Partial<BuildContractPrefillFieldsArgs>;
     }, [contractPrefillFromDb]);
 
-    const handleEditTemplateMapping = useCallback((row: ContractDocumentTemplateMappingRow) => {
-        setTemplateMappingPrefillEditRow(row);
-    }, []);
-
     // Legacy contracts may have multiple addendum rows — keep one linked to the dropdown.
     useEffect(() => {
         if (!isOpen || effectiveContractId == null || loadingTemplateMappings) return;
@@ -2462,6 +2696,11 @@ const PDFViewerModal = ({
         templateRecipientsFetchedForIdRef.current = effectiveTemplateId;
         void dispatch(getBoldSignTemplateRecipients(effectiveTemplateId));
     }, [isOpen, effectiveTemplateId, activeStep, dispatch, templateRecipients]);
+    useEffect(() => {
+        if (!isOpen || !applicationIdForLookup) return;
+        dispatch(getBankDetails({ application: applicationIdForLookup }));
+    }, [isOpen, applicationIdForLookup, dispatch]);
+
     // Pre-fetch related records by contractId for Info/Summary panels
     useEffect(() => {
         if (!isOpen || (activeStep !== "info" && activeStep !== "summary") || effectiveContractId == null) return;
@@ -4115,20 +4354,6 @@ const PDFViewerModal = ({
                                                                         ) : (
                                                                             <Eye className="h-3.5 w-3.5" />
                                                                         )}
-                                                                    </Button>
-                                                                    <Button
-                                                                        type="button"
-                                                                        size="icon"
-                                                                        variant="ghost"
-                                                                        className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-amber-50 hover:text-amber-800 dark:hover:bg-amber-950/50 dark:hover:text-amber-200"
-                                                                        title="Edit mapping"
-                                                                        onClick={() =>
-                                                                            handleEditTemplateMapping(
-                                                                                linkedAddendumMapping,
-                                                                            )
-                                                                        }
-                                                                    >
-                                                                        <Pencil className="h-3.5 w-3.5" />
                                                                     </Button>
                                                                     <Button
                                                                         type="button"
@@ -5926,8 +6151,9 @@ const PDFViewerModal = ({
                                         </span>
                                         <button
                                             type="button"
-                                            className="shrink-0 rounded p-0.5 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400"
+                                            className="shrink-0 rounded p-0.5 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 disabled:pointer-events-none disabled:opacity-40"
                                             aria-label={`Remove ${email}`}
+                                            disabled={canCancelSentContract || isCancellingContract}
                                             onClick={() => {
                                                 const next = ccEmails.filter((e) => e !== email);
                                                 setCcEmails(next);
@@ -5948,6 +6174,7 @@ const PDFViewerModal = ({
                                     value={ccEmailDraft}
                                     onChange={(e) => setCcEmailDraft(e.target.value)}
                                     className="h-9 max-w-xs bg-white dark:bg-slate-950"
+                                    disabled={canCancelSentContract || isCancellingContract}
                                     onKeyDown={(e) => {
                                         if (e.key === "Enter") {
                                             e.preventDefault();
@@ -5960,6 +6187,7 @@ const PDFViewerModal = ({
                                     variant="outline"
                                     size="sm"
                                     className="h-9 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                    disabled={canCancelSentContract || isCancellingContract}
                                     onClick={addPdfCcFromDraft}
                                 >
                                     Add CC
@@ -5972,21 +6200,36 @@ const PDFViewerModal = ({
                                     Pop-up blocked. Click Open DocuSign to continue in a new tab.
                                 </p>
                             ) : null}
-                            <div className="flex items-center justify-end gap-2">
-                            <Button variant="ghost" className="h-9" onClick={onClose}>
-                                {activeStep === "sent" ? "Close" : "Cancel"}
+                            <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+                            <Button variant="ghost" className="h-9 shrink-0" onClick={onClose}>
+                                Close
                             </Button>
-                            {activeStep === "sent" ? (
+                            {canCancelSentContract ? (
+                                <Button
+                                    type="button"
+                                    variant="default"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    onClick={() => void handleCancelContract()}
+                                    disabled={isCancellingContract || isSending}
+                                >
+                                    {isCancellingContract ? "Voiding contract…" : "Void Contract"}
+                                </Button>
+                            ) : null}
+                            {activeStep === "sent" && !canCancelSentContract ? (
                                     <Button
-                                        className="h-9 cursor-pointer bg-[#276D9C] px-6 text-white hover:bg-[#276D9C]/90"
+                                        type="button"
+                                        variant="default"
+                                        className={DOCUSIGN_PRIMARY_BTN_CLASS}
                                         onClick={onClose}
+                                        disabled={isCancellingContract}
                                     >
                                         Done
                                     </Button>
-                            ) : docuSignOpenUrl ? (
+                            ) : activeStep === "sent" && canCancelSentContract ? null : canReviewAndSendDocuSign && docuSignOpenUrl ? (
                                 <Button
                                     type="button"
-                                    className="h-9 cursor-pointer bg-[#276D9C] px-6 text-white hover:bg-[#276D9C]/90"
+                                    variant="default"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
                                     onClick={() => {
                                         const url = docuSignOpenUrl;
                                         if (!url) return;
@@ -6004,18 +6247,21 @@ const PDFViewerModal = ({
                                             );
                                         }
                                     }}
+                                    disabled={isCancellingContract}
                                 >
                                     Open DocuSign
                                 </Button>
-                            ) : (
+                            ) : canReviewAndSendDocuSign ? (
                                 <Button
-                                    className="h-9 cursor-pointer bg-[#276D9C] px-6 text-white hover:bg-[#276D9C]/90"
+                                    type="button"
+                                    variant="default"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
                                     onClick={handleSend}
-                                    disabled={isSending}
+                                    disabled={isSending || isCancellingContract}
                                 >
                                     {isSending ? "Preparing DocuSign…" : "Review & send in DocuSign"}
                                 </Button>
-                            )}
+                            ) : null}
                             </div>
                         </div>
                     </div>
@@ -6027,12 +6273,20 @@ const PDFViewerModal = ({
                 applicationData={applicationData}
                 contractId={effectiveContractId}
                 applicationUuid={applicationIdForLookup}
+                prefillOverridesReady={contractPrefillLoaded}
                 persistedPrefillOverrides={contractPrefillLoaded ? contractPrefillFromDb : undefined}
                 onPersistedPrefillChange={(next) => {
                     setContractPrefillFromDb(next ?? null);
                     invalidateDocuSignDraftSession();
                 }}
+                onPersistedPrefillFullChange={(main, mappingMap) => {
+                    setContractPrefillFromDb(main ?? null);
+                    setDocumentTemplatePrefillByMappingId(mappingMap);
+                    invalidateDocuSignDraftSession();
+                }}
                 contractRecords={contractPrefillRecords}
+                resolvedContract={resolvedContract}
+                linkedAddendumMapping={linkedAddendumMapping}
                 agreementDatePlaceholder={formatDate(new Date())}
                 offerDecision={(offerDecisionData as Record<string, unknown> | null) ?? null}
                 readOnly={!canEditContractPrefill}

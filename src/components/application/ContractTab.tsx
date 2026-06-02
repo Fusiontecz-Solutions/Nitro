@@ -327,9 +327,25 @@ export default function ContractTab({
     const contractPrefillRecords: ContractPrefillContractRecords = useMemo(() => {
         const firstRow = (data: unknown): Record<string, unknown> | null =>
             Array.isArray(data) && data.length ? (data[0] as Record<string, unknown>) : null;
+        const rows = Array.isArray(bankDetailsList) ? bankDetailsList : [];
+        const latestBank =
+            rows.length > 0
+                ? [...rows].sort((a, b) => {
+                      const ta = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime();
+                      const tb = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime();
+                      return ta - tb;
+                  })[0]
+                : null;
         return {
             contract: fetchedContract && typeof fetchedContract === "object" ? fetchedContract : null,
             ach: firstRow(achListState.data),
+            bankDetail: latestBank
+                ? {
+                      bankName: latestBank.bankName,
+                      accountNumber: latestBank.accountNumber,
+                      routingNumber: latestBank.routingNumber,
+                  }
+                : null,
             addendum: firstRow(addendumListState.data),
             epo: firstRow(epoListState.data),
             owners: Array.isArray(contractOwnerListState.data)
@@ -346,6 +362,7 @@ export default function ContractTab({
         contractOwnerListState.data,
         contractGuarantorListState.data,
         fetchedContract,
+        bankDetailsList,
     ]);
 
     useEffect(() => {
@@ -2098,6 +2115,26 @@ export default function ContractTab({
                     {applicationUuid ? (
                         <ApplicationSheetBankDetail
                             applicationId={String(applicationUuid)}
+                            onClose={() => {
+                                setBankDetailsEditorOpen(false);
+                                if (applicationUuid) {
+                                    void dispatch(
+                                        getBankDetails({ application: String(applicationUuid) }),
+                                    );
+                                    void dispatch(
+                                        getByApplicationIdContract(String(applicationUuid)),
+                                    )
+                                        .unwrap()
+                                        .then((res) => {
+                                            const contract = (res as { data?: unknown })?.data ?? res ?? null;
+                                            setFetchedContract(contract);
+                                        })
+                                        .catch(() => undefined);
+                                }
+                                if (selectedContractId != null) {
+                                    void dispatch(getAllACH({ contractId: selectedContractId }));
+                                }
+                            }}
                         />
                     ) : null}
                 </DialogContent>

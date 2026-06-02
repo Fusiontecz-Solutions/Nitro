@@ -1,49 +1,60 @@
 import type { ContractPrefillField } from "./Contract";
 
-/** Include DocuSign/BoldSign tab labels used on Woodmere Balance Transfer templates. */
-const FIELD_IDS = {
-    clientName: ["client_name", "merchant_legal_name", "merchantlegalname"],
-    businessName: ["business_name", "business_legal_name", "businesslegalname"],
-    clientDba: ["client_dba", "dba", "doing_business_as"],
-    physicalAddress: ["physical_address", "physicaladdress"],
-    date: ["date", "signature_date", "agreement_date"],
-    clientNameBy: ["client_name_by", "merchant_name", "merchantname", "customer_name"],
-    clientLegalName: ["client_legal_name", "legal_name", "legalname"],
-} as const;
+/** DocuSign Data Labels on WOODMERE LLC — Balance Transfer Sheet. */
+export const BALANCE_TRANSFER_SHEET_FIELD_DEFS = [
+    { id: "merchant_legal_name", label: "Merchant legal name" },
+    { id: "business_legal_name", label: "Business legal name" },
+    { id: "client_legal_name", label: "Client legal name" },
+    { id: "client_name_by", label: "Client name by" },
+    { id: "dba", label: "DBA" },
+    { id: "business_address", label: "Business address" },
+    { id: "business_address_city", label: "Business address city" },
+    { id: "business_address_state", label: "Business address state" },
+    { id: "business_address_zip", label: "Business address ZIP" },
+    { id: "purchase_price", label: "Purchase price" },
+] as const;
 
-const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
-    const trimmed = String(value || "").trim();
-    if (!trimmed) return [];
-    return ids.map((id) => ({ id, label, value: trimmed }));
-};
-
-/** BoldSign prefill source values for the Balance Transfer Sheet template. */
+/** DocuSign prefill source values for the Balance Transfer Sheet template. */
 export interface BalanceTransferSheetContractPrefillFields {
-    clientName?: string;
-    businessName?: string;
-    clientDba?: string;
-    physicalAddress?: string;
-    date?: string;
-    clientNameBy?: string;
+    merchantLegalName?: string;
+    businessLegalName?: string;
     clientLegalName?: string;
+    clientNameBy?: string;
+    dba?: string;
+    businessAddress?: string;
+    businessAddressCity?: string;
+    businessAddressState?: string;
+    businessAddressZip?: string;
+    purchasePrice?: string;
 }
 
 export function buildBalanceTransferSheetContractPrefillFields({
-    clientName = "",
-    businessName = "",
-    clientDba = "",
-    physicalAddress = "",
-    date: sheetDate = "",
-    clientNameBy = "",
+    merchantLegalName = "",
+    businessLegalName = "",
     clientLegalName = "",
+    clientNameBy = "",
+    dba = "",
+    businessAddress = "",
+    businessAddressCity = "",
+    businessAddressState = "",
+    businessAddressZip = "",
+    purchasePrice = "",
 }: BalanceTransferSheetContractPrefillFields = {}): ContractPrefillField[] {
-    return [
-        ...mapIds(FIELD_IDS.clientName, "Client Name", clientName),
-        ...mapIds(FIELD_IDS.businessName, "Business Name", businessName),
-        ...mapIds(FIELD_IDS.clientDba, "Client DBA", clientDba),
-        ...mapIds(FIELD_IDS.physicalAddress, "Physical Address", physicalAddress),
-        ...mapIds(FIELD_IDS.date, "Date", sheetDate),
-        ...mapIds(FIELD_IDS.clientNameBy, "Client Name By", clientNameBy),
-        ...mapIds(FIELD_IDS.clientLegalName, "Client Legal Name", clientLegalName),
-    ];
+    const values: Record<string, string> = {
+        merchant_legal_name: merchantLegalName,
+        business_legal_name: businessLegalName,
+        client_legal_name: clientLegalName,
+        client_name_by: clientNameBy,
+        dba,
+        business_address: businessAddress,
+        business_address_city: businessAddressCity,
+        business_address_state: businessAddressState,
+        business_address_zip: businessAddressZip,
+        purchase_price: purchasePrice,
+    };
+    return BALANCE_TRANSFER_SHEET_FIELD_DEFS.map(({ id, label }) => ({
+        id,
+        label,
+        value: String(values[id] ?? "").trim(),
+    }));
 }

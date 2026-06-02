@@ -7,6 +7,11 @@ import {
     buildBalanceTransferSheetContractPrefillFields,
     type BalanceTransferSheetContractPrefillFields,
 } from "./BALANCE_TRANSFER_SHEET_ADDENDUM";
+import { DOCUSIGN_ADDENDUM_TEMPLATE_IDS } from "./docusignAddendumTemplates";
+import {
+    buildWoodmereFlexAddendumContractPrefillFields,
+    type WoodmereFlexAddendumContractPrefillFields,
+} from "./WOODMERE_FLEX_ADDENDUM";
 import {
     buildBarclaysBuyoutBlankAddendumContractPrefillFields,
     type BarclaysBuyoutBlankAddendumContractPrefillFields,
@@ -141,13 +146,23 @@ function stateDisclosureComputed(
 
 function dotBalanceTransfer(): BalanceTransferSheetContractPrefillFields {
     return {
-        clientName: DUMMY,
-        businessName: DUMMY,
-        clientDba: DUMMY,
-        physicalAddress: DUMMY,
-        date: DUMMY,
-        clientNameBy: DUMMY,
+        merchantLegalName: DUMMY,
+        businessLegalName: DUMMY,
         clientLegalName: DUMMY,
+        clientNameBy: DUMMY,
+        dba: DUMMY,
+        businessAddress: DUMMY,
+        businessAddressCity: DUMMY,
+        businessAddressState: DUMMY,
+        businessAddressZip: DUMMY,
+        purchasePrice: DUMMY,
+    };
+}
+
+function dotWoodmereFlex(): WoodmereFlexAddendumContractPrefillFields {
+    return {
+        clientLegalName: DUMMY,
+        clientName: DUMMY,
     };
 }
 
@@ -156,18 +171,37 @@ function buildBalanceTransferComputed(
     sctx: StateDisclosureContext,
     application: Record<string, unknown> | null,
 ): ContractPrefillField[] {
+    const c = contract ?? {};
+    const overrides = (c.contractPrefillOverrides as Record<string, unknown> | undefined) ?? {};
     const merchant = resolveBalanceTransferMerchantContext(contract, application, {
         recipientName: sctx.recipientName,
         recipientAddress: sctx.recipientAddress,
     });
+    const purchasePrice =
+        str(c.purchasePrice) ||
+        str(c.purchaseAmount) ||
+        str(overrides.purchasePrice) ||
+        str(overrides.purchaseAmount) ||
+        "";
     return buildBalanceTransferSheetContractPrefillFields({
-        clientName: merchant.clientName,
-        businessName: merchant.businessName,
-        clientDba: merchant.clientDba,
-        physicalAddress: merchant.physicalAddress,
-        date: sctx.signatureDate,
-        clientNameBy: merchant.clientNameBy,
+        merchantLegalName: merchant.clientLegalName,
+        businessLegalName: merchant.businessName,
         clientLegalName: merchant.clientLegalName,
+        clientNameBy: merchant.clientNameBy,
+        dba: merchant.clientDba,
+        businessAddress: str(c.businessAddress) || str(overrides.businessAddress),
+        businessAddressCity: str(c.businessAddressCity) || str(overrides.businessAddressCity),
+        businessAddressState: str(c.businessAddressState) || str(overrides.businessAddressState),
+        businessAddressZip: str(c.businessAddressZip) || str(overrides.businessAddressZip),
+        purchasePrice,
+    });
+}
+
+function buildWoodmereFlexComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
+    const c = contract ?? {};
+    return buildWoodmereFlexAddendumContractPrefillFields({
+        clientLegalName: str(c.legalName) || sctx.recipientName,
+        clientName: str(c.clientName) || sctx.recipientName,
     });
 }
 
@@ -302,13 +336,25 @@ function matches(norm: string, ...needles: string[]): boolean {
 
 type AddendumKind =
     | "balance_transfer_sheet"
+    | "woodmere_flex"
     | "barclays_buyout_blank"
     | "barclays_flex"
     | "discover_epo"
     | "discover_refi_balance";
 
-function resolveAddendumKind(normName: string): AddendumKind | null {
+const ADDENDUM_GUID = Object.fromEntries(
+    Object.entries(DOCUSIGN_ADDENDUM_TEMPLATE_IDS).map(([k, v]) => [k, String(v).trim().toLowerCase()]),
+) as Record<keyof typeof DOCUSIGN_ADDENDUM_TEMPLATE_IDS, string>;
+
+function resolveAddendumKind(
+    templateId?: string | null,
+    normName = "",
+): AddendumKind | null {
+    const tid = String(templateId ?? "").trim().toLowerCase();
+    if (tid === ADDENDUM_GUID.WOODMERE_FLEX) return "woodmere_flex";
+    if (tid === ADDENDUM_GUID.WOODMERE_BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
     if (matches(normName, "balance", "transfer") && normName.includes("sheet")) return "balance_transfer_sheet";
+    if (normName.includes("woodmere") && normName.includes("flex")) return "woodmere_flex";
     if (normName.includes("buyout") && normName.includes("blank")) return "barclays_buyout_blank";
     if (normName.includes("barclays") && normName.includes("flex")) return "barclays_flex";
     if (normName.includes("discover") && normName.includes("epo")) return "discover_epo";
@@ -317,10 +363,30 @@ function resolveAddendumKind(normName: string): AddendumKind | null {
     return null;
 }
 
+/** True when this DocuSign addendum template has a registered prefill field map (edit in contract prefill modal). */
+export function hasAddendumPrefillFieldMap(
+    templateId?: string | null,
+    templateName?: string | null,
+): boolean {
+    return resolveAddendumKind(templateId, normalizeKey(templateName ?? "")) != null;
+}
+
+/** Remove per-mapping addendum blob so main contract prefill forms do not treat it as flat keys. */
+export function stripDocumentTemplateBlobFromPrefillOverrides<
+    T extends Record<string, unknown> | null | undefined,
+>(raw: T): T {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return raw;
+    const o = { ...raw } as Record<string, unknown>;
+    delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+    return o as T;
+}
+
 function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
     switch (kind) {
         case "balance_transfer_sheet":
             return buildBalanceTransferSheetContractPrefillFields(dotBalanceTransfer());
+        case "woodmere_flex":
+            return buildWoodmereFlexAddendumContractPrefillFields(dotWoodmereFlex());
         case "barclays_buyout_blank":
             return buildBarclaysBuyoutBlankAddendumContractPrefillFields(dotBarclaysBuyout());
         case "barclays_flex":
@@ -343,6 +409,8 @@ function addendumComputed(
     switch (kind) {
         case "balance_transfer_sheet":
             return buildBalanceTransferComputed(contract, sctx, application);
+        case "woodmere_flex":
+            return buildWoodmereFlexComputed(contract, sctx);
         case "barclays_buyout_blank":
             return buildBarclaysBuyoutComputed(contract, sctx);
         case "barclays_flex":
@@ -376,7 +444,10 @@ export function parseDocumentTemplatePrefillByMappingId(raw: unknown): Record<st
  * Rows for the template-mapping editor: every BoldSign field id for this template, labels from builders,
  * values from CRM-derived defaults merged with optional saved overrides for this mapping row.
  */
+export const LINKED_DOCUSIGN_ADDENDUM_SECTION_ID = "linked_docusign_addendum";
+
 export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
+    templateId?: string | null;
     templateName?: string | null;
     templateState?: string | null;
     templateFrequency?: string | null;
@@ -403,6 +474,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     const name = options.templateName;
     const state = options.templateState;
     const frequency = options.templateFrequency;
+    const templateId = options.templateId;
 
     const stAll = stateDisclosureAllDefs(name, state, frequency);
     if (stAll.length > 0) {
@@ -411,7 +483,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     }
 
     const norm = normalizeKey(name ?? "");
-    const addendum = resolveAddendumKind(norm);
+    const addendum = resolveAddendumKind(templateId, norm);
     if (addendum) {
         const all = addendumAllDefs(addendum);
         const computed = addendumComputed(
@@ -453,6 +525,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         if (!tid || !mergedSet.has(tid)) continue;
         const perMap = blob[row.id];
         const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
+            templateId: row.template?.templateId ?? null,
             templateName: row.template?.name ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
