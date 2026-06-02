@@ -1,21 +1,21 @@
 import { Request, Response } from 'express';
-import sendMail, {
-    getDefaultMailFrom,
-    isOutboundSmtpConfigured,
+import {
+    getSendGridMailFrom,
+    isSendGridConfigured,
+    sendSendGridMail,
 } from '../config/nodemailer';
 
 /**
  * POST /api/mail/send
- * Send payment template emails via server SMTP (SendGrid when SENDGRID_API_KEY is set).
- * Does not use the user's connected Gmail account.
+ * Send payment template emails via SendGrid only (not Gmail OAuth or Gmail SMTP).
  */
 export async function sendPaymentMail(req: Request, res: Response): Promise<void> {
     try {
-        if (!isOutboundSmtpConfigured()) {
+        if (!isSendGridConfigured()) {
             res.status(503).json({
                 success: false,
                 message:
-                    'Outbound email is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
+                    'Payment letters require SendGrid. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server (connected Gmail is not used).',
             });
             return;
         }
@@ -38,14 +38,14 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
             return;
         }
 
-        const result = await sendMail({
+        const result = await sendSendGridMail({
             to,
             subject: subject || '',
             html: body,
             cc,
             bcc,
             replyTo,
-            from: getDefaultMailFrom(),
+            from: getSendGridMailFrom(),
         });
 
         if (!result) {

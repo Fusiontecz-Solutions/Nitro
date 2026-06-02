@@ -5,7 +5,7 @@ import { authenticateToken } from '../middleware/authMiddleware';
 const router = Router();
 
 /**
- * POST /api/mail/send — payment letters/templates via SendGrid/SMTP (not Gmail OAuth).
+ * POST /api/mail/send — payment letters/templates via SendGrid only (not Gmail).
  */
 router.post('/send', authenticateToken, sendPaymentMail);
 

@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { type AxiosInstance } from '../../../types/http';
 import dotenv from 'dotenv';
 
 dotenv.config();

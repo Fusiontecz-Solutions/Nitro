@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { BoldSignUserInfoResponse, OAuthTokenResponse } from '../../types/oauth-api';
 import dotenv from 'dotenv';
 import prisma from '../../config/prismaClient';
 import { Client, Prisma } from '@prisma/client';
@@ -233,7 +234,7 @@ export class BoldSignService {
       params.append('client_secret', BOLDSIGN_CLIENT_SECRET);
       params.append('redirect_uri', BOLDSIGN_REDIRECT_URI);
 
-      const response = await axios.post(
+      const response = await axios.post<OAuthTokenResponse>(
         `${BOLDSIGN_AUTH_BASE}/oauth/token`,
         params,
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
@@ -246,10 +247,13 @@ export class BoldSignService {
       const { access_token, refresh_token, expires_in } = response.data;
 
       // Fetch user info from BoldSign to get account details
-      const userInfoRes = await axios.get(`${BOLDSIGN_AUTH_BASE}/oauth/userinfo`, {
-        headers: { Authorization: `Bearer ${access_token}` },
-      });
-      const defaultAccount = userInfoRes.data.accounts?.find((acc: any) => acc.is_default);
+      const userInfoRes = await axios.get<BoldSignUserInfoResponse>(
+        `${BOLDSIGN_AUTH_BASE}/oauth/userinfo`,
+        {
+          headers: { Authorization: `Bearer ${access_token}` },
+        },
+      );
+      const defaultAccount = userInfoRes.data.accounts?.find((acc) => acc.is_default);
 
       const tokenExpiry = expires_in
         ? new Date(Date.now() + expires_in * 1000)
@@ -289,7 +293,7 @@ export class BoldSignService {
       params.append('client_id', BOLDSIGN_CLIENT_ID);
       params.append('client_secret', BOLDSIGN_CLIENT_SECRET);
 
-      const response = await axios.post(
+      const response = await axios.post<OAuthTokenResponse>(
         `${BOLDSIGN_AUTH_BASE}/oauth/token`,
         params,
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
@@ -302,7 +306,7 @@ export class BoldSignService {
         data: {
           docusignAccessToken: access_token,
           docusignRefreshToken: refresh_token,
-          docusignTokenExpiry: new Date(Date.now() + expires_in * 1000),
+          docusignTokenExpiry: new Date(Date.now() + (expires_in ?? 86400) * 1000),
         } as any,
       });
 

@@ -42,6 +42,16 @@ export interface GmailAttachmentResponse {
     data: string; // base64 string
 }
 
+export interface GmailMessageMetadataResponse {
+    id: string;
+    threadId: string;
+    snippet?: string;
+    labelIds?: string[];
+    payload: {
+        headers: Array<{ name: string; value?: string }>;
+    };
+}
+
 /** Breadth-first MIME walk — avoids stack overflow on deeply nested multiparts. */
 function collectMimeAttachmentParts(payload: unknown): any[] {
     const found: any[] = [];
@@ -561,9 +571,9 @@ export async function fetchAllEmails(
 
         // 2️⃣ Fetch full message details
         const detailedMessages = await Promise.all(
-            messageIds.map(async (msg) => {
+            messageIds.map(async (msg: GmailMessage) => {
 
-                const fullMessage = await axios.get(
+                const fullMessage = await axios.get<GmailMessageMetadataResponse>(
                     `${GMAIL_BASE_URL}/messages/${msg.id}`,
                     {
                         headers: {

@@ -1,4 +1,5 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { type AxiosInstance } from '../../types/http';
+import type { DocuSignUserInfoResponse, OAuthTokenResponse } from '../../types/oauth-api';
 import dotenv from 'dotenv';
 import prisma from '../../config/prismaClient';
 import { Prisma } from '@prisma/client';
@@ -149,7 +150,7 @@ export class DocusignService {
       params.append('client_secret', DOCUSIGN_CLIENT_SECRET);
       params.append('redirect_uri', DOCUSIGN_REDIRECT_URI);
 
-      const tokenRes = await axios.post(tokenUrl, params, {
+      const tokenRes = await axios.post<OAuthTokenResponse>(tokenUrl, params, {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       });
 
@@ -158,7 +159,7 @@ export class DocusignService {
         throw new Error('Invalid response from DocuSign: Missing access token');
       }
 
-      const userInfoRes = await axios.get(userInfoUrl, {
+      const userInfoRes = await axios.get<DocuSignUserInfoResponse>(userInfoUrl, {
         headers: { Authorization: `Bearer ${access_token}` },
       });
       const accounts = userInfoRes.data?.accounts || [];
@@ -202,7 +203,7 @@ export class DocusignService {
     params.append('client_id', DOCUSIGN_CLIENT_ID);
     params.append('client_secret', DOCUSIGN_CLIENT_SECRET);
 
-    const res = await axios.post(tokenUrl, params, {
+    const res = await axios.post<OAuthTokenResponse>(tokenUrl, params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
     const { access_token, refresh_token, expires_in } = res.data;

@@ -133,7 +133,7 @@ export const googleCallback = async (req: Request, res: Response) => {
     if (!googleEmail) {
       // Gmail profile endpoint returns "emailAddress" and relies on Gmail scopes, not OpenID userinfo.
       try {
-        const profileResp = await axios.get(
+        const profileResp = await axios.get<{ emailAddress?: string }>(
           'https://gmail.googleapis.com/gmail/v1/users/me/profile',
           {
             headers: { Authorization: `Bearer ${accessToken}` },
@@ -152,7 +152,7 @@ export const googleCallback = async (req: Request, res: Response) => {
     if (!googleEmail) {
       // Fallback (requires userinfo scopes / openid depending on token).
       try {
-        const userInfoResp = await axios.get(
+        const userInfoResp = await axios.get<{ email?: string }>(
           'https://www.googleapis.com/oauth2/v2/userinfo',
           {
             headers: {

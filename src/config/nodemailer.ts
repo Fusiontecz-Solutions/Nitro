@@ -6,12 +6,41 @@ dotenv.config();
 const sendgridApiKey = process.env.SENDGRID_API_KEY?.trim();
 const useSendgrid = Boolean(sendgridApiKey);
 
+/** True when `SENDGRID_API_KEY` is set (payment letters require this). */
+export function isSendGridConfigured(): boolean {
+    return Boolean(sendgridApiKey);
+}
+
 /** True when SendGrid API key or classic Gmail SMTP user+pass is configured. */
 export function isOutboundSmtpConfigured(): boolean {
     if (sendgridApiKey) return true;
     return Boolean(
         process.env.SMTP_AUTH_USER?.trim() && process.env.SMTP_AUTH_PASS?.trim(),
     );
+}
+
+/** From address for SendGrid-only sends (verified sender in SendGrid). */
+export function getSendGridMailFrom(): string {
+    const explicit =
+        process.env.SENDGRID_FROM_EMAIL?.trim() ||
+        process.env.SENDGRID_AUTH_USER?.trim();
+    if (explicit) {
+        return explicit.includes('<') ? explicit : `"CRM" <${explicit}>`;
+    }
+    return '"CRM" <noreply@localhost>';
+}
+
+function createSendGridTransporter() {
+    const port = Number(process.env.SENDGRID_SMTP_PORT) || 587;
+    return nodemailer.createTransport({
+        host: process.env.SENDGRID_SMTP_HOST?.trim() || 'smtp.sendgrid.net',
+        port,
+        secure: port === 465,
+        auth: {
+            user: 'apikey',
+            pass: sendgridApiKey,
+        },
+    });
 }
 
 /**
@@ -37,17 +66,7 @@ export function getDefaultMailFrom(): string {
 
 function createTransporter() {
     if (useSendgrid) {
-        const port = Number(process.env.SENDGRID_SMTP_PORT) || 587;
-        return nodemailer.createTransport({
-            host: process.env.SENDGRID_SMTP_HOST?.trim() || 'smtp.sendgrid.net',
-            port,
-            secure: port === 465,
-            auth: {
-                // SendGrid SMTP always uses the literal username "apikey"
-                user: 'apikey',
-                pass: sendgridApiKey,
-            },
-        });
+        return createSendGridTransporter();
     }
 
     return nodemailer.createTransport({
@@ -117,5 +136,27 @@ const sendMail = async (
         throw error;
     }
 };
+
+/** Send mail via SendGrid SMTP only (never Gmail OAuth or Gmail SMTP). */
+export async function sendSendGridMail(options: SendMailOptions) {
+    if (!sendgridApiKey) {
+        throw new Error(
+            'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
+        );
+    }
+    const transporter = createSendGridTransporter();
+    const { to, subject, html, from, cc, bcc, replyTo, attachments } = options;
+    const mailOptions = {
+        from: from || getSendGridMailFrom(),
+        to,
+        subject,
+        html,
+        cc,
+        bcc,
+        replyTo,
+        ...(attachments?.length ? { attachments } : {}),
+    };
+    return transporter.sendMail(mailOptions);
+}
 
 export default sendMail;

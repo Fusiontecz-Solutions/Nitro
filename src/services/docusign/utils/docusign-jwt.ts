@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import axios from 'axios';
+import type { DocuSignJwtTokenResponse, DocuSignUserInfoResponse } from '../../../types/oauth-api';
 import {
   DOCUSIGN_AUTH_BASE,
   DOCUSIGN_CLIENT_ID,
@@ -79,7 +80,7 @@ async function fetchAccessToken(assertion: string): Promise<string> {
   params.append('grant_type', 'urn:ietf:params:oauth:grant-type:jwt-bearer');
   params.append('assertion', assertion);
 
-  const res = await axios.post(tokenUrl, params, {
+  const res = await axios.post<DocuSignJwtTokenResponse>(tokenUrl, params, {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   });
 
@@ -102,7 +103,7 @@ async function resolveAccountFromUserInfo(accessToken: string): Promise<{
   }
 
   const { userInfoUrl } = getDocusignOAuthUrls();
-  const userInfoRes = await axios.get(userInfoUrl, {
+  const userInfoRes = await axios.get<DocuSignUserInfoResponse>(userInfoUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
