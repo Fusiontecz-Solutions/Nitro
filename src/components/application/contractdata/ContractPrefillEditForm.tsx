@@ -38,6 +38,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import {
+    applyLiveBankDetailsToPrefillMerge,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     type BuildContractPrefillFieldsArgs,
@@ -97,7 +98,7 @@ const FIELD_LABELS = {
     clientPhone: "Phone",
     purchasePrice: "Payback amount",
     purchaseAmount: "Offer amount",
-    purchasePercent: "Rate",
+    purchasePercent: "Specified percentage",
     remittance: "Total remit",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
@@ -274,7 +275,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             id: "financial",
             title: "Offer & payback",
             description:
-                "Offer amount, payback amount, rate, total remit, frequency, and net to merchant (advance − fees − refinance).",
+                "Offer amount, payback amount, specified percentage (purchase percent on contract), total remit, frequency, and net to merchant (advance − fees − refinance).",
             Icon: DollarSign,
             groups: [
                 {
@@ -700,8 +701,13 @@ function validatePrefillValues(values: Record<keyof BuildContractPrefillFieldsAr
         if (msg) err[key] = msg;
     }
 
-    const purchasePct = validatePercent(trimField(values, "purchasePercent"));
-    if (purchasePct) err.purchasePercent = purchasePct;
+    const purchasePctRaw = trimField(values, "purchasePercent");
+    if (!purchasePctRaw) {
+        err.purchasePercent = "Specified percentage is required.";
+    } else {
+        const purchasePct = validatePercent(purchasePctRaw);
+        if (purchasePct) err.purchasePercent = purchasePct;
+    }
 
     const stateInc = trimField(values, "state");
     if (stateInc.length === 2) {
@@ -897,13 +903,16 @@ export function ContractPrefillEditForm({
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (stripDocumentTemplateBlobFromPrefillOverrides(persistedPrefillOverrides) ??
                     ({} as Partial<BuildContractPrefillFieldsArgs>));
-        const merged = finalizeContractPrefillMoneyFields(
-            { ...defaults, ...persisted },
-            {
-                application: applicationData as Record<string, unknown> | undefined,
-                contract: contractRecords?.contract ?? null,
-                offerDecision: offerDecision ?? null,
-            },
+        const merged = applyLiveBankDetailsToPrefillMerge(
+            defaults,
+            finalizeContractPrefillMoneyFields(
+                { ...defaults, ...persisted },
+                {
+                    application: applicationData as Record<string, unknown> | undefined,
+                    contract: contractRecords?.contract ?? null,
+                    offerDecision: offerDecision ?? null,
+                },
+            ),
         );
         setValues(mergeFormState(merged));
         setFieldErrors({});

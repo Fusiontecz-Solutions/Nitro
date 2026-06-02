@@ -327,6 +327,23 @@ export default function ContractTab({
     const contractPrefillRecords: ContractPrefillContractRecords = useMemo(() => {
         const firstRow = (data: unknown): Record<string, unknown> | null =>
             Array.isArray(data) && data.length ? (data[0] as Record<string, unknown>) : null;
+        const rows = Array.isArray(bankDetailsList) ? bankDetailsList : [];
+        const latestBankDetail =
+            rows.length > 0
+                ? [...rows].sort((a, b) => {
+                      const aT = new Date(
+                          (a as { updatedAt?: string; createdAt?: string }).updatedAt ??
+                              (a as { createdAt?: string }).createdAt ??
+                              0,
+                      ).getTime();
+                      const bT = new Date(
+                          (b as { updatedAt?: string; createdAt?: string }).updatedAt ??
+                              (b as { createdAt?: string }).createdAt ??
+                              0,
+                      ).getTime();
+                      return bT - aT;
+                  })[0]
+                : null;
         return {
             contract: fetchedContract && typeof fetchedContract === "object" ? fetchedContract : null,
             ach: firstRow(achListState.data),
@@ -338,6 +355,7 @@ export default function ContractTab({
             guarantors: Array.isArray(contractGuarantorListState.data)
                 ? contractGuarantorListState.data
                 : [],
+            bankDetail: latestBankDetail as Record<string, unknown> | null,
         };
     }, [
         achListState.data,
@@ -346,6 +364,7 @@ export default function ContractTab({
         contractOwnerListState.data,
         contractGuarantorListState.data,
         fetchedContract,
+        bankDetailsList,
     ]);
 
     useEffect(() => {
@@ -916,6 +935,10 @@ export default function ContractTab({
         prefillTabsApplied?: number;
         prefillFieldCount?: number;
         sendUrl?: string | null;
+        ccPrefilledEmail?: {
+            emailed?: string[];
+            skippedReason?: string;
+        };
     }> => {
         const failDocuSignEnvelope = (message: string): never => {
             toast.error(message);
@@ -2139,6 +2162,15 @@ export default function ContractTab({
                     {applicationUuid ? (
                         <ApplicationSheetBankDetail
                             applicationId={String(applicationUuid)}
+                            onClose={() => {
+                                setBankDetailsEditorOpen(false);
+                                dispatch(getBankDetails({ application: String(applicationUuid) }));
+                                void dispatch(getByApplicationIdContract(String(applicationUuid)));
+                                const contractId = Number(selectedContractId);
+                                if (Number.isFinite(contractId) && contractId > 0) {
+                                    void dispatch(getAllACH({ contractId }));
+                                }
+                            }}
                         />
                     ) : null}
                 </DialogContent>

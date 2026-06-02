@@ -536,7 +536,7 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.agreementDate, "Agreement Date", agreementDate),
         ...mapIds(FIELD_IDS.purchasePrice, "Purchase Price", purchasePrice),
         ...mapIds(FIELD_IDS.purchaseAmount, "Purchase Amount", purchaseAmount),
-        ...mapIds(FIELD_IDS.purchasePercent, "Purchase Percent", purchasePercent),
+        ...mapIds(FIELD_IDS.purchasePercent, "Specified percentage", purchasePercent),
         ...mapIds(FIELD_IDS.remittance, "Remittance", remittance),
         ...mapIds(FIELD_IDS.frequency, "Frequency", frequency),
         ...mapIds(FIELD_IDS.netToMerchant, "Net to merchant", netToMerchant),
@@ -704,7 +704,51 @@ export type ContractPrefillContractRecords = {
     epo?: Record<string, unknown> | null;
     owners?: Record<string, unknown>[] | null;
     guarantors?: Record<string, unknown>[] | null;
+    /** Latest application BankDetail row (plaintext from API); preferred over stale ACH/contract copies. */
+    bankDetail?: Record<string, unknown> | null;
 };
+
+/** Prefill keys synced from live BankDetail — used to replace empty or stale enc:v1: overrides. */
+export const LIVE_BANK_PREFILL_KEYS = [
+    "authorizationClientBankName",
+    "authorizationClientBankAccount",
+    "authorizationClientBankRouting",
+    "achAuthorizationAccountHolderBankName",
+    "achAuthorizationAccountHolderBankAccountNumber",
+    "achAuthorizationAccountHolderBankRoutingNumber",
+] as const;
+
+export function applyLiveBankDetailsToPrefillMerge<T extends Record<string, unknown>>(
+    defaults: Partial<BuildContractPrefillFieldsArgs>,
+    merged: T,
+): T {
+    const out = { ...merged };
+    for (const key of LIVE_BANK_PREFILL_KEYS) {
+        const persisted = str(out[key]);
+        const fallback = str(defaults[key as keyof BuildContractPrefillFieldsArgs]);
+        if ((!persisted || persisted.startsWith("enc:v1:")) && fallback) {
+            (out as Record<string, unknown>)[key] = fallback;
+        }
+    }
+    return out;
+}
+
+function bankDetailRowToPrefillPartial(
+    row: Record<string, unknown> | null | undefined,
+): Partial<BuildContractPrefillFieldsArgs> {
+    if (!row) return {};
+    const bankName = str(row.bankName);
+    const accountNumber = str(row.accountNumber);
+    const routingNumber = str(row.routingNumber);
+    return {
+        authorizationClientBankName: bankName,
+        authorizationClientBankAccount: accountNumber,
+        authorizationClientBankRouting: routingNumber,
+        achAuthorizationAccountHolderBankName: bankName,
+        achAuthorizationAccountHolderBankAccountNumber: accountNumber,
+        achAuthorizationAccountHolderBankRoutingNumber: routingNumber,
+    };
+}
 
 function str(v: unknown): string {
     return String(v ?? "").trim();
@@ -1220,7 +1264,7 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
     if (category === "Deal Terms") {
         if (norm === "purchase_price") return PLATFORM_LABEL.paybackAmount;
         if (norm === "purchase_amount") return PLATFORM_LABEL.offerAmount;
-        if (norm === "purchase_percent") return PLATFORM_LABEL.rate;
+        if (norm === "purchase_percent") return PLATFORM_LABEL.specifiedPercentage;
         if (norm === "remittance") return PLATFORM_LABEL.totalRemit;
         if (norm === "frequency" || norm === "paymentterms") return PLATFORM_LABEL.frequency;
     }
@@ -1374,6 +1418,7 @@ const PLATFORM_LABEL = {
     paybackAmount: "Payback amount",
     totalRemit: "Total remit",
     rate: "Rate",
+    specifiedPercentage: "Specified percentage",
     term: "Term",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
@@ -1460,7 +1505,7 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     business_address_contract_zip: "ZIP",
     purchase_price: PLATFORM_LABEL.paybackAmount,
     purchase_amount: PLATFORM_LABEL.offerAmount,
-    purchase_percent: PLATFORM_LABEL.rate,
+    purchase_percent: PLATFORM_LABEL.specifiedPercentage,
     remittance: PLATFORM_LABEL.totalRemit,
     frequency: PLATFORM_LABEL.frequency,
     paymentterms: PLATFORM_LABEL.frequency,
@@ -1860,7 +1905,7 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
     const purchaseAmount = firstTruncateDecimal(row.purchaseAmount, offer?.offer, row.approvedAmount);
     const purchasePrice = firstTruncateDecimal(row.purchasePrice, offer?.totalRemit, row.totalAmount);
     const purchasePercent =
-        firstTruncateDecimal(row.purchasePercent, offer?.rate) || str(row.purchasePercent);
+        firstTruncateDecimal(row.purchasePercent) || str(row.purchasePercent);
     const netToMerchant =
         str(row.netToMerchant) ||
         formatNetToMerchantPrefillValue(
@@ -2226,6 +2271,7 @@ export function getContractPrefillEditDefaultsFromApplication(
         ...addendumRowToPrefillPartial(rec?.addendum ?? null),
         ...ownersToPrefillPartial(rec?.owners ?? null),
         ...guarantorsToPrefillPartial(rec?.guarantors ?? null),
+        ...bankDetailRowToPrefillPartial(rec?.bankDetail ?? null),
     };
     const ownerFallback = ownerFullName(rec?.owners?.[0]?.firstName, rec?.owners?.[0]?.lastName);
     const customerName =
@@ -2298,10 +2344,13 @@ export function buildContractPrefillFieldsFromApplication(
         contractRecords: rec,
         offerDecision: options?.offerDecision ?? null,
     });
-    const merged: Partial<BuildContractPrefillFieldsArgs> = {
-        ...baseMerged,
-        ...(options?.overrides ?? {}),
-    };
+    const merged: Partial<BuildContractPrefillFieldsArgs> = applyLiveBankDetailsToPrefillMerge(
+        baseMerged,
+        {
+            ...baseMerged,
+            ...(options?.overrides ?? {}),
+        },
+    );
     if (!str(merged.frequency)) {
         const freq = resolveOfferFrequencyLabel({
             application: anyApp as Record<string, unknown> | undefined,
