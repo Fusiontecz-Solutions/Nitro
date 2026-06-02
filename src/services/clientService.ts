@@ -1,6 +1,7 @@
 import type { Application, BankDetail, Client, ClientBankInfo } from "@prisma/client";
 import prisma from "../config/prismaClient";
 import { NotFoundError } from "../utils/errors";
+import { decryptSensitiveField } from "../utils/fieldEncryption";
 
 export type DecisionLogicBusinessOwner = {
   email: string;
@@ -49,8 +50,11 @@ function resolvePreferredBankRows(client: ClientWithBankRows): DecisionLogicBank
     if (details.length) {
       return details.map((d) => ({
         bankName: String(d.bankName ?? ""),
-        accountNumber: String(d.accountNumber ?? ""),
-        routingNumber: d.routingNumber ?? null,
+        accountNumber: String(
+          decryptSensitiveField(d.accountNumber ?? undefined) ?? d.accountNumber ?? "",
+        ),
+        routingNumber:
+          decryptSensitiveField(d.routingNumber ?? undefined) ?? d.routingNumber ?? null,
         createdAt: d.createdAt,
       }));
     }

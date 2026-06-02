@@ -8,7 +8,7 @@ const oAuth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_SECRET,
   // "http://localhost:4000/api/v1/google/callback"
 
-  process.env.GOOGLE_REDIRECT_URI || "https://www.barclays.finexusai.com/backend/api/v1"
+  process.env.GOOGLE_REDIRECT_URI || "https://www.woodmere.finexusai.com/backend/api/v1"
 );
 
 // Set credentials using REFRESH TOKEN

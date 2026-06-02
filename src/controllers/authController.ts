@@ -278,7 +278,7 @@ class AuthController {
 
             // Send welcome email asynchronously (do not block response)
             const displayName = [user.firstName, user.lastName].filter(Boolean).join(' ') || emailStr;
-            const loginUrl = process.env.APP_LOGIN_URL || 'https://app.inhousecrm.com/login';
+            const loginUrl = process.env.APP_LOGIN_URL || 'https://woodmere.finexusai.com/login';
             setImmediate(() => {
                 void sendWelcomeEmail({
                     to: user.email,

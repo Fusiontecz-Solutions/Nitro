@@ -15,8 +15,8 @@ import {
  * the `tsc` build (`rootDir: ./src` would otherwise strip non-`.ts` files).
  */
 const BRAND_ASSETS_DIR = path.resolve(__dirname, '..', '..', 'public');
-const BRAND_LIGHT_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'barclays_transparent.png');
-const BRAND_DARK_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'barclays_dark_theme_logo.png');
+const BRAND_LIGHT_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'woodmere_transparent.png');
+const BRAND_DARK_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'woodmere_dark_theme_logo.png');
 
 const BRAND_LIGHT_LOGO_CID = 'brand-logo-light@finexusai';
 const BRAND_DARK_LOGO_CID = 'brand-logo-dark@finexusai';
@@ -94,7 +94,7 @@ function buildBrandHeaderRowHtml(): string {
                             <!--[if mso]>
                             <span style="line-height:normal; font-family: Arial, Helvetica, sans-serif; font-size: 1px; color:#ffffff">&nbsp;<br /></span>
                             <img src="cid:${BRAND_LIGHT_LOGO_CID}"
-                                 alt="Barclays"
+                                 alt="Woodmere"
                                  width="180"
                                  border="0"
                                  style="display:block; margin: 0 auto; width:180px; height:auto; border:0; outline:none;" />
@@ -169,7 +169,6 @@ export async function sendWelcomeEmail({
     <h2>Hello ${safeName},</h2>
     <p>Your account has been created in <strong>In-House CRM</strong>.</p>
     <p><strong>Assigned role:</strong> ${role}</p>
-    <p><strong>Login URL:</strong> <a href="${loginUrl}">${loginUrl}</a></p>
     <p><strong>Temporary password:</strong> ${temporaryPassword}</p>
     <p>For security, please log in and change your password after first sign-in.</p>
   `;
@@ -354,11 +353,11 @@ export const buildApplicationApprovalEmailHtml = ({
                                         <p style="font-size: 15px; color: #666; line-height: 1.5;">
                                             We are pleased to inform you that your application for 
                                             <strong style="color: #0b71a9;">'${safeCompanyName}'</strong> 
-                                            has been pre-approved for a Barclays Advance!
+                                            has been pre-approved for a Woodmere Financial!
                                         </p>
 
                                         <p style="font-size: 14px; color: #666; line-height: 1.5;">
-                                            Please click on the button below to calculate your approvals. You do not need a Barclays Advance CRM login to use our calculator! Everyone on your team will have immediate access via this email.
+                                            Please click on the button below to calculate your approvals. You do not need a Woodmere Financial CRM login to use our calculator! Everyone on your team will have immediate access via this email.
                                         </p>
 
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
@@ -390,7 +389,7 @@ export const buildApplicationApprovalEmailHtml = ({
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #0b71a9; margin-top: 30px; font-weight: bold;">To view your application in Barclays Advance CRM, click on the button below.</p>
+                                        <p style="font-size: 14px; color: #0b71a9; margin-top: 30px; font-weight: bold;">To view your application in Woodmere Financial CRM, click on the button below.</p>
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
                                             <tr>
                                                 <td align="center" bgcolor="#3b7ab0" style="border-radius: 5px;">
@@ -653,7 +652,7 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #0b71a9; margin-top: 24px; font-weight: bold;">To view your application in Barclays Advance CRM, click the button below.</p>
+                                        <p style="font-size: 14px; color: #0b71a9; margin-top: 24px; font-weight: bold;">To view your application in Woodmere Financial CRM, click the button below.</p>
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
                                             <tr>
                                                 <td align="center" bgcolor="#3b7ab0" style="border-radius: 5px;">
@@ -1435,7 +1434,7 @@ export async function sendDecisionLogicEmail(
     const hostedOrigin = String(
         process.env.BARCLAYS_HOSTED_ORIGIN ||
             process.env.DECISION_LOGIC_HOSTED_FALLBACK_ORIGIN ||
-            'https://barclays.finexusai.com',
+            'https://woodmere.finexusai.com',
 
     )
         .trim()
@@ -1459,7 +1458,7 @@ export async function sendDecisionLogicEmail(
         primaryIsHosted
             ? ''
             : `
-      <p style="margin-top:14px;"><a href="${hostedLink}">Open Decision Logic (hosted — barclays.finexusai.com)</a></p>
+      <p style="margin-top:14px;"><a href="${hostedLink}">Open Decision Logic (hosted — woodmere.finexusai.com)</a></p>
       <p style="font-size:12px; color:#6B7280;">Hosted URL (copy/paste): ${hostedLink}</p>
     `;
     const html = `

@@ -3,6 +3,13 @@ import prisma from '../config/prismaClient';
 import uploadService from './uploadService';
 import { parseContractLengthDaysFromOfferTerm } from '../utils/deriveFrequencyFromTerm';
 import { ValidationError } from '../utils/errors';
+import {
+  decryptEncryptedStringsInJson,
+  mapAchRecordForApi,
+  mapBankDetailRecordForApi,
+  mapContractRecordForApi,
+  decryptSensitiveField,
+} from '../utils/fieldEncryption';
 
 async function resolvePaymentBankDetailForContract(
   prismaClient: typeof prisma | any,
@@ -31,7 +38,7 @@ async function resolvePaymentBankDetailForContract(
           'Selected bank account was not found for this application; add BankDetail on the application or pass a valid paymentBankId.',
         );
       }
-      return bank;
+      return mapBankDetailRecordForApi(bank);
     }
     const bank = await prismaClient.bankDetail.findFirst({
       where: { applicationId },
@@ -43,7 +50,7 @@ async function resolvePaymentBankDetailForContract(
         'Bank details must exist on the application (BankDetail) before creating a contract.',
       );
     }
-    return bank;
+    return mapBankDetailRecordForApi(bank);
   }
 
   if (paymentBankId) {
@@ -54,7 +61,7 @@ async function resolvePaymentBankDetailForContract(
     if (!bank) {
       throw new ValidationError('paymentBankId does not reference an existing BankDetail.');
     }
-    return bank;
+    return mapBankDetailRecordForApi(bank);
   }
 
   throw new ValidationError(
@@ -562,10 +569,13 @@ class ContractService {
     const businessZip = firstNonEmptyString(client?.businessZipCode, biz?.zipCode, biz?.zip);
     const purchaseAmount = derivedApprovedAmount != null ? String(derivedApprovedAmount) : '';
     const purchasePrice = derivedTotalAmount != null ? String(derivedTotalAmount) : '';
-    const purchasePercent = offer?.rate != null ? String(offer.rate) : '';
     const legalName = firstNonEmptyString(client?.businessName, biz?.clientBusinessName);
-    const bankRouting = firstNonEmptyString(paymentBank?.routingNumber);
-    const bankAccount = firstNonEmptyString(paymentBank?.accountNumber);
+    const bankRouting = firstNonEmptyString(
+      decryptSensitiveField(paymentBank?.routingNumber ?? undefined),
+    );
+    const bankAccount = firstNonEmptyString(
+      decryptSensitiveField(paymentBank?.accountNumber ?? undefined),
+    );
     const bankName = firstNonEmptyString(paymentBank?.bankName);
     const taxEin = firstNonEmptyString(client?.businessEinNumber, biz?.federalTaxIdEin);
     const dba = firstNonEmptyString(biz?.doingBusinessAs, biz?.dba);
@@ -574,13 +584,19 @@ class ContractService {
       legalName: legalName || null,
       clientName: legalName || null,
       entityType: firstNonEmptyString(client?.businessEntityType, biz?.entityType) || null,
-      remittance: firstNonEmptyString(offer?.frequency, biz?.remittance) || null,
+      remittance:
+        firstNonEmptyString(
+          offer?.totalRemit != null ? String(offer.totalRemit) : '',
+          purchasePrice || '',
+          biz?.remittance,
+        ) || null,
       clientEmail: firstNonEmptyString(client?.businessEmail, client?.ownerEmail) || null,
       clientPhone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
       customerName: customerName || null,
       purchasePrice: purchasePrice || null,
       purchaseAmount: purchaseAmount || null,
-      purchasePercent: purchasePercent || null,
+      /** User enters via contract prefill editor; do not copy offer rate on create. */
+      purchasePercent: null,
       securityTaxEin: taxEin || null,
       businessAddress: businessAddress || null,
       businessAddressCity: businessCity || null,
@@ -801,7 +817,7 @@ class ContractService {
         });
       }
 
-      return created;
+      return mapContractRecordForApi(created);
     }, createContractTransactionOptions);
   }
 
@@ -823,7 +839,7 @@ class ContractService {
     if (filters.applicationId) where.applicationId = filters.applicationId;
     if (filters.status) where.status = filters.status;
 
-    return (prisma as any).contract.findMany({
+    const rows = await (prisma as any).contract.findMany({
       where,
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
@@ -840,10 +856,11 @@ class ContractService {
       },
       orderBy: { createdAt: 'desc' },
     });
+    return rows.map((row: Record<string, unknown>) => mapContractRecordForApi(row));
   }
 
   async getByIdContract(id: number) {
-    return (prisma as any).contract.findUnique({
+    const row = await (prisma as any).contract.findUnique({
       where: { id },
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
@@ -870,10 +887,11 @@ class ContractService {
         paymentBank: { select: { id: true, bankName: true } },
       },
     });
+    return row ? mapContractRecordForApi(row) : row;
   }
 
   async getByApplicationIdContract(applicationId: string) {
-    return (prisma as any).contract.findUnique({
+    const row = await (prisma as any).contract.findUnique({
       where: { applicationId },
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
@@ -900,6 +918,7 @@ class ContractService {
         paymentBank: { select: { id: true, bankName: true } },
       },
     });
+    return row ? mapContractRecordForApi(row) : row;
   }
 
   async updateContract(
@@ -949,7 +968,9 @@ class ContractService {
       updateData.contractPrefillOverrides =
         data.contractPrefillOverrides === null
           ? Prisma.DbNull
-          : (data.contractPrefillOverrides as Prisma.InputJsonValue);
+          : (decryptEncryptedStringsInJson(
+              data.contractPrefillOverrides,
+            ) as Prisma.InputJsonValue);
     }
     applyContractExtraFields(updateData, data);
 
@@ -957,7 +978,7 @@ class ContractService {
       throw new Error('No contract fields provided for update');
     }
 
-    return prisma.contract.update({
+    const row = await prisma.contract.update({
       where: { id },
       data: updateData,
       include: {
@@ -968,6 +989,7 @@ class ContractService {
         paymentBank: { select: { id: true, bankName: true } },
       },
     });
+    return mapContractRecordForApi(row as Record<string, unknown>);
   }
 
   async deleteContract(id: number) {
@@ -1013,15 +1035,17 @@ class ContractService {
     bankState?: string;
     bankZip?: string;
   }) {
-    return (prisma as any).aCH.create({
+    const row = await (prisma as any).aCH.create({
       data: {
         clientId: data.clientId,
         contractId: data.contractId ?? null,
         businessInfoId: normalizeBusinessInfoIdForFk(data.businessInfoId),
         bankName: data.bankName || null,
         accountHolderName: data.accountHolderName || null,
-        accountNumber: data.accountNumber || null,
-        routingNumber: data.routingNumber || null,
+        accountNumber:
+          decryptSensitiveField(data.accountNumber ?? undefined) ?? data.accountNumber ?? null,
+        routingNumber:
+          decryptSensitiveField(data.routingNumber ?? undefined) ?? data.routingNumber ?? null,
         ach_authorization_bank_portal_website:
           data.ach_authorization_bank_portal_website || null,
         ach_authorization_username: data.ach_authorization_username || null,
@@ -1074,6 +1098,7 @@ class ContractService {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
       },
     });
+    return mapAchRecordForApi(row);
   }
 
   async getAllACH(filters: { clientId?: string; contractId?: number }) {
@@ -1081,22 +1106,24 @@ class ContractService {
     if (filters.clientId) where.clientId = filters.clientId;
     if (filters.contractId) where.contractId = filters.contractId;
 
-    return (prisma as any).aCH.findMany({
+    const rows = await (prisma as any).aCH.findMany({
       where,
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
+    return rows.map((row: Record<string, unknown>) => mapAchRecordForApi(row));
   }
 
   async getByIdACH(id: number) {
-    return (prisma as any).aCH.findUnique({
+    const row = await (prisma as any).aCH.findUnique({
       where: { id },
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
       },
     });
+    return row ? mapAchRecordForApi(row) : row;
   }
 
   async updateACH(
@@ -1144,8 +1171,14 @@ class ContractService {
     const updateData: any = {};
     if (data.bankName !== undefined) updateData.bankName = data.bankName;
     if (data.accountHolderName !== undefined) updateData.accountHolderName = data.accountHolderName;
-    if (data.accountNumber !== undefined) updateData.accountNumber = data.accountNumber;
-    if (data.routingNumber !== undefined) updateData.routingNumber = data.routingNumber;
+    if (data.accountNumber !== undefined) {
+      updateData.accountNumber =
+        decryptSensitiveField(data.accountNumber) ?? data.accountNumber;
+    }
+    if (data.routingNumber !== undefined) {
+      updateData.routingNumber =
+        decryptSensitiveField(data.routingNumber) ?? data.routingNumber;
+    }
     if (data.ach_authorization_bank_portal_website !== undefined) updateData.ach_authorization_bank_portal_website = data.ach_authorization_bank_portal_website;
     if (data.ach_authorization_username !== undefined) updateData.ach_authorization_username = data.ach_authorization_username;
     if (data.ach_authorization_password !== undefined) updateData.ach_authorization_password = data.ach_authorization_password;
@@ -1182,13 +1215,14 @@ class ContractService {
     if (data.bankState !== undefined) updateData.bankState = data.bankState;
     if (data.bankZip !== undefined) updateData.bankZip = data.bankZip;
 
-    return (prisma as any).aCH.update({
+    const row = await (prisma as any).aCH.update({
       where: { id },
       data: updateData,
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
       },
     });
+    return mapAchRecordForApi(row);
   }
 
   async deleteACH(id: number) {
@@ -1723,7 +1757,7 @@ class ContractService {
       throw new Error('Contract not found');
     }
 
-    return contract;
+    return mapContractRecordForApi(contract);
   }
 
   async createBoldSignTemplate(data: {
