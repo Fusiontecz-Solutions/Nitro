@@ -99,7 +99,7 @@ const FIELD_LABELS = {
     purchasePrice: "Payback amount",
     purchaseAmount: "Offer amount",
     purchasePercent: "Specified percentage",
-    remittance: "Total remit",
+    remittance: "Daily payment",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
     clientName: "Name",

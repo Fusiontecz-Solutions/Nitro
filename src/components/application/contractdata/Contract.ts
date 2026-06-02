@@ -1054,6 +1054,73 @@ export function formatNetToMerchantPrefillValue(amount: number | undefined): str
     return truncateDecimalPrefill(amount);
 }
 
+const PAYMENT_FREQUENCY_LABELS = new Set([
+    "daily",
+    "weekly",
+    "monthly",
+    "bi-weekly",
+    "biweekly",
+    "bi weekly",
+]);
+
+function isPaymentFrequencyLabel(value: string): boolean {
+    return PAYMENT_FREQUENCY_LABELS.has(String(value || "").trim().toLowerCase());
+}
+
+/**
+ * DocuSign `remittance` tab = per-period payment (daily payment when frequency is Daily).
+ * Uses OfferDecision.repayPerPeriod, not totalRemit or frequency text.
+ */
+export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSources): string {
+    const app = sources.application;
+    const contract = sources.contract;
+    const odRoot =
+        sources.offerDecision ??
+        (contract?.offer as Record<string, unknown> | undefined) ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+
+    const saved = str(contract?.remittance);
+    if (saved && !isPaymentFrequencyLabel(saved)) {
+        const asNum = truncateDecimalPrefill(saved);
+        if (asNum) return asNum;
+    }
+
+    const periodic =
+        coerceToFiniteNumber(odRoot?.repayPerPeriod) ??
+        coerceToFiniteNumber(odEff?.repayPerPeriod) ??
+        coerceToFiniteNumber(terms0?.paymentAmount) ??
+        coerceToFiniteNumber(terms0?.repayPerPeriod) ??
+        coerceToFiniteNumber(terms0?.dailyPayment);
+
+    if (periodic !== undefined) {
+        return truncateDecimalPrefill(periodic);
+    }
+
+    const totalRemit =
+        coerceToFiniteNumber(odRoot?.totalRemit) ??
+        coerceToFiniteNumber(odEff?.totalRemit) ??
+        coerceToFiniteNumber(contract?.purchasePrice) ??
+        coerceToFiniteNumber(contract?.totalAmount);
+    const numPayments =
+        coerceToFiniteNumber(odRoot?.numberOfPayments) ??
+        coerceToFiniteNumber(terms0?.numberOfPayments);
+    if (totalRemit !== undefined && numPayments !== undefined && numPayments > 0) {
+        return truncateDecimalPrefill(totalRemit / numPayments);
+    }
+
+    return saved && !isPaymentFrequencyLabel(saved) ? saved : "";
+}
+
 /** Human-readable payment frequency for contract / DocuSign prefill. */
 export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources): string {
     const app = sources.application;
@@ -1265,7 +1332,7 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
         if (norm === "purchase_price") return PLATFORM_LABEL.paybackAmount;
         if (norm === "purchase_amount") return PLATFORM_LABEL.offerAmount;
         if (norm === "purchase_percent") return PLATFORM_LABEL.specifiedPercentage;
-        if (norm === "remittance") return PLATFORM_LABEL.totalRemit;
+        if (norm === "remittance") return PLATFORM_LABEL.remittance;
         if (norm === "frequency" || norm === "paymentterms") return PLATFORM_LABEL.frequency;
     }
 
@@ -1417,6 +1484,7 @@ const PLATFORM_LABEL = {
     offerAmount: "Offer amount",
     paybackAmount: "Payback amount",
     totalRemit: "Total remit",
+    remittance: "Daily payment",
     rate: "Rate",
     specifiedPercentage: "Specified percentage",
     term: "Term",
@@ -1506,7 +1574,7 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     purchase_price: PLATFORM_LABEL.paybackAmount,
     purchase_amount: PLATFORM_LABEL.offerAmount,
     purchase_percent: PLATFORM_LABEL.specifiedPercentage,
-    remittance: PLATFORM_LABEL.totalRemit,
+    remittance: PLATFORM_LABEL.remittance,
     frequency: PLATFORM_LABEL.frequency,
     paymentterms: PLATFORM_LABEL.frequency,
     authorization_application: "Merchant name",
@@ -1947,7 +2015,7 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         frequency,
         netToMerchant,
         remittance:
-            str(row.remittance) || "",
+            resolveRemittancePrefillValue({ contract: row, offerDecision: offer }),
         clientName: str(row.clientName),
         securityBusinessName: str(row.securityBusinessName),
         securityTaxEin: str(row.securityTaxEin),
@@ -2297,6 +2365,11 @@ export function getContractPrefillEditDefaultsFromApplication(
         contract: rec?.contract ?? null,
         offerDecision: options?.offerDecision ?? null,
     });
+    const remittanceComputed = resolveRemittancePrefillValue({
+        application: anyApp as Record<string, unknown> | undefined,
+        contract: rec?.contract ?? null,
+        offerDecision: options?.offerDecision ?? null,
+    });
 
     return applyAppendixUnderwritingFeesAmount(
         applySplitAddressStreetFields({
@@ -2311,6 +2384,9 @@ export function getContractPrefillEditDefaultsFromApplication(
             ...(str(recordPartial.netToMerchant) || !netComputed
                 ? {}
                 : { netToMerchant: netComputed }),
+            ...(str(recordPartial.remittance) || !remittanceComputed
+                ? {}
+                : { remittance: remittanceComputed }),
         }),
         {
             application: anyApp as Record<string, unknown> | undefined,
@@ -2358,6 +2434,14 @@ export function buildContractPrefillFieldsFromApplication(
             offerDecision: options?.offerDecision ?? null,
         });
         if (freq) merged.frequency = freq;
+    }
+    if (!str(merged.remittance)) {
+        const remit = resolveRemittancePrefillValue({
+            application: anyApp as Record<string, unknown> | undefined,
+            contract: rec?.contract ?? null,
+            offerDecision: options?.offerDecision ?? null,
+        });
+        if (remit) merged.remittance = remit;
     }
     if (!str(merged.netToMerchant)) {
         const computed = formatNetToMerchantPrefillValue(

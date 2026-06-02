@@ -82,9 +82,12 @@ import {
 import {
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
 } from "./contractdata/docusignTemplateConfig";
+import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
     buildBoldSignRolesFromTemplateRecipients,
+    filterTemplateRolesToPrimarySigner,
     parseBoldSignTemplateRolesFromRecipientsPayload,
+    type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
 import {
     formatCurrency,
@@ -928,6 +931,8 @@ export default function ContractTab({
             addendumBoldSignTemplateId?: string | null;
             /** Current funder from contract modal (may not be persisted yet). */
             funderName?: string | null;
+            /** CRM recipient overrides for this send (does not edit DocuSign template). */
+            signerRoles?: DocuSignTemplateRolePayload[];
         },
         options: { autoSend: boolean; suppressSuccessToast?: boolean },
     ): Promise<{
@@ -992,22 +997,24 @@ export default function ContractTab({
                 }
             }
 
-            let templateRoles =
-                parseBoldSignTemplateRolesFromRecipientsPayload(
-                    recipientsPayload,
-                );
+            let templateRoles = filterTemplateRolesToPrimarySigner(
+                parseBoldSignTemplateRolesFromRecipientsPayload(recipientsPayload),
+            );
             if (templateRoles.length === 0) {
                 const cached =
                     store.getState().boldSign?.templateRecipients ?? null;
-                templateRoles =
-                    parseBoldSignTemplateRolesFromRecipientsPayload(cached);
+                templateRoles = filterTemplateRolesToPrimarySigner(
+                    parseBoldSignTemplateRolesFromRecipientsPayload(cached),
+                );
             }
 
-            const roles = buildBoldSignRolesFromTemplateRecipients(
-                templateRoles,
-                applicationSignerEmail,
-                applicationSignerName,
-            );
+            const roles = sendPayload.signerRoles?.length
+                ? sendPayload.signerRoles
+                : buildBoldSignRolesFromTemplateRecipients(
+                      templateRoles,
+                      applicationSignerEmail,
+                      applicationSignerName,
+                  );
 
             if (roles.length === 0) {
                 failDocuSignEnvelope(
@@ -1043,10 +1050,7 @@ export default function ContractTab({
                 );
             }
 
-            const redirectUrlDocusign =
-                typeof window !== "undefined"
-                    ? window.location.href
-                    : "https://www.docusign.com";
+            const redirectUrlDocusign = resolveDocuSignSenderReturnUrl();
 
             let latestContract: any = fetchedContract;
             try {
@@ -1334,6 +1338,7 @@ export default function ContractTab({
         ccEmails: string[];
         addendumBoldSignTemplateId?: string | null;
         funderName?: string | null;
+        signerRoles?: DocuSignTemplateRolePayload[];
     }) => {
         const result = await runDocuSignEnvelope(payload, {
             autoSend: false,
