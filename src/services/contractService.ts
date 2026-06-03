@@ -657,7 +657,7 @@ class ContractService {
 
     const derivedExtraFields: ContractExtraFields = {
       legalName: legalName || null,
-      clientName: legalName || null,
+      clientName: customerName || null,
       entityType: firstNonEmptyString(client?.businessEntityType, biz?.entityType) || null,
       remittance:
         firstNonEmptyString(
@@ -682,7 +682,7 @@ class ContractService {
       doingBusinessAs: dba || null,
       federalTaxIdEin: taxEin || null,
       exhibitOwnerName: customerName || null,
-      appendixClientName: legalName || null,
+      appendixClientName: customerName || null,
       appendixUnderwritingFees:
         resolveOfferFeeDollarsForContract(
           derivedApprovedAmount ?? (offer?.offer != null ? Number(offer.offer) : null),

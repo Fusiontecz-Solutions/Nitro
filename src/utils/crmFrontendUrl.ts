@@ -110,7 +110,7 @@ function pickExplicitFrontendUrlEnv(): string | undefined {
  *
  * To switch the approval-email link between local and live, set `FRONTEND_URL` in `.env`:
  *   - Local:  `FRONTEND_URL=http://localhost:5173`
- *   - Live:   `FRONTEND_URL=https://www.barclays.finexusai.com`
+ *   - Live:   `FRONTEND_URL=https://www.woodmere.finexusai.com`
  */
 /**
  * Base URL for Decision Logic email links (`/decision-logic?token=...`).

@@ -1,127 +1,15 @@
-import path from 'path';
 import sendMail, { isOutboundSmtpConfigured } from '../config/nodemailer';
+import {
+    buildBrandHeaderRowHtml,
+    buildBrandHeaderStyles,
+    buildBrandLogoAttachments,
+} from '../constants/brand';
 import {
   resolveCrmFrontendBaseUrl,
   resolveDecisionLogicInvitationBaseUrl,
 } from '../utils/crmFrontendUrl';
 
-/**
- * Inline brand logos used inside transactional email templates.
- * The light variant has dark artwork on a transparent background (suits
- * default white email canvases), while the dark variant has light artwork
- * for clients that render the message in dark mode.
- *
- * Files live under `<project-root>/public/` (NOT in `src/`) so they survive
- * the `tsc` build (`rootDir: ./src` would otherwise strip non-`.ts` files).
- */
-const BRAND_ASSETS_DIR = path.resolve(__dirname, '..', '..', 'public');
-const BRAND_LIGHT_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'woodmere_transparent.png');
-const BRAND_DARK_LOGO_PATH = path.join(BRAND_ASSETS_DIR, 'woodmere_dark_theme_logo.png');
-
-const BRAND_LIGHT_LOGO_CID = 'brand-logo-light@finexusai';
-const BRAND_DARK_LOGO_CID = 'brand-logo-dark@finexusai';
-
-/**
- * Inline attachments (Content-ID) for the Barclays logo. Pass these to
- * `sendMail` whenever the HTML body contains the brand header so the
- * `cid:...` references in the markup resolve to real images.
- */
-export function buildBrandLogoAttachments(): Array<{
-    filename: false;
-    path: string;
-    cid: string;
-    contentType: string;
-    contentDisposition: 'inline';
-}> {
-    return [
-        {
-            filename: false,
-            path: BRAND_LIGHT_LOGO_PATH,
-            cid: BRAND_LIGHT_LOGO_CID,
-            contentType: 'image/png',
-            contentDisposition: 'inline',
-        },
-        {
-            filename: false,
-            path: BRAND_DARK_LOGO_PATH,
-            cid: BRAND_DARK_LOGO_CID,
-            contentType: 'image/png',
-            contentDisposition: 'inline',
-        },
-    ];
-}
-
-/**
- * Theme-aware brand header (`<tr>` row) used at the top of every
- * transactional email. Non-Outlook clients paint the CID via CSS
- * `background-image` rather than `<img>` so Gmail Web does not wrap the graphic
- * in its image hover toolbar (download / Drive / Photos). Outlook Windows still
- * uses `<img>` (VML/Word layout) inside the `[if mso]` branch.
- *
- * Returns the table row markup only — callers paste it where the previous
- * `<span>FinexusAI</span>` row used to live.
- */
-function buildBrandHeaderRowHtml(): string {
-    return `
-                    <tr>
-                        <td align="center" style="padding: 6px 16px 0; line-height: 0; font-size: 0;">
-                            <!--[if !mso]><!-->
-                            <table role="presentation" align="center" border="0" cellpadding="0" cellspacing="0" style="margin:0 auto;">
-                                <tr>
-                                    <td align="center" style="padding:0; line-height:0; font-size:0;">
-                            <div class="brand-logo-bg-light brand-logo-bg-slot"
-                                 role="presentation"
-                                 aria-hidden="true"
-                                 style="display:inline-block; margin:0; padding:0; vertical-align:top;
-                                        width:180px; height:78px;
-                                        background-image:url('cid:${BRAND_LIGHT_LOGO_CID}');
-                                        background-position:center center;
-                                        background-repeat:no-repeat;
-                                        background-size:contain;"></div>
-                            <div class="brand-logo-bg-dark brand-logo-bg-slot"
-                                 role="presentation"
-                                 aria-hidden="true"
-                                 style="display:inline-block; margin:0; padding:0; vertical-align:top;
-                                        width:180px; height:78px;
-                                        background-image:url('cid:${BRAND_DARK_LOGO_CID}');
-                                        background-position:center center;
-                                        background-repeat:no-repeat;
-                                        background-size:contain;"></div>
-                                    </td>
-                                </tr>
-                            </table>
-                            <!--<![endif]-->
-                            <!--[if mso]>
-                            <span style="line-height:normal; font-family: Arial, Helvetica, sans-serif; font-size: 1px; color:#ffffff">&nbsp;<br /></span>
-                            <img src="cid:${BRAND_LIGHT_LOGO_CID}"
-                                 alt="Woodmere"
-                                 width="180"
-                                 border="0"
-                                 style="display:block; margin: 0 auto; width:180px; height:auto; border:0; outline:none;" />
-                            <![endif]-->
-                        </td>
-                    </tr>`;
-}
-
-/**
- * `<style>` + `<meta>` block that toggles which logo is visible based on
- * the recipient's email-client theme. Inserted inside `<head>` of every
- * branded template.
- */
-function buildBrandHeaderStyles(): string {
-    return `
-    <meta name="color-scheme" content="light dark" />
-    <meta name="supported-color-schemes" content="light dark" />
-    <style>
-        .brand-logo-bg-dark { display: none !important; width: 0 !important; height: 0 !important; overflow: hidden !important; }
-        @media (prefers-color-scheme: dark) {
-            .brand-logo-bg-light { display: none !important; width: 0 !important; height: 0 !important; overflow: hidden !important; }
-            .brand-logo-bg-dark { display: inline-block !important; width: 180px !important; height: 78px !important; overflow: visible !important; }
-        }
-        [data-ogsc] .brand-logo-bg-light { display: none !important; width: 0 !important; height: 0 !important; overflow: hidden !important; }
-        [data-ogsc] .brand-logo-bg-dark { display: inline-block !important; width: 180px !important; height: 78px !important; overflow: visible !important; }
-    </style>`;
-}
+export { buildBrandLogoAttachments } from '../constants/brand';
 
 /**
  * Href values in these templates (`viewApplicationUrl`, `publicPortalUrl`, `calculateApprovalUrl`, etc.)
@@ -1401,7 +1289,7 @@ export async function sendUnderwriterNewApplicationEmail({
     }
 }
 
-/** Hostname (+ port) only, `www.` stripped — for detecting duplicate primary vs Barclays hosted link. */
+/** Hostname (+ port) only, `www.` stripped — for detecting duplicate primary vs hosted link. */
 function decisionLogicInvitationHostKey(raw: string): string | null {
     const t = String(raw || '').trim();
     if (!t || t.startsWith('(')) return null;
@@ -1432,7 +1320,7 @@ export async function sendDecisionLogicEmail(
     }
 
     const hostedOrigin = String(
-        process.env.BARCLAYS_HOSTED_ORIGIN ||
+        process.env.WOODMERE_HOSTED_ORIGIN ||
             process.env.DECISION_LOGIC_HOSTED_FALLBACK_ORIGIN ||
             'https://woodmere.finexusai.com',
 
