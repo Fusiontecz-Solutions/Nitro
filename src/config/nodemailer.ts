@@ -19,15 +19,24 @@ export function isOutboundSmtpConfigured(): boolean {
     );
 }
 
+const DEFAULT_MAIL_FROM_NAME =
+    process.env.MAIL_FROM_NAME?.trim() ||
+    process.env.SENDGRID_FROM_NAME?.trim() ||
+    'Woodmere Financial';
+
+function formatMailFromAddress(email: string): string {
+    return `"${DEFAULT_MAIL_FROM_NAME}" <${email}>`;
+}
+
 /** From address for SendGrid-only sends (verified sender in SendGrid). */
 export function getSendGridMailFrom(): string {
     const explicit =
         process.env.SENDGRID_FROM_EMAIL?.trim() ||
         process.env.SENDGRID_AUTH_USER?.trim();
     if (explicit) {
-        return explicit.includes('<') ? explicit : `"CRM" <${explicit}>`;
+        return explicit.includes('<') ? explicit : formatMailFromAddress(explicit);
     }
-    return '"CRM" <noreply@localhost>';
+    return formatMailFromAddress('noreply@localhost');
 }
 
 function createSendGridTransporter() {
@@ -46,6 +55,7 @@ function createSendGridTransporter() {
 /**
  * Default From header. SendGrid requires a verified sender; use SMTP_FROM,
  * MAIL_FROM, SENDGRID_FROM_EMAIL, or SENDGRID_AUTH_USER (verified address).
+ * Display name defaults to Woodmere Financial (override with MAIL_FROM_NAME or SENDGRID_FROM_NAME).
  */
 export function getDefaultMailFrom(): string {
     const explicit =
@@ -53,15 +63,15 @@ export function getDefaultMailFrom(): string {
         process.env.MAIL_FROM?.trim() ||
         process.env.SENDGRID_FROM_EMAIL?.trim();
     if (explicit) {
-        return explicit.includes('<') ? explicit : `"CRM" <${explicit}>`;
+        return explicit.includes('<') ? explicit : formatMailFromAddress(explicit);
     }
     if (useSendgrid) {
         const verified = process.env.SENDGRID_AUTH_USER?.trim();
-        if (verified) return `"CRM" <${verified}>`;
+        if (verified) return formatMailFromAddress(verified);
     }
     const gmailUser = process.env.SMTP_AUTH_USER?.trim();
-    if (gmailUser) return `"CRM" <${gmailUser}>`;
-    return '"CRM" <noreply@localhost>';
+    if (gmailUser) return formatMailFromAddress(gmailUser);
+    return formatMailFromAddress('noreply@localhost');
 }
 
 function createTransporter() {

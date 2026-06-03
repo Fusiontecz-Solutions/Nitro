@@ -84,6 +84,12 @@ export const normalizeOperationsStatusKey = (value: string): string => {
         .join('_');
 };
 
+/** Umbrella deal-pipeline stage: contract out + contract signed (not contracts-out only). */
+export const isContractedPipelineKey = (value: string): boolean => {
+    const canonical = normalizeOperationsStatusKey(value);
+    return canonical === 'Contracted';
+};
+
 export const isContractedOpsKey = (value: string): boolean => {
     const canonical = normalizeOperationsStatusKey(value);
     return canonical === 'Contracted' || canonical === 'Contracts_Out';
@@ -210,6 +216,15 @@ function contractsOutBroadMatchWhere(): Prisma.ApplicationWhereInput {
     };
 }
 
+/**
+ * Deal-pipeline `operationsStatus=Contracted`: both contract-out and contract-signed rows.
+ */
+export function contractedCombinedMatchWhere(): Prisma.ApplicationWhereInput {
+    return {
+        OR: [contractsOutBroadMatchWhere(), signedContractsBroadMatchWhere()],
+    };
+}
+
 /** DB `currentState` may store Prisma enum strings, API labels, or legacy spellings. */
 function expandStoredCurrentStateValues(mappedState: ApplicationState): string[] {
     const out = new Set<string>([mappedState]);
@@ -250,9 +265,10 @@ export function buildOperationsStatusFilterWhere(
     if (canonical === 'Contract_Signed') {
         return signedContractsStrictMatchWhere();
     }
-    const mappedState = isContractedOpsKey(canonical)
-        ? undefined
-        : toPrismaApplicationState(canonical);
+    const mappedState =
+        isContractedPipelineKey(canonical) || canonical === 'Contracts_Out'
+            ? undefined
+            : toPrismaApplicationState(canonical);
     const aliases =
         dashboardStateQueueAliases[canonical] ||
         dashboardStateQueueAliases[canonical.replace(/_/g, ' ')] ||
@@ -263,11 +279,20 @@ export function buildOperationsStatusFilterWhere(
     );
 
     if (mode === 'queue') {
+        if (isContractedPipelineKey(canonical)) {
+            return contractedCombinedMatchWhere();
+        }
+        if (canonical === 'Contracts_Out') {
+            return contractsOutBroadMatchWhere();
+        }
         return { currentQueue: { in: queueValues } };
     }
 
     if (mode === 'state') {
-        if (isContractedOpsKey(canonical)) {
+        if (isContractedPipelineKey(canonical)) {
+            return contractedCombinedMatchWhere();
+        }
+        if (canonical === 'Contracts_Out') {
             return contractsOutBroadMatchWhere();
         }
         if (canonical === 'Signed_Contracts') {
@@ -283,7 +308,10 @@ export function buildOperationsStatusFilterWhere(
     }
 
     // legacy
-    if (isContractedOpsKey(canonical)) {
+    if (isContractedPipelineKey(canonical)) {
+        return contractedCombinedMatchWhere();
+    }
+    if (canonical === 'Contracts_Out') {
         return contractsOutBroadMatchWhere();
     }
     if (canonical === 'Signed_Contracts') {

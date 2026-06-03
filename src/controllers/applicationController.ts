@@ -31,7 +31,10 @@ import {
     buildOperationsStatusFilterWhere,
     resolveOperationsListFilterMode,
     dashboardStateQueueAliases,
+    contractedCombinedMatchWhere,
     isContractedOpsKey,
+    isContractedPipelineKey,
+    normalizeOperationsStatusKey,
 } from '../services/operationsStatusFilter';
 import {
     buildApplicationStatsBucketWhere,
@@ -1301,9 +1304,11 @@ class ApplicationController {
             }
             if (currentState) {
                 const rawState = String(currentState).trim();
-                const mappedState = isContractedOpsKey(rawState)
-                    ? undefined
-                    : toPrismaApplicationState(rawState);
+                const mappedState =
+                    isContractedPipelineKey(rawState) ||
+                    normalizeOperationsStatusKey(rawState) === 'Contracts_Out'
+                        ? undefined
+                        : toPrismaApplicationState(rawState);
                 const aliasValues =
                     dashboardStateQueueAliases[rawState] ||
                     dashboardStateQueueAliases[rawState.replace(/\s+/g, '_')] ||
@@ -1333,16 +1338,18 @@ class ApplicationController {
                             { currentQueue: { in: queueFallbackVariants } },
                         ],
                     }
-                    : isContractedOpsKey(rawState)
-                        ? {
-                            OR: [
-                                { currentQueue: { in: queueFallbackVariants } },
-                                { currentState: { in: contractedStateLiterals } },
-                            ],
-                        }
-                        : {
-                            currentQueue: { in: queueFallbackVariants },
-                        };
+                    : isContractedPipelineKey(rawState)
+                        ? contractedCombinedMatchWhere()
+                        : isContractedOpsKey(rawState)
+                          ? {
+                                OR: [
+                                    { currentQueue: { in: queueFallbackVariants } },
+                                    { currentState: { in: contractedStateLiterals } },
+                                ],
+                            }
+                          : {
+                                currentQueue: { in: queueFallbackVariants },
+                            };
 
                 const existingAnd = where.AND
                     ? Array.isArray(where.AND)

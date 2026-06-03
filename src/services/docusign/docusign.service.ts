@@ -1212,10 +1212,16 @@ export class DocusignService {
       : await this.getTemplateSignerRoleNames(client, accountId, templateId);
 
     return signers.map((s, idx) => {
+      const crmRole = String(s.roleName || '').trim();
+      const templateRoleAtIdx = templateRoleNames[idx];
+      const crmMatchesTemplate =
+        crmRole &&
+        templateRoleNames.some((n) => n.toLowerCase() === crmRole.toLowerCase());
       const roleName =
-        templateRoleNames[idx] ||
+        (crmMatchesTemplate ? crmRole : '') ||
+        templateRoleAtIdx ||
         templateRoleNames[0] ||
-        s.roleName ||
+        crmRole ||
         DOCUSIGN_DEFAULT_ROLE_NAME;
 
       return {
@@ -2112,14 +2118,11 @@ export class DocusignService {
       throw new BadRequestException('At least one signer with a valid email is required.');
     }
 
-    const primarySigner = signers[0];
     const templateRoleNames = await this.getTemplateSignerRoleNames(
       client,
       accountId,
       templateIds[0],
     );
-    const roleName =
-      templateRoleNames[0] || primarySigner.roleName || DOCUSIGN_DEFAULT_ROLE_NAME;
 
     const compositeTemplates = templateIds.map((tid, idx) => ({
       compositeTemplateId: String(idx + 1),
@@ -2128,16 +2131,28 @@ export class DocusignService {
         {
           sequence: String(idx + 1),
           recipients: {
-            signers: [
-              {
+            signers: signers.map((signer, signerIdx) => {
+              const crmRole = String(signer.roleName || '').trim();
+              const crmMatchesTemplate =
+                crmRole &&
+                templateRoleNames.some((n) => n.toLowerCase() === crmRole.toLowerCase());
+              const roleName =
+                (crmMatchesTemplate ? crmRole : '') ||
+                templateRoleNames[signerIdx] ||
+                templateRoleNames[0] ||
+                crmRole ||
+                DOCUSIGN_DEFAULT_ROLE_NAME;
+              return {
                 roleName,
-                name: primarySigner.name || primarySigner.email.split('@')[0],
-                email: primarySigner.email,
-                recipientId: '1',
-                routingOrder: String(primarySigner.routingOrder || idx + 1),
-                ...(idx === 0 && textTabs.length ? { tabs: { textTabs } } : {}),
-              },
-            ],
+                name: signer.name || signer.email.split('@')[0],
+                email: signer.email,
+                recipientId: String(signerIdx + 1),
+                routingOrder: String(signer.routingOrder || signerIdx + 1),
+                ...(idx === 0 && signerIdx === 0 && textTabs.length
+                  ? { tabs: { textTabs } }
+                  : {}),
+              };
+            }),
           },
         },
       ],
