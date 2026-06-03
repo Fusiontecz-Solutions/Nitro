@@ -64,6 +64,7 @@ const ApplicationSummary = ({
         (state: RootState) => state.applicationDetail
     );
     const loginUser = useSelector((state: RootState) => state.login.data?.user);
+    const { data: offerDecisionData, loading: offerDecisionLoading } = useSelector(
         (state: RootState) => state.offerDecision,
     );
     const { data: termsOffers, loading: termsOffersLoading } = useSelector(
@@ -285,6 +286,6 @@ const ApplicationSummary = ({
             </CardContent>
         </Card>
     )
-}
+};
 
 export default ApplicationSummary;

@@ -23,8 +23,8 @@ import {
     formatFactorRateUS,
     formatNumberUS,
     formatNumberUSForInput,
+    formatRateUSCommit,
     parseNumberUS,
-} from "@/lib/utils";
 } from "@/lib/utils";
 import {
     deriveOfferRepaymentStack,
@@ -1223,13 +1223,20 @@ const ApprovedApplicationModal = ({
                                         });
                                     } catch (emailError) {
                                         console.error("Failed to send approval email:", emailError);
+                                        const backendMessage =
+                                            typeof emailError === "string"
+                                                ? emailError
+                                                : emailError instanceof Error
+                                                  ? emailError.message
+                                                  : "";
+                                        const fallbackMessage = resendApprovalEmail
+                                            ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
+                                            : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).";
                                         toast.update(toastId, {
-                                            render: resendApprovalEmail
-                                                ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
-                                                : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).",
+                                            render: backendMessage || fallbackMessage,
                                             type: "warning",
                                             isLoading: false,
-                                            autoClose: 5000,
+                                            autoClose: 7000,
                                         });
                                     }
 
