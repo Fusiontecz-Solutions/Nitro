@@ -25,7 +25,7 @@ import {
   RefreshCcw,
 } from 'lucide-react'
 
-const filters = ['All', 'Unread', 'Doc Request', 'Status Update'] as const
+const filters = ['All', 'Unread', 'Doc Request', 'Status Update', 'Contract'] as const
 
 /** Notifications per page — keeps DOM small for fast paint (slice only). */
 const LIST_PAGE_SIZE = 15
@@ -51,6 +51,7 @@ function filterNotifications(
     else if (filter === 'Unread' && !n.isRead) out.push(n)
     else if (filter === 'Doc Request' && n.type === 'document_request') out.push(n)
     else if (filter === 'Status Update' && n.type === 'application_update') out.push(n)
+    else if (filter === 'Contract' && n.type === 'contract_status_update') out.push(n)
   }
   return out
 }
@@ -125,6 +126,8 @@ function typeLabel(type: Notification['type']): string {
       return 'Document'
     case 'application_update':
       return 'Update'
+    case 'contract_status_update':
+      return 'Contract'
     case 'system':
       return 'System'
     default:
@@ -138,6 +141,8 @@ function typeBadgeClass(type: Notification['type'], isDark: boolean): string {
       return 'bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300'
     case 'application_update':
       return 'bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200'
+    case 'contract_status_update':
+      return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
     case 'system':
       return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
     default:
@@ -149,6 +154,8 @@ function getDetailIcon(type: Notification['type']) {
   switch (type) {
     case 'document_request':
       return <FileText className="size-5 text-[#276D9C] dark:text-sky-400" />
+    case 'contract_status_update':
+      return <FileText className="size-5 text-emerald-600 dark:text-emerald-400" />
     default:
       return <Bell className="size-5 text-muted-foreground" />
   }
