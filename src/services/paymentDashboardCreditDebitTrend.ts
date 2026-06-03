@@ -148,12 +148,33 @@ type TrendTx = {
   dayKey: string;
 };
 
-export async function computeCreditDebitTrend(
-  queryInput: Record<string, unknown>,
-): Promise<{ points: MoneyFlowPointDto[]; yearOptions: number[] } | null> {
-  const query = parseTrendQuery(queryInput);
-  if (!query) return null;
+export type CreditDebitTrendByViewDto = {
+  monthly: MoneyFlowPointDto[];
+  weekly: MoneyFlowPointDto[];
+  monthlyInYear: MoneyFlowPointDto[];
+  yearly: MoneyFlowPointDto[];
+};
 
+export function parseChartYearMonth(
+  chartYear?: number,
+  chartMonth?: number | 'all',
+): CreditDebitTrendQuery {
+  const year = Number.isFinite(Number(chartYear))
+    ? Math.floor(Number(chartYear))
+    : new Date().getFullYear();
+  let month: number | 'all' = new Date().getMonth();
+  if (chartMonth === 'all') {
+    month = 'all';
+  } else if (chartMonth !== undefined && Number.isFinite(Number(chartMonth))) {
+    const m = Math.floor(Number(chartMonth));
+    if (m >= 0 && m <= 11) month = m;
+  }
+  return { view: 'monthly', year, month };
+}
+
+async function buildCreditDebitTrendBundle(
+  query: CreditDebitTrendQuery,
+): Promise<{ byView: CreditDebitTrendByViewDto; yearOptions: number[] } | null> {
   const fundedWhere = buildApplicationStatsBucketWhere('funded');
   if (!fundedWhere) return null;
 
@@ -347,18 +368,68 @@ export async function computeCreditDebitTrend(
     (_, idx) => BASE_YEAR + idx,
   );
 
-  const yearly = isYearAxisMode
-    ? yearOptions.map((year) => ({
-        label: String(year),
-        inflow: Number((yearlyAxisInflowTotals.get(year) ?? 0).toFixed(2)),
-        outflow: Number((yearlyAxisOutflowTotals.get(year) ?? 0).toFixed(2)),
-      }))
-    : monthlyInYear;
+  const yearlyAxis = yearOptions.map((y) => ({
+    label: String(y),
+    inflow: Number((yearlyAxisInflowTotals.get(y) ?? 0).toFixed(2)),
+    outflow: Number((yearlyAxisOutflowTotals.get(y) ?? 0).toFixed(2)),
+  }));
 
-  const byView = { monthly, weekly, monthlyInYear, yearly };
-  const points = byView[query.view === 'monthlyInYear' ? 'monthlyInYear' : query.view];
+  const byView: CreditDebitTrendByViewDto = {
+    monthly,
+    weekly,
+    monthlyInYear,
+    yearly: yearlyAxis,
+  };
 
-  return { points, yearOptions };
+  return { byView, yearOptions };
+}
+
+export async function computeCreditDebitTrendPortfolio(
+  chartYear?: number,
+  chartMonth?: number | 'all',
+): Promise<{ creditDebitTrend: CreditDebitTrendByViewDto; chartYearOptions: number[] }> {
+  const query = parseChartYearMonth(chartYear, chartMonth);
+  const bundle = await buildCreditDebitTrendBundle(query);
+  const empty: CreditDebitTrendByViewDto = {
+    monthly: [],
+    weekly: [],
+    monthlyInYear: [],
+    yearly: [],
+  };
+  if (!bundle) {
+    return { creditDebitTrend: empty, chartYearOptions: [query.year] };
+  }
+
+  const isAllMonthsMode = query.month === 'all';
+  return {
+    creditDebitTrend: {
+      monthly: bundle.byView.monthly,
+      weekly: bundle.byView.weekly,
+      monthlyInYear: bundle.byView.monthlyInYear,
+      yearly: isAllMonthsMode ? bundle.byView.yearly : bundle.byView.monthlyInYear,
+    },
+    chartYearOptions: bundle.yearOptions,
+  };
+}
+
+export async function computeCreditDebitTrend(
+  queryInput: Record<string, unknown>,
+): Promise<{ points: MoneyFlowPointDto[]; yearOptions: number[] } | null> {
+  const query = parseTrendQuery(queryInput);
+  if (!query) return null;
+
+  const bundle = await buildCreditDebitTrendBundle(query);
+  if (!bundle) return null;
+
+  const isAllMonthsMode = query.month === 'all';
+  const isYearAxisMode = query.view === 'yearly' && isAllMonthsMode;
+  const viewKey = query.view === 'monthlyInYear' ? 'monthlyInYear' : query.view;
+  const points =
+    query.view === 'yearly' && isYearAxisMode
+      ? bundle.byView.yearly
+      : bundle.byView[viewKey as keyof CreditDebitTrendByViewDto];
+
+  return { points, yearOptions: bundle.yearOptions };
 }
 
 export { parseTrendQuery };

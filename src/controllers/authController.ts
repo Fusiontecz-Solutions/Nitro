@@ -8,6 +8,7 @@ import type { Role } from '@prisma/client';
 import { isValidRole, PUBLIC_REGISTER_ROLES, ROLES } from '../constants/roles';
 import dotenv from 'dotenv';
 import { sendWelcomeEmail } from '../services/emailService';
+import { recordAuthAudit } from '../services/systemActivityLogService';
 
 dotenv.config();
 
@@ -449,6 +450,15 @@ class AuthController {
                 isVerified: user.isVerified,
                 isActive: user.isActive,
             };
+
+            try {
+                await recordAuthAudit(req, 'LOGIN', `User logged in: ${user.email}`, {
+                    id: user.id,
+                    role: user.role,
+                });
+            } catch (auditErr) {
+                console.error('Login audit log failed:', auditErr);
+            }
 
             return res.cookie('token', token, options).status(200).json({
                 success: true,
@@ -928,15 +938,42 @@ class AuthController {
                 });
             }
 
-            const accessToken = await prisma.accessToken.updateMany({
+            const tokenRow = await prisma.accessToken.findFirst({
                 where: { token },
-                data: { expiresAt: new Date() },
+                include: {
+                    user: {
+                        select: {
+                            id: true,
+                            email: true,
+                            role: true,
+                            firstName: true,
+                            lastName: true,
+                        },
+                    },
+                },
             });
-            if (accessToken.count === 0) {
+
+            if (!tokenRow) {
                 return res.status(401).json({
                     success: false,
                     message: 'Unauthorized',
                 });
+            }
+
+            await prisma.accessToken.updateMany({
+                where: { token },
+                data: { expiresAt: new Date() },
+            });
+
+            if (tokenRow.user) {
+                try {
+                    await recordAuthAudit(req, 'LOGOUT', `User logged out: ${tokenRow.user.email}`, {
+                        id: tokenRow.user.id,
+                        role: tokenRow.user.role,
+                    });
+                } catch (auditErr) {
+                    console.error('Logout audit log failed:', auditErr);
+                }
             }
 
             res.clearCookie('token');

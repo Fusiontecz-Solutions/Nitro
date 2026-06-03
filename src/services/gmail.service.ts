@@ -36,6 +36,7 @@ export interface GmailMessage {
 export interface GmailMessagesListResponse {
     messages?: GmailMessage[];
     nextPageToken?: string;
+    resultSizeEstimate?: number;
 }
 
 export interface GmailAttachmentResponse {
@@ -535,6 +536,7 @@ export async function fetchAllEmails(
 ): Promise<{
     messages: any[];
     nextPageToken?: string;
+    resultSizeEstimate?: number;
 }> {
 
     if (!accessToken) {
@@ -566,6 +568,7 @@ export async function fetchAllEmails(
             return {
                 messages: [],
                 nextPageToken: response.data.nextPageToken,
+                resultSizeEstimate: response.data.resultSizeEstimate,
             };
         }
 
@@ -615,6 +618,7 @@ export async function fetchAllEmails(
         return {
             messages: detailedMessages,
             nextPageToken: response.data.nextPageToken,
+            resultSizeEstimate: response.data.resultSizeEstimate,
         };
 
     } catch (error: any) {

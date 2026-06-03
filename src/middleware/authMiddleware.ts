@@ -17,12 +17,51 @@ declare global {
     }
 }
 
+/**
+ * Sentinel identity used when a request was authenticated via the trusted
+ * Super Admin proxy path (signed headers) rather than a tenant JWT.
+ *
+ * The tenant DB knows nothing about Super Admin users — they live in a
+ * separate centralized backend — so we never attempt to look them up here.
+ * We just construct a synthetic principal with SUPER_ADMIN role so existing
+ * role gates (requireRoles / requireAdmin) keep working.
+ */
+const SUPER_ADMIN_PROXY_SENTINEL_ID = '00000000-0000-0000-0000-000000000000';
+
+const buildSuperAdminProxyUser = (req: Request) => {
+    const ctx = req.superAdminContext || {};
+    return {
+        id: ctx.actorId || SUPER_ADMIN_PROXY_SENTINEL_ID,
+        name: ctx.actorName || 'Super Admin (proxy)',
+        email: ctx.actorEmail || 'super-admin@proxy.internal',
+        role: 'SUPER_ADMIN',
+    };
+};
+
+/**
+ * User id safe for tenant DB foreign keys (e.g. Application.createdById).
+ * Super Admin proxy principals are synthetic and have no row in User — return null.
+ */
+export function resolveTenantUserId(req: Request): string | null {
+    if (req.isSuperAdminProxy) return null;
+    return req.user?.id ?? null;
+}
+
 export const authenticateToken = async (
     req: Request,
     res: Response,
     next: NextFunction
 ): Promise<Response | void> => {
     try {
+        // Trusted internal call from the centralized Super Admin backend.
+        // `verifySuperAdminProxy` has already validated the shared secret
+        // (constant-time compared against SUPER_ADMIN_SECRET) before this
+        // middleware runs, so we MUST NOT try to validate a tenant JWT here.
+        if (req.isSuperAdminProxy) {
+            req.user = buildSuperAdminProxyUser(req);
+            return next();
+        }
+
         // Get token from Authorization header or cookies
         const authHeader = req.headers.authorization;
         const token = authHeader?.split(' ')[1] || req.cookies?.token;
