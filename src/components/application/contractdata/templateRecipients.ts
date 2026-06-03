@@ -91,7 +91,10 @@ export function getTemplateRoleEmailFromRow(row: Record<string, unknown>): strin
     );
 }
 
-import { DOCUSIGN_DEFAULT_SIGNER_ROLE } from "./docusignTemplateConfig";
+import {
+    DOCUSIGN_DEFAULT_SIGNER_ROLE,
+    DOCUSIGN_PRIMARY_SIGNER_ROLE,
+} from "./docusignTemplateConfig";
 
 /** Role payload for `/docusign/send-template` and sync-envelope-cc. */
 export type DocuSignTemplateRolePayload = {
@@ -108,23 +111,140 @@ export type DocuSignTemplateRolePayload = {
     locale?: "EN";
 };
 
+/** CRM-only signer rows (this send) — does not modify the DocuSign template. */
+export type ContractSignerOverrideRow = {
+    role: string;
+    name: string;
+    email: string;
+};
+
+/** Persisted on `Contract.contractPrefillOverrides` (excluded from main prefill form). */
+export const CONTRACT_SIGNER_OVERRIDES_KEY = "contractSignerOverrides";
+
+export function parseContractSignerOverridesFromPrefill(
+    raw: unknown,
+): ContractSignerOverrideRow[] | null {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const rows = (raw as Record<string, unknown>)[CONTRACT_SIGNER_OVERRIDES_KEY];
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const parsed = rows
+        .map((row) => {
+            if (!row || typeof row !== "object") return null;
+            const r = row as Record<string, unknown>;
+            const role = String(r.role ?? "").trim();
+            const email = String(r.email ?? "").trim();
+            const name = String(r.name ?? "").trim();
+            if (!role || !email) return null;
+            return { role, name, email };
+        })
+        .filter((r): r is ContractSignerOverrideRow => r != null);
+    return parsed.length ? parsed : null;
+}
+
+export function mergeContractPrefillWithSignerOverrides(
+    baseRaw: unknown,
+    signerRows: ContractSignerOverrideRow[],
+): Record<string, unknown> {
+    const base =
+        baseRaw && typeof baseRaw === "object" && !Array.isArray(baseRaw)
+            ? { ...(baseRaw as Record<string, unknown>) }
+            : {};
+    return {
+        ...base,
+        [CONTRACT_SIGNER_OVERRIDES_KEY]: signerRows,
+    };
+}
+
+const DOCUSIGN_SIGNER_ROLE_COMMON = {
+    privateMessage: "Kindly sign this article",
+    authenticationCode: "1234",
+    authenticationType: "AccessCode" as const,
+    deliveryMode: "Email" as const,
+    signerType: "signer" as const,
+    locale: "EN" as const,
+};
+
+/** Build send/sync payload from Summary recipient editor rows. */
+export function buildDocuSignRolesFromEditorRows(
+    rows: ContractSignerOverrideRow[],
+): DocuSignTemplateRolePayload[] {
+    return rows
+        .filter((r) => String(r.role || "").trim() && String(r.email || "").trim())
+        .map((r, idx) => ({
+            roleIndex: idx + 1,
+            signerName: String(r.name || "").trim() || String(r.email).trim().split("@")[0],
+            signerOrder: idx + 1,
+            signerEmail: String(r.email).trim(),
+            signerRole: String(r.role).trim(),
+            ...DOCUSIGN_SIGNER_ROLE_COMMON,
+        }));
+}
+
+export function contractSignerOverridesFingerprint(
+    rows: ContractSignerOverrideRow[],
+): string {
+    return JSON.stringify(
+        rows.map((r) => ({
+            role: String(r.role || "").trim(),
+            name: String(r.name || "").trim(),
+            email: String(r.email || "").trim().toLowerCase(),
+        })),
+    );
+}
+
+export function getTemplateRoleNameFromRow(row: Record<string, unknown>): string {
+    const nestedSigner =
+        row.signer && typeof row.signer === "object"
+            ? (row.signer as Record<string, unknown>)
+            : row.Signer && typeof row.Signer === "object"
+              ? (row.Signer as Record<string, unknown>)
+              : null;
+
+    return firstNonEmptyString(
+        row.signerName,
+        row.SignerName,
+        row.defaultSignerName,
+        row.DefaultSignerName,
+        nestedSigner?.name,
+        nestedSigner?.Name,
+    );
+}
+
+/**
+ * When a DocuSign template lists multiple signer roles, keep only the primary role
+ * (e.g. "Receiver") so the envelope is not sent to duplicate signer slots.
+ */
+export function filterTemplateRolesToPrimarySigner(
+    templateRoles: Array<Record<string, unknown>>,
+    preferredRoleName: string = DOCUSIGN_PRIMARY_SIGNER_ROLE,
+): Array<Record<string, unknown>> {
+    if (templateRoles.length <= 1) return templateRoles;
+    const preferred = String(preferredRoleName || DOCUSIGN_PRIMARY_SIGNER_ROLE).trim().toLowerCase();
+    if (!preferred) return [templateRoles[0]!];
+    const matched = templateRoles.filter(
+        (row) => getTemplateRoleLabel(row).toLowerCase() === preferred,
+    );
+    if (matched.length === 1) return matched;
+    return [templateRoles[0]!];
+}
+
 /** Map template recipient rows + application client email to DocuSign signer roles. */
 export function buildBoldSignRolesFromTemplateRecipients(
     templateRoles: Array<Record<string, unknown>>,
     applicationSignerEmail: string,
     applicationSignerName: string,
+    options?: { singleSignerOnly?: boolean; preferredRoleName?: string },
 ): DocuSignTemplateRolePayload[] {
+    const rolesForSend =
+        options?.singleSignerOnly === false
+            ? templateRoles
+            : filterTemplateRolesToPrimarySigner(
+                  templateRoles,
+                  options?.preferredRoleName,
+              );
     const appEmail = applicationSignerEmail.trim();
-    const common = {
-        privateMessage: "Kindly sign this article",
-        authenticationCode: "1234",
-        authenticationType: "AccessCode" as const,
-        deliveryMode: "Email" as const,
-        signerType: "signer" as const,
-        locale: "EN" as const,
-    };
 
-    if (templateRoles.length === 0) {
+    if (rolesForSend.length === 0) {
         if (!appEmail) {
             return [];
         }
@@ -135,12 +255,12 @@ export function buildBoldSignRolesFromTemplateRecipients(
                 signerOrder: 1,
                 signerEmail: appEmail,
                 signerRole: DOCUSIGN_DEFAULT_SIGNER_ROLE,
-                ...common,
+                ...DOCUSIGN_SIGNER_ROLE_COMMON,
             },
         ];
     }
 
-    return templateRoles.map((r, idx) => {
+    return rolesForSend.map((r, idx) => {
         const row = r as Record<string, unknown>;
         const templateEmail = getTemplateRoleEmailFromRow(row);
         const signerEmail = templateEmail || (idx === 0 ? appEmail : "");
@@ -161,25 +281,60 @@ export function buildBoldSignRolesFromTemplateRecipients(
             signerOrder: idx + 1,
             signerEmail,
             signerRole: roleLabel,
-            ...common,
+            ...DOCUSIGN_SIGNER_ROLE_COMMON,
         };
     });
 }
 
-export function getTemplateRoleNameFromRow(row: Record<string, unknown>): string {
-    const nestedSigner =
-        row.signer && typeof row.signer === "object"
-            ? (row.signer as Record<string, unknown>)
-            : row.Signer && typeof row.Signer === "object"
-              ? (row.Signer as Record<string, unknown>)
-              : null;
-
-    return firstNonEmptyString(
-        row.signerName,
-        row.SignerName,
-        row.defaultSignerName,
-        row.DefaultSignerName,
-        nestedSigner?.name,
-        nestedSigner?.Name,
+/** Resolve DocuSign roles for envelope create/send (saved overrides win over template defaults). */
+export function resolveDocuSignRolesForEnvelopeSend(options: {
+    payloadRoles?: DocuSignTemplateRolePayload[] | null;
+    contractSignerOverrides?: ContractSignerOverrideRow[] | null;
+    templateRoles: Array<Record<string, unknown>>;
+    applicationSignerEmail: string;
+    applicationSignerName: string;
+    /** When true, include every template signer role (not only the primary). Default true. */
+    multiSigner?: boolean;
+}): DocuSignTemplateRolePayload[] {
+    const fromPayload = (options.payloadRoles ?? []).filter((r) =>
+        String(r.signerEmail || "").trim(),
     );
+    if (fromPayload.length) return fromPayload;
+
+    const fromContract = options.contractSignerOverrides?.length
+        ? buildDocuSignRolesFromEditorRows(options.contractSignerOverrides)
+        : [];
+    if (fromContract.length) return fromContract;
+
+    return buildBoldSignRolesFromTemplateRecipients(
+        options.templateRoles,
+        options.applicationSignerEmail,
+        options.applicationSignerName,
+        { singleSignerOnly: options.multiSigner === false },
+    );
+}
+
+/** Fill template signer slots from CRM owner/guarantor/client rows when role names match. */
+export function mergeApplicationDataIntoSignerRoles(
+    roles: DocuSignTemplateRolePayload[],
+    appRows: ContractSignerOverrideRow[],
+): DocuSignTemplateRolePayload[] {
+    const byRole = new Map<string, ContractSignerOverrideRow>();
+    for (const row of appRows) {
+        const key = String(row.role || "").trim().toLowerCase();
+        if (key && row.email.trim() && !byRole.has(key)) {
+            byRole.set(key, row);
+        }
+    }
+    if (!byRole.size) return roles;
+    return roles.map((r) => {
+        const key = String(r.signerRole || "").trim().toLowerCase();
+        const match = key ? byRole.get(key) : undefined;
+        if (!match) return r;
+        return {
+            ...r,
+            signerEmail: match.email.trim(),
+            signerName: match.name.trim() || r.signerName,
+        };
+    });
 }

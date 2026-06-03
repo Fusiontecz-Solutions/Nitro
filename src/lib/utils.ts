@@ -273,6 +273,26 @@ export function formatNumberUS(value: unknown): string {
   })
 }
 
+/** Factor/sell rate — preserves precision (e.g. 1.499), not forced to two decimals. */
+export function formatRateUS(value: unknown): string {
+  if (value === null || value === undefined) return ""
+  const num = parseNumberUS(value)
+  if (Number.isNaN(num)) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim()
+    return ""
+  }
+  return num.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  })
+}
+
+export function formatRateUSCommit(raw: string): string {
+  const num = parseNumberUS(raw)
+  if (!Number.isFinite(num)) return ""
+  return formatRateUS(num)
+}
+
 /**
  * Live numeric input: thousand separators on the integer part only; keep fractional digits as typed.
  */

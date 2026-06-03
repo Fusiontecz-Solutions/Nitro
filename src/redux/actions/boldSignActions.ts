@@ -46,6 +46,13 @@ export type BoldSignMergeAndSendPayload = {
   ccEmails?: string[];
   /** When false, creates a draft envelope only (no signing emails). */
   autoSend?: boolean;
+  title?: string;
+  message?: string;
+  reminderSettings?: {
+    enableAutoReminder?: boolean;
+    reminderDays?: number;
+    reminderCount?: number;
+  };
 };
 
 export const mergeAndSendBoldSignTemplates = createAsyncThunk(

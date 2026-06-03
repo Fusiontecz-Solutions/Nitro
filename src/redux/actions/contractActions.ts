@@ -42,6 +42,8 @@ export interface UpdateContractData {
     funderName?: string | null;
     /** BoldSign prefill overrides (flat strings); persisted on `Contract.contractPrefillOverrides`. */
     contractPrefillOverrides?: Record<string, unknown> | null;
+    clientEmail?: string | null;
+    clientName?: string | null;
 
     // Optional columns for extended BoldSign prefill fields (stored as strings).
     owner1GuarantorName?: string;

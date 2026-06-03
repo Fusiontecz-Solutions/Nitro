@@ -37,10 +37,11 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import {
+    applyAuthorizationBusinessNamePrefillFields,
+    applyLiveBankDetailsToPrefillMerge,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
-    applyLiveBankDetailsToPrefillMerge,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./Contract";
@@ -98,7 +99,7 @@ const FIELD_LABELS = {
     purchasePrice: "Payback amount",
     purchaseAmount: "Offer amount",
     purchasePercent: "Specific Percentage",
-    remittance: "Total remit",
+    remittance: "Total remit (payment amount)",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
     clientName: "Name",
@@ -186,6 +187,16 @@ const FIELD_LABELS = {
     addendumDatedPrincipalOwner2Name: "Name",
     addendumDatedPrincipalOwner2Date: "Date",
     exhibitOwnerName: "Exhibit owner",
+    exhibitAValue1: "Exhibit A company 1",
+    exhibitAValue2: "Exhibit A company 2",
+    exhibitAValue3: "Exhibit A company 3",
+    exhibitAValue4: "Exhibit A company 4",
+    exhibitAValue5: "Exhibit A company 5",
+    exhibitAValue6: "Exhibit A company 6",
+    exhibitAValue7: "Exhibit A company 7",
+    exhibitAValue8: "Exhibit A company 8",
+    exhibitAValue9: "Exhibit A company 9",
+    exhibitAValue10: "Exhibit A company 10",
 } as const satisfies Record<ContractPrefillFormFieldKey, string>;
 
 type ContractPrefillSectionGroup = {
@@ -274,7 +285,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             id: "financial",
             title: "Offer & payback",
             description:
-                "Offer amount, payback amount, specific percentage, total remit, frequency, and net to merchant (advance − fees − refinance).",
+                "Offer amount, payback amount, specific percentage, payment amount per period (total remit), frequency, and net to merchant (advance − fees − refinance).",
             Icon: DollarSign,
             groups: [
                 {
@@ -292,12 +303,28 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "owners_exhibit",
             title: "Owners & Exhibit A",
-            description: "Owner 1 / owner 2 names and Exhibit A signature party.",
+            description:
+                "Owner names, Exhibit A signature party, and up to 10 Exhibit A line values (DocuSign data labels exhibit_a_value_1 … 10).",
             Icon: Users,
             groups: [
                 { heading: "Owner 1", keys: ["owner1GuarantorName"] },
                 { heading: "Owner 2", keys: ["owner2GuarantorName"] },
-                { heading: "Exhibit A", keys: ["exhibitOwnerName"] },
+                { heading: "Exhibit A — signature", keys: ["exhibitOwnerName"] },
+                {
+                    heading: "Exhibit A — company names",
+                    keys: [
+                        "exhibitAValue1",
+                        "exhibitAValue2",
+                        "exhibitAValue3",
+                        "exhibitAValue4",
+                        "exhibitAValue5",
+                        "exhibitAValue6",
+                        "exhibitAValue7",
+                        "exhibitAValue8",
+                        "exhibitAValue9",
+                        "exhibitAValue10",
+                    ],
+                },
             ],
         },
         {
@@ -909,13 +936,16 @@ export function ContractPrefillEditForm({
             strippedMainPrefillOverrides === undefined
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (strippedMainPrefillOverrides ?? ({} as Partial<BuildContractPrefillFieldsArgs>));
-        const merged = finalizeContractPrefillMoneyFields(
-            applyLiveBankDetailsToPrefillMerge(defaults, { ...defaults, ...persisted }),
-            {
-                application: applicationData as Record<string, unknown> | undefined,
-                contract: contractRecords?.contract ?? null,
-                offerDecision: offerDecision ?? null,
-            },
+        const merged = applyAuthorizationBusinessNamePrefillFields(
+            finalizeContractPrefillMoneyFields(
+                applyLiveBankDetailsToPrefillMerge(defaults, { ...defaults, ...persisted }),
+                {
+                    application: applicationData as Record<string, unknown> | undefined,
+                    contract: contractRecords?.contract ?? null,
+                    offerDecision: offerDecision ?? null,
+                },
+            ),
+            applicationData,
         );
         setValues(mergeFormState(merged));
         setFieldErrors({});

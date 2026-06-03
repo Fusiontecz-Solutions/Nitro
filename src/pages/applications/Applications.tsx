@@ -882,7 +882,8 @@ const Applications = () => {
             const normalized = normalizeOperationsDashboardStatusParam(
               dashboardStateFilter,
             );
-            if (normalized) {
+            // Contracted is an umbrella stage — show each row's actual out/signed label.
+            if (normalized && normalized !== "Contracted") {
               queueLabel = operationsDashboardStatusTitle(normalized);
             }
           }
@@ -1593,6 +1594,9 @@ const Applications = () => {
     }
     if (normalizedStatus === "Contract_Signed") {
       return "Contract Signed Application";
+    }
+    if (normalizedStatus === "Contracted") {
+      return "CONTRACT APPLICATIONS";
     }
     const label = normalizedStatus
       ? operationsDashboardStatusTitle(normalizedStatus)

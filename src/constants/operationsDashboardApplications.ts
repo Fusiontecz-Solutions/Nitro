@@ -42,7 +42,7 @@ export type OperationsApplicationsListStatus =
 const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Contract_Pending: "Contract Pending",
   Contract_Out: "Contract Out",
-  Contracted: "Contracted",
+  Contracted: "Contract",
   Contract_Signed: "Contract Signed",
   Signed_Contracts: "Signed Contracts",
   "Funding Call": "Funding Call",

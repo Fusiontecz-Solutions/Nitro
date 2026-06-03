@@ -5,8 +5,14 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { formatNumberUS } from "@/lib/utils";
+import { formatNumberUS, formatRateUS } from "@/lib/utils";
 import { deriveOfferRepaymentStack } from "@/lib/offerRepaymentCalculations";
+import {
+  feesPercentToDollarsFromFunded,
+  resolveOfferDecisionFeesRaw,
+  resolveOfferDecisionFundedAmount,
+  resolveOfferFeesPercentForForm,
+} from "@/lib/offerDecisionFees";
 import {
   OFFER_DECISION_UPDATED_EVENT,
   offerDecisionUpdateMatchesApplication,
@@ -238,42 +244,6 @@ function sanitizeDecimalInput(value: string): string {
   return s;
 }
 
-/**
- * Fees in the UI are entered as a percentage (e.g. "10" meaning 10%), but the
- * backend column `OfferDecision.fees` stores the actual dollar amount of fees
- * (consistent with how `collectionPaymentFinancials` and the bulk Excel
- * ingest treat the column). Conversion factor is `payback = offer * rate`.
- */
-function feesPercentToDollars(
-  offer: unknown,
-  rate: unknown,
-  feesPercent: unknown,
-): number | null {
-  const offerN = parseNum(offer);
-  const rateN = parseNum(rate);
-  const pctN = parseNum(feesPercent);
-  if (!Number.isFinite(offerN) || offerN <= 0) return null;
-  if (!Number.isFinite(rateN) || rateN <= 0) return null;
-  if (!Number.isFinite(pctN) || pctN <= 0) return null;
-  return (offerN * rateN * pctN) / 100;
-}
-
-function feesDollarsToPercent(
-  offer: unknown,
-  rate: unknown,
-  feesDollars: unknown,
-): number | null {
-  const offerN = parseNum(offer);
-  const rateN = parseNum(rate);
-  const dollarsN = parseNum(feesDollars);
-  if (!Number.isFinite(offerN) || offerN <= 0) return null;
-  if (!Number.isFinite(rateN) || rateN <= 0) return null;
-  if (!Number.isFinite(dollarsN) || dollarsN <= 0) return null;
-  const payback = offerN * rateN;
-  if (payback <= 0) return null;
-  return (dollarsN / payback) * 100;
-}
-
 function computeFallbackAvgNetCredit(
   bankTables?: Array<{ rows?: Array<{ netCredit?: number | string | null }> }>,
 ): number | null {
@@ -345,19 +315,21 @@ function mapApiOfferDecisionToLocalData(
   apiData: Record<string, unknown>,
   prev: OfferFormValue,
 ): OfferFormValue {
-  const loadedFeesPercent = feesDollarsToPercent(
-    apiData.offer,
+  const fundedAmount = resolveOfferDecisionFundedAmount(apiData);
+  const feesRaw = resolveOfferDecisionFeesRaw(apiData);
+  const loadedFeesPercent = resolveOfferFeesPercentForForm(
+    fundedAmount,
     apiData.rate,
-    apiData.fees,
+    feesRaw,
   );
 
   let next: OfferFormValue = {
     ...prev,
     position: apiData.position != null ? String(apiData.position) : "",
-    offer: apiData.offer != null ? formatNumberUS(apiData.offer) : "",
+    offer: fundedAmount != null ? formatNumberUS(fundedAmount) : "",
     rate:
       apiData.rate != null
-        ? formatNumberUS(apiData.rate)
+        ? formatRateUS(apiData.rate)
         : DEFAULT_OFFER_RATE,
     term: apiData.term != null ? String(apiData.term) : "",
     frequency: (apiData.frequency as Frequency) ?? "",
@@ -1268,9 +1240,8 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     try {
       setIsApproveLoading(true);
 
-      const feesDollarsForDb = feesPercentToDollars(
+      const feesDollarsForDb = feesPercentToDollarsFromFunded(
         localData.offer,
-        localData.rate,
         localData.fees,
       );
 
@@ -1293,10 +1264,10 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       const saved = (saveRes?.data && saveRes.data.data) || null;
 
       if (saved) {
-        const savedFeesPercent = feesDollarsToPercent(
-          saved.offer,
+        const savedFeesPercent = resolveOfferFeesPercentForForm(
+          resolveOfferDecisionFundedAmount(saved as Record<string, unknown>),
           saved.rate,
-          saved.fees,
+          resolveOfferDecisionFeesRaw(saved as Record<string, unknown>),
         );
 
         setLocalData((prev) => ({
@@ -1305,7 +1276,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
           offer: saved.offer != null ? formatNumberUS(saved.offer) : "",
           rate:
             saved.rate != null
-              ? formatNumberUS(saved.rate)
+              ? formatRateUS(saved.rate)
               : DEFAULT_OFFER_RATE,
           term: saved.term != null ? String(saved.term) : "",
           frequency: saved.frequency ?? "",
