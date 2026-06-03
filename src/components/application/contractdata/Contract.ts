@@ -2135,12 +2135,22 @@ export function resolveMerchantBusinessNameForPrefill(
     const r = row ?? {};
     return (
         str(r.legalName) ||
-        str(r.appendixClientName) ||
-        str(r.clientName) ||
+        str(r.securityBusinessName) ||
         str(clientArgs?.legalName) ||
-        str(clientArgs?.clientName) ||
         ""
     );
+}
+
+/** Appendix / guaranty / main contract `client_name` tabs — owner name, not business legal name. */
+function resolvePersonalClientNamePrefill(
+    row: Record<string, unknown>,
+    field: "clientName" | "appendixClientName" | "guarantyClientName",
+): string {
+    const customer = str(row.customerName);
+    const legal = str(row.legalName);
+    const saved = str(row[field]);
+    if (customer && (!saved || (legal && saved === legal))) return customer;
+    return saved || customer;
 }
 
 /** Prefer business name when legacy rows stored owner name in authorization / ACH holder fields. */
@@ -2395,7 +2405,7 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         netToMerchant,
         remittance:
             resolveRemittancePrefillValue({ contract: row, offerDecision: offer }),
-        clientName: str(row.clientName),
+        clientName: resolvePersonalClientNamePrefill(row, "clientName"),
         securityBusinessName: str(row.securityBusinessName),
         securityTaxEin: str(row.securityTaxEin),
         securityDoingBusinessAs: str(row.securityDoingBusinessAs),
@@ -2421,7 +2431,8 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
                 }),
             );
         })(),
-        appendixClientName: str(row.appendixClientName),
+        appendixClientName: resolvePersonalClientNamePrefill(row, "appendixClientName"),
+        guarantyClientName: resolvePersonalClientNamePrefill(row, "guarantyClientName"),
         authorizationApplication: resolveAuthorizationApplicationMerchantName(row),
         authorizationClientBankName: authBankName,
         authorizationClientBankRouting: str(row.authorizationClientBankRouting),
@@ -2490,7 +2501,8 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
     return {
         customerName,
         legalName,
-        clientName: legalName || customerName,
+        clientName: customerName || legalName,
+        appendixClientName: customerName || legalName,
         doingBusinessAs: String(r.dba || bi?.dba || ""),
         businessAddress: String(street || bi?.businessAddress || ""),
         businessAddressCity: String(r.businessCity || bi?.city || ""),
@@ -2509,7 +2521,7 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
             "",
         ),
         clientPhone: String(r.businessPhone || r.ownerPhone || ""),
-        guarantyClientName: legalName || customerName,
+        guarantyClientName: customerName || legalName,
         guarantySs: String(r.ownerSsn || ""),
         guarantySsDriverLicense: String(r.ownerDriverLicense || ""),
         guarantyOwner1Name: ownerFullName(r.ownerFirst, r.ownerLast),
@@ -2685,9 +2697,6 @@ export function resolveBalanceTransferMerchantContext(
         str(c.clientName) ||
         str(overrides.clientName) ||
         str(app.clientName) ||
-        str(app.legalName) ||
-        str(overrides.legalName) ||
-        businessName ||
         clientNameBy ||
         recipientFallback;
 
@@ -2785,6 +2794,18 @@ export function getContractPrefillEditDefaultsFromApplication(
         ...recordPartial,
         customerName,
         agreementDate,
+        clientName: resolvePersonalClientNamePrefill(
+            { ...clientArgs, ...recordPartial, customerName },
+            "clientName",
+        ),
+        appendixClientName: resolvePersonalClientNamePrefill(
+            { ...clientArgs, ...recordPartial, customerName },
+            "appendixClientName",
+        ),
+        guarantyClientName: resolvePersonalClientNamePrefill(
+            { ...clientArgs, ...recordPartial, customerName },
+            "guarantyClientName",
+        ),
         ...(str(recordPartial.frequency) || !frequencyComputed
             ? {}
             : { frequency: frequencyComputed }),
