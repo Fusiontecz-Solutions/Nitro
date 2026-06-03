@@ -2,6 +2,7 @@ import type { PaymentMailLogStatus } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from './applicationService';
 import { createApplicationActivityLog } from './applicationActivityLogService';
+import { inferRecipientTypeFromCategory } from './outboundCommunicationService';
 
 const STATUS_MAP: Record<string, PaymentMailLogStatus> = {
   queued: 'QUEUED',
@@ -118,9 +119,14 @@ export async function createPaymentMailLog(
     previousStatus: null,
     currentStatus: access.application.currentState ?? 'Unknown',
     metadata: {
+      category: 'COMMUNICATION',
+      channel: 'TEMPLATE',
+      recipientType: inferRecipientTypeFromCategory(input.category),
+      recipientName: input.recipient,
       paymentMailLogId: log.id,
+      viewType: 'payment_mail',
       templateName: input.templateName,
-      category: input.category,
+      categoryLabel: input.category,
       recipient: input.recipient,
       subject: input.subject,
       status: input.status,

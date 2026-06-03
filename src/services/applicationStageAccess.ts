@@ -105,9 +105,8 @@ function resolveStageKey(
     const queueToken = normalizeToken(currentQueue);
     const stateToken = normalizeToken(currentState);
 
-    if (queueToken === 'finalunderwriter' && stateToken === 'approved') {
-        return 'POST_FINAL';
-    }
+    // Queue drives stage. FU keeps queue "Final Underwriter" with state "Approved" after
+    // sending approval mail (and while resending after ISO comments) — still FU-owned.
     if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return 'POST_FINAL';
     if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'FINAL_UNDERWRITER';
     if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'UNDERWRITER';

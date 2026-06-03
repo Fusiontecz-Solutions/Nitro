@@ -59,6 +59,7 @@ import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 import { generateNextDealId } from '../utils/generateNextDealId';
+import { resolveTenantUserId } from '../middleware/authMiddleware';
 import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import {
     createApplicationActivityLog,
@@ -85,6 +86,11 @@ import {
     type BulkImportSummary,
 } from '../services/applicationBulkExcelIngestService';
 import { approveApplication } from '../services/applicationApprovalService';
+import {
+    buildApplicationApprovalEmailHtml,
+    buildApplicationOfferUpdatedEmailHtml,
+} from '../services/emailService';
+import { recordCommunicationAudit } from '../services/systemActivityLogService';
 
 type ApplicationState =
     | 'DRAFT'
@@ -752,6 +758,12 @@ const blockIfUnderwriterUnclaimedDeal = (
     return true;
 };
 
+/** PUT body only sets `isoId` — allowed on overview without an underwriter claim. */
+const isApplicationIsoLinkOnlyBody = (body: Record<string, unknown>): boolean => {
+    const keys = Object.keys(body ?? {}).filter((k) => body[k] !== undefined);
+    return keys.length === 1 && keys[0] === 'isoId';
+};
+
 /**
  * Returns 403 when a workflow role (Agent/Underwriter/Final Underwriter) tries to
  * mutate an application that has advanced past their stage. Non-workflow roles
@@ -867,8 +879,8 @@ class ApplicationController {
                 }
             }
 
-            const createdById = (req as any).user?.id || null;
             const authUser = getAuthenticatedUser(req);
+            const createdById = resolveTenantUserId(req);
             // When an AGENT creates an application, set referringAgentId to them so they see it in their list
             const effectiveReferringAgentId = referringAgent
                 ? String(referringAgent)
@@ -1552,7 +1564,7 @@ class ApplicationController {
                             ownerZipCode: true,
                         },
                     },
-                    iso: { select: { id: true, name: true, email: true } },
+                    iso: { select: { id: true, name: true, email: true, phone: true } },
                     claimedByUnderwriter: {
                         select: { id: true, firstName: true, lastName: true, email: true },
                     },
@@ -2578,7 +2590,14 @@ class ApplicationController {
                 });
             }
 
-            if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
+            const isoLinkOnlyUpdate = isApplicationIsoLinkOnlyBody(
+                (req.body ?? {}) as Record<string, unknown>,
+            );
+
+            if (
+                !isoLinkOnlyUpdate &&
+                blockIfUnderwriterUnclaimedDeal(res, authUser, application)
+            ) {
                 return;
             }
 
@@ -5338,6 +5357,23 @@ class ApplicationController {
                 { to: isoEmailRaw, clientName: isoRecipientName },
             ];
 
+            const emailSubject = resend
+                ? 'Your Offer Values Have Been Updated'
+                : 'Your Application Has Been Approved';
+            const emailHtml = resend
+                ? buildApplicationOfferUpdatedEmailHtml({
+                    clientName: isoRecipientName,
+                    companyName,
+                    viewApplicationUrl,
+                    calculateApprovalUrl,
+                })
+                : buildApplicationApprovalEmailHtml({
+                    clientName: isoRecipientName,
+                    companyName,
+                    viewApplicationUrl,
+                    calculateApprovalUrl,
+                });
+
             const deliveryResults = await Promise.all(
                 recipients.map(async ({ to, clientName }) => {
                     const ok = resend
@@ -5372,7 +5408,6 @@ class ApplicationController {
                 ? ' resent updated offer email to the linked ISO.'
                 : ' sent approval email to the linked ISO.';
 
-            // Best-effort activity log for approval email
             try {
                 const authUserForLog = getAuthenticatedUser(req);
                 const roleLabel = authUserForLog?.role
@@ -5380,13 +5415,18 @@ class ApplicationController {
                     : 'User';
                 const actorName = (req as any).user?.name || '';
 
-                await createApplicationActivityLog({
+                await recordCommunicationAudit(req, {
                     applicationId: (application as any).id,
+                    channel: 'EMAIL',
+                    recipientType: 'ISO',
+                    recipient: recipients.map((r) => r.to).join(', '),
+                    subject: emailSubject,
+                    body: emailHtml,
+                    templateName: resend ? 'Offer updated (ISO)' : 'Application approved (ISO)',
+                    actionType: 'APPROVED',
                     user: authUserForLog,
-                    actionType: 'APPROVED' as ApplicationActivityActionType,
-                    actionDescription: `${roleLabel} ${actorName}`.trim() + approvalEmailLogSuffix,
-                    previousStatus: `${(application as any).currentQueue} / ${(application as any).currentState}`,
                     currentStatus: `${(application as any).currentQueue} / ${(application as any).currentState}`,
+                    actionDescription: `${roleLabel} ${actorName}`.trim() + approvalEmailLogSuffix,
                     metadata: {
                         emailSentTo: recipients.map((r) => r.to),
                         sentToLinkedIsoOnly: true,
@@ -5533,25 +5573,8 @@ class ApplicationController {
 
             const { logs } = await getApplicationActivityLogsForUser(application.id, authUser);
 
-            const mappedLogs = logs.map((log) => {
-                const user = (log as any).user ?? (log as any).User;
-
-                return {
-                    id: log.id,
-                    applicationId: log.applicationId,
-                    userId: log.userId,
-                    userName: user
-                        ? `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email
-                        : null,
-                    userRole: log.userRole,
-                    actionType: log.actionType,
-                    actionDescription: log.actionDescription,
-                    previousStatus: log.previousStatus,
-                    currentStatus: log.currentStatus,
-                    metadata: log.metadata,
-                    createdAt: log.createdAt,
-                };
-            });
+            const { mapApplicationActivityLogEntry } = await import('../services/applicationActivityLogMapper');
+            const mappedLogs = logs.map((log) => mapApplicationActivityLogEntry(log as any));
 
             return res.status(200).json({
                 success: true,
@@ -5559,6 +5582,63 @@ class ApplicationController {
             });
         } catch (error: any) {
             console.error('Get application activity logs error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    async getActivityLogContent(req: Request, res: Response) {
+        try {
+            const { id, logId } = req.params;
+            const authUser = getAuthenticatedUser(req);
+
+            const appIdStr = String(id);
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(appIdStr)
+                ? { applicationId: Number(appIdStr) }
+                : { id: appIdStr };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const activityLog = await prisma.applicationActivityLog.findFirst({
+                where: { id: String(logId), applicationId: application.id },
+            });
+
+            if (!activityLog) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Activity log not found for this application',
+                });
+            }
+
+            const { getSystemActivityLogContent } = await import('../services/systemActivityLogService');
+            const content = await getSystemActivityLogContent(activityLog.id);
+
+            if (!content) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'No viewable content for this log entry',
+                });
+            }
+
+            return res.status(200).json({ success: true, data: content });
+        } catch (error: any) {
+            console.error('Get application activity log content error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',

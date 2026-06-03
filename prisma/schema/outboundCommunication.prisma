@@ -1,0 +1,25 @@
+/// Stored copy of sent emails/templates/documents for super-admin audit "View".
+model OutboundCommunication {
+  id              String       @id @default(uuid()) @db.Uuid
+  applicationId   String?      @db.Uuid
+  channel         String
+  recipientType   String?
+  recipient       String
+  subject         String?
+  body            String?
+  templateName    String?
+  documentName    String?
+  contractId      String?
+  status          String       @default("sent")
+  metadata        Json?
+  createdById     String?      @db.Uuid
+  createdAt       DateTime     @default(now()) @db.Timestamptz(6)
+  application     Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  createdBy       User?        @relation("OutboundCommunicationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([applicationId])
+  @@index([channel])
+  @@index([recipientType])
+  @@index([createdAt])
+  @@map("outbound_communications")
+}

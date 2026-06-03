@@ -38,6 +38,15 @@ const buildSuperAdminProxyUser = (req: Request) => {
     };
 };
 
+/**
+ * User id safe for tenant DB foreign keys (e.g. Application.createdById).
+ * Super Admin proxy principals are synthetic and have no row in User — return null.
+ */
+export function resolveTenantUserId(req: Request): string | null {
+    if (req.isSuperAdminProxy) return null;
+    return req.user?.id ?? null;
+}
+
 export const authenticateToken = async (
     req: Request,
     res: Response,

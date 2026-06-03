@@ -3,9 +3,9 @@ import { refreshSuperAdminPlatformSnapshot } from '../services/superAdminPlatfor
 
 const DEFAULT_SUPER_ADMIN_PLATFORM_CRON = '*/5 * * * *';
 
-let refreshInProgress = false;
+let platformRefreshInProgress = false;
 
-function resolveCronExpression(): string {
+function resolveSuperAdminPlatformCronExpression(): string {
   const raw = String(process.env.SUPER_ADMIN_PLATFORM_CRON ?? '').trim();
   if (!raw) return DEFAULT_SUPER_ADMIN_PLATFORM_CRON;
   if (!validateCronExpression(raw)) {
@@ -17,29 +17,32 @@ function resolveCronExpression(): string {
   return raw;
 }
 
-async function runRefresh(): Promise<void> {
-  if (refreshInProgress) {
-    console.warn('[super-admin-platform] previous refresh still running; skipping tick');
+async function runSuperAdminPlatformRefresh(): Promise<void> {
+  if (platformRefreshInProgress) {
+    console.warn('[super-admin-platform] previous refresh still running; skipping this tick');
     return;
   }
-  refreshInProgress = true;
+  platformRefreshInProgress = true;
   try {
-    await refreshSuperAdminPlatformSnapshot();
-    console.log('[super-admin-platform] snapshot refreshed', new Date().toISOString());
+    const snapshot = await refreshSuperAdminPlatformSnapshot();
+    console.log(
+      `[super-admin-platform] refreshed at ${snapshot.lastRefreshedAt} (deals=${snapshot.dealCount}, clients=${snapshot.clientCount})`,
+    );
   } catch (err) {
     console.error('[super-admin-platform] refresh failed:', err);
   } finally {
-    refreshInProgress = false;
+    platformRefreshInProgress = false;
   }
 }
 
 export function startSuperAdminPlatformCronJob(): void {
-  const expression = resolveCronExpression();
+  const expression = resolveSuperAdminPlatformCronExpression();
   console.log(`[super-admin-platform] cron scheduled: "${expression}"`);
-  void runRefresh().catch((err) => {
-    console.error('[super-admin-platform] initial refresh failed:', err);
-  });
   cron.schedule(expression, () => {
-    void runRefresh();
+    void runSuperAdminPlatformRefresh();
+  });
+
+  void runSuperAdminPlatformRefresh().catch((err) => {
+    console.error('[super-admin-platform] initial refresh failed:', err);
   });
 }

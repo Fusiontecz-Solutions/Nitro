@@ -1,20 +1,33 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
-import { computePlatformDealCounts } from './dealCountsService';
 import { computeCommissionPortalStats } from './commissionPortalStatsService';
-import { buildPaymentDashboardPortfolioPayload } from './paymentDashboardPortfolioService';
+import { computePlatformDealCounts } from './dealCountsService';
+import {
+  aggregatePaymentPortfolioDashboard,
+  loadPortfolioDashboardContext,
+} from './paymentPortfolioDashboardService';
 
 export const SUPER_ADMIN_PLATFORM_ROW_ID = 'platform';
+
+let refreshInProgress = false;
+
+const toDecimal = (value: number): Prisma.Decimal =>
+  new Prisma.Decimal(Number.isFinite(value) ? value.toFixed(2) : '0');
 
 export type SuperAdminPlatformSnapshot = {
   id: string;
   clientCount: number;
   isoCount: number;
-  deals: { total: number; funded: number };
+  deals: {
+    total: number;
+    funded: number;
+  };
+  /** @deprecated Use deals.funded */
+  dealCount: number;
   totalDealsCount: number;
   fundedDealsCount: number;
-  dealCount: number;
   commissionPortalDealCount: number;
+  /** @deprecated Use commissionPortalDealCount */
   commissionDealsFunded: number;
   totalCommission: number;
   commission: {
@@ -25,6 +38,7 @@ export type SuperAdminPlatformSnapshot = {
     clawback: number;
     totalFundedVolume: number;
     portalDealCount: number;
+    /** @deprecated Use portalDealCount */
     dealsFunded: number;
   };
   paymentCards: {
@@ -45,157 +59,172 @@ export type SuperAdminPlatformSnapshot = {
   updatedAt: string;
 };
 
-function decimalToNumber(value: Prisma.Decimal | number | null | undefined): number {
-  if (value == null) return 0;
-  if (typeof value === 'number') return value;
-  return Number(value.toString());
-}
-
 function mapRowToSnapshot(row: {
   id: string;
   clientCount: number;
   isoCount: number;
   totalDealsCount: number;
   fundedDealsCount: number;
+  dealCount: number;
   commissionPortalDealCount: number;
   commissionDealsFunded: number;
   totalCommission: Prisma.Decimal;
-  deals: unknown;
-  commission: unknown;
-  paymentCards: unknown;
+  commissionPaid: Prisma.Decimal;
+  commissionPending: Prisma.Decimal;
+  commissionProcessing: Prisma.Decimal;
+  commissionApproved: Prisma.Decimal;
+  commissionClawback: Prisma.Decimal;
+  totalFundedVolume: Prisma.Decimal;
+  fundedTotal: Prisma.Decimal;
+  netFundingTotal: Prisma.Decimal;
+  abovePrincipalTotal: Prisma.Decimal;
+  recoveredAmount: Prisma.Decimal;
+  failedPaymentAmount: Prisma.Decimal;
+  failedPaymentCount: number;
+  dueToday: Prisma.Decimal;
+  dueNext7Days: Prisma.Decimal;
+  totalDues: Prisma.Decimal;
+  totalPayback: Prisma.Decimal;
+  collectionEfficiency: number;
   lastRefreshedAt: Date;
   updatedAt: Date;
 }): SuperAdminPlatformSnapshot {
-  const dealsJson = (row.deals ?? {}) as { total?: number; funded?: number };
-  const commissionJson = (row.commission ?? {}) as SuperAdminPlatformSnapshot['commission'];
-  const paymentJson = (row.paymentCards ?? {}) as Partial<SuperAdminPlatformSnapshot['paymentCards']>;
-  const failedJson = (paymentJson.failedPayment ?? {}) as Partial<
-    SuperAdminPlatformSnapshot['paymentCards']['failedPayment']
-  >;
-
-  const totalDealsCount = row.totalDealsCount;
-  const fundedDealsCount = row.fundedDealsCount;
-
-  // jsonb does not preserve key insertion order, so rebuild paymentCards
-  // explicitly to keep a stable, predictable response shape.
-  const paymentCards: SuperAdminPlatformSnapshot['paymentCards'] = {
-    fundedTotal: Number(paymentJson.fundedTotal ?? 0),
-    netFundingTotal: Number(paymentJson.netFundingTotal ?? 0),
-    abovePrincipalTotal: Number(paymentJson.abovePrincipalTotal ?? 0),
-    recovered: Number(paymentJson.recovered ?? 0),
-    failedPayment: {
-      totalAmount: Number(failedJson.totalAmount ?? 0),
-      count: Number(failedJson.count ?? 0),
-    },
-    dueToday: Number(paymentJson.dueToday ?? 0),
-    dueNext7Days: Number(paymentJson.dueNext7Days ?? 0),
-    totalDues: Number(paymentJson.totalDues ?? 0),
-    totalPayback: Number(paymentJson.totalPayback ?? 0),
-    collectionEfficiency: Number(paymentJson.collectionEfficiency ?? 0),
-    totalDeals: Number(paymentJson.totalDeals ?? 0),
-    activeDeals: Number(paymentJson.activeDeals ?? 0),
-  };
+  const num = (d: Prisma.Decimal) => Number(d.toString());
+  const fundedDealsCount = row.fundedDealsCount || row.dealCount;
+  const totalDealsCount = row.totalDealsCount || 0;
+  const commissionPortalDealCount =
+    row.commissionPortalDealCount || row.commissionDealsFunded;
 
   return {
     id: row.id,
     clientCount: row.clientCount,
     isoCount: row.isoCount,
     deals: {
-      total: dealsJson.total ?? totalDealsCount,
-      funded: dealsJson.funded ?? fundedDealsCount,
+      total: totalDealsCount,
+      funded: fundedDealsCount,
     },
     totalDealsCount,
     fundedDealsCount,
     dealCount: fundedDealsCount,
-    commissionPortalDealCount: row.commissionPortalDealCount,
-    commissionDealsFunded: row.commissionDealsFunded,
-    totalCommission: decimalToNumber(row.totalCommission),
-    commission: commissionJson,
-    paymentCards,
+    commissionPortalDealCount,
+    commissionDealsFunded: commissionPortalDealCount,
+    totalCommission: num(row.totalCommission),
+    commission: {
+      paid: num(row.commissionPaid),
+      pending: num(row.commissionPending),
+      processing: num(row.commissionProcessing),
+      approved: num(row.commissionApproved),
+      clawback: num(row.commissionClawback),
+      totalFundedVolume: num(row.totalFundedVolume),
+      portalDealCount: commissionPortalDealCount,
+      dealsFunded: commissionPortalDealCount,
+    },
+    paymentCards: {
+      fundedTotal: num(row.fundedTotal),
+      netFundingTotal: num(row.netFundingTotal),
+      abovePrincipalTotal: num(row.abovePrincipalTotal),
+      recovered: num(row.recoveredAmount),
+      failedPayment: {
+        totalAmount: num(row.failedPaymentAmount),
+        count: row.failedPaymentCount,
+      },
+      dueToday: num(row.dueToday),
+      dueNext7Days: num(row.dueNext7Days),
+      totalDues: num(row.totalDues),
+      totalPayback: num(row.totalPayback),
+      collectionEfficiency: row.collectionEfficiency,
+      totalDeals: fundedDealsCount,
+      activeDeals: fundedDealsCount,
+    },
     lastRefreshedAt: row.lastRefreshedAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
 
-export async function getSuperAdminPlatformSnapshot(): Promise<SuperAdminPlatformSnapshot | null> {
-  const row = await prisma.superAdminPlateform.findUnique({
-    where: { id: SUPER_ADMIN_PLATFORM_ROW_ID },
-  });
-  if (!row) return null;
-  return mapRowToSnapshot(row);
-}
-
+/** Recomputes KPIs from live data and upserts the singleton `superAdminPlateform` row. */
 export async function refreshSuperAdminPlatformSnapshot(): Promise<SuperAdminPlatformSnapshot> {
-  const now = new Date();
+  if (refreshInProgress) {
+    const existing = await prisma.superAdminPlateform.findUnique({
+      where: { id: SUPER_ADMIN_PLATFORM_ROW_ID },
+    });
+    if (existing) return mapRowToSnapshot(existing);
+  }
 
-  const [clientCount, isoCount, portfolioPayload, commissionStats, dealCounts] =
-    await Promise.all([
+  refreshInProgress = true;
+  try {
+    const [clientCount, isoCount, portfolioCtx, commissionStats, dealCounts] = await Promise.all([
       prisma.client.count(),
       prisma.iso.count(),
-      buildPaymentDashboardPortfolioPayload(),
+      loadPortfolioDashboardContext(),
       computeCommissionPortalStats(),
       computePlatformDealCounts(),
     ]);
 
-  const cards = portfolioPayload.cards as Record<string, unknown>;
-  const failedPayment = (cards.failedPayment ?? { totalAmount: 0, count: 0 }) as {
-    totalAmount: number;
-    count: number;
-  };
+    const portfolio = await aggregatePaymentPortfolioDashboard(portfolioCtx, {
+      includeMoneyFlow: false,
+      includeZeroGapDeals: false,
+      paybackFromFundedCohortOnly: true,
+    });
+    const cards = portfolio.cards;
+    const now = new Date();
 
-  const paymentCards: SuperAdminPlatformSnapshot['paymentCards'] = {
-    fundedTotal: Number(cards.fundedTotal ?? 0),
-    netFundingTotal: Number(cards.netFundingTotal ?? 0),
-    abovePrincipalTotal: Number(cards.abovePrincipalTotal ?? 0),
-    recovered: Number(cards.recovered ?? 0),
-    failedPayment: {
-      totalAmount: Number(failedPayment.totalAmount ?? 0),
-      count: Number(failedPayment.count ?? 0),
-    },
-    dueToday: Number(cards.dueToday ?? 0),
-    dueNext7Days: Number(cards.dueNext7Days ?? 0),
-    totalDues: Number(cards.totalDues ?? 0),
-    totalPayback: Number(cards.totalPayback ?? 0),
-    collectionEfficiency: Number(cards.collectionEfficiency ?? 0),
-    totalDeals: Number(cards.totalDeals ?? dealCounts.fundedDealsCount),
-    activeDeals: Number(cards.activeDeals ?? dealCounts.fundedDealsCount),
-  };
+    const fundedDealsCount =
+      dealCounts.fundedDealsCount > 0 ? dealCounts.fundedDealsCount : cards.totalDeals;
 
-  const deals = {
-    total: dealCounts.totalDealsCount,
-    funded: dealCounts.fundedDealsCount,
-  };
+    const data = {
+      clientCount,
+      isoCount,
+      totalDealsCount: dealCounts.totalDealsCount,
+      fundedDealsCount,
+      dealCount: fundedDealsCount,
+      commissionPortalDealCount: commissionStats.portalDealCount,
+      commissionDealsFunded: commissionStats.portalDealCount,
+      totalCommission: toDecimal(commissionStats.commissionTotal),
+      commissionPaid: toDecimal(commissionStats.paid),
+      commissionPending: toDecimal(commissionStats.pendingCommission),
+      commissionProcessing: toDecimal(commissionStats.processing),
+      commissionApproved: toDecimal(commissionStats.approved),
+      commissionClawback: toDecimal(commissionStats.clawback),
+      totalFundedVolume: toDecimal(commissionStats.totalFunded),
+      fundedTotal: toDecimal(cards.fundedTotal ?? 0),
+      netFundingTotal: toDecimal(cards.netFundingTotal ?? 0),
+      abovePrincipalTotal: toDecimal(cards.abovePrincipalTotal ?? 0),
+      recoveredAmount: toDecimal(cards.recovered),
+      failedPaymentAmount: toDecimal(cards.failedPayment?.totalAmount ?? cards.defaults ?? 0),
+      failedPaymentCount: cards.failedPayment?.count ?? 0,
+      dueToday: toDecimal(cards.dueToday),
+      dueNext7Days: toDecimal(cards.dueNext7Days),
+      totalDues: toDecimal(cards.totalDues),
+      totalPayback: toDecimal(cards.totalPayback),
+      collectionEfficiency: cards.collectionEfficiency,
+      lastRefreshedAt: now,
+    };
 
-  const row = await prisma.superAdminPlateform.upsert({
+    const row = await prisma.superAdminPlateform.upsert({
+      where: { id: SUPER_ADMIN_PLATFORM_ROW_ID },
+      create: { id: SUPER_ADMIN_PLATFORM_ROW_ID, ...data },
+      update: data,
+    });
+
+    return mapRowToSnapshot(row);
+  } finally {
+    refreshInProgress = false;
+  }
+}
+
+export async function getSuperAdminPlatformSnapshot(options?: {
+  refreshIfMissing?: boolean;
+}): Promise<SuperAdminPlatformSnapshot | null> {
+  const row = await prisma.superAdminPlateform.findUnique({
     where: { id: SUPER_ADMIN_PLATFORM_ROW_ID },
-    create: {
-      id: SUPER_ADMIN_PLATFORM_ROW_ID,
-      clientCount,
-      isoCount,
-      totalDealsCount: dealCounts.totalDealsCount,
-      fundedDealsCount: dealCounts.fundedDealsCount,
-      commissionPortalDealCount: commissionStats.commissionPortalDealCount,
-      commissionDealsFunded: commissionStats.commissionDealsFunded,
-      totalCommission: commissionStats.totalCommission,
-      deals: deals as Prisma.InputJsonValue,
-      commission: commissionStats.commission as Prisma.InputJsonValue,
-      paymentCards: paymentCards as Prisma.InputJsonValue,
-      lastRefreshedAt: now,
-    },
-    update: {
-      clientCount,
-      isoCount,
-      totalDealsCount: dealCounts.totalDealsCount,
-      fundedDealsCount: dealCounts.fundedDealsCount,
-      commissionPortalDealCount: commissionStats.commissionPortalDealCount,
-      commissionDealsFunded: commissionStats.commissionDealsFunded,
-      totalCommission: commissionStats.totalCommission,
-      deals: deals as Prisma.InputJsonValue,
-      commission: commissionStats.commission as Prisma.InputJsonValue,
-      paymentCards: paymentCards as Prisma.InputJsonValue,
-      lastRefreshedAt: now,
-    },
   });
+
+  if (!row) {
+    if (options?.refreshIfMissing) {
+      return refreshSuperAdminPlatformSnapshot();
+    }
+    return null;
+  }
 
   return mapRowToSnapshot(row);
 }

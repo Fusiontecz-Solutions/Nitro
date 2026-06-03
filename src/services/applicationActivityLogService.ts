@@ -22,12 +22,12 @@ export type ApplicationActivityActionType =
   | 'PAYMENT_MAIL_QUEUED';
 
 export interface CreateApplicationActivityLogInput {
-  applicationId: string;
+  applicationId: string | null;
   user: AuthenticatedUser | null;
   actionType: ApplicationActivityActionType;
   actionDescription: string;
   previousStatus?: string | null;
-  currentStatus: string;
+  currentStatus?: string | null;
   metadata?: Record<string, unknown>;
 }
 

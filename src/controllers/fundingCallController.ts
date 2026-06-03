@@ -1,8 +1,6 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import { isOutboundSmtpConfigured } from '../config/nodemailer';
-import { sendFundingCallPendingEmail } from '../services/emailService';
 import {
   isFundingCallStatusCallDone,
   notifyOperationsDisbursementReady,
@@ -177,27 +175,6 @@ class FundingCallController {
         applicationForResponse = updatedApp
           ? { ...record.Application, ...updatedApp }
           : record.Application;
-      }
-
-      const client = appRecord.client;
-      const iso = (appRecord as any).iso;
-      const isoEmail = String(iso?.email || '').trim();
-      if (isoEmail && isOutboundSmtpConfigured()) {
-        const clientName =
-          `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
-          client?.businessName ||
-          'Valued Client';
-        const isoName = String(iso?.name || '').trim();
-        const companyName = client?.businessName || 'your business';
-        await sendFundingCallPendingEmail({
-          to: isoEmail,
-          clientName: isoName || isoEmail || clientName,
-          companyName,
-        });
-      } else if (isoEmail && !isOutboundSmtpConfigured()) {
-        console.error(
-          'Funding call email skipped: set SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS.',
-        );
       }
 
       const callStatusStr = String(callStatus);

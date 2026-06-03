@@ -14,6 +14,7 @@ import { testRedisConnection } from './config/redis';
 import { startCollectionPaymentUploadWorker } from './workers/collectionPaymentUploadWorker';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
 import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
+import { activityLogger } from './middleware/activityLogger';
 
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err);
@@ -89,7 +90,7 @@ app.get('/health', (req: Request, res: Response) => {
 // x-super-admin-secret headers, `req.isSuperAdminProxy` is set and downstream
 // `authenticateToken` will skip tenant JWT validation and synthesize a
 // SUPER_ADMIN principal. Regular tenant-user requests are untouched.
-app.use('/api/v1', verifySuperAdminProxy, router);
+app.use('/api/v1', verifySuperAdminProxy, activityLogger, router);
 
 // 404 handler
 app.use((req: Request, res: Response) => {

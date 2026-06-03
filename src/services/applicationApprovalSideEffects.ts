@@ -1,5 +1,5 @@
 import prisma from '../config/prismaClient';
-import { sendApplicationApprovalEmail, sendOperationsIsoApprovalAlertEmail } from './emailService';
+import { sendApplicationApprovalEmail } from './emailService';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { createPublicPortalToken } from './publicPortalTokenService';
 import { emitToUser } from '../socket';
@@ -232,7 +232,6 @@ export async function processApplicationApprovalSideEffects(
     const clientName = businessName || ownerName || 'Client';
     const actorType = String(payload.actorType ?? '').trim().toUpperCase();
     const isIsoActor = actorType === 'ISO';
-    const isoApproverName = String(payload.actorName ?? '').trim() || String(iso?.name ?? '').trim() || 'ISO';
     const applicationNumber =
         application.applicationId != null && String(application.applicationId).trim() !== ''
             ? String(application.applicationId)
@@ -362,105 +361,29 @@ export async function processApplicationApprovalSideEffects(
         const isoName = String(iso?.name ?? '').trim();
 
         /*
-         * When an ISO performs the approval, we do NOT send the regular approval
-         * template to anyone (no ISO mailbox, no referring agent, no FUW/UW).
-         * Operations are the sole recipients via the dedicated alert email below.
+         * Email: only the linked ISO mailbox receives the branded approval template.
+         * No step/workflow mail to agent, underwriter, final underwriter, operations, or admin.
+         * (Manual "Send approval email" from the CRM uses the same ISO-only templates.)
          */
-        if (!isIsoActor) {
-            const recipients: { to: string; clientName: string }[] = [];
-            if (isoEmail) {
-                recipients.push({
-                    to: isoEmail,
-                    clientName: isoName || isoEmail,
-                });
-            }
-
-            // Internal email confirmation to referring agent (when configured separately from ISO).
-            const refAgentEmail = String((application as any).referringAgent?.email ?? '').trim();
-            if (refAgentEmail && refAgentEmail.toLowerCase() !== isoEmail.toLowerCase()) {
-                recipients.push({
-                    to: refAgentEmail,
-                    clientName:
-                        `${(application as any).referringAgent?.firstName ?? ''} ${
-                            (application as any).referringAgent?.lastName ?? ''
-                        }`.trim() || refAgentEmail,
-                });
-            }
-
-            if (recipients.length === 0) {
+        if (isoEmail) {
+            const result = await sendApplicationApprovalEmail({
+                to: isoEmail,
+                clientName: isoName || isoEmail,
+                companyName: businessName || clientName,
+                viewApplicationUrl,
+                calculateApprovalUrl,
+            });
+            if (!result) {
                 console.warn(
-                    '[approvalSideEffects] no approval template recipients for non-ISO actor on application',
+                    '[approvalSideEffects] ISO approval email was not delivered for application',
                     applicationNumber
                 );
-            } else {
-                const results = await Promise.allSettled(
-                    recipients.map((r) =>
-                        sendApplicationApprovalEmail({
-                            to: r.to,
-                            clientName: r.clientName,
-                            companyName: businessName || clientName,
-                            viewApplicationUrl,
-                            calculateApprovalUrl,
-                        })
-                    )
-                );
-
-                const failures = results.filter((r) => r.status === 'rejected');
-                if (failures.length > 0) {
-                    console.error(
-                        '[approvalSideEffects] one or more approval confirmation emails failed:',
-                        failures
-                    );
-                }
             }
-        }
-
-        if (isIsoActor) {
-            const operationsUsers = await prisma.user.findMany({
-                where: {
-                    role: 'OPERATIONS',
-                    isActive: true,
-                },
-                select: {
-                    id: true,
-                    email: true,
-                    firstName: true,
-                    lastName: true,
-                },
-            });
-
-            const operationEmailRecipients = dedupeById(
-                operationsUsers.map((u) => ({
-                    id: String(u.id),
-                    email: u.email ? String(u.email) : null,
-                    name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
-                }))
-            ).filter((r) => r.id !== payload.actorId && Boolean(r.email));
-
-            if (operationEmailRecipients.length > 0) {
-                const operationEmailResults = await Promise.allSettled(
-                    operationEmailRecipients.map((recipient) =>
-                        sendOperationsIsoApprovalAlertEmail({
-                            to: String(recipient.email),
-                            operationsName: recipient.name,
-                            isoName: isoApproverName,
-                            applicationNumber,
-                            clientName,
-                            viewApplicationUrl,
-                        })
-                    )
-                );
-
-                const operationEmailFailures = operationEmailResults.filter(
-                    (result) => result.status === 'rejected'
-                );
-                if (operationEmailFailures.length > 0) {
-                    console.error(
-                        '[approvalSideEffects] one or more operations ISO-approval alert emails failed:',
-                        operationEmailFailures
-                    );
-                }
-            }
+        } else {
+            console.warn(
+                '[approvalSideEffects] skipped ISO approval email — no linked ISO email on application',
+                applicationNumber
+            );
         }
     } catch (emailErr) {
         console.error('[approvalSideEffects] email fan-out failed:', emailErr);

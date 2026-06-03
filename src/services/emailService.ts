@@ -131,11 +131,37 @@ function buildBrandHeaderStyles(): string {
  */
 
 /**
- * When true, application status templates (client/ISO recipient flows) are not sent (no `sendMail`).
- * Internal emails (e.g. welcome, underwriter notifications) are unaffected.
+ * When true (default), workflow step emails are not sent to CRM roles (agent, underwriter,
+ * final underwriter, operations, super admin, etc.). In-app bell notifications still work.
+ * ISO-branded approval / offer-updated templates are always allowed (see sendApplicationApprovalEmail).
+ * Set DISABLE_APPLICATION_NOTIFICATION_EMAILS=false to re-enable internal step mail.
  */
-const DISABLE_CLIENT_APPLICATION_EMAILS =
-    String(process.env.DISABLE_CLIENT_APPLICATION_EMAILS || '').trim().toLowerCase() === 'true';
+export function areApplicationNotificationEmailsDisabled(): boolean {
+    const master = String(process.env.DISABLE_APPLICATION_NOTIFICATION_EMAILS ?? '').trim().toLowerCase();
+    if (master === 'false') return false;
+    if (master === 'true') return true;
+    if (String(process.env.DISABLE_CLIENT_APPLICATION_EMAILS || '').trim().toLowerCase() === 'true') {
+        return true;
+    }
+    if (String(process.env.DISABLE_INTERNAL_APPLICATION_EMAILS ?? 'true').trim().toLowerCase() !== 'false') {
+        return true;
+    }
+    return true;
+}
+
+export function normalizeMailboxEmail(email: string | null | undefined): string {
+    return String(email ?? '').trim().toLowerCase();
+}
+
+/** Linked ISO inboxes only receive branded approval / offer-updated emails, not workflow step alerts. */
+export function isDealIsoMailbox(
+    recipientEmail: string | null | undefined,
+    dealIsoEmail: string | null | undefined,
+): boolean {
+    const iso = normalizeMailboxEmail(dealIsoEmail);
+    if (!iso) return false;
+    return normalizeMailboxEmail(recipientEmail) === iso;
+}
 
 /** Resolves links like `{base}/application-details/:id/overview` (idempotent if `/overview` is already present). */
 export function withApplicationDetailsOverviewHref(
@@ -437,15 +463,6 @@ export async function sendApplicationApprovalEmail({
         return false;
     }
 
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) {
-        // eslint-disable-next-line no-console
-        console.warn(
-            '[email] Application approval skipped: DISABLE_CLIENT_APPLICATION_EMAILS=true (set to false to deliver ISO approval template)',
-            { to: toTrimmed },
-        );
-        return false;
-    }
-
     const subject = 'Your Application Has Been Approved';
     const html = buildApplicationApprovalEmailHtml({
         clientName,
@@ -491,6 +508,10 @@ export async function sendOperationsIsoApprovalAlertEmail({
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Operations ISO-approval alert skipped: empty recipient');
+        return false;
+    }
+
+    if (areApplicationNotificationEmailsDisabled()) {
         return false;
     }
 
@@ -574,6 +595,10 @@ export async function sendOperationsDisbursementReadyEmail({
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
         console.warn('[email] Operations disbursement-ready alert skipped: empty recipient');
+        return false;
+    }
+
+    if (areApplicationNotificationEmailsDisabled()) {
         return false;
     }
 
@@ -780,15 +805,6 @@ export async function sendApplicationOfferUpdatedEmail({
         return false;
     }
 
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) {
-        // eslint-disable-next-line no-console
-        console.warn(
-            '[email] Offer update skipped: DISABLE_CLIENT_APPLICATION_EMAILS=true',
-            { to: toTrimmed },
-        );
-        return false;
-    }
-
     const subject = 'Your Offer Values Have Been Updated';
     const html = buildApplicationOfferUpdatedEmailHtml({
         clientName,
@@ -921,7 +937,7 @@ export async function sendFundingCallPendingEmail({
     clientName,
     companyName,
 }: FundingCallPendingEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const subject = 'Funding call — next step for your application';
     const html = buildFundingCallPendingEmailHtml({ clientName, companyName });
@@ -1049,7 +1065,7 @@ export async function sendApplicationFundedEmail({
     clientName,
     companyName,
 }: ApplicationFundedEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const subject = 'Your application is funded — funds released';
     const html = buildApplicationFundedEmailHtml({ clientName, companyName });
@@ -1229,7 +1245,7 @@ export async function sendApplicationSentToUnderwritingClientEmail({
     viewApplicationUrl,
     publicPortalUrl,
 }: ApplicationSentToUnderwritingClientEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const safeAppRef = applicationNumber != null && String(applicationNumber).trim() !== ''
         ? String(applicationNumber).trim()
@@ -1404,7 +1420,7 @@ export async function sendApplicationUnderwritingCompletedClientEmail({
     publicPortalUrl,
     applicationNumber,
 }: ApplicationUnderwritingCompletedClientEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const safeAppRef =
         applicationNumber != null && String(applicationNumber).trim() !== ''
@@ -1451,6 +1467,10 @@ export async function sendUnderwriterNewApplicationEmail({
     clientName,
     viewApplicationUrl,
 }: UnderwriterNewApplicationEmailParams): Promise<void> {
+    if (areApplicationNotificationEmailsDisabled()) {
+        return;
+    }
+
     const safeUnderwriterName = underwriterName || to;
     const safeAgentName = agentName || 'Agent';
     const safeClientName = clientName || 'Client';
