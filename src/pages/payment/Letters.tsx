@@ -490,7 +490,7 @@ export default function Letters() {
           <p className="mt-1 text-sm text-muted-foreground">
             Create and send letters or emails for deal
             <span className="ml-1 font-semibold text-foreground">#{dealLabel}</span>
-            . Outbound email uses SendGrid from your CRM sender (not your connected Gmail account).
+            . Outbound email uses SendGrid from Woodmere Financial (not your connected Gmail account).
           </p>
         </div>
       </div>

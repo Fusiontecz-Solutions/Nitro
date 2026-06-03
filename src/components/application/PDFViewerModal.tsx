@@ -891,7 +891,6 @@ const PDFViewerModal = ({
         : [];
     const boldSignState = useSelector((state: RootState) => state.boldSign);
     const templateRecipients = boldSignState?.templateRecipients;
-    const boldSignLoading = boldSignState?.loading;
 
     const templateRoleRowsForSigner = useMemo(
         () => parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients),
@@ -1112,7 +1111,9 @@ const PDFViewerModal = ({
                 ? (() => {
                       const o = mergeContractPrefillOverrideLayers(
                           stripDocumentTemplateBlobFromPrefillOverrides(
-                              contractRow.contractPrefillOverrides,
+                              normalizeContractPrefillOverrides(
+                                  contractRow.contractPrefillOverrides,
+                              ) ?? null,
                           ),
                           contractPrefillFromDb,
                       );
@@ -1154,8 +1155,10 @@ const PDFViewerModal = ({
         const merged = mergeContractPrefillOverrideLayers(
             fromNote,
             stripDocumentTemplateBlobFromPrefillOverrides(
-                (resolvedContract as { contractPrefillOverrides?: unknown } | null)
-                    ?.contractPrefillOverrides,
+                normalizeContractPrefillOverrides(
+                    (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides,
+                ) ?? null,
             ),
             contractPrefillFromDb,
         );
@@ -2469,7 +2472,8 @@ const PDFViewerModal = ({
                     setSelectedFunder(pickFunderForSelect(rawFunder, DEFAULT_FUNDER_OPTIONS) || rawFunder);
                     setContractPrefillFromDb((prev) => {
                         const fromServer = stripDocumentTemplateBlobFromPrefillOverrides(
-                            c.contractPrefillOverrides,
+                            normalizeContractPrefillOverrides(c.contractPrefillOverrides) ??
+                                null,
                         );
                         if (!fromServer) return prev ?? null;
                         if (!prev || Object.keys(prev).length === 0) return fromServer;
