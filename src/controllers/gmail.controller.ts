@@ -376,7 +376,7 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
                 cc,
                 bcc,
                 replyTo,
-                from: from || getDefaultMailFrom(),
+                from: getDefaultMailFrom(),
             });
             if (!result) {
                 throw new Error('Failed to send email via SMTP');

@@ -38,6 +38,49 @@ function normalizeToOrigin(raw: string): string | undefined {
   return `${scheme}://${host}`.replace(/\/$/, '');
 }
 
+function isPublicOrigin(origin: string): boolean {
+    try {
+        return !isLocalHostname(new URL(origin).hostname);
+    } catch {
+        return false;
+    }
+}
+
+/** First non-localhost origin from env (safe for outbound email links in dev and prod). */
+function pickFirstPublicFrontendOrigin(): string | undefined {
+    const fromCrmApi = tryPublicOriginFromCrmApiUrl();
+
+    const candidates: Array<string | undefined> = [
+        fromCrmApi,
+        process.env.PUBLIC_SITE_ORIGIN,
+        process.env.FRONTEND_URL,
+        process.env.CLIENT_PORTAL_URL,
+        process.env.APP_APPLICATION_URL,
+        process.env.VITE_APP_URL,
+        process.env.APP_BASE_URL,
+    ];
+
+    for (const c of candidates) {
+        if (!c || String(c).trim() === '') continue;
+        const normalized = normalizeToOrigin(c);
+        if (!normalized || !isPublicOrigin(normalized)) continue;
+        return normalized;
+    }
+
+    let raw: string | undefined;
+    if (process.env.APP_LOGIN_URL) {
+        raw = process.env.APP_LOGIN_URL.replace(/\/login\/?$/i, '');
+    }
+    if (raw) {
+        const normalized = normalizeToOrigin(raw);
+        if (normalized && isPublicOrigin(normalized)) {
+            return normalized;
+        }
+    }
+
+    return undefined;
+}
+
 /**
  * Pick the first defined env var, return its normalized origin (or undefined).
  * Used to honor an explicit `FRONTEND_URL` override regardless of `NODE_ENV`.
@@ -60,8 +103,8 @@ function pickExplicitFrontendUrlEnv(): string | undefined {
  *
  * Resolution order (applies in both dev and prod so a single env flip controls email links):
  *   1. Explicit override: `FRONTEND_URL` / `PUBLIC_FRONTEND_URL` / `APP_FRONTEND_URL`.
- *   2. **Local (`NODE_ENV` ≠ `production`):** `LOCAL_FRONTEND_URL` / `DEV_FRONTEND_URL`,
- *      otherwise `http://localhost:5173`.
+ *   2. **Non-production API:** same public origins as production (`CRM_API_URL`, `PUBLIC_SITE_ORIGIN`, …)
+ *      so locally sent emails never embed `localhost` links; dev SPA fallback is last.
  *   3. **Production:** origin derived from `CRM_API_URL`, then `PUBLIC_SITE_ORIGIN`,
  *      `APP_APPLICATION_URL`, `CLIENT_PORTAL_URL`, etc.
  *
@@ -100,58 +143,20 @@ export function resolveDecisionLogicInvitationBaseUrl(): string {
 export function resolveCrmFrontendBaseUrl(): string | undefined {
   const inProd = process.env.NODE_ENV === 'production';
 
+  // Email / invite links: never prefer localhost when a public origin is configured.
+  const publicOrigin = pickFirstPublicFrontendOrigin();
+  if (publicOrigin) return publicOrigin;
+
   const explicit = pickExplicitFrontendUrlEnv();
-  if (explicit) return explicit;
+  if (explicit && (inProd || isPublicOrigin(explicit))) return explicit;
 
   if (!inProd) {
     const devLocal = String(
       process.env.LOCAL_FRONTEND_URL || process.env.DEV_FRONTEND_URL || '',
     ).trim();
     const normalized = devLocal ? normalizeToOrigin(devLocal) : undefined;
-    return normalized && normalized.length > 0 ? normalized : 'http://localhost:5173';
-  }
-
-  const fromCrmApi = tryPublicOriginFromCrmApiUrl();
-
-  const candidates: Array<string | undefined> = [
-    fromCrmApi,
-    process.env.PUBLIC_SITE_ORIGIN,
-    process.env.APP_APPLICATION_URL,
-    process.env.FRONTEND_URL,
-    process.env.CLIENT_PORTAL_URL,
-    process.env.VITE_APP_URL,
-    process.env.APP_BASE_URL,
-  ];
-
-  for (const c of candidates) {
-    if (!c || String(c).trim() === '') continue;
-    const normalized = normalizeToOrigin(c);
-    if (!normalized) continue;
-    try {
-      const host = new URL(normalized).hostname;
-      if (isLocalHostname(host)) continue;
-    } catch {
-      continue;
-    }
-    return normalized;
-  }
-
-  let raw: string | undefined;
-  if (process.env.APP_LOGIN_URL) {
-    raw = process.env.APP_LOGIN_URL.replace(/\/login\/?$/i, '');
-  }
-
-  if (raw) {
-    const normalized = normalizeToOrigin(raw);
-    if (normalized) {
-      try {
-        if (!isLocalHostname(new URL(normalized).hostname)) {
-          return normalized;
-        }
-      } catch {
-        /* ignore */
-      }
-    }
+    if (normalized && normalized.length > 0) return normalized;
+    return 'http://localhost:5173';
   }
 
   return undefined;

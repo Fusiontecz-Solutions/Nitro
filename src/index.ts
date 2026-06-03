@@ -12,6 +12,7 @@ import { initializeSocketIO } from './socket/index';
 import { testRedisConnection } from './config/redis';
 import { startCollectionPaymentUploadWorker } from './workers/collectionPaymentUploadWorker';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
+import { getDefaultMailFrom, isSendGridConfigured } from './config/nodemailer';
 
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err);
@@ -67,6 +68,9 @@ app.use((req, res, next) => {
 
 cloudinaryConnect();
 console.log('Starting CRM Email Bot...');
+console.log(
+    `[mail] Outbound sender: ${getDefaultMailFrom()} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
+);
 startCronJob();
 // Test Redis connection
 testRedisConnection().catch(console.error);

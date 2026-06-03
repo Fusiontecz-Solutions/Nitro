@@ -1,7 +1,4 @@
 import nodemailer from 'nodemailer';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 const sendgridApiKey = process.env.SENDGRID_API_KEY?.trim();
 const useSendgrid = Boolean(sendgridApiKey);
@@ -19,24 +16,75 @@ export function isOutboundSmtpConfigured(): boolean {
     );
 }
 
-const DEFAULT_MAIL_FROM_NAME =
-    process.env.MAIL_FROM_NAME?.trim() ||
-    process.env.SENDGRID_FROM_NAME?.trim() ||
-    'Woodmere Financial';
+const DEFAULT_DISPLAY_NAME = 'Woodmere Financial';
 
-function formatMailFromAddress(email: string): string {
-    return `"${DEFAULT_MAIL_FROM_NAME}" <${email}>`;
+const LEGACY_MAIL_FROM_NAMES = new Set([
+    'crm',
+    'in-house crm',
+    'ih crm',
+    'in house crm',
+]);
+
+/** Display name for outbound SMTP / SendGrid (read at send time, not module load). */
+function getMailFromDisplayName(): string {
+    const envName =
+        process.env.MAIL_FROM_NAME?.trim() ||
+        process.env.SENDGRID_FROM_NAME?.trim();
+    if (envName && !LEGACY_MAIL_FROM_NAMES.has(envName.toLowerCase())) {
+        return envName;
+    }
+    return DEFAULT_DISPLAY_NAME;
+}
+
+/** Strip optional `"Name"` wrapper and extract the bare email from a From value. */
+function extractEmailAddress(raw: string): string {
+    const trimmed = raw.trim();
+    const angle = trimmed.match(/<([^>]+)>/);
+    if (angle?.[1]) return angle[1].trim();
+    return trimmed;
+}
+
+function resolveVerifiedFromEmail(): string | undefined {
+    return (
+        process.env.SMTP_FROM?.trim() ||
+        process.env.MAIL_FROM?.trim() ||
+        process.env.SENDGRID_FROM_EMAIL?.trim() ||
+        process.env.SENDGRID_AUTH_USER?.trim() ||
+        process.env.SMTP_AUTH_USER?.trim()
+    );
+}
+
+/** Nodemailer + SendGrid: object `from` is more reliable than a formatted string. */
+export function buildMailFrom(optionalRaw?: string): { name: string; address: string } {
+    const raw = optionalRaw?.trim() || resolveVerifiedFromEmail();
+    if (!raw) {
+        if (sendgridApiKey) {
+            throw new Error(
+                'SendGrid is configured but no verified From email is set. Add SENDGRID_FROM_EMAIL or SENDGRID_AUTH_USER to .env.',
+            );
+        }
+        throw new Error(
+            'Outbound email is not configured. Set SENDGRID_FROM_EMAIL (or SENDGRID_API_KEY + verified sender).',
+        );
+    }
+    return {
+        name: getMailFromDisplayName(),
+        address: extractEmailAddress(raw),
+    };
+}
+
+function formatMailFromAddress(emailOrFrom: string): string {
+    const { name, address } = buildMailFrom(emailOrFrom);
+    return `"${name}" <${address}>`;
 }
 
 /** From address for SendGrid-only sends (verified sender in SendGrid). */
 export function getSendGridMailFrom(): string {
-    const explicit =
+    const { name, address } = buildMailFrom(
         process.env.SENDGRID_FROM_EMAIL?.trim() ||
-        process.env.SENDGRID_AUTH_USER?.trim();
-    if (explicit) {
-        return explicit.includes('<') ? explicit : formatMailFromAddress(explicit);
-    }
-    return formatMailFromAddress('noreply@localhost');
+            process.env.SENDGRID_AUTH_USER?.trim(),
+    );
+    return `"${name}" <${address}>`;
 }
 
 function createSendGridTransporter() {
@@ -58,20 +106,8 @@ function createSendGridTransporter() {
  * Display name defaults to Woodmere Financial (override with MAIL_FROM_NAME or SENDGRID_FROM_NAME).
  */
 export function getDefaultMailFrom(): string {
-    const explicit =
-        process.env.SMTP_FROM?.trim() ||
-        process.env.MAIL_FROM?.trim() ||
-        process.env.SENDGRID_FROM_EMAIL?.trim();
-    if (explicit) {
-        return explicit.includes('<') ? explicit : formatMailFromAddress(explicit);
-    }
-    if (useSendgrid) {
-        const verified = process.env.SENDGRID_AUTH_USER?.trim();
-        if (verified) return formatMailFromAddress(verified);
-    }
-    const gmailUser = process.env.SMTP_AUTH_USER?.trim();
-    if (gmailUser) return formatMailFromAddress(gmailUser);
-    return formatMailFromAddress('noreply@localhost');
+    const { name, address } = buildMailFrom();
+    return `"${name}" <${address}>`;
 }
 
 function createTransporter() {
@@ -129,7 +165,7 @@ const sendMail = async (
         const { to, subject, html, from, cc, bcc, replyTo, attachments } = options;
 
         const mailOptions = {
-            from: from || getDefaultMailFrom(),
+            from: buildMailFrom(from),
             to,
             subject,
             html,
@@ -157,7 +193,11 @@ export async function sendSendGridMail(options: SendMailOptions) {
     const transporter = createSendGridTransporter();
     const { to, subject, html, from, cc, bcc, replyTo, attachments } = options;
     const mailOptions = {
-        from: from || getSendGridMailFrom(),
+        from: buildMailFrom(
+            from ||
+                process.env.SENDGRID_FROM_EMAIL?.trim() ||
+                process.env.SENDGRID_AUTH_USER?.trim(),
+        ),
         to,
         subject,
         html,
