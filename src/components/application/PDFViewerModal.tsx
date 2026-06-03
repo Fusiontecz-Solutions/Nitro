@@ -43,7 +43,14 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import { US_STATES } from "@/constants/usStates";
+import { SearchableStateSelect, pickUsStateForSelect } from "@/components/ui/searchable-state-select";
+import {
+    DEFAULT_FUNDER_OPTIONS,
+    normalizeLegacyFunderName,
+    pickFunderForSelect,
+} from "@/constants/contractFunder";
+import { fetchLatestContractTemplate } from "@/utils/contractTemplate";
+import { fetchDocuSignTemplateIdForFunder } from "@/utils/contractDocuSignTemplate";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
     getAllACH,
@@ -119,7 +126,9 @@ import {
     parseDocumentTemplatePrefillByMappingId,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./contractdata/documentTemplateMappingPrefill";
-import { DEFAULT_DOCUSIGN_TEMPLATE_ID } from "./contractdata/docusignTemplateConfig";
+import {
+    DEFAULT_DOCUSIGN_TEMPLATE_ID,
+} from "./contractdata/docusignTemplateConfig";
 import {
     getTemplateRoleEmailFromRow,
     getTemplateRoleLabel,
@@ -234,24 +243,7 @@ type ContractDocumentTemplateMappingRow = {
     } | null;
 };
 
-const DEFAULT_FUNDER_OPTIONS = ["Barclays Advance"] as const;
 type InfoPanelId = "addendum" | "ach" | "epo" | "owner" | "guarantor";
-
-function pickUsStateForSelect(value: unknown): string {
-    const v = String(value ?? "").trim();
-    if (!v) return "";
-    const exact = US_STATES.find((s) => s === v);
-    if (exact) return exact;
-    return US_STATES.find((s) => s.toLowerCase() === v.toLowerCase()) ?? "";
-}
-
-function pickFunderForSelect(value: unknown, options: readonly string[]): string {
-    const v = String(value ?? "").trim();
-    if (!v) return "";
-    const exact = options.find((s) => s === v);
-    if (exact) return exact;
-    return options.find((s) => s.toLowerCase() === v.toLowerCase()) ?? "";
-}
 
 function toUsDateDisplay(value: string): string {
     const raw = String(value || "").trim();
@@ -641,6 +633,7 @@ const PDFViewerModal = ({
     };
     const [selectedState, setSelectedState] = useState<string>("");
     const [selectedFunder, setSelectedFunder] = useState<string>("");
+    const [activeContractTemplateName, setActiveContractTemplateName] = useState<string>("Contract.pdf");
     const [savingContractMeta, setSavingContractMeta] = useState(false);
     const [contractPrefillEditOpen, setContractPrefillEditOpen] = useState(false);
     const [prefilledBoldSignPdfUrl, setPrefilledBoldSignPdfUrl] = useState<string | null>(null);
@@ -663,7 +656,7 @@ const PDFViewerModal = ({
     const funderSelectOptions = useMemo(() => {
         const base = [...DEFAULT_FUNDER_OPTIONS];
         const cur = String(selectedFunder || "").trim();
-        if (cur && !base.some((x) => x.toLowerCase() === cur.toLowerCase())) {
+        if (cur && !base.some((x: string) => x.toLowerCase() === cur.toLowerCase())) {
             return [...base, cur];
         }
         return base;
@@ -1886,9 +1879,9 @@ const PDFViewerModal = ({
             : undefined;
         const client = ad.client as Record<string, unknown> | undefined;
         const st = String(client?.state ?? bi0?.state ?? "").trim();
-        const fd = String(bi0?.funderName ?? ad.funderName ?? "").trim();
+        const fd = normalizeLegacyFunderName(bi0?.funderName ?? ad.funderName ?? "");
         setSelectedState(st);
-        setSelectedFunder(fd);
+        setSelectedFunder(pickFunderForSelect(fd, DEFAULT_FUNDER_OPTIONS) || fd);
     }, [isOpen, applicationData]);
 
     // Seed CC list when the dialog opens (saved addresses only — no hardcoded defaults)
@@ -2886,6 +2879,19 @@ const PDFViewerModal = ({
         dispatch(getBoldSignTemplates({}));
     }, [dispatch, isOpen]);
 
+    useEffect(() => {
+        if (!isOpen) return;
+        let cancelled = false;
+        void (async () => {
+            const latest = await fetchLatestContractTemplate();
+            if (cancelled || !latest) return;
+            setActiveContractTemplateName(latest.originalName);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [isOpen]);
+
     // Keep effectiveTemplateId in sync with prop, then VITE_DOCUSIGN_TEMPLATE_ID, then CRM template list
     useEffect(() => {
         const fromProp = String(templateId ?? "").trim();
@@ -2899,6 +2905,19 @@ const PDFViewerModal = ({
         }
         setEffectiveTemplateId(null);
     }, [templateId]);
+
+    useEffect(() => {
+        if (!isOpen || !selectedFunder.trim() || String(templateId ?? "").trim()) return;
+        let cancelled = false;
+        void (async () => {
+            const tid = await fetchDocuSignTemplateIdForFunder(selectedFunder);
+            if (cancelled || !tid) return;
+            setEffectiveTemplateId(tid);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [isOpen, selectedFunder, templateId]);
 
     useEffect(() => {
         if (effectiveTemplateId) return;
@@ -4438,7 +4457,10 @@ const PDFViewerModal = ({
                                                         Contract Meta
                                                     </h4>
                                                     <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                        Used for CRM reporting and contract metadata.
+                                                        Used for CRM reporting and contract metadata. Template:{" "}
+                                                        <span className="font-medium text-slate-700 dark:text-slate-300">
+                                                            {activeContractTemplateName}
+                                                        </span>
                                                     </p>
                                                 </div>
                                             </div>
@@ -4448,8 +4470,9 @@ const PDFViewerModal = ({
                                                         <MapPin className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
                                                         Select State
                                                     </label>
-                                                    <Select
-                                                        value={selectedState || undefined}
+                                                    <SearchableStateSelect
+                                                        id="pdf-viewer-contract-state-info"
+                                                        value={selectedState}
                                                         disabled={savingContractMeta}
                                                         onValueChange={(v: string) => {
                                                             setSelectedState(v);
@@ -4457,21 +4480,7 @@ const PDFViewerModal = ({
                                                                 void persistContractStateAndFunder({ state: v });
                                                             }
                                                         }}
-                                                    >
-                                                        <SelectTrigger
-                                                            id="pdf-viewer-contract-state-info"
-                                                            className="h-10 w-full rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600"
-                                                        >
-                                                            <SelectValue placeholder="Select state" />
-                                                        </SelectTrigger>
-                                                        <SelectContent position="popper" className="z-[10100] max-h-72">
-                                                            {US_STATES.map((s) => (
-                                                                <SelectItem key={s} value={s}>
-                                                                    {s}
-                                                                </SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
+                                                    />
                                                 </div>
                                                 <div className="space-y-1.5">
                                                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300" htmlFor="pdf-viewer-contract-funder-info">
@@ -4495,7 +4504,7 @@ const PDFViewerModal = ({
                                                             <SelectValue placeholder="Select funder" />
                                                         </SelectTrigger>
                                                         <SelectContent position="popper" className="z-[10100] max-h-72">
-                                                            {funderSelectOptions.map((f) => (
+                                                            {funderSelectOptions.map((f: string) => (
                                                                 <SelectItem key={f} value={f}>
                                                                     {f}
                                                                 </SelectItem>

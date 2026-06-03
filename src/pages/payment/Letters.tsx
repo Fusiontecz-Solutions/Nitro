@@ -165,7 +165,7 @@ function formatUsShortDate(iso?: string): string {
 
 /** Default wire destination shown in payoff letter merge fields (edit per send if needed). */
 const DEFAULT_PAYOFF_WIRE_DETAILS = {
-  beneficiary_name: "BARCLAYS ADVANCE LLC",
+  beneficiary_name: "WOODMERE FINANCIAL LLC",
   bank_name: "OPTIMUM BANK",
   bank_address_line1: "652 N Broad St, Suite 201",
   bank_city_state_zip: "Middletown, DE 19709",

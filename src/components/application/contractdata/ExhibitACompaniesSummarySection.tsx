@@ -7,12 +7,8 @@ import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { toast } from "react-toastify";
-import {
-    EXHIBIT_A_VALUE_COUNT,
-    EXHIBIT_A_VALUE_FIELD_KEYS,
-    type BuildContractPrefillFieldsArgs,
-    type ExhibitAValueFieldKey,
-} from "./Contract";
+import { EXHIBIT_A_VALUE_COUNT, type BuildContractPrefillFieldsArgs } from "./Contract";
+import { companiesFromPrefill, companiesToPrefillPayload } from "./exhibitCompanyPrefill";
 import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     stripDocumentTemplateBlobFromPrefillOverrides,
@@ -23,26 +19,6 @@ function parsePositiveContractId(id: number | string | null | undefined): number
     const n = typeof id === "number" ? id : Number(String(id).trim());
     if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) return null;
     return n;
-}
-
-function companiesFromPrefill(
-    prefill: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
-): string[] {
-    const loaded: string[] = [];
-    for (const key of EXHIBIT_A_VALUE_FIELD_KEYS) {
-        const v = String(prefill?.[key] ?? "").trim();
-        if (v) loaded.push(v);
-    }
-    return loaded.length > 0 ? loaded : [""];
-}
-
-function companiesToPrefillPayload(companies: string[]): Partial<BuildContractPrefillFieldsArgs> {
-    const out: Partial<BuildContractPrefillFieldsArgs> = {};
-    for (let i = 0; i < EXHIBIT_A_VALUE_COUNT; i++) {
-        const key = EXHIBIT_A_VALUE_FIELD_KEYS[i] as ExhibitAValueFieldKey;
-        out[key] = String(companies[i] ?? "").trim();
-    }
-    return out;
 }
 
 export type ExhibitACompaniesSummarySectionProps = {

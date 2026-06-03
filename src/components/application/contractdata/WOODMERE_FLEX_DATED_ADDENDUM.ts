@@ -13,20 +13,20 @@ const mapIds = (ids: readonly string[], label: string, value: string): ContractP
     return ids.map((id) => ({ id, label, value: trimmed }));
 };
 
-/** BoldSign prefill source values for the Barclays Flex Addendum template. */
-export interface BarclaysFlexAddendumContractPrefillFields {
+/** DocuSign prefill source values for the Woodmere Flex Addendum (dated) template. */
+export interface WoodmereFlexDatedAddendumContractPrefillFields {
     addendumDated?: string;
     agreementDate?: string;
     clientNameAddendum?: string;
     clientName?: string;
 }
 
-export function buildBarclaysFlexAddendumContractPrefillFields({
+export function buildWoodmereFlexDatedAddendumContractPrefillFields({
     addendumDated = "",
     agreementDate = "",
     clientNameAddendum = "",
     clientName = "",
-}: BarclaysFlexAddendumContractPrefillFields = {}): ContractPrefillField[] {
+}: WoodmereFlexDatedAddendumContractPrefillFields = {}): ContractPrefillField[] {
     return [
         ...mapIds(FIELD_IDS.addendumDated, "Addendum Dated", addendumDated),
         ...mapIds(FIELD_IDS.agreementDate, "Agreement Date", agreementDate),

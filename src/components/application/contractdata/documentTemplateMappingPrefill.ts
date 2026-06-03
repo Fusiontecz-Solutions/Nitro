@@ -13,13 +13,13 @@ import {
     type WoodmereFlexAddendumContractPrefillFields,
 } from "./WOODMERE_FLEX_ADDENDUM";
 import {
-    buildBarclaysBuyoutBlankAddendumContractPrefillFields,
-    type BarclaysBuyoutBlankAddendumContractPrefillFields,
-} from "./Barclays_buyout_blank_ADDENDUM";
+    buildWoodmereBuyoutBlankAddendumContractPrefillFields,
+    type WoodmereBuyoutBlankAddendumContractPrefillFields,
+} from "./WOODMERE_BUYOUT_BLANK_ADDENDUM";
 import {
-    buildBarclaysFlexAddendumContractPrefillFields,
-    type BarclaysFlexAddendumContractPrefillFields,
-} from "./BARCLAYS_FLEX_ADDENDUM";
+    buildWoodmereFlexDatedAddendumContractPrefillFields,
+    type WoodmereFlexDatedAddendumContractPrefillFields,
+} from "./WOODMERE_FLEX_DATED_ADDENDUM";
 import {
     buildDiscoverAdvanceEpoAddendumContractPrefillFields,
     type DiscoverAdvanceEpoAddendumContractPrefillFields,
@@ -200,18 +200,19 @@ function buildBalanceTransferComputed(
 
 function buildWoodmereFlexComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
     const c = contract ?? {};
+    const personName = str(c.customerName) || str(c.clientName) || sctx.recipientName;
     return buildWoodmereFlexAddendumContractPrefillFields({
         clientLegalName: str(c.legalName) || sctx.recipientName,
-        clientName: str(c.clientName) || sctx.recipientName,
+        clientName: personName,
     });
 }
 
-function buildBarclaysBuyoutComputed(
+function buildWoodmereBuyoutComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
 ): ContractPrefillField[] {
     const c = contract ?? {};
-    return buildBarclaysBuyoutBlankAddendumContractPrefillFields({
+    return buildWoodmereBuyoutBlankAddendumContractPrefillFields({
         addendumEnteredDate: sctx.signatureDate,
         addendumAgreementDate: sctx.signatureDate,
         clientName: sctx.recipientName,
@@ -228,7 +229,7 @@ function buildBarclaysBuyoutComputed(
     });
 }
 
-function dotBarclaysBuyout(): BarclaysBuyoutBlankAddendumContractPrefillFields {
+function dotWoodmereBuyout(): WoodmereBuyoutBlankAddendumContractPrefillFields {
     return {
         addendumEnteredDate: DUMMY,
         addendumAgreementDate: DUMMY,
@@ -246,17 +247,18 @@ function dotBarclaysBuyout(): BarclaysBuyoutBlankAddendumContractPrefillFields {
     };
 }
 
-function buildBarclaysFlexComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
+function buildWoodmereFlexDatedComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
     const c = contract ?? {};
-    return buildBarclaysFlexAddendumContractPrefillFields({
+    const personName = str(c.customerName) || str(c.clientName) || sctx.recipientName;
+    return buildWoodmereFlexDatedAddendumContractPrefillFields({
         addendumDated: sctx.signatureDate,
         agreementDate: sctx.signatureDate,
-        clientNameAddendum: str(c.legalName) || sctx.recipientName,
-        clientName: str(c.clientName) || sctx.recipientName,
+        clientNameAddendum: personName,
+        clientName: personName,
     });
 }
 
-function dotBarclaysFlex(): BarclaysFlexAddendumContractPrefillFields {
+function dotWoodmereFlexDated(): WoodmereFlexDatedAddendumContractPrefillFields {
     return {
         addendumDated: DUMMY,
         agreementDate: DUMMY,
@@ -338,8 +340,8 @@ function matches(norm: string, ...needles: string[]): boolean {
 type AddendumKind =
     | "balance_transfer_sheet"
     | "woodmere_flex"
-    | "barclays_buyout_blank"
-    | "barclays_flex"
+    | "woodmere_buyout_blank"
+    | "woodmere_flex_dated"
     | "discover_epo"
     | "discover_refi_balance";
 
@@ -355,9 +357,10 @@ function resolveAddendumKind(
     if (tid === ADDENDUM_GUID.WOODMERE_FLEX) return "woodmere_flex";
     if (tid === ADDENDUM_GUID.WOODMERE_BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
     if (matches(normName, "balance", "transfer") && normName.includes("sheet")) return "balance_transfer_sheet";
+    if (normName.includes("woodmere") && normName.includes("flex") && (normName.includes("dated") || normName.includes("agreement")))
+        return "woodmere_flex_dated";
     if (normName.includes("woodmere") && normName.includes("flex")) return "woodmere_flex";
-    if (normName.includes("buyout") && normName.includes("blank")) return "barclays_buyout_blank";
-    if (normName.includes("barclays") && normName.includes("flex")) return "barclays_flex";
+    if (normName.includes("buyout") && normName.includes("blank")) return "woodmere_buyout_blank";
     if (normName.includes("discover") && normName.includes("epo")) return "discover_epo";
     if (normName.includes("discover") && (normName.includes("refi") || normName.includes("balance_transfer")))
         return "discover_refi_balance";
@@ -389,10 +392,10 @@ function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
             return buildBalanceTransferSheetContractPrefillFields(dotBalanceTransfer());
         case "woodmere_flex":
             return buildWoodmereFlexAddendumContractPrefillFields(dotWoodmereFlex());
-        case "barclays_buyout_blank":
-            return buildBarclaysBuyoutBlankAddendumContractPrefillFields(dotBarclaysBuyout());
-        case "barclays_flex":
-            return buildBarclaysFlexAddendumContractPrefillFields(dotBarclaysFlex());
+        case "woodmere_buyout_blank":
+            return buildWoodmereBuyoutBlankAddendumContractPrefillFields(dotWoodmereBuyout());
+        case "woodmere_flex_dated":
+            return buildWoodmereFlexDatedAddendumContractPrefillFields(dotWoodmereFlexDated());
         case "discover_epo":
             return buildDiscoverAdvanceEpoAddendumContractPrefillFields(dotDiscoverEpo());
         case "discover_refi_balance":
@@ -413,10 +416,10 @@ function addendumComputed(
             return buildBalanceTransferComputed(contract, sctx, application);
         case "woodmere_flex":
             return buildWoodmereFlexComputed(contract, sctx);
-        case "barclays_buyout_blank":
-            return buildBarclaysBuyoutComputed(contract, sctx);
-        case "barclays_flex":
-            return buildBarclaysFlexComputed(contract, sctx);
+        case "woodmere_buyout_blank":
+            return buildWoodmereBuyoutComputed(contract, sctx);
+        case "woodmere_flex_dated":
+            return buildWoodmereFlexDatedComputed(contract, sctx);
         case "discover_epo":
             return buildDiscoverEpoComputed(contract, sctx);
         case "discover_refi_balance":

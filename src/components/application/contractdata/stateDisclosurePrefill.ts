@@ -366,13 +366,16 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
 
     const appPrefill = getApplicationClientPrefillArgs(args.application);
     const linkedClient = (contract.client ?? null) as Record<string, unknown> | null;
+    const linkedOwnerName = [linkedClient?.ownerFirstName, linkedClient?.ownerLastName]
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean)
+        .join(" ");
     const customerName =
         str(contract.customerName) ||
-        str(contract.legalName) ||
-        str(contract.clientName) ||
         str(appPrefill.customerName) ||
         getApplicationPrimaryRecipientName(args.application) ||
-        str(linkedClient?.businessName);
+        str(contract.clientName) ||
+        linkedOwnerName;
 
     const businessAddressLine = [
         str(contract.businessAddress),

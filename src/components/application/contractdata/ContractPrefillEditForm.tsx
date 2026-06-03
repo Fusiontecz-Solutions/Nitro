@@ -218,7 +218,7 @@ function contractPrefillSectionKeys(section: ContractPrefillSection): ContractPr
 }
 
 /**
- * Document-aligned sections for the Barclays RPA stack (RPA → Security → Guaranty → Appendix → ACH → Addendum).
+ * Document-aligned sections for the Woodmere RPA stack (RPA → Security → Guaranty → Appendix → ACH → Addendum).
  * Order follows the contract PDF flow so users can verify fields section by section.
  */
 const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
