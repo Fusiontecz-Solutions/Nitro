@@ -44,6 +44,22 @@ import {
 } from './utils/docusign-webhook';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
 
+/** Contract signing status labels for notifications */
+const CONTRACT_STATUS_LABELS: Record<string, string> = {
+  sent: 'Contract Sent',
+  viewed: 'Contract Viewed',
+  signed: 'Contract Signed',
+  completed: 'Contract Fully Signed',
+  declined: 'Contract Declined',
+  revoked: 'Contract Revoked',
+  expired: 'Contract Expired',
+};
+
+/** Get human-readable status label */
+function getContractStatusLabel(status: string): string {
+  return CONTRACT_STATUS_LABELS[status] || `Contract Status: ${status}`;
+}
+
 dotenv.config();
 
 class UnauthorizedException extends Error {
@@ -1447,6 +1463,188 @@ export class DocusignService {
     }
   }
 
+  /**
+   * Create notifications for contract status changes.
+   * Notifies the referring agent, sales representative, and relevant users about the status change.
+   */
+  private async createContractStatusNotification(
+    applicationId: string,
+    newStatus: string,
+    previousStatus: string | null,
+    envelopeId: string,
+  ): Promise<void> {
+    const appId = String(applicationId || '').trim();
+    if (!appId) return;
+
+    try {
+      const application = await prisma.application.findUnique({
+        where: { id: appId },
+        select: {
+          id: true,
+          applicationId: true,
+          referringAgentId: true,
+          salesRepresentativeId: true,
+          client: {
+            select: {
+              businessName: true,
+              ownerFirstName: true,
+              ownerLastName: true,
+            },
+          },
+        },
+      });
+
+      if (!application) {
+        console.warn(`[DocuSign] Cannot create notification: application ${appId} not found`);
+        return;
+      }
+
+      const clientName =
+        application.client?.businessName ||
+        `${application.client?.ownerFirstName || ''} ${application.client?.ownerLastName || ''}`.trim() ||
+        'Client';
+      const appIdNumber = application.applicationId || 'N/A';
+
+      const statusLabel = getContractStatusLabel(newStatus);
+      const title = statusLabel;
+      const message = `${statusLabel} for Application #${appIdNumber} - ${clientName}. DocuSign envelope status has been updated.`;
+
+      const recipientIds = new Set<string>();
+      if (application.referringAgentId) {
+        recipientIds.add(application.referringAgentId);
+      }
+      if (application.salesRepresentativeId) {
+        recipientIds.add(application.salesRepresentativeId);
+      }
+
+      const underwriters = await prisma.user.findMany({
+        where: {
+          role: { in: ['UNDERWRITER', 'FINAL_UNDERWRITER'] },
+          isActive: true,
+        },
+        select: { id: true },
+      });
+      underwriters.forEach((u) => recipientIds.add(u.id));
+
+      if (recipientIds.size === 0) {
+        console.warn(`[DocuSign] No recipients to notify for application ${appId}`);
+        return;
+      }
+
+      const notificationData = recipientIds.size > 0
+        ? Array.from(recipientIds).map((recipientId) => ({
+            title,
+            message,
+            type: 'contract_status_update',
+            recipientId,
+            applicationId: application.id,
+          }))
+        : [];
+
+      if (notificationData.length > 0) {
+        await prisma.notification.createMany({
+          data: notificationData,
+        });
+        console.log(
+          `[DocuSign] Contract status notifications created for ${recipientIds.size} recipient(s) - status: ${newStatus}, envelope: ${envelopeId}`,
+        );
+      }
+    } catch (error) {
+      console.error('[DocuSign] Failed to create contract status notification:', error);
+    }
+  }
+
+  /**
+   * Create an audit log entry for contract status changes.
+   */
+  private async createContractStatusAuditLog(
+    applicationId: string,
+    newStatus: string,
+    previousStatus: string | null,
+    envelopeId: string,
+  ): Promise<void> {
+    const appId = String(applicationId || '').trim();
+    if (!appId) return;
+
+    try {
+      const application = await prisma.application.findUnique({
+        where: { id: appId },
+        select: {
+          id: true,
+          currentQueue: true,
+          currentState: true,
+        },
+      });
+
+      if (!application) {
+        console.warn(`[DocuSign] Cannot create audit log: application ${appId} not found`);
+        return;
+      }
+
+      const statusLabel = getContractStatusLabel(newStatus);
+      const actionType = `CONTRACT_${newStatus.toUpperCase()}`;
+      const actionDescription = `DocuSign contract ${statusLabel.toLowerCase()}. Envelope ID: ${envelopeId}`;
+
+      const previousStatusLabel = previousStatus
+        ? getContractStatusLabel(previousStatus)
+        : 'N/A';
+      const currentStatusStr = `${application.currentQueue} / ${application.currentState}`;
+
+      await prisma.applicationActivityLog.create({
+        data: {
+          applicationId: application.id,
+          userId: null,
+          userRole: 'SYSTEM',
+          actionType,
+          actionDescription,
+          previousStatus: previousStatus ? previousStatusLabel : null,
+          currentStatus: currentStatusStr,
+          metadata: {
+            envelopeId,
+            contractStatus: newStatus,
+            previousContractStatus: previousStatus,
+            statusLabel,
+            timestamp: new Date().toISOString(),
+          } as any,
+        },
+      });
+
+      console.log(
+        `[DocuSign] Audit log created - actionType: ${actionType}, envelope: ${envelopeId}`,
+      );
+    } catch (error) {
+      console.error('[DocuSign] Failed to create contract status audit log:', error);
+    }
+  }
+
+  /**
+   * Handle contract status change: create notification and audit log.
+   * Only triggers when the status actually changes (not for duplicate webhooks).
+   */
+  private async handleContractStatusChange(
+    applicationId: string,
+    newStatus: string,
+    previousStatus: string | null,
+    envelopeId: string,
+  ): Promise<void> {
+    const normalizedNew = String(newStatus || '').trim().toLowerCase();
+    const normalizedPrev = previousStatus ? String(previousStatus).trim().toLowerCase() : null;
+
+    if (normalizedNew === normalizedPrev) {
+      return;
+    }
+
+    const notifiableStatuses = ['sent', 'viewed', 'signed', 'completed', 'declined', 'revoked', 'expired'];
+    if (!notifiableStatuses.includes(normalizedNew)) {
+      return;
+    }
+
+    await Promise.all([
+      this.createContractStatusNotification(applicationId, normalizedNew, normalizedPrev, envelopeId),
+      this.createContractStatusAuditLog(applicationId, normalizedNew, normalizedPrev, envelopeId),
+    ]);
+  }
+
   /** After auto-send: mark linked `Document` row and `Contract.status` as SENT. */
   private async markEnvelopeSent(applicationId: string, envelopeId: string) {
     const appId = String(applicationId || '').trim();
@@ -2692,6 +2890,15 @@ export class DocusignService {
       );
     }
 
+    if (applicationId && status && priorStatus !== status) {
+      await this.handleContractStatusChange(
+        applicationId,
+        status,
+        priorStatus || null,
+        envelopeId,
+      );
+    }
+
     console.info('[DocuSign] webhook processed', {
       envelopeId,
       event: eventName,
@@ -2757,6 +2964,15 @@ export class DocusignService {
         appId,
         existingDoc,
         options.ccEmails,
+      );
+    }
+
+    if (appId && status && priorStatus !== status) {
+      await this.handleContractStatusChange(
+        appId,
+        status,
+        priorStatus || null,
+        envelopeId,
       );
     }
 
