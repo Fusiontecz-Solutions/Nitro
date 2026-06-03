@@ -20,6 +20,7 @@ import {
 } from '../actions/applicationActions';
 import type { ApplicationStatsData } from '../actions/applicationActions';
 import { sendDocumentRequest } from '../actions/notificationActions';
+import { updateIso } from '../actions/isoActions';
 
 function mergeApplicationDetailFromUpdate(
     state: { data: Application | null },
@@ -400,6 +401,26 @@ export const applicationDetailSlice = createSlice({
             })
             .addCase(updateApplication.fulfilled, (state, action) => {
                 mergeApplicationDetailFromUpdate(state, action.payload);
+            })
+            .addCase(updateIso.fulfilled, (state, action) => {
+                const payload = action.payload as { data?: Record<string, unknown> } | Record<string, unknown> | null;
+                const updated = (
+                    payload && typeof payload === 'object' && 'data' in payload && payload.data
+                        ? payload.data
+                        : payload
+                ) as Record<string, unknown> | null;
+                if (!updated || !state.data) return;
+                const d = state.data as Application & { iso?: Record<string, unknown> | null };
+                const iso = d.iso;
+                const updatedId = String(updated.id ?? '').trim();
+                if (!iso || !updatedId) return;
+                const curId = String(iso.id ?? iso._id ?? '').trim();
+                if (curId && curId === updatedId) {
+                    state.data = {
+                        ...d,
+                        iso: { ...iso, ...updated },
+                    } as Application;
+                }
             })
             .addCase(updateApplicationQueue.fulfilled, (state, action) => {
                 mergeApplicationDetailFromUpdate(state, action.payload);

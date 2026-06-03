@@ -137,6 +137,8 @@ const ApplicationDetails = () => {
     const isUnderwriter = roleKey === 'UNDERWRITER' || roleKey === 'FINAL_UNDERWRITER';
     const isFinalUnderwriter = roleKey === 'FINAL_UNDERWRITER';
     const isAgent = roleKey === 'AGENT';
+    const canEditIsoDetails =
+        isSuperAdmin || isAgent || roleKey === "OPERATIONS";
     const hideBusinessProfileOnDecisionMakingTab =
         roleKey === "UNDERWRITER" ||
         roleKey === "OPERATIONS" ||
@@ -465,9 +467,14 @@ const ApplicationDetails = () => {
                 isOperationsTabBehindCurrentDeal)) ||
         isViewOnlyBrowse ||
         isStagePreview;
+    /** Super Admin may edit offer, bank analysis, and positions on the Bank Analysis tab even when the deal has moved past that stage. */
+    const superAdminBankAnalysisOverride =
+        isSuperAdmin && activeTab === "bank-analysis";
     /** Most pipeline stages: no edits for Operations / Super Admin on past tabs / view-only browse / workflow preview. */
     const pipelineStageReadOnly =
         isOperationsReadOnlyPipelineTab || isViewOnlyBrowse || isStagePreview;
+    const bankAnalysisTabReadOnly =
+        isOperationsReadOnlyPipelineTab && !superAdminBankAnalysisOverride;
     /** Offer + positions on Decision Making (underwriters; Operations only when that tab is editable). */
     const canEditDecisionMakingFinalValues =
         (isUnderwriter || roleKey === "OPERATIONS") && !pipelineStageReadOnly;
@@ -719,7 +726,8 @@ const ApplicationDetails = () => {
         : null;
 
     const previewBanner =
-        isStagePreview || isOperationsTabBehindCurrentDeal ? (
+        (isStagePreview || isOperationsTabBehindCurrentDeal) &&
+        !superAdminBankAnalysisOverride ? (
             <div
                 role="status"
                 aria-live="polite"
@@ -811,6 +819,9 @@ const ApplicationDetails = () => {
                             applicationId={applicationId}
                             onBack={() => navigate(-1)}
                         />
+                        {activeTab !== "eligibility-analysis" ? (
+                            <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
+                        ) : null}
                         {/* Row 3: Tab content (Decision Making or Contract) */}
                         {canRenderTabContent ? (
                             <>
@@ -958,7 +969,7 @@ const ApplicationDetails = () => {
 	                            <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <>
                                         <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
-                                        {isAgent ? <AgentDealIsoTag applicationId={applicationId} /> : null}
+                                        <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                         {canShowSendToUnderwriterButton ? (
                                             <div className="flex justify-end mb-4">
@@ -1049,8 +1060,11 @@ const ApplicationDetails = () => {
 
                             <LazyTabContent activeTab={activeTab} value="bank-analysis" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
-                                    <BankAnalysis readOnly={isOperationsReadOnlyPipelineTab} />
-                                    <RequiredDocument isBankAnalysis={true} readOnly={isOperationsReadOnlyPipelineTab} />
+                                    <BankAnalysis
+                                        readOnly={bankAnalysisTabReadOnly}
+                                        enableCreate={superAdminBankAnalysisOverride}
+                                    />
+                                    <RequiredDocument isBankAnalysis={true} readOnly={bankAnalysisTabReadOnly} />
                                     <div className="mt-6"><CommentSection readOnly={commentsReadOnly} /></div>
                             </LazyTabContent>
 

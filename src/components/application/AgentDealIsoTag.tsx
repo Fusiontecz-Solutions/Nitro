@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import {
     Select,
     SelectContent,
@@ -10,24 +12,47 @@ import {
 } from "@/components/ui/select";
 import { useTheme } from "@/context/ThemeContext";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { getIsos } from "@/redux/actions/isoActions";
+import { getIsos, updateIso } from "@/redux/actions/isoActions";
 import { updateApplication } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
-import { Building2, Link2 } from "lucide-react";
+import { Check, Loader2, Mail, Pencil, PhoneCall, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
+
+const EMPTY_FIELD = "—";
+
+function formatIsoPhoneDisplay(phone: string): string {
+    const trimmed = phone.trim();
+    if (!trimmed) return EMPTY_FIELD;
+    return formatUSPhoneNumber(trimmed) || trimmed;
+}
+
+function isoInitials(name: string): string {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+        return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+    }
+    const single = parts[0] ?? name.trim();
+    return single.slice(0, 2).toUpperCase() || "ISO";
+}
 
 type AgentDealIsoTagProps = {
     applicationId?: string | null;
+    alwaysEditable?: boolean;
+    /** Tighter vertical layout for dialogs (e.g. Approved Application modal). */
+    variant?: "default" | "compact";
 };
 
-/**
- * Agent-only: tag an ISO on the current deal when none is set.
- * Compact strip above Business Profile on application detail.
- */
-export default function AgentDealIsoTag({ applicationId }: AgentDealIsoTagProps) {
+export default function AgentDealIsoTag({
+    applicationId,
+    alwaysEditable = true,
+    variant = "default",
+}: AgentDealIsoTagProps) {
+    const isCompact = variant === "compact";
     const dispatch = useDispatch<AppDispatch>();
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
+    
     const { loading: fetchLoading, data: applicationData } = useSelector(
         (state: RootState) => state.applicationDetail,
     );
@@ -65,6 +90,18 @@ export default function AgentDealIsoTag({ applicationId }: AgentDealIsoTagProps)
         return isoTagged || rawId.length > 0;
     }, [showDynamicData, applicationData]);
 
+    const linkedIsoId = useMemo(() => {
+        if (!showDynamicData || !applicationData) return "";
+        const row = applicationData as unknown as Record<string, unknown>;
+        const iso = row.iso as Record<string, unknown> | null | undefined;
+        if (iso && typeof iso === "object") {
+            if (iso.id != null && String(iso.id).trim()) return String(iso.id).trim();
+            if (iso._id != null && String(iso._id).trim()) return String(iso._id).trim();
+        }
+        const isoIdRaw = row.isoId;
+        return isoIdRaw != null && String(isoIdRaw).trim() !== "" ? String(isoIdRaw).trim() : "";
+    }, [showDynamicData, applicationData]);
+
     const appRow = applicationData as unknown as Record<string, unknown> | null;
     const targetApplicationId = String(
         normalizedApplicationId ||
@@ -80,12 +117,15 @@ export default function AgentDealIsoTag({ applicationId }: AgentDealIsoTagProps)
         (state: RootState) => state.iso,
     );
     const [taggingIso, setTaggingIso] = useState(false);
+    const [savingEmail, setSavingEmail] = useState(false);
     const taggingIsoRef = useRef(false);
+    const [emailDraft, setEmailDraft] = useState("");
+    const [editingEmail, setEditingEmail] = useState(false);
 
     useEffect(() => {
-        if (!showDynamicData || hasIso) return;
+        if (!showDynamicData) return;
         void dispatch(getIsos());
-    }, [dispatch, hasIso, showDynamicData]);
+    }, [dispatch, showDynamicData]);
 
     const sortedIsos = useMemo(() => {
         return [...isoList].sort((a, b) =>
@@ -95,10 +135,51 @@ export default function AgentDealIsoTag({ applicationId }: AgentDealIsoTagProps)
         );
     }, [isoList]);
 
-    const handleAgentPickIso = useCallback(
+    const linkedIso = useMemo(() => {
+        if (!showDynamicData || !applicationData) return { name: "", email: "", phone: "" };
+        const row = applicationData as unknown as Record<string, unknown>;
+        let name = "";
+        let email = "";
+        let phone = "";
+        if (row.iso && typeof row.iso === "object") {
+            const iso = row.iso as Record<string, unknown>;
+            name = typeof iso.name === "string" ? iso.name.trim() : "";
+            email = typeof iso.email === "string" ? iso.email.trim() : "";
+            phone = typeof iso.phone === "string" ? iso.phone.trim() : "";
+        }
+        const isoIdForList =
+            linkedIsoId ||
+            (row.iso && typeof row.iso === "object"
+                ? String(
+                      (row.iso as Record<string, unknown>).id ??
+                          (row.iso as Record<string, unknown>)._id ??
+                          "",
+                  ).trim()
+                : row.isoId != null
+                  ? String(row.isoId).trim()
+                  : "");
+        if (isoIdForList) {
+            const fromList = isoList.find((item) => item.id === isoIdForList);
+            if (fromList) {
+                if (!name) name = String(fromList.name || "").trim();
+                if (!email) email = String(fromList.email || "").trim();
+                if (!phone) phone = String(fromList.phone || "").trim();
+            }
+        }
+        return { name, email, phone };
+    }, [applicationData, showDynamicData, isoList, linkedIsoId]);
+
+    useEffect(() => {
+        setEmailDraft(linkedIso.email);
+        setEditingEmail(false);
+    }, [linkedIso.email, linkedIsoId]);
+
+    const handlePickIso = useCallback(
         async (isoId: string) => {
             if (!isoId?.trim() || !targetApplicationId) return;
             if (taggingIsoRef.current) return;
+            if (hasIso && isoId.trim() === linkedIsoId) return;
+
             taggingIsoRef.current = true;
             setTaggingIso(true);
             try {
@@ -108,181 +189,439 @@ export default function AgentDealIsoTag({ applicationId }: AgentDealIsoTagProps)
                         data: { isoId: isoId.trim() },
                     }),
                 ).unwrap();
-                toast.success("ISO linked to this deal.");
+                toast.success(hasIso ? "ISO updated successfully." : "ISO linked successfully.");
             } catch (err: unknown) {
                 const msg =
                     typeof err === "string"
                         ? err
                         : err && typeof err === "object" && "message" in err
                           ? String((err as { message?: string }).message)
-                          : "Failed to tag ISO";
-                toast.error(msg || "Failed to tag ISO");
+                          : "Failed to update ISO";
+                toast.error(msg || "Failed to update ISO");
             } finally {
                 taggingIsoRef.current = false;
                 setTaggingIso(false);
             }
         },
-        [dispatch, targetApplicationId],
+        [dispatch, targetApplicationId, hasIso, linkedIsoId],
     );
 
-    const linkedIso = useMemo(() => {
-        if (!showDynamicData || !applicationData) return { name: "", email: "" };
-        const row = applicationData as unknown as Record<string, unknown>;
-        if (!row.iso || typeof row.iso !== "object") return { name: "", email: "" };
-        const iso = row.iso as Record<string, unknown>;
-        const name = typeof iso.name === "string" ? iso.name.trim() : "";
-        const email = typeof iso.email === "string" ? iso.email.trim() : "";
-        return { name, email };
-    }, [applicationData, showDynamicData]);
+    const handleSaveEmail = useCallback(async () => {
+        const trimmed = emailDraft.trim();
+        if (!linkedIsoId) {
+            toast.error("Link an ISO before saving.");
+            return;
+        }
+        if (!trimmed) {
+            toast.error("ISO email is required.");
+            return;
+        }
+        if (trimmed === linkedIso.email) return;
+
+        setSavingEmail(true);
+        try {
+            await dispatch(
+                updateIso({
+                    id: linkedIsoId,
+                    data: { email: trimmed },
+                }),
+            ).unwrap();
+            toast.success("ISO email updated.");
+            setEditingEmail(false);
+        } catch (err: unknown) {
+            const msg =
+                typeof err === "string"
+                    ? err
+                    : err && typeof err === "object" && "message" in err
+                      ? String((err as { message?: string }).message)
+                      : "Failed to update ISO email";
+            toast.error(msg || "Failed to update ISO email");
+        } finally {
+            setSavingEmail(false);
+        }
+    }, [dispatch, emailDraft, linkedIso.email, linkedIsoId]);
 
     if (!showDynamicData) return null;
 
+    const controlsDisabled =
+        !alwaysEditable ||
+        taggingIso ||
+        savingEmail ||
+        !targetApplicationId ||
+        (isoListLoading && sortedIsos.length === 0);
+
+    const emailDirty = emailDraft.trim() !== linkedIso.email;
+    const canSaveEmail =
+        alwaysEditable &&
+        hasIso &&
+        linkedIsoId.length > 0 &&
+        emailDirty &&
+        emailDraft.trim().length > 0 &&
+        !savingEmail;
+
     const shell = cn(
-        "mb-6 flex flex-col gap-3 rounded-xl border p-3.5 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:p-4",
+        "overflow-hidden rounded-xl border p-0 shadow-sm",
+        isCompact ? "mb-0" : "mb-6",
         isDark
-            ? "border-white/10 bg-gradient-to-br from-zinc-900/90 to-zinc-950/95 ring-1 ring-white/5"
-            : "border-slate-200/90 bg-gradient-to-br from-white via-slate-50/80 to-slate-100/40 ring-1 ring-slate-900/[0.04]",
+            ? "border-[#374151] bg-[#141517]"
+            : "border-[#FDFDFD] bg-white",
     );
 
-    const iconWrap = (tone: "linked" | "link") =>
-        cn(
-            "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
-            tone === "linked"
-                ? isDark
-                    ? "bg-emerald-500/15 text-emerald-400"
-                    : "bg-emerald-500/[0.12] text-emerald-700"
-                : isDark
-                  ? "bg-sky-500/15 text-sky-400"
-                  : "bg-sky-500/[0.12] text-sky-700",
-        );
+    const sectionTitle = fetchLoading
+        ? "ISO Partner"
+        : hasIso
+          ? alwaysEditable && editingEmail
+              ? "Edit ISO"
+              : "Linked ISO"
+          : alwaysEditable
+            ? "Link ISO"
+            : "ISO Partner";
 
-    return (
-        <div className={shell}>
-            {fetchLoading ? (
-                <div className="flex w-full items-center gap-3">
-                    <Skeleton className="h-10 w-10 shrink-0 rounded-lg" />
-                    <Skeleton className="h-9 flex-1 max-w-md rounded-lg" />
-                </div>
-            ) : hasIso ? (
-                <div className="flex min-w-0 flex-1 items-center gap-3">
-                    <div className={iconWrap("linked")}>
-                        <Building2 className="h-5 w-5" aria-hidden />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                        <p
-                            className={cn(
-                                "text-[11px] font-semibold uppercase tracking-[0.14em]",
-                                isDark ? "text-zinc-500" : "text-slate-500",
-                            )}
-                        >
-                            ISO
-                        </p>
-                        <p
-                            className={cn(
-                                "truncate text-sm font-semibold leading-tight",
-                                isDark ? "text-zinc-100" : "text-slate-900",
-                            )}
-                        >
-                            {linkedIso.name || linkedIso.email || "Linked"}
-                        </p>
-                        {linkedIso.name && linkedIso.email ? (
-                            <p
-                                className={cn(
-                                    "truncate text-xs leading-snug",
-                                    isDark ? "text-zinc-400" : "text-slate-600",
-                                )}
-                            >
-                                {linkedIso.email}
-                            </p>
-                        ) : null}
-                    </div>
-                </div>
-            ) : (
-                <>
-                    <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
-                        <div className={iconWrap("link")}>
-                            <Link2 className="h-5 w-5" aria-hidden />
-                        </div>
-                        <div className="min-w-0 pt-0.5 sm:pt-0">
-                            <p
-                                className={cn(
-                                    "text-sm font-semibold leading-tight",
-                                    isDark ? "text-zinc-100" : "text-slate-900",
-                                )}
-                            >
-                                Link ISO
-                            </p>
-                            <p
-                                className={cn(
-                                    "mt-0.5 text-xs leading-snug",
-                                    isDark ? "text-zinc-500" : "text-slate-600",
-                                )}
-                            >
-                                Attach an independent sales org to this deal.
-                            </p>
-                        </div>
-                    </div>
-                    <div className="w-full shrink-0 sm:w-[min(100%,18rem)]">
-                        {isoListError ? (
-                            <p className="text-xs text-destructive">{isoListError}</p>
-                        ) : sortedIsos.length === 0 && !isoListLoading ? (
-                            <p
-                                className={cn(
-                                    "text-xs",
-                                    isDark ? "text-zinc-500" : "text-muted-foreground",
-                                )}
-                            >
-                                No ISOs in the system yet.
-                            </p>
-                        ) : (
-                            <Select
-                                disabled={
-                                    taggingIso ||
-                                    !targetApplicationId ||
-                                    (isoListLoading && sortedIsos.length === 0)
-                                }
-                                onValueChange={(v: string) => void handleAgentPickIso(v)}
-                            >
-                                <SelectTrigger
-                                    size="sm"
-                                    className={cn(
-                                        "h-9 w-full rounded-lg border font-medium shadow-none transition-colors",
-                                        isDark
-                                            ? "border-white/10 bg-zinc-900/80 hover:bg-zinc-900"
-                                            : "border-slate-200 bg-white hover:bg-slate-50",
-                                    )}
-                                >
-                                    <SelectValue
-                                        placeholder={
-                                            isoListLoading && sortedIsos.length === 0
-                                                ? "Loading…"
-                                                : "Choose ISO…"
-                                        }
-                                    />
-                                </SelectTrigger>
-                                <SelectContent className="z-[10060] max-h-72 rounded-lg">
-                                    {sortedIsos.map((iso) => (
-                                        <SelectItem key={iso.id} value={iso.id}>
-                                            {iso.name}
-                                            {iso.email ? ` — ${iso.email}` : ""}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        )}
-                        {taggingIso ? (
-                            <p
-                                className={cn(
-                                    "mt-1.5 text-[11px]",
-                                    isDark ? "text-zinc-500" : "text-muted-foreground",
-                                )}
-                            >
-                                Saving…
-                            </p>
-                        ) : null}
-                    </div>
-                </>
+    const headerBar = cn(
+        "flex items-center gap-2 border-b font-roboto font-[600] uppercase tracking-wide",
+        isCompact
+            ? "px-4 py-2.5 text-xs sm:px-4"
+            : "px-4 py-3 text-base sm:px-5",
+        isDark
+            ? "border-[#374151] bg-[#2A2B2F] text-white"
+            : "border-slate-100 bg-[#F9FAFD] text-[#374151]",
+    );
+
+    const bodyPad = isCompact ? "px-4 py-3 sm:px-4" : "px-4 py-3.5 sm:px-5 sm:py-4";
+
+    // Cleaned up Form Trigger Styles
+    const selectTriggerClass = cn(
+        "h-10 w-full min-w-[11rem] cursor-pointer rounded-lg border text-sm font-medium transition-all duration-200 focus:ring-2 focus:ring-blue-500/20",
+        isDark
+            ? "border-zinc-800 bg-zinc-950/40 text-zinc-200 hover:border-zinc-700 hover:bg-zinc-950"
+            : "border-slate-200 bg-slate-50/50 text-slate-700 hover:border-slate-300 hover:bg-white",
+    );
+
+    const clickAction = "cursor-pointer";
+
+    const isoSelect = (
+        <Select
+            disabled={controlsDisabled}
+            value={hasIso && linkedIsoId ? linkedIsoId : undefined}
+            onValueChange={(v: string) => void handlePickIso(v)}
+        >
+            <SelectTrigger size="sm" className={selectTriggerClass}>
+                <SelectValue
+                    placeholder={
+                        isoListLoading && sortedIsos.length === 0
+                            ? "Loading…"
+                            : hasIso
+                              ? "Change ISO partner"
+                              : "Select ISO partner"
+                    }
+                >
+                    {hasIso && linkedIsoId
+                        ? "Change ISO partner"
+                        : undefined}
+                </SelectValue>
+            </SelectTrigger>
+            <SelectContent className="z-[10060] max-h-72 rounded-xl backdrop-blur-xl border border-blue-500/10 shadow-xl">
+                {sortedIsos.map((iso) => (
+                    <SelectItem
+                        key={iso.id}
+                        value={iso.id}
+                        className="cursor-pointer rounded-md py-2 text-sm my-0.5"
+                    >
+                        <span className="font-medium">{iso.name}</span>
+                        {iso.email ? <span className="opacity-60 font-normal"> — {iso.email}</span> : ""}
+                    </SelectItem>
+                ))}
+            </SelectContent>
+        </Select>
+    );
+
+    const displayName = linkedIso.name || linkedIso.email || "Linked ISO";
+    const metaMuted = isDark ? "text-zinc-500" : "text-slate-400";
+    const metaValue = isDark ? "text-zinc-300" : "text-slate-600";
+
+    const isoSelectControl = isoListError ? (
+        <p className="text-sm font-medium text-destructive">{isoListError}</p>
+    ) : sortedIsos.length === 0 && !isoListLoading ? (
+        <p className={cn("text-sm font-medium", metaMuted)}>No ISOs registered.</p>
+    ) : (
+        <div
+            className={cn(
+                "flex w-full flex-col items-stretch gap-1.5",
+                !isCompact && "shrink-0 lg:items-end lg:max-w-[14rem]",
+            )}
+        >
+            {isCompact ? (
+                <p className={cn("text-xs font-medium", metaMuted)}>ISO partner</p>
+            ) : null}
+            {isoSelect}
+            {taggingIso && (
+                <span
+                    className={cn(
+                        "flex items-center gap-1.5 text-xs font-medium",
+                        isDark ? "text-blue-400" : "text-blue-600",
+                    )}
+                >
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                    Updating deal…
+                </span>
             )}
         </div>
+    );
+
+    const contactChip = (icon: ReactNode, children: ReactNode) => (
+        <span
+            className={cn(
+                "inline-flex min-w-0 max-w-full items-center gap-2 text-sm font-medium",
+                metaValue,
+            )}
+        >
+            <span
+                className={cn(
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
+                    isDark ? "bg-zinc-800 text-sky-400" : "bg-[#3B8BD1]/10 text-[#2566A9]",
+                )}
+            >
+                {icon}
+            </span>
+            <span className="truncate">{children}</span>
+        </span>
+    );
+
+    const editEmailButton = (
+        <button
+            type="button"
+            onClick={() => setEditingEmail(true)}
+            className={cn(
+                clickAction,
+                "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm font-medium transition-colors",
+                isDark
+                    ? "border-zinc-700 bg-zinc-800/80 text-sky-300 hover:border-sky-500/40 hover:bg-zinc-800 hover:text-sky-200"
+                    : "border-slate-200 bg-white text-[#276D9C] hover:border-[#3B8BD1]/40 hover:bg-[#3B8BD1]/5 hover:text-[#2566A9]",
+            )}
+            aria-label="Edit ISO email"
+        >
+            <Pencil className="h-4 w-4" aria-hidden />
+            Edit
+        </button>
+    );
+
+    return (
+        <section className={shell} aria-labelledby="deal-iso-section-title">
+            <div className={headerBar}>
+                {/* <Building2
+                    className={cn(
+                        "h-5 w-5 shrink-0",
+                        isDark ? "text-[#5AACEA]" : "text-[#276D9C]",
+                    )}
+                    aria-hidden
+                /> */}
+                <h2 id="deal-iso-section-title" className="leading-tight">
+                    {sectionTitle}
+                </h2>
+            </div>
+
+            {fetchLoading ? (
+                <div className={cn(bodyPad, "flex items-center gap-4")}>
+                    <Skeleton className="h-10 w-10 shrink-0 rounded-xl" />
+                    <div className="space-y-1.5 flex-1">
+                        <Skeleton className="h-4 max-w-[200px] rounded" />
+                        <Skeleton className="h-3 max-w-[300px] rounded" />
+                    </div>
+                </div>
+            ) : hasIso ? (
+                <div className={cn(bodyPad, "flex flex-col gap-3.5")}>
+                    <div
+                        className={cn(
+                            "flex flex-col gap-3",
+                            !isCompact && "lg:flex-row lg:items-start lg:justify-between",
+                        )}
+                    >
+                        <div className="flex min-w-0 flex-1 items-start gap-3">
+                            <div
+                                className={cn(
+                                    "flex shrink-0 items-center justify-center rounded-xl font-bold tracking-wider shadow-inner",
+                                    isCompact ? "h-10 w-10 text-xs" : "h-12 w-12 text-sm",
+                                    isDark
+                                        ? "bg-gradient-to-br from-blue-500/20 to-blue-600/5 text-blue-300 border border-blue-500/10"
+                                        : "bg-gradient-to-br from-blue-100 to-blue-50 text-blue-700 border border-blue-200/50",
+                                )}
+                            >
+                                {isoInitials(displayName)}
+                            </div>
+
+                            <div className="min-w-0 flex-1 space-y-2">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span
+                                        className={cn(
+                                            "truncate font-semibold tracking-tight",
+                                            isCompact ? "text-sm" : "text-base",
+                                            isDark ? "text-zinc-100" : "text-slate-800",
+                                        )}
+                                    >
+                                        {linkedIso.name || displayName}
+                                    </span>
+                                    <span
+                                        className={cn(
+                                            "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                            isDark
+                                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                                                : "bg-emerald-50 text-emerald-700 border border-emerald-200",
+                                        )}
+                                    >
+                                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                        Linked
+                                    </span>
+                                </div>
+
+                                {!editingEmail ? (
+                                    <div
+                                        className={cn(
+                                            "flex flex-col gap-2",
+                                            !isCompact &&
+                                                "sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-2",
+                                        )}
+                                    >
+                                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                            {contactChip(
+                                                <Mail
+                                                    className="h-4 w-4"
+                                                    strokeWidth={2}
+                                                    aria-hidden
+                                                />,
+                                                linkedIso.email || EMPTY_FIELD,
+                                            )}
+                                            {alwaysEditable ? editEmailButton : null}
+                                        </div>
+                                        {!isCompact ? (
+                                            <span
+                                                className={cn(
+                                                    "hidden sm:inline text-base",
+                                                    metaMuted,
+                                                )}
+                                                aria-hidden
+                                            >
+                                                ·
+                                            </span>
+                                        ) : null}
+                                        {contactChip(
+                                            <PhoneCall
+                                                className="h-4 w-4"
+                                                strokeWidth={2}
+                                                aria-hidden
+                                            />,
+                                            formatIsoPhoneDisplay(linkedIso.phone),
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col gap-2 pt-0.5">
+                                        {contactChip(
+                                            <PhoneCall
+                                                className="h-4 w-4"
+                                                strokeWidth={2}
+                                                aria-hidden
+                                            />,
+                                            formatIsoPhoneDisplay(linkedIso.phone),
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {isCompact ? (
+                            <div className="border-t pt-3">{alwaysEditable ? isoSelectControl : null}</div>
+                        ) : (
+                            alwaysEditable ? isoSelectControl : null
+                        )}
+                    </div>
+
+                    {/* Premium Row Action Panel when Editing Email */}
+                    {alwaysEditable && editingEmail ? (
+                        <div className={cn(
+                            "flex min-w-0 flex-col gap-2.5 border-t pt-3 mt-1 sm:flex-row sm:items-center sm:gap-3 animation-fadeIn",
+                            isDark ? "border-zinc-800/80" : "border-slate-100"
+                        )}>
+                            <div className="relative flex-1">
+                                <Mail
+                                    className={cn(
+                                        "absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2",
+                                        isDark ? "text-zinc-500" : "text-[#3B8BD1]",
+                                    )}
+                                    strokeWidth={2}
+                                    aria-hidden
+                                />
+                                <Input
+                                    id="deal-iso-email"
+                                    type="email"
+                                    autoComplete="email"
+                                    disabled={savingEmail}
+                                    value={emailDraft}
+                                    onChange={(e) => setEmailDraft(e.target.value)}
+                                    className={cn(
+                                        "h-10 pl-10 text-sm rounded-lg",
+                                        isDark ? "border-zinc-800 bg-zinc-950/50" : "border-slate-200 bg-white",
+                                    )}
+                                    placeholder="ISO partner email"
+                                />
+                            </div>
+                            <div className="flex shrink-0 gap-2 justify-end">
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={!canSaveEmail}
+                                    onClick={() => void handleSaveEmail()}
+                                    className={cn(
+                                        clickAction,
+                                        "h-10 gap-1.5 bg-[#3B8BD1] px-4 text-sm font-semibold text-white hover:bg-[#2566A9] rounded-lg",
+                                    )}
+                                >
+                                    {savingEmail ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <Check className="h-4 w-4" />
+                                    )}
+                                    Save
+                                </Button>
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={savingEmail}
+                                    className={cn(
+                                        clickAction,
+                                        "h-10 w-10 p-0 rounded-lg",
+                                        isDark ? "hover:bg-zinc-800" : "hover:bg-slate-100",
+                                    )}
+                                    onClick={() => {
+                                        setEmailDraft(linkedIso.email);
+                                        setEditingEmail(false);
+                                    }}
+                                >
+                                    <X className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        </div>
+                    ) : null}
+                </div>
+            ) : (
+                <div
+                    className={cn(
+                        bodyPad,
+                        "flex flex-col gap-3",
+                        !isCompact && "gap-3.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4",
+                    )}
+                >
+                    <p className={cn("min-w-0 text-sm font-medium leading-relaxed", metaMuted)}>
+                        {alwaysEditable
+                            ? "Connect a sales partner to track commissions and contact details on this deal."
+                            : "No ISO linked."}
+                    </p>
+                    {alwaysEditable ? (
+                        <div className={cn("w-full shrink-0", !isCompact && "sm:w-auto sm:min-w-[11rem]")}>
+                            {isoSelectControl}
+                        </div>
+                    ) : null}
+                </div>
+            )}
+        </section>
     );
 }
