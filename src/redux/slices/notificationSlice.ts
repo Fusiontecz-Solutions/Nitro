@@ -12,7 +12,7 @@ export interface Notification {
     _id: string;
     title: string;
     message: string;
-    type: 'document_request' | 'application_update' | 'system' | 'other';
+    type: 'document_request' | 'application_update' | 'contract_status_update' | 'system' | 'other';
     recipient: string | {
         _id: string;
         firstName: string;
