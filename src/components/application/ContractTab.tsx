@@ -71,6 +71,7 @@ import {
     getApplicationPrimaryRecipientName,
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
+    resolveBalanceTransferMerchantContext,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./contractdata/Contract";
@@ -80,7 +81,9 @@ import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
+    buildDocuSignEnvelopeEmailSubject,
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
+    DOCUSIGN_EMAIL_LENDER_NAME,
 } from "./contractdata/docusignTemplateConfig";
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
@@ -96,6 +99,17 @@ import {
     formatNumberUSForInput,
     parseNumberUS,
 } from "@/lib/utils";
+import {
+    resolveOfferDecisionFeesRaw,
+    resolveOfferDecisionFundedAmount,
+    resolveOfferFeeAmountForDeal,
+} from "@/lib/offerDecisionFees";
+import {
+    deriveOfferRepaymentStack,
+    parseTerm,
+    resolveOfferFactorRate,
+    resolveOfferPayback,
+} from "@/lib/offerRepaymentCalculations";
 
 function formatContractCurrency(value: number | string | null | undefined) {
     return formatCurrency(value, { fallback: "—" });
@@ -182,7 +196,6 @@ type PersistedContractValues = {
     financeChargeInput: string;
     estimatedTotalPaymentInput: string;
     paymentTotalInput: string;
-    checkValueInput: string;
     estimatedMonthlyCostInput: string;
     estimatedPaymentInput: string;
     frequencyInput: string;
@@ -270,11 +283,11 @@ export default function ContractTab({
     const applicationUuid =
         (applicationData as any)?._id ?? (applicationData as any)?.id ?? appId;
     useEffect(() => {
-        if (appId) {
-            dispatch(getTermsOffers({ application: appId }));
+        const termsApplicationKey = applicationUuid ?? appId;
+        if (termsApplicationKey) {
+            dispatch(getTermsOffers({ application: String(termsApplicationKey) }));
         }
-
-    }, [appId, dispatch]);
+    }, [appId, applicationUuid, dispatch]);
 
     // Load existing contract by application so "Contracts Generated" can show
     // persisted backend data even before creating/selecting a contract in this session.
@@ -383,6 +396,24 @@ export default function ContractTab({
     // Note: BoldSign callback is handled in RootLayout.tsx to ensure it runs on every page load
 
     const latestTermsOffer: TermsOffer | undefined = termsOffers?.[0];
+
+    const effectiveTermsOffer = useMemo((): TermsOffer | undefined => {
+        const normalize = (raw: unknown): TermsOffer | undefined => {
+            if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+            const row = raw as Record<string, unknown>;
+            const id = String(row._id ?? row.id ?? "");
+            return { ...(row as unknown as TermsOffer), _id: id || String(row._id ?? "") };
+        };
+        return (
+            latestTermsOffer ??
+            normalize((fetchedContract as { termsOffers?: unknown[] } | null)?.termsOffers?.[0]) ??
+            normalize(
+                (fetchedContract as { application?: { termsOffers?: unknown[] } } | null)
+                    ?.application?.termsOffers?.[0],
+            )
+        );
+    }, [latestTermsOffer, fetchedContract]);
+
     const contractsForTable = termsOffers ?? [];
     const hasGeneratedContract = useMemo(() => {
         const fetchedId = Number((fetchedContract as { id?: unknown } | null)?.id);
@@ -390,29 +421,14 @@ export default function ContractTab({
         return Number.isFinite(Number(selectedContractId)) && Number(selectedContractId) > 0;
     }, [fetchedContract, selectedContractId]);
 
-    // Derive final calculations from "new offer decision" first, but fall back to terms offer.
-    const decisionOffer = parseMaybeNumber((offerDecision as any)?.offer);
-    const decisionRate = parseMaybeNumber((offerDecision as any)?.rate);
-    const decisionTermLength = parseMaybeNumber(
-        (offerDecision as any)?.termLength ?? (offerDecision as any)?.term,
-    );
+    // Derive final calculations from offer decision + terms offer (aligned with OfferDecisionToggle).
+    const offerRecord =
+        offerDecision != null && typeof offerDecision === "object"
+            ? (offerDecision as Record<string, unknown>)
+            : null;
+
     const decisionFrequency = String(
-        (offerDecision as any)?.frequency ??
-        latestTermsOffer?.frequency ??
-        "",
-    );
-    const decisionCommissionAmount = parseMaybeNumber(
-        (offerDecision as any)?.commissionAmount,
-    );
-    // UI in OfferDecisionToggle labels this input with a `%`, so treat it as a percent.
-    const decisionFeesPct = parseMaybeNumber((offerDecision as any)?.fees);
-    const decisionNumberOfPayments = parseMaybeNumber(
-        (offerDecision as any)?.numberOfPayments,
-    );
-    const decisionPaymentAmount = parseMaybeNumber(
-        (offerDecision as any)?.paymentAmount ??
-        (offerDecision as any)?.repayPerPeriod ??
-        (offerDecision as any)?.daysWeeks,
+        offerRecord?.frequency ?? effectiveTermsOffer?.frequency ?? "",
     );
 
     const paymentsPerMonth =
@@ -424,50 +440,85 @@ export default function ContractTab({
                     ? 1
                     : 0;
 
-    const termLength =
-        decisionTermLength ??
-        latestTermsOffer?.termLength ??
-        // Keep defaults numeric to avoid breaking the math
+    const approvedAmount =
+        resolveOfferDecisionFundedAmount(offerRecord) ??
+        parseMaybeNumber(offerRecord?.offer) ??
+        effectiveTermsOffer?.approvedAmount ??
         0;
 
+    const factorRate = resolveOfferFactorRate({
+        offerDecisionRate: parseMaybeNumber(offerRecord?.rate),
+        termsFactorRate: effectiveTermsOffer?.factorRate,
+        fallback: 1.499,
+    });
+
+    const paymentTermStr =
+        offerRecord?.term != null ? String(offerRecord.term).trim() : "";
+    const paymentTermCount = paymentTermStr ? parseTerm(paymentTermStr) : NaN;
+
+    const termLength =
+        parseMaybeNumber(offerRecord?.termLength) ??
+        effectiveTermsOffer?.termLength ??
+        (Number.isFinite(paymentTermCount) &&
+        paymentTermCount > 0 &&
+        paymentsPerMonth > 0
+            ? Math.round(paymentTermCount / paymentsPerMonth)
+            : 0);
+
+    const feesRaw = resolveOfferDecisionFeesRaw(offerRecord);
+    const commissionAmount = resolveOfferFeeAmountForDeal({
+        fundedAmount: approvedAmount,
+        factorRate,
+        feesRaw,
+        termsCommissionPercent: effectiveTermsOffer?.commissionPercent,
+        applicationCommissionPercentage: (applicationData as { commissionPercentage?: unknown })
+            ?.commissionPercentage,
+    });
+
+    const paybackAmount = resolveOfferPayback(approvedAmount, factorRate, {
+        termsPaybackAmount: effectiveTermsOffer?.paybackAmount,
+        offerPaybackAmount: parseMaybeNumber(offerRecord?.paybackAmount),
+        totalRemit: parseMaybeNumber(offerRecord?.totalRemit),
+    });
+
+    const repaymentStack =
+        approvedAmount > 0 && paymentTermStr
+            ? deriveOfferRepaymentStack({
+                  advance: approvedAmount,
+                  factorRate,
+                  term: paymentTermStr,
+                  frequency: decisionFrequency || "Daily",
+              })
+            : null;
+
     const numberOfPayments =
-        decisionNumberOfPayments ??
-        (termLength > 0 && paymentsPerMonth > 0
-            ? termLength * paymentsPerMonth
-            : latestTermsOffer?.numberOfPayments ?? 0);
+        parseMaybeNumber(offerRecord?.numberOfPayments) ??
+        (Number.isFinite(paymentTermCount) && paymentTermCount > 0
+            ? paymentTermCount
+            : termLength > 0 && paymentsPerMonth > 0
+              ? termLength * paymentsPerMonth
+              : effectiveTermsOffer?.numberOfPayments ?? 0);
 
-    const approvedAmount =
-        decisionOffer ?? latestTermsOffer?.approvedAmount ?? 0;
-
-    const commissionAmount =
-        decisionCommissionAmount ??
-        (decisionFeesPct != null && approvedAmount > 0
-            ? approvedAmount * (decisionFeesPct / 100)
-            : latestTermsOffer?.commissionAmount ?? 0);
-
-    const paybackAmount =
-        parseMaybeNumber((offerDecision as any)?.paybackAmount) ??
-        (decisionOffer != null && decisionRate != null
-            ? decisionOffer * decisionRate
-            : latestTermsOffer?.paybackAmount ?? 0);
-
-    // Keep raw payment amount for "Check Value" fallback
     const rawPaymentAmount =
-        decisionPaymentAmount ?? latestTermsOffer?.paymentAmount ?? 0;
+        parseMaybeNumber(offerRecord?.repayPerPeriod) ??
+        parseMaybeNumber(offerRecord?.paymentAmount) ??
+        parseMaybeNumber(offerRecord?.daysWeeks) ??
+        effectiveTermsOffer?.paymentAmount ??
+        0;
 
     const amountFinanced = approvedAmount;
     const recipientFunds = approvedAmount - commissionAmount;
-    const financeCharge = paybackAmount - approvedAmount;
+    const feeAmount = commissionAmount;
 
-    // Use paybackAmount as the authoritative total
-    const estimatedTotalPayment = paybackAmount;
+    const estimatedTotalPayment =
+        repaymentStack?.payback ?? paybackAmount;
 
-    // Base per-payment amount using rounded division
-    const estimatedPaymentRaw =
-        numberOfPayments > 0 ? estimatedTotalPayment / numberOfPayments : 0;
-    const estimatedPayment = Number(estimatedPaymentRaw.toFixed(2));
+    const estimatedPayment =
+        repaymentStack?.perPeriodPayment ??
+        (numberOfPayments > 0
+            ? Number((estimatedTotalPayment / numberOfPayments).toFixed(2))
+            : rawPaymentAmount);
 
-    // Reconstruct total from rounded payments and adjust last payment if needed
     let lastPayment = estimatedPayment;
     let paymentTotal = estimatedPayment * numberOfPayments;
 
@@ -479,8 +530,66 @@ export default function ContractTab({
         }
     }
 
-    const checkValue = estimatedPayment || rawPaymentAmount;
-    const estimatedMonthlyCost = estimatedPayment;
+    const estimatedMonthlyCost =
+        repaymentStack?.monthlyPayment ??
+        (estimatedPayment > 0 && paymentsPerMonth > 0
+            ? Number((estimatedPayment * paymentsPerMonth).toFixed(2))
+            : 0);
+
+    const contractTableMetrics = useMemo(() => {
+        const offerDecisionRate = parseMaybeNumber(offerRecord?.rate);
+        const buyRateFromOfferDecision =
+            offerDecisionRate != null &&
+            offerDecisionRate > 0 &&
+            offerDecisionRate < 2
+                ? offerDecisionRate
+                : null;
+
+        const buyRate =
+            effectiveTermsOffer?.buyRate ?? buyRateFromOfferDecision ?? null;
+        const upsell =
+            effectiveTermsOffer?.percentOfGross ??
+            effectiveTermsOffer?.commissionPercent ??
+            parseMaybeNumber(
+                (applicationData as { commissionPercentage?: unknown })
+                    ?.commissionPercentage,
+            );
+        const factor =
+            effectiveTermsOffer?.factorRate ??
+            factorRate;
+
+        const perPeriodPayment =
+            parseMaybeNumber(fetchedContract?.offer?.repayPerPeriod) ??
+            repaymentStack?.perPeriodPayment ??
+            parseMaybeNumber(offerRecord?.repayPerPeriod) ??
+            effectiveTermsOffer?.paymentAmount ??
+            estimatedPayment;
+
+        const formatRatePercent = (value: number | null | undefined) => {
+            if (value == null || !Number.isFinite(value)) return "—";
+            return `${value}%`;
+        };
+
+        const formatFactor = (value: number | null | undefined) => {
+            if (value == null || !Number.isFinite(value)) return "—";
+            return String(value);
+        };
+
+        return {
+            buyRate: formatRatePercent(buyRate ?? undefined),
+            upsell: formatRatePercent(upsell ?? undefined),
+            factor: formatFactor(factor ?? undefined),
+            perPeriodPayment,
+        };
+    }, [
+        applicationData,
+        estimatedPayment,
+        effectiveTermsOffer,
+        factorRate,
+        fetchedContract,
+        offerRecord,
+        repaymentStack,
+    ]);
 
     // Local editable copies for Final Calculation fields
     const [amountFinancedInput, setAmountFinancedInput] = useState<string>("");
@@ -489,7 +598,6 @@ export default function ContractTab({
     const [estimatedTotalPaymentInput, setEstimatedTotalPaymentInput] =
         useState<string>("");
     const [paymentTotalInput, setPaymentTotalInput] = useState<string>("");
-    const [checkValueInput, setCheckValueInput] = useState<string>("");
     const [estimatedMonthlyCostInput, setEstimatedMonthlyCostInput] =
         useState<string>("");
     const [estimatedPaymentInput, setEstimatedPaymentInput] =
@@ -510,7 +618,6 @@ export default function ContractTab({
         financeChargeInput,
         estimatedTotalPaymentInput,
         paymentTotalInput,
-        checkValueInput,
         estimatedMonthlyCostInput,
         estimatedPaymentInput,
         frequencyInput,
@@ -528,13 +635,14 @@ export default function ContractTab({
 
         if (persisted) {
             setAmountFinancedInput(String(persisted.amountFinancedInput || ""));
-            setRecipientFundsInput(String(persisted.recipientFundsInput || ""));
-            setFinanceChargeInput(String(persisted.financeChargeInput || ""));
+            setRecipientFundsInput(
+                recipientFunds ? formatCurrencyFull(recipientFunds) : "",
+            );
+            setFinanceChargeInput(feeAmount ? formatCurrencyFull(feeAmount) : "");
             setEstimatedTotalPaymentInput(
                 String(persisted.estimatedTotalPaymentInput || ""),
             );
             setPaymentTotalInput(String(persisted.paymentTotalInput || ""));
-            setCheckValueInput(String(persisted.checkValueInput || ""));
             setEstimatedMonthlyCostInput(
                 String(persisted.estimatedMonthlyCostInput || ""),
             );
@@ -553,12 +661,11 @@ export default function ContractTab({
         setSavedContractValuesSnapshot(null);
         setAmountFinancedInput(amountFinanced ? formatCurrencyFull(amountFinanced) : "");
         setRecipientFundsInput(recipientFunds ? formatCurrencyFull(recipientFunds) : "");
-        setFinanceChargeInput(financeCharge ? formatCurrencyFull(financeCharge) : "");
+        setFinanceChargeInput(feeAmount ? formatCurrencyFull(feeAmount) : "");
         setEstimatedTotalPaymentInput(
             estimatedTotalPayment ? formatCurrencyFull(estimatedTotalPayment) : "",
         );
         setPaymentTotalInput(paymentTotal ? formatCurrencyFull(paymentTotal) : "");
-        setCheckValueInput(checkValue ? formatCurrencyFull(checkValue) : "");
         setEstimatedMonthlyCostInput(
             estimatedMonthlyCost ? formatCurrencyFull(estimatedMonthlyCost) : "",
         );
@@ -572,10 +679,9 @@ export default function ContractTab({
         applicationData,
         amountFinanced,
         recipientFunds,
-        financeCharge,
+        feeAmount,
         estimatedTotalPayment,
         paymentTotal,
-        checkValue,
         estimatedMonthlyCost,
         estimatedPayment,
         decisionFrequency,
@@ -1066,6 +1172,17 @@ export default function ContractTab({
                 /* use fetchedContract */
             }
 
+            const docuSignClientName =
+                resolveBalanceTransferMerchantContext(
+                    latestContract as Record<string, unknown>,
+                    applicationData,
+                ).clientName.trim() ||
+                applicationSignerName.trim() ||
+                "Client";
+            const docuSignEmailSubject =
+                buildDocuSignEnvelopeEmailSubject(docuSignClientName);
+            const docuSignEmailMessage = `Please review and sign your agreement with ${DOCUSIGN_EMAIL_LENDER_NAME}.`;
+
             const baseTemplateId = DEFAULT_DOCUSIGN_TEMPLATE_ID;
             if (!baseTemplateId) {
                 failDocuSignEnvelope(
@@ -1147,6 +1264,8 @@ export default function ContractTab({
                     showSendButton: true,
                     showPreviewButton: true,
                     showNavigationButtons: true,
+                    title: docuSignEmailSubject,
+                    message: docuSignEmailMessage,
                     ccEmails: effectiveCcEmails,
                     autoSend: options.autoSend,
                     reminderSettings: {
@@ -1175,9 +1294,8 @@ export default function ContractTab({
                         showSendButton: true,
                         showPreviewButton: true,
                         showNavigationButtons: true,
-                        title: "LLC Operating Agreement",
-                        message:
-                            "An LLC operating agreement is a legal document that governs the affairs, management, and ownership of a company.",
+                        title: docuSignEmailSubject,
+                        message: docuSignEmailMessage,
                         roles,
                         labels: ["currency"],
                         reminderSettings: {
@@ -1431,7 +1549,6 @@ export default function ContractTab({
         { label: "Finance Charge", value: financeChargeInput },
         { label: "Estimated Total Payment Amount", value: estimatedTotalPaymentInput },
         { label: "Payment Total", value: paymentTotalInput },
-        { label: "Check Value", value: checkValueInput },
         { label: "Estimated Monthly Cost", value: estimatedMonthlyCostInput },
         { label: "Estimated Payments", value: estimatedPaymentInput },
         { label: "Payments Terms", value: numberOfPaymentsInput },
@@ -1486,7 +1603,6 @@ export default function ContractTab({
                 savedContractValuesSnapshot.estimatedTotalPaymentInput || "",
             );
             setPaymentTotalInput(savedContractValuesSnapshot.paymentTotalInput || "");
-            setCheckValueInput(savedContractValuesSnapshot.checkValueInput || "");
             setEstimatedMonthlyCostInput(
                 savedContractValuesSnapshot.estimatedMonthlyCostInput || "",
             );
@@ -1750,23 +1866,6 @@ export default function ContractTab({
                             <Label
                                 className={`text-sm ${isDark ? "text-gray-400" : "text-[#687182]"}`}
                             >
-                                Check Value
-                            </Label>
-                            <Input
-                                value={checkValueInput}
-                                disabled={isContractValuesReadOnly}
-                                onChange={(e) => {
-                                    const stripped = e.target.value.replace(/^\$\s*/, "");
-                                    const formatted = formatNumberUSForInput(stripped);
-                                    setCheckValueInput(formatted ? `$ ${formatted}` : "");
-                                }}
-                                className={calculationInputClass}
-                            />
-                        </div>
-                        <div className="space-y-1.5">
-                            <Label
-                                className={`text-sm ${isDark ? "text-gray-400" : "text-[#687182]"}`}
-                            >
                                 Estimated Monthly Cost
                             </Label>
                             <Input
@@ -1897,7 +1996,7 @@ export default function ContractTab({
                                     PAYBACK
                                 </TableHead>
                                 <TableHead className={tableHeaderCellClass}>
-                                    WEEKLY PAYMENT
+                                    PAYMENT AMOUNT
                                 </TableHead>
                                 <TableHead className={tableHeaderCellClass}>
                                     BUY RATE
@@ -1941,16 +2040,18 @@ export default function ContractTab({
                                         {formatContractCurrency(fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit)}
                                     </TableCell>
                                     <TableCell className={tableCellClass}>
-                                        {formatContractCurrency(fetchedContract?.offer?.paymentAmount)}
+                                        {formatContractCurrency(
+                                            contractTableMetrics.perPeriodPayment,
+                                        )}
                                     </TableCell>
                                     <TableCell className={tableCellClass}>
-                                        {fetchedContract?.offer?.buyRate ?? "—"}
+                                        {contractTableMetrics.buyRate}
                                     </TableCell>
                                     <TableCell className={tableCellClass}>
-                                        {fetchedContract?.offer?.percentOfGross ?? "—"}
+                                        {contractTableMetrics.upsell}
                                     </TableCell>
                                     <TableCell className={tableCellClass}>
-                                        {fetchedContract?.offer?.factorRate ?? "—"}
+                                        {contractTableMetrics.factor}
                                     </TableCell>
                                     <TableCell>
                                         <div className="flex items-center gap-1.5">
@@ -2008,16 +2109,25 @@ export default function ContractTab({
                                             {formatContractCurrency(offer.paybackAmount)}
                                         </TableCell>
                                         <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(offer.paymentAmount)}
+                                            {formatContractCurrency(
+                                                offer.paymentAmount ??
+                                                    contractTableMetrics.perPeriodPayment,
+                                            )}
                                         </TableCell>
                                         <TableCell className={tableCellClass}>
-                                            {offer.buyRate ?? "—"}
+                                            {offer.buyRate != null
+                                                ? `${offer.buyRate}%`
+                                                : contractTableMetrics.buyRate}
                                         </TableCell>
                                         <TableCell className={tableCellClass}>
-                                            {offer.percentOfGross ?? "—"}
+                                            {offer.percentOfGross != null
+                                                ? `${offer.percentOfGross}%`
+                                                : contractTableMetrics.upsell}
                                         </TableCell>
                                         <TableCell className={tableCellClass}>
-                                            {offer.factorRate ?? "—"}
+                                            {offer.factorRate != null
+                                                ? String(offer.factorRate)
+                                                : contractTableMetrics.factor}
                                         </TableCell>
                                         <TableCell>
                                             <span className={statusBadgeClass}>

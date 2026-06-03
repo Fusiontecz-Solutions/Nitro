@@ -1,3 +1,5 @@
+import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
+
 export interface ContractPrefillField {
     id: string;
     label: string;
@@ -139,7 +141,27 @@ export interface BuildContractPrefillFieldsArgs {
     addendumDatedPrincipalOwner2Name?: string;
     addendumDatedPrincipalOwner2Date?: string;
     exhibitOwnerName?: string;
+    /** Exhibit A line items (DocuSign data labels `exhibit_a_value_1` … `exhibit_a_value_10`). */
+    exhibitAValue1?: string;
+    exhibitAValue2?: string;
+    exhibitAValue3?: string;
+    exhibitAValue4?: string;
+    exhibitAValue5?: string;
+    exhibitAValue6?: string;
+    exhibitAValue7?: string;
+    exhibitAValue8?: string;
+    exhibitAValue9?: string;
+    exhibitAValue10?: string;
 }
+
+export const EXHIBIT_A_VALUE_COUNT = 10;
+
+export type ExhibitAValueFieldKey = `exhibitAValue${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10}`;
+
+export const EXHIBIT_A_VALUE_FIELD_KEYS: readonly ExhibitAValueFieldKey[] = Array.from(
+    { length: EXHIBIT_A_VALUE_COUNT },
+    (_, i) => `exhibitAValue${i + 1}` as ExhibitAValueFieldKey,
+);
 
 const FIELD_IDS = {
     agreementDate: ["agreement_date"],
@@ -166,7 +188,7 @@ const FIELD_IDS = {
     clientPhone: ["client_phone"],
     purchasePrice: ["purchase_price"],
     purchaseAmount: ["purchase_amount"],
-    purchasePercent: ["purchase_percent"],
+    purchasePercent: ["purchase_percent", "specified_percentage", "purchased_percent"],
     remittance: ["remittance"],
     frequency: ["frequency", "paymentTerms"],
     /** DocuSign: `net_to_merchant`; BoldSign template tabs often use `NetFundProvided`. */
@@ -267,6 +289,16 @@ const FIELD_IDS = {
     addendumDatedPrincipalOwner2Name: ["addendum_dated_principal_owner2_name"],
     addendumDatedPrincipalOwner2Date: ["addendum_dated_principal_owner2_date"],
     exhibitOwnerName: ["exhibit_owner_name"],
+    exhibitAValue1: ["exhibit_a_value_1"],
+    exhibitAValue2: ["exhibit_a_value_2"],
+    exhibitAValue3: ["exhibit_a_value_3"],
+    exhibitAValue4: ["exhibit_a_value_4"],
+    exhibitAValue5: ["exhibit_a_value_5"],
+    exhibitAValue6: ["exhibit_a_value_6"],
+    exhibitAValue7: ["exhibit_a_value_7"],
+    exhibitAValue8: ["exhibit_a_value_8"],
+    exhibitAValue9: ["exhibit_a_value_9"],
+    exhibitAValue10: ["exhibit_a_value_10"],
 } as const;
 
 function formatUsDateString(value: string): string {
@@ -506,6 +538,16 @@ export const buildContractPrefillFields = ({
     addendumDatedPrincipalOwner2Name = "",
     addendumDatedPrincipalOwner2Date = "",
     exhibitOwnerName = "",
+    exhibitAValue1 = "",
+    exhibitAValue2 = "",
+    exhibitAValue3 = "",
+    exhibitAValue4 = "",
+    exhibitAValue5 = "",
+    exhibitAValue6 = "",
+    exhibitAValue7 = "",
+    exhibitAValue8 = "",
+    exhibitAValue9 = "",
+    exhibitAValue10 = "",
 }: BuildContractPrefillFieldsArgs): ContractPrefillField[] => {
     return [
         ...mapIds(FIELD_IDS.legalName, "Legal Name", legalName),
@@ -693,6 +735,16 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.addendumDatedPrincipalOwner2Name, "Addendum Principal Owner2 Name", addendumDatedPrincipalOwner2Name),
         ...mapIds(FIELD_IDS.addendumDatedPrincipalOwner2Date, "Addendum Principal Owner2 Date", addendumDatedPrincipalOwner2Date),
         ...mapIds(FIELD_IDS.exhibitOwnerName, "Exhibit Owner Name", exhibitOwnerName),
+        ...mapIds(FIELD_IDS.exhibitAValue1, "Exhibit A company 1", exhibitAValue1),
+        ...mapIds(FIELD_IDS.exhibitAValue2, "Exhibit A company 2", exhibitAValue2),
+        ...mapIds(FIELD_IDS.exhibitAValue3, "Exhibit A company 3", exhibitAValue3),
+        ...mapIds(FIELD_IDS.exhibitAValue4, "Exhibit A company 4", exhibitAValue4),
+        ...mapIds(FIELD_IDS.exhibitAValue5, "Exhibit A company 5", exhibitAValue5),
+        ...mapIds(FIELD_IDS.exhibitAValue6, "Exhibit A company 6", exhibitAValue6),
+        ...mapIds(FIELD_IDS.exhibitAValue7, "Exhibit A company 7", exhibitAValue7),
+        ...mapIds(FIELD_IDS.exhibitAValue8, "Exhibit A company 8", exhibitAValue8),
+        ...mapIds(FIELD_IDS.exhibitAValue9, "Exhibit A company 9", exhibitAValue9),
+        ...mapIds(FIELD_IDS.exhibitAValue10, "Exhibit A company 10", exhibitAValue10),
     ];
 };
 
@@ -895,6 +947,8 @@ export type NetToMerchantPrefillSources = {
     offerDecision?: Record<string, unknown> | null;
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    /** Merged prefill / overrides — offer amount here wins over mis-set contract.purchaseAmount (payback). */
+    prefill?: Partial<BuildContractPrefillFieldsArgs> | null;
 };
 
 function offerDecisionEffectiveRecordForNet(
@@ -908,8 +962,32 @@ function offerDecisionEffectiveRecordForNet(
     return odRoot;
 }
 
-/** Purchase / advance amount used for fee % and net-to-merchant math. */
-export function resolvePurchaseAmountDollars(sources: NetToMerchantPrefillSources): number | undefined {
+function resolvePaybackAmountDollars(sources: NetToMerchantPrefillSources): number | undefined {
+    const app = sources.application;
+    const contract = sources.contract;
+    const odRoot =
+        sources.offerDecision ??
+        (contract?.offer as Record<string, unknown> | undefined) ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const payback =
+        coerceToFiniteNumber(contract?.purchasePrice) ??
+        coerceToFiniteNumber(contract?.totalAmount) ??
+        coerceToFiniteNumber(odEff?.totalRemit) ??
+        coerceToFiniteNumber(odRoot?.totalRemit) ??
+        coerceToFiniteNumber(odEff?.paybackAmount) ??
+        coerceToFiniteNumber(odRoot?.paybackAmount);
+    return payback !== undefined && payback > 0 ? payback : undefined;
+}
+
+/**
+ * Offer / advance amount for underwriting fee % → dollars (never payback / total remit).
+ */
+export function resolveOfferAmountDollarsForUnderwritingFees(
+    sources: NetToMerchantPrefillSources,
+): number | undefined {
     const app = sources.application;
     const contract = sources.contract;
     const odRoot =
@@ -927,16 +1005,31 @@ export function resolvePurchaseAmountDollars(sources: NetToMerchantPrefillSource
               ? (termsRaw as Record<string, unknown>)
               : null;
 
-    const advance =
-        coerceToFiniteNumber(contract?.purchaseAmount) ??
-        coerceToFiniteNumber(terms0?.approvedAmount) ??
-        coerceToFiniteNumber(odEff?.offer) ??
-        coerceToFiniteNumber(odEff?.approvedAmount) ??
-        coerceToFiniteNumber(odRoot?.offer) ??
-        coerceToFiniteNumber(odRoot?.approvedAmount) ??
-        coerceToFiniteNumber(app?.loanAmount);
+    const payback = resolvePaybackAmountDollars(sources);
+    const prefillOverrides = normalizeContractPrefillOverrides(contract?.contractPrefillOverrides);
+    const candidates = [
+        coerceToFiniteNumber(sources.prefill?.purchaseAmount),
+        coerceToFiniteNumber(prefillOverrides?.purchaseAmount),
+        coerceToFiniteNumber(contract?.purchaseAmount),
+        coerceToFiniteNumber(odEff?.offer),
+        coerceToFiniteNumber(odEff?.approvedAmount),
+        coerceToFiniteNumber(odRoot?.offer),
+        coerceToFiniteNumber(odRoot?.approvedAmount),
+        coerceToFiniteNumber(terms0?.approvedAmount),
+        coerceToFiniteNumber(contract?.approvedAmount),
+    ];
 
-    return advance !== undefined && advance > 0 ? advance : undefined;
+    for (const n of candidates) {
+        if (n === undefined || !(n > 0)) continue;
+        if (payback !== undefined && Math.abs(n - payback) < 0.01) continue;
+        return n;
+    }
+    return undefined;
+}
+
+/** Purchase / advance amount used for fee % and net-to-merchant math. */
+export function resolvePurchaseAmountDollars(sources: NetToMerchantPrefillSources): number | undefined {
+    return resolveOfferAmountDollarsForUnderwritingFees(sources);
 }
 
 /**
@@ -946,7 +1039,13 @@ export function resolvePurchaseAmountDollars(sources: NetToMerchantPrefillSource
 export function resolveAppendixUnderwritingFeesDisplay(
     rawFees: unknown,
     purchaseAmount: number | undefined,
-    options?: { /** Offer decision `fees` is always a percent, not dollars. */ fromOfferDecision?: boolean },
+    options?: {
+        /**
+         * @deprecated Offer decision `fees` is stored as dollars. Prefer
+         * `formatOfferDecisionFeesDollarsForPrefill` for that source.
+         */
+        fromOfferDecision?: boolean;
+    },
 ): string {
     const raw = str(rawFees);
     if (!raw) return "";
@@ -978,15 +1077,25 @@ export function resolveAppendixUnderwritingFeesDollars(
     return coerceToFiniteNumber(resolveAppendixUnderwritingFeesDisplay(rawFees, purchaseAmount));
 }
 
+/** `OfferDecision.fees` is persisted as dollars (% was applied to funded amount at save). */
+export function formatOfferDecisionFeesDollarsForPrefill(rawFees: unknown): string {
+    const n = coerceToFiniteNumber(rawFees);
+    if (n !== undefined) return truncateDecimalPrefill(n);
+    const raw = str(rawFees);
+    return raw ? truncateDecimalPrefill(raw) : "";
+}
+
 function applyAppendixUnderwritingFeesAmount(
     partial: Partial<BuildContractPrefillFieldsArgs>,
     sources: NetToMerchantPrefillSources,
 ): Partial<BuildContractPrefillFieldsArgs> {
     const out = { ...partial };
-    const purchase =
-        resolvePurchaseAmountDollars(sources) ?? coerceToFiniteNumber(out.purchaseAmount);
+    const purchase = resolveOfferAmountDollarsForUnderwritingFees({
+        ...sources,
+        prefill: { ...sources.prefill, ...partial },
+    });
     let raw = str(out.appendixUnderwritingFees);
-    let fromOfferDecision = false;
+    let feesFromOfferDecision = false;
     if (!raw) {
         const contract = sources.contract;
         const odRoot =
@@ -996,12 +1105,39 @@ function applyAppendixUnderwritingFeesAmount(
         const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
         const offer = (contract?.offer ?? null) as Record<string, unknown> | null;
         raw = str(odEff?.fees ?? offer?.fees ?? odRoot?.fees);
-        fromOfferDecision = Boolean(raw);
+        feesFromOfferDecision = Boolean(raw);
     }
-    if (raw) {
-        out.appendixUnderwritingFees = resolveAppendixUnderwritingFeesDisplay(raw, purchase, {
-            fromOfferDecision,
+    if (raw && !feesFromOfferDecision) {
+        out.appendixUnderwritingFees = resolveAppendixUnderwritingFeesDisplay(
+            raw,
+            purchase,
+        );
+    } else if (purchase !== undefined && purchase > 0) {
+        const contract = sources.contract;
+        const odRoot =
+            sources.offerDecision ??
+            (contract?.offer as Record<string, unknown> | undefined) ??
+            null;
+        const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+        const app = sources.application;
+        const termsRaw = app?.termsOffers;
+        const terms0 =
+            Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+                ? (termsRaw[0] as Record<string, unknown>)
+                : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+                  ? (termsRaw as Record<string, unknown>)
+                  : null;
+        const feeDollars = resolveOfferFeeAmountForDeal({
+            fundedAmount: purchase,
+            factorRate:
+                odEff?.rate ?? odRoot?.rate ?? terms0?.factorRate,
+            feesRaw: odEff?.fees ?? odRoot?.fees ?? raw,
+            termsCommissionPercent: terms0?.commissionPercent,
+            applicationCommissionPercentage: app?.commissionPercentage,
         });
+        out.appendixUnderwritingFees = formatOfferDecisionFeesDollarsForPrefill(
+            feeDollars,
+        );
     }
     return out;
 }
@@ -1011,7 +1147,10 @@ export function finalizeContractPrefillMoneyFields(
     partial: Partial<BuildContractPrefillFieldsArgs>,
     sources: NetToMerchantPrefillSources,
 ): Partial<BuildContractPrefillFieldsArgs> {
-    return applyAppendixUnderwritingFeesAmount(partial, sources);
+    return applyAppendixUnderwritingFeesAmount(partial, {
+        ...sources,
+        prefill: { ...sources.prefill, ...partial },
+    });
 }
 
 /**
@@ -1031,14 +1170,27 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
         null;
     const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
 
-    const feesRaw =
-        contract?.appendixUnderwritingFees ??
-        odRoot?.fees ??
-        odEff?.fees;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+
+    const appendixRaw = contract?.appendixUnderwritingFees;
     const fees =
-        resolveAppendixUnderwritingFeesDollars(feesRaw, advance) ??
-        coerceToFiniteNumber(feesRaw) ??
-        0;
+        coerceToFiniteNumber(appendixRaw) ??
+        resolveOfferFeeAmountForDeal({
+            fundedAmount: advance,
+            factorRate:
+                odEff?.rate ??
+                odRoot?.rate ??
+                terms0?.factorRate,
+            feesRaw: odEff?.fees ?? odRoot?.fees,
+            termsCommissionPercent: terms0?.commissionPercent,
+            applicationCommissionPercentage: app?.commissionPercentage,
+        });
     const refinance =
         coerceToFiniteNumber(odRoot?.refinanceAmount) ??
         coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
@@ -1344,6 +1496,8 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
     if (category === "Appendix") {
         if (norm === "appendix_client_name") return "Client name";
         if (norm === "exhibit_owner_name") return "Exhibit owner";
+        const exhibitVal = norm.match(/^exhibit_a_value_(\d+)$/);
+        if (exhibitVal) return `Exhibit A company ${exhibitVal[1]}`;
     }
 
     return null;
@@ -1363,7 +1517,7 @@ const DEAL_REVIEW_GLOBAL_DEDUPE_LABELS = new Set(["underwriting fees", "net to m
 export function categorizeDealReviewPrefillFieldId(id: string): string {
     const s = normalizeDealReviewFieldId(id);
     if (DEAL_REVIEW_APPENDIX_FEE_IDS.has(s)) return "Appendix";
-    if (s === "exhibit_owner_name") return "Appendix";
+    if (s === "exhibit_owner_name" || /^exhibit_a_value_\d+$/.test(s)) return "Appendix";
     if (s.startsWith("ach_")) return "ACH";
     if (s.startsWith("addendum_")) return "Addendum";
     if (s.startsWith("authorization_") || s.startsWith("authorized_")) return "Authorization";
@@ -1454,6 +1608,9 @@ export function dealReviewPrefillSubsection(fieldId: string, category: string): 
             return "Address";
         }
         if (id.includes("email") || id.includes("phone")) return "Contact";
+    }
+    if (category === "Appendix" && /^exhibit_a_value_\d+$/.test(id)) {
+        return "Exhibit A companies";
     }
     return null;
 }
@@ -1553,6 +1710,16 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     underwriter_fees: PLATFORM_LABEL.underwritingFees,
     appendix_client_name: "Client name",
     exhibit_owner_name: "Exhibit owner",
+    exhibit_a_value_1: "Exhibit A company 1",
+    exhibit_a_value_2: "Exhibit A company 2",
+    exhibit_a_value_3: "Exhibit A company 3",
+    exhibit_a_value_4: "Exhibit A company 4",
+    exhibit_a_value_5: "Exhibit A company 5",
+    exhibit_a_value_6: "Exhibit A company 6",
+    exhibit_a_value_7: "Exhibit A company 7",
+    exhibit_a_value_8: "Exhibit A company 8",
+    exhibit_a_value_9: "Exhibit A company 9",
+    exhibit_a_value_10: "Exhibit A company 10",
     state_of_inc: "State of incorporation",
     doing_business_as: "DBA",
     federal_tax_id_ein: "EIN",
@@ -1581,8 +1748,8 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     authorization_client_bank_name: "Bank name",
     authorization_client_bank_routing: "Routing number",
     authorization_client_bank_account: "Account number",
-    authorization_client_name: "Signer name",
-    authorization_client_name_print: "Printed name",
+    authorization_client_name: "Business name",
+    authorization_client_name_print: "Business name (print)",
     authorization_client_tax_id: "Tax ID / EIN",
     authorization_client_date: "Date",
     authorized_business_phone: "Business phone",
@@ -1669,6 +1836,8 @@ function normalizeDealReviewDedupeValue(value: string): string {
 export function prepareDealReviewPrefillDisplay(fields: ContractPrefillField[]): ContractPrefillField[] {
     const seenSection = new Set<string>();
     const seenGlobal = new Set<string>();
+    /** Last row wins for labels like "Underwriting fees" (multiple DocuSign ids share one display row). */
+    const globalDedupeLastBySection = new Map<string, ContractPrefillField>();
     const out: ContractPrefillField[] = [];
     for (const f of fields) {
         if (!str(f.value)) continue;
@@ -1681,16 +1850,28 @@ export function prepareDealReviewPrefillDisplay(fields: ContractPrefillField[]):
         displayLabel = stripDealReviewSubsectionFromLabel(displayLabel, subsection);
         const labelKey = displayLabel.toLowerCase();
         const dedupeKey = `${category}|${labelKey}`;
-        if (seenSection.has(dedupeKey)) continue;
 
         if (DEAL_REVIEW_GLOBAL_DEDUPE_LABELS.has(labelKey)) {
             const globalKey = `${labelKey}|${normalizeDealReviewDedupeValue(f.value)}`;
             if (seenGlobal.has(globalKey)) continue;
             seenGlobal.add(globalKey);
+            globalDedupeLastBySection.set(dedupeKey, {
+                id: f.id,
+                label: displayLabel,
+                value: f.value,
+            });
+            continue;
         }
+
+        if (seenSection.has(dedupeKey)) continue;
 
         seenSection.add(dedupeKey);
         out.push({ id: f.id, label: displayLabel, value: f.value });
+    }
+    for (const [dedupeKey, field] of globalDedupeLastBySection) {
+        if (seenSection.has(dedupeKey)) continue;
+        seenSection.add(dedupeKey);
+        out.push(field);
     }
     return out;
 }
@@ -1765,6 +1946,135 @@ export function normalizeContractPrefillOverrides(
     return raw as Partial<BuildContractPrefillFieldsArgs>;
 }
 
+/**
+ * Contract table columns updated alongside `contractPrefillOverrides`
+ * (keep in sync with in-house-crm-be `CONTRACT_EXTRA_STRING_FIELDS`).
+ */
+export const CONTRACT_PREFILL_COLUMN_SYNC_KEYS = [
+    "legalName",
+    "clientName",
+    "entityType",
+    "remittance",
+    "clientEmail",
+    "clientPhone",
+    "customerName",
+    "purchasePrice",
+    "purchaseAmount",
+    "purchasePercent",
+    "securityTaxEin",
+    "businessAddress",
+    "businessAddressCity",
+    "businessAddressState",
+    "businessAddressZip",
+    "doingBusinessAs",
+    "federalTaxIdEin",
+    "exhibitOwnerName",
+    "appendixClientName",
+    "appendixUnderwritingFees",
+    "authorizationApplication",
+    "authorizationClientDate",
+    "authorizationClientName",
+    "authorizationClientNamePrint",
+    "authorizationClientTaxId",
+    "authorizationClientBankName",
+    "authorizationClientBankAccount",
+    "authorizationClientBankRouting",
+    "authorizedBusinessPhone",
+    "businessAddressContract",
+    "businessAddressContractCity",
+    "businessAddressContractState",
+    "businessAddressContractZip",
+    "securityBusinessName",
+    "securityDoingBusinessAs",
+    "securityBusinessAddress",
+    "securityBusinessAddressCity",
+    "securityBusinessAddressState",
+    "securityBusinessAddressZip",
+    "securityGuarantor",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+const APPENDIX_FEE_OVERRIDE_ALIASES = [
+    "appendixUnderwritingFees",
+    "appendix_underwriting_fees",
+    "underwriter_fee",
+    "underwriterfee",
+    "underwriter_fees",
+] as const;
+
+/** Map legacy / DocuSign fee field keys onto `appendixUnderwritingFees` for merge + display. */
+function expandPrefillOverrideAliases(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const out = { ...partial } as Record<string, unknown>;
+    if (str(out.appendixUnderwritingFees)) return out as Partial<BuildContractPrefillFieldsArgs>;
+    for (const key of APPENDIX_FEE_OVERRIDE_ALIASES) {
+        const fee = str(out[key]);
+        if (fee) {
+            out.appendixUnderwritingFees = fee;
+            break;
+        }
+    }
+    return out as Partial<BuildContractPrefillFieldsArgs>;
+}
+
+/** Merge prefill override layers; later layers win (used for Deal Review + DocuSign build). */
+export function mergeContractPrefillOverrideLayers(
+    ...layers: Array<Partial<BuildContractPrefillFieldsArgs> | null | undefined>
+): Partial<BuildContractPrefillFieldsArgs> {
+    const out: Partial<BuildContractPrefillFieldsArgs> = {};
+    for (const layer of layers) {
+        if (!layer || typeof layer !== "object" || Array.isArray(layer)) continue;
+        for (const [key, val] of Object.entries(layer)) {
+            if (val === undefined || val === null) continue;
+            if (!str(val)) continue;
+            (out as Record<string, unknown>)[key] = val;
+        }
+    }
+    return expandPrefillOverrideAliases(out);
+}
+
+/**
+ * Deal Review shows one "Underwriting fees" row; ensure every fee field id reflects saved overrides
+ * (edit prefill may store `appendixUnderwritingFees` while DocuSign ids use `underwriter_fee`, etc.).
+ */
+export function overlaySavedAppendixFeeOnPrefillFields(
+    fields: ContractPrefillField[],
+    overrides: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
+    sources?: NetToMerchantPrefillSources,
+): ContractPrefillField[] {
+    const normalized = mergeContractPrefillOverrideLayers(overrides);
+    const rawFee = str(normalized.appendixUnderwritingFees);
+    if (!rawFee) return fields;
+
+    const purchase = sources
+        ? resolveOfferAmountDollarsForUnderwritingFees({
+              ...sources,
+              prefill: normalized,
+          })
+        : undefined;
+    const displayFee = resolveAppendixUnderwritingFeesDisplay(rawFee, purchase) || rawFee;
+    const value = normalizePrefillValueForUsFormat("underwriter_fee", displayFee);
+
+    return fields.map((f) =>
+        DEAL_REVIEW_APPENDIX_FEE_IDS.has(normalizeDealReviewFieldId(f.id))
+            ? { ...f, value }
+            : f,
+    );
+}
+
+/** Map saved prefill to `updateContract` scalar fields so Deal Review / DocuSign see edits. */
+export function contractPrefillToContractColumnUpdate(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+): Record<string, string | null> {
+    const out: Record<string, string | null> = {};
+    for (const key of CONTRACT_PREFILL_COLUMN_SYNC_KEYS) {
+        if (!(key in partial)) continue;
+        const v = str((partial as Record<string, unknown>)[key]);
+        out[key] = v || null;
+    }
+    return out;
+}
+
 function escapeRegExpForNote(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1817,11 +2127,81 @@ function mergePrefillFieldsPreferFirst(...groups: ContractPrefillField[][]): Con
     return Array.from(map.values());
 }
 
-function achRowToPrefillPartial(row: Record<string, unknown> | null | undefined): Partial<BuildContractPrefillFieldsArgs> {
+/** Merchant legal / business name for authorization & ACH account-holder tabs (not owner personal name). */
+export function resolveMerchantBusinessNameForPrefill(
+    row: Record<string, unknown> | null | undefined,
+    clientArgs?: Partial<BuildContractPrefillFieldsArgs>,
+): string {
+    const r = row ?? {};
+    return (
+        str(r.legalName) ||
+        str(r.appendixClientName) ||
+        str(r.clientName) ||
+        str(clientArgs?.legalName) ||
+        str(clientArgs?.clientName) ||
+        ""
+    );
+}
+
+/** Prefer business name when legacy rows stored owner name in authorization / ACH holder fields. */
+function resolveAuthorizationBusinessNamePrefill(
+    row: Record<string, unknown>,
+    field: "authorizationClientName" | "authorizationClientNamePrint" | "achAuthorizationAccountHolderName" | "achAuthorizationConcentAccountHolderName",
+): string {
+    const business = resolveMerchantBusinessNameForPrefill(row);
+    const saved = str(row[field]);
+    const customer = str(row.customerName);
+    if (business && (!saved || (customer && saved === customer))) return business;
+    return saved || business;
+}
+
+function exhibitValuesToPrefillPartial(
+    row: Record<string, unknown> | null | undefined,
+): Partial<BuildContractPrefillFieldsArgs> {
     if (!row) return {};
+    const overrides = normalizeContractPrefillOverrides(row.contractPrefillOverrides) ?? {};
+    const out: Partial<BuildContractPrefillFieldsArgs> = {};
+    for (const key of EXHIBIT_A_VALUE_FIELD_KEYS) {
+        const v = str(row[key]) || str(overrides[key]);
+        if (v) (out as Record<string, string>)[key] = v;
+    }
+    return out;
+}
+
+/** Do not hydrate specified purchase % from offer factor/rate — user must enter in prefill form. */
+function stripImpliedPurchasePercentFromOffer(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+    offerDecision?: Record<string, unknown> | null,
+): void {
+    const saved = str(partial.purchasePercent);
+    if (!saved) {
+        partial.purchasePercent = "";
+        return;
+    }
+    const odRoot = offerDecision ?? null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const implied = [
+        odRoot?.rate,
+        odRoot?.factorRate,
+        odEff?.rate,
+        odEff?.factorRate,
+    ]
+        .map((v) => truncateDecimalPrefill(v))
+        .filter(Boolean);
+    if (implied.some((c) => c === saved || c === truncateDecimalPrefill(Number(saved)))) {
+        partial.purchasePercent = "";
+    }
+}
+
+function achRowToPrefillPartial(
+    row: Record<string, unknown> | null | undefined,
+    businessName?: string,
+): Partial<BuildContractPrefillFieldsArgs> {
+    if (!row) return {};
+    const merchantName = businessName || str(row.accountHolderName);
     const out: Partial<BuildContractPrefillFieldsArgs> = {
-        achAuthorizationAccountHolderName: str(row.accountHolderName),
-        achAuthorizationConcentAccountHolderName: str(row.accountHolderName),
+        achAuthorizationAccountHolderName: merchantName,
+        achAuthorizationConcentAccountHolderName: merchantName,
         achAuthorizationConcentAccountHolderDate:
             prefillIsoDate(row.createdAt) || str(row.createdAt),
         achAuthorizationAccountHolderDba: str(row.dba),
@@ -1972,8 +2352,7 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
 
     const purchaseAmount = firstTruncateDecimal(row.purchaseAmount, offer?.offer, row.approvedAmount);
     const purchasePrice = firstTruncateDecimal(row.purchasePrice, offer?.totalRemit, row.totalAmount);
-    const purchasePercent =
-        firstTruncateDecimal(row.purchasePercent) || str(row.purchasePercent);
+    const purchasePercent = str(row.purchasePercent);
     const netToMerchant =
         str(row.netToMerchant) ||
         formatNetToMerchantPrefillValue(
@@ -1991,7 +2370,7 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
     let authBankName = str(row.authorizationClientBankName);
     if (!authBankName) authBankName = str(paymentBank?.bankName);
 
-    return applySplitAddressStreetFields({
+    const base = applySplitAddressStreetFields({
         customerName: str(row.customerName),
         entityType: str(row.entityType),
         legalName: str(row.legalName),
@@ -2029,10 +2408,17 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
             const rowRaw = str(row.appendixUnderwritingFees);
             const offerRaw = str(offer?.fees);
             const raw = rowRaw || offerRaw;
+            if (!rowRaw && offerRaw) {
+                return formatOfferDecisionFeesDollarsForPrefill(offerRaw);
+            }
+            const prefillOverrides = normalizeContractPrefillOverrides(row.contractPrefillOverrides);
             return resolveAppendixUnderwritingFeesDisplay(
                 raw,
-                coerceToFiniteNumber(purchaseAmount),
-                { fromOfferDecision: !rowRaw && Boolean(offerRaw) },
+                resolveOfferAmountDollarsForUnderwritingFees({
+                    contract: row,
+                    offerDecision: offer,
+                    prefill: prefillOverrides ?? undefined,
+                }),
             );
         })(),
         appendixClientName: str(row.appendixClientName),
@@ -2040,15 +2426,26 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         authorizationClientBankName: authBankName,
         authorizationClientBankRouting: str(row.authorizationClientBankRouting),
         authorizationClientBankAccount: str(row.authorizationClientBankAccount),
-        authorizationClientName: str(row.authorizationClientName),
-        authorizationClientNamePrint: str(row.authorizationClientNamePrint),
+        authorizationClientName: resolveAuthorizationBusinessNamePrefill(
+            row,
+            "authorizationClientName",
+        ),
+        authorizationClientNamePrint: resolveAuthorizationBusinessNamePrefill(
+            row,
+            "authorizationClientNamePrint",
+        ),
         authorizationClientTaxId: str(row.authorizationClientTaxId),
         authorizationClientDate: authorizationDate,
         authorizedBusinessPhone: str(row.authorizedBusinessPhone),
         owner1GuarantorName: str(row.owner1GuarantorName),
 
-        achAuthorizationConcentAccountHolderName: str(
-            row.achAuthorizationConcentAccountHolderName,
+        achAuthorizationAccountHolderName: resolveAuthorizationBusinessNamePrefill(
+            row,
+            "achAuthorizationAccountHolderName",
+        ),
+        achAuthorizationConcentAccountHolderName: resolveAuthorizationBusinessNamePrefill(
+            row,
+            "achAuthorizationConcentAccountHolderName",
         ),
         achAuthorizationConcentAccountHolderDate: prefillIsoDate(
             row.achAuthorizationConcentAccountHolderDate,
@@ -2078,6 +2475,8 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         achAuthorizationReferenceRelationship3: str(row.achAuthorizationReferenceRelationship3),
         exhibitOwnerName: str(row.exhibitOwnerName),
     });
+    const overrides = normalizeContractPrefillOverrides(row.contractPrefillOverrides);
+    return overrides ? { ...base, ...overrides } : base;
 }
 
 export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildContractPrefillFieldsArgs> {
@@ -2117,6 +2516,10 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         guarantyOwner1Ss: String(r.ownerSsn || ""),
         guarantyOwner1DriverLicense: String(r.ownerDriverLicense || ""),
         authorizationApplication: legalName || customerName,
+        authorizationClientName: legalName || "",
+        authorizationClientNamePrint: legalName || "",
+        achAuthorizationAccountHolderName: legalName || "",
+        achAuthorizationConcentAccountHolderName: legalName || "",
     };
 }
 
@@ -2333,9 +2736,14 @@ export function getContractPrefillEditDefaultsFromApplication(
     const rec = options?.contractRecords;
     const clientArgs = getApplicationClientPrefillArgs(anyApp);
     const contractPartial = contractRowToPrefillPartial(rec?.contract ?? null);
+    const merchantBusinessName = resolveMerchantBusinessNameForPrefill(
+        rec?.contract ?? null,
+        clientArgs,
+    );
     const recordPartial: Partial<BuildContractPrefillFieldsArgs> = {
         ...contractPartial,
-        ...achRowToPrefillPartial(rec?.ach ?? null),
+        ...exhibitValuesToPrefillPartial(rec?.contract ?? null),
+        ...achRowToPrefillPartial(rec?.ach ?? null, merchantBusinessName),
         ...addendumRowToPrefillPartial(rec?.addendum ?? null),
         ...ownersToPrefillPartial(rec?.owners ?? null),
         ...guarantorsToPrefillPartial(rec?.guarantors ?? null),
@@ -2371,29 +2779,38 @@ export function getContractPrefillEditDefaultsFromApplication(
         offerDecision: options?.offerDecision ?? null,
     });
 
-    return applyAppendixUnderwritingFeesAmount(
-        applySplitAddressStreetFields({
-            /** Application-derived defaults first, then persisted Contract / ACH / Addendum rows (preferred). */
-            ...clientArgs,
-            ...recordPartial,
-            customerName,
-            agreementDate,
-            ...(str(recordPartial.frequency) || !frequencyComputed
-                ? {}
-                : { frequency: frequencyComputed }),
-            ...(str(recordPartial.netToMerchant) || !netComputed
-                ? {}
-                : { netToMerchant: netComputed }),
-            ...(str(recordPartial.remittance) || !remittanceComputed
-                ? {}
-                : { remittance: remittanceComputed }),
-        }),
-        {
-            application: anyApp as Record<string, unknown> | undefined,
-            contract: rec?.contract ?? null,
-            offerDecision: options?.offerDecision ?? null,
-        },
-    ) as Partial<BuildContractPrefillFieldsArgs> & {
+    const mergedBeforeFees = applySplitAddressStreetFields({
+        /** Application-derived defaults first, then persisted Contract / ACH / Addendum rows (preferred). */
+        ...clientArgs,
+        ...recordPartial,
+        customerName,
+        agreementDate,
+        ...(str(recordPartial.frequency) || !frequencyComputed
+            ? {}
+            : { frequency: frequencyComputed }),
+        ...(str(recordPartial.netToMerchant) || !netComputed
+            ? {}
+            : { netToMerchant: netComputed }),
+        ...(str(recordPartial.remittance) || !remittanceComputed
+            ? {}
+            : { remittance: remittanceComputed }),
+    });
+    stripImpliedPurchasePercentFromOffer(mergedBeforeFees, options?.offerDecision ?? null);
+    if (!str(mergedBeforeFees.authorizationClientName) && merchantBusinessName) {
+        mergedBeforeFees.authorizationClientName = merchantBusinessName;
+        mergedBeforeFees.authorizationClientNamePrint = merchantBusinessName;
+    }
+    if (!str(mergedBeforeFees.achAuthorizationAccountHolderName) && merchantBusinessName) {
+        mergedBeforeFees.achAuthorizationAccountHolderName = merchantBusinessName;
+        mergedBeforeFees.achAuthorizationConcentAccountHolderName = merchantBusinessName;
+    }
+
+    return applyAppendixUnderwritingFeesAmount(mergedBeforeFees, {
+        application: anyApp as Record<string, unknown> | undefined,
+        contract: rec?.contract ?? null,
+        offerDecision: options?.offerDecision ?? null,
+        prefill: mergedBeforeFees,
+    }) as Partial<BuildContractPrefillFieldsArgs> & {
         customerName: string;
         agreementDate: string;
     };
@@ -2415,6 +2832,7 @@ export function buildContractPrefillFieldsFromApplication(
     },
 ): ContractPrefillField[] {
     const rec = options?.contractRecords;
+    const savedOverrides = mergeContractPrefillOverrideLayers(options?.overrides);
     const baseMerged = getContractPrefillEditDefaultsFromApplication(anyApp, {
         agreementDate: options?.agreementDate,
         contractRecords: rec,
@@ -2424,7 +2842,7 @@ export function buildContractPrefillFieldsFromApplication(
         baseMerged,
         {
             ...baseMerged,
-            ...(options?.overrides ?? {}),
+            ...savedOverrides,
         },
     );
     if (!str(merged.frequency)) {
@@ -2457,9 +2875,16 @@ export function buildContractPrefillFieldsFromApplication(
         application: anyApp as Record<string, unknown> | undefined,
         contract: rec?.contract ?? null,
         offerDecision: options?.offerDecision ?? null,
+        prefill: merged,
     };
     Object.assign(merged, finalizeContractPrefillMoneyFields(merged, moneySources));
+    if (Object.keys(savedOverrides).length > 0) {
+        Object.assign(merged, savedOverrides);
+    }
     coerceNumericPrefillMoneyStrings(merged);
+    if (!str(savedOverrides.purchasePercent)) {
+        stripImpliedPurchasePercentFromOffer(merged, options?.offerDecision ?? null);
+    }
     const customerName = str(merged.customerName) || "Signer";
     const legalName = str(merged.legalName) || customerName;
 

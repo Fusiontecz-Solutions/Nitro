@@ -27,7 +27,7 @@ export interface KatanAchAuthorizationAddendumPrefillFields {
 }
 
 const FIELD_DEFS: Array<{ id: keyof KatanAchAuthorizationAddendumPrefillFields; label: string }> = [
-    { id: "achAuthorizationAccountHolderName", label: "Account holder name" },
+    { id: "achAuthorizationAccountHolderName", label: "Account holder business name" },
     { id: "achAuthorizationAccountHolderDba", label: "Account holder DBA" },
     { id: "achAuthorizationAccountHolderPhone", label: "Account holder phone" },
     { id: "achAuthorizationAccountHolderAddress", label: "Account holder street" },
@@ -45,8 +45,8 @@ const FIELD_DEFS: Array<{ id: keyof KatanAchAuthorizationAddendumPrefillFields; 
     { id: "authorizationClientBankName", label: "Authorization bank name" },
     { id: "authorizationClientBankRouting", label: "Authorization routing" },
     { id: "authorizationClientBankAccount", label: "Authorization account" },
-    { id: "authorizationClientName", label: "Authorization signer name" },
-    { id: "authorizationClientNamePrint", label: "Authorization printed name" },
+    { id: "authorizationClientName", label: "Authorization business name" },
+    { id: "authorizationClientNamePrint", label: "Authorization business name (print)" },
     { id: "authorizationClientTaxId", label: "Authorization tax ID" },
     { id: "authorizedBusinessPhone", label: "Authorized business phone" },
 ];

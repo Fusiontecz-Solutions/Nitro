@@ -19,12 +19,19 @@ import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActi
 import { notifyFinalUnderwriterOnAssignment } from "@/redux/actions/notificationActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
-import { formatNumberUS, formatNumberUSForInput, parseNumberUS } from "@/lib/utils";
+import {
+    formatNumberUS,
+    formatNumberUSForInput,
+    formatRateUS,
+    formatRateUSCommit,
+    parseNumberUS,
+} from "@/lib/utils";
 import {
     deriveOfferRepaymentStack,
     type OfferRepaymentStack,
 } from "@/lib/offerRepaymentCalculations";
 import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
+import { feesPercentToDollarsFromFunded } from "@/lib/offerDecisionFees";
 import { DollarSign, Pencil } from "lucide-react";
 import ComplianceChecksQuestionnaire, {
     type ComplianceChecksProgress,
@@ -120,26 +127,13 @@ function applyCalculatedFieldsToStack(
     const derived = deriveCalculatedFieldsFromDrivers({
         approvedAmount:
             apiOffer != null ? formatMoneyField(apiOffer) : "",
-        factorRate: apiRate != null ? formatNumberUS(apiRate) : "",
+        factorRate: apiRate != null ? formatRateUS(apiRate) : "",
         tenure: termLabel,
         achFrequency: frequency,
     });
     return derived ?? empty;
 }
 
-function feesPercentToDollars(
-    offer: unknown,
-    rate: unknown,
-    feesPercent: unknown,
-): number | null {
-    const offerN = parseNumberUS(offer);
-    const rateN = parseNumberUS(rate);
-    const pctN = parseNumberUS(feesPercent);
-    if (!Number.isFinite(offerN) || offerN <= 0) return null;
-    if (!Number.isFinite(rateN) || rateN <= 0) return null;
-    if (!Number.isFinite(pctN) || pctN <= 0) return null;
-    return (offerN * rateN * pctN) / 100;
-}
 
 function buildApprovalFormFromApi(
     apiData: Record<string, unknown> | null,
@@ -169,7 +163,7 @@ function buildApprovalFormFromApi(
         paybackAmount,
         originationFee: ORIGINATION_FEE_FIXED,
         approvedAmount: offer != null ? formatMoneyField(offer) : "",
-        factorRate: rate != null ? formatNumberUS(rate) : "",
+        factorRate: rate != null ? formatRateUS(rate) : "",
         repay,
         monthlyRepayment,
         achFrequency: frequency,
@@ -369,18 +363,18 @@ interface UsNumberInputProps extends Omit<ComponentProps<typeof Input>, "onChang
     onChange: (next: string) => void;
 }
 
-/** Comma-grouped numeric input (rates, fees) without a currency symbol. */
-const UsNumberInput = forwardRef<HTMLInputElement, UsNumberInputProps>(
-    function UsNumberInput({ value, onChange, className, onBlur, ...rest }, ref) {
+/** Factor rate input — preserves fractional precision (not forced to .00). */
+const UsRateInput = forwardRef<HTMLInputElement, UsNumberInputProps>(
+    function UsRateInput({ value, onChange, className, onBlur, ...rest }, ref) {
         return (
             <Input
                 {...rest}
                 ref={ref}
                 value={value}
-                onChange={(e) => onChange(formatCurrencyInputLive(e.target.value))}
+                onChange={(e) => onChange(formatNumberUSForInput(e.target.value))}
                 onBlur={(e) => {
                     onBlur?.(e);
-                    const committed = formatCurrencyInputCommit(value);
+                    const committed = formatRateUSCommit(value);
                     if (committed !== value) {
                         onChange(committed);
                     }
@@ -559,9 +553,8 @@ const ApprovedApplicationModal = ({
         setIsUpdatingOffer(true);
         const toastId = toast.loading("Updating offer details...");
         try {
-            const feesDollars = feesPercentToDollars(
+            const feesDollars = feesPercentToDollarsFromFunded(
                 data.approvedAmount,
-                data.factorRate,
                 ORIGINATION_FEE_FIXED,
             );
 
@@ -945,7 +938,7 @@ const ApprovedApplicationModal = ({
                                     control={control}
                                     name="factorRate"
                                     render={({ field }) => (
-                                        <UsNumberInput
+                                        <UsRateInput
                                             ref={field.ref}
                                             name={field.name}
                                             value={field.value}

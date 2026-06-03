@@ -38,10 +38,12 @@ import {
     type StateDisclosureContext,
 } from "./stateDisclosurePrefill";
 
+import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
+
 /** Stored on `Contract.contractPrefillOverrides` alongside main prefill keys. */
 export const DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY = "documentTemplatePrefillByMappingId";
 
-/** Main prefill form fields only — excludes per-template mapping blob on `contractPrefillOverrides`. */
+/** Main prefill form fields only — excludes reserved blobs on `contractPrefillOverrides`. */
 export function stripDocumentTemplateBlobFromPrefillOverrides(
     raw: unknown,
 ): Partial<BuildContractPrefillFieldsArgs> | null {
@@ -49,6 +51,7 @@ export function stripDocumentTemplateBlobFromPrefillOverrides(
     if (typeof raw !== "object" || Array.isArray(raw)) return null;
     const o = { ...(raw as Record<string, unknown>) };
     delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+    delete o[CONTRACT_SIGNER_OVERRIDES_KEY];
     return o as Partial<BuildContractPrefillFieldsArgs>;
 }
 

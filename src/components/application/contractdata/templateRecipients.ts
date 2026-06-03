@@ -115,6 +115,43 @@ export type ContractSignerOverrideRow = {
     email: string;
 };
 
+/** Persisted on `Contract.contractPrefillOverrides` (excluded from main prefill form). */
+export const CONTRACT_SIGNER_OVERRIDES_KEY = "contractSignerOverrides";
+
+export function parseContractSignerOverridesFromPrefill(
+    raw: unknown,
+): ContractSignerOverrideRow[] | null {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const rows = (raw as Record<string, unknown>)[CONTRACT_SIGNER_OVERRIDES_KEY];
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const parsed = rows
+        .map((row) => {
+            if (!row || typeof row !== "object") return null;
+            const r = row as Record<string, unknown>;
+            const role = String(r.role ?? "").trim();
+            const email = String(r.email ?? "").trim();
+            const name = String(r.name ?? "").trim();
+            if (!role || !email) return null;
+            return { role, name, email };
+        })
+        .filter((r): r is ContractSignerOverrideRow => r != null);
+    return parsed.length ? parsed : null;
+}
+
+export function mergeContractPrefillWithSignerOverrides(
+    baseRaw: unknown,
+    signerRows: ContractSignerOverrideRow[],
+): Record<string, unknown> {
+    const base =
+        baseRaw && typeof baseRaw === "object" && !Array.isArray(baseRaw)
+            ? { ...(baseRaw as Record<string, unknown>) }
+            : {};
+    return {
+        ...base,
+        [CONTRACT_SIGNER_OVERRIDES_KEY]: signerRows,
+    };
+}
+
 const DOCUSIGN_SIGNER_ROLE_COMMON = {
     privateMessage: "Kindly sign this article",
     authenticationCode: "1234",

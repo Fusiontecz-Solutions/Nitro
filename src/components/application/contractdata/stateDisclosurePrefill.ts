@@ -300,9 +300,7 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     const purchasePrice = coerceFiniteNumber(
         contract.purchasePrice ?? offer?.totalRemit ?? offer?.paybackAmount ?? contract.totalAmount,
     );
-    const purchasePercent = coerceFiniteNumber(
-        contract.purchasePercent ?? offer?.rate ?? offer?.factorRate,
-    );
+    const purchasePercent = coerceFiniteNumber(contract.purchasePercent);
     const underwritingFees =
         resolveAppendixUnderwritingFeesDollars(
             contract.appendixUnderwritingFees ?? offer?.fees,
@@ -360,8 +358,13 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     if (explicitApr !== undefined) {
         estimatedAnnualPercentageRate = formatPercent(explicitApr);
     } else if (purchasePercent !== undefined) {
-        /** CRM stores `purchasePercent` as a factor (e.g. 1.49 = 149%) — display as-is for templates that show factor. */
+        /** User-entered specified percentage on the contract prefill form only. */
         estimatedAnnualPercentageRate = formatPercent(purchasePercent);
+    } else {
+        const factorOnly = coerceFiniteNumber(offer?.rate ?? offer?.factorRate);
+        if (factorOnly !== undefined) {
+            estimatedAnnualPercentageRate = formatPercent(factorOnly);
+        }
     }
 
     const appPrefill = getApplicationClientPrefillArgs(args.application);

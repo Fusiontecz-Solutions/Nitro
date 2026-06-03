@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/select";
 import {
     applyLiveBankDetailsToPrefillMerge,
+    contractPrefillToContractColumnUpdate,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     type BuildContractPrefillFieldsArgs,
@@ -134,12 +135,12 @@ const FIELD_LABELS = {
     authorizationClientBankName: "Bank name",
     authorizationClientBankRouting: "Routing number",
     authorizationClientBankAccount: "Account number",
-    authorizationClientName: "Signer name",
-    authorizationClientNamePrint: "Printed name",
+    authorizationClientName: "Business name",
+    authorizationClientNamePrint: "Business name (print)",
     authorizationClientTaxId: "Tax ID / EIN",
     authorizationClientDate: "Date",
     authorizedBusinessPhone: "Business phone",
-    achAuthorizationAccountHolderName: "Name",
+    achAuthorizationAccountHolderName: "Business name",
     achAuthorizationAccountHolderDba: "DBA",
     achAuthorizationAccountHolderPhone: "Phone",
     achAuthorizationAccountHolderAddress: "Street",
@@ -154,7 +155,7 @@ const FIELD_LABELS = {
     achAuthorizationAccountHolderBankAccountNumber: "Account number",
     achAuthorizationAccountHolderBankTransactionFee: "Transaction fee",
     achAuthorizationAccountHolderDate: "Date",
-    achAuthorizationConcentAccountHolderName: "Name",
+    achAuthorizationConcentAccountHolderName: "Business name",
     achAuthorizationConcentAccountHolderDate: "Date",
     achAuthorizationBankPortalWebsite: "Bank portal URL",
     achAuthorizationUsername: "Username",
@@ -187,6 +188,16 @@ const FIELD_LABELS = {
     addendumDatedPrincipalOwner2Name: "Name",
     addendumDatedPrincipalOwner2Date: "Date",
     exhibitOwnerName: "Exhibit owner",
+    exhibitAValue1: "Exhibit A company 1",
+    exhibitAValue2: "Exhibit A company 2",
+    exhibitAValue3: "Exhibit A company 3",
+    exhibitAValue4: "Exhibit A company 4",
+    exhibitAValue5: "Exhibit A company 5",
+    exhibitAValue6: "Exhibit A company 6",
+    exhibitAValue7: "Exhibit A company 7",
+    exhibitAValue8: "Exhibit A company 8",
+    exhibitAValue9: "Exhibit A company 9",
+    exhibitAValue10: "Exhibit A company 10",
 } as const satisfies Record<ContractPrefillFormFieldKey, string>;
 
 type ContractPrefillSectionGroup = {
@@ -293,12 +304,28 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "owners_exhibit",
             title: "Owners & Exhibit A",
-            description: "Owner 1 / owner 2 names and Exhibit A signature party.",
+            description:
+                "Owner names, Exhibit A signature party, and up to 10 Exhibit A line values (DocuSign data labels exhibit_a_value_1 … 10).",
             Icon: Users,
             groups: [
                 { heading: "Owner 1", keys: ["owner1GuarantorName"] },
                 { heading: "Owner 2", keys: ["owner2GuarantorName"] },
-                { heading: "Exhibit A", keys: ["exhibitOwnerName"] },
+                { heading: "Exhibit A — signature", keys: ["exhibitOwnerName"] },
+                {
+                    heading: "Exhibit A — company names",
+                    keys: [
+                        "exhibitAValue1",
+                        "exhibitAValue2",
+                        "exhibitAValue3",
+                        "exhibitAValue4",
+                        "exhibitAValue5",
+                        "exhibitAValue6",
+                        "exhibitAValue7",
+                        "exhibitAValue8",
+                        "exhibitAValue9",
+                        "exhibitAValue10",
+                    ],
+                },
             ],
         },
         {
@@ -903,16 +930,15 @@ export function ContractPrefillEditForm({
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (stripDocumentTemplateBlobFromPrefillOverrides(persistedPrefillOverrides) ??
                     ({} as Partial<BuildContractPrefillFieldsArgs>));
+        const mergedBase = { ...defaults, ...persisted };
         const merged = applyLiveBankDetailsToPrefillMerge(
             defaults,
-            finalizeContractPrefillMoneyFields(
-                { ...defaults, ...persisted },
-                {
-                    application: applicationData as Record<string, unknown> | undefined,
-                    contract: contractRecords?.contract ?? null,
-                    offerDecision: offerDecision ?? null,
-                },
-            ),
+            finalizeContractPrefillMoneyFields(mergedBase, {
+                application: applicationData as Record<string, unknown> | undefined,
+                contract: contractRecords?.contract ?? null,
+                offerDecision: offerDecision ?? null,
+                prefill: mergedBase,
+            }),
         );
         setValues(mergeFormState(merged));
         setFieldErrors({});
@@ -950,7 +976,8 @@ export function ContractPrefillEditForm({
             hydratePersistAfterLoadRef.current = false;
             resetFromSourcesRef.current();
         }
-    }, [open, formReady, persistedPrefillOverrides]);
+        // Intentionally omit `persistedPrefillOverrides` — re-hydrating on parent updates resets in-progress edits.
+    }, [open, formReady]);
 
     useEffect(() => {
         if (!open) {
@@ -997,7 +1024,13 @@ export function ContractPrefillEditForm({
         setFieldErrors({});
         setSaving(true);
         try {
-            const payload = toPayload(values);
+            const rawPayload = toPayload(values);
+            const payload = finalizeContractPrefillMoneyFields(rawPayload, {
+                application: applicationData as Record<string, unknown> | undefined,
+                contract: contractRecords?.contract ?? null,
+                offerDecision: offerDecision ?? null,
+                prefill: rawPayload,
+            });
             const extras =
                 additionalContractPrefillJson && typeof additionalContractPrefillJson === "object"
                     ? { ...additionalContractPrefillJson }
@@ -1021,10 +1054,14 @@ export function ContractPrefillEditForm({
                 ...(payload as Record<string, unknown>),
                 ...extras,
             };
+            const columnSync = contractPrefillToContractColumnUpdate(payload);
             const updateRes = await dispatch(
                 updateContract({
                     id: cid,
-                    data: { contractPrefillOverrides },
+                    data: {
+                        contractPrefillOverrides,
+                        ...columnSync,
+                    },
                 }),
             ).unwrap();
             const updatedContract = (updateRes as { data?: unknown })?.data ?? updateRes;
@@ -1039,12 +1076,13 @@ export function ContractPrefillEditForm({
                 (payload as Partial<BuildContractPrefillFieldsArgs>);
             onPersistedPrefillChange?.(mainSaved);
             onPersistedPrefillFullChange?.(fullSaved);
+            setValues(mergeFormState(mainSaved));
             const appKey = String(applicationUuid ?? "").trim();
             if (appKey) {
                 try {
                     await dispatch(getByApplicationIdContract(appKey)).unwrap();
                 } catch {
-                    /* parent already has saved snapshot */
+                    /* parent already has saved snapshot from update response */
                 }
             }
             setSaveError(null);

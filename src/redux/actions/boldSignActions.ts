@@ -46,6 +46,15 @@ export type BoldSignMergeAndSendPayload = {
   ccEmails?: string[];
   /** When false, creates a draft envelope only (no signing emails). */
   autoSend?: boolean;
+  /** DocuSign envelope email subject (`emailSubject`). */
+  title?: string;
+  /** DocuSign envelope email body (`emailBlurb`). */
+  message?: string;
+  reminderSettings?: {
+    enableAutoReminder?: boolean;
+    reminderDays?: number;
+    reminderCount?: number;
+  };
 };
 
 export const mergeAndSendBoldSignTemplates = createAsyncThunk(

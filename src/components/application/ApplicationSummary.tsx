@@ -1,12 +1,47 @@
-import { useSelector } from "react-redux";
+import { useEffect } from "react";
+import { useDispatch, useSelector } from "react-redux";
 import { Card, CardContent } from "../ui/card"
-import type { RootState } from "@/redux/store";
+import type { AppDispatch, RootState } from "@/redux/store";
 import { Skeleton } from "../ui/skeleton";
 import { useTheme } from "@/context/ThemeContext";
 import { ChevronLeft } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { formatActionRequired } from "@/lib/formatActionRequired";
+import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
+import { getTermsOffers } from "@/redux/actions/termsOfferActions";
+import type { TermsOffer } from "@/types/termsOfferTypes";
 // import { Button } from "../ui/button";
+
+const toValidNumber = (value: unknown): number | null => {
+    if (value == null || String(value).trim() === "") return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+};
+
+function resolveOfferAmountForSummary(
+    offerDecisionData: unknown,
+    latestTermsOffer: TermsOffer | undefined,
+): number | null {
+    const fromTerms = toValidNumber(latestTermsOffer?.approvedAmount);
+    if (!offerDecisionData || typeof offerDecisionData !== "object") {
+        return fromTerms;
+    }
+    const od = offerDecisionData as Record<string, unknown>;
+    if (String(od.decision ?? "").toLowerCase() === "declined") {
+        return fromTerms;
+    }
+    const inner =
+        od.offer && typeof od.offer === "object" && !Array.isArray(od.offer)
+            ? (od.offer as Record<string, unknown>)
+            : null;
+    return (
+        toValidNumber(od.offer) ??
+        toValidNumber(inner?.offer) ??
+        toValidNumber(inner?.approvedAmount) ??
+        toValidNumber(od.approvedAmount) ??
+        fromTerms
+    );
+}
 
 interface ApplicationSummaryProps {
     isUnderwriter?: boolean;
@@ -21,8 +56,15 @@ const ApplicationSummary = ({
     applicationId,
     onBack,
 }: ApplicationSummaryProps) => {
+    const dispatch = useDispatch<AppDispatch>();
     const { loading: fetchLoading, data: applicationData } = useSelector(
         (state: RootState) => state.applicationDetail
+    );
+    const { data: offerDecisionData, loading: offerDecisionLoading } = useSelector(
+        (state: RootState) => state.offerDecision,
+    );
+    const { data: termsOffers, loading: termsOffersLoading } = useSelector(
+        (state: RootState) => state.termsOffers,
     );
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
@@ -43,7 +85,29 @@ const ApplicationSummary = ({
             String(dataApplicationId ?? "") === normalizedApplicationId;
 
     const showDynamicData = appIdMatch && applicationData;
+    const apiApplicationKey = showDynamicData
+        ? String(
+            (applicationData as { applicationId?: string | number; _id?: string })?.applicationId ??
+            (applicationData as { _id?: string })?._id ??
+            normalizedApplicationId ??
+            "",
+        ).trim()
+        : "";
+
+    useEffect(() => {
+        if (!apiApplicationKey) return;
+        void dispatch(getOfferDecisionByApplication(apiApplicationKey));
+        void dispatch(getTermsOffers({ application: apiApplicationKey }));
+    }, [apiApplicationKey, dispatch]);
+
+    const latestTermsOffer = termsOffers?.[0];
+    const offerAmount = showDynamicData
+        ? resolveOfferAmountForSummary(offerDecisionData, latestTermsOffer)
+        : null;
+
     const isLoading = fetchLoading;
+    const offerAmountLoading =
+        Boolean(apiApplicationKey) && (offerDecisionLoading || termsOffersLoading);
 
     const clientName = showDynamicData
         ? (applicationData?.client as any)?.owner?.firstName + ' ' + (applicationData?.client as any)?.owner?.lastName
@@ -70,7 +134,7 @@ const ApplicationSummary = ({
 
     const panelTint = isDark ? "bg-white/10 border border-white/15" : "bg-white/30";
 
-    const innerPanelClass = `grid gap-4 rounded-lg p-4 justify-center items-center shadow-md dark:shadow-lg ${panelTint} grid-cols-1 md:grid-cols-3 lg:grid-cols-5`;
+    const innerPanelClass = `grid gap-4 rounded-lg p-4 justify-center items-center shadow-md dark:shadow-lg ${panelTint} grid-cols-1 md:grid-cols-3 lg:grid-cols-6`;
 
     const standardFiveColumns = (
         <>
@@ -111,6 +175,21 @@ const ApplicationSummary = ({
                         <p className="text-sm font-medium opacity-90 mb-1">Requested Amount</p>
                         <p className="text-base font-semibold">
                             {loanAmount != null ? formatCurrency(loanAmount) : "-"}
+                        </p>
+                    </>
+                )}
+            </div>
+            <div className="text-white">
+                {isLoading || offerAmountLoading ? (
+                    <div className="space-y-2 pr-12">
+                        <Skeleton className="h-4 w-[150px] bg-white/30" />
+                        <Skeleton className="h-4 w-[100px] bg-white/30" />
+                    </div>
+                ) : (
+                    <>
+                        <p className="text-sm font-medium opacity-90 mb-1">Offer Amount</p>
+                        <p className="text-base font-semibold">
+                            {offerAmount != null ? formatCurrency(offerAmount) : "-"}
                         </p>
                     </>
                 )}
