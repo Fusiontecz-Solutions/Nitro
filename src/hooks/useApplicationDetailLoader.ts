@@ -9,12 +9,15 @@ import {
   isNumericApplicationRouteParam,
   routeParamMatchesApplication,
 } from "@/lib/applicationRouteMatch";
+import type { Application } from "@/types/applicationTypes";
 import {
-  readApplicationDetailCache,
-  writeApplicationDetailCache,
+  applicationDetailCacheKeyFromApplication,
+  buildDetailHydrationPayload,
+  getCachedApplicationDetail,
+  setCachedApplicationDetail,
 } from "@/lib/applicationDetailCache";
 import { findApplicationInListCache } from "@/lib/applicationsListCache";
-import { setApplicationDetail } from "@/redux/slices/applicationSlice";
+import { hydrateApplicationDetailFromCache } from "@/redux/slices/applicationSlice";
 
 /**
  * Loads application detail once per route param: reuse Redux, detail cache, or
@@ -42,15 +45,19 @@ export function useApplicationDetailLoader(applicationId: string | undefined) {
   useEffect(() => {
     if (!applicationId) return;
 
-    const fromDetail = readApplicationDetailCache(applicationId);
+    const cachedBody = getCachedApplicationDetail(applicationId);
+    const fromDetail = buildDetailHydrationPayload(cachedBody)?.data;
     const fromList =
       fromDetail === undefined
         ? findApplicationInListCache(applicationId)
         : undefined;
-    const cachedRow = fromDetail ?? fromList;
+    const cachedRow: Application | undefined = fromDetail ?? fromList;
 
     if (fromList) {
-      writeApplicationDetailCache(fromList);
+      const key = applicationDetailCacheKeyFromApplication(fromList);
+      if (key) {
+        setCachedApplicationDetail(key, { success: true, data: fromList });
+      }
     }
 
     const current = dataRef.current;
@@ -58,7 +65,11 @@ export function useApplicationDetailLoader(applicationId: string | undefined) {
       !!current && routeParamMatchesApplication(applicationId, current);
 
     if (!matchesCurrent && cachedRow) {
-      dispatch(setApplicationDetail(cachedRow));
+      dispatch(
+        hydrateApplicationDetailFromCache(
+          cachedBody ?? { success: true, data: cachedRow },
+        ),
+      );
       dataRef.current = cachedRow;
     }
 

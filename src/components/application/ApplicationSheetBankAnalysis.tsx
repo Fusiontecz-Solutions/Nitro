@@ -7,6 +7,7 @@ import type { AppDispatch } from "@/redux/store"
 import BankAnalysisTable from "./BankAnalysisTable"
 import DecisionMakeFinalValues from "./DecisionMakeFinalValues"
 import { getPositions } from "@/redux/actions/positionActions"
+import { resolveEffectiveRole, normalizeRoleKey } from "@/lib/sessionRole"
 
 type ApplicationSheetBankAnalysisProps = {
   applicationId?: string | null
@@ -18,6 +19,13 @@ export default function ApplicationSheetBankAnalysis({
   const dispatch = useDispatch<AppDispatch>()
   const resolvedApplicationId = applicationId ?? undefined
   const positionsState = useSelector((state: RootState) => state.positions)
+
+  const loginUser = useSelector((state: RootState) => state.login?.data?.user)
+  /** Super Admin may edit/create offer, bank analysis, and positions from this tab. */
+  const isSuperAdmin = useMemo(
+    () => normalizeRoleKey(resolveEffectiveRole(loginUser)) === "SUPER_ADMIN",
+    [loginUser],
+  )
 
   useEffect(() => {
     if (!resolvedApplicationId) return
@@ -56,9 +64,13 @@ export default function ApplicationSheetBankAnalysis({
     <div className="space-y-6">
       <DecisionMakeFinalValues
         applicationId={resolvedApplicationId}
+        allowOfferEdit={isSuperAdmin}
+        allowPositionsEdit={isSuperAdmin}
         betweenOfferAndPositions={
           <BankAnalysisTable
-            showOnlyTotals
+            showOnlyTotals={!isSuperAdmin}
+            readOnly={!isSuperAdmin}
+            disableCreate={!isSuperAdmin}
             applicationId={resolvedApplicationId}
             positions={scopedPositions as any}
           />

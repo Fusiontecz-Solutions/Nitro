@@ -31,6 +31,9 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: false,
   },
+  server: {
+    port: 2000,
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

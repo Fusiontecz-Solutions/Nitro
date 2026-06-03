@@ -36,17 +36,19 @@ import type { AppDispatch, RootState } from "@/redux/store";
 import {
   cn,
   formatCurrency,
+  formatFactorRateUS,
   formatNumberUS,
   formatNumberUSForInput,
   parseNumberUS,
 } from "@/lib/utils";
 import {
-  computeMonthlyPayment,
+  deriveOfferRepaymentStack,
   recalculateOfferFields,
   resolveOfferFactorRate,
   resolveOfferPayback,
   type OfferCalcDriverField,
 } from "@/lib/offerRepaymentCalculations";
+import { OFFER_DECISION_UPDATED_EVENT } from "@/lib/offerDecisionSync";
 import {
   buildPaymentSchedule,
   getDefaultPaymentStartDate,
@@ -117,14 +119,6 @@ const parseNumberInput = (raw: string): number => {
   return Number.isFinite(num) ? num : 0;
 };
 
-const formatNumber = (value: number | null | undefined, fractionDigits = 2) => {
-  if (value == null || Number.isNaN(value)) return "—";
-  return value.toLocaleString("en-US", {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  });
-};
-
 type EditableState = {
   advance: number;
   factorRate: number;
@@ -183,23 +177,27 @@ function uniqueApplicationKeys(...candidates: Array<string | null | undefined>) 
   return out;
 }
 
+/** Matches BE `offerDecisionEffectiveRecord` — nested `offer` JSON holds saved field values. */
+function offerDecisionEffectiveRow(raw: Record<string, unknown>): Record<string, unknown> {
+  const inner = raw.offer;
+  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+    return { ...raw, ...(inner as Record<string, unknown>) };
+  }
+  return raw;
+}
+
 /** API may return flat fields or nested `offer` JSON — normalize for the form. */
 function normalizeOfferDecision(raw: unknown): OfferDecisionRecord | null {
   if (!raw || typeof raw !== "object") return null;
-  const row = raw as Record<string, unknown>;
-  const inner =
-    row.offer && typeof row.offer === "object" && !Array.isArray(row.offer)
-      ? (row.offer as Record<string, unknown>)
-      : null;
+  const row = offerDecisionEffectiveRow(raw as Record<string, unknown>);
 
   const offer =
-    toValidNumber(row.offer) ??
-    toValidNumber(inner?.offer) ??
-    toValidNumber(inner?.approvedAmount);
+    toValidNumber(row.offer) ?? toValidNumber(row.approvedAmount);
 
   if (
     offer == null &&
     row.rate == null &&
+    row.factorRate == null &&
     row.fees == null &&
     row.totalRemit == null &&
     row.repayPerPeriod == null
@@ -208,29 +206,65 @@ function normalizeOfferDecision(raw: unknown): OfferDecisionRecord | null {
   }
 
   return {
-    _id: row._id != null ? String(row._id) : undefined,
+    _id:
+      row._id != null
+        ? String(row._id)
+        : row.id != null
+          ? String(row.id)
+          : undefined,
     offer,
-    rate:
-      toValidNumber(row.rate) ??
-      toValidNumber(row.factorRate) ??
-      toValidNumber(inner?.rate),
+    rate: toValidNumber(row.rate) ?? toValidNumber(row.factorRate),
     factorRate: toValidNumber(row.factorRate),
-    term: (row.term ?? inner?.term) as number | string | null | undefined,
-    frequency: String(row.frequency ?? inner?.frequency ?? "").trim() || null,
+    term: row.term as number | string | null | undefined,
+    frequency: String(row.frequency ?? "").trim() || null,
     repayPerPeriod:
-      toValidNumber(row.repayPerPeriod) ??
-      toValidNumber(inner?.repayPerPeriod) ??
-      toValidNumber(inner?.daysWeeks),
-    fees: toValidNumber(row.fees) ?? toValidNumber(inner?.fees),
+      toValidNumber(row.repayPerPeriod) ?? toValidNumber(row.daysWeeks),
+    fees: toValidNumber(row.fees),
     totalRemit:
-      toValidNumber(row.totalRemit) ??
-      toValidNumber(inner?.totalRemit) ??
-      toValidNumber(inner?.paybackAmount),
+      toValidNumber(row.totalRemit) ?? toValidNumber(row.paybackAmount),
     paybackAmount: toValidNumber(row.paybackAmount),
-    monthlyPayment:
-      toValidNumber(row.monthlyPayment) ?? toValidNumber(inner?.monthlyPayment),
-    decision: row.decision != null ? String(row.decision) : null,
+    monthlyPayment: toValidNumber(row.monthlyPayment),
+    decision:
+      row.decision != null
+        ? String(row.decision)
+        : row.status != null
+          ? String(row.status)
+          : null,
   };
+}
+
+function parseOfferDecisionApiResponse(
+  res: { data?: unknown } | null | undefined
+): OfferDecisionRecord | null {
+  const envelope = res?.data;
+  if (!envelope || typeof envelope !== "object") return null;
+  const body = envelope as Record<string, unknown>;
+  if (body.data != null) {
+    return normalizeOfferDecision(body.data);
+  }
+  return normalizeOfferDecision(body);
+}
+
+function normalizeOfferDecisionFromApplication(
+  applicationData: Record<string, unknown> | null | undefined
+): OfferDecisionRecord | null {
+  if (!applicationData) return null;
+  const raw =
+    applicationData.OfferDecision ?? applicationData.offerDecision ?? null;
+  return normalizeOfferDecision(raw);
+}
+
+function hasUsableOfferDecision(od: OfferDecisionRecord | null): boolean {
+  if (!od) return false;
+  if (String(od.decision ?? "").toLowerCase() === "declined") return false;
+  const offer = toValidNumber(od.offer);
+  const rate = toValidNumber(od.rate) ?? toValidNumber(od.factorRate);
+  return (offer != null && offer > 0) || (rate != null && rate >= 1);
+}
+
+function formatOfferTerm(term: number | string | null | undefined): string {
+  if (term == null || String(term).trim() === "") return "";
+  return String(term).replace(/\s*payments?/i, "").trim();
 }
 
 /** `Application.commissionAmount` (DB) — prefer over collections/terms when set. */
@@ -256,89 +290,180 @@ function resolveApplicationCommissionAmount(
   return null;
 }
 
+function resolveFormCommission(
+  applicationData: Record<string, unknown> | null,
+  advance: number,
+  offerDecision: OfferDecisionRecord | null,
+  dealView: DealCollectionsView | null,
+  latestTerms: TermsOffer | null
+): number {
+  const applicationCommission = resolveApplicationCommissionAmount(
+    applicationData,
+    advance
+  );
+  const offerDecisionCommission =
+    toValidNumber(
+      (offerDecision as { commissionAmount?: number | null } | null)
+        ?.commissionAmount
+    ) ?? null;
+
+  return (
+    applicationCommission ??
+    offerDecisionCommission ??
+    toValidNumber(dealView?.offerSummary?.commissionOnDeal) ??
+    toValidNumber(latestTerms?.commissionAmount) ??
+    0
+  );
+}
+
+
+function buildFormFromOfferDecision(
+  offerDecision: OfferDecisionRecord,
+  dealView: DealCollectionsView | null,
+  latestTerms: TermsOffer | null,
+  applicationData: Record<string, unknown> | null
+): EditableState {
+  const advance = toValidNumber(offerDecision.offer) ?? 0;
+  const factorRate = resolveOfferFactorRate({
+    offerDecisionRate: toValidNumber(offerDecision.rate),
+    offerDecisionFactorRate: toValidNumber(offerDecision.factorRate),
+    summaryFactor: toValidNumber(dealView?.offerSummary?.factorRate),
+    termsFactorRate: toValidNumber(latestTerms?.factorRate),
+    fallback: 1.5,
+  });
+
+  const term =
+    formatOfferTerm(offerDecision.term) ||
+    (latestTerms?.termLength != null ? String(latestTerms.termLength) : "");
+
+  const frequency = getScheduleFrequencyLabel(
+    offerDecision.frequency || latestTerms?.frequency || "Daily"
+  );
+
+  const payback = resolveOfferPayback(advance, factorRate, {
+    offerPaybackAmount: toValidNumber(offerDecision.paybackAmount),
+    totalRemit: toValidNumber(offerDecision.totalRemit),
+    termsPaybackAmount: toValidNumber(latestTerms?.paybackAmount),
+    paybackNum: toValidNumber(dealView?.offerSummary?.paybackNum),
+  });
+
+  const stack =
+    advance > 0 && term.trim() !== ""
+      ? deriveOfferRepaymentStack({
+          advance,
+          factorRate,
+          term,
+          frequency,
+        })
+      : null;
+
+  const daily =
+    stack?.perPeriodPayment ??
+    toValidNumber(offerDecision.repayPerPeriod) ??
+    toValidNumber(latestTerms?.paymentAmount) ??
+    0;
+
+  const monthlyPayment =
+    stack?.monthlyPayment ?? toValidNumber(offerDecision.monthlyPayment) ?? 0;
+
+  const resolvedPayback = stack?.payback ?? payback;
+
+  return {
+    advance: stack?.advance ?? advance,
+    factorRate: stack?.factorRate ?? factorRate,
+    payback: resolvedPayback,
+    daily,
+    feesAmount: toValidNumber(offerDecision.fees) ?? 0,
+    commissionAmount: resolveFormCommission(
+      applicationData,
+      advance,
+      offerDecision,
+      dealView,
+      latestTerms
+    ),
+    monthlyPayment,
+    term,
+    frequency,
+  };
+}
+
 function buildFormFromSources(
   dealView: DealCollectionsView | null,
   offerDecision: OfferDecisionRecord | null,
   latestTerms: TermsOffer | null,
   applicationData: Record<string, unknown> | null
 ): EditableState {
+  if (hasUsableOfferDecision(offerDecision)) {
+    return buildFormFromOfferDecision(
+      offerDecision!,
+      dealView,
+      latestTerms,
+      applicationData
+    );
+  }
+
   const summary = dealView?.offerSummary;
   const schedule = dealView?.schedule;
 
   const advance =
     toValidNumber(summary?.advanceNum) ??
-    toValidNumber(offerDecision?.offer) ??
     toValidNumber(latestTerms?.approvedAmount) ??
     toValidNumber(applicationData?.loanAmount) ??
     0;
 
   const factorRate = resolveOfferFactorRate({
     summaryFactor: toValidNumber(summary?.factorRate),
-    offerDecisionRate: toValidNumber(offerDecision?.rate),
-    offerDecisionFactorRate: toValidNumber(offerDecision?.factorRate),
     termsFactorRate: toValidNumber(latestTerms?.factorRate),
     fallback: 1.5,
   });
 
+  const term =
+    latestTerms?.termLength != null ? String(latestTerms.termLength) : "";
+
+  const frequency = getScheduleFrequencyLabel(
+    summary?.frequencyLabel ||
+      summary?.frequency ||
+      latestTerms?.frequency ||
+      "Daily"
+  );
+
   const payback = resolveOfferPayback(advance, factorRate, {
     paybackNum: toValidNumber(summary?.paybackNum),
     termsPaybackAmount: toValidNumber(latestTerms?.paybackAmount),
-    offerPaybackAmount: toValidNumber(offerDecision?.paybackAmount),
-    totalRemit: toValidNumber(offerDecision?.totalRemit),
   });
 
+  const stack =
+    advance > 0 && term.trim() !== ""
+      ? deriveOfferRepaymentStack({
+          advance,
+          factorRate,
+          term,
+          frequency,
+        })
+      : null;
+
   const daily =
+    stack?.perPeriodPayment ??
     toValidNumber(summary?.paymentAmount) ??
     toValidNumber(schedule?.dailyPayment) ??
-    toValidNumber(offerDecision?.repayPerPeriod) ??
     toValidNumber(latestTerms?.paymentAmount) ??
     0;
 
-  const feesAmount =
-    toValidNumber(summary?.feesAmount) ?? toValidNumber(offerDecision?.fees) ?? 0;
-
-  const offerDecisionCommission =
-    toValidNumber(
-      (offerDecision as { commissionAmount?: number | null } | null)?.commissionAmount
-    ) ?? null;
-
-  const applicationCommission = resolveApplicationCommissionAmount(
-    applicationData,
-    advance
-  );
-
-  const commissionAmount =
-    applicationCommission ??
-    offerDecisionCommission ??
-    toValidNumber(summary?.commissionOnDeal) ??
-    toValidNumber(latestTerms?.commissionAmount) ??
-    0;
-
-  const term =
-    offerDecision?.term != null && String(offerDecision.term).trim() !== ""
-      ? String(offerDecision.term)
-      : latestTerms?.termLength != null
-        ? String(latestTerms.termLength)
-        : "";
-
-  const frequency =
-    summary?.frequencyLabel ||
-    offerDecision?.frequency ||
-    latestTerms?.frequency ||
-    "Daily";
-
-  const monthlyPayment =
-    payback > 0 && term.trim() !== ""
-      ? computeMonthlyPayment({ payback, term, frequency })
-      : toValidNumber(offerDecision?.monthlyPayment) ?? 0;
+  const monthlyPayment = stack?.monthlyPayment ?? 0;
 
   return {
-    advance,
-    factorRate,
-    payback,
+    advance: stack?.advance ?? advance,
+    factorRate: stack?.factorRate ?? factorRate,
+    payback: stack?.payback ?? payback,
     daily,
-    feesAmount,
-    commissionAmount,
+    feesAmount: toValidNumber(summary?.feesAmount) ?? 0,
+    commissionAmount: resolveFormCommission(
+      applicationData,
+      advance,
+      null,
+      dealView,
+      latestTerms
+    ),
     monthlyPayment,
     term,
     frequency,
@@ -435,10 +560,10 @@ export default function DealReviewDialog({
 
   const loadOfferData = useCallback(async () => {
     const lookupKeys = uniqueApplicationKeys(
-      primaryApplicationId,
+      applicationId,
       numericApplicationId,
       applicationDealId,
-      applicationId
+      primaryApplicationId
     );
     if (!lookupKeys.length) return;
 
@@ -446,6 +571,8 @@ export default function DealReviewDialog({
     let fetchedDealView: DealCollectionsView | null = null;
     let od: OfferDecisionRecord | null = null;
     let latest: TermsOffer | null = null;
+    let resolvedAppRecord: Record<string, unknown> | null =
+      applicationData as Record<string, unknown> | null;
 
     try {
       // Collection payments require a resolvable deal id — try each key; ignore 404s.
@@ -494,8 +621,8 @@ export default function DealReviewDialog({
       );
       for (const result of offerResults) {
         if (result.status !== "fulfilled") continue;
-        const parsed = normalizeOfferDecision(result.value?.data?.data);
-        if (parsed) {
+        const parsed = parseOfferDecisionApiResponse(result.value);
+        if (hasUsableOfferDecision(parsed)) {
           od = parsed;
           break;
         }
@@ -520,8 +647,6 @@ export default function DealReviewDialog({
         }
       }
 
-      let resolvedAppRecord: Record<string, unknown> | null =
-        applicationData as Record<string, unknown> | null;
       try {
         if (numericApplicationId) {
           const appRes = await axiosGet(
@@ -544,6 +669,13 @@ export default function DealReviewDialog({
         // Keep Redux application detail if direct fetch fails.
       }
 
+      if (!hasUsableOfferDecision(od)) {
+        const embedded = normalizeOfferDecisionFromApplication(resolvedAppRecord);
+        if (hasUsableOfferDecision(embedded)) {
+          od = embedded;
+        }
+      }
+
       setLocalDealView(fetchedDealView);
       setOfferDecision(od);
       setTermsOffer(latest);
@@ -561,6 +693,7 @@ export default function DealReviewDialog({
   }, [
     applicationDealId,
     applicationId,
+    applicationData,
     dispatch,
     numericApplicationId,
     primaryApplicationId,
@@ -583,6 +716,43 @@ export default function DealReviewDialog({
     dispatch,
     numericApplicationId,
   ]);
+
+  // If Redux application detail arrives after offer fetch, hydrate from embedded OfferDecision.
+  useEffect(() => {
+    if (!open || loadingOffer || editMode || hasUsableOfferDecision(offerDecision)) {
+      return;
+    }
+    const embedded = normalizeOfferDecisionFromApplication(appRecord);
+    if (!hasUsableOfferDecision(embedded)) return;
+    setOfferDecision(embedded);
+    setForm(buildFormFromSources(dealView, embedded, termsOffer, appRecord));
+  }, [
+    open,
+    loadingOffer,
+    editMode,
+    offerDecision,
+    appRecord,
+    dealView,
+    termsOffer,
+  ]);
+
+  // Re-sync when offer decision is saved elsewhere (approval modal, bank analysis toggle).
+  useEffect(() => {
+    if (!open && !preload) return;
+
+    const onOfferDecisionUpdated = () => {
+      if (editModeRef.current) return;
+      void loadOfferData();
+    };
+
+    window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+    return () => {
+      window.removeEventListener(
+        OFFER_DECISION_UPDATED_EVENT,
+        onOfferDecisionUpdated
+      );
+    };
+  }, [open, preload, loadOfferData]);
 
   // When application detail lands in Redux after load, apply DB commissionAmount.
   useEffect(() => {
@@ -1151,7 +1321,7 @@ function OfferFieldsGrid({
         editable={editMode}
         fractionDigits={3}
         onChange={(v) => onFieldChange("factorRate", v)}
-        display={formatNumber(form.factorRate, 3)}
+        display={formatFactorRateUS(form.factorRate) || "—"}
       />
       <EditableMoneyField
         label="Payback"
@@ -1222,11 +1392,7 @@ function formatUsMoneyInputValue(value: number): string {
 }
 
 function formatUsFactorInputValue(value: number): string {
-  if (!Number.isFinite(value)) return "";
-  return value.toLocaleString("en-US", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 3,
-  });
+  return formatFactorRateUS(value);
 }
 
 function EditableMoneyField({
@@ -1397,6 +1563,7 @@ function EditableFrequencyField({
         >
           <option value="Daily">Daily</option>
           <option value="Weekly">Weekly</option>
+          <option value="Bi-Weekly">Bi-Weekly</option>
           <option value="Monthly">Monthly</option>
         </select>
       ) : (

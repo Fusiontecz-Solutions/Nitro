@@ -17,8 +17,6 @@ import OfferDecisionToggle from "./OfferDecisionToggle";
 import { axiosGet } from "@/redux/axios";
 import {
     getBankDetails,
-    // createBankDetail, 
-    // updateBankDetail
 } from "@/redux/actions/bankDetailActions";
 import {
     getMonths,
@@ -111,9 +109,11 @@ interface ExpandedMonths {
 type BankAnalysisProps = {
     /** View-only: no statement upload, bank edits, positions, or terms-of-offer actions (e.g. OPERATIONS). */
     readOnly?: boolean;
+    /** When true with readOnly false, allow add-bank/month and new position rows (e.g. Super Admin on past pipeline tabs). */
+    enableCreate?: boolean;
 };
 
-const BankAnalysis = ({ readOnly = false }: BankAnalysisProps) => {
+const BankAnalysis = ({ readOnly = false, enableCreate = false }: BankAnalysisProps) => {
     // const { resolvedTheme } = useTheme();
     // const isDark = resolvedTheme === 'dark';
     const dispatch = useDispatch<AppDispatch>();
@@ -1401,7 +1401,7 @@ const BankAnalysis = ({ readOnly = false }: BankAnalysisProps) => {
                         />
                         <BankAnalysisTable
                             readOnly={readOnly}
-                            disableCreate={!readOnly}
+                            disableCreate={readOnly || !enableCreate}
                             onNetCreditAverageChange={setBankNetCreditAvg}
                             positions={livePositions as any}
                             onBanksMetaChange={handleBanksMetaChange}
@@ -1417,7 +1417,7 @@ const BankAnalysis = ({ readOnly = false }: BankAnalysisProps) => {
                             onRowsChange={handleRowsChange}
                             bankAllocationOptions={bankAllocationOptions}
                             readOnly={readOnly}
-                            disableCreate={!readOnly}
+                            disableCreate={readOnly || !enableCreate}
                         />
                     </div>
                 </div>

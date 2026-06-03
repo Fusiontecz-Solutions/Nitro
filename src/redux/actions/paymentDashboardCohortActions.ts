@@ -1,15 +1,15 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { executeApplicationsListFetch } from '@/redux/actions/applicationActions';
-import {
-    paymentFundedDealsListParams,
-    type PaymentFundedDealsListArg,
-} from '@/lib/paymentDashboardFunded';
+import { buildPaymentFundedCohortParams } from '@/lib/paymentDashboardFunded';
+import type { GetApplicationsParams } from '@/types/applicationTypes';
 
 export const fetchPaymentDashboardFundedDeals = createAsyncThunk(
     'paymentDashboardCohort/fetch',
-    async (arg: PaymentFundedDealsListArg, { rejectWithValue }) => {
+    async (params: GetApplicationsParams | undefined, { rejectWithValue }) => {
         try {
-            return await executeApplicationsListFetch(paymentFundedDealsListParams(arg));
+            return await executeApplicationsListFetch(
+                params ?? buildPaymentFundedCohortParams(),
+            );
         } catch (error: unknown) {
             const err = error as { response?: { data?: { message?: string } }; message?: string };
             return rejectWithValue(

@@ -1,8 +1,8 @@
 import { jwtDecode } from "jwt-decode";
 import type { OperationsDashboardRecentCase } from "@/redux/actions/operationsDashboardActions";
-import { CRM_CACHE_NS, crmCacheClearNamespace, crmCacheGet, crmCacheSet } from "@/lib/crmCache";
+import { idbClearNamespace, idbGet, idbSet } from "@/lib/persistentCache/idbStore";
 
-const NS = CRM_CACHE_NS.OPS_DASHBOARD;
+const IDB_NAMESPACE = "operations-dashboard.v1";
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 type StoredBlob = {
@@ -20,10 +20,11 @@ type StoredBlob = {
   };
   caseStageCounts: Record<string, number>;
   operationsMetricsMode: string | null;
-  /** Present on blobs written after this field was added; older caches infer from list length. */
   hasLoadedRecentOnce?: boolean;
   recentCases: OperationsDashboardRecentCase[];
 };
+
+let memoryBlob: StoredBlob | null = null;
 
 function getTokenUserId(): string {
   if (typeof window === "undefined") return "";
@@ -50,6 +51,31 @@ function normalizeRecentCase(
   };
 }
 
+function blobToHydration(parsed: StoredBlob): OperationsDashboardHydration {
+  const recentCases = Array.isArray(parsed.recentCases)
+    ? parsed.recentCases.map((r) => normalizeRecentCase(r))
+    : [];
+
+  const hasLoadedRecentOnce =
+    typeof parsed.hasLoadedRecentOnce === "boolean"
+      ? parsed.hasLoadedRecentOnce
+      : recentCases.length > 0;
+
+  return {
+    summaryCounts: { ...parsed.summaryCounts },
+    caseStageCounts: { ...parsed.caseStageCounts },
+    operationsMetricsMode:
+      typeof parsed.operationsMetricsMode === "string"
+        ? parsed.operationsMetricsMode
+        : null,
+    hasLoadedSummaryOnce: true,
+    lastSummaryFetchedAt: null,
+    hasLoadedRecentOnce,
+    lastRecentFetchedAt: null,
+    recentCases,
+  };
+}
+
 export type OperationsDashboardHydration = {
   summaryCounts: StoredBlob["summaryCounts"];
   caseStageCounts: Record<string, number>;
@@ -61,51 +87,35 @@ export type OperationsDashboardHydration = {
   recentCases: OperationsDashboardRecentCase[];
 };
 
-/**
- * Read last persisted ops dashboard payload for the current JWT user.
- * Timestamps are cleared so thunks still refetch in the background.
- */
 export function readOperationsDashboardSession(): OperationsDashboardHydration | null {
   if (typeof window === "undefined") return null;
   const userId = getTokenUserId();
-  if (!userId) return null;
-  try {
-    const parsed = crmCacheGet<StoredBlob>(NS, userId);
-    if (!parsed || parsed.v !== 1 || parsed.userId !== userId) return null;
-    if (
-      typeof parsed.savedAt !== "number" ||
-      Date.now() - parsed.savedAt > MAX_CACHE_AGE_MS
-    ) {
-      crmCacheClearNamespace(NS);
-      return null;
-    }
-    if (!parsed.summaryCounts || !parsed.caseStageCounts) return null;
-
-    const recentCases = Array.isArray(parsed.recentCases)
-      ? parsed.recentCases.map((r) => normalizeRecentCase(r))
-      : [];
-
-    const hasLoadedRecentOnce =
-      typeof parsed.hasLoadedRecentOnce === "boolean"
-        ? parsed.hasLoadedRecentOnce
-        : recentCases.length > 0;
-
-    return {
-      summaryCounts: { ...parsed.summaryCounts },
-      caseStageCounts: { ...parsed.caseStageCounts },
-      operationsMetricsMode:
-        typeof parsed.operationsMetricsMode === "string"
-          ? parsed.operationsMetricsMode
-          : null,
-      hasLoadedSummaryOnce: true,
-      lastSummaryFetchedAt: null,
-      hasLoadedRecentOnce,
-      lastRecentFetchedAt: null,
-      recentCases,
-    };
-  } catch {
+  if (!userId || !memoryBlob) return null;
+  if (memoryBlob.userId !== userId) return null;
+  if (
+    typeof memoryBlob.savedAt !== "number" ||
+    Date.now() - memoryBlob.savedAt > MAX_CACHE_AGE_MS
+  ) {
+    memoryBlob = null;
+    void idbClearNamespace(IDB_NAMESPACE);
     return null;
   }
+  if (!memoryBlob.summaryCounts || !memoryBlob.caseStageCounts) return null;
+  return blobToHydration(memoryBlob);
+}
+
+export async function hydrateOperationsDashboardCacheFromIdb(): Promise<void> {
+  const userId = getTokenUserId();
+  if (!userId) return;
+  const hit = await idbGet<StoredBlob>(IDB_NAMESPACE, userId);
+  if (!hit?.payload || (hit.payload as StoredBlob).v !== 1) return;
+  const parsed = hit.payload as StoredBlob;
+  if (parsed.userId !== userId) return;
+  if (Date.now() - parsed.savedAt > MAX_CACHE_AGE_MS) {
+    void idbClearNamespace(IDB_NAMESPACE);
+    return;
+  }
+  memoryBlob = parsed;
 }
 
 export function persistOperationsDashboardSession(payload: {
@@ -128,14 +138,16 @@ export function persistOperationsDashboardSession(payload: {
       hasLoadedRecentOnce: payload.hasLoadedRecentOnce,
       recentCases: payload.recentCases.map((r) => normalizeRecentCase(r)),
     };
-    crmCacheSet(NS, payload.userId, blob);
+    memoryBlob = blob;
+    void idbSet(IDB_NAMESPACE, payload.userId, blob);
   } catch {
-    /* quota / private mode */
+    /* ignore */
   }
 }
 
 export function clearOperationsDashboardSession(): void {
-  crmCacheClearNamespace(NS);
+  memoryBlob = null;
+  void idbClearNamespace(IDB_NAMESPACE);
 }
 
 export { getTokenUserId };

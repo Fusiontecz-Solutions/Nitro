@@ -369,16 +369,15 @@ export default function FailedTransactions() {
   const [filterYear, setFilterYear] = useState("");
   const [filterMonth, setFilterMonth] = useState("");
   const [filterDay, setFilterDay] = useState("");
-  const [datePick, setDatePick] = useState(() => rangeForPreset("last1").toDate);
-  /** Quick-range preset — default today; sent as `fromDate`/`toDate` and supersedes the calendar. */
-  const [rangePreset, setRangePreset] = useState<RangePreset | null>("last1");
+  const [datePick, setDatePick] = useState("");
+  /** Quick-range preset; null = no date filter (all failed transactions). */
+  const [rangePreset, setRangePreset] = useState<RangePreset | null>(null);
   /** User-defined inclusive From → To range (`fromDate` / `toDate` on the API). */
   const [customRange, setCustomRange] = useState<{ fromYmd: string; toYmd: string } | null>(
     null,
   );
-  const initialPresetRange = rangeForPreset("last1");
-  const [draftRangeFrom, setDraftRangeFrom] = useState(initialPresetRange.fromDate);
-  const [draftRangeTo, setDraftRangeTo] = useState(initialPresetRange.toDate);
+  const [draftRangeFrom, setDraftRangeFrom] = useState("");
+  const [draftRangeTo, setDraftRangeTo] = useState("");
 
   /** Client-side sort of the current page (server paginates the result set). */
   const [sortKey, setSortKey] = useState<SortKey>("date");
@@ -455,11 +454,24 @@ export default function FailedTransactions() {
         const params = new URLSearchParams(filterQueryParams);
         params.set("page", String(page));
         params.set("pageSize", String(pageSize));
-        if (page === 1) params.set("includeSummary", "1");
+        // Intentionally NOT passing `includeSummary=1`. The inline summary on the
+        // `/failed-transactions` endpoint counts post-pairing `status === FAILED` rows,
+        // while the Dashboard "Failed Payment" StatCard sums raw `status === DEBIT`
+        // rows. To keep both views consistent we always fetch the dedicated
+        // `/failed-transactions/summary` endpoint, which uses the same DEBIT-based
+        // aggregation as the StatCard.
 
-        const res = await axiosGet(
+        const dataRequest = axiosGet(
           `/collection-payments/failed-transactions?${params.toString()}`,
         );
+        const summaryRequest =
+          page === 1
+            ? axiosGet(
+                `/collection-payments/failed-transactions/summary?${filterQueryParams.toString()}`,
+              )
+            : Promise.resolve(null);
+
+        const [res, sumRes] = await Promise.all([dataRequest, summaryRequest]);
         if (cancelled) return;
 
         const payload = res.data as FailedTransactionsApiResponse | undefined;
@@ -478,22 +490,14 @@ export default function FailedTransactions() {
           setHasLoadedTable(true);
 
           if (page === 1) {
-            if (payload.summary) {
-              setSummary(payload.summary);
-            } else {
-              const sumRes = await axiosGet(
-                `/collection-payments/failed-transactions/summary?${filterQueryParams.toString()}`,
-              );
-              if (cancelled) return;
-              const sumPayload = sumRes.data as
-                | { success?: boolean; summary?: FailedSummary }
-                | undefined;
-              setSummary(
-                sumPayload?.success && sumPayload.summary
-                  ? sumPayload.summary
-                  : EMPTY_SUMMARY,
-              );
-            }
+            const sumPayload = sumRes?.data as
+              | { success?: boolean; summary?: FailedSummary }
+              | undefined;
+            setSummary(
+              sumPayload?.success && sumPayload.summary
+                ? sumPayload.summary
+                : EMPTY_SUMMARY,
+            );
           }
         } else {
           setError("Failed to load failed transactions.");
@@ -648,15 +652,14 @@ export default function FailedTransactions() {
   const showPager = hasLoadedTable && (canPrev || canNext);
 
   const clearDateFilters = useCallback(() => {
-    const { fromDate, toDate } = rangeForPreset("last1");
     setFilterYear("");
     setFilterMonth("");
     setFilterDay("");
-    setDatePick(toDate);
-    setRangePreset("last1");
+    setDatePick("");
+    setRangePreset(null);
     setCustomRange(null);
-    setDraftRangeFrom(fromDate);
-    setDraftRangeTo(toDate);
+    setDraftRangeFrom("");
+    setDraftRangeTo("");
   }, []);
 
   /** Select a quick-range preset; clears single-day calendar params and syncs the picker. */
@@ -872,15 +875,16 @@ export default function FailedTransactions() {
                   />
                   <Button
                     type="button"
+                    variant={customRangePendingApply ? "default" : "outline"}
                     size="sm"
                     disabled={!canApplyCustomRange}
                     onClick={applyCustomDateRange}
-                    className={`h-9 shrink-0 rounded-lg px-3.5 text-xs font-semibold ${
+                    className={`h-9 shrink-0 rounded-lg px-3.5 text-xs font-semibold disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-100 ${
                       customRangePendingApply
                         ? "bg-[#276D9C] text-white hover:bg-[#1f5d86]"
                         : customRange
-                          ? "border-[#276D9C]/40 bg-[#276D9C]/10 text-[#276D9C] hover:bg-[#276D9C]/15"
-                          : ""
+                          ? "border-[#276D9C]/40 bg-[#276D9C]/10 text-[#276D9C] hover:bg-[#276D9C]/15 disabled:border-[#276D9C]/40 disabled:bg-[#276D9C]/10 disabled:text-[#276D9C]"
+                          : "disabled:border-border/80 disabled:bg-background/90 disabled:text-muted-foreground"
                     }`}
                   >
                     {customRangePendingApply ? "Apply" : customRange ? "Applied" : "Apply"}
@@ -897,8 +901,8 @@ export default function FailedTransactions() {
                 </div>
               </div>
               <p className="mt-2.5 text-[11px] leading-snug text-muted-foreground">
-                Use presets for quick ranges, or set From and To for a custom range (same day for a
-                single date).
+                All failed transactions are shown by default. Use presets for quick ranges, or set
+                From and To for a custom range (same day for a single date).
               </p>
             </div>
           </div>

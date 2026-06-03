@@ -3,6 +3,32 @@ import {
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
 } from "@/constants/operationsDashboardApplications";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
+import type { SortingState } from "@tanstack/react-table";
+
+/** API `sortBy` values supported by `GET /applications`. */
+export type ApplicationsListSortField = "createdAt" | "applicationId" | "updatedAt";
+
+const TABLE_SORT_TO_API: Record<string, ApplicationsListSortField> = {
+  createdAt: "createdAt",
+  applicationId: "applicationId",
+  dealId: "applicationId",
+  updatedAt: "updatedAt",
+  lastModifiedAt: "updatedAt",
+};
+
+/** Map TanStack column sort → backend query (defaults to newest first). */
+export function applicationsListSortFromTable(
+  sorting: SortingState,
+): Pick<GetApplicationsParams, "sortBy" | "sortOrder"> {
+  const rule = sorting[0];
+  if (!rule) return { ...APPLICATIONS_LIST_DEFAULT_SORT };
+  const sortBy = TABLE_SORT_TO_API[rule.id];
+  if (!sortBy) return { ...APPLICATIONS_LIST_DEFAULT_SORT };
+  return {
+    sortBy,
+    sortOrder: rule.desc ? "desc" : "asc",
+  };
+}
 
 /**
  * Pipeline dropdown values that must use `operationsStatus` (not a single `currentQueue`
@@ -96,18 +122,20 @@ export function buildApplicationsListParams(options: {
   priorityFilter?: string;
   /** UNDERWRITER: server-side pool / my-claimed (Underwriter queue only). Overrides queue dropdown. */
   underwriterClaim?: "unclaimed" | "mine";
-  /**
-   * When true (operations sidebar: `fromDashboard=operations`), `dashboardStateFilter`
-   * drives `operationsStatus`. When false, the pipeline dropdown (`statusFilter`) wins.
-   */
-  useDashboardStageFilter?: boolean;
+  statsBucket?: string;
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
 }): GetApplicationsParams {
   const params: GetApplicationsParams = {
     page: options.pageIndex + 1,
     limit: options.pageSize,
-    ...APPLICATIONS_LIST_DEFAULT_SORT,
+    sortBy: options.sortBy ?? APPLICATIONS_LIST_DEFAULT_SORT.sortBy,
+    sortOrder: options.sortOrder ?? APPLICATIONS_LIST_DEFAULT_SORT.sortOrder,
     lite: true,
   };
+  if (options.statsBucket) {
+    params.statsBucket = options.statsBucket;
+  }
   if (options.searchTerm) {
     params.search = options.searchTerm;
   }
@@ -117,26 +145,13 @@ export function buildApplicationsListParams(options: {
   if (options.priorityFilter && options.priorityFilter !== "all") {
     params.priority = options.priorityFilter;
   }
+  if (options.statsBucket) {
+    return params;
+  }
   if (options.underwriterClaim) {
     params.underwriterClaim = options.underwriterClaim;
     return params;
   }
-
-  if (options.useDashboardStageFilter && options.dashboardStateFilter) {
-    const isAllPipeline =
-      options.dashboardStateFilter === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY ||
-      options.dashboardStateFilter.toLowerCase() === "all";
-    if (!isAllPipeline) {
-      params.operationsStatus = options.dashboardStateFilter;
-    }
-    return params;
-  }
-
-  if (options.statusFilter !== "all") {
-    Object.assign(params, pipelineStatusFilterToApiFields(options.statusFilter));
-    return params;
-  }
-
   if (options.dashboardStateFilter) {
     const isAllPipeline =
       options.dashboardStateFilter === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY ||
@@ -144,6 +159,10 @@ export function buildApplicationsListParams(options: {
     if (!isAllPipeline) {
       params.operationsStatus = options.dashboardStateFilter;
     }
+    return params;
+  }
+  if (options.statusFilter !== "all") {
+    Object.assign(params, pipelineStatusFilterToApiFields(options.statusFilter));
   }
   return params;
 }
@@ -152,17 +171,13 @@ export function buildApplicationsListParams(options: {
 export function buildInitialApplicationsListParamsFromSearch(
   urlSearch: string,
 ): GetApplicationsParams {
-  const query = new URLSearchParams(urlSearch);
   const { dashboardStateFilter, statusFilter } =
     parseApplicationsListRouteFilters(urlSearch);
-  const useDashboardStageFilter =
-    query.get("fromDashboard") === "operations";
   return buildApplicationsListParams({
     pageIndex: 0,
     pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
     searchTerm: "",
     dashboardStateFilter,
     statusFilter,
-    useDashboardStageFilter,
   });
 }
