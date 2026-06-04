@@ -1,6 +1,8 @@
 import type { Role } from '@prisma/client';
+import type { Request } from 'express';
 import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from './applicationService';
+import { markActivityLogged } from './outboundCommunicationService';
 
 // Local TypeScript representation of allowed activity action types.
 // This mirrors the values used in the Prisma enum.
@@ -24,6 +26,7 @@ export type ApplicationActivityActionType =
 export interface CreateApplicationActivityLogInput {
   applicationId: string | null;
   user: AuthenticatedUser | null;
+  req?: Request | null;
   actionType: ApplicationActivityActionType;
   actionDescription: string;
   previousStatus?: string | null;
@@ -32,7 +35,7 @@ export interface CreateApplicationActivityLogInput {
 }
 
 export async function createApplicationActivityLog(input: CreateApplicationActivityLogInput) {
-  const { applicationId, user, actionType, actionDescription, previousStatus, currentStatus, metadata } = input;
+  const { applicationId, user, req, actionType, actionDescription, previousStatus, currentStatus, metadata } = input;
 
   const userId = user?.id ?? null;
   const normalizedRole = (user?.role ?? null) as Role | string | null;
@@ -41,7 +44,7 @@ export async function createApplicationActivityLog(input: CreateApplicationActiv
       ? (normalizedRole.trim().toUpperCase().replace(/-/g, '_') as Role)
       : (normalizedRole as Role | null);
 
-  return prisma.applicationActivityLog.create({
+  const log = await prisma.applicationActivityLog.create({
     data: {
       applicationId,
       userId,
@@ -55,6 +58,9 @@ export async function createApplicationActivityLog(input: CreateApplicationActiv
       metadata: metadata ? (metadata as any) : undefined,
     },
   });
+
+  if (req) markActivityLogged(req);
+  return log;
 }
 
 export async function getApplicationActivityLogsForUser(applicationId: string, user: AuthenticatedUser | null) {

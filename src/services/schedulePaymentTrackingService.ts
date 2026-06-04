@@ -42,6 +42,48 @@ const toAmountDecimal = (amount: number): Prisma.Decimal => {
   return new Prisma.Decimal(rounded.toFixed(2));
 };
 
+/** Super Admin proxy sentinel — not a row in tenant User. */
+const SUPER_ADMIN_PROXY_SENTINEL_ID = '00000000-0000-0000-0000-000000000000';
+
+type SchedulePaymentAttributionContext = {
+  createdById: string | null;
+  salesRepresentativeId: string | null;
+};
+
+/**
+ * Tenant User.id safe for SchedulePaymentTracking.confirmedById (optional FK).
+ * Super Admin proxy principals and unknown ids never write a synthetic id.
+ */
+async function resolveSchedulePaymentConfirmedById(
+  user: AuthenticatedUser | null,
+  application: SchedulePaymentAttributionContext,
+): Promise<string | null> {
+  const candidateId = user?.id?.trim();
+  if (
+    candidateId &&
+    candidateId !== SUPER_ADMIN_PROXY_SENTINEL_ID
+  ) {
+    const actor = await prisma.user.findUnique({
+      where: { id: candidateId },
+      select: { id: true },
+    });
+    if (actor) return actor.id;
+  }
+
+  const fallbackIds = [application.createdById, application.salesRepresentativeId].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  );
+  for (const id of fallbackIds) {
+    const row = await prisma.user.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (row) return row.id;
+  }
+
+  return null;
+}
+
 export const mapSchedulePaymentToApi = (row: SchedulePaymentTracking) => ({
   id: row.id,
   applicationId: row.applicationId,
@@ -120,7 +162,13 @@ export async function replaceSchedulePaymentTracking(
 ) {
   const application = await prisma.application.findUnique({
     where: { id: applicationId },
-    select: { id: true, dealId: true, referringAgentId: true, createdById: true },
+    select: {
+      id: true,
+      dealId: true,
+      referringAgentId: true,
+      createdById: true,
+      salesRepresentativeId: true,
+    },
   });
 
   if (!application) {
@@ -166,7 +214,7 @@ export async function replaceSchedulePaymentTracking(
     null;
 
   const batchId = randomUUID();
-  const confirmedById = user?.id ?? null;
+  const confirmedById = await resolveSchedulePaymentConfirmedById(user, application);
 
   const rows = validated.payments.map((p) => ({
     applicationId,

@@ -1,3 +1,4 @@
+import type { Request } from 'express';
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { createApplicationActivityLog } from './applicationActivityLogService';
@@ -54,6 +55,8 @@ export interface ApproveApplicationOptions {
      * result instead of re-running the transition. Lets clients safely retry.
      */
     idempotencyKey?: string | null;
+    /** When set, audit rows attribute to a real tenant User (incl. Super Admin proxy fallback). */
+    req?: Request | null;
 }
 
 /* --------------------------- Idempotency cache ---------------------------- */
@@ -226,6 +229,7 @@ async function runApproval(
             await createApplicationActivityLog({
                 applicationId: existing.id,
                 user: options.actor ?? null,
+                req: options.req,
                 actionType: 'APPROVED',
                 actionDescription: buildApprovalActivityDescription(options),
                 previousStatus: `${previousQueue ?? ''} / ${previousState ?? ''}`,

@@ -38,6 +38,10 @@ export async function recordCommunicationAudit(
   req: Request | null,
   input: RecordCommunicationAuditInput,
 ) {
+  const auditUser =
+    input.user ??
+    (req?.user ? ({ id: req.user.id, role: req.user.role } as AuthenticatedUser) : null);
+
   const outbound = await createOutboundCommunication({
     applicationId: input.applicationId,
     channel: input.channel,
@@ -48,7 +52,8 @@ export async function recordCommunicationAudit(
     templateName: input.templateName,
     documentName: input.documentName,
     contractId: input.contractId,
-    user: input.user ?? (req?.user as AuthenticatedUser | undefined) ?? null,
+    user: auditUser,
+    req,
     metadata: input.metadata,
   });
 
@@ -58,7 +63,8 @@ export async function recordCommunicationAudit(
 
   await createApplicationActivityLog({
     applicationId: input.applicationId ?? null,
-    user: input.user ?? (req?.user as AuthenticatedUser | undefined) ?? null,
+    user: auditUser,
+    req,
     actionType,
     actionDescription: input.actionDescription,
     previousStatus: null,
@@ -95,6 +101,7 @@ export async function recordAuthAudit(
   await createApplicationActivityLog({
     applicationId: null,
     user,
+    req,
     actionType: action === 'LOGIN' ? 'APPLICATION_UPDATED' : 'APPLICATION_UPDATED',
     actionDescription: description,
     previousStatus: null,
@@ -120,9 +127,14 @@ export async function recordGenericAudit(
     currentStatus?: string | null;
   },
 ) {
+  const auditUser = req.user
+    ? ({ id: req.user.id, role: req.user.role } as AuthenticatedUser)
+    : null;
+
   await createApplicationActivityLog({
-    applicationId: input.applicationId ?? null,
-    user: req.user as AuthenticatedUser,
+    applicationId: input.applicationId ?? extractApplicationIdFromPath(req.originalUrl || req.url),
+    user: auditUser,
+    req,
     actionType: 'APPLICATION_UPDATED',
     actionDescription: input.description,
     previousStatus: null,
@@ -139,6 +151,13 @@ export async function recordGenericAudit(
     },
   });
   markActivityLogged(req);
+}
+
+/** UUID application id from paths like /api/v1/applications/:id/... */
+function extractApplicationIdFromPath(path: string | undefined): string | null {
+  if (!path) return null;
+  const match = path.match(/\/applications\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  return match?.[1] ?? null;
 }
 
 function getClientIp(req: Request): string | null {
