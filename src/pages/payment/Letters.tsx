@@ -34,8 +34,22 @@ import {
   type TemplateItem as ApiTemplateItem,
 } from "./paymentTemplateApi";
 import { sendPaymentMail } from "@/redux/actions/paymentMailActions";
+import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
+import { getTermsOffers } from "@/redux/actions/termsOfferActions";
+import { resolveOfferDecisionFundedAmount } from "@/lib/offerDecisionFees";
 import { cn, formatCurrency } from "@/lib/utils";
 import { FileText, Mail, RotateCcw, Send } from "lucide-react";
+import type { TermsOffer } from "@/types/termsOfferTypes";
+
+type ApplicationFundingExtras = Application & {
+  termsOffers?: Array<{ approvedAmount?: unknown }>;
+  OfferDecision?: Record<string, unknown>;
+};
+
+type LetterFundingSources = {
+  offerDecision?: Record<string, unknown> | null;
+  termsOffers?: TermsOffer[];
+};
 
 /** Ordered unique placeholder keys from template body (without `{{` `}}`). */
 function placeholderKeysFromBody(body: string): string[] {
@@ -163,6 +177,114 @@ function formatUsShortDate(iso?: string): string {
   return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
 }
 
+function isPayoffOrZeroBalanceLetter(templateName: string): boolean {
+  const n = templateName.trim().toLowerCase();
+  return (
+    n === "zero balance letter" ||
+    n.includes("zero balance") ||
+    n.includes("payoff") ||
+    n.includes("pay off")
+  );
+}
+
+function letterTypeLabelForSubject(templateName: string): string {
+  const n = templateName.trim().toLowerCase();
+  if (n === "zero balance letter" || n.includes("zero balance")) {
+    return "Zero Balance Letter";
+  }
+  if (n.includes("payoff") || n.includes("pay off")) {
+    return "Pay off Letter";
+  }
+  return templateName;
+}
+
+function letterFundedAmountForSubject(values: Record<string, string>): string {
+  return (
+    values.original_funded?.trim() ||
+    values.advance_amount?.trim() ||
+    values.offer_amount?.trim() ||
+    ""
+  );
+}
+
+function offerDecisionBelongsToApplication(
+  offerDecision: Record<string, unknown> | null | undefined,
+  applicationUuid: string
+): boolean {
+  if (!offerDecision || !applicationUuid) return false;
+  const appRef = offerDecision.application ?? offerDecision.applicationId;
+  return String(appRef) === applicationUuid;
+}
+
+function termsOfferBelongsToApplication(
+  termsOffer: TermsOffer,
+  applicationUuid: string
+): boolean {
+  if (!applicationUuid) return false;
+  const app = termsOffer.application;
+  if (typeof app === "string") return app === applicationUuid;
+  if (app && typeof app === "object") {
+    const id = (app as { _id?: string; id?: string })._id ?? (app as { id?: string }).id;
+    return id != null && String(id) === applicationUuid;
+  }
+  return true;
+}
+
+function resolveFundedAmountFromOfferDecision(
+  offerDecision: Record<string, unknown> | null | undefined
+): number | null {
+  if (!offerDecision || typeof offerDecision !== "object") return null;
+  if (String(offerDecision.decision ?? "").toLowerCase() === "declined") {
+    return null;
+  }
+  return resolveOfferDecisionFundedAmount(offerDecision);
+}
+
+/** Payoff / zero-balance letters: `Client Name: Letter Type - Funded Amount`. */
+function buildLetterEmailSubject(
+  templateName: string,
+  values: Record<string, string>
+): string {
+  const clientName =
+    values.business_name?.trim() ||
+    values.client_name?.trim() ||
+    values.merchant_name?.trim() ||
+    "Client";
+  const letterType = letterTypeLabelForSubject(templateName);
+  const fundedAmount = letterFundedAmountForSubject(values);
+  return fundedAmount
+    ? `${clientName}: ${letterType} - ${fundedAmount}`
+    : `${clientName}: ${letterType}`;
+}
+
+function resolveFundedAmount(
+  application: Application | null | undefined,
+  funding: LetterFundingSources = {}
+): number {
+  const direct = Number(application?.loanAmount);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+
+  const ext = application as ApplicationFundingExtras | null | undefined;
+  const fetchedTermsAmt = Number(funding.termsOffers?.[0]?.approvedAmount);
+  const embeddedTermsAmt = Number(ext?.termsOffers?.[0]?.approvedAmount);
+  const termsAmt = Number.isFinite(fetchedTermsAmt) && fetchedTermsAmt > 0
+    ? fetchedTermsAmt
+    : embeddedTermsAmt;
+  if (Number.isFinite(termsAmt) && termsAmt > 0) return termsAmt;
+
+  const fromFetchedOffer = resolveFundedAmountFromOfferDecision(
+    funding.offerDecision
+  );
+  if (fromFetchedOffer != null && fromFetchedOffer > 0) return fromFetchedOffer;
+
+  const fromEmbeddedOffer = resolveFundedAmountFromOfferDecision(
+    ext?.OfferDecision
+  );
+  if (fromEmbeddedOffer != null && fromEmbeddedOffer > 0) return fromEmbeddedOffer;
+
+  return 0;
+}
+
 /** Default wire destination shown in payoff letter merge fields (edit per send if needed). */
 const DEFAULT_PAYOFF_WIRE_DETAILS = {
   beneficiary_name: "WOODMERE FINANCIAL LLC",
@@ -175,7 +297,8 @@ const DEFAULT_PAYOFF_WIRE_DETAILS = {
 
 function buildDefaultValues(
   application: Application | null | undefined,
-  dealLabel: string
+  dealLabel: string,
+  funding: LetterFundingSources = {}
 ): Record<string, string> {
   const client = application?.client;
   const owner = typeof client === "object" ? client?.owner : undefined;
@@ -185,10 +308,14 @@ function buildDefaultValues(
     .join(" ")
     .trim();
   const email = owner?.email ?? business?.email ?? "";
-  const loan = Number(application?.loanAmount) || 0;
+  const loan = resolveFundedAmount(application, funding);
   const totalRepay = Math.round(loan * 1.42);
   const paid = Math.round(loan * 0.071);
-  const payoff = Math.max(0, totalRepay - paid);
+  const balanceDue = Number(application?.collectionBalanceDue);
+  const payoff =
+    Number.isFinite(balanceDue) && balanceDue >= 0
+      ? balanceDue
+      : Math.max(0, totalRepay - paid);
   const today = new Date().toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
@@ -205,6 +332,7 @@ function buildDefaultValues(
     business_name: business?.name ?? "",
     agent_name: application?.salesRepresentative ?? "",
     advance_amount: loan ? formatCurrency(loan) : "",
+    offer_amount: loan ? formatCurrency(loan) : "",
     factor_rate: "1.42",
     payback_amount: totalRepay ? formatCurrency(totalRepay) : "",
     daily_payment: totalRepay ? formatCurrency(Math.round(totalRepay / 120)) : "",
@@ -248,6 +376,33 @@ export default function Letters() {
   const application = useSelector(
     (s: RootState) => s.applicationDetail.data
   ) as Application | null | undefined;
+  const offerDecisionRaw = useSelector(
+    (s: RootState) => s.offerDecision.data
+  ) as Record<string, unknown> | null | undefined;
+  const termsOffersRaw = useSelector(
+    (s: RootState) => s.termsOffers.data
+  ) as TermsOffer[];
+  const applicationUuid = application?._id ?? "";
+
+  const fundingSources = useMemo((): LetterFundingSources => {
+    const offerDecision = offerDecisionBelongsToApplication(
+      offerDecisionRaw,
+      applicationUuid
+    )
+      ? offerDecisionRaw
+      : null;
+    const termsOffers = termsOffersRaw.filter((row) =>
+      termsOfferBelongsToApplication(row, applicationUuid)
+    );
+    return { offerDecision, termsOffers };
+  }, [offerDecisionRaw, termsOffersRaw, applicationUuid]);
+
+  useEffect(() => {
+    if (!applicationUuid) return;
+    void dispatch(getOfferDecisionByApplication(applicationUuid));
+    void dispatch(getTermsOffers({ application: applicationUuid, limit: 5 }));
+  }, [dispatch, applicationUuid]);
+
   const dealLabel = useMemo(
     () =>
       application?.applicationId != null
@@ -257,8 +412,8 @@ export default function Letters() {
   );
 
   const defaults = useMemo(
-    () => buildDefaultValues(application, dealLabel),
-    [application, dealLabel]
+    () => buildDefaultValues(application, dealLabel, fundingSources),
+    [application, dealLabel, fundingSources]
   );
 
   const [templates, setTemplates] = useState<ApiTemplateItem[]>(
@@ -338,13 +493,9 @@ export default function Letters() {
       setSubject(`${selectedTemplate.name} - ${defaults.business_name || dealLabel}`);
     } else if (selectedTemplate.category === "letter") {
       setSubject(
-        selectedTemplate.name === "Payoff Statement"
-          ? `RE: Payoff Statement - Deal #${dealLabel}`
-          : selectedTemplate.name === "Payoff Wire Instructions"
-            ? `Payoff Letter - ${dealLabel}`
-            : selectedTemplate.name === "Zero balance letter"
-              ? `RE: Zero Balance Letter - Deal #${dealLabel}`
-              : `RE: ${selectedTemplate.name} - Deal ID: ${dealLabel}`
+        isPayoffOrZeroBalanceLetter(selectedTemplate.name)
+          ? buildLetterEmailSubject(selectedTemplate.name, { ...defaults, ...next })
+          : `RE: ${selectedTemplate.name} - Deal ID: ${dealLabel}`
       );
     } else {
       setSubject(`${selectedTemplate.name} - ${dealLabel}`);
@@ -426,7 +577,14 @@ export default function Letters() {
     try {
       const recipient = recipientEmail.trim();
       const resolvedSubject =
-        subject.trim() || `${selectedTemplate.name} - Deal #${dealLabel}`;
+        subject.trim() ||
+        (selectedTemplate.category === "letter" &&
+        isPayoffOrZeroBalanceLetter(selectedTemplate.name)
+          ? buildLetterEmailSubject(selectedTemplate.name, {
+              ...defaults,
+              ...fieldValues,
+            })
+          : `${selectedTemplate.name} - Deal #${dealLabel}`);
 
       await dispatch(
         sendPaymentMail({

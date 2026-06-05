@@ -225,6 +225,11 @@ const ApplicationDetails = () => {
         /** After "Generate contract", queue moves here — keep CONTRACT tab so FUW is not locked out. */
         const isContractedQueue =
             queueNorm === 'contracted' ||
+            queueNorm === 'contract pending' ||
+            queueNorm === 'contract generated' ||
+            queueNorm === 'contract sent' ||
+            queueNorm === 'contract cancelled' ||
+            queueNorm === 'contract signed' ||
             queueNorm === 'contract out' ||
             queueNorm === 'contracts out';
         // const stateNorm =

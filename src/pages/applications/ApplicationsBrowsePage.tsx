@@ -27,10 +27,7 @@ import {
 } from "@tanstack/react-table";
 import { DataTableContent, DataTablePagination } from "@/components/DataTable";
 import { useTheme } from "@/context/ThemeContext";
-import {
-  CONTRACT_OUT_QUEUE_BADGE_CLASS,
-  isContractOutQueueBadgeLabel,
-} from "@/lib/contractOutQueueBadge";
+import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
@@ -54,7 +51,9 @@ const QUEUE_OPTIONS = [
   { label: "Agent", value: "Agent" },
   { label: "Underwriter", value: "Underwriter" },
   { label: "Final Underwriter", value: "Final Underwriter" },
-  { label: "Contract Out", value: "Contract Out" },
+  { label: "Contract Generated", value: "Contract Generated" },
+  { label: "Contract Sent", value: "Contract Sent" },
+  { label: "Contract Cancelled", value: "Contract Cancelled" },
   { label: "Contract Signed", value: "Contract_Signed" },
   { label: "Final", value: "Final" },
   { label: "Funding call", value: "Funding Call" },
@@ -232,9 +231,8 @@ export default function ApplicationsBrowsePage() {
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
-    if (isContractOutQueueBadgeLabel(queueLabel)) {
-      return CONTRACT_OUT_QUEUE_BADGE_CLASS;
-    }
+    const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
+    if (contractWorkflowClass) return contractWorkflowClass;
     if (isContractSignedQueueBadgeLabel(queueLabel)) {
       return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
     }

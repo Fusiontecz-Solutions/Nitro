@@ -61,8 +61,8 @@ import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApp
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import type { Application } from "@/types/applicationTypes";
 import {
-  CONTRACT_OUT_QUEUE_BADGE_CLASS,
-  isContractOutQueueBadgeLabel,
+  getContractWorkflowQueueBadgeClass,
+  isContractSentQueueBadgeLabel,
 } from "@/lib/contractOutQueueBadge";
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
@@ -108,9 +108,8 @@ type MonthlyTrendApiRow = {
 
 /** Queue pills: light mode tinted bg; dark mode light pill + dark text for contrast on dark tables. */
 const getRecentCaseQueueBadgeClass = (queueLabel: string) => {
-  if (isContractOutQueueBadgeLabel(queueLabel)) {
-    return CONTRACT_OUT_QUEUE_BADGE_CLASS;
-  }
+  const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
+  if (contractWorkflowClass) return contractWorkflowClass;
   if (isContractSignedQueueBadgeLabel(queueLabel)) {
     return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
   }
@@ -318,11 +317,18 @@ export const OperationsDashboard = () => {
         operationsStatus: "Contract_Pending",
       },
       {
-        label: "Contract Out",
-        value: summaryCounts.contractsOut,
+        label: "Contract Generated",
+        value: summaryCounts.contractGenerated ?? 0,
+        helper: "Total Amount",
+        icon: <FileInput className="w-6 h-6 text-amber-500" />,
+        operationsStatus: "Contract_Generated",
+      },
+      {
+        label: "Contract Sent",
+        value: summaryCounts.contractSent ?? summaryCounts.contractsOut ?? 0,
         helper: "Total Amount",
         icon: <FileInput className="w-6 h-6 text-emerald-500" />,
-        operationsStatus: "Contract_Out",
+        operationsStatus: "Contract_Sent",
       },
       {
         label: "Contract Signed",
@@ -435,7 +441,7 @@ export const OperationsDashboard = () => {
       const qs = new URLSearchParams();
       qs.set(
         "operationsStatus",
-        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Out" : "Contracted",
+        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Sent" : "Contracted",
       );
       navigate(
         `/application-details/${recentCase.applicationId}?${qs.toString()}`,
@@ -463,8 +469,11 @@ export const OperationsDashboard = () => {
       switch (card.operationsStatus) {
         case "Contract_Pending":
           return summaryAmounts.contractPending ?? 0;
+        case "Contract_Generated":
+          return summaryAmounts.contractGenerated ?? 0;
+        case "Contract_Sent":
         case "Contract_Out":
-          return summaryAmounts.contractsOut ?? 0;
+          return summaryAmounts.contractSent ?? summaryAmounts.contractsOut ?? 0;
         case "Contract_Signed":
           return summaryAmounts.signedContracts ?? 0;
         case "Funding Call":
@@ -580,7 +589,7 @@ export const OperationsDashboard = () => {
     }
     if (isOperationsUser) {
       return recentCases.filter((item) =>
-        isContractOutQueueBadgeLabel(String(item.status ?? "")),
+        isContractSentQueueBadgeLabel(String(item.status ?? "")),
       );
     }
     return recentCases;
@@ -839,14 +848,14 @@ export const OperationsDashboard = () => {
                 {isSuperAdmin
                   ? "Latest Funded Deals"
                   : isOperationsUser
-                    ? "Contract Out Applications"
+                    ? "Contract Sent Applications"
                     : "Recent Applications"}
               </span>
               <p className="mt-0.5 text-xs text-muted-foreground hidden sm:block">
                 {isSuperAdmin
                   ? "Most recently funded or disbursed deals."
                   : isOperationsUser
-                    ? "Applications currently in the Contract Out queue."
+                    ? "Applications with contracts sent for signature."
                     : "Latest contracted applications."}
               </p>
               {recentError ? (
@@ -868,7 +877,7 @@ export const OperationsDashboard = () => {
                     isSuperAdmin
                       ? "Search funded deals..."
                       : isOperationsUser
-                        ? "Search contract out..."
+                        ? "Search contract sent..."
                         : "Search contracted..."
                   }
                   className="h-10 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#276D9C]/30"
@@ -926,7 +935,7 @@ export const OperationsDashboard = () => {
                   {isSuperAdmin
                     ? "No funded deals found."
                     : isOperationsUser
-                      ? "No contract out applications found."
+                      ? "No contract sent applications found."
                       : "No contracted applications found."}
                 </div>
               ) : recentCasesViewMode === "list" ? (

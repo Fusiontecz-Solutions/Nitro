@@ -67,9 +67,13 @@ export function getOperationsTabsForDashboardEntry(
         { id: "contract", label: "CONTRACT" },
       ];
     case "Contract_Pending":
+    case "Contract_Generated":
+    case "Contract_Sent":
+    case "Contract_Cancelled":
     case "Contract_Out":
     case "Contracted":
     case "Contract_Signed":
+    case "Signed_Contracts":
     case "Signed_Contracts": {
       const end = TAB_INDEX.contract;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
@@ -105,9 +109,13 @@ export function getOperationsPipelineStageTabId(
     case "Final Underwriter":
       return "decision-making";
     case "Contract_Pending":
+    case "Contract_Generated":
+    case "Contract_Sent":
+    case "Contract_Cancelled":
     case "Contract_Out":
     case "Contracted":
     case "Contract_Signed":
+    case "Signed_Contracts":
     case "Signed_Contracts":
       return "contract";
     case "Final":

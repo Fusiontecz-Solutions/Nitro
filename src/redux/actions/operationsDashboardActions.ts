@@ -95,6 +95,8 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
     summaryCounts: {
       totalCases: number;
       contractPending: number;
+      contractGenerated: number;
+      contractSent: number;
       contractsOut: number;
       signedContracts: number;
       fundingCall: number;
@@ -103,6 +105,8 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
     };
     summaryAmounts: {
       contractPending: number;
+      contractGenerated: number;
+      contractSent: number;
       contractsOut: number;
       signedContracts: number;
       fundingCall: number;
@@ -128,7 +132,11 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         summaryCounts: {
           totalCases: Number(data.summaryCounts.totalCases) || 0,
           contractPending: Number(data.summaryCounts.contractPending) || 0,
-          contractsOut: Number(data.summaryCounts.contractsOut) || 0,
+          contractGenerated: Number(data.summaryCounts.contractGenerated) || 0,
+          contractSent:
+            Number(data.summaryCounts.contractSent ?? data.summaryCounts.contractsOut) || 0,
+          contractsOut:
+            Number(data.summaryCounts.contractsOut ?? data.summaryCounts.contractSent) || 0,
           signedContracts: Number(data.summaryCounts.signedContracts) || 0,
           fundingCall: Number(data.summaryCounts.fundingCall) || 0,
           disbursment: Number(data.summaryCounts.disbursment) || 0,
@@ -136,7 +144,11 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         },
         summaryAmounts: {
           contractPending: Number(data.summaryAmounts?.contractPending) || 0,
-          contractsOut: Number(data.summaryAmounts?.contractsOut) || 0,
+          contractGenerated: Number(data.summaryAmounts?.contractGenerated) || 0,
+          contractSent:
+            Number(data.summaryAmounts?.contractSent ?? data.summaryAmounts?.contractsOut) || 0,
+          contractsOut:
+            Number(data.summaryAmounts?.contractsOut ?? data.summaryAmounts?.contractSent) || 0,
           signedContracts: Number(data.summaryAmounts?.signedContracts) || 0,
           fundingCall: Number(data.summaryAmounts?.fundingCall) || 0,
           disbursment: Number(data.summaryAmounts?.disbursment) || 0,

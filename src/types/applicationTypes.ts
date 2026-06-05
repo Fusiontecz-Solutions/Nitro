@@ -67,8 +67,8 @@ export interface Application {
     status?: 'Pending' | 'Approved' | 'Rejected' | 'Funded';
     queue?: string;
     state?: string;
-    currentQueue?: 'New' | 'Agent' | 'Review' | 'Underwriting' | 'Final Review' | 'Approved' | 'Declined' | 'On Hold' | 'Contracted' | 'Contract Out' | 'Contracts Out';
-    currentState?: 'Draft' | 'Pending' | 'Submitted' | 'In Progress' | 'Completed' | 'Cancelled' | 'Contract Out' | 'Contracts Out';
+    currentQueue?: 'New' | 'Agent' | 'Review' | 'Underwriting' | 'Final Review' | 'Approved' | 'Declined' | 'On Hold' | 'Contracted' | 'Contract Pending' | 'Contract Generated' | 'Contract Sent' | 'Contract Cancelled' | 'Contract Signed' | 'Contract Out' | 'Contracts Out';
+    currentState?: 'Draft' | 'Pending' | 'Submitted' | 'In Progress' | 'Completed' | 'Cancelled' | 'Contract Pending' | 'Contract Generated' | 'Contract Sent' | 'Contract Cancelled' | 'Contract Signed' | 'Contract Out' | 'Contracts Out';
     /** Raw DB state (Prisma) when present — `currentState` is workflow-mapped and can collapse funded vs approved. */
     statsCurrentState?: string;
     /** Application-level commission rate (0–100), persisted on the application record. */

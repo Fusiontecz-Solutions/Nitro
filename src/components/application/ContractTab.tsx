@@ -847,22 +847,22 @@ export default function ContractTab({
         }
     };
 
-    /** Contract Out stage: both queue and state use the same label; API persists `currentState` as `CONTRACTS_OUT`. */
-    const persistContractsOutStage = async () => {
+    /** Draft created — Contract Generated (not sent until DocuSign envelope is delivered). */
+    const persistContractGeneratedStage = async () => {
         if (!applicationUuid) return;
         try {
             await dispatch(
                 updateApplication({
                     id: String(applicationUuid),
                     data: {
-                        currentQueue: "Contract Out",
-                        currentState: "Contract Out",
+                        currentQueue: "Contract Generated",
+                        currentState: "Contract Generated",
                     },
                 }),
             ).unwrap();
         } catch (err) {
             console.error(
-                "Failed to set application currentQueue/currentState to Contract Out:",
+                "Failed to set application currentQueue/currentState to Contract Generated:",
                 err,
             );
         }
@@ -902,7 +902,7 @@ export default function ContractTab({
 
         const anyApp = applicationData as any;
 
-        await persistContractsOutStage();
+        await persistContractGeneratedStage();
 
         const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
         const userFromStorage = (() => {

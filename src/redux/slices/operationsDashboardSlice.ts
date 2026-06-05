@@ -10,6 +10,8 @@ export type { OperationsDashboardRecentCase };
 const defaultSummaryCounts = {
   totalCases: 0,
   contractPending: 0,
+  contractGenerated: 0,
+  contractSent: 0,
   contractsOut: 0,
   signedContracts: 0,
   fundingCall: 0,
@@ -19,6 +21,8 @@ const defaultSummaryCounts = {
 
 const defaultSummaryAmounts = {
   contractPending: 0,
+  contractGenerated: 0,
+  contractSent: 0,
   contractsOut: 0,
   signedContracts: 0,
   fundingCall: 0,

@@ -65,6 +65,11 @@ const ChecksAndDecision = ({
         queueNorm === "final review" || queueNorm === "final underwriter";
     const isContractedQueue =
         queueNorm === "contracted" ||
+        queueNorm === "contract pending" ||
+        queueNorm === "contract generated" ||
+        queueNorm === "contract sent" ||
+        queueNorm === "contract cancelled" ||
+        queueNorm === "contract signed" ||
         queueNorm === "contract out" ||
         queueNorm === "contracts out";
 

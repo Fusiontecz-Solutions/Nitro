@@ -72,6 +72,7 @@ import { axiosGet, axiosPostFormData } from "@/redux/axios";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import { getClientByClientId } from "@/redux/actions/clientActions";
 import {
+  inferOperationsListStatusFromApplication,
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
   operationsDashboardStatusTitle,
@@ -95,10 +96,7 @@ import {
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
-import {
-  CONTRACT_OUT_QUEUE_BADGE_CLASS,
-  isContractOutQueueBadgeLabel,
-} from "@/lib/contractOutQueueBadge";
+import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
@@ -157,7 +155,9 @@ const APPLICATIONS_QUEUE_FILTER_OPTIONS = [
   { label: "Agent", value: "Agent" },
   { label: "Underwriter", value: "Underwriter" },
   { label: "Final Underwriter", value: "Final Underwriter" },
-  { label: "Contract Out", value: "Contract Out" },
+  { label: "Contract Generated", value: "Contract Generated" },
+  { label: "Contract Sent", value: "Contract Sent" },
+  { label: "Contract Cancelled", value: "Contract Cancelled" },
   { label: "Contract Signed", value: "Contract_Signed" },
   { label: "Final", value: "Final" },
   { label: "Funding call", value: "Funding Call" },
@@ -580,9 +580,8 @@ const Applications = () => {
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
-    if (isContractOutQueueBadgeLabel(queueLabel)) {
-      return CONTRACT_OUT_QUEUE_BADGE_CLASS;
-    }
+    const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
+    if (contractWorkflowClass) return contractWorkflowClass;
     if (isContractSignedQueueBadgeLabel(queueLabel)) {
       return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
     }
@@ -885,8 +884,19 @@ const Applications = () => {
             const normalized = normalizeOperationsDashboardStatusParam(
               dashboardStateFilter,
             );
-            // Contracted is an umbrella stage — show each row's actual out/signed label.
-            if (normalized && normalized !== "Contracted") {
+            if (normalized === "Contracted") {
+              const inferred = inferOperationsListStatusFromApplication(
+                row.original.currentQueue ?? row.original.queue,
+                {
+                  explicitStatus: row.original.status,
+                  currentState:
+                    row.original.currentState ?? row.original.state,
+                },
+              );
+              if (inferred) {
+                queueLabel = operationsDashboardStatusTitle(inferred);
+              }
+            } else if (normalized) {
               queueLabel = operationsDashboardStatusTitle(normalized);
             }
           }
@@ -1553,8 +1563,14 @@ const Applications = () => {
       return "ALL APPLICATIONS";
     }
     const normalizedStatus = normalizeOperationsDashboardStatusParam(dashboardStateFilter);
-    if (normalizedStatus === "Contract_Out") {
-      return "Contract Out Application";
+    if (normalizedStatus === "Contract_Generated") {
+      return "Contract Generated Application";
+    }
+    if (normalizedStatus === "Contract_Sent" || normalizedStatus === "Contract_Out") {
+      return "Contract Sent Application";
+    }
+    if (normalizedStatus === "Contract_Cancelled") {
+      return "Contract Cancelled Application";
     }
     if (normalizedStatus === "Contract_Signed") {
       return "Contract Signed Application";

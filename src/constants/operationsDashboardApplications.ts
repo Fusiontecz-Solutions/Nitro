@@ -7,6 +7,9 @@ export const OPERATIONS_APPLICATIONS_LIST_ALL_QUERY = "all";
 /** Backend `operationsStatus` values used by Operations dashboard stat cards and `/applications` filtering. */
 export const OPERATIONS_DASHBOARD_APPLICATION_STATUSES = [
   "Contract_Pending",
+  "Contract_Generated",
+  "Contract_Sent",
+  "Contract_Cancelled",
   "Contract_Out",
   "Contracted",
   "Contract_Signed",
@@ -41,7 +44,10 @@ export type OperationsApplicationsListStatus =
 
 const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Contract_Pending: "Contract Pending",
-  Contract_Out: "Contract Out",
+  Contract_Generated: "Contract Generated",
+  Contract_Sent: "Contract Sent",
+  Contract_Cancelled: "Contract Cancelled",
+  Contract_Out: "Contract Sent",
   Contracted: "Contract",
   Contract_Signed: "Contract Signed",
   Signed_Contracts: "Signed Contracts",
@@ -68,9 +74,12 @@ export function normalizeOperationsDashboardStatusParam(
   const key = trimmed.toLowerCase().replace(/[\s-]+/g, "_");
   const map: Record<string, OperationsApplicationsListStatus> = {
     contract_pending: "Contract_Pending",
-    contract_out: "Contract_Out",
+    contract_generated: "Contract_Generated",
+    contract_sent: "Contract_Sent",
+    contract_cancelled: "Contract_Cancelled",
+    contract_out: "Contract_Sent",
     contracted: "Contracted",
-    contracts_out: "Contract_Out",
+    contracts_out: "Contract_Sent",
     contract_signed: "Contract_Signed",
     signed_contracts: "Contract_Signed",
     funding_call: "Funding Call",
@@ -129,8 +138,17 @@ export function inferOperationsListStatusFromApplication(
   ) {
     return "Underwriter";
   }
-  if (q === "contractout" || q === "contractsout") {
-    return "Contract_Out";
+  if (q === "contractpending") {
+    return "Contract_Pending";
+  }
+  if (q === "contractgenerated") {
+    return "Contract_Generated";
+  }
+  if (q === "contractsent" || q === "contractout" || q === "contractsout") {
+    return "Contract_Sent";
+  }
+  if (q === "contractcancelled") {
+    return "Contract_Cancelled";
   }
   if (q === "contractsigned" || q === "signedcontracts") {
     return "Contract_Signed";
@@ -138,7 +156,10 @@ export function inferOperationsListStatusFromApplication(
   if (state === "signedcontracts" || state === "signed_contracts") {
     return "Contract_Signed";
   }
-  if (q === "contracted" || q === "contractpending" || st === "contracted") {
+  if (q === "approved" && (state === "approved" || st === "approved")) {
+    return "Contract_Pending";
+  }
+  if (q === "contracted" || st === "contracted") {
     return "Contracted";
   }
   if (q === "new" || q === "agent" || q === "draft") return "Agent";
