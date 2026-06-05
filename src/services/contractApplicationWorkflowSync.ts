@@ -1,6 +1,22 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 
+/** Approved deal awaiting contract generation. */
+export const APPLICATION_QUEUE_CONTRACT_PENDING = 'Contract Pending';
+export const APPLICATION_STATE_CONTRACT_PENDING = 'CONTRACT_PENDING';
+
+/** Contract draft created in CRM (not yet sent for signature). */
+export const APPLICATION_QUEUE_CONTRACT_GENERATED = 'Contract Generated';
+export const APPLICATION_STATE_CONTRACT_GENERATED = 'CONTRACT_GENERATED';
+
+/** Envelope sent to signer(s); awaiting signature. */
+export const APPLICATION_QUEUE_CONTRACT_SENT = 'Contract Sent';
+export const APPLICATION_STATE_CONTRACT_SENT = 'CONTRACT_SENT';
+
+/** Envelope voided / revoked / declined / expired. */
+export const APPLICATION_QUEUE_CONTRACT_CANCELLED = 'Contract Cancelled';
+export const APPLICATION_STATE_CONTRACT_CANCELLED = 'CONTRACT_CANCELLED';
+
 /** Stored in `Application.currentQueue` when the linked contract is fully signed (BoldSign COMPLETED). */
 export const APPLICATION_QUEUE_CONTRACT_SIGNED = 'Contract Signed';
 
@@ -87,6 +103,198 @@ export function contractSignedApplicationUpdateData(): {
     currentQueue: APPLICATION_QUEUE_CONTRACT_SIGNED,
     currentState: APPLICATION_STATE_CONTRACT_SIGNED,
   };
+}
+
+export function contractGeneratedApplicationUpdateData(): {
+  currentQueue: string;
+  currentState: string;
+} {
+  return {
+    currentQueue: APPLICATION_QUEUE_CONTRACT_GENERATED,
+    currentState: APPLICATION_STATE_CONTRACT_GENERATED,
+  };
+}
+
+export function contractSentApplicationUpdateData(): {
+  currentQueue: string;
+  currentState: string;
+} {
+  return {
+    currentQueue: APPLICATION_QUEUE_CONTRACT_SENT,
+    currentState: APPLICATION_STATE_CONTRACT_SENT,
+  };
+}
+
+export function contractCancelledApplicationUpdateData(): {
+  currentQueue: string;
+  currentState: string;
+} {
+  return {
+    currentQueue: APPLICATION_QUEUE_CONTRACT_CANCELLED,
+    currentState: APPLICATION_STATE_CONTRACT_CANCELLED,
+  };
+}
+
+const POST_CONTRACT_SENT_QUEUE_KEYS = new Set([
+  'contractsigned',
+  'signedcontracts',
+  'final',
+  'fundingcall',
+  'disbursment',
+  'disbursement',
+  'funded',
+]);
+
+function isPostContractSentQueue(queue: string | null | undefined): boolean {
+  return POST_CONTRACT_SENT_QUEUE_KEYS.has(normalizeWorkflowToken(queue));
+}
+
+async function syncApplicationWorkflowStage(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  updateData: { currentQueue: string; currentState: string },
+  meta: ContractWorkflowSyncMeta,
+  skipIfAlready?: (app: { currentQueue?: string | null; currentState?: string | null }) => boolean,
+): Promise<boolean> {
+  const application = await prismaClient.application.findUnique({
+    where: { id: applicationId },
+    select: { id: true, applicationId: true, currentQueue: true, currentState: true },
+  });
+
+  if (!application) {
+    console.log('[Contract→Application Sync]', {
+      event: 'sync_skip',
+      reason: 'application_not_found',
+      applicationId,
+      ...meta,
+    });
+    return false;
+  }
+
+  if (skipIfAlready?.(application)) {
+    console.log('[Contract→Application Sync]', {
+      event: 'sync_skip',
+      reason: 'already_at_target_stage',
+      applicationId,
+      currentQueue: application.currentQueue,
+      currentState: application.currentState,
+      ...meta,
+    });
+    return false;
+  }
+
+  const updated = await prismaClient.application.update({
+    where: { id: applicationId },
+    data: updateData,
+    select: {
+      id: true,
+      applicationId: true,
+      currentQueue: true,
+      currentState: true,
+    },
+  });
+
+  console.log('[Contract→Application Sync]', {
+    event: 'sync_applied',
+    applicationId,
+    applicationNumericId: updated.applicationId,
+    previousQueue: application.currentQueue,
+    previousState: application.currentState,
+    newQueue: updated.currentQueue,
+    newState: updated.currentState,
+    ...meta,
+  });
+
+  return true;
+}
+
+/** After contract record is created (DRAFT) — not when the envelope is sent. */
+export async function syncApplicationToContractGenerated(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  meta: ContractWorkflowSyncMeta,
+): Promise<boolean> {
+  return syncApplicationWorkflowStage(
+    prismaClient,
+    applicationId,
+    contractGeneratedApplicationUpdateData(),
+    meta,
+    (app) =>
+      isApplicationAtContractSignedStage(app) ||
+      normalizeWorkflowToken(app.currentQueue) === 'contractsent' ||
+      normalizeWorkflowToken(app.currentQueue) === 'contractout' ||
+      normalizeWorkflowToken(app.currentQueue) === 'contractsout',
+  );
+}
+
+/** After envelope is sent / viewed / partially signed — awaiting completion. */
+export async function syncApplicationToContractSent(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  meta: ContractWorkflowSyncMeta,
+): Promise<boolean> {
+  return syncApplicationWorkflowStage(
+    prismaClient,
+    applicationId,
+    contractSentApplicationUpdateData(),
+    meta,
+    (app) =>
+      isApplicationAtContractSignedStage(app) || isPostContractSentQueue(app.currentQueue),
+  );
+}
+
+/** After envelope is voided / revoked / declined / expired. */
+export async function syncApplicationToContractCancelled(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  meta: ContractWorkflowSyncMeta,
+): Promise<boolean> {
+  return syncApplicationWorkflowStage(
+    prismaClient,
+    applicationId,
+    contractCancelledApplicationUpdateData(),
+    meta,
+    (app) => isApplicationAtContractSignedStage(app) || isPostContractSentQueue(app.currentQueue),
+  );
+}
+
+/**
+ * Maps DocuSign / BoldSign envelope status to the application workflow stage.
+ * - DRAFT → Contract Generated (if a contract row exists)
+ * - SENT / VIEWED / SIGNED → Contract Sent
+ * - COMPLETED → Contract Signed
+ * - DECLINED / REVOKED / EXPIRED → Contract Cancelled
+ */
+export async function syncApplicationWorkflowFromContractEnvelopeStatus(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  envelopeStatus: unknown,
+  meta: ContractWorkflowSyncMeta,
+): Promise<boolean> {
+  const statusNorm = normalizeContractStatus(envelopeStatus);
+  if (!statusNorm) return false;
+
+  if (statusNorm === 'COMPLETED') {
+    return syncApplicationToContractSignedWhenContractCompleted(
+      prismaClient,
+      applicationId,
+      meta,
+    );
+  }
+
+  if (['DECLINED', 'REVOKED', 'EXPIRED'].includes(statusNorm)) {
+    return syncApplicationToContractCancelled(prismaClient, applicationId, meta);
+  }
+
+  if (['SENT', 'VIEWED', 'SIGNED'].includes(statusNorm)) {
+    return syncApplicationToContractSent(prismaClient, applicationId, meta);
+  }
+
+  if (statusNorm === 'DRAFT') {
+    return syncApplicationToContractGenerated(prismaClient, applicationId, meta);
+  }
+
+  return false;
 }
 
 /**

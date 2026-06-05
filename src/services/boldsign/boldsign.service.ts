@@ -1733,10 +1733,25 @@ export class BoldSignService {
     const apiClient = await this.getApiClient(userId);
     try {
       await apiClient.patch(`/v1/document/void?documentId=${documentId}`, { message: reason });
+      const docRow = await (prisma as any).document.findFirst({
+        where: { envelopeId: documentId },
+        select: { applicationId: true },
+      });
       await (prisma as any).document.updateMany({
         where: { envelopeId: documentId },
         data: { status: 'voided' },
       });
+      if (docRow?.applicationId) {
+        const { syncApplicationWorkflowFromContractEnvelopeStatus } = await import(
+          '../contractApplicationWorkflowSync'
+        );
+        await syncApplicationWorkflowFromContractEnvelopeStatus(
+          prisma,
+          String(docRow.applicationId),
+          'revoked',
+          { source: 'boldsign.voidDocument' },
+        );
+      }
       return { success: true };
     } catch (error: any) {
       throw new BadRequestException('Failed to void document: ' + (error?.message || error));
@@ -1949,5 +1964,15 @@ export class BoldSignService {
       where: { applicationId },
       data: { status: contractStatus as any },
     });
+
+    const { syncApplicationWorkflowFromContractEnvelopeStatus } = await import(
+      '../contractApplicationWorkflowSync'
+    );
+    await syncApplicationWorkflowFromContractEnvelopeStatus(
+      prisma,
+      applicationId,
+      status,
+      { source: 'boldsign.webhook' },
+    );
   }
 }

@@ -1399,58 +1399,22 @@ export class DocusignService {
     await this.syncApplicationWorkflowOnContractSigning(appId, internalStatus);
   }
 
-  /** Move deal to Contract Signed when fully signed; keep Contract Out while awaiting signature. */
+  /** Map envelope status → application contract workflow (Generated / Sent / Signed / Cancelled). */
   private async syncApplicationWorkflowOnContractSigning(
     applicationId: string,
     internalStatus: string,
   ) {
     const appId = String(applicationId || '').trim();
     if (!appId) return;
-    const status = String(internalStatus || '').trim().toLowerCase();
-
-    const normalizeQueueKey = (queue: string | null | undefined) =>
-      String(queue ?? '')
-        .trim()
-        .replace(/[\s_-]+/g, '')
-        .toLowerCase();
-
-    const postSignedQueueKeys = new Set([
-      'contractsigned',
-      'signedcontracts',
-      'final',
-      'fundingcall',
-      'disbursment',
-      'disbursement',
-      'funded',
-    ]);
-
-    if (status === 'completed') {
-      await prisma.application.updateMany({
-        where: { id: appId },
-        data: {
-          currentQueue: 'Contract Signed',
-          currentState: 'SIGNED_CONTRACTS',
-        },
-      });
-      return;
-    }
-
-    if (['sent', 'viewed', 'signed'].includes(status)) {
-      const app = await prisma.application.findUnique({
-        where: { id: appId },
-        select: { currentQueue: true },
-      });
-      const qKey = normalizeQueueKey(app?.currentQueue);
-      if (!postSignedQueueKeys.has(qKey)) {
-        await prisma.application.updateMany({
-          where: { id: appId },
-          data: {
-            currentQueue: 'Contract Out',
-            currentState: 'Contract Out',
-          },
-        });
-      }
-    }
+    const { syncApplicationWorkflowFromContractEnvelopeStatus } = await import(
+      '../contractApplicationWorkflowSync'
+    );
+    await syncApplicationWorkflowFromContractEnvelopeStatus(
+      prisma,
+      appId,
+      internalStatus,
+      { source: 'docusign.syncApplicationWorkflowOnContractSigning' },
+    );
   }
 
   /** After auto-send: mark linked `Document` row and `Contract.status` as SENT. */
@@ -2350,10 +2314,17 @@ export class DocusignService {
       status: 'voided',
       voidedReason: reason || 'Voided by user',
     });
+    const docRow = await prisma.document.findFirst({
+      where: { envelopeId: documentId },
+      select: { applicationId: true },
+    });
     await prisma.document.updateMany({
       where: { envelopeId: documentId },
       data: { status: 'revoked' },
     });
+    if (docRow?.applicationId) {
+      await this.syncContractSigningStatus(String(docRow.applicationId), 'revoked');
+    }
     return { success: true };
   }
 

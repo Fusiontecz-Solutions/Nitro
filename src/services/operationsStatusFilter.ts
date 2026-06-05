@@ -8,6 +8,9 @@ type ApplicationState =
     | 'COMPLETED'
     | 'CANCELLED'
     | 'CONTRACT_PENDING'
+    | 'CONTRACT_GENERATED'
+    | 'CONTRACT_SENT'
+    | 'CONTRACT_CANCELLED'
     | 'CONTRACTS_OUT'
     | 'SIGNED_CONTRACTS'
     | 'FUNDING_CALL'
@@ -23,6 +26,9 @@ const ApplicationStateConst = {
     COMPLETED: 'COMPLETED',
     CANCELLED: 'CANCELLED',
     CONTRACT_PENDING: 'CONTRACT_PENDING',
+    CONTRACT_GENERATED: 'CONTRACT_GENERATED',
+    CONTRACT_SENT: 'CONTRACT_SENT',
+    CONTRACT_CANCELLED: 'CONTRACT_CANCELLED',
     CONTRACTS_OUT: 'CONTRACTS_OUT',
     SIGNED_CONTRACTS: 'SIGNED_CONTRACTS',
     FUNDING_CALL: 'FUNDING_CALL',
@@ -43,8 +49,13 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
     Approved: 'COMPLETED',
     Cancelled: 'CANCELLED',
     Contract_Pending: 'CONTRACT_PENDING',
+    Contract_Generated: 'CONTRACT_GENERATED',
+    Contract_Sent: 'CONTRACT_SENT',
+    Contract_Cancelled: 'CONTRACT_CANCELLED',
     Contracts_Out: 'CONTRACTS_OUT',
     'Contracts Out': 'CONTRACTS_OUT',
+    /** Legacy alias — sent contracts awaiting signature. */
+    'Contract Out': 'CONTRACT_SENT',
     Contracted: 'CONTRACTS_OUT',
     Signed_Contracts: 'SIGNED_CONTRACTS',
     'Funding Call': 'FUNDING_CALL',
@@ -60,10 +71,31 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
 /** Queue labels used by deal-pipeline filters (aligned with application list aliases). */
 export const dashboardStateQueueAliases: Record<string, string[]> = {
     Contract_Pending: ['Contract Pending', 'Contract_Pending'],
-    Contracted: ['Contracted', 'Contract Out', 'Contracts Out', 'Contracts_Out', 'Contract_Out'],
-    'Contract Out': ['Contract Out', 'Contract_Out', 'Contracted', 'Contracts Out', 'Contracts_Out'],
-    'Contracts Out': ['Contracts Out', 'Contracts_Out', 'Contract Out', 'Contract_Out', 'Contracted'],
-    Contracts_Out: ['Contracts Out', 'Contracts_Out', 'Contract Out', 'Contract_Out'],
+    Contract_Generated: ['Contract Generated', 'Contract_Generated'],
+    Contract_Sent: ['Contract Sent', 'Contract_Sent', 'Contract Out', 'Contract_Out', 'Contracts Out', 'Contracts_Out'],
+    Contract_Cancelled: ['Contract Cancelled', 'Contract_Cancelled'],
+    Contracted: [
+        'Contracted',
+        'Contract Pending',
+        'Contract_Pending',
+        'Contract Generated',
+        'Contract_Generated',
+        'Contract Sent',
+        'Contract_Sent',
+        'Contract Cancelled',
+        'Contract_Cancelled',
+        'Contract Signed',
+        'Contract_Signed',
+        'Contract Out',
+        'Contracts Out',
+        'Contracts_Out',
+        'Contract_Out',
+        'Signed Contracts',
+        'Signed_Contracts',
+    ],
+    'Contract Out': ['Contract Out', 'Contract_Out', 'Contract Sent', 'Contract_Sent', 'Contracts Out', 'Contracts_Out'],
+    'Contracts Out': ['Contracts Out', 'Contracts_Out', 'Contract Out', 'Contract_Out', 'Contract Sent', 'Contract_Sent'],
+    Contracts_Out: ['Contracts Out', 'Contracts_Out', 'Contract Out', 'Contract_Out', 'Contract Sent', 'Contract_Sent'],
     Signed_Contracts: [
         'Signed Contracts',
         'Signed_Contracts',
@@ -125,6 +157,9 @@ const applicationStatePrismaToApi: Record<ApplicationState, string> = {
     [ApplicationStateConst.COMPLETED]: 'Completed',
     [ApplicationStateConst.CANCELLED]: 'Cancelled',
     [ApplicationStateConst.CONTRACT_PENDING]: 'Contract_Pending',
+    [ApplicationStateConst.CONTRACT_GENERATED]: 'Contract_Generated',
+    [ApplicationStateConst.CONTRACT_SENT]: 'Contract_Sent',
+    [ApplicationStateConst.CONTRACT_CANCELLED]: 'Contract_Cancelled',
     [ApplicationStateConst.CONTRACTS_OUT]: 'Contract Out',
     [ApplicationStateConst.SIGNED_CONTRACTS]: 'Signed_Contracts',
     [ApplicationStateConst.FUNDING_CALL]: 'Funding Call',
@@ -133,8 +168,24 @@ const applicationStatePrismaToApi: Record<ApplicationState, string> = {
     [ApplicationStateConst.FINAL]: 'FINAL',
 };
 
-/** Queue labels for “contract out” only (excludes generic workflow queue `Contracted`). */
-const CONTRACT_OUT_QUEUE_STRICT = [
+/** Queue labels for contract pending (approved / awaiting contract generation). */
+const CONTRACT_PENDING_QUEUE_STRICT = [
+    'Contract Pending',
+    'Contract_Pending',
+    'ContractPending',
+];
+
+/** Queue labels for contract generated (draft created, not yet sent). */
+const CONTRACT_GENERATED_QUEUE_STRICT = [
+    'Contract Generated',
+    'Contract_Generated',
+    'ContractGenerated',
+];
+
+/** Queue labels for contract sent (legacy Contract Out included). */
+const CONTRACT_SENT_QUEUE_STRICT = [
+    'Contract Sent',
+    'Contract_Sent',
     'Contract Out',
     'Contract_Out',
     'Contracts Out',
@@ -142,17 +193,62 @@ const CONTRACT_OUT_QUEUE_STRICT = [
     'ContractOut',
 ];
 
-/**
- * Strict contract-out: `currentState` in CONTRACTS_OUT spellings **or** `currentQueue` is
- * explicitly Contract(s) Out — not plain `Contracted` queue alone.
- */
-export function contractsOutStrictMatchWhere(): Prisma.ApplicationWhereInput {
+/** Queue labels for voided / cancelled contracts. */
+const CONTRACT_CANCELLED_QUEUE_STRICT = [
+    'Contract Cancelled',
+    'Contract_Cancelled',
+    'ContractCancelled',
+];
+
+/** @deprecated Use {@link contractSentStrictMatchWhere}. */
+const CONTRACT_OUT_QUEUE_STRICT = CONTRACT_SENT_QUEUE_STRICT;
+
+export function contractPendingStrictMatchWhere(): Prisma.ApplicationWhereInput {
     return {
         OR: [
-            { currentState: { in: expandStoredCurrentStateValues('CONTRACTS_OUT') } },
-            { currentQueue: { in: CONTRACT_OUT_QUEUE_STRICT } },
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_PENDING') } },
+            { currentQueue: { in: CONTRACT_PENDING_QUEUE_STRICT } },
+            /** Pre-generation: approved deals not yet in a contract workflow queue. */
+            { currentQueue: 'Approved', currentState: 'Approved' },
         ],
     };
+}
+
+export function contractGeneratedStrictMatchWhere(): Prisma.ApplicationWhereInput {
+    return {
+        OR: [
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_GENERATED') } },
+            { currentQueue: { in: CONTRACT_GENERATED_QUEUE_STRICT } },
+        ],
+    };
+}
+
+/**
+ * Strict contract-sent: envelope handed to signer(s), awaiting completion.
+ * Includes legacy Contract Out / Contracts Out rows.
+ */
+export function contractSentStrictMatchWhere(): Prisma.ApplicationWhereInput {
+    return {
+        OR: [
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_SENT') } },
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACTS_OUT') } },
+            { currentQueue: { in: CONTRACT_SENT_QUEUE_STRICT } },
+        ],
+    };
+}
+
+export function contractCancelledStrictMatchWhere(): Prisma.ApplicationWhereInput {
+    return {
+        OR: [
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_CANCELLED') } },
+            { currentQueue: { in: CONTRACT_CANCELLED_QUEUE_STRICT } },
+        ],
+    };
+}
+
+/** @deprecated Use {@link contractSentStrictMatchWhere}. */
+export function contractsOutStrictMatchWhere(): Prisma.ApplicationWhereInput {
+    return contractSentStrictMatchWhere();
 }
 
 /** Queue labels for “contract signed” / signed-contracts stage (strict list). */
@@ -217,11 +313,26 @@ function contractsOutBroadMatchWhere(): Prisma.ApplicationWhereInput {
 }
 
 /**
- * Deal-pipeline `operationsStatus=Contracted`: both contract-out and contract-signed rows.
+ * Umbrella `operationsStatus=Contracted`: every contract workflow stage from pending
+ * through signed (includes legacy Contracted / Contract Out spellings).
  */
 export function contractedCombinedMatchWhere(): Prisma.ApplicationWhereInput {
     return {
-        OR: [contractsOutBroadMatchWhere(), signedContractsBroadMatchWhere()],
+        OR: [
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_PENDING') } },
+            { currentQueue: { in: CONTRACT_PENDING_QUEUE_STRICT } },
+            { currentQueue: 'Approved', currentState: 'Approved' },
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_GENERATED') } },
+            { currentQueue: { in: CONTRACT_GENERATED_QUEUE_STRICT } },
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_SENT') } },
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACTS_OUT') } },
+            { currentQueue: { in: CONTRACT_SENT_QUEUE_STRICT } },
+            { currentState: { in: expandStoredCurrentStateValues('CONTRACT_CANCELLED') } },
+            { currentQueue: { in: CONTRACT_CANCELLED_QUEUE_STRICT } },
+            { currentState: { in: expandStoredCurrentStateValues('SIGNED_CONTRACTS') } },
+            { currentQueue: { in: CONTRACT_SIGNED_QUEUE_STRICT } },
+            { currentQueue: 'Contracted' },
+        ],
     };
 }
 
@@ -259,8 +370,17 @@ export function buildOperationsStatusFilterWhere(
     mode: OperationsStatusFilterMode,
 ): Prisma.ApplicationWhereInput {
     const canonical = normalizeOperationsStatusKey(rawValue);
-    if (canonical === 'Contract_Out') {
-        return contractsOutStrictMatchWhere();
+    if (canonical === 'Contract_Pending') {
+        return contractPendingStrictMatchWhere();
+    }
+    if (canonical === 'Contract_Generated') {
+        return contractGeneratedStrictMatchWhere();
+    }
+    if (canonical === 'Contract_Sent' || canonical === 'Contract_Out') {
+        return contractSentStrictMatchWhere();
+    }
+    if (canonical === 'Contract_Cancelled') {
+        return contractCancelledStrictMatchWhere();
     }
     if (canonical === 'Contract_Signed') {
         return signedContractsStrictMatchWhere();

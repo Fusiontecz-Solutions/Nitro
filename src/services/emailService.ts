@@ -19,11 +19,23 @@ export { buildBrandLogoAttachments } from '../constants/brand';
  */
 
 /**
- * When true, application status templates (client/ISO recipient flows) are not sent (no `sendMail`).
- * Internal emails (e.g. welcome, underwriter notifications) are unaffected.
+ * When true (default), workflow step emails are not sent to CRM roles (agent, underwriter,
+ * final underwriter, operations, super admin, etc.). In-app bell notifications still work.
+ * ISO-branded approval / offer-updated templates are always allowed (see sendApplicationApprovalEmail).
+ * Set DISABLE_APPLICATION_NOTIFICATION_EMAILS=false to re-enable internal step mail.
  */
-const DISABLE_CLIENT_APPLICATION_EMAILS =
-    String(process.env.DISABLE_CLIENT_APPLICATION_EMAILS || '').trim().toLowerCase() === 'true';
+export function areApplicationNotificationEmailsDisabled(): boolean {
+    const master = String(process.env.DISABLE_APPLICATION_NOTIFICATION_EMAILS ?? '').trim().toLowerCase();
+    if (master === 'false') return false;
+    if (master === 'true') return true;
+    if (String(process.env.DISABLE_CLIENT_APPLICATION_EMAILS || '').trim().toLowerCase() === 'true') {
+        return true;
+    }
+    if (String(process.env.DISABLE_INTERNAL_APPLICATION_EMAILS ?? 'true').trim().toLowerCase() !== 'false') {
+        return true;
+    }
+    return true;
+}
 
 /** Resolves links like `{base}/application-details/:id/overview` (idempotent if `/overview` is already present). */
 export function withApplicationDetailsOverviewHref(

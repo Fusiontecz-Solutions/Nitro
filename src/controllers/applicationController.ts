@@ -103,6 +103,9 @@ type ApplicationState =
     | 'COMPLETED'
     | 'CANCELLED'
     | 'CONTRACT_PENDING'
+    | 'CONTRACT_GENERATED'
+    | 'CONTRACT_SENT'
+    | 'CONTRACT_CANCELLED'
     | 'CONTRACTS_OUT'
     | 'SIGNED_CONTRACTS'
     | 'FUNDING_CALL'
@@ -119,6 +122,9 @@ const ApplicationState = {
     COMPLETED: 'COMPLETED',
     CANCELLED: 'CANCELLED',
     CONTRACT_PENDING: 'CONTRACT_PENDING',
+    CONTRACT_GENERATED: 'CONTRACT_GENERATED',
+    CONTRACT_SENT: 'CONTRACT_SENT',
+    CONTRACT_CANCELLED: 'CONTRACT_CANCELLED',
     CONTRACTS_OUT: 'CONTRACTS_OUT',
     SIGNED_CONTRACTS: 'SIGNED_CONTRACTS',
     FUNDING_CALL: 'FUNDING_CALL',
@@ -260,6 +266,9 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
     Approved: 'COMPLETED' as ApplicationState,
     Cancelled: 'CANCELLED' as ApplicationState,
     Contract_Pending: 'CONTRACT_PENDING' as ApplicationState,
+    Contract_Generated: 'CONTRACT_GENERATED' as ApplicationState,
+    Contract_Sent: 'CONTRACT_SENT' as ApplicationState,
+    Contract_Cancelled: 'CONTRACT_CANCELLED' as ApplicationState,
     Contracts_Out: 'CONTRACTS_OUT' as ApplicationState,
     /** Legacy spelling — still accepted on input. */
     'Contracts Out': 'CONTRACTS_OUT' as ApplicationState,
@@ -278,7 +287,10 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
 
 /** API input → verbatim `Application.currentState` string (not a Prisma workflow enum). */
 const verbatimApplicationStateByInput: Record<string, string> = {
-    'Contract Out': 'Contract Out',
+    'Contract Out': 'Contract Sent',
+    'Contract Generated': 'Contract Generated',
+    'Contract Sent': 'Contract Sent',
+    'Contract Cancelled': 'Contract Cancelled',
 };
 
 const applicationStatePrismaToApi: Record<ApplicationState, string> = {
@@ -289,6 +301,9 @@ const applicationStatePrismaToApi: Record<ApplicationState, string> = {
     [ApplicationState.COMPLETED]: 'Completed',
     [ApplicationState.CANCELLED]: 'Cancelled',
     [ApplicationState.CONTRACT_PENDING]: 'Contract_Pending',
+    [ApplicationState.CONTRACT_GENERATED]: 'Contract_Generated',
+    [ApplicationState.CONTRACT_SENT]: 'Contract_Sent',
+    [ApplicationState.CONTRACT_CANCELLED]: 'Contract_Cancelled',
     [ApplicationState.CONTRACTS_OUT]: 'Contract Out',
     [ApplicationState.SIGNED_CONTRACTS]: 'Signed_Contracts',
     [ApplicationState.FUNDING_CALL]: 'Funding Call',

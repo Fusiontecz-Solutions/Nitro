@@ -6,7 +6,8 @@ import {
 } from './applicationService';
 import {
     buildOperationsStatusFilterWhere,
-    contractsOutStrictMatchWhere,
+    contractGeneratedStrictMatchWhere,
+    contractSentStrictMatchWhere,
     signedContractsStrictMatchWhere,
     resolveOperationsListFilterMode,
     type OperationsStatusFilterMode,
@@ -43,6 +44,9 @@ export type OperationsDashboardSummaryPayload = {
     summaryCounts: {
         totalCases: number;
         contractPending: number;
+        contractGenerated: number;
+        contractSent: number;
+        /** @deprecated Use `contractSent` — kept for older clients. */
         contractsOut: number;
         signedContracts: number;
         fundingCall: number;
@@ -51,6 +55,9 @@ export type OperationsDashboardSummaryPayload = {
     };
     summaryAmounts: {
         contractPending: number;
+        contractGenerated: number;
+        contractSent: number;
+        /** @deprecated Use `contractSent` — kept for older clients. */
         contractsOut: number;
         signedContracts: number;
         fundingCall: number;
@@ -80,8 +87,9 @@ export type OperationsDashboardRecentCasePayload = Array<{
 
 /**
  * Parallel counts for the operations dashboard.
- * - OPERATIONS: most summary cards use `currentState` only; **contracts out** uses
- *   `contractsOutStrictMatchWhere`; **contract signed** uses `signedContractsStrictMatchWhere`.
+ * - OPERATIONS: most summary cards use `currentState` only; **contract generated** uses
+ *   `contractGeneratedStrictMatchWhere`; **contract sent** uses `contractSentStrictMatchWhere`;
+ *   **contract signed** uses `signedContractsStrictMatchWhere`.
  * - SUPER_ADMIN: pipeline cards and chart use `currentQueue` only.
  */
 export async function aggregateOperationsDashboardSummary(
@@ -106,7 +114,10 @@ export async function aggregateOperationsDashboardSummary(
         prisma.application.count({ where: visibilityBase }),
         prisma.application.count({ where: sq('Contract_Pending') }),
         prisma.application.count({
-            where: combineWhere(visibilityBase, contractsOutStrictMatchWhere()),
+            where: combineWhere(visibilityBase, contractGeneratedStrictMatchWhere()),
+        }),
+        prisma.application.count({
+            where: combineWhere(visibilityBase, contractSentStrictMatchWhere()),
         }),
         prisma.application.count({
             where: combineWhere(visibilityBase, signedContractsStrictMatchWhere()),
@@ -130,7 +141,8 @@ export async function aggregateOperationsDashboardSummary(
 
     const amountQueries = [
         sumLoanAmount(sq('Contract_Pending')),
-        sumLoanAmount(combineWhere(visibilityBase, contractsOutStrictMatchWhere())),
+        sumLoanAmount(combineWhere(visibilityBase, contractGeneratedStrictMatchWhere())),
+        sumLoanAmount(combineWhere(visibilityBase, contractSentStrictMatchWhere())),
         sumLoanAmount(combineWhere(visibilityBase, signedContractsStrictMatchWhere())),
         sumLoanAmount(sq('Funding Call')),
         sumLoanAmount(sq('Disbursment')),
@@ -140,7 +152,8 @@ export async function aggregateOperationsDashboardSummary(
     const [
         totalCases,
         contractPending,
-        contractsOut,
+        contractGenerated,
+        contractSent,
         signedContracts,
         fundingCall,
         disbursment,
@@ -155,7 +168,8 @@ export async function aggregateOperationsDashboardSummary(
 
     const [
         contractPendingAmountAgg,
-        contractsOutAmountAgg,
+        contractGeneratedAmountAgg,
+        contractSentAmountAgg,
         signedContractsAmountAgg,
         fundingCallAmountAgg,
         disbursmentAmountAgg,
@@ -166,7 +180,9 @@ export async function aggregateOperationsDashboardSummary(
         summaryCounts: {
             totalCases,
             contractPending,
-            contractsOut,
+            contractGenerated,
+            contractSent,
+            contractsOut: contractSent,
             signedContracts,
             fundingCall,
             disbursment,
@@ -174,7 +190,9 @@ export async function aggregateOperationsDashboardSummary(
         },
         summaryAmounts: {
             contractPending: Number(contractPendingAmountAgg._sum.loanAmount ?? 0),
-            contractsOut: Number(contractsOutAmountAgg._sum.loanAmount ?? 0),
+            contractGenerated: Number(contractGeneratedAmountAgg._sum.loanAmount ?? 0),
+            contractSent: Number(contractSentAmountAgg._sum.loanAmount ?? 0),
+            contractsOut: Number(contractSentAmountAgg._sum.loanAmount ?? 0),
             signedContracts: Number(signedContractsAmountAgg._sum.loanAmount ?? 0),
             fundingCall: Number(fundingCallAmountAgg._sum.loanAmount ?? 0),
             disbursment: Number(disbursmentAmountAgg._sum.loanAmount ?? 0),

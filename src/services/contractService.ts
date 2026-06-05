@@ -3,6 +3,7 @@ import prisma from '../config/prismaClient';
 import uploadService from './uploadService';
 import { parseContractLengthDaysFromOfferTerm } from '../utils/deriveFrequencyFromTerm';
 import { ValidationError } from '../utils/errors';
+import { syncApplicationToContractGenerated } from './contractApplicationWorkflowSync';
 import {
   decryptEncryptedStringsInJson,
   mapAchRecordForApi,
@@ -891,12 +892,10 @@ class ContractService {
       }
 
       if (data.applicationId) {
-        await tx.application.update({
-          where: { id: data.applicationId },
-          data: {
-            currentQueue: 'Contract Out',
-            currentState: 'Contract Out',
-          },
+        await syncApplicationToContractGenerated(tx, data.applicationId, {
+          source: 'contractService.createContract',
+          contractId: created.id,
+          contractStatusNew: 'DRAFT',
         });
       }
 
