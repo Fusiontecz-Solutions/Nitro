@@ -15,6 +15,11 @@ import sendMail, {
     getDefaultMailFrom,
     isOutboundSmtpConfigured,
 } from '../config/nodemailer';
+import {
+    formatRecipientList,
+    inferRecipientTypeFromCategory,
+} from '../services/outboundCommunicationService';
+import { recordCommunicationAudit } from '../services/systemActivityLogService';
 
 /**
  * Manually trigger Gmail sync
@@ -61,9 +66,21 @@ import sendMail, {
 //     }
 // }
 
+// Page-size guards. Gmail allows up to 500 per `messages.list`, but each
+// listed id still costs a separate `messages.get` (5 quota units), so we
+// cap the per-page fan-out to keep us under Gmail's 250 units/user/second.
+const GMAIL_LIST_DEFAULT_LIMIT = 50;
+const GMAIL_LIST_MAX_LIMIT = 100;
+
+function clampPageLimit(raw: unknown): number {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return GMAIL_LIST_DEFAULT_LIMIT;
+    return Math.min(Math.max(Math.trunc(n), 1), GMAIL_LIST_MAX_LIMIT);
+}
+
 export async function syncGmail(req: Request, res: Response): Promise<void> {
     try {
-        const { accessToken, type, pageToken } = req.body;
+        const { accessToken, type, pageToken, limit, query } = req.body;
 
         if (!accessToken) {
             res.status(400).json({
@@ -114,17 +131,28 @@ export async function syncGmail(req: Request, res: Response): Promise<void> {
                 label = undefined;
         }
 
+        const pageLimit = clampPageLimit(limit);
+        const safeQuery = typeof query === 'string' && query.trim().length > 0 ? query.trim() : undefined;
+
         const result = await fetchAllEmails(
             accessToken,
             pageToken,
-            15,
-            label
+            pageLimit,
+            label,
+            safeQuery,
         );
 
         res.status(200).json({
             success: true,
             count: result.messages.length,
             nextPageToken: result.nextPageToken,
+            resultSizeEstimate: result.resultSizeEstimate,
+            pageSize: pageLimit,
+            /** Echo for clients — ignore this response if it does not match the pageToken you sent (stale race). */
+            requestedPageToken:
+                pageToken != null && String(pageToken).trim() !== ''
+                    ? String(pageToken)
+                    : null,
             data: result.messages,
         });
 
@@ -332,6 +360,8 @@ export async function autoCreateFromEmails(req: Request, res: Response): Promise
  *   threadId     - existing thread ID when replying (optional)
  *   inReplyTo    - Message-ID of the message being replied to (optional)
  *   references   - References header for threading (optional)
+ *   attachLetterPdf - when true, generates a PDF from `body` (Puppeteer) and attaches it (Letters page only)
+ *   letterPdfFilename - optional attachment filename (sanitized server-side; should end in .pdf)
  */
 export async function sendCompose(req: Request, res: Response): Promise<void> {
     try {
@@ -347,7 +377,41 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
             threadId,
             inReplyTo,
             references,
+            attachLetterPdf,
+            letterPdfFilename,
         } = req.body;
+
+        const wantLetterPdf =
+            attachLetterPdf === true ||
+            attachLetterPdf === 'true' ||
+            attachLetterPdf === 1 ||
+            attachLetterPdf === '1';
+
+        let letterPdfBuffer: Buffer | undefined;
+        let letterPdfName: string | undefined;
+
+        if (wantLetterPdf) {
+            const { renderLetterHtmlToPdfBuffer, sanitizeLetterPdfFilename } = await import(
+                '../services/pdf/letterHtmlToPdf.service'
+            );
+            const rawPdfName =
+                typeof letterPdfFilename === 'string' && letterPdfFilename.trim()
+                    ? letterPdfFilename.trim()
+                    : `${String(subject || 'letter').trim().slice(0, 120) || 'letter'}`;
+            letterPdfName = sanitizeLetterPdfFilename(rawPdfName);
+            try {
+                letterPdfBuffer = await renderLetterHtmlToPdfBuffer(String(body ?? ''));
+            } catch (pdfErr: unknown) {
+                console.error('[gmail/send] Letter PDF generation failed:', pdfErr);
+                res.status(500).json({
+                    success: false,
+                    message:
+                        (pdfErr as { message?: string })?.message ||
+                        'Failed to generate letter PDF attachment',
+                });
+                return;
+            }
+        }
 
         if (!to) {
             res.status(400).json({
@@ -402,7 +466,46 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
                 threadId,
                 inReplyTo,
                 references,
+                ...(letterPdfBuffer && letterPdfName
+                    ? {
+                          attachments: [
+                              {
+                                  filename: letterPdfName,
+                                  content: letterPdfBuffer,
+                                  contentType: 'application/pdf',
+                              },
+                          ],
+                      }
+                    : {}),
             });
+        }
+
+        const recipientStr = formatRecipientList(to);
+        const recipientTypeRaw =
+            typeof req.body.recipientType === 'string'
+                ? req.body.recipientType
+                : typeof req.body.category === 'string'
+                  ? inferRecipientTypeFromCategory(req.body.category)
+                  : 'OTHER';
+        const applicationId =
+            typeof req.body.applicationId === 'string' ? req.body.applicationId : null;
+
+        try {
+            await recordCommunicationAudit(req, {
+                applicationId,
+                channel: 'EMAIL',
+                recipientType: recipientTypeRaw,
+                recipient: recipientStr,
+                subject: subject || '',
+                body: String(body ?? ''),
+                actionDescription: `Email sent to ${recipientStr}${subject ? `: ${subject}` : ''}`,
+                metadata: {
+                    cc: cc ?? null,
+                    hasLetterPdf: Boolean(letterPdfBuffer),
+                },
+            });
+        } catch (auditErr) {
+            console.error('[gmail/send] audit log failed:', auditErr);
         }
 
         res.status(200).json({

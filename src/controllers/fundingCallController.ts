@@ -1,8 +1,10 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import { isOutboundSmtpConfigured } from '../config/nodemailer';
-import { sendFundingCallPendingEmail } from '../services/emailService';
+import {
+  isFundingCallStatusCallDone,
+  notifyOperationsDisbursementReady,
+} from '../services/fundingCallDisbursementSideEffects';
 
 /** Align with deal-pipeline queue labels (Agent, Underwriter, Final Underwriter, Contracted, Final). */
 const normalizeQueueKey = (queue: string | null | undefined) =>
@@ -83,6 +85,7 @@ class FundingCallController {
           message: 'Application and callStatus are required',
         });
       }
+      
 
       const applicationStr = String(application);
       let appRecord = null;
@@ -124,6 +127,7 @@ class FundingCallController {
         where: { applicationId: appRecord.id },
         orderBy: { createdAt: 'desc' },
       });
+      const previousCallStatus = latestExisting?.callStatus ?? null;
 
       let record;
 
@@ -173,31 +177,27 @@ class FundingCallController {
           : record.Application;
       }
 
-      const client = appRecord.client;
-      const iso = (appRecord as any).iso;
-      const isoEmail = String(iso?.email || '').trim();
-      if (isoEmail && isOutboundSmtpConfigured()) {
-        const clientName =
-          `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
-          client?.businessName ||
-          'Valued Client';
-        const isoName = String(iso?.name || '').trim();
-        const companyName = client?.businessName || 'your business';
-        await sendFundingCallPendingEmail({
-          to: isoEmail,
-          clientName: isoName || isoEmail || clientName,
-          companyName,
+      const callStatusStr = String(callStatus);
+      let operationsNotified = false;
+      if (
+        isFundingCallStatusCallDone(callStatusStr) &&
+        !isFundingCallStatusCallDone(previousCallStatus)
+      ) {
+        const notifyResult = await notifyOperationsDisbursementReady({
+          applicationId: appRecord.id,
+          createdById: String(createdBy),
+          skipIfAlreadyNotified: true,
         });
-      } else if (isoEmail && !isOutboundSmtpConfigured()) {
-        console.error(
-          'Funding call email skipped: set SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS.',
-        );
+        operationsNotified = notifyResult.notified > 0;
       }
 
       return res.status(201).json({
         success: true,
         message: 'Funding call saved successfully',
-        data: mapFundingCallToApi({ ...record, Application: applicationForResponse }),
+        data: {
+          ...mapFundingCallToApi({ ...record, Application: applicationForResponse }),
+          operationsNotified,
+        },
       });
     } catch (error) {
       console.error('Create funding call error:', error);

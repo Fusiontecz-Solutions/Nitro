@@ -1,6 +1,7 @@
 import express from 'express';
 import notificationController from '../controllers/notificationController';
 import { authenticateToken } from '../middleware/authMiddleware';
+import { requireRoles } from '../middleware/requireRoles';
 
 const router = express.Router();
 
@@ -14,6 +15,18 @@ router.post('/document-request', notificationController.sendDocumentRequest.bind
 router.post(
     '/application-sent-to-final-underwriter',
     notificationController.notifyApplicationSentToFinalUnderwriter.bind(notificationController),
+);
+
+router.post(
+    '/notify-operations-disbursement',
+    requireRoles('SUPER_ADMIN', 'ADMIN'),
+    notificationController.notifyOperationsDisbursement.bind(notificationController),
+);
+
+// Super Admin signals Operations team that the Funding Call is complete and disbursement may begin
+router.post(
+    '/notify-operations-disbursement',
+    notificationController.notifyOperationsDisbursement.bind(notificationController),
 );
 
 // Get notifications for current user

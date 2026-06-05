@@ -106,6 +106,20 @@ router.get(
 // Get monthly trend stats (approved & funded amounts per month)
 router.get('/stats/trend', applicationController.getMonthlyTrend.bind(applicationController));
 
+// Main dashboard aggregates (no bulk application list)
+router.get(
+    '/dashboard-pipeline-funnel',
+    applicationController.getDashboardPipelineFunnel.bind(applicationController),
+);
+router.get(
+    '/dashboard-trend-chart',
+    applicationController.getDashboardTrendChart.bind(applicationController),
+);
+router.get(
+    '/dashboard-recent-applications',
+    applicationController.getDashboardRecentApplications.bind(applicationController),
+);
+
 // Get applications by agent ID (referringAgentId). Query: ?agentId=uuid&page=1&limit=10
 router.get('/by-agent', applicationController.getApplicationsByAgentId.bind(applicationController));
 
@@ -159,6 +173,10 @@ router.post('/:id/reject', applicationController.rejectApplication.bind(applicat
 router.post('/:id/approve', applicationController.approve.bind(applicationController));
 
 // Application activity logs
+router.get(
+    '/:id/activity-logs/:logId/content',
+    applicationController.getActivityLogContent.bind(applicationController),
+);
 router.get('/:id/activity-logs', applicationController.getActivityLogs.bind(applicationController));
 
 // Payment workspace: mail send history (persisted)

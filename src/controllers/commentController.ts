@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import sendMail, { isOutboundSmtpConfigured } from '../config/nodemailer';
+import { areApplicationNotificationEmailsDisabled } from '../services/emailService';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 
@@ -21,6 +22,7 @@ const mapCommentToApi = (comment: any) => {
     updatedAt,
     ...rest
   } = comment;
+
 
   const mappedCreatedBy =
     createdBy &&
@@ -56,6 +58,7 @@ const mapCommentToApi = (comment: any) => {
     updatedAt,
   };
 };
+
 
 class CommentController {
   // Create a new comment on an application
@@ -190,7 +193,7 @@ class CommentController {
               })),
             });
 
-            if (isOutboundSmtpConfigured()) {
+            if (isOutboundSmtpConfigured() && !areApplicationNotificationEmailsDisabled()) {
               const recipientUsers = await prisma.user.findMany({
                 where: { id: { in: Array.from(finalUwRecipients) } },
                 select: { email: true, firstName: true, lastName: true },

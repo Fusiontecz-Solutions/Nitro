@@ -324,15 +324,6 @@ export async function sendApplicationApprovalEmail({
         return false;
     }
 
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) {
-        // eslint-disable-next-line no-console
-        console.warn(
-            '[email] Application approval skipped: DISABLE_CLIENT_APPLICATION_EMAILS=true (set to false to deliver ISO approval template)',
-            { to: toTrimmed },
-        );
-        return false;
-    }
-
     const subject = 'Your Application Has Been Approved';
     const html = buildApplicationApprovalEmailHtml({
         clientName,
@@ -378,6 +369,10 @@ export async function sendOperationsIsoApprovalAlertEmail({
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Operations ISO-approval alert skipped: empty recipient');
+        return false;
+    }
+
+    if (areApplicationNotificationEmailsDisabled()) {
         return false;
     }
 
@@ -438,6 +433,99 @@ export async function sendOperationsIsoApprovalAlertEmail({
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Operations ISO-approval alert email send failed:', { to: toTrimmed, error });
+        return false;
+    }
+}
+
+export interface OperationsDisbursementReadyEmailParams {
+    to: string;
+    operationsName: string;
+    applicationNumber: string;
+    clientName: string;
+    viewApplicationUrl?: string;
+}
+
+/** Operations alert when funding call is "Call Done" and disbursement can proceed. */
+export async function sendOperationsDisbursementReadyEmail({
+    to,
+    operationsName,
+    applicationNumber,
+    clientName,
+    viewApplicationUrl,
+}: OperationsDisbursementReadyEmailParams): Promise<boolean> {
+    const toTrimmed = String(to || '').trim();
+    if (!toTrimmed) {
+        console.warn('[email] Operations disbursement-ready alert skipped: empty recipient');
+        return false;
+    }
+
+    if (areApplicationNotificationEmailsDisabled()) {
+        return false;
+    }
+
+    const safeOperationsName = String(operationsName || '').trim() || 'Operations Team';
+    const safeApplicationNumber = String(applicationNumber || '').trim() || 'N/A';
+    const safeClientName = String(clientName || '').trim() || 'Client';
+    const applicationHref = withApplicationDetailsOverviewHref(viewApplicationUrl);
+
+    const subject = `Funding call complete — proceed with disbursement (#${safeApplicationNumber})`;
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Disbursement Ready</title>
+    ${buildBrandHeaderStyles()}
+</head>
+<body style="margin:0; padding:0; background:#f4f7f9; font-family: Arial, Helvetica, sans-serif;">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+            <td style="padding: 20px 0;">
+                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background:#ffffff; border:1px solid #e5e7eb;">
+                    ${buildBrandHeaderRowHtml()}
+                    <tr>
+                        <td style="padding: 20px 24px 8px;">
+                            <h2 style="margin:0; color:#111827; font-size:22px;">Ready for Disbursement</h2>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 0 24px 20px; color:#374151; font-size:14px; line-height:1.6;">
+                            <p style="margin: 0 0 12px;">Hi ${safeOperationsName},</p>
+                            <p style="margin: 0 0 8px;">
+                                <strong>Application ID:</strong> #${safeApplicationNumber}
+                            </p>
+                            <p style="margin: 0 0 8px;">
+                                <strong>Client:</strong> ${safeClientName}
+                            </p>
+                            <p style="margin: 0 0 16px;">
+                                The funding call for this application is marked <strong>Call Done</strong>.
+                                You may now proceed with disbursement in the CRM.
+                            </p>
+                            ${
+                                applicationHref
+                                    ? `<p style="margin: 0;"><a href="${applicationHref}" style="color:#1E88E5;">Open disbursement in CRM</a></p>`
+                                    : ''
+                            }
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>`;
+
+    try {
+        await sendMail({
+            to: toTrimmed,
+            subject,
+            html,
+            attachments: buildBrandLogoAttachments(),
+        });
+        return true;
+    } catch (error) {
+        console.error('Operations disbursement-ready email send failed:', { to: toTrimmed, error });
         return false;
     }
 }
@@ -578,15 +666,6 @@ export async function sendApplicationOfferUpdatedEmail({
         return false;
     }
 
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) {
-        // eslint-disable-next-line no-console
-        console.warn(
-            '[email] Offer update skipped: DISABLE_CLIENT_APPLICATION_EMAILS=true',
-            { to: toTrimmed },
-        );
-        return false;
-    }
-
     const subject = 'Your Offer Values Have Been Updated';
     const html = buildApplicationOfferUpdatedEmailHtml({
         clientName,
@@ -719,7 +798,7 @@ export async function sendFundingCallPendingEmail({
     clientName,
     companyName,
 }: FundingCallPendingEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const subject = 'Funding call — next step for your application';
     const html = buildFundingCallPendingEmailHtml({ clientName, companyName });
@@ -827,7 +906,7 @@ export const buildApplicationFundedEmailHtml = ({
 
                                     
                                         <p style="font-size: 13px; color: #777; margin-top: 20px; line-height: 1.4;">
-                                            Thank you for choosing FinexusAI as your funding partner. We look forward to supporting your business growth!
+                                            Thank you for choosing Barclays Advance as your funding partner. We look forward to supporting your business growth!
                                         </p>
                                     </td>
                                 </tr>
@@ -847,7 +926,7 @@ export async function sendApplicationFundedEmail({
     clientName,
     companyName,
 }: ApplicationFundedEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const subject = 'Your application is funded — funds released';
     const html = buildApplicationFundedEmailHtml({ clientName, companyName });
@@ -907,7 +986,7 @@ export const buildApplicationSentToUnderwritingClientEmailHtml = ({
                                             </tr>
                                         </table>
                                         ${isPublicTokenLink
-            ? `<p style="font-size: 12px; color: #777; margin: 8px 0 0 0;">No FinexusAI login required. This personal link expires after 90 days; do not forward to anyone you do not trust.</p>`
+            ? `<p style="font-size: 12px; color: #777; margin: 8px 0 0 0;">No Barclays Advance CRM login required. This personal link expires after 90 days; do not forward to anyone you do not trust.</p>`
             : ''
         }`
         : `<p style="font-size: 13px; color: #777;">We could not generate a secure portal link. Please contact your representative for an updated link.</p>`;
@@ -1027,7 +1106,7 @@ export async function sendApplicationSentToUnderwritingClientEmail({
     viewApplicationUrl,
     publicPortalUrl,
 }: ApplicationSentToUnderwritingClientEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const safeAppRef = applicationNumber != null && String(applicationNumber).trim() !== ''
         ? String(applicationNumber).trim()
@@ -1202,7 +1281,7 @@ export async function sendApplicationUnderwritingCompletedClientEmail({
     publicPortalUrl,
     applicationNumber,
 }: ApplicationUnderwritingCompletedClientEmailParams): Promise<void> {
-    if (DISABLE_CLIENT_APPLICATION_EMAILS) return;
+    if (areApplicationNotificationEmailsDisabled()) return;
 
     const safeAppRef =
         applicationNumber != null && String(applicationNumber).trim() !== ''
@@ -1249,6 +1328,10 @@ export async function sendUnderwriterNewApplicationEmail({
     clientName,
     viewApplicationUrl,
 }: UnderwriterNewApplicationEmailParams): Promise<void> {
+    if (areApplicationNotificationEmailsDisabled()) {
+        return;
+    }
+
     const safeUnderwriterName = underwriterName || to;
     const safeAgentName = agentName || 'Agent';
     const safeClientName = clientName || 'Client';
@@ -1313,9 +1396,9 @@ export async function sendDecisionLogicEmail(
     if (!isOutboundSmtpConfigured()) {
         throw new Error(
             'Decision Logic invitation email cannot be sent: outbound mail is not configured. ' +
-                'Set SENDGRID_API_KEY (recommended: SendGrid SMTP via smtp.sendgrid.net, user "apikey") ' +
-                'or SMTP_AUTH_USER + SMTP_AUTH_PASS. Also set a verified From address: SMTP_FROM, MAIL_FROM, ' +
-                'SENDGRID_FROM_EMAIL, or SENDGRID_AUTH_USER.',
+            'Set SENDGRID_API_KEY (recommended: SendGrid SMTP via smtp.sendgrid.net, user "apikey") ' +
+            'or SMTP_AUTH_USER + SMTP_AUTH_PASS. Also set a verified From address: SMTP_FROM, MAIL_FROM, ' +
+            'SENDGRID_FROM_EMAIL, or SENDGRID_AUTH_USER.',
         );
     }
 
@@ -1335,6 +1418,12 @@ export async function sendDecisionLogicEmail(
         ? `${base}/decision-logic?token=${encodeURIComponent(token)}`
         : `(configure a frontend base URL in env) token=${encodeURIComponent(token)}`;
     const hostedLink = `${hostedOrigin}/decision-logic?token=${encodeURIComponent(token)}`;
+    let hostedLinkHostname = 'hosted site';
+    try {
+        hostedLinkHostname = new URL(hostedOrigin).hostname;
+    } catch {
+        /* keep fallback label */
+    }
     const primaryHost = decisionLogicInvitationHostKey(base);
     const hostedHost = decisionLogicInvitationHostKey(hostedOrigin);
     const primaryIsHosted =

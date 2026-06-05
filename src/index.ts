@@ -3,6 +3,7 @@ import './config/loadEnv';
 import 'reflect-metadata';
 import { createServer } from 'http';
 import { startCronJob } from './cron-job/crmGmailCronJob';
+import { startSuperAdminPlatformCronJob } from './cron-job/superAdminPlatformCronJob';
 import fileUpload from 'express-fileupload';
 import connectDB from './config/database';
 import router from './routes/index';
@@ -13,6 +14,9 @@ import { testRedisConnection } from './config/redis';
 import { startCollectionPaymentUploadWorker } from './workers/collectionPaymentUploadWorker';
 import { startApplicationApprovalWorker } from './workers/applicationApprovalWorker';
 import { getDefaultMailFrom, isSendGridConfigured } from './config/nodemailer';
+
+import { verifySuperAdminProxy } from './middleware/verifySuperAdminProxy';
+import { activityLogger } from './middleware/activityLogger';
 
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err);
@@ -72,6 +76,7 @@ console.log(
     `[mail] Outbound sender: ${getDefaultMailFrom()} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
 );
 startCronJob();
+startSuperAdminPlatformCronJob();
 // Test Redis connection
 testRedisConnection().catch(console.error);
 startCollectionPaymentUploadWorker();
@@ -85,7 +90,12 @@ app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.use('/api/v1', router);
+// Hybrid authentication gateway: every /api/v1 request first passes through
+// the Super Admin proxy verifier. If it carries valid x-super-admin-proxy +
+// x-super-admin-secret headers, `req.isSuperAdminProxy` is set and downstream
+// `authenticateToken` will skip tenant JWT validation and synthesize a
+// SUPER_ADMIN principal. Regular tenant-user requests are untouched.
+app.use('/api/v1', verifySuperAdminProxy, activityLogger, router);
 
 // 404 handler
 app.use((req: Request, res: Response) => {
@@ -114,7 +124,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-// Start the HTTP server after DB is ready
+// Start the HTTP server after DB is ready (seed default templates)
 void (async () => {
   await connectDB();
   httpServer.listen(PORT, () => {
