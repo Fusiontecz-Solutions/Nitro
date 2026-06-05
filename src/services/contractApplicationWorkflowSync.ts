@@ -149,6 +149,16 @@ function isPostContractSentQueue(queue: string | null | undefined): boolean {
   return POST_CONTRACT_SENT_QUEUE_KEYS.has(normalizeWorkflowToken(queue));
 }
 
+/** Deal has already moved past Contract Signed (Final, Funding Call, Disbursement, etc.). */
+function isApplicationPastContractSignedStage(app: {
+  currentQueue?: string | null;
+  currentState?: string | null;
+}): boolean {
+  return (
+    isApplicationAtContractSignedStage(app) || isPostContractSentQueue(app.currentQueue)
+  );
+}
+
 async function syncApplicationWorkflowStage(
   prismaClient: PrismaLike,
   applicationId: string,
@@ -321,10 +331,10 @@ export async function syncApplicationToContractSignedWhenContractCompleted(
     return false;
   }
 
-  if (isApplicationAtContractSignedStage(application)) {
+  if (isApplicationPastContractSignedStage(application)) {
     console.log('[Contract→Application Sync]', {
       event: 'sync_skip',
-      reason: 'already_contract_signed',
+      reason: 'already_at_or_past_contract_signed',
       applicationId,
       currentQueue: application.currentQueue,
       currentState: application.currentState,
@@ -400,7 +410,7 @@ export async function applyContractCompletedSyncToApplicationRecord(
   },
   source: string,
 ): Promise<boolean> {
-  if (isApplicationAtContractSignedStage(applicationRecord)) {
+  if (isApplicationPastContractSignedStage(applicationRecord)) {
     return false;
   }
 
