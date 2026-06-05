@@ -855,22 +855,43 @@ export default function ContractTab({
         }
     };
 
-    /** Contract Out stage: both queue and state use the same label; API persists `currentState` as `CONTRACTS_OUT`. */
-    const persistContractsOutStage = async () => {
+    /** Contract record created — not yet in DocuSign. Contract Out only after send. */
+    const persistContractPendingStage = async () => {
         if (!applicationUuid) return;
         try {
             await dispatch(
                 updateApplication({
                     id: String(applicationUuid),
                     data: {
-                        currentQueue: "Contract Out",
-                        currentState: "Contract Out",
+                        currentQueue: "Contract Pending",
+                        currentState: "Contract_Pending",
                     },
                 }),
             ).unwrap();
         } catch (err) {
             console.error(
-                "Failed to set application currentQueue/currentState to Contract Out:",
+                "Failed to set application currentQueue/currentState to Contract Pending:",
+                err,
+            );
+        }
+    };
+
+    /** DocuSign draft envelope created — review before send. */
+    const persistContractGeneratedStage = async () => {
+        if (!applicationUuid) return;
+        try {
+            await dispatch(
+                updateApplication({
+                    id: String(applicationUuid),
+                    data: {
+                        currentQueue: "Contract Generated",
+                        currentState: "Contract_Generated",
+                    },
+                }),
+            ).unwrap();
+        } catch (err) {
+            console.error(
+                "Failed to set application currentQueue/currentState to Contract Generated:",
                 err,
             );
         }
@@ -910,7 +931,7 @@ export default function ContractTab({
 
         const anyApp = applicationData as any;
 
-        await persistContractsOutStage();
+        await persistContractPendingStage();
 
         const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
         const userFromStorage = (() => {
@@ -1466,6 +1487,7 @@ export default function ContractTab({
         if (!envelopeId) {
             throw new Error("DocuSign did not return an envelope ID after creating the draft.");
         }
+        await persistContractGeneratedStage();
         const ccEmailed = result.ccPrefilledEmail?.emailed;
         if (ccEmailed?.length) {
             toast.success(`CC copy emailed to: ${ccEmailed.join(", ")}`);

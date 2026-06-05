@@ -138,7 +138,13 @@ export function inferOperationsListStatusFromApplication(
   if (state === "signedcontracts" || state === "signed_contracts") {
     return "Contract_Signed";
   }
-  if (q === "contracted" || q === "contractpending" || st === "contracted") {
+  if (q === "contractpending" || state === "contractpending" || st === "contractpending") {
+    return "Contract_Pending";
+  }
+  if (q === "contractgenerated" || state === "contractgenerated" || st === "contractgenerated") {
+    return "Contracted";
+  }
+  if (q === "contracted" || st === "contracted") {
     return "Contracted";
   }
   if (q === "new" || q === "agent" || q === "draft") return "Agent";

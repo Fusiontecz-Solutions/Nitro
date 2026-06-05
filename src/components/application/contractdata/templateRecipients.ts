@@ -189,6 +189,32 @@ export function contractSignerOverridesFingerprint(
     );
 }
 
+/** Block DocuSign review/send when contract signers are missing or incomplete. */
+export function getContractSignerValidationMessage(
+    roles: DocuSignTemplateRolePayload[],
+    signerOverrideRows?: ContractSignerOverrideRow[] | null,
+): string | null {
+    if (signerOverrideRows?.length) {
+        const withRole = signerOverrideRows.filter((r) => String(r.role || "").trim());
+        if (!withRole.length) {
+            return "Enter a recipient in Contract Signers before reviewing in DocuSign.";
+        }
+        if (withRole.some((r) => !String(r.email || "").trim())) {
+            return "Every signer role needs an email address. Edit recipients in Contract Signers to continue.";
+        }
+    }
+
+    if (!roles.length) {
+        return "Enter a recipient in Contract Signers before reviewing in DocuSign.";
+    }
+
+    if (roles.some((r) => !String(r.signerEmail || "").trim())) {
+        return "Every signer role needs an email address. Edit recipients in Contract Signers to continue.";
+    }
+
+    return null;
+}
+
 export function getTemplateRoleNameFromRow(row: Record<string, unknown>): string {
     const nestedSigner =
         row.signer && typeof row.signer === "object"

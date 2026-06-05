@@ -21,11 +21,31 @@ export function formatDealPipelineCurrentStateLabel(app: {
   const queue = String(app.currentQueue ?? app.queue ?? "").trim();
   const state = String(app.currentState ?? app.state ?? "").trim();
 
+  const queueCompact = compactKey(queue);
+  const stateCompact = compactKey(state);
+
+  if (
+    queueCompact === "contractpending" ||
+    stateCompact === "contractpending" ||
+    state === "Contract_Pending" ||
+    state === "CONTRACT_PENDING"
+  ) {
+    return "Contract Pending";
+  }
+
+  if (
+    queueCompact === "contractgenerated" ||
+    stateCompact === "contractgenerated" ||
+    state === "Contract_Generated" ||
+    state === "CONTRACT_GENERATED"
+  ) {
+    return "Contract Generated";
+  }
+
   if (isContractSignedQueueBadgeLabel(queue) || isContractSignedQueueBadgeLabel(state)) {
     return "Contract Signed";
   }
 
-  const stateCompact = compactKey(state);
   if (
     stateCompact === "signedcontracts" ||
     stateCompact === "contractsigned" ||
@@ -38,7 +58,6 @@ export function formatDealPipelineCurrentStateLabel(app: {
     return "Contract Out";
   }
 
-  const queueCompact = compactKey(queue);
   if (
     queueCompact === "contracted" ||
     stateCompact === "contractsout" ||

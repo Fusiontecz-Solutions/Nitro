@@ -92,6 +92,8 @@ const Cases = () => {
       return application.status;
     }
 
+    if (queue === "Contract Pending") return "Contract Pending";
+    if (queue === "Contract Generated") return "Contract Generated";
     if (queue === "Contract Out") return "Contract Out";
     if (queue === "Contracts Out") return "Contract Out";
     if (

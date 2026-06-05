@@ -123,6 +123,7 @@ import {
     buildBoldSignRolesFromTemplateRecipients,
     buildDocuSignRolesFromEditorRows,
     contractSignerOverridesFingerprint,
+    getContractSignerValidationMessage,
     filterTemplateRolesToPrimarySigner,
     mergeContractPrefillWithSignerOverrides,
     parseBoldSignTemplateRolesFromRecipientsPayload,
@@ -1459,6 +1460,22 @@ const PDFViewerModal = ({
         [resolvedContract, sentAt],
     );
 
+    const contractSignersValidationError = useMemo(() => {
+        const roles = contractSignerOverrides?.length
+            ? buildDocuSignRolesFromEditorRows(contractSignerOverrides)
+            : buildBoldSignRolesFromTemplateRecipients(
+                  templateRoleRowsForSigner,
+                  String(docuSignSignerEmail.email || "").trim(),
+                  getApplicationPrimaryRecipientName(applicationData),
+              );
+        return getContractSignerValidationMessage(roles, contractSignerOverrides);
+    }, [
+        applicationData,
+        contractSignerOverrides,
+        docuSignSignerEmail.email,
+        templateRoleRowsForSigner,
+    ]);
+
     const docuSignPdfCacheSuffix = useMemo(
         () => getDocuSignPdfCacheSuffix(resolvedContract, sentAt),
         [resolvedContract, sentAt],
@@ -1969,12 +1986,20 @@ const PDFViewerModal = ({
             setCcEmailDraft("");
 
             if (onPrepareDocuSignDraft) {
-                const signerEmail = String(docuSignSignerEmail.email || "").trim();
-                if (!signerEmail) {
-                    const msg =
-                        "No signing email found. Set client email on the application or contract, or a default signer email on the DocuSign template. CC addresses are not signers.";
-                    toast.error(msg);
-                    showDocuSignTabMessage(docuSignTab, "Could not open DocuSign", msg);
+                const signerValidationMsg =
+                    contractSignersValidationError ||
+                    getContractSignerValidationMessage(
+                        buildDocuSignRolesForSync(),
+                        contractSignerOverrides,
+                    );
+                if (signerValidationMsg) {
+                    toast.error(signerValidationMsg);
+                    showDocuSignTabMessage(
+                        docuSignTab,
+                        "Could not open DocuSign",
+                        signerValidationMsg,
+                    );
+                    setShowRecipientEditor(true);
                     return;
                 }
                 if (selectedAddendumOption.startsWith("up:")) {
@@ -2176,6 +2201,11 @@ const PDFViewerModal = ({
             toast.error(
                 "This contract is already out for signature. Void it in DocuSign before sending again.",
             );
+            return;
+        }
+        if (contractSignersValidationError) {
+            toast.error(contractSignersValidationError);
+            setShowRecipientEditor(true);
             return;
         }
 
@@ -5407,6 +5437,12 @@ const PDFViewerModal = ({
                                                 </span>
                                             </div>
 
+                                            {contractSignersValidationError ? (
+                                                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                                                    {contractSignersValidationError}
+                                                </p>
+                                            ) : null}
+
                                             <div className="grid gap-3">
                                                 {summaryTemplateRoles.map((r, index) => {
                                                     const roleRow = r as Record<string, unknown>;
@@ -5538,6 +5574,35 @@ const PDFViewerModal = ({
                                                     );
                                                 })}
                                             </div>
+
+                                            {summaryTemplateRoles.length === 0 ? (
+                                                <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center">
+                                                    <p className="text-xs text-slate-600">
+                                                        No contract signers yet. Add a recipient with a role and email
+                                                        before reviewing in DocuSign.
+                                                    </p>
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-8 text-xs border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/5"
+                                                        onClick={() => {
+                                                            setRecipientEditorRows([
+                                                                {
+                                                                    id: "1",
+                                                                    role: "Client",
+                                                                    name: getApplicationPrimaryRecipientName(applicationData),
+                                                                    email: primaryClientRecipientEmail,
+                                                                },
+                                                            ]);
+                                                            setShowRecipientEditor(true);
+                                                        }}
+                                                    >
+                                                        <Plus className="mr-1.5 h-3.5 w-3.5" />
+                                                        Add Recipient
+                                                    </Button>
+                                                </div>
+                                            ) : null}
 
                                             {/* How many signers are allowed per role (informational) */}
                                             {/* <div
@@ -6536,7 +6601,13 @@ const PDFViewerModal = ({
                                     type="button"
                                     variant="default"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    disabled={Boolean(contractSignersValidationError)}
                                     onClick={() => {
+                                        if (contractSignersValidationError) {
+                                            toast.error(contractSignersValidationError);
+                                            setShowRecipientEditor(true);
+                                            return;
+                                        }
                                         const url = docuSignOpenUrl;
                                         if (!url) return;
                                         if (navigateDocuSignTab(null, url)) {
@@ -6563,7 +6634,11 @@ const PDFViewerModal = ({
                                     variant="default"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
                                     onClick={handleReviewInDocuSignClick}
-                                    disabled={isSending || isCancellingContract}
+                                    disabled={
+                                        isSending ||
+                                        isCancellingContract ||
+                                        Boolean(contractSignersValidationError)
+                                    }
                                 >
                                     {isSending ? "Preparing DocuSign…" : "Review & send in DocuSign"}
                                 </Button>

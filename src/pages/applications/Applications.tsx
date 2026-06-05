@@ -558,6 +558,21 @@ const Applications = () => {
       return "Final Underwriter-Approved";
     }
 
+    const contractPipelineLabel = formatDealPipelineCurrentStateLabel({
+      currentQueue: application.currentQueue ?? application.queue,
+      queue: application.queue,
+      currentState: application.currentState ?? application.state,
+      state: application.state,
+    });
+    if (
+      contractPipelineLabel === "Contract Pending" ||
+      contractPipelineLabel === "Contract Generated" ||
+      contractPipelineLabel === "Contract Out" ||
+      contractPipelineLabel === "Contract Signed"
+    ) {
+      return contractPipelineLabel;
+    }
+
     const q = application.currentQueue || application.queue;
     if (q == null || String(q).trim() === "") return "-";
     const raw = String(q).trim();
@@ -605,7 +620,12 @@ const Applications = () => {
     if (n === "funded" || n === "disbursement") {
       return "bg-green-100 text-green-700";
     }
-    if (n === "approved" || n === "contracted") {
+    if (
+      n === "approved" ||
+      n === "contracted" ||
+      n === "contract pending" ||
+      n === "contract generated"
+    ) {
       return "bg-blue-100 text-blue-700";
     }
     if (n === "declined") {
