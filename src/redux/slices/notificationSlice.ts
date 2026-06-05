@@ -5,6 +5,8 @@ import {
     markNotificationAsRead,
     markAllNotificationsAsRead,
     getDocumentRequestsByApplication,
+    notifyOperationsForDisbursement,
+    type NotifyOperationsDisbursementResponse,
 } from '../actions/notificationActions';
 
 // Notification Type
@@ -12,7 +14,7 @@ export interface Notification {
     _id: string;
     title: string;
     message: string;
-    type: 'document_request' | 'application_update' | 'system' | 'other';
+    type: 'document_request' | 'application_update' | 'contract_status_update' | 'system' | 'other';
     recipient: string | {
         _id: string;
         firstName: string;
@@ -277,6 +279,51 @@ export const markAllAsReadSlice = createSlice({
     },
 });
 
+// Notify Operations Disbursement State
+interface NotifyOperationsDisbursementState {
+    loading: boolean;
+    success: boolean;
+    error: string | null;
+    data: NotifyOperationsDisbursementResponse | null;
+}
+
+export const notifyOperationsDisbursementSlice = createSlice({
+    name: 'notifyOperationsDisbursement',
+    initialState: {
+        loading: false,
+        success: false,
+        error: null,
+        data: null,
+    } as NotifyOperationsDisbursementState,
+    reducers: {
+        resetNotifyOperationsDisbursement: (state) => {
+            state.loading = false;
+            state.success = false;
+            state.error = null;
+            state.data = null;
+        },
+    },
+    extraReducers: (builder) => {
+        builder
+            .addCase(notifyOperationsForDisbursement.pending, (state) => {
+                state.loading = true;
+                state.error = null;
+                state.success = false;
+            })
+            .addCase(notifyOperationsForDisbursement.fulfilled, (state, action) => {
+                state.loading = false;
+                state.error = null;
+                state.success = true;
+                state.data = (action.payload?.data ?? action.payload) as NotifyOperationsDisbursementResponse;
+            })
+            .addCase(notifyOperationsForDisbursement.rejected, (state, action) => {
+                state.loading = false;
+                state.error = (action.payload as string) || 'Failed to notify Operations for disbursement';
+                state.success = false;
+            });
+    },
+});
+
 // Document Request State
 interface DocumentRequest {
     name: string;
@@ -338,4 +385,5 @@ export const { resetSendDocumentRequest } = sendDocumentRequestSlice.actions;
 export const { resetMarkAsRead } = markAsReadSlice.actions;
 export const { resetMarkAllAsRead } = markAllAsReadSlice.actions;
 export const { clearDocumentRequestsError } = documentRequestsSlice.actions;
+export const { resetNotifyOperationsDisbursement } = notifyOperationsDisbursementSlice.actions;
 

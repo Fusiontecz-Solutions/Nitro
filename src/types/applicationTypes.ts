@@ -16,6 +16,7 @@ export type ApplicationIsoLite = {
     id?: string;
     name?: string;
     email?: string | null;
+    phone?: string | null;
 };
 
 /** Minimal bank row used by Decision Logic widgets. */

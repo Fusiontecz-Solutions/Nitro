@@ -84,7 +84,8 @@ import {
     sendDocumentRequestSlice,
     markAsReadSlice,
     markAllAsReadSlice,
-    documentRequestsSlice
+    documentRequestsSlice,
+    notifyOperationsDisbursementSlice,
 } from './slices/notificationSlice';
 import chatReducer from '@/redux/slices/chatSlice';
 import teamChatReducer from './slices/teamChatSlice';
@@ -100,7 +101,6 @@ import { offerDecisionSlice } from './slices/offerDecisionSlice';
 import { collectionPaymentsSlice } from './slices/collectionPaymentSlice';
 import { paymentDashboardSlice } from './slices/paymentDashboardSlice';
 import { paymentDashboardCohortSlice } from './slices/paymentDashboardCohortSlice';
-import { paymentDashboardTrendSlice } from './slices/paymentDashboardTrendSlice';
 import { paymentDashboardMoneySlice } from './slices/paymentDashboardMoneySlice';
 import { operationsApplicationsSlice } from './slices/operationsApplicationsSlice';
 import { operationsDashboardSlice } from './slices/operationsDashboardSlice';
@@ -145,7 +145,6 @@ import {
 } from './slices/contractSlice';
 import isoReducer from './slices/isoSlice';
 import { paymentDashboardSessionCacheMiddleware } from './middleware/paymentDashboardSessionCacheMiddleware';
-import { hydratePaymentDashboardFromSession } from '@/lib/hydratePaymentDashboardStore';
 
 export const store = configureStore({
     reducer: {
@@ -228,6 +227,7 @@ export const store = configureStore({
         markNotificationAsRead: markAsReadSlice.reducer,
         markAllNotificationsAsRead: markAllAsReadSlice.reducer,
         documentRequests: documentRequestsSlice.reducer,
+        notifyOperationsDisbursement: notifyOperationsDisbursementSlice.reducer,
         // Chat reducer
         chat: chatReducer,
         teamChat: teamChatReducer,
@@ -286,7 +286,6 @@ export const store = configureStore({
         collectionPayments: collectionPaymentsSlice.reducer,
         paymentDashboard: paymentDashboardSlice.reducer,
         paymentDashboardCohort: paymentDashboardCohortSlice.reducer,
-        paymentDashboardTrend: paymentDashboardTrendSlice.reducer,
         paymentDashboardMoney: paymentDashboardMoneySlice.reducer,
         operationsApplications: operationsApplicationsSlice.reducer,
         operationsDashboard: operationsDashboardSlice.reducer,
@@ -298,7 +297,6 @@ export const store = configureStore({
         }).concat(paymentDashboardSessionCacheMiddleware),
 });
 
-hydratePaymentDashboardFromSession(store);
-
 export type RootState = ReturnType<typeof store.getState>;
 export type AppDispatch = typeof store.dispatch;
+export type AppStore = typeof store;

@@ -1,14 +1,17 @@
 import { useEffect } from "react";
+import { useMemo } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Card, CardContent } from "../ui/card"
 import type { AppDispatch, RootState } from "@/redux/store";
 import { Skeleton } from "../ui/skeleton";
 import { useTheme } from "@/context/ThemeContext";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, Lock } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { formatActionRequired } from "@/lib/formatActionRequired";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
+import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
+import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 // import { Button } from "../ui/button";
 
@@ -52,7 +55,7 @@ interface ApplicationSummaryProps {
 }
 
 const ApplicationSummary = ({
-    isUnderwriter,
+    isUnderwriter: _isUnderwriter,
     applicationId,
     onBack,
 }: ApplicationSummaryProps) => {
@@ -60,6 +63,7 @@ const ApplicationSummary = ({
     const { loading: fetchLoading, data: applicationData } = useSelector(
         (state: RootState) => state.applicationDetail
     );
+    const loginUser = useSelector((state: RootState) => state.login.data?.user);
     const { data: offerDecisionData, loading: offerDecisionLoading } = useSelector(
         (state: RootState) => state.offerDecision,
     );
@@ -68,6 +72,16 @@ const ApplicationSummary = ({
     );
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
+
+    const stageAccess = useMemo(
+        () =>
+            getStageAccessForApplication(
+                applicationData as any,
+                normalizeRoleKey(resolveEffectiveRole(loginUser)),
+            ),
+        [applicationData, loginUser],
+    );
+    const showReadOnlyPill = stageAccess.isPreview;
 
     // When applicationId is provided (e.g. agent on overview), only use data that matches the current application
     const normalizedApplicationId =
@@ -245,11 +259,23 @@ const ApplicationSummary = ({
                     <h2 className="text-white text-2xl font-[700] font-roboto uppercase tracking-wide">
                         Application Summary
                     </h2>
+                    {showReadOnlyPill ? (
+                        <span
+                            className="ml-1 inline-flex items-center gap-1.5 rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white shadow-sm backdrop-blur-sm"
+                            title={
+                                stageAccess.reason ??
+                                "Read-only preview for your role"
+                            }
+                        >
+                            <Lock className="h-3 w-3" aria-hidden />
+                            Read-only
+                        </span>
+                    ) : null}
                 </div>
                 <div className={innerPanelClass}>
                     {standardFiveColumns}
                 </div>
-                {/* {isUnderwriter && (
+                {/* {_isUnderwriter && (
                     <div className="flex gap-2 items-center">
                         <Button variant="outline" className="h-9 gap-2 w-fit">
                             <span className="w-fit bg-[#276D9C] text-white px-2 py-1 rounded-sm">Edit</span>
@@ -260,6 +286,6 @@ const ApplicationSummary = ({
             </CardContent>
         </Card>
     )
-}
+};
 
 export default ApplicationSummary;

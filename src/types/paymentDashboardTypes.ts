@@ -45,6 +45,18 @@ export type PaymentDashboardCards = {
   zeroGapDeals?: ZeroGapDealRow[];
 };
 
+export type CreditDebitTrendByView = {
+  monthly: MoneyFlowPoint[];
+  weekly: MoneyFlowPoint[];
+  monthlyInYear: MoneyFlowPoint[];
+  yearly: MoneyFlowPoint[];
+};
+
+export type PaymentFailedPaymentSummary = {
+  totalAmount: number;
+  failedTxnCount: number;
+};
+
 export type PaymentDashboardData = {
   cards: PaymentDashboardCards;
   moneyFlow: {
@@ -52,4 +64,8 @@ export type PaymentDashboardData = {
     weekly: MoneyFlowPoint[];
     yearly: MoneyFlowPoint[];
   };
+  /** Portfolio-wide debit vs credit chart (from `/collection-payments/financial-overview`). */
+  creditDebitTrend?: CreditDebitTrendByView;
+  chartYearOptions?: number[];
+  failedPaymentSummary?: PaymentFailedPaymentSummary;
 };

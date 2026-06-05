@@ -1,5 +1,5 @@
 import { DASHBOARD_APPLICATION_STATS_BUCKET } from "@/constants/dashboardApplicationsNavigation";
-import { APPLICATIONS_LIST_DEFAULT_SORT, DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
+import { DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
 import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
 
 /** Matches backend funded cohort for payment dashboard lists. */
@@ -16,27 +16,36 @@ function normalizeStatus(value: unknown): string {
     .replace(/\s+/g, " ");
 }
 
-export type PaymentFundedDealsListArg = {
-  page: number;
-  limit?: number;
-  search?: string;
-};
-
 /**
- * Server-paginated funded cohort for the payment dashboard deals table.
- * Balances are embedded by the applications list API when `statsBucket=funded`.
+ * Server-paginated funded cohort for the payment dashboard table (no `fetchAllPages`).
+ * Full application payload is required for payback math — not `lite`.
  */
-export function paymentFundedDealsListParams(
-  arg: PaymentFundedDealsListArg,
-): GetApplicationsParams {
-  return {
-    page: Math.max(1, arg.page),
-    limit: arg.limit ?? DEFAULT_APPLICATIONS_PAGE_SIZE,
-    ...(arg.search?.trim() ? { search: arg.search.trim() } : {}),
-    ...APPLICATIONS_LIST_DEFAULT_SORT,
+export function buildPaymentFundedCohortParams(options: {
+  pageIndex?: number;
+  pageSize?: number;
+  search?: string;
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
+} = {}): GetApplicationsParams {
+  const params: GetApplicationsParams = {
+    page: (options.pageIndex ?? 0) + 1,
+    limit: options.pageSize ?? DEFAULT_APPLICATIONS_PAGE_SIZE,
+    sortBy: options.sortBy ?? "createdAt",
+    sortOrder: options.sortOrder ?? "desc",
     statsBucket: DASHBOARD_APPLICATION_STATS_BUCKET.FUNDED,
     skipListCacheRead: true,
     skipListCache: true,
-    requestTimeoutMs: 60_000,
+    requestTimeoutMs: 120_000,
   };
+  const q = options.search?.trim();
+  if (q) params.search = q;
+  return params;
+}
+
+/** @deprecated Use `buildPaymentFundedCohortParams` with explicit page/limit. */
+export function paymentFundedDealsListParams(): GetApplicationsParams {
+  return buildPaymentFundedCohortParams({
+    pageIndex: 0,
+    pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
+  });
 }

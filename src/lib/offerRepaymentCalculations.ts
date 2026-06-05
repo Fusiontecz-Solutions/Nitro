@@ -1,8 +1,3 @@
-/**
- * Bidirectional offer / repayment math (mirrors OfferDecisionToggle).
- * advance = offer, factorRate = rate, payback = total repayment, daily = per-period payment.
- */
-
 export type OfferFrequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly";
 
 export type OfferCalcDriverField =
@@ -29,10 +24,10 @@ export type OfferCalcResult = Pick<
   monthlyPayment: number;
 };
 
-const WEEKLY_TO_MONTHLY_FACTOR = 4.2;
-// Bi-Weekly = every 2 weeks → ~26 payments/year ÷ 12 months ≈ 2.166.
-// Kept consistent with the project's WEEKLY_TO_MONTHLY_FACTOR (4.2) by halving it.
-const BIWEEKLY_TO_MONTHLY_FACTOR = 2.1;
+// Weekly: monthly ÷ 4 = per-period (≈ 4 weeks per month).
+const WEEKLY_TO_MONTHLY_FACTOR = 4;
+// Bi-Weekly: monthly ÷ 2 = per-period (≈ 2 bi-weekly periods per month).
+const BIWEEKLY_TO_MONTHLY_FACTOR = 2;
 
 function roundMoney(value: number): number {
   if (!Number.isFinite(value)) return 0;

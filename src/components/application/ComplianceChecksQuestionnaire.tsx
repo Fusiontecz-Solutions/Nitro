@@ -86,9 +86,6 @@ const ComplianceChecksQuestionnaire = ({
 
     const { data: complianceChecksData, loading: complianceChecksLoading } =
         useSelector((state: RootState) => state.complianceChecks);
-    const { loading: createOrUpdateLoading } = useSelector(
-        (state: RootState) => state.createOrUpdateComplianceCheck,
-    );
 
     const [questions, setQuestions] = useState<CheckQuestion[]>(
         DEFAULT_COMPLIANCE_QUESTIONS,
@@ -165,6 +162,22 @@ const ComplianceChecksQuestionnaire = ({
                 return;
             }
 
+            const previousQuestions = questions;
+
+            setQuestions((prev) =>
+                prev.map((q) =>
+                    q.id === id || q.question === questionText
+                        ? {
+                              ...q,
+                              answer: "no",
+                              reason: undefined,
+                              signature: undefined,
+                              date: undefined,
+                          }
+                        : q,
+                ),
+            );
+
             try {
                 await dispatch(
                     createOrUpdateComplianceCheck({
@@ -173,33 +186,16 @@ const ComplianceChecksQuestionnaire = ({
                         application: String(applicationId),
                     }),
                 ).unwrap();
-
-                setQuestions((prev) =>
-                    prev.map((q) =>
-                        q.id === id || q.question === questionText
-                            ? {
-                                  ...q,
-                                  answer: "no",
-                                  reason: undefined,
-                                  signature: undefined,
-                                  date: undefined,
-                              }
-                            : q,
-                    ),
-                );
-
-                dispatch(
-                    getComplianceChecks({ application: String(applicationId) }),
-                );
             } catch (error: unknown) {
                 console.error("Save compliance check error:", error);
+                setQuestions(previousQuestions);
                 toast.error(
                     (error as { message?: string })?.message ||
                         "Failed to save compliance check",
                 );
             }
         },
-        [applicationId, dispatch],
+        [applicationId, dispatch, questions],
     );
 
     const handleSaveDetails = useCallback(
@@ -224,6 +220,23 @@ const ComplianceChecksQuestionnaire = ({
                 return;
             }
 
+            const previousQuestions = questions;
+
+            setQuestions((prev) =>
+                prev.map((q) =>
+                    q.id === questionId
+                        ? {
+                              ...q,
+                              answer: "yes",
+                              reason: details,
+                              signature: userName,
+                              date: currentDate,
+                          }
+                        : q,
+                ),
+            );
+            setOpenModalQuestionId(null);
+
             try {
                 await dispatch(
                     createOrUpdateComplianceCheck({
@@ -236,33 +249,15 @@ const ComplianceChecksQuestionnaire = ({
                     }),
                 ).unwrap();
 
-                setQuestions((prev) =>
-                    prev.map((q) =>
-                        q.id === questionId
-                            ? {
-                                  ...q,
-                                  answer: "yes",
-                                  reason: details,
-                                  signature: userName,
-                                  date: currentDate,
-                              }
-                            : q,
-                    ),
-                );
-
-                dispatch(
-                    getComplianceChecks({ application: String(applicationId) }),
-                );
                 toast.success("Compliance check saved successfully");
             } catch (error: unknown) {
                 console.error("Save compliance check error:", error);
+                setQuestions(previousQuestions);
                 toast.error(
                     (error as { message?: string })?.message ||
                         "Failed to save compliance check",
                 );
             }
-
-            setOpenModalQuestionId(null);
         },
         [applicationId, dispatch, questions, user],
     );
@@ -409,8 +404,7 @@ const ComplianceChecksQuestionnaire = ({
                                             question.question,
                                         )
                                     }
-                                    disabled={createOrUpdateLoading}
-                                    className={`px-3 py-1.5 flex items-center gap-2 rounded-sm border-2 transition-all ${getRadioButtonClasses(
+                                    className={`px-3 py-1.5 flex items-center gap-2 rounded-sm border-2 transition-all cursor-pointer ${getRadioButtonClasses(
                                         question.answer === "yes",
                                         "yes",
                                     )}`}
@@ -427,8 +421,7 @@ const ComplianceChecksQuestionnaire = ({
                                             question.question,
                                         )
                                     }
-                                    disabled={createOrUpdateLoading}
-                                    className={`px-3 py-1.5 flex items-center gap-2 rounded-sm border-2 transition-all ${getRadioButtonClasses(
+                                    className={`px-3 py-1.5 flex items-center gap-2 rounded-sm border-2 transition-all cursor-pointer ${getRadioButtonClasses(
                                         question.answer === "no",
                                         "no",
                                     )}`}

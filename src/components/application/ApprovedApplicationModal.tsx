@@ -20,9 +20,9 @@ import { notifyFinalUnderwriterOnAssignment } from "@/redux/actions/notification
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
 import {
+    formatFactorRateUS,
     formatNumberUS,
     formatNumberUSForInput,
-    formatRateUS,
     formatRateUSCommit,
     parseNumberUS,
 } from "@/lib/utils";
@@ -37,6 +37,7 @@ import ComplianceChecksQuestionnaire, {
     type ComplianceChecksProgress,
 } from "./ComplianceChecksQuestionnaire";
 import { getComplianceChecks } from "@/redux/actions/complianceCheckActions";
+import AgentDealIsoTag from "./AgentDealIsoTag";
 
 const ORIGINATION_FEE_FIXED = "10";
 
@@ -127,7 +128,7 @@ function applyCalculatedFieldsToStack(
     const derived = deriveCalculatedFieldsFromDrivers({
         approvedAmount:
             apiOffer != null ? formatMoneyField(apiOffer) : "",
-        factorRate: apiRate != null ? formatRateUS(apiRate) : "",
+        factorRate: apiRate != null ? formatFactorRateUS(apiRate) : "",
         tenure: termLabel,
         achFrequency: frequency,
     });
@@ -162,7 +163,7 @@ function buildApprovalFormFromApi(
         paybackAmount,
         originationFee: ORIGINATION_FEE_FIXED,
         approvedAmount: offer != null ? formatMoneyField(offer) : "",
-        factorRate: rate != null ? formatRateUS(rate) : "",
+        factorRate: rate != null ? formatFactorRateUS(rate) : "",
         repay,
         monthlyRepayment,
         achFrequency: frequency,
@@ -780,6 +781,15 @@ const ApprovedApplicationModal = ({
                 </DialogHeader>
 
                 <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+                    {isFinalUnderwriter ? (
+                        <AgentDealIsoTag
+                            applicationId={
+                                applicationId != null ? String(applicationId) : undefined
+                            }
+                            alwaysEditable={false}
+                            variant="compact"
+                        />
+                    ) : null}
                     <div
                         className={
                             isFinalUnderwriter
@@ -1074,7 +1084,7 @@ const ApprovedApplicationModal = ({
                                                 onValueChange={field.onChange}
                                                 value={field.value || undefined}
                                             >
-                                                <SelectTrigger className={`${FIELD_CONTROL_H} w-full rounded-sm px-3 py-0 text-sm outline-none ${isDark ? "bg-muted border-gray-700 text-gray-200" : "bg-white border-gray-200"}`}>
+                                                <SelectTrigger className={`${FIELD_CONTROL_H} w-full cursor-pointer rounded-sm px-3 py-0 text-sm outline-none disabled:cursor-not-allowed ${isDark ? "bg-muted border-gray-700 text-gray-200" : "bg-white border-gray-200"}`}>
                                                     <SelectValue placeholder="Select frequency" />
                                                 </SelectTrigger>
                                                 <SelectContent>
@@ -1127,7 +1137,7 @@ const ApprovedApplicationModal = ({
                                 type="button"
                                 onClick={() => void handleUpdateOffer()}
                                 disabled={isUpdatingOffer}
-                                className="bg-[#3B8BD1] hover:bg-[#3B8BD1]/90 text-white px-6"
+                                className="cursor-pointer bg-[#3B8BD1] px-6 text-white hover:bg-[#3B8BD1]/90 disabled:cursor-not-allowed"
                             >
                                 {isUpdatingOffer ? "Updating…" : "Update"}
                             </Button>
@@ -1213,13 +1223,20 @@ const ApprovedApplicationModal = ({
                                         });
                                     } catch (emailError) {
                                         console.error("Failed to send approval email:", emailError);
+                                        const backendMessage =
+                                            typeof emailError === "string"
+                                                ? emailError
+                                                : emailError instanceof Error
+                                                  ? emailError.message
+                                                  : "";
+                                        const fallbackMessage = resendApprovalEmail
+                                            ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
+                                            : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).";
                                         toast.update(toastId, {
-                                            render: resendApprovalEmail
-                                                ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
-                                                : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).",
+                                            render: backendMessage || fallbackMessage,
                                             type: "warning",
                                             isLoading: false,
-                                            autoClose: 5000,
+                                            autoClose: 7000,
                                         });
                                     }
 
@@ -1235,7 +1252,7 @@ const ApprovedApplicationModal = ({
                                 isEditMode ||
                                 isUpdatingOffer
                             }
-                            className="bg-green-600 hover:bg-green-700 text-white px-6"
+                            className="cursor-pointer bg-green-600 px-6 text-white hover:bg-green-700 disabled:cursor-not-allowed"
                         >
                             {offerDecisionLoading || isSubmitting
                                 ? "Processing…"
@@ -1258,7 +1275,7 @@ const ApprovedApplicationModal = ({
                                 isUpdatingOffer ||
                                 !checksProgress.allComplete
                             }
-                            className="bg-green-600 hover:bg-green-700 cursor-pointer text-white px-6"
+                            className="cursor-pointer bg-green-600 px-6 text-white hover:bg-green-700 disabled:cursor-not-allowed"
                         >
                             {isSubmitting
                                 ? "Sending…"
