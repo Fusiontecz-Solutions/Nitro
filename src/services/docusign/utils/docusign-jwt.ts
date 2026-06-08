@@ -10,6 +10,7 @@ import {
   DOCUSIGN_ACCOUNT_ID,
   DOCUSIGN_BASE_URI,
   getDocusignOAuthUrls,
+  isDocusignAccountIdGuid,
   normalizeDocusignRestBaseUri,
 } from './docusign-client';
 
@@ -95,13 +96,6 @@ async function resolveAccountFromUserInfo(accessToken: string): Promise<{
   accountId: string;
   baseUri: string;
 }> {
-  if (DOCUSIGN_ACCOUNT_ID?.trim() && DOCUSIGN_BASE_URI?.trim()) {
-    return {
-      accountId: DOCUSIGN_ACCOUNT_ID.trim(),
-      baseUri: normalizeDocusignRestBaseUri(DOCUSIGN_BASE_URI.trim()),
-    };
-  }
-
   const { userInfoUrl } = getDocusignOAuthUrls();
   const userInfoRes = await axios.get<DocuSignUserInfoResponse>(userInfoUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -113,14 +107,47 @@ async function resolveAccountFromUserInfo(accessToken: string): Promise<{
 
   if (!defaultAccount?.account_id || !defaultAccount?.base_uri) {
     throw new Error(
-      'Could not resolve DocuSign account. Set DOCUSIGN_ACCOUNT_ID and DOCUSIGN_BASE_URI in .env.',
+      'Could not resolve DocuSign account from userinfo. Check JWT consent and impersonated user.',
     );
   }
 
-  return {
-    accountId: String(defaultAccount.account_id),
-    baseUri: normalizeDocusignRestBaseUri(String(defaultAccount.base_uri)),
-  };
+  let accountId = String(defaultAccount.account_id);
+  const envAccountId = DOCUSIGN_ACCOUNT_ID?.trim();
+  if (envAccountId) {
+    if (isDocusignAccountIdGuid(envAccountId)) {
+      const match = accounts.find(
+        (a: { account_id?: string }) => String(a.account_id) === envAccountId,
+      );
+      if (match) {
+        accountId = envAccountId;
+      } else {
+        console.warn(
+          `[DocuSign] DOCUSIGN_ACCOUNT_ID=${envAccountId} not found in userinfo accounts; using default ${accountId}`,
+        );
+      }
+    } else {
+      console.warn(
+        `[DocuSign] DOCUSIGN_ACCOUNT_ID=${envAccountId} is numeric — ignoring. Use API account GUID from DocuSign Admin.`,
+      );
+    }
+  }
+
+  let baseUri = normalizeDocusignRestBaseUri(String(defaultAccount.base_uri));
+  const envBaseUri = DOCUSIGN_BASE_URI?.trim();
+  if (envBaseUri) {
+    const normalizedEnv = normalizeDocusignRestBaseUri(envBaseUri);
+    if (normalizedEnv !== baseUri) {
+      console.warn(
+        `[DocuSign] DOCUSIGN_BASE_URI (${normalizedEnv}) differs from userinfo (${baseUri}); using userinfo.`,
+      );
+    }
+  }
+
+  console.log(
+    `[DocuSign] JWT session resolved accountId=${accountId} apiBase=${baseUri}`,
+  );
+
+  return { accountId, baseUri };
 }
 
 /**
@@ -133,12 +160,23 @@ export async function getDocusignJwtSession(): Promise<{
   baseUri: string;
 }> {
   const bufferMs = 5 * 60 * 1000;
-  if (cachedSession && cachedSession.expiresAtMs - bufferMs > Date.now()) {
+  if (
+    cachedSession &&
+    cachedSession.expiresAtMs - bufferMs > Date.now() &&
+    isDocusignAccountIdGuid(cachedSession.accountId)
+  ) {
     return {
       accessToken: cachedSession.accessToken,
       accountId: cachedSession.accountId,
       baseUri: cachedSession.baseUri,
     };
+  }
+
+  if (cachedSession && !isDocusignAccountIdGuid(cachedSession.accountId)) {
+    console.warn(
+      `[DocuSign] JWT cache had non-GUID accountId=${cachedSession.accountId}; refreshing session`,
+    );
+    cachedSession = null;
   }
 
   const assertion = buildJwtAssertion();

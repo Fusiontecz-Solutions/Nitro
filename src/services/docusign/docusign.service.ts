@@ -19,6 +19,8 @@ import {
   getDocusignOAuthUrls,
   normalizeDocusignRestBaseUri,
   resolveDocusignAuthMode,
+  DOCUSIGN_SENDER_RETURN_URL,
+  formatDocusignApiErrorMessage,
 } from './utils/docusign-client';
 import {
   buildTextTabsFromPrefillIds,
@@ -531,10 +533,60 @@ export class DocusignService {
   }
 
   private logDocusignApiError(context: string, err: unknown) {
-    const ax = err as { response?: { data?: { errorCode?: string; message?: string } }; message?: string };
+    const ax = err as { response?: { data?: { errorCode?: string } } };
     const code = ax?.response?.data?.errorCode;
-    const message = ax?.response?.data?.message || ax?.message || String(err);
+    const message = formatDocusignApiErrorMessage(err);
     console.warn(`[DocuSign] ${context}${code ? ` (${code})` : ''}: ${message}`);
+  }
+
+  private normalizeSenderReturnUrl(returnUrl: string): string {
+    const raw = String(returnUrl || '').trim();
+    if (!raw) return DOCUSIGN_SENDER_RETURN_URL;
+    try {
+      const u = new URL(raw);
+      const host = u.hostname.toLowerCase();
+      if (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        u.protocol === 'http:'
+      ) {
+        return DOCUSIGN_SENDER_RETURN_URL;
+      }
+      return raw;
+    } catch {
+      return DOCUSIGN_SENDER_RETURN_URL;
+    }
+  }
+
+  /**
+   * DocuSign demo REST rejects per-recipient PUT .../recipients/{id} (INVALID_API_VERSION).
+   * Bulk PUT .../recipients with { signers: [...] } is the supported update path.
+   */
+  private async updateEnvelopeSignersBulk(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+    signerUpdates: Array<{
+      recipientId: string;
+      email: string;
+      name: string;
+      roleName?: string;
+      routingOrder?: string;
+    }>,
+  ): Promise<void> {
+    if (!signerUpdates.length) return;
+    await client.put(
+      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
+      {
+        signers: signerUpdates.map((s) => ({
+          recipientId: s.recipientId,
+          email: s.email,
+          name: s.name,
+          roleName: s.roleName,
+          routingOrder: s.routingOrder,
+        })),
+      },
+    );
   }
 
   /** Decrypt CRM `enc:v1:` values and drop empty fields before sending to DocuSign. */
@@ -893,7 +945,50 @@ export class DocusignService {
   }
 
   /**
-   * Apply CRM signer emails onto the draft envelope (per recipient PUT — does not wipe other recipients).
+   * Map CRM signer rows onto envelope slots without reusing the same CRM row twice.
+   * Duplicate template role names (e.g. two "Owner" slots) must map by position, not
+   * always to normalized[0].
+   */
+  private matchCrmSignersToEnvelopeSlots(
+    envelopeSigners: Array<{ roleName?: string; routingOrder?: string }>,
+    normalized: Array<{
+      roleName: string;
+      name: string;
+      email: string;
+      routingOrder: string;
+    }>,
+  ): Array<{
+    roleName: string;
+    name: string;
+    email: string;
+  } | null> {
+    const used = new Set<number>();
+
+    const takeFirstUnused = (
+      predicate: (row: (typeof normalized)[number], idx: number) => boolean,
+    ) => {
+      const idx = normalized.findIndex((row, ni) => !used.has(ni) && predicate(row, ni));
+      if (idx < 0) return null;
+      used.add(idx);
+      return normalized[idx];
+    };
+
+    return envelopeSigners.map((signer, slotIdx) => {
+      const roleKey = String(signer.roleName || '').trim().toLowerCase();
+      const routingOrder = String(signer.routingOrder || slotIdx + 1).trim();
+
+      return (
+        takeFirstUnused((row) => row.roleName.toLowerCase() === roleKey) ||
+        takeFirstUnused((row) => row.routingOrder === routingOrder) ||
+        takeFirstUnused((_, ni) => ni === slotIdx) ||
+        takeFirstUnused(() => true) ||
+        null
+      );
+    });
+  }
+
+  /**
+   * Apply CRM signer emails onto the draft envelope (bulk recipients PUT).
    */
   private async applyCrmRolesToEnvelopeSigners(
     client: AxiosInstance,
@@ -923,16 +1018,19 @@ export class DocusignService {
       );
     }
 
+    const matched = this.matchCrmSignersToEnvelopeSlots(signers, normalized);
     const missingRoles: string[] = [];
-    let updated = 0;
+    const bulkUpdates: Array<{
+      recipientId: string;
+      email: string;
+      name: string;
+      roleName?: string;
+      routingOrder?: string;
+    }> = [];
 
     for (let i = 0; i < signers.length; i++) {
       const signer = signers[i];
-      const roleKey = String(signer.roleName || '').trim().toLowerCase();
-      const match =
-        normalized.find((n) => n.roleName.toLowerCase() === roleKey) ||
-        normalized[i] ||
-        normalized[0];
+      const match = matched[i];
       const email = String(match?.email || '').trim();
       const rid = String(signer.recipientId || '').trim();
       if (!rid) continue;
@@ -942,26 +1040,35 @@ export class DocusignService {
         continue;
       }
 
-      const current = String(signer.email || '').trim().toLowerCase();
-      if (current === email.toLowerCase()) continue;
+      const nextName = match?.name || email.split('@')[0];
+      const currentEmail = String(signer.email || '').trim().toLowerCase();
+      const currentName = String(signer.name || '').trim();
+      if (
+        currentEmail === email.toLowerCase() &&
+        (!nextName || currentName === nextName)
+      ) {
+        continue;
+      }
 
-      await client.put(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${rid}`,
-        {
-          recipientId: rid,
-          email,
-          name: match.name || email.split('@')[0],
-          roleName: signer.roleName,
-          routingOrder: signer.routingOrder || String(i + 1),
-        },
-      );
-      updated++;
-      console.log(
-        `[DocuSign] signer ${signer.roleName} on ${envelopeId} → ${email}`,
-      );
+      bulkUpdates.push({
+        recipientId: rid,
+        email,
+        name: nextName,
+        roleName: signer.roleName,
+        routingOrder: signer.routingOrder || String(i + 1),
+      });
     }
 
-    return { updated, missingRoles };
+    if (bulkUpdates.length) {
+      await this.updateEnvelopeSignersBulk(client, accountId, envelopeId, bulkUpdates);
+      for (const u of bulkUpdates) {
+        console.log(
+          `[DocuSign] signer ${u.roleName} on ${envelopeId} → ${u.email}`,
+        );
+      }
+    }
+
+    return { updated: bulkUpdates.length, missingRoles };
   }
 
   /**
@@ -1000,8 +1107,7 @@ export class DocusignService {
       const current = String(primary.email || '').trim().toLowerCase();
       if (current === email.toLowerCase()) return;
 
-      await client.put(
-        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${rid}`,
+      await this.updateEnvelopeSignersBulk(client, accountId, envelopeId, [
         {
           recipientId: rid,
           email,
@@ -1011,7 +1117,7 @@ export class DocusignService {
           roleName: primary.roleName,
           routingOrder: primary.routingOrder || '1',
         },
-      );
+      ]);
       console.log(
         `[DocuSign] primary signer on ${envelopeId} set to ${email} (was ${current || 'empty'})`,
       );
@@ -1092,14 +1198,7 @@ export class DocusignService {
     }
 
     const primaryEmail = String(signerEmail || '').trim();
-    if (primaryEmail && rolesToApply.length) {
-      const first = rolesToApply[0] as SignerRoleInput;
-      rolesToApply[0] = {
-        ...first,
-        signerEmail: primaryEmail,
-        signerName: String(signerName || first.signerName || '').trim() || undefined,
-      };
-    } else if (primaryEmail && !rolesToApply.length) {
+    if (primaryEmail && !rolesToApply.length) {
       rolesToApply = [
         {
           signerEmail: primaryEmail,
@@ -1218,10 +1317,10 @@ export class DocusignService {
         crmRole &&
         templateRoleNames.some((n) => n.toLowerCase() === crmRole.toLowerCase());
       const roleName =
-        (crmMatchesTemplate ? crmRole : '') ||
         templateRoleAtIdx ||
-        templateRoleNames[0] ||
+        (crmMatchesTemplate ? crmRole : '') ||
         crmRole ||
+        templateRoleNames[0] ||
         DOCUSIGN_DEFAULT_ROLE_NAME;
 
       return {
@@ -1694,13 +1793,18 @@ export class DocusignService {
     envelopeId: string,
     returnUrl: string,
   ): Promise<string> {
-    const res = await client.post(
-      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/views/sender`,
-      { returnUrl },
-    );
-    const url = res.data?.url;
-    if (!url) throw new BadRequestException('DocuSign did not return sender view URL');
-    return url;
+    const normalizedReturnUrl = this.normalizeSenderReturnUrl(returnUrl);
+    try {
+      const res = await client.post(
+        `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/views/sender`,
+        { returnUrl: normalizedReturnUrl },
+      );
+      const url = res.data?.url;
+      if (!url) throw new BadRequestException('DocuSign did not return sender view URL');
+      return url;
+    } catch (err) {
+      throw new BadRequestException(formatDocusignApiErrorMessage(err));
+    }
   }
 
   private async finalizeEnvelopeFlow(
@@ -1809,10 +1913,9 @@ export class DocusignService {
       }
     }
 
-    const returnUrl =
-      options.redirectUrl ||
-      process.env.DOCUSIGN_SENDER_RETURN_URL ||
-      'https://www.docusign.com';
+    const returnUrl = this.normalizeSenderReturnUrl(
+      options.redirectUrl || DOCUSIGN_SENDER_RETURN_URL,
+    );
 
     let sendUrl: string | null = null;
     if (!autoSend) {

@@ -30,9 +30,21 @@ export const DOCUSIGN_IMPERSONATED_USER_ID =
 /** RSA private key PEM (use \\n for newlines in .env) */
 export const DOCUSIGN_RSA_PRIVATE_KEY = process.env.DOCUSIGN_RSA_PRIVATE_KEY || '';
 
-/** Optional — skip userinfo lookup when both are set */
+/** Optional hint — must be API account GUID (not numeric account number) */
 export const DOCUSIGN_ACCOUNT_ID = process.env.DOCUSIGN_ACCOUNT_ID || '';
 export const DOCUSIGN_BASE_URI = process.env.DOCUSIGN_BASE_URI || '';
+
+/** Fallback return URL when frontend sends localhost/http (DocuSign sender view). */
+export const DOCUSIGN_SENDER_RETURN_URL =
+  process.env.DOCUSIGN_SENDER_RETURN_URL || 'https://www.docusign.com';
+
+const DOCUSIGN_ACCOUNT_GUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** DocuSign REST paths require the API account GUID, not the numeric account number. */
+export function isDocusignAccountIdGuid(accountId: string): boolean {
+  return DOCUSIGN_ACCOUNT_GUID_RE.test(String(accountId || '').trim());
+}
 
 /**
  * Auth mode: `jwt` (server, no user connect) | `oauth` (per-user connect).
@@ -84,10 +96,53 @@ export function getDocusignOAuthUrls() {
 export function normalizeDocusignRestBaseUri(baseUri: string): string {
   let uri = String(baseUri || '').trim().replace(/\/+$/, '');
   if (!uri) return uri;
+  // Axios paths already include /v2.1/... — baseURL must end at /restapi only.
+  uri = uri.replace(/\/v2\.1\/?$/i, '');
   if (!uri.endsWith('/restapi')) {
     uri = `${uri}/restapi`;
   }
   return uri;
+}
+
+export function buildDocusignApiUrl(baseUri: string, path: string): string {
+  const base = normalizeDocusignRestBaseUri(baseUri);
+  const rel = String(path || '').trim().replace(/^\/+/, '');
+  return rel ? `${base}/${rel}` : base;
+}
+
+/** Parse DocuSign REST error body instead of bare axios "Request failed with status code 400". */
+export function formatDocusignApiErrorMessage(err: unknown): string {
+  const ax = err as {
+    response?: { data?: unknown; status?: number };
+    message?: string;
+  };
+  const data = ax?.response?.data;
+  if (data && typeof data === 'object') {
+    const o = data as { errorCode?: string; message?: string };
+    if (o.message) {
+      return o.errorCode
+        ? `DocuSign (${o.errorCode}): ${o.message}`
+        : `DocuSign: ${o.message}`;
+    }
+  }
+  const msg = String(ax?.message || err || 'Unknown DocuSign error');
+  if (/^Request failed with status code \d+$/i.test(msg) && ax?.response?.status) {
+    return `DocuSign API request failed (HTTP ${ax.response.status})`;
+  }
+  return msg;
+}
+
+export function formatDocusignRouteError(err: unknown): {
+  status: number;
+  message: string;
+} {
+  const e = err as { status?: number; message?: string };
+  const status =
+    typeof e?.status === 'number' && e.status >= 400 && e.status < 600
+      ? e.status
+      : 500;
+  const message = formatDocusignApiErrorMessage(err);
+  return { status, message };
 }
 
 export function resolveDocusignAuthMode(): 'jwt' | 'oauth' {
