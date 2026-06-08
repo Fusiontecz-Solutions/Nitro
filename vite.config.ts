@@ -32,7 +32,7 @@ export default defineConfig({
     sourcemap: false,
   },
   server: {
-    port: 2000,
+    port: 8000,
   },
   resolve: {
     alias: {
