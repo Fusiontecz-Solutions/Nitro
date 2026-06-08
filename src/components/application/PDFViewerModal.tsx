@@ -122,16 +122,17 @@ import {
     getTemplateRoleNameFromRow,
     buildBoldSignRolesFromTemplateRecipients,
     buildDocuSignRolesFromEditorRows,
+    buildSuggestedContractSignerRows,
     contractSignerOverridesFingerprint,
     getContractSignerValidationMessage,
-    filterTemplateRolesToPrimarySigner,
     mergeContractPrefillWithSignerOverrides,
     parseBoldSignTemplateRolesFromRecipientsPayload,
     parseContractSignerOverridesFromPrefill,
+    suggestedRowsToSummaryTemplateRoles,
     type ContractSignerOverrideRow,
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
-import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
+import { axiosDelete, axiosGet, axiosPatch, axiosPost } from "@/redux/axios";
 
 const DOCUSIGN_PRIMARY_BTN_CLASS =
     "h-9 shrink-0 cursor-pointer border-0 bg-[#276D9C] px-6 text-white shadow-sm hover:bg-[#276D9C]/90 focus-visible:ring-[#276D9C]/40";
@@ -534,6 +535,21 @@ function canReviewAndSendToDocuSign(
     return true;
 }
 
+/** DocuSign envelope id only when the contract is still an editable draft. */
+function resolveDraftEnvelopeIdForSync(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt: Date | null,
+    sessionEnvelopeId: string | null,
+): string | null {
+    if (isContractAlreadySent(contract, sessionSentAt)) return null;
+    const doc = pickContractEnvelopeDocument(contract);
+    if (envelopeDocStatusIsTerminal(doc)) return null;
+    const docStatus = String(doc?.status ?? "").trim().toLowerCase();
+    if (docStatus && DOCUSIGN_DOC_SENT_STATUSES.has(docStatus)) return null;
+    const id = String(sessionEnvelopeId || doc?.envelopeId || "").trim();
+    return id || null;
+}
+
 /** Cache bust suffix — only draft / sent / completed (ignore viewed, delivered, etc.). */
 function getDocuSignPdfCacheSuffix(
     contract: Record<string, unknown> | null | undefined,
@@ -756,18 +772,24 @@ const PDFViewerModal = ({
     const [resolvedContract, setResolvedContract] = useState<Record<string, unknown> | null>(null);
     /** After the first contract meta fetch for this dialog open, prefer DB overrides over legacy application note. */
     const [contractPrefillLoaded, setContractPrefillLoaded] = useState(false);
+    const sessionEnvelopeHydratedRef = useRef(false);
 
     useEffect(() => {
         if (!isOpen) {
             setSessionEnvelopeId(null);
+            sessionEnvelopeHydratedRef.current = false;
             return;
         }
-        const fromContract = String(
-            (resolvedContract as { application?: { document?: { envelopeId?: string } } } | null)
-                ?.application?.document?.envelopeId ?? "",
-        ).trim();
-        if (fromContract) setSessionEnvelopeId(fromContract);
-    }, [isOpen, resolvedContract]);
+        if (sessionEnvelopeHydratedRef.current) return;
+        if (!contractPrefillLoaded && !resolvedContract) return;
+        sessionEnvelopeHydratedRef.current = true;
+        const draftEnvelopeId = resolveDraftEnvelopeIdForSync(
+            resolvedContract,
+            sentAt,
+            null,
+        );
+        if (draftEnvelopeId) setSessionEnvelopeId(draftEnvelopeId);
+    }, [isOpen, resolvedContract, contractPrefillLoaded, sentAt]);
 
     type RequiredDocumentKey =
         | "voidedCheck"
@@ -993,6 +1015,22 @@ const PDFViewerModal = ({
     );
 
     /** DocuSign/BoldSign template roles for Summary (top-level `roles`, not `raw.roles`). */
+    const suggestedContractSignerRows = useMemo(
+        () =>
+            buildSuggestedContractSignerRows({
+                clientName: getApplicationPrimaryRecipientName(applicationData),
+                clientEmail: primaryClientRecipientEmail,
+                owners: ownerEntries,
+                guarantors: guarantorEntries,
+            }),
+        [
+            applicationData,
+            primaryClientRecipientEmail,
+            ownerEntries,
+            guarantorEntries,
+        ],
+    );
+
     const summaryTemplateRoles = useMemo(() => {
         if (contractSignerOverrides?.length) {
             return contractSignerOverrides.map((r, idx) => ({
@@ -1002,10 +1040,11 @@ const PDFViewerModal = ({
                 roleIndex: idx + 1,
             }));
         }
-        const parsed = filterTemplateRolesToPrimarySigner(
-            parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients),
-        );
-        if (parsed.length > 0) return parsed;
+        const allTemplateRoles = parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients);
+        if (allTemplateRoles.length > 0) return allTemplateRoles;
+        if (suggestedContractSignerRows.length > 1) {
+            return suggestedRowsToSummaryTemplateRoles(suggestedContractSignerRows);
+        }
         const signerEmail = docuSignSignerEmail.email.trim();
         if (!signerEmail) return [];
         return [
@@ -1016,7 +1055,12 @@ const PDFViewerModal = ({
                 roleIndex: 1,
             },
         ];
-    }, [contractSignerOverrides, templateRecipients, docuSignSignerEmail.email]);
+    }, [
+        contractSignerOverrides,
+        suggestedContractSignerRows,
+        templateRecipients,
+        docuSignSignerEmail.email,
+    ]);
 
     const hasSavedSignerOverrides = Boolean(contractSignerOverrides?.length);
 
@@ -1463,16 +1507,20 @@ const PDFViewerModal = ({
     const contractSignersValidationError = useMemo(() => {
         const roles = contractSignerOverrides?.length
             ? buildDocuSignRolesFromEditorRows(contractSignerOverrides)
-            : buildBoldSignRolesFromTemplateRecipients(
-                  templateRoleRowsForSigner,
-                  String(docuSignSignerEmail.email || "").trim(),
-                  getApplicationPrimaryRecipientName(applicationData),
-              );
+            : suggestedContractSignerRows.length > 1
+              ? buildDocuSignRolesFromEditorRows(suggestedContractSignerRows)
+              : buildBoldSignRolesFromTemplateRecipients(
+                    templateRoleRowsForSigner,
+                    String(docuSignSignerEmail.email || "").trim(),
+                    getApplicationPrimaryRecipientName(applicationData),
+                    { singleSignerOnly: false },
+                );
         return getContractSignerValidationMessage(roles, contractSignerOverrides);
     }, [
         applicationData,
         contractSignerOverrides,
         docuSignSignerEmail.email,
+        suggestedContractSignerRows,
         templateRoleRowsForSigner,
     ]);
 
@@ -1524,6 +1572,56 @@ const PDFViewerModal = ({
         draftPreparedPrefillFingerprintRef.current = null;
         draftPreparedSignerRolesRef.current = null;
     }, []);
+
+    const openRecipientEditorFromSummary = useCallback(() => {
+        const existing = summaryTemplateRoles;
+        if (existing.length > 0) {
+            setRecipientEditorRows(
+                existing.map((roleRow, idx) => {
+                    const row = roleRow as Record<string, unknown>;
+                    const role = getTemplateRoleLabel(row);
+                    const email = resolveSignerEmailForSummary(
+                        role,
+                        getTemplateRoleEmailFromRow(row),
+                        docuSignSignerEmail.email,
+                        hasSavedSignerOverrides,
+                    );
+                    return {
+                        id: String(idx + 1),
+                        role: role || `Role-${idx + 1}`,
+                        name: getTemplateRoleNameFromRow(row),
+                        email,
+                    };
+                }),
+            );
+        } else if (suggestedContractSignerRows.length) {
+            setRecipientEditorRows(
+                suggestedContractSignerRows.map((row, idx) => ({
+                    id: String(idx + 1),
+                    role: row.role,
+                    name: row.name,
+                    email: row.email,
+                })),
+            );
+        } else {
+            setRecipientEditorRows([
+                {
+                    id: "1",
+                    role: "Client",
+                    name: getApplicationPrimaryRecipientName(applicationData),
+                    email: primaryClientRecipientEmail,
+                },
+            ]);
+        }
+        setShowRecipientEditor(true);
+    }, [
+        applicationData,
+        docuSignSignerEmail.email,
+        hasSavedSignerOverrides,
+        primaryClientRecipientEmail,
+        suggestedContractSignerRows,
+        summaryTemplateRoles,
+    ]);
 
     /** Saved signer overrides changed after a draft was prepared — force a new envelope on next send. */
     useEffect(() => {
@@ -1700,14 +1798,23 @@ const PDFViewerModal = ({
         if (contractSignerOverrides?.length) {
             return buildDocuSignRolesFromEditorRows(contractSignerOverrides);
         }
+        if (suggestedContractSignerRows.length > 1) {
+            return buildDocuSignRolesFromEditorRows(suggestedContractSignerRows);
+        }
         const signerEmail = String(primarySignerEmailRef.current || "").trim();
         const signerName = getApplicationPrimaryRecipientName(applicationData);
         return buildBoldSignRolesFromTemplateRecipients(
             templateRoleRowsForSigner,
             signerEmail,
             signerName,
+            { singleSignerOnly: false },
         );
-    }, [applicationData, contractSignerOverrides, templateRoleRowsForSigner]);
+    }, [
+        applicationData,
+        contractSignerOverrides,
+        suggestedContractSignerRows,
+        templateRoleRowsForSigner,
+    ]);
 
     const fetchDocuSignSenderViewUrl = useCallback(
         async (
@@ -2685,6 +2792,39 @@ const PDFViewerModal = ({
         prefilledPdfCachedForEnvelopeRef.current = null;
         prefilledBoldSignPdfUrlRef.current = null;
     }, []);
+
+    const syncPrefillToDraftEnvelope = useCallback(async () => {
+        const envelopeId = resolveDraftEnvelopeIdForSync(
+            resolvedContract,
+            sentAt,
+            sessionEnvelopeId,
+        );
+        if (!envelopeId) return;
+        const fields = dealReviewFields
+            .map((f) => ({
+                id: f.id,
+                value: String(f.value ?? "").trim(),
+            }))
+            .filter((f) => f.id && f.value);
+        if (!fields.length) return;
+        try {
+            await axiosPatch("/docusign/prefill-fields", {
+                documentId: envelopeId,
+                fields,
+            });
+            invalidateDocuSignPdfCache();
+            void loadPrefilledPdfFromDocuSign(envelopeId, { manageLoading: false });
+        } catch (err) {
+            console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
+        }
+    }, [
+        dealReviewFields,
+        resolvedContract,
+        sentAt,
+        sessionEnvelopeId,
+        invalidateDocuSignPdfCache,
+        loadPrefilledPdfFromDocuSign,
+    ]);
 
     const handleCancelContract = useCallback(async () => {
         const envelopeId = String(linkedEnvelopeId || "").trim();
@@ -5430,11 +5570,23 @@ const PDFViewerModal = ({
                                     <section className="space-y-4">
                                         <div className="space-y-3">
                                             {/* Section Header */}
-                                            <div className="flex items-center justify-between px-1">
+                                            <div className="flex flex-wrap items-center justify-between gap-3 px-1">
                                                 <h3 className="text-sm font-bold text-slate-800 tracking-tight">Contract Signers</h3>
-                                                <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-                                                    {summaryTemplateRoles.length} Total Recipients
-                                                </span>
+                                                <div className="flex flex-wrap items-center gap-3">
+                                                    <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
+                                                        {summaryTemplateRoles.length} Total Recipients
+                                                    </span>
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-8 text-xs border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/5"
+                                                        onClick={openRecipientEditorFromSummary}
+                                                    >
+                                                        <Plus className="mr-1.5 h-3.5 w-3.5" />
+                                                        Add signer
+                                                    </Button>
+                                                </div>
                                             </div>
 
                                             {contractSignersValidationError ? (
@@ -5534,37 +5686,7 @@ const PDFViewerModal = ({
                                                                     onClick={(e) => {
                                                                         e.preventDefault();
                                                                         e.stopPropagation();
-                                                                        const existing = summaryTemplateRoles;
-                                                                        if (existing.length > 0) {
-                                                                            setRecipientEditorRows(
-                                                                                existing.map((roleRow, idx: number) => {
-                                                                                    const row = roleRow as Record<string, unknown>;
-                                                                                    const role = getTemplateRoleLabel(row);
-                                                                                    const email = resolveSignerEmailForSummary(
-                                                                                        role,
-                                                                                        getTemplateRoleEmailFromRow(row),
-                                                                                        docuSignSignerEmail.email,
-                                                                                        hasSavedSignerOverrides,
-                                                                                    );
-                                                                                    return {
-                                                                                        id: String(idx + 1),
-                                                                                        role: role || `Role-${idx + 1}`,
-                                                                                        name: getTemplateRoleNameFromRow(row),
-                                                                                        email,
-                                                                                    };
-                                                                                }),
-                                                                            );
-                                                                        } else {
-                                                                            setRecipientEditorRows(
-                                                                                signerTableRows.map((row, idx) => ({
-                                                                                    id: String(idx + 1),
-                                                                                    role: row.role || `Role-${idx + 1}`,
-                                                                                    name: row.name || "",
-                                                                                    email: row.email || "",
-                                                                                })),
-                                                                            );
-                                                                        }
-                                                                        setShowRecipientEditor(true);
+                                                                        openRecipientEditorFromSummary();
                                                                     }}
                                                                 >
                                                                     <Pencil className="h-3.5 w-3.5" />
@@ -5586,17 +5708,7 @@ const PDFViewerModal = ({
                                                         variant="outline"
                                                         size="sm"
                                                         className="h-8 text-xs border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/5"
-                                                        onClick={() => {
-                                                            setRecipientEditorRows([
-                                                                {
-                                                                    id: "1",
-                                                                    role: "Client",
-                                                                    name: getApplicationPrimaryRecipientName(applicationData),
-                                                                    email: primaryClientRecipientEmail,
-                                                                },
-                                                            ]);
-                                                            setShowRecipientEditor(true);
-                                                        }}
+                                                        onClick={openRecipientEditorFromSummary}
                                                     >
                                                         <Plus className="mr-1.5 h-3.5 w-3.5" />
                                                         Add Recipient
@@ -5802,37 +5914,12 @@ const PDFViewerModal = ({
                                                                 }
                                                                 setSavingContractRecipients(true);
                                                                 try {
-                                                                    const envelopeId = String(
-                                                                        sessionEnvelopeIdRef.current || "",
-                                                                    ).trim();
                                                                     const appId =
                                                                         applicationIdForLookupRef.current;
-                                                                    if (envelopeId) {
-                                                                        await axiosPost(
-                                                                            "/docusign/sync-envelope-cc",
-                                                                            {
-                                                                                envelopeId,
-                                                                                roles,
-                                                                                ccEmails: ccEmailsRef.current,
-                                                                                ...(appId
-                                                                                    ? { applicationId: appId }
-                                                                                    : {}),
-                                                                                signerEmail:
-                                                                                    roles[0]?.signerEmail,
-                                                                                signerName:
-                                                                                    roles[0]?.signerName,
-                                                                            },
-                                                                        );
-                                                                    }
                                                                     const fp =
                                                                         contractSignerOverridesFingerprint(
                                                                             rows,
                                                                         );
-                                                                    setContractSignerOverrides(rows);
-                                                                    draftPreparedSignerRolesRef.current = fp;
-                                                                    if (!envelopeId) {
-                                                                        invalidateDocuSignDraftSession();
-                                                                    }
                                                                     const cid = effectiveContractId;
                                                                     if (cid != null) {
                                                                         const prefillBase =
@@ -5876,11 +5963,53 @@ const PDFViewerModal = ({
                                                                                 : (payload as Record<string, unknown>),
                                                                         );
                                                                     }
-                                                                    toast.success(
-                                                                        envelopeId
-                                                                            ? "Signers updated on this DocuSign draft."
-                                                                            : "Signers saved. They will be used when you Review & send.",
-                                                                    );
+                                                                    setContractSignerOverrides(rows);
+                                                                    draftPreparedSignerRolesRef.current = fp;
+
+                                                                    const draftEnvelopeId =
+                                                                        resolveDraftEnvelopeIdForSync(
+                                                                            resolvedContract,
+                                                                            sentAt,
+                                                                            sessionEnvelopeIdRef.current,
+                                                                        );
+                                                                    if (draftEnvelopeId) {
+                                                                        try {
+                                                                            await axiosPost(
+                                                                                "/docusign/sync-envelope-cc",
+                                                                                {
+                                                                                    envelopeId: draftEnvelopeId,
+                                                                                    roles,
+                                                                                    ccEmails: ccEmailsRef.current,
+                                                                                    ...(appId
+                                                                                        ? { applicationId: appId }
+                                                                                        : {}),
+                                                                                    signerEmail:
+                                                                                        roles[0]?.signerEmail,
+                                                                                    signerName:
+                                                                                        roles[0]?.signerName,
+                                                                                },
+                                                                            );
+                                                                            toast.success(
+                                                                                "Signers updated on this DocuSign draft.",
+                                                                            );
+                                                                        } catch (syncErr: unknown) {
+                                                                            invalidateDocuSignDraftSession();
+                                                                            const syncMsg =
+                                                                                await parseApiErrorMessageFromAxios(
+                                                                                    syncErr,
+                                                                                );
+                                                                            toast.warning(
+                                                                                syncMsg
+                                                                                    ? `Signers saved in CRM. DocuSign draft could not be updated: ${syncMsg}`
+                                                                                    : "Signers saved in CRM. Click Review & send to apply them on a new DocuSign draft.",
+                                                                            );
+                                                                        }
+                                                                    } else {
+                                                                        invalidateDocuSignDraftSession();
+                                                                        toast.success(
+                                                                            "Signers saved. They will be used when you Review & send.",
+                                                                        );
+                                                                    }
                                                                     setShowRecipientEditor(false);
                                                                 } catch (err: unknown) {
                                                                     const msg =
@@ -5916,7 +6045,14 @@ const PDFViewerModal = ({
                                             }
                                             onPersistedPrefillChange={(next) => {
                                                 setContractPrefillFromDb(next ?? null);
-                                                invalidateDocuSignDraftSession();
+                                                draftPreparedPrefillFingerprintRef.current =
+                                                    docuSignPrefillDraftFingerprint({
+                                                        contractPrefillOverrides: next ?? null,
+                                                        documentTemplatePrefillByMappingId,
+                                                    });
+                                                queueMicrotask(() => {
+                                                    void syncPrefillToDraftEnvelope();
+                                                });
                                             }}
                                             onPersistedPrefillFullChange={(full) => {
                                                 setDocumentTemplatePrefillByMappingId(
@@ -6682,7 +6818,14 @@ const PDFViewerModal = ({
                               }
                             : prev,
                     );
-                    invalidateDocuSignDraftSession();
+                    draftPreparedPrefillFingerprintRef.current =
+                        docuSignPrefillDraftFingerprint({
+                            contractPrefillOverrides: main,
+                            documentTemplatePrefillByMappingId,
+                        });
+                    queueMicrotask(() => {
+                        void syncPrefillToDraftEnvelope();
+                    });
                 }}
                 onPersistedPrefillFullChange={(full) => {
                     setDocumentTemplatePrefillByMappingId(parseDocumentTemplatePrefillByMappingId(full));
@@ -6698,7 +6841,15 @@ const PDFViewerModal = ({
                               }
                             : prev,
                     );
-                    invalidateDocuSignDraftSession();
+                    draftPreparedPrefillFingerprintRef.current =
+                        docuSignPrefillDraftFingerprint({
+                            contractPrefillOverrides: main,
+                            documentTemplatePrefillByMappingId:
+                                parseDocumentTemplatePrefillByMappingId(full),
+                        });
+                    queueMicrotask(() => {
+                        void syncPrefillToDraftEnvelope();
+                    });
                 }}
                 contractRecords={contractPrefillRecords}
                 agreementDatePlaceholder={formatDate(new Date())}

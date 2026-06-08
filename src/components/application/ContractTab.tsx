@@ -88,8 +88,9 @@ import {
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
     buildBoldSignRolesFromTemplateRecipients,
-    filterTemplateRolesToPrimarySigner,
+    buildDocuSignRolesFromEditorRows,
     parseBoldSignTemplateRolesFromRecipientsPayload,
+    parseContractSignerOverridesFromPrefill,
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
 import {
@@ -1124,24 +1125,28 @@ export default function ContractTab({
                 }
             }
 
-            let templateRoles = filterTemplateRolesToPrimarySigner(
-                parseBoldSignTemplateRolesFromRecipientsPayload(recipientsPayload),
-            );
+            let templateRoles = parseBoldSignTemplateRolesFromRecipientsPayload(recipientsPayload);
             if (templateRoles.length === 0) {
                 const cached =
                     store.getState().boldSign?.templateRecipients ?? null;
-                templateRoles = filterTemplateRolesToPrimarySigner(
-                    parseBoldSignTemplateRolesFromRecipientsPayload(cached),
-                );
+                templateRoles = parseBoldSignTemplateRolesFromRecipientsPayload(cached);
             }
+
+            const savedSignerOverrides = parseContractSignerOverridesFromPrefill(
+                (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+            );
 
             const roles = sendPayload.signerRoles?.length
                 ? sendPayload.signerRoles
-                : buildBoldSignRolesFromTemplateRecipients(
-                      templateRoles,
-                      applicationSignerEmail,
-                      applicationSignerName,
-                  );
+                : savedSignerOverrides?.length
+                  ? buildDocuSignRolesFromEditorRows(savedSignerOverrides)
+                  : buildBoldSignRolesFromTemplateRecipients(
+                        templateRoles,
+                        applicationSignerEmail,
+                        applicationSignerName,
+                        { singleSignerOnly: false },
+                    );
 
             if (roles.length === 0) {
                 failDocuSignEnvelope(

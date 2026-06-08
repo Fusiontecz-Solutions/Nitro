@@ -118,6 +118,77 @@ export type ContractSignerOverrideRow = {
 /** Persisted on `Contract.contractPrefillOverrides` (excluded from main prefill form). */
 export const CONTRACT_SIGNER_OVERRIDES_KEY = "contractSignerOverrides";
 
+type SuggestedSignerParty = {
+    ownerFirstName?: string;
+    ownerLastName?: string;
+    ownerEmail?: string;
+    guarantorFirstName?: string;
+    guarantorLastName?: string;
+    guarantorEmail?: string;
+};
+
+/** Suggested CRM signer rows (client + owners/guarantors with emails). */
+export function buildSuggestedContractSignerRows(input: {
+    clientName?: string;
+    clientEmail?: string;
+    owners?: SuggestedSignerParty[];
+    guarantors?: SuggestedSignerParty[];
+}): ContractSignerOverrideRow[] {
+    const rows: ContractSignerOverrideRow[] = [];
+    const clientEmail = String(input.clientEmail || "").trim();
+    const clientName = String(input.clientName || "").trim();
+    if (clientEmail) {
+        rows.push({
+            role: "Client",
+            name: clientName || clientEmail.split("@")[0],
+            email: clientEmail,
+        });
+    }
+
+    let ownerIndex = 0;
+    for (const o of input.owners || []) {
+        const email = String(o.ownerEmail || "").trim();
+        if (!email) continue;
+        ownerIndex += 1;
+        const name =
+            `${String(o.ownerFirstName || "").trim()} ${String(o.ownerLastName || "").trim()}`.trim() ||
+            email.split("@")[0];
+        rows.push({
+            role: ownerIndex === 1 ? "Owner" : `Owner ${ownerIndex}`,
+            name,
+            email,
+        });
+    }
+
+    let guarantorIndex = 0;
+    for (const g of input.guarantors || []) {
+        const email = String(g.guarantorEmail || "").trim();
+        if (!email) continue;
+        guarantorIndex += 1;
+        const name =
+            `${String(g.guarantorFirstName || "").trim()} ${String(g.guarantorLastName || "").trim()}`.trim() ||
+            email.split("@")[0];
+        rows.push({
+            role: guarantorIndex === 1 ? "Guarantor" : `Guarantor ${guarantorIndex}`,
+            name,
+            email,
+        });
+    }
+
+    return rows;
+}
+
+export function suggestedRowsToSummaryTemplateRoles(
+    rows: ContractSignerOverrideRow[],
+): Array<Record<string, unknown>> {
+    return rows.map((r, idx) => ({
+        roleName: r.role,
+        signerEmail: r.email,
+        signerName: r.name,
+        roleIndex: idx + 1,
+    }));
+}
+
 export function parseContractSignerOverridesFromPrefill(
     raw: unknown,
 ): ContractSignerOverrideRow[] | null {
