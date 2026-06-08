@@ -52,4 +52,11 @@ export type PaymentDashboardData = {
     weekly: MoneyFlowPoint[];
     yearly: MoneyFlowPoint[];
   };
+  creditDebitTrend?: {
+    monthly: MoneyFlowPoint[];
+    weekly: MoneyFlowPoint[];
+    monthlyInYear: MoneyFlowPoint[];
+    yearly: MoneyFlowPoint[];
+  };
+  chartYearOptions?: number[];
 };

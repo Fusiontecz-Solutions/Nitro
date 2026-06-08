@@ -1,0 +1,202 @@
+/**
+ * Stage-aware role access for applications.
+ *
+ * Workflow:
+ *   Agent  →  Underwriter  →  Final Underwriter  →  (Post-final / Funded / etc.)
+ *
+ * Rule:
+ *   When an application moves to the next stage, the previous-stage role can
+ *   still SEE the deal in their list/detail but can only PREVIEW it (no edits
+ *   or workflow actions). Operations / Admin / Super Admin / Accountant are
+ *   never locked out by stage.
+ */
+
+import { normalizeRoleKey } from "./sessionRole";
+
+export type ApplicationStageMode = "edit" | "preview";
+
+/** Coarse pipeline buckets for queue/state strings. `null` = stage unknown / new draft. */
+export type ApplicationStageKey =
+  | "AGENT"
+  | "UNDERWRITER"
+  | "FINAL_UNDERWRITER"
+  | "POST_FINAL";
+
+export interface ApplicationStageAccess {
+  mode: ApplicationStageMode;
+  canEdit: boolean;
+  isPreview: boolean;
+  /** Short banner copy when the deal is preview-only for this role. */
+  reason: string | null;
+  /** Resolved stage of the application (best effort). */
+  stageKey: ApplicationStageKey | null;
+  /** Friendly label for the stage the deal has moved to. */
+  nextStageLabel: string | null;
+  /** Normalized role key used in the decision. */
+  roleKey: string;
+}
+
+interface StageAccessOptions {
+  role: string | null | undefined;
+  currentQueue: string | null | undefined;
+  currentState?: string | null | undefined;
+  /** Optional: `?viewOnly=1` browse links always force preview, regardless of stage. */
+  viewOnlyBrowse?: boolean;
+}
+
+const normalizeToken = (value: unknown): string =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+
+const AGENT_STAGE_TOKENS = new Set([
+  "",
+  "new",
+  "agent",
+  "onhold",
+  "review",
+  "draft",
+]);
+
+const UNDERWRITER_STAGE_TOKENS = new Set([
+  "underwriter",
+  "underwriting",
+]);
+
+const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
+  "finalunderwriter",
+  "finalreview",
+]);
+
+const POST_FINAL_STAGE_TOKENS = new Set([
+  "approved",
+  "declined",
+  "rejected",
+  "contracted",
+  "contractout",
+  "contractsout",
+  "contractsigned",
+  "signedcontracts",
+  "final",
+  "fundingcall",
+  "disbursment",
+  "disbursement",
+  "funded",
+  "completed",
+  "cancelled",
+]);
+
+const STAGE_FRIENDLY_LABEL: Record<ApplicationStageKey, string> = {
+  AGENT: "Agent",
+  UNDERWRITER: "Underwriter",
+  FINAL_UNDERWRITER: "Final Underwriter",
+  POST_FINAL: "Operations",
+};
+
+/** Resolve which pipeline bucket an application is in (for timeline + preview rules). */
+export function getApplicationPipelineStageKey(
+  currentQueue: string | null | undefined,
+  currentState?: string | null | undefined,
+): ApplicationStageKey | null {
+  const queueToken = normalizeToken(currentQueue);
+  const stateToken = normalizeToken(currentState);
+
+  // Queue drives stage. FU keeps queue "Final Underwriter" with state "Approved" after
+  // sending approval mail (and while resending after ISO comments) — still FU-owned.
+  if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return "POST_FINAL";
+  if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "FINAL_UNDERWRITER";
+  if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "UNDERWRITER";
+  if (AGENT_STAGE_TOKENS.has(queueToken)) return "AGENT";
+
+  // Some imports use `currentState` for the deal stage (e.g. "FINAL").
+  if (POST_FINAL_STAGE_TOKENS.has(stateToken)) return "POST_FINAL";
+
+  return null;
+}
+
+const STAGE_ORDER: Record<ApplicationStageKey, number> = {
+  AGENT: 0,
+  UNDERWRITER: 1,
+  FINAL_UNDERWRITER: 2,
+  POST_FINAL: 3,
+};
+
+const ROLE_OWNED_STAGE: Record<string, ApplicationStageKey> = {
+  AGENT: "AGENT",
+  UNDERWRITER: "UNDERWRITER",
+  FINAL_UNDERWRITER: "FINAL_UNDERWRITER",
+};
+
+/**
+ * @param options Application stage + the viewer's role.
+ * @returns `mode: 'preview'` when the deal has moved past the viewer's owning
+ * stage (workflow roles only). All non-workflow roles return `mode: 'edit'`.
+ */
+export function getApplicationStageAccess(
+  options: StageAccessOptions,
+): ApplicationStageAccess {
+  const roleKey = normalizeRoleKey(options.role ?? "");
+  const stageKey = getApplicationPipelineStageKey(
+    options.currentQueue,
+    options.currentState,
+  );
+
+  const baseEdit: ApplicationStageAccess = {
+    mode: "edit",
+    canEdit: true,
+    isPreview: false,
+    reason: null,
+    stageKey,
+    nextStageLabel: null,
+    roleKey,
+  };
+
+  if (options.viewOnlyBrowse) {
+    return {
+      ...baseEdit,
+      mode: "preview",
+      canEdit: false,
+      isPreview: true,
+      reason: "Read-only browse view — actions and edits are disabled.",
+    };
+  }
+
+  const ownedStage = ROLE_OWNED_STAGE[roleKey];
+  if (!ownedStage) return baseEdit;
+  if (!stageKey) return baseEdit;
+
+  if (STAGE_ORDER[stageKey] <= STAGE_ORDER[ownedStage]) {
+    return baseEdit;
+  }
+
+  const nextLabel = STAGE_FRIENDLY_LABEL[stageKey];
+  return {
+    ...baseEdit,
+    mode: "preview",
+    canEdit: false,
+    isPreview: true,
+    nextStageLabel: nextLabel,
+    reason: `This deal has moved to ${nextLabel} — preview only for your role.`,
+  };
+}
+
+/** Convenience helper for an application-like object (queue/state on top-level fields). */
+export function getStageAccessForApplication(
+  application: {
+    currentQueue?: string | null;
+    currentState?: string | null;
+    queue?: string | null;
+    state?: string | null;
+  } | null
+    | undefined,
+  role: string | null | undefined,
+  options?: { viewOnlyBrowse?: boolean },
+): ApplicationStageAccess {
+  return getApplicationStageAccess({
+    role,
+    currentQueue: application?.currentQueue ?? application?.queue,
+    currentState: application?.currentState ?? application?.state,
+    viewOnlyBrowse: options?.viewOnlyBrowse,
+  });
+}

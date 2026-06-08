@@ -37,6 +37,7 @@ import ComplianceChecksQuestionnaire, {
     type ComplianceChecksProgress,
 } from "./ComplianceChecksQuestionnaire";
 import { getComplianceChecks } from "@/redux/actions/complianceCheckActions";
+import AgentDealIsoTag from "./AgentDealIsoTag";
 
 const ORIGINATION_FEE_FIXED = "10";
 
@@ -784,10 +785,21 @@ const ApprovedApplicationModal = ({
                     <div
                         className={
                             isFinalUnderwriter
-                                ? "space-y-0"
+                                ? "space-y-4"
                                 : "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start"
                         }
                     >
+                    {isFinalUnderwriter ? (
+                        <AgentDealIsoTag
+                            applicationId={
+                                complianceApplicationId ??
+                                (applicationId != null ? String(applicationId) : null)
+                            }
+                            alwaysEditable={false}
+                            variant="compact"
+                        />
+                    ) : null}
+
                     {/* Requested & Approval Loan Details — left column */}
                     <div className={loanDetailsPanelClass}>
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1214,10 +1226,23 @@ const ApprovedApplicationModal = ({
                                         });
                                     } catch (emailError) {
                                         console.error("Failed to send approval email:", emailError);
+                                        const backendMessage =
+                                            typeof emailError === "string"
+                                                ? emailError
+                                                : emailError &&
+                                                    typeof emailError === "object" &&
+                                                    "message" in emailError
+                                                  ? String(
+                                                        (emailError as { message?: string })
+                                                            .message,
+                                                    )
+                                                  : null;
                                         toast.update(toastId, {
-                                            render: resendApprovalEmail
-                                                ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
-                                                : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).",
+                                            render:
+                                                backendMessage ||
+                                                (resendApprovalEmail
+                                                    ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
+                                                    : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again)."),
                                             type: "warning",
                                             isLoading: false,
                                             autoClose: 5000,

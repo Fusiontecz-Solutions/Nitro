@@ -27,6 +27,9 @@ export default defineConfig({
     include: ['stream-browserify', 'buffer', 'events'],
     exclude: ['lucide-react'],
   },
+  server: {
+    port: 5173,
+  },
   build: {
     target: 'es2022',
     sourcemap: false,
