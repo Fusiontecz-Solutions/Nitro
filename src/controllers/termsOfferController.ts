@@ -1,6 +1,7 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import { resolveApplicationAttributedUserId } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 
@@ -185,7 +186,7 @@ class TermsOfferController {
         ? paymentDays.filter((day: string) => validPaymentDays.includes(day))
         : [];
 
-      const createdBy = (req as any).user?.id;
+      const createdById = await resolveApplicationAttributedUserId(req, applicationExists);
 
       const newTermsOffer = await prisma.termsOffer.create({
         data: {
@@ -205,7 +206,7 @@ class TermsOfferController {
           paymentSchedule,
           paymentDays: paymentDaysArray,
           applicationId: applicationExists.id,
-          createdById: createdBy || null,
+          createdById: createdById ?? null,
         },
       });
 

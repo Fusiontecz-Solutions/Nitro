@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import prisma from '../config/prismaClient';
+import { resolveAuditLogUserId } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from './applicationService';
 
 export type CommunicationChannel = 'EMAIL' | 'TEMPLATE' | 'DOCUMENT';
@@ -18,6 +19,7 @@ export interface CreateOutboundCommunicationInput {
   status?: string;
   metadata?: Record<string, unknown>;
   user?: AuthenticatedUser | null;
+  req?: Request | null;
 }
 
 export function inferRecipientTypeFromCategory(category: string): CommunicationRecipientType {
@@ -48,7 +50,13 @@ export async function createOutboundCommunication(input: CreateOutboundCommunica
     status = 'sent',
     metadata,
     user,
+    req,
   } = input;
+
+  const createdById = await resolveAuditLogUserId(req, {
+    user,
+    applicationId: applicationId ?? undefined,
+  });
 
   return prisma.outboundCommunication.create({
     data: {
@@ -63,7 +71,7 @@ export async function createOutboundCommunication(input: CreateOutboundCommunica
       contractId: contractId ?? null,
       status,
       metadata: metadata ? (metadata as object) : undefined,
-      createdById: user?.id ?? null,
+      createdById,
     },
   });
 }

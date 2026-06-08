@@ -8,6 +8,12 @@ import {
 } from '@prisma/client';
 import * as XLSX from 'xlsx';
 import prisma from '../config/prismaClient';
+import { resolveOptionalTenantUserId } from '../middleware/authMiddleware';
+import {
+  aggregateDebitPaymentSummary,
+  countDealsWithDebitPayments,
+  type DebitSummaryDateQuery,
+} from '../services/collectionPaymentDebitSummary';
 import {
   applyStrictTransactionFiltering,
   computeDealCollectionsView,
@@ -37,7 +43,6 @@ import {
   parseTransactionStatusValue,
 } from '../utils/achReturnCodeFromDescription';
 import { getPreviewSheetDescription } from '../utils/previewSheetDebitCredit';
-import { computeCreditDebitTrend } from '../services/paymentDashboardCreditDebitTrend';
 
 const STATUS_MAP_TO_DB: Record<string, CollectionPaymentStatus | undefined> = {
   paid: CollectionPaymentStatus.PAID,
@@ -837,7 +842,7 @@ function pruneExpiredFailedTxSummaryCache() {
 async function aggregateFailedTransactionsPortfolioSummary(
   cohortApps: FailedTxCohortApp[],
   dateQuery: FailedTxDateQuery,
-  paymentCache?: Map<string, FailedTxPaymentRow[]>,
+  _paymentCache?: Map<string, FailedTxPaymentRow[]>,
 ): Promise<{
   totalAmount: number;
   totalCount: number;
@@ -846,9 +851,21 @@ async function aggregateFailedTransactionsPortfolioSummary(
   totalCountDisplay: string;
   dealCountDisplay: string;
 }> {
-  const cache = paymentCache ?? new Map<string, FailedTxPaymentRow[]>();
-  const bundles = await collectAllFailedTxBundlesParallel(cohortApps, dateQuery, cache);
-  return summarizeFailedTxBundles(bundles);
+  const applicationIds = cohortApps.map((app) => app.id);
+  const debitDateQuery = dateQuery as DebitSummaryDateQuery;
+  const [debitSummary, dealCount] = await Promise.all([
+    aggregateDebitPaymentSummary({ applicationIds, dateQuery: debitDateQuery }),
+    countDealsWithDebitPayments({ applicationIds, dateQuery: debitDateQuery }),
+  ]);
+  const summaryTotal = debitSummary.totalAmount;
+  return {
+    totalAmount: summaryTotal,
+    totalCount: debitSummary.totalCount,
+    dealCount,
+    totalAmountDisplay: formatFailedSummaryMoney(summaryTotal),
+    totalCountDisplay: debitSummary.totalCount.toLocaleString('en-US'),
+    dealCountDisplay: dealCount.toLocaleString('en-US'),
+  };
 }
 
 class CollectionPaymentController {
@@ -1369,7 +1386,7 @@ class CollectionPaymentController {
               ? CollectionPaymentSource.MANUAL
               : CollectionPaymentSource.SYSTEM,
           paymentNumber: (lastPayment?.paymentNumber ?? 0) + 1,
-          createdById: (req as any)?.user?.id ?? null,
+          createdById: await resolveOptionalTenantUserId(req),
         },
       });
 
@@ -1642,7 +1659,7 @@ class CollectionPaymentController {
           queueJobId,
           fileName: file.originalname || safeOriginal,
           filePath: `BUFFER_ONLY:${queueJobId}-${safeOriginal}`,
-          createdById: (req as any)?.user?.id ?? null,
+          createdById: await resolveOptionalTenantUserId(req),
           status: 'PROCESSING',
         },
       });
@@ -2237,32 +2254,7 @@ class CollectionPaymentController {
     }
   }
 
-  /**
-   * Debit vs credit trend for the payment dashboard chart — scoped by view/year/month.
-   * Loads only collection rows in the relevant date window (not the full portfolio).
-   */
-  async creditDebitTrend(req: Request, res: Response) {
-    try {
-      const result = await computeCreditDebitTrend(req.query as Record<string, unknown>);
-      if (!result) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid query: view (monthly|weekly|monthlyInYear|yearly), year, optional month (0-11 or all)',
-        });
-      }
-      return res.status(200).json({
-        success: true,
-        data: {
-          points: result.points,
-          yearOptions: result.yearOptions,
-        },
-      });
-    } catch (error) {
-      console.error('Credit/debit trend error:', error);
-      return res.status(500).json({ success: false, message: 'Internal server error' });
-    }
-  }
-
+  /** KPI cards + portfolio chart only (cached). Use with paginated deals fetch in parallel. */
   async financialOverviewSummary(req: Request, res: Response) {
     try {
       const { buildPaymentFinancialOverviewSummary } = await import(
@@ -2280,23 +2272,74 @@ class CollectionPaymentController {
       );
       return res.status(200).json({ success: true, data });
     } catch (error) {
-      console.error('Financial overview summary error:', error);
+      console.error('Collection payment financial overview summary error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  async financialOverview(req: Request, res: Response) {
+    try {
+      const { buildPaymentFinancialOverview } = await import(
+        '../services/paymentFinancialOverviewService'
+      );
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 10;
+      const search = typeof req.query.search === 'string' ? req.query.search : '';
+      const sortBy = typeof req.query.sortBy === 'string' ? req.query.sortBy : 'createdAt';
+      const sortOrder =
+        req.query.sortOrder === 'asc' || req.query.sortOrder === 'desc'
+          ? req.query.sortOrder
+          : 'desc';
+      const chartYear = Number(req.query.chartYear);
+      const chartMonthRaw = req.query.chartMonth;
+
+      const data = await buildPaymentFinancialOverview({
+        page,
+        limit,
+        search,
+        sortBy,
+        sortOrder,
+        chartYear: Number.isFinite(chartYear) ? chartYear : undefined,
+        chartMonth:
+          chartMonthRaw === 'all'
+            ? 'all'
+            : chartMonthRaw != null && String(chartMonthRaw).trim() !== ''
+              ? Number(chartMonthRaw)
+              : undefined,
+      });
+
+      return res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('Collection payment financial overview error:', error);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }
 
   async dashboard(req: Request, res: Response) {
     try {
-      const { buildPaymentDashboardPortfolioPayload } = await import(
-        '../services/paymentDashboardPortfolioService'
+      const { loadPortfolioDashboardContext, aggregatePaymentPortfolioDashboard } = await import(
+        '../services/paymentPortfolioDashboardService'
       );
-      const data = await buildPaymentDashboardPortfolioPayload();
+      const ctx = await loadPortfolioDashboardContext();
+      const data = await aggregatePaymentPortfolioDashboard(ctx);
       return res.status(200).json({ success: true, data });
     } catch (error) {
       console.error('Collection payment dashboard error:', error);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }
+}
+
+/** Portfolio failed-payment KPI — count + sum of CollectionPayment rows with status = DEBIT. */
+export async function loadPortfolioFailedPaymentSummaryForOverview(): Promise<{
+  totalAmount: number;
+  failedTxnCount: number;
+}> {
+  const summary = await aggregateDebitPaymentSummary();
+  return {
+    totalAmount: summary.totalAmount,
+    failedTxnCount: summary.totalCount,
+  };
 }
 
 const collectionPaymentController = new CollectionPaymentController();

@@ -62,7 +62,10 @@ import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 import { generateNextDealId } from '../utils/generateNextDealId';
-import { resolveTenantUserId } from '../middleware/authMiddleware';
+import {
+    resolveApplicationAttributedUserId,
+    resolveTenantUserId,
+} from '../middleware/authMiddleware';
 import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import {
     createApplicationActivityLog,
@@ -967,6 +970,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: application.id,
                     user: authUserForLog,
+                    req,
                     actionType: 'CREATE_APPLICATION' as ApplicationActivityActionType,
                     actionDescription,
                     previousStatus: null,
@@ -1185,6 +1189,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: updatedApplicationRecord.id,
                     user: authUserForLog,
+                    req,
                     actionType: 'FILE_UPLOADED' as ApplicationActivityActionType,
                     actionDescription:
                         `${roleLabel} ${actorName}`.trim() + ` uploaded ${newFiles.length} file(s) to the application.`,
@@ -2972,6 +2977,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: applicationRecord.id,
                     user: authUserForLog,
+                    req,
                     actionType,
                     actionDescription: description,
                     previousStatus: `${previousQueue} / ${existingApplication.currentState}`,
@@ -2992,7 +2998,11 @@ class ApplicationController {
                 const roleUpper = String(authUserForNotif?.role || '').toUpperCase();
 
                 if (upperQueue === 'UNDERWRITER' && roleUpper === 'AGENT') {
-                    const senderId = String((req as any).user?.id || authUserForNotif?.id || '');
+                    const attributedSenderId = await resolveApplicationAttributedUserId(
+                        req,
+                        applicationRecord,
+                    );
+                    const senderId = attributedSenderId ? String(attributedSenderId) : '';
                     const senderName = String((req as any).user?.name || 'Agent').trim() || 'Agent';
 
                     const clientName =
@@ -3270,6 +3280,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: refreshed.id,
                     user: authUser,
+                    req,
                     actionType: 'UNDERWRITER_CLAIMED',
                     actionDescription: `${actorName} claimed this deal for underwriting.`,
                     previousStatus: `${application.currentQueue} / ${application.currentState}`,
@@ -3379,6 +3390,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: refreshed.id,
                     user: authUser,
+                    req,
                     actionType: 'UNDERWRITER_RELEASED',
                     actionDescription: `${actorName} returned this deal to the underwriter queue.`,
                     previousStatus: `${application.currentQueue} / ${application.currentState}`,
@@ -3483,6 +3495,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: applicationRecord.id,
                     user: authUserForLog,
+                    req,
                     actionType: 'STATUS_CHANGED' as ApplicationActivityActionType,
                     actionDescription:
                         `${roleLabel} ${actorName}`.trim() +
@@ -3578,6 +3591,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: applicationRecord.id,
                     user: authUserForLog,
+                    req,
                     actionType: 'APPLICATION_UPDATED' as ApplicationActivityActionType,
                     actionDescription:
                         `${roleLabel} ${actorName}`.trim() + ' updated the document checklist.',
@@ -3694,10 +3708,13 @@ class ApplicationController {
 
                 // Use raw IDs - exclude sender (don't notify yourself)
                 const recipientIds = new Set<string>();
-                const createdById = (req as any).user?.id;
+                const attributedCreatedById = await resolveApplicationAttributedUserId(
+                    req,
+                    appRecord,
+                );
                 const addIfNotSender = (id: string) => {
                     const sid = String(id);
-                    if (sid && sid !== String(createdById)) recipientIds.add(sid);
+                    if (sid && sid !== String(attributedCreatedById)) recipientIds.add(sid);
                 };
                 if (appRecord.referringAgentId) addIfNotSender(appRecord.referringAgentId);
                 if (appRecord.salesRepresentativeId) addIfNotSender(appRecord.salesRepresentativeId);
@@ -3718,7 +3735,7 @@ class ApplicationController {
                             type: 'application_update',
                             recipientId: String(recId),
                             applicationId: appIdForNotif,
-                            createdById,
+                            createdById: attributedCreatedById,
                         },
                     });
                 }
@@ -3747,6 +3764,7 @@ class ApplicationController {
                 await createApplicationActivityLog({
                     applicationId: applicationRecord.id,
                     user: authUserForLog,
+                    req,
                     actionType: 'APPLICATION_REJECTED' as ApplicationActivityActionType,
                     actionDescription:
                         `${roleLabel} ${actorName}`.trim() + ` rejected the application. Reason: ${reasonText}`,
@@ -5776,7 +5794,7 @@ class ApplicationController {
                 subject,
                 body: mailBody,
                 status: statusRaw as 'queued' | 'sent' | 'failed',
-            });
+            }, req);
 
             if (result.forbidden) {
                 return res.status(403).json({
@@ -6472,6 +6490,7 @@ class ApplicationController {
 
             const result = await approveApplication(whereClause, {
                 actor: authUser,
+                req,
                 actorType: reqUser?.publicApprovalActor || authUser?.role || null,
                 actorName: reqUser?.name ?? null,
                 note: typeof note === 'string' ? note : null,

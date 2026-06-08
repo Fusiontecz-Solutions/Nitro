@@ -1,6 +1,10 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import {
+  APPLICATION_USER_ATTRIBUTION_ERROR,
+  resolveApplicationAttributedUserId,
+} from '../middleware/authMiddleware';
 
 const mapNoteToApi = (note: any) => {
   if (!note) return note;
@@ -88,11 +92,18 @@ class NoteController {
         });
       }
 
-      const createdBy = (req as any).user?.id;
-      if (!createdBy) {
+      if (!req.user) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
+        });
+      }
+
+      const createdById = await resolveApplicationAttributedUserId(req, appRecord);
+      if (!createdById) {
+        return res.status(400).json({
+          success: false,
+          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -100,7 +111,7 @@ class NoteController {
         data: {
           content: content.trim(),
           applicationId: appRecord.id,
-          createdById: createdBy,
+          createdById,
         },
         include: {
           createdBy: {

@@ -1,6 +1,10 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import {
+  APPLICATION_USER_ATTRIBUTION_ERROR,
+  resolveApplicationAttributedUserId,
+} from '../middleware/authMiddleware';
 
 const mapMonthToApi = (month: any) => {
   if (!month) return month;
@@ -143,11 +147,18 @@ class MonthController {
         }
       }
 
-      const createdBy = (req as any).user?.id;
-      if (!createdBy) {
+      if (!req.user) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
+        });
+      }
+
+      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
+      if (!createdById) {
+        return res.status(400).json({
+          success: false,
+          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -169,7 +180,7 @@ class MonthController {
           date: new Date(dateObj),
           amount: amountNum,
           applicationId: applicationRecord.id,
-          createdById: createdBy,
+          createdById,
         },
         include: {
           application: {

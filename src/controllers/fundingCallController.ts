@@ -1,6 +1,12 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import { isOutboundSmtpConfigured } from '../config/nodemailer';
+import { sendFundingCallPendingEmail } from '../services/emailService';
+import {
+  APPLICATION_USER_ATTRIBUTION_ERROR,
+  resolveApplicationAttributedUserId,
+} from '../middleware/authMiddleware';
 import {
   isFundingCallStatusCallDone,
   notifyOperationsDisbursementReady,
@@ -109,11 +115,18 @@ class FundingCallController {
         });
       }
 
-      const createdBy = (req as any).user?.id;
-      if (!createdBy) {
+      if (!req.user) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
+        });
+      }
+
+      const createdById = await resolveApplicationAttributedUserId(req, appRecord);
+      if (!createdById) {
+        return res.status(400).json({
+          success: false,
+          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -153,7 +166,7 @@ class FundingCallController {
             applicationStatus: applicationStatus ?? null,
             remarks: remarks ?? null,
             followUpDate: parsedFollowUpDate,
-            createdById: createdBy,
+            createdById,
           },
           include: {
             Application: true,
@@ -177,6 +190,27 @@ class FundingCallController {
           : record.Application;
       }
 
+      const client = appRecord.client;
+      const iso = (appRecord as any).iso;
+      const isoEmail = String(iso?.email || '').trim();
+      if (isoEmail && isOutboundSmtpConfigured()) {
+        const clientName =
+          `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
+          client?.businessName ||
+          'Valued Client';
+        const isoName = String(iso?.name || '').trim();
+        const companyName = client?.businessName || 'your business';
+        await sendFundingCallPendingEmail({
+          to: isoEmail,
+          clientName: isoName || isoEmail || clientName,
+          companyName,
+        });
+      } else if (isoEmail && !isOutboundSmtpConfigured()) {
+        console.error(
+          'Funding call email skipped: set SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS.',
+        );
+      }
+
       const callStatusStr = String(callStatus);
       let operationsNotified = false;
       if (
@@ -185,7 +219,7 @@ class FundingCallController {
       ) {
         const notifyResult = await notifyOperationsDisbursementReady({
           applicationId: appRecord.id,
-          createdById: String(createdBy),
+          createdById,
           skipIfAlreadyNotified: true,
         });
         operationsNotified = notifyResult.notified > 0;

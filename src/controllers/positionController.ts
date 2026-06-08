@@ -1,6 +1,7 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import { resolveApplicationAttributedUserId } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 
@@ -169,7 +170,7 @@ class PositionController {
         });
       }
 
-      const createdBy = (req as any).user?.id || null;
+      const createdById = await resolveApplicationAttributedUserId(req, applicationExists);
 
       const newPosition = await prisma.position.create({
         data: {
@@ -186,7 +187,7 @@ class PositionController {
           closeDate: closeDateObj,
           notes: notes || '',
           applicationId: applicationExists.id,
-          createdById: createdBy,
+          createdById: createdById ?? null,
           status: status != null ? String(status).trim() || null : null,
           loanAmount: optNum(loanAmount),
           paymentTerm: optInt(paymentTerm),

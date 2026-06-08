@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import { resolveOptionalTenantUserId } from '../middleware/authMiddleware';
 import uploadService from '../services/uploadService';
 
 class ContractTemplateController {
@@ -34,7 +35,7 @@ class ContractTemplateController {
                 });
             }
 
-            const currentUserId = (req as any).user?.id ?? null;
+            const currentUserId = await resolveOptionalTenantUserId(req);
 
             const template = await prisma.contractTemplate.create({
                 data: {
