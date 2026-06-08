@@ -29,7 +29,10 @@ import {
  * Mounted once at the app root (inside SocketProvider) so it runs for every
  * authenticated user and never duplicates listeners.
  */
-type RealtimeKind = "iso_approval_for_operations" | "application_approved";
+type RealtimeKind =
+    | "iso_approval_for_operations"
+    | "application_approved"
+    | "contract_signing_status";
 
 interface IncomingNotificationEvent {
     notification: Notification;
@@ -97,6 +100,24 @@ const RealtimeNotificationsListener = () => {
                     ),
                     {
                         autoClose: 6000,
+                        onClick: () => {
+                            if (applicationLink) navigate(applicationLink);
+                        },
+                    },
+                );
+                return;
+            }
+
+            if (kind === "contract_signing_status") {
+                toast.info(
+                    () => (
+                        <div className="flex flex-col gap-1">
+                            <span className="font-semibold">{incoming.title}</span>
+                            <span className="text-sm">{incoming.message}</span>
+                        </div>
+                    ),
+                    {
+                        autoClose: 5000,
                         onClick: () => {
                             if (applicationLink) navigate(applicationLink);
                         },

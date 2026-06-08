@@ -46,6 +46,7 @@ export function formatDealPipelineCurrentStateLabel(app: {
     return "Contract Signed";
   }
 
+  const stateCompact = compactKey(state);
   if (
     stateCompact === "signedcontracts" ||
     stateCompact === "contractsigned" ||
@@ -58,6 +59,7 @@ export function formatDealPipelineCurrentStateLabel(app: {
     return "Contract Out";
   }
 
+  const queueCompact = compactKey(queue);
   if (
     queueCompact === "contracted" ||
     stateCompact === "contractsout" ||
