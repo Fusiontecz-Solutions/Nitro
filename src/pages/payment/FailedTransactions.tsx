@@ -231,22 +231,6 @@ type ActiveDateFilter =
   | { kind: "exact"; ymd: string }
   | { kind: "range"; fromYmd: string; toYmd: string };
 
-/** `YYYY-MM-DD` used for date filtering — matches the Date column in the table. */
-function transactionFilterYmd(tx: FailedTransactionRow): string | null {
-  const cell = rowDateListCell(tx);
-  return cell !== "—" && /^\d{4}-\d{2}-\d{2}$/.test(cell) ? cell : null;
-}
-
-function transactionMatchesDateFilter(
-  tx: FailedTransactionRow,
-  filter: ActiveDateFilter,
-): boolean {
-  const ymd = transactionFilterYmd(tx);
-  if (!ymd) return false;
-  if (filter.kind === "exact") return ymd === filter.ymd;
-  return ymd >= filter.fromYmd && ymd <= filter.toYmd;
-}
-
 function normalizeYmdRange(
   from: string,
   to: string,
@@ -294,29 +278,6 @@ function buildActiveDateFilter(
     return { kind: "exact", ymd: `${filterYear}-${m}-${d}` };
   }
   return null;
-}
-
-/** Keep only transactions whose Date column falls inside the active filter. */
-function scopeDealGroupsToDateFilter(
-  groups: FailedDealGroup[],
-  filter: ActiveDateFilter | null,
-): FailedDealGroup[] {
-  if (!filter) return groups;
-  return groups
-    .map((g) => {
-      const transactions = g.transactions.filter((tx) =>
-        transactionMatchesDateFilter(tx, filter),
-      );
-      if (!transactions.length) return null;
-      const failedAmount = transactions.reduce((sum, tx) => sum + (tx.amount ?? 0), 0);
-      return {
-        ...g,
-        transactions,
-        failedCount: transactions.length,
-        failedAmount: Number(failedAmount.toFixed(2)),
-      };
-    })
-    .filter((g): g is FailedDealGroup => g != null);
 }
 
 /** Pick the best-available timestamp (ms) for a transaction; -Infinity when missing. */
@@ -369,16 +330,15 @@ export default function FailedTransactions() {
   const [filterYear, setFilterYear] = useState("");
   const [filterMonth, setFilterMonth] = useState("");
   const [filterDay, setFilterDay] = useState("");
-  const [datePick, setDatePick] = useState(() => rangeForPreset("last1").toDate);
-  /** Quick-range preset — default today; sent as `fromDate`/`toDate` and supersedes the calendar. */
-  const [rangePreset, setRangePreset] = useState<RangePreset | null>("last1");
+  const [datePick, setDatePick] = useState("");
+  /** Quick-range preset — null by default (no date filter, show all). */
+  const [rangePreset, setRangePreset] = useState<RangePreset | null>(null);
   /** User-defined inclusive From → To range (`fromDate` / `toDate` on the API). */
   const [customRange, setCustomRange] = useState<{ fromYmd: string; toYmd: string } | null>(
     null,
   );
-  const initialPresetRange = rangeForPreset("last1");
-  const [draftRangeFrom, setDraftRangeFrom] = useState(initialPresetRange.fromDate);
-  const [draftRangeTo, setDraftRangeTo] = useState(initialPresetRange.toDate);
+  const [draftRangeFrom, setDraftRangeFrom] = useState("");
+  const [draftRangeTo, setDraftRangeTo] = useState("");
 
   /** Client-side sort of the current page (server paginates the result set). */
   const [sortKey, setSortKey] = useState<SortKey>("date");
@@ -527,12 +487,6 @@ export default function FailedTransactions() {
     [customRange, rangePreset, datePick, filterYear, filterMonth, filterDay],
   );
 
-  /** Only transactions on the selected date(s) — not every failed row for the deal. */
-  const dateScopedData = useMemo(
-    () => scopeDealGroupsToDateFilter(data, activeDateFilter),
-    [data, activeDateFilter],
-  );
-
   const hasExactTotals =
     pagination.total != null &&
     pagination.totalPages != null &&
@@ -588,7 +542,7 @@ export default function FailedTransactions() {
   const sortedData = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
 
-    const sortedGroups = [...dateScopedData].sort((a, b) => {
+    const sortedGroups = [...data].sort((a, b) => {
       if (sortKey === "dealId") {
         return (
           dir *
@@ -621,9 +575,9 @@ export default function FailedTransactions() {
       }));
     }
     return sortedGroups;
-  }, [dateScopedData, sortKey, sortDir]);
+  }, [data, sortKey, sortDir]);
 
-  const showEmpty = !tableLoading && !error && dateScopedData.length === 0;
+  const showEmpty = !tableLoading && !error && data.length === 0;
   const isInitialTableLoading = tableLoading && !hasLoadedTable;
   const isRefetchingTable = tableLoading && hasLoadedTable;
   const showSummaryTotalsSpinner = summaryLoading && !summaryHydrated;
@@ -648,15 +602,14 @@ export default function FailedTransactions() {
   const showPager = hasLoadedTable && (canPrev || canNext);
 
   const clearDateFilters = useCallback(() => {
-    const { fromDate, toDate } = rangeForPreset("last1");
     setFilterYear("");
     setFilterMonth("");
     setFilterDay("");
-    setDatePick(toDate);
-    setRangePreset("last1");
+    setDatePick("");
+    setRangePreset(null);
     setCustomRange(null);
-    setDraftRangeFrom(fromDate);
-    setDraftRangeTo(toDate);
+    setDraftRangeFrom("");
+    setDraftRangeTo("");
   }, []);
 
   /** Select a quick-range preset; clears single-day calendar params and syncs the picker. */

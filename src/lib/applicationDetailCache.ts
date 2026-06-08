@@ -1,47 +1,26 @@
 import type { Application } from "@/types/applicationTypes";
 import { axiosGet } from "@/redux/axios";
-import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch";
 import {
-  CRM_CACHE_NS,
-  crmCacheClearNamespace,
-  crmCacheGet,
-  crmCacheSet,
-} from "@/lib/crmCache";
+  isNumericApplicationRouteParam,
+  routeParamMatchesApplication,
+} from "@/lib/applicationRouteMatch";
+import {
+  idbClearNamespace,
+  idbDelete,
+  idbGetAllInNamespace,
+  idbSet,
+} from "@/lib/persistentCache/idbStore";
 
-const NS = CRM_CACHE_NS.APPLICATIONS_DETAIL;
+const TTL_MS = 5 * 60_000;
+const MAX_ENTRIES = 30;
+const IDB_NAMESPACE = "application-detail.v1";
 
-/** All route-param keys that resolve to the same application row. */
-export function applicationDetailCacheKeysForApp(app: Application): string[] {
-  const keys = new Set<string>();
-  const row = app as Application & { id?: string };
-  const pk = row._id ?? row.id;
-  if (pk != null && String(pk).trim()) keys.add(String(pk).trim());
-  if (row.applicationId != null && String(row.applicationId).trim()) {
-    keys.add(String(row.applicationId).trim());
-  }
-  return [...keys];
-}
+type CacheEntry = { at: number; data: unknown };
 
-export function writeApplicationDetailCache(app: Application) {
-  for (const key of applicationDetailCacheKeysForApp(app)) {
-    crmCacheSet(NS, key, app);
-  }
-}
+const memory = new Map<string, CacheEntry>();
 
-export function readApplicationDetailCache(
-  routeParam: string,
-): Application | undefined {
-  const key = String(routeParam).trim();
-  if (!key) return undefined;
-  return crmCacheGet<Application>(NS, key);
-}
-
-export function isApplicationDetailCacheStale(routeParam: string): boolean {
-  return readApplicationDetailCache(routeParam) === undefined;
-}
-
-export function invalidateApplicationDetailCache() {
-  crmCacheClearNamespace(NS);
+function cacheKey(routeParam: string): string {
+  return String(routeParam).trim();
 }
 
 function detailUrl(routeParam: string): string {
@@ -51,23 +30,131 @@ function detailUrl(routeParam: string): string {
   return `/applications/${routeParam}`;
 }
 
-/** Warm detail cache before navigation (hover / row click). */
+function isExpired(entry: CacheEntry): boolean {
+  return Date.now() - entry.at > TTL_MS;
+}
+
+function remember(key: string, entry: CacheEntry) {
+  memory.set(key, entry);
+  void idbSet(IDB_NAMESPACE, key, entry);
+  while (memory.size > MAX_ENTRIES) {
+    const first = memory.keys().next().value;
+    if (first === undefined) break;
+    memory.delete(first);
+    void idbDelete(IDB_NAMESPACE, first);
+  }
+}
+
+export async function hydrateApplicationDetailCacheFromIdb(): Promise<void> {
+  const rows = await idbGetAllInNamespace<CacheEntry>(IDB_NAMESPACE);
+  for (const row of rows) {
+    if (!row.payload || typeof row.payload.at !== "number") continue;
+    if (isExpired(row.payload)) {
+      void idbDelete(IDB_NAMESPACE, row.key);
+      continue;
+    }
+    if (!memory.has(row.key) || row.payload.at > (memory.get(row.key)?.at ?? 0)) {
+      memory.set(row.key, row.payload);
+    }
+  }
+}
+
+export function getCachedApplicationDetail(
+  routeParam: string,
+): unknown | undefined {
+  const key = cacheKey(routeParam);
+  const entry = memory.get(key);
+  if (!entry) return undefined;
+  if (isExpired(entry)) {
+    memory.delete(key);
+    void idbDelete(IDB_NAMESPACE, key);
+    return undefined;
+  }
+  return entry.data;
+}
+
+export function setCachedApplicationDetail(
+  routeParam: string,
+  payload: unknown,
+): void {
+  remember(cacheKey(routeParam), { at: Date.now(), data: payload });
+}
+
+export function invalidateApplicationDetailCache(routeParam?: string): void {
+  if (routeParam) {
+    const key = cacheKey(routeParam);
+    memory.delete(key);
+    void idbDelete(IDB_NAMESPACE, key);
+    return;
+  }
+  memory.clear();
+  void idbClearNamespace(IDB_NAMESPACE);
+}
+
+/** Best-effort warm cache (row hover / before navigate). */
 export function prefetchApplicationDetail(routeParam: string): void {
-  const key = String(routeParam).trim();
-  if (!key) return;
-  if (readApplicationDetailCache(key) !== undefined) return;
-  void axiosGet(detailUrl(key))
+  const key = cacheKey(routeParam);
+  const existing = memory.get(key);
+  if (existing && !isExpired(existing)) return;
+  const url = detailUrl(routeParam);
+  void axiosGet(url)
     .then((res) => {
-      const body = res?.data;
-      const app =
-        body?.data && typeof body.data === "object"
-          ? (body.data as Application)
-          : (body as Application);
-      if (app && (app._id || (app as Application & { id?: string }).id)) {
-        writeApplicationDetailCache(app);
-      }
+      setCachedApplicationDetail(key, res.data);
     })
     .catch(() => {
       /* prefetch only */
     });
+}
+
+/** Use a list row (lite) for instant paint when opening details. */
+export function applicationDetailCacheKeyFromApplication(
+  app: Application,
+): string | null {
+  if (app.applicationId != null) return String(app.applicationId);
+  const id = app._id ?? (app as { id?: string }).id;
+  return id != null ? String(id) : null;
+}
+
+export function findApplicationListRowForRoute(
+  routeParam: string,
+  listRows: Application[] | undefined | null,
+): Application | undefined {
+  if (!routeParam || !listRows?.length) return undefined;
+  return listRows.find((row) => routeParamMatchesApplication(routeParam, row));
+}
+
+export function buildDetailHydrationPayload(
+  cachedOrApiBody: unknown,
+): { data: Application } | null {
+  if (!cachedOrApiBody || typeof cachedOrApiBody !== "object") return null;
+  const body = cachedOrApiBody as { data?: Application } | Application;
+  const data =
+    "data" in body && body.data && typeof body.data === "object"
+      ? (body.data as Application)
+      : (body as Application);
+  if (!data || typeof data !== "object") return null;
+  return { data };
+}
+
+/** Read a cached application row/API body for a route param (L1 only). */
+export function readApplicationDetailCache(
+  routeParam: string,
+): Application | undefined {
+  const raw = getCachedApplicationDetail(routeParam);
+  if (raw == null) return undefined;
+  const hydrated = buildDetailHydrationPayload(raw);
+  if (hydrated) return hydrated.data;
+  if (typeof raw === "object") return raw as Application;
+  return undefined;
+}
+
+/** Store an application under all route keys (numeric id, UUID, legacy id). */
+export function writeApplicationDetailCache(app: Application): void {
+  const keys = new Set<string>();
+  if (app.applicationId != null) keys.add(String(app.applicationId));
+  const id = app._id ?? (app as { id?: string }).id;
+  if (id != null) keys.add(String(id));
+  for (const key of keys) {
+    setCachedApplicationDetail(key, app);
+  }
 }

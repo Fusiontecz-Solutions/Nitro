@@ -2,9 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { getPaymentDashboard } from "@/redux/actions/paymentDashboardActions";
+import { fetchPaymentFinancialOverviewSummary } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
-import { fetchPaymentDashboardCreditDebitTrend } from "@/redux/actions/paymentDashboardTrendActions";
 import { updateApplication } from "@/redux/actions/applicationActions";
 import { axiosPost, axiosPostFormData } from "@/redux/axios";
 import type { FundedDealBalanceApiRow } from "@/lib/collectionPaymentDashboardApi";
@@ -87,6 +86,26 @@ type StatCardProps = {
 };
 
 type MoneyFlowView = "monthly" | "weekly" | "monthlyInYear" | "yearly";
+
+function selectCreditDebitTrendSeries(
+  data: PaymentDashboardData | null | undefined,
+  view: MoneyFlowView,
+): MoneyFlowPoint[] {
+  const trend = data?.creditDebitTrend;
+  if (!trend) return [];
+  switch (view) {
+    case "monthly":
+      return trend.monthly;
+    case "weekly":
+      return trend.weekly;
+    case "monthlyInYear":
+      return trend.monthlyInYear;
+    case "yearly":
+      return trend.yearly;
+    default:
+      return [];
+  }
+}
 
 type PaymentTransactionRow = {
   id: string;
@@ -1290,12 +1309,6 @@ export const PaymentHistoryDashboard = () => {
     pagination: cohortPagination,
   } = useSelector((state: RootState) => state.paymentDashboardCohort);
   const {
-    loading: trendLoading,
-    points: trendPoints,
-    yearOptions: trendYearOptions,
-    error: trendError,
-  } = useSelector((state: RootState) => state.paymentDashboardTrend);
-  const {
     data: dashboardData,
     loading: paymentDashboardApiLoading,
     isRefreshing: paymentDashboardRefreshing,
@@ -1411,6 +1424,27 @@ export const PaymentHistoryDashboard = () => {
   const [moneyFlowView, setMoneyFlowView] = useState<MoneyFlowView>("monthly");
   const [moneyFlowFilterYear, setMoneyFlowFilterYear] = useState<number>(new Date().getFullYear());
   const [moneyFlowFilterMonth, setMoneyFlowFilterMonth] = useState<number | "all">(new Date().getMonth());
+  const debouncedChartYear = useDebouncedValue(moneyFlowFilterYear, 400);
+  const debouncedChartMonth = useDebouncedValue(moneyFlowFilterMonth, 400);
+
+  const fetchFinancialOverviewSummary = useCallback(
+    (options?: { force?: boolean }) => {
+      void dispatch(
+        fetchPaymentFinancialOverviewSummary({
+          chartYear: debouncedChartYear,
+          chartMonth: debouncedChartMonth,
+          organization: paymentOrganizationApiParam,
+          force: options?.force,
+        }),
+      );
+    },
+    [
+      dispatch,
+      debouncedChartYear,
+      debouncedChartMonth,
+      paymentOrganizationApiParam,
+    ],
+  );
 
   const fetchCohortPage = useCallback(() => {
     void dispatch(
@@ -1429,46 +1463,22 @@ export const PaymentHistoryDashboard = () => {
     paymentOrganizationApiParam,
   ]);
 
-  const fetchTrendChart = useCallback(() => {
-    void dispatch(
-      fetchPaymentDashboardCreditDebitTrend({
-        view: moneyFlowView,
-        year: moneyFlowFilterYear,
-        month: moneyFlowFilterMonth,
-        organization: paymentOrganizationApiParam,
-      }),
-    );
-  }, [
-    dispatch,
-    moneyFlowView,
-    moneyFlowFilterYear,
-    moneyFlowFilterMonth,
-    paymentOrganizationApiParam,
-  ]);
-
-  /** KPI cards + current table page + chart — after transaction writes. */
+  /** KPI cards + chart summary — after transaction writes. */
   const refreshDashboardAfterTransactionWrites = useCallback(async () => {
     await Promise.all([
       dispatch(
-        getPaymentDashboard(
-          paymentOrganizationApiParam
-            ? { organization: paymentOrganizationApiParam }
-            : undefined,
-        ),
+        fetchPaymentFinancialOverviewSummary({
+          chartYear: debouncedChartYear,
+          chartMonth: debouncedChartMonth,
+          organization: paymentOrganizationApiParam,
+          force: true,
+        }),
       ).unwrap(),
       dispatch(
         fetchPaymentDashboardFundedDeals({
           page: pagination.pageIndex + 1,
           limit: pagination.pageSize,
           search: debouncedSearchTerm.trim() || undefined,
-          organization: paymentOrganizationApiParam,
-        }),
-      ).unwrap(),
-      dispatch(
-        fetchPaymentDashboardCreditDebitTrend({
-          view: moneyFlowView,
-          year: moneyFlowFilterYear,
-          month: moneyFlowFilterMonth,
           organization: paymentOrganizationApiParam,
         }),
       ).unwrap(),
@@ -1479,42 +1489,23 @@ export const PaymentHistoryDashboard = () => {
     pagination.pageSize,
     debouncedSearchTerm,
     paymentOrganizationApiParam,
-    moneyFlowView,
-    moneyFlowFilterYear,
-    moneyFlowFilterMonth,
+    debouncedChartYear,
+    debouncedChartMonth,
   ]);
 
   useEffect(() => {
     if (location.pathname !== "/payments") return;
-    void dispatch(
-      getPaymentDashboard(
-        paymentOrganizationApiParam
-          ? { organization: paymentOrganizationApiParam }
-          : undefined,
-      ),
-    );
-  }, [location.pathname, location.key, dispatch, paymentOrganizationApiParam]);
+    fetchFinancialOverviewSummary();
+  }, [
+    location.pathname,
+    location.key,
+    fetchFinancialOverviewSummary,
+  ]);
 
   useEffect(() => {
     if (location.pathname !== "/payments") return;
     fetchCohortPage();
   }, [location.pathname, fetchCohortPage]);
-
-  useEffect(() => {
-    if (location.pathname !== "/payments") return;
-    fetchTrendChart();
-  }, [location.pathname, fetchTrendChart]);
-
-  const lastTrendErrorToastRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!trendError) {
-      lastTrendErrorToastRef.current = null;
-      return;
-    }
-    if (lastTrendErrorToastRef.current === trendError) return;
-    lastTrendErrorToastRef.current = trendError;
-    toast.error(trendError);
-  }, [trendError]);
 
   useEffect(() => {
     if (!pendingViewDealId) return;
@@ -1562,10 +1553,12 @@ export const PaymentHistoryDashboard = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const previewTableScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const moneyFlowYearOptions = useMemo(() => {
-    if (trendYearOptions.length > 0) return trendYearOptions;
+    if (dashboardData?.chartYearOptions && dashboardData.chartYearOptions.length > 0) {
+      return dashboardData.chartYearOptions;
+    }
     const currentYear = new Date().getFullYear();
     return Array.from({ length: currentYear - 2023 + 1 }, (_, idx) => 2023 + idx);
-  }, [trendYearOptions]);
+  }, [dashboardData?.chartYearOptions]);
 
   useEffect(() => {
     if (moneyFlowYearOptions.length === 0) return;
@@ -1614,13 +1607,16 @@ export const PaymentHistoryDashboard = () => {
 
   const chartMoneyFlowData = useMemo(
     () =>
-      trendPoints.map((point: MoneyFlowPoint) => ({
+      selectCreditDebitTrendSeries(dashboardData, moneyFlowView).map((point: MoneyFlowPoint) => ({
         ...point,
         inflow: Number(point?.inflow ?? 0),
         outflow: Number(point?.outflow ?? 0),
       })),
-    [trendPoints],
+    [dashboardData, moneyFlowView],
   );
+
+  const chartDataLoading =
+    paymentDashboardApiLoading && selectCreditDebitTrendSeries(dashboardData, moneyFlowView).length === 0;
 
   const moneyFlowSubtitle =
     moneyFlowView === "monthly"
@@ -3395,7 +3391,7 @@ export const PaymentHistoryDashboard = () => {
         chartMoneyFlowData={chartMoneyFlowData}
         calendarYear={moneyFlowCalendarAnchor.year}
         calendarMonth={moneyFlowCalendarAnchor.month}
-        chartDataLoading={trendLoading}
+        chartDataLoading={chartDataLoading}
       />
    
 

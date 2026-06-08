@@ -74,6 +74,10 @@ export function normalizePaymentDashboardData(raw: unknown): PaymentDashboardDat
         root.moneyFlow && typeof root.moneyFlow === 'object'
             ? (root.moneyFlow as Record<string, unknown>)
             : {};
+    const trendRaw =
+        root.creditDebitTrend && typeof root.creditDebitTrend === 'object'
+            ? (root.creditDebitTrend as Record<string, unknown>)
+            : {};
 
     const fundedTotal = cardOptionalNumber(cardsRaw, 'fundedTotal');
     const netFundingTotal = cardOptionalNumber(cardsRaw, 'netFundingTotal');
@@ -84,6 +88,13 @@ export function normalizePaymentDashboardData(raw: unknown): PaymentDashboardDat
     const dealsWithNegativeGap = cardOptionalNumber(cardsRaw, 'dealsWithNegativeGap');
     const dealsWithZeroGap = cardOptionalNumber(cardsRaw, 'dealsWithZeroGap');
     const failedPayment = normalizeFailedPaymentDebit(cardsRaw.failedPayment);
+
+    const chartYearOptions = Array.isArray(root.chartYearOptions)
+        ? root.chartYearOptions
+              .map((y) => Number(y))
+              .filter((y) => Number.isFinite(y))
+              .map((y) => Math.floor(y))
+        : undefined;
 
     return {
 cards: {
@@ -115,10 +126,81 @@ cards: {
             weekly: normalizeMoneyFlowPoints(mfRaw.weekly),
             yearly: normalizeMoneyFlowPoints(mfRaw.yearly),
         },
+        creditDebitTrend: {
+            monthly: normalizeMoneyFlowPoints(trendRaw.monthly),
+            weekly: normalizeMoneyFlowPoints(trendRaw.weekly),
+            monthlyInYear: normalizeMoneyFlowPoints(trendRaw.monthlyInYear),
+            yearly: normalizeMoneyFlowPoints(trendRaw.yearly),
+        },
+        ...(chartYearOptions && chartYearOptions.length > 0 ? { chartYearOptions } : {}),
     };
 }
 
-type PaymentDashForCondition = { paymentDashboard: { loading: boolean } };
+type PaymentDashForCondition = {
+    paymentDashboard: { loading: boolean; isRefreshing: boolean };
+};
+
+export type FetchPaymentFinancialOverviewSummaryArg = {
+    chartYear?: number;
+    chartMonth?: number | 'all';
+    /** `Katan II` / `Katan III` — omit or `all` for portfolio-wide totals. */
+    organization?: string;
+    /** When true, bypass the in-flight guard (manual refresh). */
+    force?: boolean;
+};
+
+export const fetchPaymentFinancialOverviewSummary = createAsyncThunk<
+    PaymentDashboardData,
+    FetchPaymentFinancialOverviewSummaryArg | void,
+    { rejectValue: string }
+>(
+    'paymentDashboard/financialOverviewSummary',
+    async (arg, { rejectWithValue }) => {
+        try {
+            const params = new URLSearchParams();
+            const chartYear =
+                arg && typeof arg === 'object' && arg.chartYear != null && Number.isFinite(arg.chartYear)
+                    ? Math.floor(arg.chartYear)
+                    : undefined;
+            const chartMonth =
+                arg && typeof arg === 'object' ? arg.chartMonth : undefined;
+            const organization =
+                arg && typeof arg === 'object' && arg.organization?.trim()
+                    ? arg.organization.trim()
+                    : undefined;
+
+            if (chartYear != null) {
+                params.set('chartYear', String(chartYear));
+            }
+            if (chartMonth === 'all') {
+                params.set('chartMonth', 'all');
+            } else if (chartMonth != null && Number.isFinite(chartMonth)) {
+                params.set('chartMonth', String(Math.floor(chartMonth)));
+            }
+            if (organization && organization.toLowerCase() !== 'all') {
+                params.set('organization', organization);
+            }
+
+            const qs = params.toString();
+            const response = await axiosGet(
+                `/collection-payments/financial-overview/summary${qs ? `?${qs}` : ''}`,
+                { timeout: PAYMENT_DASHBOARD_REQUEST_TIMEOUT_MS },
+            );
+            const body = response?.data ?? {};
+            const raw = (body as { data?: unknown }).data ?? body;
+            return normalizePaymentDashboardData(raw);
+        } catch (error: unknown) {
+            return rejectWithValue(resolvePaymentDashboardFetchError(error));
+        }
+    },
+    {
+        condition: (arg, { getState }) => {
+            if (arg && typeof arg === 'object' && arg.force) return true;
+            const s = (getState() as PaymentDashForCondition).paymentDashboard;
+            return !s?.loading;
+        },
+    },
+);
 
 export type GetPaymentDashboardArg = {
     /** `Katan II` / `Katan III` — omit or `all` for portfolio-wide totals. */

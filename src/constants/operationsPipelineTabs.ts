@@ -2,12 +2,13 @@ import type { OperationsApplicationsListStatus } from "@/constants/operationsDas
 
 export type PipelineTab = { id: string; label: string };
 
-/** Full pipeline for Super Admin — includes Bank Analysis after Documents and Final + Funding Call between Contract and Disbursement. */
+/** Full pipeline for Super Admin — includes Eligibility Analysis, Bank Analysis, Final + Funding Call, and Disbursement. */
 export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
-  { id: "bank-analysis", label: "BANK ANALYSIS" },
+  // { id: "bank-analysis", label: "BANK ANALYSIS" },
   { id: "decision-making", label: "DECISION MAKING" },
+  { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
   { id: "contract", label: "CONTRACT" },
   { id: "final", label: "FINAL" },
   { id: "funding-call", label: "FUNDING CALL" },
@@ -88,4 +89,59 @@ export function getOperationsTabsForDashboardEntry(
     default:
       return [...full];
   }
+}
+
+/**
+ * Pipeline tab that best matches where the deal currently sits (for edit vs preview).
+ * Uses the longest strip ({@link SUPER_ADMIN_PIPELINE_TABS}) so bank-analysis lines up with decision-making.
+ */
+export function getOperationsPipelineStageTabId(
+  status: OperationsApplicationsListStatus,
+): string {
+  switch (status) {
+    case "Agent":
+      return "documents";
+    case "Underwriter":
+      return "decision-making";
+    case "Final Underwriter":
+      return "decision-making";
+    case "Contract_Pending":
+    case "Contract_Out":
+    case "Contracted":
+    case "Contract_Signed":
+    case "Signed_Contracts":
+      return "contract";
+    case "Final":
+      return "final";
+    case "Funding Call":
+      return "funding-call";
+    case "Funded":
+    case "Disbursment":
+      return "disbursement";
+    default:
+      return "disbursement";
+  }
+}
+
+function pipelineTabIndex(tabId: string, pipelineTabs: PipelineTab[]): number {
+  return pipelineTabs.findIndex((t) => t.id === tabId);
+}
+
+/**
+ * True when the user is viewing an earlier pipeline tab than the deal's current stage
+ * (e.g. Decision Making / Bank Analysis while status is Contract Out).
+ */
+export function isOperationsPipelineTabBehindDealStage(
+  activeTabId: string,
+  dealStageStatus: OperationsApplicationsListStatus | null,
+  pipelineTabs: PipelineTab[],
+): boolean {
+  if (!dealStageStatus || pipelineTabs.length === 0) return false;
+
+  const stageTabId = getOperationsPipelineStageTabId(dealStageStatus);
+  const stageIdx = pipelineTabIndex(stageTabId, pipelineTabs);
+  const activeIdx = pipelineTabIndex(activeTabId, pipelineTabs);
+
+  if (stageIdx < 0 || activeIdx < 0) return false;
+  return activeIdx < stageIdx;
 }

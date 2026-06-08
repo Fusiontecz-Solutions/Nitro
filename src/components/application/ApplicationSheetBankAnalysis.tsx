@@ -7,6 +7,8 @@ import type { AppDispatch } from "@/redux/store"
 import BankAnalysisTable from "./BankAnalysisTable"
 import DecisionMakeFinalValues from "./DecisionMakeFinalValues"
 import { getPositions } from "@/redux/actions/positionActions"
+import { canRoleEditDecisionMakingTab } from "@/lib/decisionMakingAccess"
+import { resolveEffectiveRole } from "@/lib/sessionRole"
 
 type ApplicationSheetBankAnalysisProps = {
   applicationId?: string | null
@@ -18,6 +20,12 @@ export default function ApplicationSheetBankAnalysis({
   const dispatch = useDispatch<AppDispatch>()
   const resolvedApplicationId = applicationId ?? undefined
   const positionsState = useSelector((state: RootState) => state.positions)
+
+  const loginUser = useSelector((state: RootState) => state.login?.data?.user)
+  const canEditDecisionMaking = useMemo(
+    () => canRoleEditDecisionMakingTab(resolveEffectiveRole(loginUser)),
+    [loginUser],
+  )
 
   useEffect(() => {
     if (!resolvedApplicationId) return
@@ -56,9 +64,13 @@ export default function ApplicationSheetBankAnalysis({
     <div className="space-y-6">
       <DecisionMakeFinalValues
         applicationId={resolvedApplicationId}
+        allowOfferEdit={canEditDecisionMaking}
+        allowPositionsEdit={canEditDecisionMaking}
         betweenOfferAndPositions={
           <BankAnalysisTable
-            showOnlyTotals
+            showOnlyTotals={!canEditDecisionMaking}
+            readOnly={!canEditDecisionMaking}
+            disableCreate={!canEditDecisionMaking}
             applicationId={resolvedApplicationId}
             positions={scopedPositions as any}
           />

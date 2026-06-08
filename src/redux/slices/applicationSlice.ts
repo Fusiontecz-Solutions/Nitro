@@ -1,5 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { Application } from '@/types/applicationTypes';
+import { buildDetailHydrationPayload } from '@/lib/applicationDetailCache.ts';
 import {
     createApplication,
     getApplications,
@@ -19,7 +20,7 @@ import {
 } from '../actions/applicationActions';
 import type { ApplicationStatsData } from '../actions/applicationActions';
 import { sendDocumentRequest } from '../actions/notificationActions';
-import { writeApplicationDetailCache } from '@/lib/applicationDetailCache';
+import { updateIso } from '../actions/isoActions';
 
 function mergeApplicationDetailFromUpdate(
     state: { data: Application | null },
@@ -43,7 +44,6 @@ function mergeApplicationDetailFromUpdate(
         Number(curAid) === Number(upAid);
     if (idMatch || aidMatch) {
         state.data = { ...d, ...u } as Application;
-        writeApplicationDetailCache(state.data);
     }
 }
 
@@ -61,7 +61,6 @@ interface ApplicationsState {
         totalPages: number;
     } | null;
     error: string | null;
-  /** RTK request id for the in-flight list fetch; stale responses are ignored. */
     latestRequestId: string | null;
 }
 
@@ -118,15 +117,6 @@ export const applicationsSlice = createSlice({
             state.loading = false;
             state.isRefreshing = false;
         },
-        /** Clear list rows before a new fetch without flashing an empty-state message. */
-        resetApplicationsListForFetch: (state) => {
-            state.data = [];
-            state.pagination = null;
-            state.error = null;
-            state.loading = true;
-            state.isRefreshing = false;
-            state.latestRequestId = null;
-        },
         /**
          * Apply a cached list response before `getApplications` runs so the first paint can show rows
          * and pending uses `isRefreshing` instead of a full-table loading state.
@@ -172,14 +162,14 @@ export const applicationsSlice = createSlice({
                 }
             })
             .addCase(getApplications.fulfilled, (state, action) => {
+                // Ignore out-of-order responses: after a newer fetch completes, `latestRequestId` is
+                // null, but an older in-flight response must not overwrite fresh data.
+                if (action.meta.requestId !== state.latestRequestId) {
+                    return;
+                }
                 state.loading = false;
                 state.isRefreshing = false;
-                const body = action.payload as { data?: Application[] } | Application[];
-                state.data = Array.isArray(body)
-                    ? body
-                    : Array.isArray(body?.data)
-                      ? body.data
-                      : [];
+                state.data = action.payload.data || action.payload;
                 const pagination = action.payload?.pagination;
                 state.pagination = pagination
                     ? {
@@ -192,6 +182,9 @@ export const applicationsSlice = createSlice({
                 state.latestRequestId = null;
             })
             .addCase(getApplications.rejected, (state, action) => {
+                if (action.meta.requestId !== state.latestRequestId) {
+                    return;
+                }
                 state.loading = false;
                 state.isRefreshing = false;
                 state.error = action.payload as string;
@@ -214,6 +207,7 @@ interface ApplicationStatsState {
     isRefreshing: boolean;
     data: ApplicationStatsData | null;
     error: string | null;
+    lastFetchedAt: number | null;
 }
 
 const applicationStatsInitialState: ApplicationStatsState = {
@@ -221,6 +215,7 @@ const applicationStatsInitialState: ApplicationStatsState = {
     isRefreshing: false,
     data: null,
     error: null,
+    lastFetchedAt: null,
 };
 
 export const applicationStatsSlice = createSlice({
@@ -232,6 +227,7 @@ export const applicationStatsSlice = createSlice({
             state.error = null;
             state.loading = false;
             state.isRefreshing = false;
+            state.lastFetchedAt = null;
         },
     },
     extraReducers: (builder) => {
@@ -247,6 +243,7 @@ export const applicationStatsSlice = createSlice({
             .addCase(getApplicationStats.fulfilled, (state, action) => {
                 state.loading = false;
                 state.isRefreshing = false;
+                state.lastFetchedAt = Date.now();
                 const raw = action.payload?.data ?? action.payload;
                 state.data = normalizeApplicationStatsData(raw);
             })
@@ -331,11 +328,13 @@ export const applicationDetailSlice = createSlice({
             state.loading = false;
             state.isRefreshing = false;
         },
-        setApplicationDetail: (state, action: PayloadAction<Application>) => {
-            state.data = action.payload;
-            state.error = null;
+        hydrateApplicationDetailFromCache: (state, action) => {
+            const payload = buildDetailHydrationPayload(action.payload);
+            if (!payload) return;
+            state.data = payload.data;
             state.loading = false;
             state.isRefreshing = false;
+            state.error = null;
         },
     },
     extraReducers: (builder) => {
@@ -364,11 +363,7 @@ export const applicationDetailSlice = createSlice({
                 state.loading = false;
                 state.isRefreshing = false;
                 state.error = null;
-                const row =
-                    (action.payload as { data?: Application })?.data ??
-                    (action.payload as Application);
-                state.data = row;
-                if (row) writeApplicationDetailCache(row);
+                state.data = action.payload.data || action.payload;
             })
             .addCase(getApplicationById.rejected, (state, action) => {
                 state.loading = false;
@@ -397,11 +392,7 @@ export const applicationDetailSlice = createSlice({
                 state.loading = false;
                 state.isRefreshing = false;
                 state.error = null;
-                const row =
-                    (action.payload as { data?: Application })?.data ??
-                    (action.payload as Application);
-                state.data = row;
-                if (row) writeApplicationDetailCache(row);
+                state.data = action.payload.data || action.payload;
             })
             .addCase(getApplicationByApplicationId.rejected, (state, action) => {
                 state.loading = false;
@@ -410,6 +401,26 @@ export const applicationDetailSlice = createSlice({
             })
             .addCase(updateApplication.fulfilled, (state, action) => {
                 mergeApplicationDetailFromUpdate(state, action.payload);
+            })
+            .addCase(updateIso.fulfilled, (state, action) => {
+                const payload = action.payload as { data?: Record<string, unknown> } | Record<string, unknown> | null;
+                const updated = (
+                    payload && typeof payload === 'object' && 'data' in payload && payload.data
+                        ? payload.data
+                        : payload
+                ) as Record<string, unknown> | null;
+                if (!updated || !state.data) return;
+                const d = state.data as Application & { iso?: Record<string, unknown> | null };
+                const iso = d.iso;
+                const updatedId = String(updated.id ?? '').trim();
+                if (!iso || !updatedId) return;
+                const curId = String(iso.id ?? iso._id ?? '').trim();
+                if (curId && curId === updatedId) {
+                    state.data = {
+                        ...d,
+                        iso: { ...iso, ...updated },
+                    } as Application;
+                }
             })
             .addCase(updateApplicationQueue.fulfilled, (state, action) => {
                 mergeApplicationDetailFromUpdate(state, action.payload);
@@ -772,16 +783,15 @@ export const uploadDocumentsSlice = createSlice({
 });
 
 // Export actions
-export const {
-    clearApplications,
-    resetApplicationsListForFetch,
-    hydrateApplicationsListFromCache,
-} =
+export const { clearApplications, hydrateApplicationsListFromCache } =
     applicationsSlice.actions;
 export const { clearApplicationStats } = applicationStatsSlice.actions;
 export const { resetCreateApplication } = createApplicationSlice.actions;
-export const { clearApplicationDetail, setApplicationDetail } =
-    applicationDetailSlice.actions;
+export const {
+    clearApplicationDetail,
+    hydrateApplicationDetailFromCache,
+} = applicationDetailSlice.actions;
+export const setApplicationDetail = hydrateApplicationDetailFromCache;
 export const { clearClientApplications } = clientApplicationsSlice.actions;
 export const { clearIsoApplications } = isoApplicationsSlice.actions;
 export const { resetUpdateApplication } = updateApplicationSlice.actions;

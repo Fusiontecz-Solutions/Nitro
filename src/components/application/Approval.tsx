@@ -73,6 +73,12 @@ const toValidNumber = (value: unknown): number | null => {
     return Number.isFinite(num) ? num : null;
 };
 
+/** Like toValidNumber but ignores zero/negative placeholders from stale rows. */
+const toPositiveNumber = (value: unknown): number | null => {
+    const num = toValidNumber(value);
+    return num != null && num > 0 ? num : null;
+};
+
 // Custom Slider Component
 interface SliderProps {
     value: number;
@@ -215,6 +221,8 @@ type ApprovalProps = {
     showSendToClient?: boolean;
     applicationData?: any;
     termsOffers?: TermsOffer[];
+    /** Preloaded offer decision (e.g. public approval link — agents cannot call /offer-decisions). */
+    offerDecision?: Record<string, unknown> | null;
 };
 
 const Approval = ({
@@ -223,6 +231,7 @@ const Approval = ({
     compactSpacing = false,
     applicationData: applicationDataProp,
     termsOffers: termsOffersProp,
+    offerDecision: offerDecisionProp,
 }: ApprovalProps) => {
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
@@ -230,7 +239,8 @@ const Approval = ({
 
     const { data: applicationDataRedux } = useSelector((state: RootState) => state.applicationDetail);
     const { data: termsOffersRedux, loading: termsOffersLoadingRedux } = useSelector((state: RootState) => state.termsOffers);
-    const [offerDecisionData, setOfferDecisionData] = useState<any>(null);
+    const [offerDecisionFetched, setOfferDecisionFetched] = useState<any>(null);
+    const offerDecisionData = offerDecisionProp ?? offerDecisionFetched;
 
     const applicationData = applicationDataProp ?? applicationDataRedux;
     const termsOffers = termsOffersProp ?? termsOffersRedux;
@@ -365,9 +375,11 @@ const Approval = ({
 
     // Fetch persisted offer decision by application id (DB source of truth)
     useEffect(() => {
+        if (offerDecisionProp != null) return;
+
         const loadOfferDecision = async () => {
             if (!offerDecisionApplicationId) {
-                setOfferDecisionData(null);
+                setOfferDecisionFetched(null);
                 return;
             }
             try {
@@ -375,29 +387,29 @@ const Approval = ({
                     params: { application: offerDecisionApplicationId },
                 });
                 const apiData = (res.data && res.data.data) || null;
-                setOfferDecisionData(apiData);
+                setOfferDecisionFetched(apiData);
             } catch {
-                setOfferDecisionData(null);
+                setOfferDecisionFetched(null);
             }
         };
         void loadOfferDecision();
-    }, [offerDecisionApplicationId]);
+    }, [offerDecisionApplicationId, offerDecisionProp]);
 
     const latestTermsOffer: TermsOffer | undefined = termsOffers?.[0];
 
     const resolvedOfferAmount =
-        toValidNumber(offerDecisionData?.offer) ??
-        toValidNumber(latestTermsOffer?.approvedAmount) ??
-        toValidNumber(applicationData?.loanAmount) ??
+        toPositiveNumber(offerDecisionData?.offer) ??
+        toPositiveNumber(latestTermsOffer?.approvedAmount) ??
+        toPositiveNumber(applicationData?.loanAmount) ??
         100000;
     const resolvedTerm =
-        toValidNumber(offerDecisionData?.term) ??
-        toValidNumber(latestTermsOffer?.termLength) ??
+        toPositiveNumber(offerDecisionData?.term) ??
+        toPositiveNumber(latestTermsOffer?.termLength) ??
         8;
     const resolvedUpsell =
-        toValidNumber(applicationData?.commissionPercentage) ??
-        toValidNumber(offerDecisionData?.fees) ??
-        toValidNumber(latestTermsOffer?.commissionPercent) ??
+        toPositiveNumber(applicationData?.commissionPercentage) ??
+        toPositiveNumber(offerDecisionData?.fees) ??
+        toPositiveNumber(latestTermsOffer?.commissionPercent) ??
         12;
     const {
         control,
@@ -446,10 +458,10 @@ const Approval = ({
         const borrowerName = client?.owner ? `${client.owner.firstName || ""} ${client.owner.lastName || ""}`.trim() : null;
         const businessName = client?.business?.name ?? null;
 
-        const dbOfferNum = toValidNumber(offerDecisionData?.offer);
-        const termsApprovedAmountNum = toValidNumber(latestTermsOffer?.approvedAmount);
-        const formAdvanceNum = toValidNumber(advanceAmount);
-        const applicationLoanAmountNum = toValidNumber(applicationData?.loanAmount);
+        const dbOfferNum = toPositiveNumber(offerDecisionData?.offer);
+        const termsApprovedAmountNum = toPositiveNumber(latestTermsOffer?.approvedAmount);
+        const formAdvanceNum = toPositiveNumber(advanceAmount);
+        const applicationLoanAmountNum = toPositiveNumber(applicationData?.loanAmount);
 
         const normalizedFrequency = String(offerDecisionData?.frequency ?? latestTermsOffer?.frequency ?? "").trim();
         const frequency = normalizedFrequency === "Weekly" || normalizedFrequency === "Monthly" || normalizedFrequency === "Daily"
