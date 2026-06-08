@@ -1,5 +1,4 @@
 import { Queue } from 'bullmq';
-import Redis from 'ioredis';
 // Type-only import: keeps the runtime module graph acyclic
 // (applicationApprovalService imports this queue module for value).
 import type { ApprovalSideEffectPayload } from '../services/applicationApprovalService';
@@ -31,13 +30,13 @@ let queueInstance: Queue<ApplicationApprovalJobData, void, ApplicationApprovalJo
 
 const redisUrl = (): string => String(process.env.REDIS_URL || '').trim();
 
-const createRedisConnection = (): Redis =>
-    new Redis(redisUrl(), {
-        maxRetriesPerRequest: null,
-        retryStrategy(times) {
-            return Math.min(times * 200, 2_000);
-        },
-    });
+const getRedisConnectionOptions = () => ({
+    url: redisUrl(),
+    maxRetriesPerRequest: null as null,
+    retryStrategy(times: number) {
+        return Math.min(times * 200, 2_000);
+    },
+});
 
 export const isApplicationApprovalQueueEnabled = (): boolean => Boolean(redisUrl());
 
@@ -47,10 +46,10 @@ export const getApplicationApprovalQueue = ():
     if (!isApplicationApprovalQueueEnabled()) return null;
 
     if (!queueInstance) {
-        queueInstance = new Queue<ApplicationApprovalJobData, void, ApplicationApprovalJobName>(
+        queueInstance = new Queue(
             APPLICATION_APPROVAL_QUEUE_NAME,
             {
-                connection: createRedisConnection(),
+                connection: getRedisConnectionOptions(),
                 defaultJobOptions: {
                     /** Keeps last 500 successful jobs for observability without unbounded growth. */
                     removeOnComplete: 500,
