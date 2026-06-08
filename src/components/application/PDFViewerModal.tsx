@@ -96,7 +96,7 @@ import {
     prepareDealReviewPrefillDisplay,
     CONTRACT_PREFILL_OVERRIDES_SECTION,
     getApplicationPrimaryRecipientName,
-    getSignerRecipientEmailForContract,
+    // getSignerRecipientEmailForContract,
     resolveEffectiveDocuSignSignerEmail,
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
@@ -866,10 +866,10 @@ const PDFViewerModal = ({
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
     /** CRM-only client email (contract + application client). */
-    const primaryClientRecipientEmail = useMemo(
-        () => getSignerRecipientEmailForContract(applicationData, resolvedContract),
-        [applicationData, resolvedContract],
-    );
+    // const primaryClientRecipientEmail = useMemo(
+    //     () => getSignerRecipientEmailForContract(applicationData, resolvedContract),
+    //     [applicationData, resolvedContract],
+    // );
 
     const offerDecisionState = useSelector((state: RootState) => state.offerDecision);
     const offerDecisionData = offerDecisionState?.data ?? null;
@@ -3864,50 +3864,50 @@ const PDFViewerModal = ({
         void handleSaveCurrentPanel();
     };
 
-    const getPrefillValue = (...ids: string[]) => {
-        const found = prefillFieldsPreview.find((f) => ids.includes(f.id));
-        return String(found?.value || "").trim();
-    };
+    // const getPrefillValue = (...ids: string[]) => {
+    //     const found = prefillFieldsPreview.find((f) => ids.includes(f.id));
+    //     return String(found?.value || "").trim();
+    // };
 
-    const signerRows = buildContractPartySignerRows({
-        clientEmail:
-            primaryClientRecipientEmail ||
-            getPrefillValue("customer_email", "business_email", "client_email", "owner_email"),
-        clientName:
-            getPrefillValue("customer_name", "owner_name", "business_name") ||
-            getApplicationPrimaryRecipientName(applicationData),
-        owners: ownerEntries.map((entry) => ({
-            firstName: String(entry.ownerFirstName || "").trim(),
-            lastName: String(entry.ownerLastName || "").trim(),
-            email: String(entry.ownerEmail || "").trim(),
-        })),
-        guarantors: guarantorEntries.map((entry) => ({
-            firstName: String(entry.guarantorFirstName || "").trim(),
-            lastName: String(entry.guarantorLastName || "").trim(),
-            email: String(entry.guarantorEmail || "").trim(),
-        })),
-    }).filter((row) => row.name || row.email);
+    // const signerRows = buildContractPartySignerRows({
+    //     clientEmail:
+    //         primaryClientRecipientEmail ||
+    //         getPrefillValue("customer_email", "business_email", "client_email", "owner_email"),
+    //     clientName:
+    //         getPrefillValue("customer_name", "owner_name", "business_name") ||
+    //         getApplicationPrimaryRecipientName(applicationData),
+    //     owners: ownerEntries.map((entry) => ({
+    //         firstName: String(entry.ownerFirstName || "").trim(),
+    //         lastName: String(entry.ownerLastName || "").trim(),
+    //         email: String(entry.ownerEmail || "").trim(),
+    //     })),
+    //     guarantors: guarantorEntries.map((entry) => ({
+    //         firstName: String(entry.guarantorFirstName || "").trim(),
+    //         lastName: String(entry.guarantorLastName || "").trim(),
+    //         email: String(entry.guarantorEmail || "").trim(),
+    //     })),
+    // }).filter((row) => row.name || row.email);
 
-    const signerTableRows = (() => {
-        const defaults = {
-            Client: { role: "Client", name: "John Carter", email: "john.carter@example.com" },
-            Owner: { role: "Owner", name: "Sarah Lee", email: "sarah.lee@example.com" },
-            Guarantor: { role: "Guarantor", name: "Michael Brown", email: "michael.brown@example.com" },
-        } as const;
+    // const signerTableRows = (() => {
+    //     const defaults = {
+    //         Client: { role: "Client", name: "John Carter", email: "john.carter@example.com" },
+    //         Owner: { role: "Owner", name: "Sarah Lee", email: "sarah.lee@example.com" },
+    //         Guarantor: { role: "Guarantor", name: "Michael Brown", email: "michael.brown@example.com" },
+    //     } as const;
 
-        const byRole = new Map<string, { role: string; name: string; email: string }>();
-        signerRows.forEach((row) => {
-            if (!byRole.has(row.role)) {
-                byRole.set(row.role, row);
-            }
-        });
+    //     const byRole = new Map<string, { role: string; name: string; email: string }>();
+    //     signerRows.forEach((row) => {
+    //         if (!byRole.has(row.role)) {
+    //             byRole.set(row.role, row);
+    //         }
+    //     });
 
-        return [
-            byRole.get("Client") || defaults.Client,
-            byRole.get("Owner") || defaults.Owner,
-            byRole.get("Guarantor") || defaults.Guarantor,
-        ];
-    })();
+    //     return [
+    //         byRole.get("Client") || defaults.Client,
+    //         byRole.get("Owner") || defaults.Owner,
+    //         byRole.get("Guarantor") || defaults.Guarantor,
+    //     ];
+    // })();
 
     if (!isOpen || !fileUrl) return null;
 

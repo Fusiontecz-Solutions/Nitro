@@ -98,10 +98,10 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
+import {
   downloadFailedBulkUploadRows,
   type BulkImportRowError,
 } from "@/lib/bulkUploadErrors";
-import {
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
