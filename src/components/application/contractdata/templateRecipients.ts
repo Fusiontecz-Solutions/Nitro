@@ -314,27 +314,258 @@ export function resolveDocuSignRolesForEnvelopeSend(options: {
     );
 }
 
+export type ContractPartyPerson = {
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+};
+
+function normalizeRoleKey(role: string): string {
+    return String(role || "").trim().toLowerCase();
+}
+
+function isOwnerRoleName(role: string): boolean {
+    const key = normalizeRoleKey(role);
+    return key === "owner" || /^owner[\s_-]*\d*$/.test(key);
+}
+
+function isGuarantorRoleName(role: string): boolean {
+    return normalizeRoleKey(role).includes("guarantor");
+}
+
+function isClientRoleName(role: string): boolean {
+    const key = normalizeRoleKey(role);
+    return (
+        key === "client" ||
+        key.includes("merchant") ||
+        key.includes("receiver") ||
+        key.includes("customer")
+    );
+}
+
+/** Build numbered owner/guarantor/client rows from CRM contract parties. */
+export function buildContractPartySignerRows(options: {
+    clientEmail?: string;
+    clientName?: string;
+    owners?: ContractPartyPerson[];
+    guarantors?: ContractPartyPerson[];
+}): ContractSignerOverrideRow[] {
+    const rows: ContractSignerOverrideRow[] = [];
+    const clientEmail = String(options.clientEmail || "").trim();
+    const clientName = String(options.clientName || "").trim();
+    if (clientEmail) {
+        rows.push({
+            role: "Client",
+            name: clientName || clientEmail.split("@")[0],
+            email: clientEmail,
+        });
+    }
+    (options.owners || []).forEach((owner, idx) => {
+        const email = String(owner.email || "").trim();
+        if (!email) return;
+        const name =
+            `${String(owner.firstName || "").trim()} ${String(owner.lastName || "").trim()}`.trim() ||
+            email.split("@")[0];
+        rows.push({
+            role: idx === 0 ? "Owner" : `Owner ${idx + 1}`,
+            name,
+            email,
+        });
+    });
+    (options.guarantors || []).forEach((guarantor, idx) => {
+        const email = String(guarantor.email || "").trim();
+        if (!email) return;
+        const name =
+            `${String(guarantor.firstName || "").trim()} ${String(guarantor.lastName || "").trim()}`.trim() ||
+            email.split("@")[0];
+        rows.push({
+            role: idx === 0 ? "Guarantor" : `Guarantor ${idx + 1}`,
+            name,
+            email,
+        });
+    });
+    return rows;
+}
+
 /** Fill template signer slots from CRM owner/guarantor/client rows when role names match. */
 export function mergeApplicationDataIntoSignerRoles(
     roles: DocuSignTemplateRolePayload[],
     appRows: ContractSignerOverrideRow[],
 ): DocuSignTemplateRolePayload[] {
-    const byRole = new Map<string, ContractSignerOverrideRow>();
+    if (!appRows.length) return roles;
+
+    const byExactRole = new Map<string, ContractSignerOverrideRow>();
     for (const row of appRows) {
-        const key = String(row.role || "").trim().toLowerCase();
-        if (key && row.email.trim() && !byRole.has(key)) {
-            byRole.set(key, row);
+        const key = normalizeRoleKey(row.role);
+        if (key && row.email.trim() && !byExactRole.has(key)) {
+            byExactRole.set(key, row);
         }
     }
-    if (!byRole.size) return roles;
-    return roles.map((r) => {
-        const key = String(r.signerRole || "").trim().toLowerCase();
-        const match = key ? byRole.get(key) : undefined;
-        if (!match) return r;
-        return {
-            ...r,
-            signerEmail: match.email.trim(),
-            signerName: match.name.trim() || r.signerName,
-        };
+
+    const clientRows = appRows.filter(
+        (r) => isClientRoleName(r.role) && String(r.email || "").trim(),
+    );
+    const ownerRows = appRows.filter(
+        (r) => isOwnerRoleName(r.role) && String(r.email || "").trim(),
+    );
+    const guarantorRows = appRows.filter(
+        (r) => isGuarantorRoleName(r.role) && String(r.email || "").trim(),
+    );
+
+    let ownerIdx = 0;
+    let guarantorIdx = 0;
+
+    return roles.map((r, slotIdx) => {
+        const roleLabel = String(r.signerRole || "").trim();
+
+        if (isGuarantorRoleName(roleLabel) && guarantorRows[guarantorIdx]) {
+            const match = guarantorRows[guarantorIdx++];
+            return {
+                ...r,
+                signerEmail: match.email.trim(),
+                signerName: match.name.trim() || r.signerName,
+            };
+        }
+
+        if (isOwnerRoleName(roleLabel) && ownerRows[ownerIdx]) {
+            const match = ownerRows[ownerIdx++];
+            return {
+                ...r,
+                signerEmail: match.email.trim(),
+                signerName: match.name.trim() || r.signerName,
+            };
+        }
+
+        if (isClientRoleName(roleLabel) && clientRows[0]) {
+            return {
+                ...r,
+                signerEmail: clientRows[0].email.trim(),
+                signerName: clientRows[0].name.trim() || r.signerName,
+            };
+        }
+
+        const exact = byExactRole.get(normalizeRoleKey(roleLabel));
+        if (exact) {
+            return {
+                ...r,
+                signerEmail: exact.email.trim(),
+                signerName: exact.name.trim() || r.signerName,
+            };
+        }
+
+        const partyBySlot = appRows[slotIdx];
+        if (partyBySlot?.email.trim()) {
+            return {
+                ...r,
+                signerEmail: partyBySlot.email.trim(),
+                signerName: partyBySlot.name.trim() || r.signerName,
+            };
+        }
+
+        return r;
     });
+}
+
+export type SignerEditorRow = {
+    id: string;
+    role: string;
+    name: string;
+    email: string;
+};
+
+/** Rows for the signer editor — saved overrides win, else template slots + CRM parties. */
+export function buildSignerEditorRows(options: {
+    savedOverrides?: ContractSignerOverrideRow[] | null;
+    templateRoles: Array<Record<string, unknown>>;
+    applicationSignerEmail: string;
+    applicationSignerName: string;
+    partyRows: ContractSignerOverrideRow[];
+}): SignerEditorRow[] {
+    if (options.savedOverrides?.length) {
+        return options.savedOverrides.map((row, idx) => ({
+            id: String(idx + 1),
+            role: row.role,
+            name: row.name,
+            email: row.email,
+        }));
+    }
+
+    const resolved = mergeApplicationDataIntoSignerRoles(
+        buildBoldSignRolesFromTemplateRecipients(
+            options.templateRoles,
+            options.applicationSignerEmail,
+            options.applicationSignerName,
+            { singleSignerOnly: false },
+        ),
+        options.partyRows,
+    );
+
+    if (resolved.length) {
+        return resolved.map((row, idx) => ({
+            id: String(idx + 1),
+            role: row.signerRole,
+            name: row.signerName,
+            email: row.signerEmail,
+        }));
+    }
+
+    if (options.partyRows.length) {
+        return options.partyRows.map((row, idx) => ({
+            id: String(idx + 1),
+            role: row.role,
+            name: row.name,
+            email: row.email,
+        }));
+    }
+
+    const email = String(options.applicationSignerEmail || "").trim();
+    if (!email) return [{ id: "1", role: "", name: "", email: "" }];
+    return [
+        {
+            id: "1",
+            role: DOCUSIGN_DEFAULT_SIGNER_ROLE,
+            name: options.applicationSignerName || email.split("@")[0],
+            email,
+        },
+    ];
+}
+
+/** Next unused DocuSign template role name (for “Add signer”). */
+export function suggestNextTemplateSignerRole(
+    templateRoles: Array<Record<string, unknown>>,
+    usedRoles: string[],
+): string {
+    const used = new Set(usedRoles.map((r) => normalizeRoleKey(r)));
+    for (const row of templateRoles) {
+        const label = getTemplateRoleLabel(row);
+        if (label && !used.has(normalizeRoleKey(label))) return label;
+    }
+    return "";
+}
+
+export function validateDocuSignSignerRoles(
+    roles: DocuSignTemplateRolePayload[],
+): { valid: boolean; message?: string } {
+    if (!roles.length) {
+        return {
+            valid: false,
+            message:
+                "Add at least one signer with a role name and email before sending to DocuSign.",
+        };
+    }
+    const missing = roles
+        .map((r, idx) =>
+            String(r.signerEmail || "").trim() ? -1 : idx,
+        )
+        .filter((i) => i >= 0);
+    if (missing.length) {
+        const labels = missing
+            .map((i) => roles[i]?.signerRole || `Signer ${i + 1}`)
+            .join(", ");
+        return {
+            valid: false,
+            message: `Every DocuSign signer needs an email. Missing for: ${labels}.`,
+        };
+    }
+    return { valid: true };
 }

@@ -70,6 +70,7 @@ import {
     getSignerRecipientEmailForContract,
     getApplicationPrimaryRecipientName,
     resolveBalanceTransferMerchantContext,
+    mergeContractPrefillOverrideLayers,
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
     type BuildContractPrefillFieldsArgs,
@@ -79,6 +80,7 @@ import { buildBoldSignMergeRolesForStateTemplateMerge } from "./contractdata/bol
 import {
     applyDocumentTemplateMappingPrefillOverrides,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
     buildDocuSignEnvelopeEmailSubject,
@@ -1002,19 +1004,34 @@ export default function ContractTab({
     const getPrimaryRecipientEmail = () =>
         getSignerRecipientEmailForContract(applicationData, fetchedContract);
 
-    const buildPrefillFields = () => {
-        const fromContract = normalizeContractPrefillOverrides(
-            (fetchedContract as { contractPrefillOverrides?: unknown } | null)?.contractPrefillOverrides,
+    const buildPrefillFields = (contractRow?: Record<string, unknown> | null) => {
+        const source =
+            contractRow ??
+            (fetchedContract && typeof fetchedContract === "object"
+                ? (fetchedContract as Record<string, unknown>)
+                : null);
+        const fromContract = stripDocumentTemplateBlobFromPrefillOverrides(
+            normalizeContractPrefillOverrides(
+                (source as { contractPrefillOverrides?: unknown } | null)?.contractPrefillOverrides,
+            ) ?? null,
         );
         const note = String((applicationData as { note?: string })?.note || "");
         const fromNote = parseNoteStructuredSection<Partial<BuildContractPrefillFieldsArgs>>(
             note,
             CONTRACT_PREFILL_OVERRIDES_SECTION,
         );
-        const overrides = fromContract ?? fromNote ?? undefined;
+        const mergedOverrides = mergeContractPrefillOverrideLayers(fromNote, fromContract);
+        const overrides =
+            Object.keys(mergedOverrides).length > 0 ? mergedOverrides : undefined;
+        const recordsForBuild: ContractPrefillContractRecords | undefined = selectedContractId
+            ? {
+                  ...contractPrefillRecords,
+                  contract: source,
+              }
+            : undefined;
         return buildContractPrefillFieldsFromApplication(applicationData, {
             agreementDate: formatDate(new Date()),
-            contractRecords: selectedContractId ? contractPrefillRecords : undefined,
+            contractRecords: recordsForBuild,
             overrides,
             offerDecision: (offerDecision as Record<string, unknown> | null) ?? null,
         });
@@ -1148,7 +1165,7 @@ export default function ContractTab({
             }
 
             const primarySignerEmail = String(roles[0]?.signerEmail || "").trim();
-            let prefillFieldsPayload = buildPrefillFields().map((field) => ({
+            let prefillFieldsPayload = buildPrefillFields(latestContract).map((field) => ({
                 id: field.id,
                 value: field.value,
             }));
