@@ -101,6 +101,8 @@ const NotificationDropdown = () => {
                 return '📄';
             case 'application_update':
                 return '📋';
+            case 'contract_signing':
+                return '✍️';
             case 'system':
                 return '⚙️';
             default:

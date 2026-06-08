@@ -472,12 +472,13 @@ export default function Letters() {
       setSubject(`${selectedTemplate.name} - ${defaults.business_name || dealLabel}`);
     } else if (selectedTemplate.category === "letter") {
       setSubject(
-        isPayoffOrZeroBalanceLetterTemplate(selectedTemplate.name)
-          ? buildPayoffOrZeroBalanceMailSubject(
-              selectedTemplate.name,
-              defaults
-            )
-          : `RE: ${selectedTemplate.name} - Deal ID: ${dealLabel}`
+        selectedTemplate.name === "Payoff Statement"
+          ? `RE: Payoff Statement - Deal #${dealLabel}`
+          : selectedTemplate.name === "Payoff Wire Instructions"
+            ? `Payoff Letter - ${dealLabel}`
+            : selectedTemplate.name === "Zero balance letter"
+              ? `RE: Zero Balance Letter - Deal #${dealLabel}`
+              : `RE: ${selectedTemplate.name} - Deal ID: ${dealLabel}`
       );
     } else {
       setSubject(`${selectedTemplate.name} - ${dealLabel}`);

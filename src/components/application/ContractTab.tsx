@@ -892,7 +892,7 @@ export default function ContractTab({
             ).unwrap();
         } catch (err) {
             console.error(
-                "Failed to set application currentQueue/currentState to Contract Generated:",
+                "Failed to set application currentQueue/currentState to Contract Out:",
                 err,
             );
         }
@@ -932,7 +932,7 @@ export default function ContractTab({
 
         const anyApp = applicationData as any;
 
-        await persistContractPendingStage();
+        await persistContractsOutStage();
 
         const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
         const userFromStorage = (() => {
