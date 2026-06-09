@@ -1,0 +1,196 @@
+{
+  "layoutVersion": 1,
+  "key": "balance_transfer",
+  "name": "WOODMERE LLC -  BALANCE TRANSFER SHEET .",
+  "description": "Balance transfer — BoldSignTemplate type=balance_transfer.",
+  "legacyDocuSignTemplateId": "574ca299-5e72-4bbd-902c-e268831e20f1",
+  "pdf": {
+    "source": "boldSignTemplate",
+    "fileName": "WOODMERE LLC - BALANCE TRANSFER SHEET.pdf"
+  },
+  "document": {
+    "documentId": "1406",
+    "originalFileName": "WOODMERE LLC -  BALANCE TRANSFER SHEET ..pdf"
+  },
+  "signers": [
+    {
+      "roleName": "Signer",
+      "routingOrder": 1,
+      "legacyRecipientId": "1"
+    }
+  ],
+  "variables": [
+    "business_address",
+    "business_address_city",
+    "business_address_state",
+    "business_address_zip",
+    "business_legal_name",
+    "client_legal_name",
+    "client_name_by",
+    "dba",
+    "merchant_legal_name",
+    "purchase_price",
+    "signature_date"
+  ],
+  "placements": [
+    {
+      "id": "p1",
+      "type": "date",
+      "variable": "signature_date",
+      "slot": "date_p1_97_274",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "97",
+      "y": "274",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Date Signed 0ef512d2-e265-4b5f-a6d6-02e5eeb2dee5"
+    },
+    {
+      "id": "p2",
+      "type": "date",
+      "variable": "signature_date",
+      "slot": "date_p1_214_341",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "214",
+      "y": "341",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Date Signed 73ff113f-0e51-4950-8324-6dad99c3112a"
+    },
+    {
+      "id": "p3",
+      "type": "date",
+      "variable": "signature_date",
+      "slot": "date_p1_234_362",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "234",
+      "y": "362",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Date Signed fcb0201a-c5fa-46d0-88e2-cee43bd972da"
+    },
+    {
+      "id": "p4",
+      "type": "text",
+      "variable": "purchase_price",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "182",
+      "y": "385",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "purchase_price"
+    },
+    {
+      "id": "p5",
+      "type": "text",
+      "variable": "business_address_city",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "155",
+      "y": "251",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "business_address_city"
+    },
+    {
+      "id": "p6",
+      "type": "text",
+      "variable": "business_address_state",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "241",
+      "y": "252",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "business_address_state"
+    },
+    {
+      "id": "p7",
+      "type": "text",
+      "variable": "business_address_zip",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "326",
+      "y": "251",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "business_address_zip"
+    },
+    {
+      "id": "p8",
+      "type": "text",
+      "variable": "business_address",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "155",
+      "y": "230",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "business_address"
+    },
+    {
+      "id": "p9",
+      "type": "text",
+      "variable": "client_legal_name",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "173",
+      "y": "601",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "client_legal_name"
+    },
+    {
+      "id": "p10",
+      "type": "text",
+      "variable": "client_name_by",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "127",
+      "y": "573",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "client_name_by"
+    },
+    {
+      "id": "p11",
+      "type": "text",
+      "variable": "business_legal_name",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "237",
+      "y": "146",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "business_legal_name"
+    },
+    {
+      "id": "p12",
+      "type": "text",
+      "variable": "dba",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "100",
+      "y": "172",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "dba"
+    },
+    {
+      "id": "p13",
+      "type": "text",
+      "variable": "merchant_legal_name",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "243",
+      "y": "100",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "merchant_legal_name"
+    }
+  ]
+}

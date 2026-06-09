@@ -671,10 +671,7 @@ class ContractService {
       customerName: customerName || null,
       purchasePrice: purchasePrice || null,
       purchaseAmount: purchaseAmount || null,
-      purchasePercent:
-        offer?.rate != null && String(offer.rate).trim() !== ""
-          ? String(offer.rate).trim()
-          : null,
+      purchasePercent: null,
       securityTaxEin: taxEin || null,
       businessAddress: businessAddress || null,
       businessAddressCity: businessCity || null,
@@ -1865,9 +1862,13 @@ class ContractService {
   async createBoldSignTemplate(data: {
     name: string;
     type: string;
-    templateId: string;
+    templateId?: string;
     state?: string;
     frequency?: string;
+    pdfUrl?: string;
+    pdfPublicId?: string;
+    originalFileName?: string;
+    layoutKey?: string;
   }) {
     return (prisma as any).boldSignTemplate.create({
       data: {
@@ -1875,7 +1876,11 @@ class ContractService {
         type: data.type,
         state: data.state || null,
         frequency: data.frequency || null,
-        templateId: data.templateId,
+        templateId: data.templateId || null,
+        pdfUrl: data.pdfUrl || null,
+        pdfPublicId: data.pdfPublicId || null,
+        originalFileName: data.originalFileName || null,
+        layoutKey: data.layoutKey || null,
       },
     });
   }

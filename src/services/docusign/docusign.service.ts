@@ -45,6 +45,11 @@ import {
   resolveDocusignWebhookEnvelopeStatus,
 } from './utils/docusign-webhook';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
+import {
+  buildPlatformLayoutEnvelopeDefinition,
+  filterSupplementalRefs,
+  resolveSupplementalRefsFromDb,
+} from './utils/platform-layout-envelope';
 
 dotenv.config();
 
@@ -468,7 +473,7 @@ export class DocusignService {
     client: AxiosInstance,
     accountId: string,
     envelopeId: string,
-    templateId: string,
+    templateId?: string,
   ) {
     const res = await client.get(
       `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
@@ -478,14 +483,20 @@ export class DocusignService {
     );
     if (signers.length) return signers;
 
-    const templateRoles = await this.getTemplateSignerRoleNames(
-      client,
-      accountId,
-      templateId,
-    );
+    if (templateId) {
+      const templateRoles = await this.getTemplateSignerRoleNames(
+        client,
+        accountId,
+        templateId,
+      );
+      throw new BadRequestException(
+        `DocuSign envelope has no signers with email. Template role name(s): ${templateRoles.join(', ') || 'unknown'}. ` +
+          'CRM must send roles[].signerRole (or roleName) exactly matching the template role, plus a valid signerEmail.',
+      );
+    }
+
     throw new BadRequestException(
-      `DocuSign envelope has no signers with email. Template role name(s): ${templateRoles.join(', ') || 'unknown'}. ` +
-        'CRM must send roles[].signerRole (or roleName) exactly matching the template role, plus a valid signerEmail.',
+      'DocuSign envelope has no signers with email. Provide roles with signerEmail for each signer.',
     );
   }
 
@@ -973,12 +984,19 @@ export class DocusignService {
       return normalized[idx];
     };
 
+    const findByRoleReusable = (roleKey: string) => {
+      if (!roleKey) return null;
+      return normalized.find((row) => row.roleName.toLowerCase() === roleKey) || null;
+    };
+
     return envelopeSigners.map((signer, slotIdx) => {
       const roleKey = String(signer.roleName || '').trim().toLowerCase();
       const routingOrder = String(signer.routingOrder || slotIdx + 1).trim();
 
       return (
         takeFirstUnused((row) => row.roleName.toLowerCase() === roleKey) ||
+        /** Composite merges may repeat the same role (e.g. two "Signer" slots) — reuse CRM email. */
+        findByRoleReusable(roleKey) ||
         takeFirstUnused((row) => row.routingOrder === routingOrder) ||
         takeFirstUnused((_, ni) => ni === slotIdx) ||
         takeFirstUnused(() => true) ||
@@ -1018,6 +1036,13 @@ export class DocusignService {
       );
     }
 
+    if (normalized.length > signers.length) {
+      throw new BadRequestException(
+        `This DocuSign draft has ${signers.length} signer slot(s) but CRM now has ${normalized.length}. ` +
+          'Click Review & send again to create a new draft with all signers (e.g. Owner 2).',
+      );
+    }
+
     const matched = this.matchCrmSignersToEnvelopeSlots(signers, normalized);
     const missingRoles: string[] = [];
     const bulkUpdates: Array<{
@@ -1031,7 +1056,10 @@ export class DocusignService {
     for (let i = 0; i < signers.length; i++) {
       const signer = signers[i];
       const match = matched[i];
-      const email = String(match?.email || '').trim();
+      let email = String(match?.email || '').trim();
+      if (!email) {
+        email = String(signer.email || '').trim();
+      }
       const rid = String(signer.recipientId || '').trim();
       if (!rid) continue;
 
@@ -1040,7 +1068,10 @@ export class DocusignService {
         continue;
       }
 
-      const nextName = match?.name || email.split('@')[0];
+      const nextName =
+        match?.name ||
+        String(signer.name || '').trim() ||
+        email.split('@')[0];
       const currentEmail = String(signer.email || '').trim().toLowerCase();
       const currentName = String(signer.name || '').trim();
       if (
@@ -1974,88 +2005,21 @@ export class DocusignService {
     frequency?: string | null;
     type?: string | null;
   }): Promise<string[]> {
-    const state = this.normalizeTemplateLookupKey(filters.state);
-    const frequency = this.normalizeTemplateLookupKey(filters.frequency);
-    const type = this.normalizeTemplateLookupKey(filters.type);
-
-    const where: Prisma.BoldSignTemplateWhereInput = {};
-    if (state) where.state = state;
-    if (frequency) where.frequency = frequency;
-    if (type) where.type = type;
-
-    const rows = await prisma.boldSignTemplate.findMany({
-      where,
-      select: { templateId: true },
-    });
-    return [...new Set(rows.map((r) => String(r.templateId).trim()).filter(Boolean))];
+    return resolveSupplementalRefsFromDb(filters);
   }
 
-  // ─── Send single template ────────────────────────────────────────────────────
-
-  async sendTemplate(
-    userId: string,
+  private decoratePlatformLayoutEnvelope(
+    envelopeDefinition: Record<string, unknown>,
     options: {
-      templateId?: string;
-      redirectUrl?: string;
-      title?: string;
-      message?: string;
-      roles?: SignerRoleInput[];
-      signerName?: string;
-      signerEmail?: string;
-      prefillFields?: PrefillField[];
-      ccEmails?: string[];
       applicationId?: string;
+      ccEmails?: string[];
       reminderSettings?: {
         enableAutoReminder?: boolean;
         reminderDays?: number;
         reminderCount?: number;
       };
-      /** When true (or DOCUSIGN_AUTO_SEND_ENVELOPE), emails signers without opening sender view. */
-      autoSend?: boolean;
     },
   ) {
-    const { client, accountId } = await this.getAuthContext(userId);
-    const templateId = options.templateId || DOCUSIGN_DEFAULT_TEMPLATE_ID;
-    if (!templateId) {
-      throw new BadRequestException('templateId is required (set DOCUSIGN_DEFAULT_TEMPLATE_ID).');
-    }
-
-    let roles: SignerRoleInput[] = options.roles?.length
-      ? options.roles
-      : [
-          {
-            signerName: options.signerName || '',
-            signerEmail: options.signerEmail || '',
-            roleName: DOCUSIGN_DEFAULT_ROLE_NAME,
-          },
-        ];
-
-    const templateDef = await this.fetchTemplateDefinition(client, accountId, templateId);
-    const textTabs = await this.buildTextTabsForPrefill(
-      client,
-      accountId,
-      templateId,
-      options.prefillFields,
-      templateDef.textTabs,
-    );
-    const templateRoles = await this.buildTemplateRolesForSend(
-      client,
-      accountId,
-      templateId,
-      roles,
-      textTabs,
-      templateDef.roleNames,
-    );
-    const createTimePrefillTabCount = textTabs.length;
-
-    const envelopeDefinition: Record<string, unknown> = {
-      status: 'created',
-      emailSubject: options.title || 'Please sign this document',
-      emailBlurb: options.message || '',
-      templateId,
-      templateRoles,
-    };
-
     if (options.reminderSettings?.enableAutoReminder !== false) {
       (envelopeDefinition as any).notification = {
         reminders: {
@@ -2079,6 +2043,50 @@ export class DocusignService {
     if (connectNotification) {
       (envelopeDefinition as any).eventNotification = connectNotification;
     }
+  }
+
+  private async sendEnvelopeFromPlatformLayouts(
+    userId: string,
+    options: {
+      supplementalRefs?: string[];
+      redirectUrl?: string;
+      title?: string;
+      message?: string;
+      roles: SignerRoleInput[];
+      prefillFields?: PrefillField[];
+      ccEmails?: string[];
+      applicationId?: string;
+      ownerCount?: number;
+      guarantorCount?: number;
+      reminderSettings?: {
+        enableAutoReminder?: boolean;
+        reminderDays?: number;
+        reminderCount?: number;
+      };
+      autoSend?: boolean;
+    },
+  ) {
+    const { client, accountId } = await this.getAuthContext(userId);
+
+    let built;
+    try {
+      built = await buildPlatformLayoutEnvelopeDefinition({
+        supplementalRefs: options.supplementalRefs,
+        roles: options.roles,
+        prefillFields: options.prefillFields,
+        ownerCount: options.ownerCount,
+        guarantorCount: options.guarantorCount,
+        title: options.title,
+        message: options.message,
+      });
+    } catch (err: any) {
+      throw new BadRequestException(err?.message || String(err));
+    }
+
+    const envelopeDefinition: Record<string, unknown> = {
+      ...built.envelopeDefinition,
+    };
+    this.decoratePlatformLayoutEnvelope(envelopeDefinition, options);
 
     try {
       const createRes = await client.post(
@@ -2090,173 +2098,7 @@ export class DocusignService {
         throw new BadRequestException('DocuSign did not return envelopeId');
       }
 
-      await this.assertEnvelopeHasSigners(client, accountId, envelopeId, templateId);
-
-      return this.finalizeEnvelopeFlow(userId, envelopeId, {
-        applicationId: options.applicationId,
-        redirectUrl: options.redirectUrl,
-        ccEmails: options.ccEmails,
-        title: options.title,
-        prefillFields: options.prefillFields,
-        templateId,
-        autoSend: options.autoSend,
-        createTimePrefillTabCount,
-        client,
-        accountId,
-      });
-    } catch (error: any) {
-      if (error?.response?.status === 401) {
-        clearDocusignJwtCache();
-        throw new ServiceConfigException(
-          'DocuSign API rejected credentials. Check JWT key, impersonated user, and admin consent.',
-        );
-      }
-      if (error?.response?.data) {
-        throw new BadRequestException(`DocuSign error: ${JSON.stringify(error.response.data)}`);
-      }
-      throw new BadRequestException('Failed to send template: ' + (error?.message || error));
-    }
-  }
-
-  // ─── Merge multiple templates (composite) ───────────────────────────────────
-
-  async mergeAndSendTemplates(
-    userId: string,
-    options: {
-      templates?: Array<{ templateId: string }>;
-      templateIds?: string[];
-      contractTemplateFilters?: {
-        state?: string | null;
-        frequency?: string | null;
-        type?: string | null;
-      };
-      roles: SignerRoleInput[];
-      prefillFields?: PrefillField[];
-      redirectUrl?: string;
-      applicationId?: string;
-      ccEmails?: string[];
-      title?: string;
-      message?: string;
-      autoSend?: boolean;
-    },
-  ) {
-    if (!options?.roles?.length) {
-      throw new BadRequestException('At least one role is required');
-    }
-
-    let templateIds: string[] = [];
-    if (options.templateIds?.length) {
-      templateIds = options.templateIds.map((id) => String(id).trim()).filter(Boolean);
-    } else if (options.contractTemplateFilters) {
-      templateIds = await this.resolveTemplateIdsFromDb(options.contractTemplateFilters);
-    } else if (options.templates?.length) {
-      templateIds = options.templates.map((t) => String(t.templateId).trim()).filter(Boolean);
-    }
-
-    if (!templateIds.length) {
-      throw new BadRequestException(
-        'No DocuSign template IDs to merge. Provide templateIds or contractTemplateFilters.',
-      );
-    }
-
-    if (templateIds.length === 1) {
-      return this.sendTemplate(userId, {
-        templateId: templateIds[0],
-        roles: options.roles,
-        prefillFields: options.prefillFields,
-        redirectUrl: options.redirectUrl,
-        applicationId: options.applicationId,
-        ccEmails: options.ccEmails,
-        title: options.title,
-        message: options.message,
-        autoSend: options.autoSend,
-      });
-    }
-
-    const { client, accountId } = await this.getAuthContext(userId);
-    const textTabs = await this.buildTextTabsForPrefill(
-      client,
-      accountId,
-      templateIds[0],
-      options.prefillFields,
-    );
-    const signers = this.normalizeSignerRoles(options.roles);
-    if (!signers.length) {
-      throw new BadRequestException('At least one signer with a valid email is required.');
-    }
-
-    const templateRoleNames = await this.getTemplateSignerRoleNames(
-      client,
-      accountId,
-      templateIds[0],
-    );
-
-    const compositeTemplates = templateIds.map((tid, idx) => ({
-      compositeTemplateId: String(idx + 1),
-      serverTemplates: [{ sequence: '1', templateId: tid }],
-      inlineTemplates: [
-        {
-          sequence: String(idx + 1),
-          recipients: {
-            signers: signers.map((signer, signerIdx) => {
-              const crmRole = String(signer.roleName || '').trim();
-              const crmMatchesTemplate =
-                crmRole &&
-                templateRoleNames.some((n) => n.toLowerCase() === crmRole.toLowerCase());
-              const roleName =
-                (crmMatchesTemplate ? crmRole : '') ||
-                templateRoleNames[signerIdx] ||
-                templateRoleNames[0] ||
-                crmRole ||
-                DOCUSIGN_DEFAULT_ROLE_NAME;
-              return {
-                roleName,
-                name: signer.name || signer.email.split('@')[0],
-                email: signer.email,
-                recipientId: String(signerIdx + 1),
-                routingOrder: String(signer.routingOrder || signerIdx + 1),
-                ...(idx === 0 && signerIdx === 0 && textTabs.length
-                  ? { tabs: { textTabs } }
-                  : {}),
-              };
-            }),
-          },
-        },
-      ],
-    }));
-
-    const envelopeDefinition: Record<string, unknown> = {
-      status: 'created',
-      emailSubject: options.title || 'Please sign this document',
-      emailBlurb: options.message || '',
-      compositeTemplates,
-    };
-
-    const appId = String(options.applicationId || '').trim();
-    const mergeCustomFields = this.buildEnvelopeTextCustomFields(
-      appId,
-      options.ccEmails,
-    );
-    if (mergeCustomFields.length) {
-      (envelopeDefinition as any).customFields = {
-        textCustomFields: mergeCustomFields,
-      };
-    }
-
-    const connectNotification = this.buildEnvelopeConnectNotification();
-    if (connectNotification) {
-      (envelopeDefinition as any).eventNotification = connectNotification;
-    }
-
-    try {
-      const createRes = await client.post(
-        `/v2.1/accounts/${accountId}/envelopes`,
-        envelopeDefinition,
-      );
-      const envelopeId = createRes.data?.envelopeId;
-      if (!envelopeId) {
-        throw new BadRequestException('DocuSign did not return envelopeId from composite merge');
-      }
+      await this.assertEnvelopeHasSigners(client, accountId, envelopeId);
 
       const result = await this.finalizeEnvelopeFlow(userId, envelopeId, {
         applicationId: options.applicationId,
@@ -2264,8 +2106,8 @@ export class DocusignService {
         ccEmails: options.ccEmails,
         title: options.title,
         prefillFields: options.prefillFields,
-        templateId: templateIds[0],
         autoSend: options.autoSend,
+        createTimePrefillTabCount: built.createTimePrefillTabCount,
         client,
         accountId,
       });
@@ -2274,7 +2116,8 @@ export class DocusignService {
         ...result,
         data: {
           ...(result.data as object),
-          templateIds,
+          layoutKeys: built.layoutKeys,
+          supplementalRefs: options.supplementalRefs || [],
           merge: createRes.data,
         },
       };
@@ -2288,8 +2131,121 @@ export class DocusignService {
       if (error?.response?.data) {
         throw new BadRequestException(`DocuSign error: ${JSON.stringify(error.response.data)}`);
       }
-      throw new BadRequestException('Failed to merge and send templates: ' + (error?.message || error));
+      throw new BadRequestException(
+        'Failed to send envelope from platform layouts: ' + (error?.message || error),
+      );
     }
+  }
+
+  // ─── Send contract (platform PDF + coordinate layouts) ───────────────────────
+
+  async sendTemplate(
+    userId: string,
+    options: {
+      templateId?: string;
+      redirectUrl?: string;
+      title?: string;
+      message?: string;
+      roles?: SignerRoleInput[];
+      signerName?: string;
+      signerEmail?: string;
+      prefillFields?: PrefillField[];
+      ccEmails?: string[];
+      applicationId?: string;
+      ownerCount?: number;
+      guarantorCount?: number;
+      reminderSettings?: {
+        enableAutoReminder?: boolean;
+        reminderDays?: number;
+        reminderCount?: number;
+      };
+      /** When true (or DOCUSIGN_AUTO_SEND_ENVELOPE), emails signers without opening sender view. */
+      autoSend?: boolean;
+    },
+  ) {
+    const roles: SignerRoleInput[] = options.roles?.length
+      ? options.roles
+      : [
+          {
+            signerName: options.signerName || '',
+            signerEmail: options.signerEmail || '',
+            roleName: DOCUSIGN_DEFAULT_ROLE_NAME,
+          },
+        ];
+
+    return this.sendEnvelopeFromPlatformLayouts(userId, {
+      supplementalRefs: [],
+      roles,
+      redirectUrl: options.redirectUrl,
+      title: options.title,
+      message: options.message,
+      prefillFields: options.prefillFields,
+      ccEmails: options.ccEmails,
+      applicationId: options.applicationId,
+      ownerCount: options.ownerCount,
+      guarantorCount: options.guarantorCount,
+      reminderSettings: options.reminderSettings,
+      autoSend: options.autoSend,
+    });
+  }
+
+  // ─── Merge multiple templates (composite) ───────────────────────────────────
+
+  async mergeAndSendTemplates(
+    userId: string,
+    options: {
+      templates?: Array<{ templateId: string }>;
+      templateIds?: string[];
+      supplementalDocumentRefs?: string[];
+      contractTemplateFilters?: {
+        state?: string | null;
+        frequency?: string | null;
+        type?: string | null;
+      };
+      roles: SignerRoleInput[];
+      prefillFields?: PrefillField[];
+      redirectUrl?: string;
+      applicationId?: string;
+      ccEmails?: string[];
+      title?: string;
+      message?: string;
+      ownerCount?: number;
+      guarantorCount?: number;
+      autoSend?: boolean;
+    },
+  ) {
+    if (!options?.roles?.length) {
+      throw new BadRequestException('At least one role is required');
+    }
+
+    let supplementalRefs: string[] = [];
+    if (options.supplementalDocumentRefs?.length) {
+      supplementalRefs = options.supplementalDocumentRefs
+        .map((id) => String(id).trim())
+        .filter(Boolean);
+    } else if (options.templateIds?.length) {
+      supplementalRefs = await filterSupplementalRefs(options.templateIds);
+    } else if (options.contractTemplateFilters) {
+      supplementalRefs = await this.resolveTemplateIdsFromDb(options.contractTemplateFilters);
+    } else if (options.templates?.length) {
+      supplementalRefs = await filterSupplementalRefs(
+        options.templates.map((t) => String(t.templateId).trim()).filter(Boolean),
+      );
+    }
+
+    return this.sendEnvelopeFromPlatformLayouts(userId, {
+      supplementalRefs,
+      roles: options.roles,
+      prefillFields: options.prefillFields,
+      redirectUrl: options.redirectUrl,
+      applicationId: options.applicationId,
+      ccEmails: options.ccEmails,
+      title: options.title,
+      message: options.message,
+      ownerCount: options.ownerCount,
+      guarantorCount: options.guarantorCount,
+      autoSend: options.autoSend,
+    });
   }
 
   /**
@@ -2513,12 +2469,23 @@ export class DocusignService {
   }
 
   async getTemplateRecipients(userId: string, templateId?: string) {
-    const { client, accountId } = await this.getAuthContext(userId);
-    const tid = templateId || DOCUSIGN_DEFAULT_TEMPLATE_ID;
+    const tid = String(templateId || DOCUSIGN_DEFAULT_TEMPLATE_ID || '').trim();
     if (!tid) {
-      throw new BadRequestException('templateId is required');
+      const roles = [
+        { roleIndex: 1, roleName: 'Client', signerName: '', signerEmail: '', signerOrder: 1 },
+        { roleIndex: 2, roleName: 'Owner', signerName: '', signerEmail: '', signerOrder: 2 },
+        { roleIndex: 3, roleName: 'Owner 2', signerName: '', signerEmail: '', signerOrder: 3 },
+      ];
+      return {
+        success: true,
+        templateId: null,
+        roles,
+        raw: null,
+        source: 'platform-layout',
+      };
     }
 
+    const { client, accountId } = await this.getAuthContext(userId);
     const res = await client.get(
       `/v2.1/accounts/${accountId}/templates/${tid}/recipients`,
     );

@@ -76,6 +76,7 @@ export const sendTemplate = async (req: Request, res: Response) => {
       ccEmails,
       applicationId,
       autoSend,
+      ownerCount,
     } = req.body;
 
     if (!roles?.length && (!signerName || !signerEmail)) {
@@ -97,6 +98,7 @@ export const sendTemplate = async (req: Request, res: Response) => {
       ccEmails: ccEmails || [],
       applicationId,
       autoSend: autoSend === false ? false : undefined,
+      ownerCount: ownerCount != null ? Number(ownerCount) : undefined,
     });
 
     return res.json(result);
@@ -318,6 +320,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
     const {
       templates,
       templateIds,
+      supplementalDocumentRefs,
       contractTemplateFilters,
       roles,
       prefillFields,
@@ -327,24 +330,10 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       title,
       message,
       autoSend,
+      ownerCount,
+      guarantorCount,
     } = req.body;
 
-    const hasTemplates = Array.isArray(templates) && templates.length > 0;
-    const hasTemplateIds = Array.isArray(templateIds) && templateIds.length > 0;
-    const hasFilters =
-      contractTemplateFilters &&
-      typeof contractTemplateFilters === 'object' &&
-      ['state', 'frequency', 'type'].some((k) => {
-        const v = (contractTemplateFilters as Record<string, unknown>)[k];
-        return v != null && String(v).trim() !== '';
-      });
-
-    if (!hasTemplates && !hasTemplateIds && !hasFilters) {
-      return res.status(400).json({
-        message:
-          'Provide templateIds, templates, or contractTemplateFilters (state/frequency/type).',
-      });
-    }
     if (!roles?.length) {
       return res.status(400).json({ message: 'roles is required' });
     }
@@ -352,6 +341,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
     const result = await docusignService.mergeAndSendTemplates(userId, {
       templates,
       templateIds,
+      supplementalDocumentRefs,
       contractTemplateFilters,
       roles,
       prefillFields,
@@ -361,6 +351,8 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       title,
       message,
       autoSend: autoSend === false ? false : autoSend === true ? true : undefined,
+      ownerCount: ownerCount != null ? Number(ownerCount) : undefined,
+      guarantorCount: guarantorCount != null ? Number(guarantorCount) : undefined,
     });
 
     return res.json(result);

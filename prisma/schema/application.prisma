@@ -296,6 +296,8 @@ model ContractTemplate {
   url          String
   publicId     String
   originalName String?
+  /** Coordinate layout key — default main contract (`contract.layout.json`). */
+  layoutKey    String   @default("contract")
   uploadedById String?  @db.Uuid
   createdAt    DateTime @default(now())
   uploadedBy   User?    @relation(fields: [uploadedById], references: [id])
