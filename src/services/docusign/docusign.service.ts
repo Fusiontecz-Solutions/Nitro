@@ -36,8 +36,10 @@ import {
   isDocusignJwtConfigured,
 } from './utils/docusign-jwt';
 import {
+  extractCrmApplicationIdFromWebhook,
   extractDocusignConnectEventName,
   extractDocusignEnvelopeId,
+  extractWebhookTextCustomFields,
   internalEnvelopeStatusToContractStatusDbValue,
   mapDocusignEnvelopeStatus,
   mergeWithExistingEnvelopeStatus,
@@ -799,10 +801,13 @@ export class DocusignService {
 
   private parseCcEmailsFromWebhookCustomFields(
     customFields: { textCustomFields?: Array<{ name?: string; value?: string }> } | undefined,
+    body?: unknown,
   ): string[] {
-    const raw = customFields?.textCustomFields?.find?.(
-      (f) => f.name === 'crmCcEmails',
-    )?.value;
+    const list =
+      customFields?.textCustomFields?.length
+        ? customFields.textCustomFields
+        : extractWebhookTextCustomFields(body);
+    const raw = list.find((f) => f.name === 'crmCcEmails')?.value;
     if (!raw) return [];
     return [...new Set(String(raw).split(',').map((e) => e.trim()).filter(Boolean))];
   }
@@ -1505,12 +1510,21 @@ export class DocusignService {
       updateData.completedAt = new Date();
     }
 
-    await prisma.document.updateMany({
+    const docUpdate = await prisma.document.updateMany({
       where: { envelopeId: String(envelopeId) },
       data: updateData as any,
     });
 
     const appId = applicationId || existingDoc?.applicationId || null;
+    if (docUpdate.count === 0) {
+      console.warn('[DocuSign] webhook: no Document row for envelopeId', {
+        envelopeId,
+        applicationId: appId,
+        incoming: incomingResolved,
+        stored: status,
+      });
+    }
+
     if (appId) {
       await this.syncContractSigningStatus(String(appId), status);
     }
@@ -2718,13 +2732,18 @@ export class DocusignService {
     const customFields = body?.data?.customFields as
       | { textCustomFields?: Array<{ name?: string; value?: string }> }
       | undefined;
-    let applicationId =
-      customFields?.textCustomFields?.find?.(
-        (f) => f.name === 'crmApplicationId',
-      )?.value || null;
+    let applicationId = extractCrmApplicationIdFromWebhook(body);
 
     if (!applicationId && existingDoc?.applicationId) {
       applicationId = existingDoc.applicationId;
+    }
+
+    if (!existingDoc && !applicationId) {
+      console.warn('[DocuSign] webhook: envelope not linked to CRM application', {
+        envelopeId,
+        event: eventName,
+        incoming: incomingResolved,
+      });
     }
 
     const priorStatus = String(existingDoc?.status || '').toLowerCase();

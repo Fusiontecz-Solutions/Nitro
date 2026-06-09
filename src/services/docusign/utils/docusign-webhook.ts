@@ -105,7 +105,8 @@ const CONNECT_EVENT_EXACT: Record<string, string> = {
   'envelope-deleted': 'revoked',
   'recipient-sent': 'sent',
   'recipient-delivered': 'viewed',
-  'recipient-completed': 'completed',
+  /** One signer finished — envelope may still be `sent` until all recipients complete. */
+  'recipient-completed': 'signed',
   'recipient-declined': 'declined',
   'recipient-autoresponded': 'viewed',
   'recipient-finish-later': 'viewed',
@@ -152,6 +153,39 @@ export function extractDocusignEnvelopeId(body: any): string | null {
   return s || null;
 }
 
+/** Connect 2.0 nests custom fields under several paths depending on eventData.includeData. */
+export function extractWebhookTextCustomFields(
+  body: any,
+): Array<{ name?: string; value?: string }> {
+  const candidates = [
+    body?.data?.customFields?.textCustomFields,
+    body?.data?.envelopeSummary?.customFields?.textCustomFields,
+    body?.data?.envelopeSummary?.customFields,
+    body?.customFields?.textCustomFields,
+    body?.textCustomFields,
+  ];
+  for (const raw of candidates) {
+    if (Array.isArray(raw)) {
+      return raw as Array<{ name?: string; value?: string }>;
+    }
+  }
+  return [];
+}
+
+export function extractCrmApplicationIdFromWebhook(body: any): string | null {
+  const fields = extractWebhookTextCustomFields(body);
+  const fromFields = fields.find((f) => f.name === 'crmApplicationId')?.value;
+  if (fromFields != null && String(fromFields).trim()) {
+    return String(fromFields).trim();
+  }
+  const direct =
+    body?.data?.crmApplicationId ??
+    body?.crmApplicationId ??
+    body?.data?.envelopeSummary?.crmApplicationId;
+  const s = direct != null ? String(direct).trim() : '';
+  return s || null;
+}
+
 function mapRecipientStatus(status: unknown): string | null {
   if (status == null) return null;
   const k = String(status).trim().toLowerCase();
@@ -184,7 +218,21 @@ export function resolveDocusignWebhookEnvelopeStatus(body: any): string | null {
     mapRecipientStatus(body?.recipientStatus);
 
   const fromEvent = mapDocusignConnectEvent(eventRaw);
-  return pickRicher(pickRicher(fromStatus, fromRecipient), fromEvent);
+  const merged = pickRicher(pickRicher(fromStatus, fromRecipient), fromEvent);
+
+  /**
+   * Recipient-level events must not outrank the envelope summary when the envelope
+   * is not finished (e.g. first signer completes while envelope status is still `sent`).
+   */
+  if (fromStatus && merged && fromEvent && fromStatus !== 'completed') {
+    const statusRank = INTERNAL_ENVELOPE_STATUS_RANK[fromStatus] ?? 0;
+    const mergedRank = INTERNAL_ENVELOPE_STATUS_RANK[merged] ?? 0;
+    if (mergedRank > statusRank && mergedRank >= INTERNAL_ENVELOPE_STATUS_RANK.completed) {
+      return pickRicher(fromStatus, fromRecipient) ?? fromStatus;
+    }
+  }
+
+  return merged;
 }
 
 export function mergeWithExistingEnvelopeStatus(
