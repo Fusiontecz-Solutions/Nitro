@@ -24,6 +24,7 @@ import {
   ArrowLeft,
   Activity,
   Upload,
+  Download,
 } from "lucide-react";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
 import { useLocation, useNavigate } from "react-router";
@@ -97,6 +98,10 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
+import {
+  downloadFailedBulkUploadRows,
+  type BulkImportRowError,
+} from "@/lib/bulkUploadErrors";
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
@@ -280,6 +285,9 @@ const Applications = () => {
   } | null>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const bulkUploadInputRef = useRef<HTMLInputElement>(null);
+  const bulkUploadSourceFileRef = useRef<File | null>(null);
+  const [showBulkUploadErrorsDialog, setShowBulkUploadErrorsDialog] =
+    useState(false);
   const [bulkUploadProgress, setBulkUploadProgress] = useState<{
     status: "idle" | "processing" | "completed" | "failed";
     totalRows: number;
@@ -288,6 +296,7 @@ const Applications = () => {
     updatedCount: number;
     failedCount: number;
     message?: string;
+    errors: BulkImportRowError[];
   }>({
     status: "idle",
     totalRows: 0,
@@ -295,6 +304,7 @@ const Applications = () => {
     successCount: 0,
     updatedCount: 0,
     failedCount: 0,
+    errors: [],
   });
   const isBulkDeleteRef = useRef(false);
 
@@ -1407,6 +1417,8 @@ const Applications = () => {
       };
 
       try {
+        bulkUploadSourceFileRef.current = file;
+        setShowBulkUploadErrorsDialog(false);
         setBulkUploadProgress({
           status: "processing",
           totalRows: 0,
@@ -1415,6 +1427,7 @@ const Applications = () => {
           updatedCount: 0,
           failedCount: 0,
           message: "Upload started...",
+          errors: [],
         });
 
         const formData = new FormData();
@@ -1480,6 +1493,15 @@ const Applications = () => {
             lastProgressMs = Date.now();
           }
 
+          const rowErrors: BulkImportRowError[] = Array.isArray(progress.errors)
+            ? progress.errors.map((err: BulkImportRowError) => ({
+                excelRowNumber: Number(err.excelRowNumber) || 0,
+                message: String(err.message ?? "Unknown error"),
+                dealId: err.dealId ?? null,
+                dealName: err.dealName ?? null,
+              }))
+            : [];
+
           setBulkUploadProgress({
             status: progress.status,
             totalRows: Number(progress.totalRows) || 0,
@@ -1488,6 +1510,7 @@ const Applications = () => {
             updatedCount: Number(progress.updatedCount) || 0,
             failedCount: Number(progress.failedCount) || 0,
             message: progress.message,
+            errors: rowErrors,
           });
 
           if (progress.status === "completed") {
@@ -1499,10 +1522,10 @@ const Applications = () => {
                 ? `No applications were imported from ${totalNum} row(s).`
                 : `Inserted ${insertedNum}, updated ${updatedNum} of ${totalNum} row(s).`;
             toast.success(progress.message || fallbackMessage);
-            if (Array.isArray(progress.errors) && progress.errors.length) {
-              console.warn("[Bulk upload] row issues", progress.errors);
+            if (rowErrors.length) {
+              setShowBulkUploadErrorsDialog(true);
               toast.warning(
-                `${progress.errors.length} row(s) could not be imported. Open the browser console for details.`,
+                `${rowErrors.length} row(s) could not be imported. Review the failure report to fix and re-upload.`,
               );
             }
             await applicationsListQuery.refetch();
@@ -1539,6 +1562,29 @@ const Applications = () => {
     },
     [applicationsListQuery],
   );
+
+  const handleDownloadFailedBulkRows = useCallback(async () => {
+    const sourceFile = bulkUploadSourceFileRef.current;
+    const { errors } = bulkUploadProgress;
+    if (!sourceFile) {
+      toast.error("Original upload file is no longer available. Re-upload the full file.");
+      return;
+    }
+    if (!errors.length) {
+      toast.error("No failed rows to export.");
+      return;
+    }
+    try {
+      await downloadFailedBulkUploadRows(sourceFile, errors);
+      toast.success("Failed rows downloaded. Fix the issues and re-upload this file.");
+    } catch (err: unknown) {
+      const msg =
+        err && typeof err === "object" && "message" in err
+          ? String((err as { message?: string }).message)
+          : "Failed to export rows.";
+      toast.error(msg);
+    }
+  }, [bulkUploadProgress]);
 
   const pipelineFilterButtonLabel = useMemo(() => {
     if (statusFilter === "all") return "All";
@@ -1851,13 +1897,25 @@ const Applications = () => {
                       : "Bulk Upload Application"}
                   </Button>
                   {bulkUploadProgress.status !== "idle" && (
-                    <p className="text-xs text-muted-foreground">
-                      Processed {bulkUploadProgress.processedRows}/
-                      {bulkUploadProgress.totalRows || "?"} | Inserted{" "}
-                      {bulkUploadProgress.successCount} | Updated{" "}
-                      {bulkUploadProgress.updatedCount} | Failed{" "}
-                      {bulkUploadProgress.failedCount}
-                    </p>
+                    <div className="text-xs text-muted-foreground">
+                      <p>
+                        Processed {bulkUploadProgress.processedRows}/
+                        {bulkUploadProgress.totalRows || "?"} | Inserted{" "}
+                        {bulkUploadProgress.successCount} | Updated{" "}
+                        {bulkUploadProgress.updatedCount} | Failed{" "}
+                        {bulkUploadProgress.failedCount}
+                      </p>
+                      {bulkUploadProgress.errors.length > 0 && (
+                        <button
+                          type="button"
+                          className="mt-0.5 text-[#276D9C] hover:underline cursor-pointer"
+                          onClick={() => setShowBulkUploadErrorsDialog(true)}
+                        >
+                          View {bulkUploadProgress.errors.length} failed row
+                          {bulkUploadProgress.errors.length === 1 ? "" : "s"}
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -2435,6 +2493,104 @@ const Applications = () => {
             >
               OK
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk upload failure report */}
+      <Dialog
+        open={showBulkUploadErrorsDialog}
+        onOpenChange={setShowBulkUploadErrorsDialog}
+      >
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/30">
+                <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-500" />
+              </div>
+              <div>
+                <DialogTitle className="text-left">
+                  Bulk Upload — Failed Rows
+                </DialogTitle>
+                <DialogDescription className="text-left pt-1">
+                  {bulkUploadProgress.errors.length} row
+                  {bulkUploadProgress.errors.length === 1 ? "" : "s"} could not
+                  be imported. Fix the issues below, then download the failed
+                  rows and re-upload that file.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="overflow-auto border rounded-md">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-muted/80 backdrop-blur-sm">
+                <tr className="text-left">
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    Excel Row
+                  </th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    Deal ID
+                  </th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    Deal Name
+                  </th>
+                  <th className="px-3 py-2 font-semibold">Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bulkUploadProgress.errors.map((err, idx) => (
+                  <tr
+                    key={`${err.excelRowNumber}-${idx}`}
+                    className="border-t even:bg-muted/30"
+                  >
+                    <td className="px-3 py-2 whitespace-nowrap font-medium">
+                      {err.excelRowNumber > 0 ? err.excelRowNumber : "—"}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {err.dealId?.trim() || "—"}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap max-w-[180px] truncate">
+                      {err.dealName?.trim() || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {err.message}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <DialogFooter className="sm:justify-between gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-2"
+              onClick={handleDownloadFailedBulkRows}
+              disabled={!bulkUploadSourceFileRef.current}
+            >
+              <Download className="size-4" />
+              Download failed rows
+            </Button>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowBulkUploadErrorsDialog(false)}
+              >
+                Close
+              </Button>
+              <Button
+                type="button"
+                className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 gap-2"
+                onClick={() => {
+                  setShowBulkUploadErrorsDialog(false);
+                  bulkUploadInputRef.current?.click();
+                }}
+              >
+                <Upload className="size-4" />
+                Re-upload
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
