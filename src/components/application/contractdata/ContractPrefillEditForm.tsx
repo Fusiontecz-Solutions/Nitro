@@ -56,6 +56,17 @@ import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
+import {
+    GUARANTOR1_PREFILL_FORM_KEYS,
+    GUARANTOR2_PREFILL_FORM_KEYS,
+    OWNER2_PREFILL_FORM_KEYS,
+    resolveActiveGuarantorCount,
+    resolveActiveOwnerCount,
+} from "./contractPartyCounts";
+import {
+    parseContractSignerOverridesFromPrefill,
+    type ContractSignerOverrideRow,
+} from "./templateRecipients";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -826,6 +837,8 @@ export type ContractPrefillEditFormProps = {
     readOnly?: boolean;
     /** Merged into `contractPrefillOverrides` on save; preserved when clearing main prefill (document template field map). */
     additionalContractPrefillJson?: Record<string, unknown> | null;
+    /** Live Contract Signers from the PDF modal (unsaved rows still count for owner-2 prefill sections). */
+    liveContractSignerOverrides?: ContractSignerOverrideRow[] | null;
 };
 
 function isPasswordPrefillKey(key: keyof BuildContractPrefillFieldsArgs): boolean {
@@ -849,6 +862,7 @@ export function ContractPrefillEditForm({
     offerDecision = null,
     readOnly = false,
     additionalContractPrefillJson = null,
+    liveContractSignerOverrides = null,
 }: ContractPrefillEditFormProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
@@ -912,8 +926,69 @@ export function ContractPrefillEditForm({
         return `Selected addendum — ${name}`;
     }, [linkedAddendumMapping]);
 
+    const contractSignerRolesForCounts = useMemo(() => {
+        if (liveContractSignerOverrides?.length) {
+            return liveContractSignerOverrides.map((row) => ({
+                signerRole: row.role,
+                signerEmail: row.email,
+                signerName: row.name,
+            }));
+        }
+        const raw =
+            resolvedContract?.contractPrefillOverrides ??
+            additionalContractPrefillJson ??
+            null;
+        const rows = parseContractSignerOverridesFromPrefill(raw);
+        return (rows ?? []).map((row) => ({
+            signerRole: row.role,
+            signerEmail: row.email,
+            signerName: row.name,
+        }));
+    }, [
+        resolvedContract?.contractPrefillOverrides,
+        additionalContractPrefillJson,
+        liveContractSignerOverrides,
+    ]);
+
+    const activeOwnerCount = useMemo(
+        () =>
+            resolveActiveOwnerCount({
+                owners: contractRecords?.owners ?? null,
+                signerRoles: contractSignerRolesForCounts,
+            }),
+        [contractRecords?.owners, contractSignerRolesForCounts],
+    );
+    const activeGuarantorCount = useMemo(
+        () =>
+            resolveActiveGuarantorCount({
+                guarantors: contractRecords?.guarantors ?? null,
+                signerRoles: contractSignerRolesForCounts,
+            }),
+        [contractRecords?.guarantors, contractSignerRolesForCounts],
+    );
+
+    const owner2KeySet = useMemo(() => new Set<string>(OWNER2_PREFILL_FORM_KEYS), []);
+    const guarantor2KeySet = useMemo(() => new Set<string>(GUARANTOR2_PREFILL_FORM_KEYS), []);
+    const guarantor1KeySet = useMemo(() => new Set<string>(GUARANTOR1_PREFILL_FORM_KEYS), []);
+
     const navSections = useMemo(() => {
-        const base = [...CONTRACT_PREFILL_SECTIONS];
+        const filterGroupKeys = (keys: ContractPrefillFormFieldKey[]) =>
+            keys.filter((key) => {
+                if (activeOwnerCount < 2 && owner2KeySet.has(key)) return false;
+                if (activeOwnerCount < 2 && guarantor2KeySet.has(key)) return false;
+                return true;
+            });
+
+        const base = CONTRACT_PREFILL_SECTIONS.map((section) => ({
+            ...section,
+            groups: section.groups
+                .map((group) => ({
+                    ...group,
+                    keys: filterGroupKeys(group.keys),
+                }))
+                .filter((group) => group.keys.length > 0),
+        })).filter((section) => section.groups.length > 0);
+
         if (linkedAddendumMapping && addendumEditorRows.length > 0) {
             base.push({
                 id: LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
@@ -924,7 +999,16 @@ export function ContractPrefillEditForm({
             });
         }
         return base;
-    }, [linkedAddendumMapping, addendumEditorRows.length, linkedAddendumSectionTitle]);
+    }, [
+        linkedAddendumMapping,
+        addendumEditorRows.length,
+        linkedAddendumSectionTitle,
+        activeOwnerCount,
+        activeGuarantorCount,
+        owner2KeySet,
+        guarantor2KeySet,
+        guarantor1KeySet,
+    ]);
 
     const resetFromSources = useCallback(() => {
         const defaults = getContractPrefillEditDefaultsFromApplication(applicationData, {

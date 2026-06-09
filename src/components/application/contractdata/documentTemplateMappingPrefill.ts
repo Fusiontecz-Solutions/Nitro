@@ -526,8 +526,14 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     const byId = new Map(args.prefillFieldsPayload.map((f) => [f.id, { ...f }]));
 
     for (const row of args.templateMappingRows) {
-        const tid = String(row.template?.templateId ?? "").trim();
-        if (!tid || !mergedSet.has(tid)) continue;
+        const templateRowId = String(
+            (row.template as { id?: string } | null | undefined)?.id ?? "",
+        ).trim();
+        const legacyTemplateId = String(row.template?.templateId ?? "").trim();
+        const matchesMerged =
+            (templateRowId && mergedSet.has(templateRowId)) ||
+            (legacyTemplateId && mergedSet.has(legacyTemplateId));
+        if (!matchesMerged) continue;
         const perMap = blob[row.id];
         const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
             templateId: row.template?.templateId ?? null,

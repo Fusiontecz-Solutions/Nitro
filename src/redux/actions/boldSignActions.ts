@@ -13,7 +13,7 @@ export type BoldSignMergeAndSendRole = {
   formFields?: unknown[];
 };
 
-/** Filters `BoldSignTemplate` rows (state / frequency / type stored lowercase in DB). */
+/** Filters CRM document-template rows (legacy table: `BoldSignTemplate`; state / frequency / type lowercase in DB). */
 export type BoldSignContractTemplateFilters = {
   state?: string | null;
   frequency?: string | null;
@@ -21,12 +21,18 @@ export type BoldSignContractTemplateFilters = {
 };
 
 export type BoldSignMergeAndSendPayload = {
-  /** Legacy v1 merge: `{ templateId }[]` → resolved to `templateIds` server-side. */
+  /** Legacy v1 merge: `{ templateId }[]` → resolved to supplemental refs server-side. */
   templates?: Array<{ templateId: string }>;
-  /** BoldSign v1-beta: explicit template GUIDs. */
+  /** Legacy: CRM document-template row ids or old DocuSign UUIDs (ignored if not in CRM). */
   templateIds?: string[];
-  /** Resolve template IDs from CRM `BoldSignTemplate` (AND on provided fields). */
+  /** CRM document-template row ids for addendum / supplemental PDFs (main contract PDF from ContractTemplate). */
+  supplementalDocumentRefs?: string[];
+  /** Resolve supplemental refs from CRM document templates (AND on provided fields). */
   contractTemplateFilters?: BoldSignContractTemplateFilters;
+  /** Active owner count (1 or 2) — controls Owner 2 signature slots. */
+  ownerCount?: number;
+  /** Active guarantor count (0–2) — controls guarantor signature slots on page 11. */
+  guarantorCount?: number;
   roles: Array<BoldSignMergeAndSendRole | Record<string, unknown>>;
   /** Non-empty BoldSign form-field rows for merged templates after the first (e.g. state disclosure). */
   secondaryMergeRoleFormFields?: Array<Record<string, unknown>>;
@@ -326,6 +332,12 @@ export const getBoldSignTemplateRecipients = createAsyncThunk(
   }
 );
 
+/** DocuSign-only: merge contract + optional supplemental PDFs and create/send envelope. */
+export const mergeAndSendDocuSignEnvelope = mergeAndSendBoldSignTemplates;
+
+/** DocuSign-only: signer roles for envelope create (platform layout or legacy template). */
+export const getDocuSignTemplateRecipients = getBoldSignTemplateRecipients;
+
 export const prefillBoldSignFields = createAsyncThunk(
   "boldSign/prefillFields",
   async (payload: BoldSignPrefillFieldsPayload, { rejectWithValue }) => {
@@ -346,3 +358,6 @@ export const prefillBoldSignFields = createAsyncThunk(
     }
   }
 );
+
+/** @alias DocuSign merge-and-send payload */
+export type DocuSignMergeAndSendPayload = BoldSignMergeAndSendPayload;

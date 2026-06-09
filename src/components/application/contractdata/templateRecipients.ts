@@ -324,16 +324,16 @@ function normalizeRoleKey(role: string): string {
     return String(role || "").trim().toLowerCase();
 }
 
-function isOwnerRoleName(role: string): boolean {
+export function isOwnerRoleName(role: string): boolean {
     const key = normalizeRoleKey(role);
     return key === "owner" || /^owner[\s_-]*\d*$/.test(key);
 }
 
-function isGuarantorRoleName(role: string): boolean {
+export function isGuarantorRoleName(role: string): boolean {
     return normalizeRoleKey(role).includes("guarantor");
 }
 
-function isClientRoleName(role: string): boolean {
+export function isClientRoleName(role: string): boolean {
     const key = normalizeRoleKey(role);
     return (
         key === "client" ||
@@ -367,7 +367,7 @@ export function buildContractPartySignerRows(options: {
             `${String(owner.firstName || "").trim()} ${String(owner.lastName || "").trim()}`.trim() ||
             email.split("@")[0];
         rows.push({
-            role: idx === 0 ? "Owner" : `Owner ${idx + 1}`,
+            role: idx === 0 ? "Owner" : DOCUSIGN_DEFAULT_SIGNER_ROLE,
             name,
             email,
         });
@@ -379,7 +379,7 @@ export function buildContractPartySignerRows(options: {
             `${String(guarantor.firstName || "").trim()} ${String(guarantor.lastName || "").trim()}`.trim() ||
             email.split("@")[0];
         rows.push({
-            role: idx === 0 ? "Guarantor" : `Guarantor ${idx + 1}`,
+            role: idx === 0 ? "Guarantor" : DOCUSIGN_DEFAULT_SIGNER_ROLE,
             name,
             email,
         });
@@ -530,17 +530,20 @@ export function buildSignerEditorRows(options: {
     ];
 }
 
-/** Next unused DocuSign template role name (for “Add signer”). */
+/** Next role for “Add signer” — first slot from template, additional slots default to Signer. */
 export function suggestNextTemplateSignerRole(
     templateRoles: Array<Record<string, unknown>>,
     usedRoles: string[],
 ): string {
+    if (usedRoles.filter((r) => String(r || "").trim()).length >= 1) {
+        return DOCUSIGN_DEFAULT_SIGNER_ROLE;
+    }
     const used = new Set(usedRoles.map((r) => normalizeRoleKey(r)));
     for (const row of templateRoles) {
         const label = getTemplateRoleLabel(row);
         if (label && !used.has(normalizeRoleKey(label))) return label;
     }
-    return "";
+    return DOCUSIGN_DEFAULT_SIGNER_ROLE;
 }
 
 export function validateDocuSignSignerRoles(

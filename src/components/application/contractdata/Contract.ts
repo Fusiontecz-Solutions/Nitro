@@ -1,5 +1,5 @@
 import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
-import { computePerPeriodPayment, resolveOfferFactorRate } from "@/lib/offerRepaymentCalculations";
+import { computePerPeriodPayment } from "@/lib/offerRepaymentCalculations";
 import { formatRateUS } from "@/lib/utils";
 
 export interface ContractPrefillField {
@@ -794,6 +794,20 @@ function str(v: unknown): string {
     return String(v ?? "").trim();
 }
 
+/** Apply persisted contract rows without wiping application defaults with empty strings. */
+function mergeNonemptyPrefillPartial<T extends Record<string, unknown>>(
+    base: Partial<T>,
+    overlay: Partial<T>,
+): Partial<T> {
+    const out: Partial<T> = { ...base };
+    for (const [key, value] of Object.entries(overlay)) {
+        if (str(value)) {
+            (out as Record<string, unknown>)[key] = value;
+        }
+    }
+    return out;
+}
+
 /**
  * DocuSign page 1 expects street in `business_address` and city/state/zip in separate tabs.
  * Legacy contract rows sometimes store the full line in `businessAddress`; strip the suffix
@@ -1239,43 +1253,14 @@ export function looksLikePaymentFrequencyLabel(value: string): boolean {
     return /^(daily|weekly|monthly|bi[-\s]?weekly)$/i.test(trimmed);
 }
 
-/** Specified percentage / factor rate for contract `purchasePercent` → DocuSign `purchase_percent`. */
+/** Specified percentage for contract `purchasePercent` → DocuSign `purchase_percent` (persisted value only). */
 export function resolvePurchasePercentPrefillValue(
     sources: NetToMerchantPrefillSources,
 ): string {
-    const app = sources.application;
-    const contract = sources.contract;
-    const odRoot =
-        sources.offerDecision ??
-        (contract?.offer as Record<string, unknown> | undefined) ??
-        (app?.offerDecision as Record<string, unknown> | undefined) ??
-        (app?.OfferDecision as Record<string, unknown> | undefined) ??
-        null;
-    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
-
-    const stored = str(contract?.purchasePercent);
-    if (stored) {
-        const asNum = coerceToFiniteNumber(stored);
-        return asNum !== undefined ? formatRateUS(asNum) : stored;
-    }
-
-    const termsRaw = app?.termsOffers;
-    const terms0 =
-        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
-            ? (termsRaw[0] as Record<string, unknown>)
-            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
-              ? (termsRaw as Record<string, unknown>)
-              : null;
-
-    const rate = resolveOfferFactorRate({
-        offerDecisionRate:
-            coerceToFiniteNumber(odEff?.rate ?? odRoot?.rate) ?? null,
-        offerDecisionFactorRate:
-            coerceToFiniteNumber(odEff?.factorRate ?? odRoot?.factorRate) ?? null,
-        termsFactorRate: coerceToFiniteNumber(terms0?.factorRate) ?? null,
-    });
-
-    return rate >= 1 ? formatRateUS(rate) : "";
+    const stored = str(sources.contract?.purchasePercent);
+    if (!stored) return "";
+    const asNum = coerceToFiniteNumber(stored);
+    return asNum !== undefined ? formatRateUS(asNum) : stored;
 }
 
 /** True when persisted remittance should be replaced (frequency label or legacy full payback). */
@@ -2290,17 +2275,29 @@ function ownersToPrefillPartial(rows: Record<string, unknown>[] | null | undefin
     const ssn2 = str(o2?.ssnNumber ?? o2?.ssn);
     const dl1 = str(o1?.driverLicenseNumber ?? o1?.driverLicense);
     const dl2 = str(o2?.driverLicenseNumber ?? o2?.driverLicense);
-    return {
+    const hasSecondOwner = Boolean(n2 || ssn2 || dl2 || partyEmail(o2));
+    const out: Partial<BuildContractPrefillFieldsArgs> = {
         owner1GuarantorName: n1,
-        owner2GuarantorName: n2,
         guarantyOwner1Name: n1,
         guarantyOwner1Ss: ssn1,
         guarantyOwner1DriverLicense: dl1,
-        guarantyOwner2Name: n2,
-        guarantyOwner2Ss: ssn2,
-        guarantyOwner2DriverLicense: dl2,
+        guarantyGuarantor1Name: n1,
         exhibitOwnerName: n1 || n2,
     };
+    if (hasSecondOwner) {
+        out.owner2GuarantorName = n2;
+        out.guarantyOwner2Name = n2;
+        out.guarantyOwner2Ss = ssn2;
+        out.guarantyOwner2DriverLicense = dl2;
+        out.guarantyGuarantor2Name = n2;
+        out.guarantyGuarantor2Ss = ssn2;
+        out.guarantyGuarantor2DriverLicense = dl2;
+    }
+    return out;
+}
+
+function partyEmail(row: Record<string, unknown> | undefined): string {
+    return str(row?.email);
 }
 
 function guarantorsToPrefillPartial(rows: Record<string, unknown>[] | null | undefined): Partial<BuildContractPrefillFieldsArgs> {
@@ -2308,8 +2305,7 @@ function guarantorsToPrefillPartial(rows: Record<string, unknown>[] | null | und
     const g1 = rows[0];
     const g2 = rows[1];
     const guarantorName = ownerFullName(g1?.firstName, g1?.lastName);
-    return {
-        owner2GuarantorName: guarantorName,
+    const out: Partial<BuildContractPrefillFieldsArgs> = {
         securityGuarantor: guarantorName,
         guarantorEmail: str(g1?.email),
         guarantorPhone: str(g1?.phone),
@@ -2320,10 +2316,14 @@ function guarantorsToPrefillPartial(rows: Record<string, unknown>[] | null | und
         guarantyGuarantor1Name: ownerFullName(g1?.firstName, g1?.lastName),
         guarantyGuarantor1Ss: str(g1?.ssnNumber ?? g1?.ssn),
         guarantyGuarantor1DriverLicense: str(g1?.driverLicenseNumber ?? g1?.driverLicense),
-        guarantyGuarantor2Name: ownerFullName(g2?.firstName, g2?.lastName),
-        guarantyGuarantor2Ss: str(g2?.ssnNumber ?? g2?.ssn),
-        guarantyGuarantor2DriverLicense: str(g2?.driverLicenseNumber ?? g2?.driverLicense),
     };
+    const g2Name = ownerFullName(g2?.firstName, g2?.lastName);
+    if (g2Name || partyEmail(g2) || str(g2?.ssnNumber ?? g2?.ssn)) {
+        out.guarantyGuarantor2Name = g2Name;
+        out.guarantyGuarantor2Ss = str(g2?.ssnNumber ?? g2?.ssn);
+        out.guarantyGuarantor2DriverLicense = str(g2?.driverLicenseNumber ?? g2?.driverLicense);
+    }
+    return out;
 }
 
 /** ACH authorization `authorization_application` tab — merchant legal name, not CRM application id. */
@@ -2569,12 +2569,15 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
     const businessLegalName = String(r.businessName || bi?.clientBusinessName || "");
     const legalName = businessLegalName || customerName;
     const street = [r.businessAddress1, r.businessAddress2].filter(Boolean).join(", ").trim();
+    const dba = String(r.dba || bi?.dba || "");
     return {
         customerName,
         legalName,
         clientName: customerName,
         appendixClientName: customerName,
-        doingBusinessAs: String(r.dba || bi?.dba || ""),
+        doingBusinessAs: dba,
+        securityDoingBusinessAs: dba,
+        achAuthorizationAccountHolderDba: dba,
         businessAddress: String(street || bi?.businessAddress || ""),
         businessAddressCity: String(r.businessCity || bi?.city || ""),
         businessAddressState: String(r.businessState || bi?.state || ""),
@@ -2878,9 +2881,8 @@ export function getContractPrefillEditDefaultsFromApplication(
         applyAuthorizationBusinessNamePrefillFields(
             applyAppendixUnderwritingFeesAmount(
                 applySplitAddressStreetFields({
-                    /** Application-derived defaults first, then persisted Contract / ACH / Addendum rows (preferred). */
-                    ...clientArgs,
-                    ...recordPartial,
+                    /** Application defaults, then non-empty persisted contract / ACH / owner rows. */
+                    ...mergeNonemptyPrefillPartial(clientArgs, recordPartial),
                     customerName,
                     agreementDate,
                     ...(str(recordPartial.frequency) || !frequencyComputed
