@@ -67,7 +67,6 @@ import {
     // deleteContractOwner,
     // deleteContractGuarantor,
     deleteUploadedContractDocument,
-    getBoldSignTemplates,
     getUploadedContractDocumentById,
     getUploadedContractDocuments,
     uploadContractDocuments,
@@ -101,10 +100,7 @@ import {
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-import {
-    getBoldSignTemplateRecipients,
-    voidBoldSignDocument,
-} from "@/redux/actions/boldSignActions";
+import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { loadBoldSignCcEmailList, saveBoldSignCcEmailList } from "./boldsignCcList";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
@@ -114,7 +110,14 @@ import {
     parseDocumentTemplatePrefillByMappingId,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./contractdata/documentTemplateMappingPrefill";
-import { DEFAULT_DOCUSIGN_TEMPLATE_ID } from "./contractdata/docusignTemplateConfig";
+import { DOCUSIGN_DEFAULT_SIGNER_ROLE } from "./contractdata/docusignTemplateConfig";
+import {
+    getPlatformSignerRoleRows,
+    isPlatformLayoutKey,
+    SUPPLEMENTAL_DOCUMENT_OPTIONS,
+    supplementalOptionLabel,
+} from "./contractdata/platformDocumentConfig";
+import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
     getTemplateRoleEmailFromRow,
@@ -126,7 +129,6 @@ import {
     contractSignerOverridesFingerprint,
     getContractSignerValidationMessage,
     mergeContractPrefillWithSignerOverrides,
-    parseBoldSignTemplateRolesFromRecipientsPayload,
     parseContractSignerOverridesFromPrefill,
     suggestedRowsToSummaryTemplateRoles,
     type ContractSignerOverrideRow,
@@ -282,9 +284,11 @@ interface PDFViewerModalProps {
     /** Create DocuSign draft (prefill, do not email signers). */
     onPrepareDocuSignDraft?: (payload: {
         ccEmails: string[];
-        addendumBoldSignTemplateId?: string | null;
+        supplementalLayoutKey?: string | null;
         funderName?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
+        /** Current Deal Review values — always applied on each Review & send open. */
+        prefillFields?: Array<{ id: string; value: string }>;
     }) => void | Promise<
         void | {
             envelopeId?: string;
@@ -313,6 +317,7 @@ type ContractDocumentTemplateMappingRow = {
         type?: string;
         state?: string | null;
         templateId?: string;
+        layoutKey?: string | null;
     } | null;
 };
 
@@ -590,6 +595,8 @@ function mergeBoldSignRoleSignerEmail(roleName: unknown, boldSignDefaultEmail: u
     const bs = String(boldSignDefaultEmail ?? "").trim();
     const crm = String(crmSignerEmail ?? "").trim();
     if (rl.includes("guarantor")) return bs;
+    // Second signer slot must have its own email — never copy the primary client email.
+    if (/owner\s*2|signer\s*2|guarantor\s*2/.test(rl)) return bs;
     return crm || bs;
 }
 
@@ -701,7 +708,6 @@ const PDFViewerModal = ({
     onSendToDocusign,
 }: PDFViewerModalProps) => {
     const dispatch = useDispatch<AppDispatch>();
-    const [effectiveTemplateId, setEffectiveTemplateId] = useState<string | null>(templateId ?? null);
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
     const [isSending, setIsSending] = useState(false);
@@ -981,18 +987,48 @@ const PDFViewerModal = ({
     const ownerListState = useSelector((state: RootState) => state.contractOwnerList);
     const guarantorListState = useSelector((state: RootState) => state.contractGuarantorList);
     const bankDetailsListState = useSelector((state: RootState) => state.bankDetails);
-    const boldSignTemplatesState = useSelector(
-        (state: RootState) => state.boldSignTemplates,
+
+    /** DocuSign/BoldSign template roles for Summary (top-level `roles`, not `raw.roles`). */
+    const suggestedContractSignerRows = useMemo(
+        () =>
+            buildSuggestedContractSignerRows({
+                clientName: getApplicationPrimaryRecipientName(applicationData),
+                clientEmail: primaryClientRecipientEmail,
+                owners: ownerEntries,
+                guarantors: guarantorEntries,
+            }),
+        [
+            applicationData,
+            primaryClientRecipientEmail,
+            ownerEntries,
+            guarantorEntries,
+        ],
     );
-    const boldSignTemplates = Array.isArray(boldSignTemplatesState.data)
-        ? boldSignTemplatesState.data
-        : [];
-    const boldSignState = useSelector((state: RootState) => state.boldSign);
-    const templateRecipients = boldSignState?.templateRecipients;
+
+    const activeOwnerCount = useMemo(
+        () =>
+            resolveActiveOwnerCount({
+                owners: ownerEntries.map((o) => ({
+                    email: String((o as { ownerEmail?: string }).ownerEmail || "").trim(),
+                    firstName: String((o as { ownerFirstName?: string }).ownerFirstName || "").trim(),
+                    lastName: String((o as { ownerLastName?: string }).ownerLastName || "").trim(),
+                })),
+                guarantors: guarantorEntries.map((g) => ({
+                    email: String((g as { guarantorEmail?: string }).guarantorEmail || "").trim(),
+                    firstName: String((g as { guarantorFirstName?: string }).guarantorFirstName || "").trim(),
+                    lastName: String((g as { guarantorLastName?: string }).guarantorLastName || "").trim(),
+                })),
+                signerRoles: suggestedContractSignerRows.map((r) => ({
+                    signerRole: r.role,
+                    signerEmail: r.email,
+                })),
+            }),
+        [ownerEntries, guarantorEntries, suggestedContractSignerRows],
+    );
 
     const templateRoleRowsForSigner = useMemo(
-        () => parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients),
-        [templateRecipients],
+        () => getPlatformSignerRoleRows(activeOwnerCount),
+        [activeOwnerCount],
     );
 
     /** Signing email for DocuSign (includes template default when CRM client email is blank). */
@@ -1014,23 +1050,6 @@ const PDFViewerModal = ({
         ],
     );
 
-    /** DocuSign/BoldSign template roles for Summary (top-level `roles`, not `raw.roles`). */
-    const suggestedContractSignerRows = useMemo(
-        () =>
-            buildSuggestedContractSignerRows({
-                clientName: getApplicationPrimaryRecipientName(applicationData),
-                clientEmail: primaryClientRecipientEmail,
-                owners: ownerEntries,
-                guarantors: guarantorEntries,
-            }),
-        [
-            applicationData,
-            primaryClientRecipientEmail,
-            ownerEntries,
-            guarantorEntries,
-        ],
-    );
-
     const summaryTemplateRoles = useMemo(() => {
         if (contractSignerOverrides?.length) {
             return contractSignerOverrides.map((r, idx) => ({
@@ -1040,11 +1059,10 @@ const PDFViewerModal = ({
                 roleIndex: idx + 1,
             }));
         }
-        const allTemplateRoles = parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients);
-        if (allTemplateRoles.length > 0) return allTemplateRoles;
-        if (suggestedContractSignerRows.length > 1) {
+        if (suggestedContractSignerRows.length > 0) {
             return suggestedRowsToSummaryTemplateRoles(suggestedContractSignerRows);
         }
+        if (templateRoleRowsForSigner.length > 0) return templateRoleRowsForSigner;
         const signerEmail = docuSignSignerEmail.email.trim();
         if (!signerEmail) return [];
         return [
@@ -1058,7 +1076,7 @@ const PDFViewerModal = ({
     }, [
         contractSignerOverrides,
         suggestedContractSignerRows,
-        templateRecipients,
+        templateRoleRowsForSigner,
         docuSignSignerEmail.email,
     ]);
 
@@ -1136,13 +1154,7 @@ const PDFViewerModal = ({
             .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
             .join(" ");
     };
-    const addendumTemplateOptions = boldSignTemplates.filter((template: any) => {
-        const typeText = String(template?.type || "").toLowerCase();
-        const nameText = String(
-            template?.name || template?.title || template?.templateName || "",
-        ).toLowerCase();
-        return typeText.includes("addendum") || nameText.includes("addendum");
-    });
+    const addendumTemplateOptions = SUPPLEMENTAL_DOCUMENT_OPTIONS;
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
             file?.documentType || file?.fileName || "",
@@ -1370,6 +1382,7 @@ const PDFViewerModal = ({
             draftPreparedCcRef.current = null;
             draftPreparedPrefillFingerprintRef.current = null;
             draftPreparedSignerRolesRef.current = null;
+            draftPreparedOwnerCountRef.current = null;
             prefilledPdfCachedForEnvelopeRef.current = null;
             prefilledBoldSignPdfUrlRef.current = null;
             return;
@@ -1541,6 +1554,7 @@ const PDFViewerModal = ({
     const draftPreparedCcRef = useRef<string[] | null>(null);
     const draftPreparedPrefillFingerprintRef = useRef<string | null>(null);
     const draftPreparedSignerRolesRef = useRef<string | null>(null);
+    const draftPreparedOwnerCountRef = useRef<number | null>(null);
 
     const signerRolesDraftFingerprint = useMemo(
         () =>
@@ -1571,6 +1585,7 @@ const PDFViewerModal = ({
         draftPreparedCcRef.current = null;
         draftPreparedPrefillFingerprintRef.current = null;
         draftPreparedSignerRolesRef.current = null;
+        draftPreparedOwnerCountRef.current = null;
     }, []);
 
     const openRecipientEditorFromSummary = useCallback(() => {
@@ -1637,17 +1652,10 @@ const PDFViewerModal = ({
         invalidateDocuSignDraftSession();
     }, [prefillDraftFingerprint, invalidateDocuSignDraftSession]);
 
-    const ccListsEqual = (a: string[], b: string[] | null) => {
-        if (!b) return false;
-        const norm = (list: string[]) =>
-            [...list].map((e) => e.trim().toLowerCase()).filter(Boolean).sort().join("\n");
-        return norm(a) === norm(b);
-    };
     const sessionEnvelopeIdRef = useRef<string | null>(null);
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
-    const templateRecipientsFetchedForIdRef = useRef<string | null>(null);
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
     ccEmailsRef.current = ccEmails;
@@ -1778,17 +1786,21 @@ const PDFViewerModal = ({
     [],
     );
 
-    const resolveAddendumTemplateIdForDocuSignMerge = useCallback((): string | null => {
+    const resolveAddendumLayoutKeyForDocuSignMerge = useCallback((): string | null => {
         const opt = String(selectedAddendumOptionRef.current || "").trim();
         if (opt.startsWith("up:")) return null;
-        if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
-        return (
-            String(
+        if (opt.startsWith("lk:")) return opt.slice(3).trim() || null;
+        if (opt.startsWith("bs:")) {
+            const legacy = opt.slice(3).trim();
+            return isPlatformLayoutKey(legacy) ? legacy : null;
+        }
+        const fromMapping = String(
+            linkedAddendumMappingRef.current?.template?.layoutKey ??
                 linkedAddendumMappingRef.current?.template?.templateId ??
-                    linkedAddendumMappingRef.current?.templateId ??
-                    "",
-            ).trim() || null
-        );
+                linkedAddendumMappingRef.current?.templateId ??
+                "",
+        ).trim();
+        return isPlatformLayoutKey(fromMapping) ? fromMapping : null;
     }, []);
 
     const primarySignerEmailRef = useRef("");
@@ -1896,7 +1908,7 @@ const PDFViewerModal = ({
             return;
         }
 
-        void loadPrefilledPdfFromDocuSign();
+        void loadPrefilledPdfFromDocuSign(undefined, { maxAttempts: 3 });
         return () => {
             prefilledLoadGenRef.current += 1;
         };
@@ -2117,7 +2129,7 @@ const PDFViewerModal = ({
                     return;
                 }
 
-                const addendumTemplateId = resolveAddendumTemplateIdForDocuSignMerge();
+                const addendumLayoutKey = resolveAddendumLayoutKeyForDocuSignMerge();
                 const funderForDealId = selectedFunder.trim();
                 const contractIdForDeal = effectiveContractId;
                 if (
@@ -2161,76 +2173,54 @@ const PDFViewerModal = ({
                 }
 
                 const sessionEnv = String(sessionEnvelopeId || "").trim() || null;
-                const prefillMatchesPreparedDraft =
-                    draftPreparedPrefillFingerprintRef.current === prefillDraftFingerprint;
                 const signerRolesForSend = buildDocuSignRolesForSync();
-                const signerRolesMatchPrepared =
-                    draftPreparedSignerRolesRef.current ===
-                    contractSignerOverridesFingerprint(
-                        contractSignerOverrides?.length
-                            ? contractSignerOverrides
-                            : signerRolesForSend.map((r) => ({
-                                  role: r.signerRole,
-                                  name: r.signerName,
-                                  email: r.signerEmail,
-                              })),
-                    );
-                /** Always create a fresh envelope when CC is set — reusing an old draft can keep broken recipients. */
-                const draftMatchesSelection =
-                    toSend.length === 0 &&
-                    Boolean(sessionEnv) &&
-                    draftPreparedAddendumIdRef.current !== undefined &&
-                    (draftPreparedAddendumIdRef.current || "") === (addendumTemplateId || "") &&
-                    ccListsEqual(toSend, draftPreparedCcRef.current) &&
-                    prefillMatchesPreparedDraft &&
-                    signerRolesMatchPrepared;
+                const signerFingerprintForSend = contractSignerOverridesFingerprint(
+                    contractSignerOverrides?.length
+                        ? contractSignerOverrides
+                        : signerRolesForSend.map((r) => ({
+                              role: r.signerRole,
+                              name: r.signerName,
+                              email: r.signerEmail,
+                          })),
+                );
+                const currentOwnerCount = resolveActiveOwnerCount({
+                    signerRoles: signerRolesForSend.map((r) => ({
+                        signerRole: r.signerRole,
+                        signerEmail: r.signerEmail,
+                    })),
+                });
+                const prefillFieldsForDraft = dealReviewFields
+                    .map((f) => ({
+                        id: f.id,
+                        value: String(f.value ?? "").trim(),
+                    }))
+                    .filter((f) => f.id && f.value);
 
-                let envelopeId = draftMatchesSelection ? sessionEnv : null;
-                let preparedSenderUrl: string | null = null;
+                /** Always rebuild the draft so Sender View reflects current CRM prefill/signers. */
+                if (sessionEnv) {
+                    invalidateDocuSignPdfCache();
+                }
 
-                if (!envelopeId) {
-                    if (sessionEnv && toSend.length > 0) {
-                        toast.info(
-                            "Creating a new DocuSign draft so CC recipients are configured correctly with the signer.",
-                        );
-                    } else if (
-                        sessionEnv &&
-                        draftPreparedPrefillFingerprintRef.current != null &&
-                        !prefillMatchesPreparedDraft
-                    ) {
-                        toast.info(
-                            "Creating a new DocuSign draft with your updated prefill values.",
-                        );
-                    }
-                    const prepared = await onPrepareDocuSignDraft({
-                        ccEmails: toSend,
-                        addendumBoldSignTemplateId: addendumTemplateId,
-                        funderName: selectedFunder.trim() || null,
-                        signerRoles: signerRolesForSend,
-                    });
-                    envelopeId = String(
-                        (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
-                    ).trim() || null;
-                    preparedSenderUrl =
-                        String(
-                            (prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "",
-                        ).trim() || null;
-                    if (envelopeId) {
-                        setSessionEnvelopeId(envelopeId);
-                        linkedEnvelopeIdRef.current = envelopeId;
-                        draftPreparedAddendumIdRef.current = addendumTemplateId;
-                        draftPreparedCcRef.current = [...toSend];
-                        draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
-                        draftPreparedSignerRolesRef.current = contractSignerOverridesFingerprint(
-                            contractSignerOverrides?.length
-                                ? contractSignerOverrides
-                                : signerRolesForSend.map((r) => ({
-                                      role: r.signerRole,
-                                      name: r.signerName,
-                                      email: r.signerEmail,
-                                  })),
-                        );
-                    }
+                let envelopeId: string | null = null;
+
+                const prepared = await onPrepareDocuSignDraft({
+                    ccEmails: toSend,
+                    supplementalLayoutKey: addendumLayoutKey,
+                    funderName: selectedFunder.trim() || null,
+                    signerRoles: signerRolesForSend,
+                    prefillFields: prefillFieldsForDraft,
+                });
+                envelopeId =
+                    String((prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "").trim() ||
+                    null;
+                if (envelopeId) {
+                    setSessionEnvelopeId(envelopeId);
+                    linkedEnvelopeIdRef.current = envelopeId;
+                    draftPreparedAddendumIdRef.current = addendumLayoutKey;
+                    draftPreparedCcRef.current = [...toSend];
+                    draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
+                    draftPreparedSignerRolesRef.current = signerFingerprintForSend;
+                    draftPreparedOwnerCountRef.current = currentOwnerCount;
                 }
 
                 if (!envelopeId) {
@@ -2244,7 +2234,7 @@ const PDFViewerModal = ({
                 const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
                     envelopeId,
                     toSend,
-                    Boolean(preparedSenderUrl),
+                    true,
                 );
                 const senderUrl = senderViewResult.url;
                 if (!senderUrl) {
@@ -2936,7 +2926,7 @@ const PDFViewerModal = ({
                         documentType: "addendum",
                         templateRef: ref,
                     });
-                    setSelectedAddendumOption(`bs:${ref}`);
+                    setSelectedAddendumOption(`lk:${ref}`);
                 } else {
                     setSelectedAddendumOption("");
                 }
@@ -2952,9 +2942,11 @@ const PDFViewerModal = ({
 
     const handlePreviewBoldSignTemplate = useCallback(
         async (row: ContractDocumentTemplateMappingRow) => {
-            const templateRef = String(row?.template?.templateId || row?.templateId || "").trim();
-            if (!templateRef) {
-                setDocumentUploadMessage("This mapping has no DocuSign template id.");
+            const templateRef = String(
+                row?.template?.layoutKey || row?.template?.templateId || row?.templateId || "",
+            ).trim();
+            if (!templateRef || !isPlatformLayoutKey(templateRef)) {
+                setDocumentUploadMessage("This mapping has no platform layout key.");
                 return;
             }
             try {
@@ -2975,11 +2967,11 @@ const PDFViewerModal = ({
                 setActivePreview(null);
                 setUploadedPreviewUrl(url);
                 if (String(row.documentType || "").toLowerCase() === "addendum") {
-                    setSelectedAddendumOption(`bs:${templateRef}`);
+                    setSelectedAddendumOption(`lk:${templateRef}`);
                 }
                 setDocumentUploadMessage(
                     `Showing template: ${formatDropdownLabel(
-                        row?.template?.name || row?.templateId || "Template",
+                        row?.template?.name || supplementalOptionLabel(templateRef) || "Template",
                     )}`,
                 );
             } catch (error: any) {
@@ -3010,21 +3002,25 @@ const PDFViewerModal = ({
         if (addendumTemplateMappings.length <= 1) {
             const row = linkedAddendumMapping;
             if (!row) {
-                if (selectedAddendumOption.startsWith("bs:")) {
+                if (selectedAddendumOption.startsWith("lk:") || selectedAddendumOption.startsWith("bs:")) {
                     setSelectedAddendumOption("");
                 }
                 return;
             }
-            const tid = String(row?.template?.templateId || "").trim();
-            if (!tid) return;
-            const next = `bs:${tid}`;
+            const layoutKey = String(
+                row?.template?.layoutKey || row?.template?.templateId || "",
+            ).trim();
+            if (!layoutKey) return;
+            const next = `lk:${layoutKey}`;
             if (selectedAddendumOption !== next && !selectedAddendumOption.startsWith("up:")) {
                 setSelectedAddendumOption(next);
             }
             return;
         }
         const primary = linkedAddendumMapping;
-        const primaryRef = String(primary?.template?.templateId || "").trim();
+        const primaryRef = String(
+            primary?.template?.layoutKey || primary?.template?.templateId || "",
+        ).trim();
         const extras = addendumTemplateMappings.filter((row) => row.id !== primary?.id);
         void (async () => {
             try {
@@ -3036,7 +3032,7 @@ const PDFViewerModal = ({
                     ),
                 );
                 if (primaryRef) {
-                    setSelectedAddendumOption(`bs:${primaryRef}`);
+                    setSelectedAddendumOption(`lk:${primaryRef}`);
                 }
                 await fetchTemplateMappings();
             } catch {
@@ -3070,55 +3066,6 @@ const PDFViewerModal = ({
         void fetchTemplateMappings();
     }, [isOpen, fetchTemplateMappings]);
 
-    useEffect(() => {
-        if (!isOpen) return;
-        dispatch(getBoldSignTemplates({}));
-    }, [dispatch, isOpen]);
-
-    // Keep effectiveTemplateId in sync with prop, then VITE_DOCUSIGN_TEMPLATE_ID, then CRM template list
-    useEffect(() => {
-        const fromProp = String(templateId ?? "").trim();
-        if (fromProp) {
-            setEffectiveTemplateId(fromProp);
-            return;
-        }
-        if (DEFAULT_DOCUSIGN_TEMPLATE_ID) {
-            setEffectiveTemplateId(DEFAULT_DOCUSIGN_TEMPLATE_ID);
-            return;
-        }
-        setEffectiveTemplateId(null);
-    }, [templateId]);
-
-    useEffect(() => {
-        if (effectiveTemplateId) return;
-        if (!Array.isArray(boldSignTemplates) || boldSignTemplates.length === 0) return;
-        const first = boldSignTemplates[0];
-        const tid = String(first?.templateId || first?.id || "").trim();
-        if (tid) setEffectiveTemplateId(tid);
-    }, [effectiveTemplateId, boldSignTemplates]);
-
-    useEffect(() => {
-        if (!isOpen) {
-            templateRecipientsFetchedForIdRef.current = null;
-            return;
-        }
-        if (!effectiveTemplateId) return;
-        if (activeStep !== "summary" && activeStep !== "info") return;
-        if (templateRecipientsFetchedForIdRef.current === effectiveTemplateId) return;
-        const cachedRoles = parseBoldSignTemplateRolesFromRecipientsPayload(templateRecipients);
-        const cachedTemplateId = String(
-            (templateRecipients as { templateId?: string } | null)?.templateId ?? "",
-        ).trim();
-        if (
-            cachedRoles.length > 0 &&
-            (!cachedTemplateId || cachedTemplateId === effectiveTemplateId)
-        ) {
-            templateRecipientsFetchedForIdRef.current = effectiveTemplateId;
-            return;
-        }
-        templateRecipientsFetchedForIdRef.current = effectiveTemplateId;
-        void dispatch(getBoldSignTemplateRecipients(effectiveTemplateId));
-    }, [isOpen, effectiveTemplateId, activeStep, dispatch, templateRecipients]);
     // Pre-fetch related records by contractId for Info/Summary panels
     useEffect(() => {
         if (!isOpen || (activeStep !== "info" && activeStep !== "summary") || effectiveContractId == null) return;
@@ -3998,52 +3945,6 @@ const PDFViewerModal = ({
         void handleSaveCurrentPanel();
     };
 
-    const getPrefillValue = (...ids: string[]) => {
-        const found = prefillFieldsPreview.find((f) => ids.includes(f.id));
-        return String(found?.value || "").trim();
-    };
-
-    const signerRows = [
-        {
-            role: "Client",
-            name: getPrefillValue("customer_name", "owner_name", "business_name"),
-            email:
-                primaryClientRecipientEmail ||
-                getPrefillValue("customer_email", "business_email", "client_email", "owner_email"),
-        },
-        ...ownerEntries.map((entry) => ({
-            role: "Owner",
-            name: `${String(entry.ownerFirstName || "").trim()} ${String(entry.ownerLastName || "").trim()}`.trim(),
-            email: entry.ownerEmail.trim(),
-        })),
-        ...guarantorEntries.map((entry) => ({
-            role: "Guarantor",
-            name: `${String(entry.guarantorFirstName || "").trim()} ${String(entry.guarantorLastName || "").trim()}`.trim(),
-            email: entry.guarantorEmail.trim(),
-        })),
-    ].filter((row) => row.name || row.email);
-
-    const signerTableRows = (() => {
-        const defaults = {
-            Client: { role: "Client", name: "John Carter", email: "john.carter@example.com" },
-            Owner: { role: "Owner", name: "Sarah Lee", email: "sarah.lee@example.com" },
-            Guarantor: { role: "Guarantor", name: "Michael Brown", email: "michael.brown@example.com" },
-        } as const;
-
-        const byRole = new Map<string, { role: string; name: string; email: string }>();
-        signerRows.forEach((row) => {
-            if (!byRole.has(row.role)) {
-                byRole.set(row.role, row);
-            }
-        });
-
-        return [
-            byRole.get("Client") || defaults.Client,
-            byRole.get("Owner") || defaults.Owner,
-            byRole.get("Guarantor") || defaults.Guarantor,
-        ];
-    })();
-
     if (!isOpen || !fileUrl) return null;
 
     const currentPreviewUrl =
@@ -4555,7 +4456,7 @@ const PDFViewerModal = ({
                                                 onChange={(e) => {
                                                     const value = e.target.value;
                                                     setUploadedPreviewUrl(null);
-                                                    if (value.startsWith("bs:")) {
+                                                    if (value.startsWith("lk:") || value.startsWith("bs:")) {
                                                         const templateRef = value.slice(3).trim();
                                                         void setAddendumTemplateMapping(
                                                             templateRef || null,
@@ -4570,27 +4471,14 @@ const PDFViewerModal = ({
                                                 }}
                                             >
                                                 <option value="">Select addendum</option>
-                                                {addendumTemplateOptions.length > 0
-                                                    ? addendumTemplateOptions.map((t: any) => {
-                                                        const tid = String(
-                                                            t?.templateId ?? t?.template_id ?? "",
-                                                        ).trim();
-                                                        if (!tid) return null;
-                                                        return (
-                                                            <option
-                                                                key={`bs-${tid}`}
-                                                                value={`bs:${tid}`}
-                                                            >
-                                                                {formatDropdownLabel(
-                                                                    t?.name ||
-                                                                    t?.templateName ||
-                                                                    t?.title ||
-                                                                    "Addendum",
-                                                                ) || "Addendum"}
-                                                            </option>
-                                                        );
-                                                    })
-                                                    : null}
+                                                {addendumTemplateOptions.map((option) => (
+                                                    <option
+                                                        key={`lk-${option.layoutKey}`}
+                                                        value={`lk:${option.layoutKey}`}
+                                                    >
+                                                        {option.label}
+                                                    </option>
+                                                ))}
                                                 {addendumDocs.length > 0 ? (
                                                     <optgroup label="Uploaded PDFs (preview only — not merged in DocuSign)">
                                                         {addendumDocs.map((file: any) => (
@@ -4742,8 +4630,13 @@ const PDFViewerModal = ({
                                                                         <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
                                                                             {formatDropdownLabel(
                                                                                 linkedAddendumMapping?.template?.name ||
-                                                                                linkedAddendumMapping?.template?.templateId ||
-                                                                                linkedAddendumMapping?.templateId ||
+                                                                                supplementalOptionLabel(
+                                                                                    String(
+                                                                                        linkedAddendumMapping?.template?.layoutKey ||
+                                                                                            linkedAddendumMapping?.template?.templateId ||
+                                                                                            "",
+                                                                                    ),
+                                                                                ) ||
                                                                                 "Template",
                                                                             )}
                                                                         </p>
@@ -5789,7 +5682,7 @@ const PDFViewerModal = ({
                                                                     ...prev,
                                                                     {
                                                                         id: String(Date.now()),
-                                                                        role: "",
+                                                                        role: DOCUSIGN_DEFAULT_SIGNER_ROLE,
                                                                         name: "",
                                                                         email: "",
                                                                     },

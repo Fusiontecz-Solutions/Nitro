@@ -1,19 +1,33 @@
-/** DocuSign template GUIDs for Katan addendum merge (from template exports). */
-export const DOCUSIGN_ADDENDUM_TEMPLATE_IDS = {
-    BALANCE_TRANSFER_SHEET: "a963c28a-24ff-437d-834e-3233c986976a",
-    FLEX_ADDENDUM: "1e199836-12b2-4558-ac11-258f3a9267d6",
-    ACH_AUTHORIZATION: "c716fecc-7c02-4374-ad06-af851d0916dc",
+import {
+    isPlatformLayoutKey,
+    PLATFORM_LAYOUT_KEYS,
+    type PlatformLayoutKey,
+} from "./platformDocumentConfig";
+
+/** @deprecated Use PLATFORM_LAYOUT_KEYS — kept for mapping prefill compatibility. */
+export const DOCUSIGN_ADDENDUM_LAYOUT_KEYS = {
+    BALANCE_TRANSFER_SHEET: PLATFORM_LAYOUT_KEYS.balanceTransfer,
+    FLEX_ADDENDUM: PLATFORM_LAYOUT_KEYS.flexAddendum,
+    ACH_AUTHORIZATION: PLATFORM_LAYOUT_KEYS.achAuthorization,
 } as const;
 
-export type DocusignAddendumTemplateId =
-    (typeof DOCUSIGN_ADDENDUM_TEMPLATE_IDS)[keyof typeof DOCUSIGN_ADDENDUM_TEMPLATE_IDS];
+export type DocusignAddendumLayoutKey =
+    (typeof DOCUSIGN_ADDENDUM_LAYOUT_KEYS)[keyof typeof DOCUSIGN_ADDENDUM_LAYOUT_KEYS];
 
-const ID_SET = new Set<string>(Object.values(DOCUSIGN_ADDENDUM_TEMPLATE_IDS));
+const LAYOUT_KEY_SET = new Set<string>(Object.values(DOCUSIGN_ADDENDUM_LAYOUT_KEYS));
 
-export function normalizeDocusignTemplateId(value: unknown): string {
+export function normalizeDocusignLayoutKey(value: unknown): string {
     return String(value ?? "").trim().toLowerCase();
 }
 
-export function isKnownKatanAddendumTemplateId(templateId: unknown): boolean {
-    return ID_SET.has(normalizeDocusignTemplateId(templateId));
+/** @deprecated Use normalizeDocusignLayoutKey */
+export const normalizeDocusignTemplateId = normalizeDocusignLayoutKey;
+
+export function isKnownKatanAddendumLayoutKey(layoutKey: unknown): layoutKey is PlatformLayoutKey {
+    return LAYOUT_KEY_SET.has(normalizeDocusignLayoutKey(layoutKey));
+}
+
+/** Accept legacy DocuSign template UUIDs or platform layout keys. */
+export function isKnownKatanAddendumTemplateId(ref: unknown): boolean {
+    return isPlatformLayoutKey(ref) || isKnownKatanAddendumLayoutKey(ref);
 }

@@ -91,7 +91,10 @@ export function getTemplateRoleEmailFromRow(row: Record<string, unknown>): strin
     );
 }
 
-import { DOCUSIGN_DEFAULT_SIGNER_ROLE, DOCUSIGN_PRIMARY_SIGNER_ROLE } from "./docusignTemplateConfig";
+import {
+    DOCUSIGN_DEFAULT_SIGNER_ROLE,
+    DOCUSIGN_PRIMARY_SIGNER_ROLE,
+} from "./docusignTemplateConfig";
 
 /** Role payload for `/docusign/send-template` and sync-envelope-cc. */
 export type DocuSignTemplateRolePayload = {
@@ -139,7 +142,7 @@ export function buildSuggestedContractSignerRows(input: {
     const clientName = String(input.clientName || "").trim();
     if (clientEmail) {
         rows.push({
-            role: "Client",
+            role: DOCUSIGN_PRIMARY_SIGNER_ROLE,
             name: clientName || clientEmail.split("@")[0],
             email: clientEmail,
         });
@@ -148,14 +151,28 @@ export function buildSuggestedContractSignerRows(input: {
     let ownerIndex = 0;
     for (const o of input.owners || []) {
         const email = String(o.ownerEmail || "").trim();
-        if (!email) continue;
-        ownerIndex += 1;
         const name =
-            `${String(o.ownerFirstName || "").trim()} ${String(o.ownerLastName || "").trim()}`.trim() ||
-            email.split("@")[0];
+            `${String(o.ownerFirstName || "").trim()} ${String(o.ownerLastName || "").trim()}`.trim();
+        if (!email && !name) continue;
+        ownerIndex += 1;
+        const displayName = name || (email ? email.split("@")[0] : "");
+        if (ownerIndex === 1) {
+            if (rows.length > 0) {
+                const primary = rows[0]!;
+                rows[0] = {
+                    ...primary,
+                    name:
+                        displayName ||
+                        primary.name ||
+                        clientName ||
+                        (email ? email.split("@")[0] : ""),
+                };
+            }
+            continue;
+        }
         rows.push({
-            role: ownerIndex === 1 ? "Owner" : `Owner ${ownerIndex}`,
-            name,
+            role: ownerIndex === 2 ? "Owner 2" : DOCUSIGN_DEFAULT_SIGNER_ROLE,
+            name: displayName,
             email,
         });
     }
@@ -207,6 +224,19 @@ export function parseContractSignerOverridesFromPrefill(
         })
         .filter((r): r is ContractSignerOverrideRow => r != null);
     return parsed.length ? parsed : null;
+}
+
+/** Map send/review role payloads to persisted Contract Signers rows. */
+export function contractSignerRowsFromRolePayload(
+    roles: DocuSignTemplateRolePayload[],
+): ContractSignerOverrideRow[] {
+    return roles
+        .map((r) => ({
+            role: String(r.signerRole || "").trim(),
+            name: String(r.signerName || "").trim(),
+            email: String(r.signerEmail || "").trim(),
+        }))
+        .filter((r) => r.role && r.email);
 }
 
 export function mergeContractPrefillWithSignerOverrides(
@@ -284,6 +314,29 @@ export function getContractSignerValidationMessage(
     }
 
     return null;
+}
+
+function normalizeRoleKey(role: string): string {
+    return String(role || "").trim().toLowerCase();
+}
+
+export function isOwnerRoleName(role: string): boolean {
+    const key = normalizeRoleKey(role);
+    return key === "owner" || /^owner[\s_-]*\d*$/.test(key);
+}
+
+export function isGuarantorRoleName(role: string): boolean {
+    return normalizeRoleKey(role).includes("guarantor");
+}
+
+export function isClientRoleName(role: string): boolean {
+    const key = normalizeRoleKey(role);
+    return (
+        key === "client" ||
+        key.includes("merchant") ||
+        key.includes("receiver") ||
+        key.includes("customer")
+    );
 }
 
 export function getTemplateRoleNameFromRow(row: Record<string, unknown>): string {

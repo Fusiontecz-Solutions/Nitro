@@ -28,7 +28,8 @@ import {
     type KatanAchAuthorizationAddendumPrefillFields,
 } from "./KATAN_ACH_AUTHORIZATION_ADDENDUM";
 import {
-    DOCUSIGN_ADDENDUM_TEMPLATE_IDS,
+    DOCUSIGN_ADDENDUM_LAYOUT_KEYS,
+    isKnownKatanAddendumLayoutKey,
     normalizeDocusignTemplateId,
 } from "./docusignAddendumTemplates";
 import {
@@ -395,11 +396,23 @@ type AddendumKind =
     | "discover_epo"
     | "discover_refi_balance";
 
+function resolveAddendumKindFromLayoutKey(layoutKey?: string | null): AddendumKind | null {
+    const key = normalizeDocusignTemplateId(layoutKey);
+    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
+    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "barclays_flex";
+    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION) return "katan_ach_authorization";
+    return null;
+}
+
 function resolveAddendumKind(normName: string, templateId?: string | null): AddendumKind | null {
+    if (isKnownKatanAddendumLayoutKey(templateId)) {
+        const fromKey = resolveAddendumKindFromLayoutKey(templateId);
+        if (fromKey) return fromKey;
+    }
     const tid = normalizeDocusignTemplateId(templateId);
-    if (tid === DOCUSIGN_ADDENDUM_TEMPLATE_IDS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
-    if (tid === DOCUSIGN_ADDENDUM_TEMPLATE_IDS.FLEX_ADDENDUM) return "barclays_flex";
-    if (tid === DOCUSIGN_ADDENDUM_TEMPLATE_IDS.ACH_AUTHORIZATION) return "katan_ach_authorization";
+    if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
+    if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "barclays_flex";
+    if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION) return "katan_ach_authorization";
 
     if (matches(normName, "balance", "transfer") && normName.includes("sheet")) return "balance_transfer_sheet";
     if (normName.includes("buyout") && normName.includes("blank")) return "barclays_buyout_blank";
@@ -534,10 +547,12 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
 export function applyDocumentTemplateMappingPrefillOverrides(args: {
     prefillFieldsPayload: Array<{ id: string; value: string }>;
     mergedTemplateIds: string[];
+    mergedLayoutKeys?: string[];
     templateMappingRows: Array<{
         id: string;
         template?: {
             templateId?: string;
+            layoutKey?: string | null;
             name?: string | null;
             state?: string | null;
             frequency?: string | null;
@@ -550,15 +565,20 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
 }): Array<{ id: string; value: string }> {
     const blob = parseDocumentTemplatePrefillByMappingId(args.contractPrefillOverridesRaw);
-    const mergedSet = new Set(args.mergedTemplateIds.map((x) => String(x).trim()).filter(Boolean));
+    const mergedSet = new Set([
+        ...args.mergedTemplateIds.map((x) => String(x).trim()).filter(Boolean),
+        ...(args.mergedLayoutKeys || []).map((x) => String(x).trim()).filter(Boolean),
+    ]);
     const byId = new Map(args.prefillFieldsPayload.map((f) => [f.id, { ...f }]));
 
     for (const row of args.templateMappingRows) {
+        const layoutKey = String(row.template?.layoutKey ?? "").trim();
         const tid = String(row.template?.templateId ?? "").trim();
-        if (!tid || !mergedSet.has(tid)) continue;
+        const ref = layoutKey || tid;
+        if (!ref || !mergedSet.has(ref)) continue;
         const perMap = blob[row.id];
         const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
-            templateId: row.template?.templateId ?? null,
+            templateId: ref,
             templateName: row.template?.name ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,

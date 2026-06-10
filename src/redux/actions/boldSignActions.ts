@@ -25,6 +25,12 @@ export type BoldSignMergeAndSendPayload = {
   templates?: Array<{ templateId: string }>;
   /** BoldSign v1-beta: explicit template GUIDs. */
   templateIds?: string[];
+  /** Code-defined layout keys (e.g. flex_addendum, balance_transfer). */
+  supplementalLayoutKeys?: string[];
+  /** @deprecated Use supplementalLayoutKeys — accepts layout keys or legacy CRM row ids. */
+  supplementalDocumentRefs?: string[];
+  ownerCount?: number;
+  guarantorCount?: number;
   /** Resolve template IDs from CRM `BoldSignTemplate` (AND on provided fields). */
   contractTemplateFilters?: BoldSignContractTemplateFilters;
   roles: Array<BoldSignMergeAndSendRole | Record<string, unknown>>;

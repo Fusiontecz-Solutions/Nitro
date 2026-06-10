@@ -57,6 +57,13 @@ import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
+import {
+    GUARANTOR2_PREFILL_FORM_KEYS,
+    OWNER2_PREFILL_FORM_KEYS,
+    resolveActiveGuarantorCount,
+    resolveActiveOwnerCount,
+} from "./contractPartyCounts";
+import { parseContractSignerOverridesFromPrefill } from "./templateRecipients";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -105,7 +112,8 @@ const FIELD_LABELS = {
     netToMerchant: "Net to merchant",
     clientName: "Name",
     owner1GuarantorName: "Name",
-    owner2GuarantorName: "Name",
+    merchant2Name: "Merchant 2 — Name",
+    owner2GuarantorName: "Merchant 2 — Name",
     securityBusinessName: "Business name",
     securityTaxEin: "Tax ID / EIN",
     securityDoingBusinessAs: "DBA",
@@ -309,7 +317,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             Icon: Users,
             groups: [
                 { heading: "Owner 1", keys: ["owner1GuarantorName"] },
-                { heading: "Owner 2", keys: ["owner2GuarantorName"] },
+                { heading: "Merchant 2 (Owner 2)", keys: ["owner2GuarantorName"] },
                 { heading: "Exhibit A — signature", keys: ["exhibitOwnerName"] },
                 {
                     heading: "Exhibit A — company names",
@@ -892,8 +900,57 @@ export function ContractPrefillEditForm({
         mainPrefillOverridesForAddendum,
     ]);
 
+    const contractSignerRolesForCounts = useMemo(() => {
+        const raw =
+            additionalContractPrefillJson ??
+            resolvedContract?.contractPrefillOverrides ??
+            null;
+        const rows = parseContractSignerOverridesFromPrefill(raw);
+        return (rows ?? []).map((row) => ({
+            signerRole: row.role,
+            signerEmail: row.email,
+            signerName: row.name,
+        }));
+    }, [resolvedContract?.contractPrefillOverrides, additionalContractPrefillJson]);
+
+    const activeOwnerCount = useMemo(
+        () =>
+            resolveActiveOwnerCount({
+                owners: contractRecords?.owners ?? null,
+                signerRoles: contractSignerRolesForCounts,
+            }),
+        [contractRecords?.owners, contractSignerRolesForCounts],
+    );
+    const activeGuarantorCount = useMemo(
+        () =>
+            resolveActiveGuarantorCount({
+                guarantors: contractRecords?.guarantors ?? null,
+                signerRoles: contractSignerRolesForCounts,
+            }),
+        [contractRecords?.guarantors, contractSignerRolesForCounts],
+    );
+
+    const owner2KeySet = useMemo(() => new Set<string>(OWNER2_PREFILL_FORM_KEYS), []);
+    const guarantor2KeySet = useMemo(() => new Set<string>(GUARANTOR2_PREFILL_FORM_KEYS), []);
+
     const prefillSections = useMemo((): ContractPrefillSection[] => {
-        const sections = [...CONTRACT_PREFILL_SECTIONS];
+        const filterGroupKeys = (keys: ContractPrefillFormFieldKey[]) =>
+            keys.filter((key) => {
+                if (activeOwnerCount < 2 && owner2KeySet.has(key)) return false;
+                if (activeGuarantorCount < 2 && guarantor2KeySet.has(key)) return false;
+                return true;
+            });
+
+        const sections = CONTRACT_PREFILL_SECTIONS.map((section) => ({
+            ...section,
+            groups: section.groups
+                .map((group) => ({
+                    ...group,
+                    keys: filterGroupKeys(group.keys),
+                }))
+                .filter((group) => group.keys.length > 0),
+        })).filter((section) => section.groups.length > 0);
+
         if (linkedAddendumMapping) {
             sections.push({
                 id: LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
@@ -906,7 +963,15 @@ export function ContractPrefillEditForm({
             });
         }
         return sections;
-    }, [linkedAddendumMapping, linkedAddendumTemplateName, linkedAddendumHasFieldMap]);
+    }, [
+        linkedAddendumMapping,
+        linkedAddendumTemplateName,
+        linkedAddendumHasFieldMap,
+        activeOwnerCount,
+        activeGuarantorCount,
+        owner2KeySet,
+        guarantor2KeySet,
+    ]);
 
     const seededAddendumMappingIdRef = useRef<string | null>(null);
     useEffect(() => {
