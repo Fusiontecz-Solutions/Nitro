@@ -60,6 +60,10 @@ export const DOCUSIGN_DEFAULT_TEMPLATE_ID =
 export const DOCUSIGN_DEFAULT_ROLE_NAME =
   process.env.DOCUSIGN_DEFAULT_ROLE_NAME || 'Signer';
 
+/** Always included as a DocuSign carbon-copy recipient on contract envelopes. */
+export const DOCUSIGN_DEFAULT_CC_EMAIL =
+  process.env.DOCUSIGN_DEFAULT_CC_EMAIL || 'info@woodmerefinancial.com';
+
 /**
  * When true, envelope is set to `sent` after prefill (DocuSign emails signers).
  * Default true unless DOCUSIGN_AUTO_SEND_ENVELOPE=false in .env.
