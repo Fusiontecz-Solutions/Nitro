@@ -24,6 +24,7 @@ import {
     getDocuSignTemplateRecipients,
     mergeAndSendDocuSignEnvelope,
 } from "@/redux/actions/boldSignActions";
+import { mergeWithDefaultCcEmails } from "./docusignCcList";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -1071,11 +1072,9 @@ export default function ContractTab({
             );
         }
 
-        const effectiveCcEmails = [
-            ...new Set(
-                (sendPayload.ccEmails || []).map((e) => String(e).trim()).filter(Boolean),
-            ),
-        ];
+        const effectiveCcEmails = mergeWithDefaultCcEmails(
+            (sendPayload.ccEmails || []).map((e) => String(e).trim()).filter(Boolean),
+        );
         const addendumDocumentRef = String(
             sendPayload.addendumDocumentRef ?? sendPayload.addendumBoldSignTemplateId ?? "",
         ).trim();

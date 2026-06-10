@@ -96,7 +96,6 @@ import {
     prepareDealReviewPrefillDisplay,
     CONTRACT_PREFILL_OVERRIDES_SECTION,
     getApplicationPrimaryRecipientName,
-    getSignerRecipientEmailForContract,
     resolveEffectiveDocuSignSignerEmail,
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
@@ -117,7 +116,13 @@ import {
     voidBoldSignDocument,
 } from "@/redux/actions/boldSignActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
-import { loadBoldSignCcEmailList, saveBoldSignCcEmailList } from "./boldsignCcList";
+import {
+    DOCUSIGN_DEFAULT_CC_EMAIL,
+    isDefaultCcEmail,
+    loadBoldSignCcEmailList,
+    mergeWithDefaultCcEmails,
+    saveBoldSignCcEmailList,
+} from "./docusignCcList";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
 import { ExhibitACompaniesSummarySection } from "./contractdata/ExhibitACompaniesSummarySection";
 import { TemplateMappingPrefillEditDialog } from "./contractdata/TemplateMappingPrefillEditDialog";
@@ -874,11 +879,6 @@ const PDFViewerModal = ({
         (state: RootState) => state.uploadedContractDocuments,
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
-    /** CRM-only client email (contract + application client). */
-    const primaryClientRecipientEmail = useMemo(
-        () => getSignerRecipientEmailForContract(applicationData, resolvedContract),
-        [applicationData, resolvedContract],
-    );
 
     const offerDecisionState = useSelector((state: RootState) => state.offerDecision);
     const offerDecisionData = offerDecisionState?.data ?? null;
@@ -1745,7 +1745,7 @@ const PDFViewerModal = ({
                 const res = await axiosPost("/docusign/sender-view", {
                     envelopeId,
                     returnUrl,
-                    ccEmails: ccForSync,
+                    ccEmails: mergeWithDefaultCcEmails(ccForSync),
                     roles,
                     ...(appId ? { applicationId: appId } : {}),
                     ...(signerEmail
@@ -1948,7 +1948,7 @@ const PDFViewerModal = ({
         setSelectedFunder(pickFunderForSelect(fd, DEFAULT_FUNDER_OPTIONS) || fd);
     }, [isOpen, applicationData]);
 
-    // Seed CC list when the dialog opens (saved addresses only — no hardcoded defaults)
+    // Seed CC list when the dialog opens (user-added addresses; default CC is always merged at send)
     useEffect(() => {
         if (!isOpen) {
             return;
@@ -1967,7 +1967,10 @@ const PDFViewerModal = ({
             toast.error("Enter a valid email address.");
             return;
         }
-        if (ccEmails.some((e) => e.toLowerCase() === raw.toLowerCase())) {
+        if (
+            isDefaultCcEmail(raw) ||
+            ccEmails.some((e) => e.toLowerCase() === raw.toLowerCase())
+        ) {
             toast.info("That address is already in the CC list.");
             return;
         }
@@ -2001,6 +2004,7 @@ const PDFViewerModal = ({
             setSentAt(null);
             contractWasSentRef.current = false;
             pendingCcForSentRef.current = [];
+            ccEmailDeliveredRef.current = false;
             invalidateDocuSignPdfCache();
             setPrefilledBoldSignPdfUrl(null);
             setPrefilledBoldSignPdfHint(null);
@@ -2046,17 +2050,20 @@ const PDFViewerModal = ({
             flushSync(() => setIsSending(true));
 
             const draft = ccEmailDraft.trim();
-            let toSend = [...ccEmails];
+            let userCc = [...ccEmails];
             if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
-                const dup = toSend.some((e) => e.toLowerCase() === draft.toLowerCase());
+                const dup =
+                    isDefaultCcEmail(draft) ||
+                    userCc.some((e) => e.toLowerCase() === draft.toLowerCase());
                 if (!dup) {
-                    toSend = [...toSend, draft];
+                    userCc = [...userCc, draft];
                 }
             }
-            toSend = [...new Set(toSend.map((e) => e.trim()).filter(Boolean))];
+            userCc = [...new Set(userCc.map((e) => e.trim()).filter(Boolean))];
+            const toSend = mergeWithDefaultCcEmails(userCc);
 
-            saveBoldSignCcEmailList(toSend);
-            setCcEmails(toSend);
+            saveBoldSignCcEmailList(userCc);
+            setCcEmails(userCc);
             setCcEmailDraft("");
 
             if (onPrepareDocuSignDraft) {
@@ -2114,7 +2121,6 @@ const PDFViewerModal = ({
                     draftPreparedOwnerCountRef.current === currentOwnerCount;
                 /** Always create a fresh envelope when CC is set — reusing an old draft can keep broken recipients. */
                 const draftMatchesSelection =
-                    toSend.length === 0 &&
                     Boolean(sessionEnv) &&
                     draftPreparedAddendumIdRef.current !== undefined &&
                     (draftPreparedAddendumIdRef.current || "") === (addendumTemplateId || "") &&
@@ -2127,7 +2133,7 @@ const PDFViewerModal = ({
                 let preparedSenderUrl: string | null = null;
 
                 if (!envelopeId) {
-                    if (sessionEnv && toSend.length > 0) {
+                    if (sessionEnv && !ccListsEqual(toSend, draftPreparedCcRef.current)) {
                         toast.info(
                             "Creating a new DocuSign draft so CC recipients are configured correctly with the signer.",
                         );
@@ -2206,15 +2212,14 @@ const PDFViewerModal = ({
                 }
 
                 pendingCcForSentRef.current = toSend;
+                ccEmailDeliveredRef.current = false;
 
                 if (docuSignTab) {
                     try {
                         docuSignTab.location.href = senderUrl;
                         setDocuSignOpenUrl(null);
                         toast.success(
-                            toSend.length
-                                ? "DocuSign opened in a new tab. Click Send to email the signer. CC addresses will receive a prefilled contract copy by email once DocuSign marks the envelope sent."
-                                : "DocuSign opened in a new tab. Click Send there to email signers. This modal will move to step 4 (Sent) and refresh when DocuSign confirms the send.",
+                            "DocuSign opened in a new tab. Click Send there to email signers. CC addresses will receive a contract copy by email once DocuSign marks the envelope sent.",
                             { autoClose: 12000 },
                         );
                         return;
@@ -2235,9 +2240,7 @@ const PDFViewerModal = ({
 
                 setDocuSignOpenUrl(null);
                 toast.success(
-                    toSend.length
-                        ? "DocuSign opened in a new tab. Click Send to email the signer. CC addresses will receive a prefilled contract copy by email once DocuSign marks the envelope sent."
-                        : "DocuSign opened in a new tab. Click Send there to email signers. This modal will move to step 4 (Sent) and refresh when DocuSign confirms the send.",
+                    "DocuSign opened in a new tab. Click Send there to email signers. CC addresses will receive a contract copy by email once DocuSign marks the envelope sent.",
                     { autoClose: 12000 },
                 );
             } else if (onSendToDocusign) {
@@ -2490,14 +2493,17 @@ const PDFViewerModal = ({
     const contractWasSentRef = useRef(false);
     const prevContractStatusRef = useRef("");
     const pendingCcForSentRef = useRef<string[]>([]);
+    /** Set when sync-envelope-status reports CC PDF was emailed (avoids spam, allows retry until success). */
+    const ccEmailDeliveredRef = useRef(false);
     const loadPrefilledPdfRef = useRef(loadPrefilledPdfFromDocuSign);
     loadPrefilledPdfRef.current = loadPrefilledPdfFromDocuSign;
     const setPdfRightPaneTabRef = useRef(setPdfRightPaneTab);
     setPdfRightPaneTabRef.current = setPdfRightPaneTab;
     const DOCUSIGN_SYNC_MIN_INTERVAL_MS = 60_000;
     const DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS = 45_000;
+    const DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS = 10_000;
     /** How often the modal polls while a draft exists (awaiting Send in DocuSign). */
-    const DOCUSIGN_AWAITING_SEND_POLL_MS = 45_000;
+    const DOCUSIGN_AWAITING_SEND_POLL_MS = 12_000;
     /** How often the modal polls on step 4 while signers are still pending. */
     const SIGNING_STATUS_CRM_POLL_MS = 30_000;
     const contractModalWasOpenRef = useRef(false);
@@ -2579,32 +2585,42 @@ const PDFViewerModal = ({
 
                 if (maySyncDocuSign) {
                     const now = Date.now();
+                    const hasPendingCc =
+                        pendingCcForSentRef.current.length > 0 ||
+                        ccEmailsRef.current.length > 0;
                     const syncMinInterval = onSentStep
-                        ? DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS
-                        : DOCUSIGN_SYNC_MIN_INTERVAL_MS;
+                        ? ccEmailDeliveredRef.current
+                            ? DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS
+                            : DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
+                        : hasPendingCc
+                          ? DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
+                          : DOCUSIGN_SYNC_MIN_INTERVAL_MS;
                     if (
                         options?.forceDocuSignSync ||
                         now - lastDocuSignSyncAtRef.current >= syncMinInterval
                     ) {
                         lastDocuSignSyncAtRef.current = now;
                         try {
-                            const ccForSync = pendingCcForSentRef.current.length
-                                ? pendingCcForSentRef.current
-                                : ccEmailsRef.current;
+                            const ccForSync = mergeWithDefaultCcEmails(
+                                pendingCcForSentRef.current.length
+                                    ? pendingCcForSentRef.current
+                                    : ccEmailsRef.current,
+                            );
                             const syncRes = await axiosPost("/docusign/sync-envelope-status", {
                                 ...(appId ? { applicationId: appId } : {}),
                                 ...(envelopeForSync ? { envelopeId: envelopeForSync } : {}),
-                                ...(ccForSync.length ? { ccEmails: ccForSync } : {}),
+                                ccEmails: ccForSync,
                             });
                             const emailed = (
                                 syncRes as {
                                     data?: { ccPrefilledEmail?: { emailed?: string[] } };
                                 }
                             )?.data?.ccPrefilledEmail?.emailed;
-                            if (emailed?.length && !silent) {
-                                toast.success(
-                                    `CC copy emailed to: ${emailed.join(", ")}`,
-                                );
+                            if (emailed?.length) {
+                                ccEmailDeliveredRef.current = true;
+                                if (!silent) {
+                                    toast.success(`CC copy emailed to: ${emailed.join(", ")}`);
+                                }
                             } else if (
                                 ccForSync.length &&
                                 !silent &&
@@ -2651,10 +2667,12 @@ const PDFViewerModal = ({
                 if (nowSent && !contractWasSentRef.current) {
                     contractWasSentRef.current = true;
                     setSentAt(new Date());
-                    const cc = pendingCcForSentRef.current.length
-                        ? pendingCcForSentRef.current
-                        : ccEmailsRef.current;
-                    if (cc.length) setSentCcEmails(cc);
+                    const cc = mergeWithDefaultCcEmails(
+                        pendingCcForSentRef.current.length
+                            ? pendingCcForSentRef.current
+                            : ccEmailsRef.current,
+                    );
+                    setSentCcEmails(cc);
                     if (activeStepRef.current !== "sent") {
                         setActiveStep("sent");
                         didSuggestSentTabThisOpenRef.current = true;
@@ -2667,6 +2685,12 @@ const PDFViewerModal = ({
                         toast.success(
                             "Contract sent in DocuSign. Step 4 shows signing status and the envelope PDF.",
                         );
+                    }
+                    if (!ccEmailDeliveredRef.current && cc.length > 0) {
+                        void refreshContractSigningState(true, {
+                            syncDocuSign: true,
+                            forceDocuSignSync: true,
+                        });
                     }
                 }
 
@@ -2701,6 +2725,7 @@ const PDFViewerModal = ({
             contractWasSentRef.current = false;
             prevContractStatusRef.current = "";
             pendingCcForSentRef.current = [];
+            ccEmailDeliveredRef.current = false;
             setSentAt(null);
             return;
         }
@@ -3901,51 +3926,6 @@ const PDFViewerModal = ({
     const saveActivePanel = () => {
         void handleSaveCurrentPanel();
     };
-
-    const getPrefillValue = (...ids: string[]) => {
-        const found = prefillFieldsPreview.find((f) => ids.includes(f.id));
-        return String(found?.value || "").trim();
-    };
-
-    const signerRows = buildContractPartySignerRows({
-        clientEmail:
-            primaryClientRecipientEmail ||
-            getPrefillValue("customer_email", "business_email", "client_email", "owner_email"),
-        clientName:
-            getPrefillValue("customer_name", "owner_name", "business_name") ||
-            getApplicationPrimaryRecipientName(applicationData),
-        owners: ownerEntries.map((entry) => ({
-            firstName: String(entry.ownerFirstName || "").trim(),
-            lastName: String(entry.ownerLastName || "").trim(),
-            email: String(entry.ownerEmail || "").trim(),
-        })),
-        guarantors: guarantorEntries.map((entry) => ({
-            firstName: String(entry.guarantorFirstName || "").trim(),
-            lastName: String(entry.guarantorLastName || "").trim(),
-            email: String(entry.guarantorEmail || "").trim(),
-        })),
-    }).filter((row) => row.name || row.email);
-
-    const signerTableRows = (() => {
-        const defaults = {
-            Client: { role: "Client", name: "John Carter", email: "john.carter@example.com" },
-            Owner: { role: "Owner", name: "Sarah Lee", email: "sarah.lee@example.com" },
-            Guarantor: { role: "Guarantor", name: "Michael Brown", email: "michael.brown@example.com" },
-        } as const;
-
-        const byRole = new Map<string, { role: string; name: string; email: string }>();
-        signerRows.forEach((row) => {
-            if (!byRole.has(row.role)) {
-                byRole.set(row.role, row);
-            }
-        });
-
-        return [
-            byRole.get("Client") || defaults.Client,
-            byRole.get("Owner") || defaults.Owner,
-            byRole.get("Guarantor") || defaults.Guarantor,
-        ];
-    })();
 
     if (!isOpen || !fileUrl) return null;
 
@@ -6517,10 +6497,20 @@ const PDFViewerModal = ({
                                     <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#276D9C]/12">
                                         <Mail className="h-3.5 w-3.5" aria-hidden />
                                     </span>
-                                    CC (copy only — not a signer)
+                                    CC (copy by email on send — not a signer)
                                 </span>
                             </div>
                             <div className="flex flex-wrap gap-1.5">
+                                <span
+                                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/30 bg-[#276D9C]/12 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[#276D9C]/40 dark:bg-[#276D9C]/20 dark:text-slate-100"
+                                    title={`Always included: ${DOCUSIGN_DEFAULT_CC_EMAIL}`}
+                                >
+                                    <Mail className="h-3 w-3 shrink-0 text-[#276D9C] opacity-80" aria-hidden />
+                                    <span className="max-w-[220px] truncate">{DOCUSIGN_DEFAULT_CC_EMAIL}</span>
+                                    <span className="text-[10px] font-normal uppercase tracking-wide text-[#276D9C]/80">
+                                        Default
+                                    </span>
+                                </span>
                                 {ccEmails.map((email) => (
                                     <span
                                         key={email}
