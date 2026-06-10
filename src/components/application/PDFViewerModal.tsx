@@ -3998,51 +3998,10 @@ const PDFViewerModal = ({
         void handleSaveCurrentPanel();
     };
 
-    const getPrefillValue = (...ids: string[]) => {
-        const found = prefillFieldsPreview.find((f) => ids.includes(f.id));
-        return String(found?.value || "").trim();
-    };
-
-    const signerRows = [
-        {
-            role: "Client",
-            name: getPrefillValue("customer_name", "owner_name", "business_name"),
-            email:
-                primaryClientRecipientEmail ||
-                getPrefillValue("customer_email", "business_email", "client_email", "owner_email"),
-        },
-        ...ownerEntries.map((entry) => ({
-            role: "Owner",
-            name: `${String(entry.ownerFirstName || "").trim()} ${String(entry.ownerLastName || "").trim()}`.trim(),
-            email: entry.ownerEmail.trim(),
-        })),
-        ...guarantorEntries.map((entry) => ({
-            role: "Guarantor",
-            name: `${String(entry.guarantorFirstName || "").trim()} ${String(entry.guarantorLastName || "").trim()}`.trim(),
-            email: entry.guarantorEmail.trim(),
-        })),
-    ].filter((row) => row.name || row.email);
-
-    const signerTableRows = (() => {
-        const defaults = {
-            Client: { role: "Client", name: "John Carter", email: "john.carter@example.com" },
-            Owner: { role: "Owner", name: "Sarah Lee", email: "sarah.lee@example.com" },
-            Guarantor: { role: "Guarantor", name: "Michael Brown", email: "michael.brown@example.com" },
-        } as const;
-
-        const byRole = new Map<string, { role: string; name: string; email: string }>();
-        signerRows.forEach((row) => {
-            if (!byRole.has(row.role)) {
-                byRole.set(row.role, row);
-            }
-        });
-
-        return [
-            byRole.get("Client") || defaults.Client,
-            byRole.get("Owner") || defaults.Owner,
-            byRole.get("Guarantor") || defaults.Guarantor,
-        ];
-    })();
+    // const getPrefillValue = (...ids: string[]) => {
+    //     const found = prefillFieldsPreview.find((f) => ids.includes(f.id));
+    //     return String(found?.value || "").trim();
+    // };
 
     if (!isOpen || !fileUrl) return null;
 
