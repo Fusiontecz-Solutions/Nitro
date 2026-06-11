@@ -55,6 +55,7 @@ type TemplateMappingPrefillEditDialogProps = {
     onSaved: () => void;
     /** Addendum flow: edit field values only (hide template GUID editor). */
     addendumOnly?: boolean;
+    bankDetail?: Record<string, unknown> | null;
 };
 
 export function TemplateMappingPrefillEditDialog({
@@ -70,6 +71,7 @@ export function TemplateMappingPrefillEditDialog({
     mainPrefillOverrides,
     onSaved,
     addendumOnly = false,
+    bankDetail = null,
 }: TemplateMappingPrefillEditDialogProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [templateRef, setTemplateRef] = useState("");
@@ -89,6 +91,7 @@ export function TemplateMappingPrefillEditDialog({
             agreementDate,
             mainPrefillOverrides: mainPrefillOverrides ?? undefined,
             savedOverridesForMapping: saved,
+            bankDetail,
         });
     }, [
         row,
@@ -97,6 +100,7 @@ export function TemplateMappingPrefillEditDialog({
         applicationData,
         agreementDate,
         mainPrefillOverrides,
+        bankDetail,
     ]);
 
     useEffect(() => {
@@ -216,13 +220,6 @@ export function TemplateMappingPrefillEditDialog({
                     <DialogTitle className="text-base">
                         {addendumOnly ? `Edit addendum prefill — ${titleName}` : `Edit template mapping — ${titleName}`}
                     </DialogTitle>
-                    <p className="text-muted-foreground text-sm font-normal leading-snug">
-                        {addendumOnly
-                            ? "Adjust only the DocuSign field values for this addendum. Main contract prefill is not changed here."
-                            : "Change the DocuSign template ID if needed, then adjust field values used when prefilling this document."}{" "}
-                        Values are saved on the contract under{" "}
-                        <span className="font-mono text-xs">documentTemplatePrefillByMappingId</span>.
-                    </p>
                 </DialogHeader>
                 <div className="max-h-[min(65vh,520px)] overflow-y-auto px-6 py-4">
                     <div className="space-y-4">

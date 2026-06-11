@@ -39,6 +39,7 @@ import {
     type StateDisclosureContext,
 } from "./stateDisclosurePrefill";
 
+import { ACH_AUTHORIZATION_DOCUSIGN_KEY } from "./achAuthorizationDocuSign";
 import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
 
 /** Stored on `Contract.contractPrefillOverrides` alongside main prefill keys. */
@@ -53,6 +54,7 @@ export function stripDocumentTemplateBlobFromPrefillOverrides(
     const o = { ...(raw as Record<string, unknown>) };
     delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
     delete o[CONTRACT_SIGNER_OVERRIDES_KEY];
+    delete o[ACH_AUTHORIZATION_DOCUSIGN_KEY];
     return o as Partial<BuildContractPrefillFieldsArgs>;
 }
 
@@ -99,11 +101,12 @@ function buildEffectiveContractForTemplatePrefill(options: {
     application?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    bankDetail?: Record<string, unknown> | null;
 }): Record<string, unknown> {
     const contract = options.contract ?? {};
     const merged = getContractPrefillEditDefaultsFromApplication(options.application ?? null, {
         agreementDate: options.agreementDate,
-        contractRecords: { contract },
+        contractRecords: { contract, bankDetail: options.bankDetail ?? null },
     });
     return {
         ...merged,
@@ -401,6 +404,9 @@ function resolveAddendumKindFromLayoutKey(layoutKey?: string | null): AddendumKi
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "barclays_flex";
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION) return "katan_ach_authorization";
+    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE) {
+        return "katan_ach_authorization";
+    }
     return null;
 }
 
@@ -504,12 +510,14 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     /** Main contract prefill overrides (excludes per-mapping blob); same source as Deal Review. */
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     savedOverridesForMapping?: Record<string, string> | null;
+    bankDetail?: Record<string, unknown> | null;
 }): ContractPrefillField[] {
     const effectiveContract = buildEffectiveContractForTemplatePrefill({
         contract: options.contract ?? null,
         application: options.application ?? null,
         agreementDate: options.agreementDate,
         mainPrefillOverrides: options.mainPrefillOverrides,
+        bankDetail: options.bankDetail ?? null,
     });
 
     const sctx = buildStateDisclosurePrefillContextFromContract({
@@ -563,12 +571,16 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     application?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    bankDetail?: Record<string, unknown> | null;
 }): Array<{ id: string; value: string }> {
     const blob = parseDocumentTemplatePrefillByMappingId(args.contractPrefillOverridesRaw);
     const mergedSet = new Set([
         ...args.mergedTemplateIds.map((x) => String(x).trim()).filter(Boolean),
         ...(args.mergedLayoutKeys || []).map((x) => String(x).trim()).filter(Boolean),
     ]);
+    if (mergedSet.has(DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE)) {
+        mergedSet.add(DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION);
+    }
     const byId = new Map(args.prefillFieldsPayload.map((f) => [f.id, { ...f }]));
 
     for (const row of args.templateMappingRows) {
@@ -587,6 +599,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             agreementDate: args.agreementDate,
             mainPrefillOverrides: args.mainPrefillOverrides,
             savedOverridesForMapping: perMap ?? null,
+            bankDetail: args.bankDetail ?? null,
         });
         for (const field of computedRows) {
             const v = String(field.value ?? "").trim();

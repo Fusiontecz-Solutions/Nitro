@@ -60,10 +60,17 @@ import { cn } from "@/lib/utils";
 import {
     GUARANTOR2_PREFILL_FORM_KEYS,
     OWNER2_PREFILL_FORM_KEYS,
-    resolveActiveGuarantorCount,
     resolveActiveOwnerCount,
+    resolveOwnerRowFullName,
+    resolveSecondOwnerSignerName,
 } from "./contractPartyCounts";
-import { parseContractSignerOverridesFromPrefill } from "./templateRecipients";
+import {
+    buildDocuSignRolesFromEditorRows,
+    mergeContractPrefillWithSignerOverrides,
+    resolveContractSignerOverrideRows,
+    type ContractSignerOverrideRow,
+} from "./templateRecipients";
+import { getPlatformSignerRoleRows, PLATFORM_PRIMARY_SIGNER_ROLE } from "./platformDocumentConfig";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -112,8 +119,8 @@ const FIELD_LABELS = {
     netToMerchant: "Net to merchant",
     clientName: "Name",
     owner1GuarantorName: "Name",
-    merchant2Name: "Merchant 2 — Name",
-    owner2GuarantorName: "Merchant 2 — Name",
+    merchant2Name: "Name",
+    owner2GuarantorName: "Name",
     securityBusinessName: "Business name",
     securityTaxEin: "Tax ID / EIN",
     securityDoingBusinessAs: "DBA",
@@ -317,7 +324,8 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             Icon: Users,
             groups: [
                 { heading: "Owner 1", keys: ["owner1GuarantorName"] },
-                { heading: "Merchant 2 (Owner 2)", keys: ["owner2GuarantorName"] },
+                { heading: "Merchant 2", keys: ["merchant2Name"] },
+                { heading: "Owner 2", keys: ["owner2GuarantorName"] },
                 { heading: "Exhibit A — signature", keys: ["exhibitOwnerName"] },
                 {
                     heading: "Exhibit A — company names",
@@ -533,6 +541,52 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
 
 /** Extra nav section in the prefill modal for the linked DocuSign addendum template (not main-contract addendum fields). */
 export const LINKED_DOCUSIGN_ADDENDUM_SECTION_ID = "linked_docusign_addendum";
+
+/** Editable contract signer rows when two owners / signers are active. */
+export const CONTRACT_SIGNERS_PREFILL_SECTION_ID = "contract_signers";
+
+function defaultSignerEditorRows(ownerCount: number): ContractSignerOverrideRow[] {
+    if (ownerCount < 2) return [];
+    return getPlatformSignerRoleRows(ownerCount).map((slot) => ({
+        role: String(slot.roleName || "").trim() || PLATFORM_PRIMARY_SIGNER_ROLE,
+        name: String(slot.signerName || "").trim(),
+        email: String(slot.signerEmail || "").trim(),
+    }));
+}
+
+function mergeSignerEditorRows(
+    saved: ContractSignerOverrideRow[] | null,
+    ownerCount: number,
+): ContractSignerOverrideRow[] {
+    if (ownerCount < 2) return saved ?? [];
+    const defaults = defaultSignerEditorRows(ownerCount);
+    if (!saved?.length) return defaults;
+    const out = [...saved];
+    while (out.length < 2 && defaults[out.length]) {
+        out.push(defaults[out.length]!);
+    }
+    return out.slice(0, 2);
+}
+
+function applySecondOwnerNameToPrefillPartial(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+    secondOwnerName: string,
+): void {
+    const name = String(secondOwnerName || "").trim();
+    if (!name) return;
+    const keys = [
+        "owner2GuarantorName",
+        "merchant2Name",
+        "guarantyOwner2Name",
+        "guarantyGuarantor2Name",
+        "addendumDatedPrincipalOwner2Name",
+    ] as const;
+    for (const key of keys) {
+        if (!String(partial[key] || "").trim()) {
+            partial[key] = name;
+        }
+    }
+}
 
 function emptyValuesRecord(): Record<keyof BuildContractPrefillFieldsArgs, string> {
     const out = {} as Record<keyof BuildContractPrefillFieldsArgs, string>;
@@ -810,6 +864,8 @@ export type ContractPrefillEditFormProps = {
     /** Linked addendum mapping row from Info — enables a final modal tab for template-specific DocuSign fields. */
     linkedAddendumMapping?: TemplateMappingPrefillEditRow | null;
     resolvedContract?: Record<string, unknown> | null;
+    /** Live CRM signer rows from Summary (may be unsaved); used for owner-2 field visibility and hydration. */
+    contractSignerOverrides?: ContractSignerOverrideRow[] | null;
 };
 
 function isPasswordPrefillKey(key: keyof BuildContractPrefillFieldsArgs): boolean {
@@ -833,10 +889,12 @@ export function ContractPrefillEditForm({
     onPersistedPrefillFullChange,
     linkedAddendumMapping = null,
     resolvedContract = null,
+    contractSignerOverrides = null,
 }: ContractPrefillEditFormProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
     const [addendumFieldValues, setAddendumFieldValues] = useState<Record<string, string>>({});
+    const [signerEditorRows, setSignerEditorRows] = useState<ContractSignerOverrideRow[]>([]);
     const [saving, setSaving] = useState(false);
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
     const [saveError, setSaveError] = useState<string | null>(null);
@@ -888,6 +946,7 @@ export function ContractPrefillEditForm({
             agreementDate: agreementDateForDefaults,
             mainPrefillOverrides: mainPrefillOverridesForAddendum,
             savedOverridesForMapping: saved,
+            bankDetail: contractRecords?.bankDetail ?? null,
         });
     }, [
         linkedAddendumMapping,
@@ -898,46 +957,51 @@ export function ContractPrefillEditForm({
         applicationData,
         agreementDateForDefaults,
         mainPrefillOverridesForAddendum,
+        contractRecords?.bankDetail,
     ]);
 
-    const contractSignerRolesForCounts = useMemo(() => {
-        const raw =
-            additionalContractPrefillJson ??
-            resolvedContract?.contractPrefillOverrides ??
-            null;
-        const rows = parseContractSignerOverridesFromPrefill(raw);
-        return (rows ?? []).map((row) => ({
-            signerRole: row.role,
-            signerEmail: row.email,
-            signerName: row.name,
-        }));
-    }, [resolvedContract?.contractPrefillOverrides, additionalContractPrefillJson]);
+    const resolvedSignerRows = useMemo(
+        () =>
+            resolveContractSignerOverrideRows({
+                explicit: contractSignerOverrides,
+                contractPrefillOverrides: resolvedContract?.contractPrefillOverrides,
+                additionalPrefillJson: additionalContractPrefillJson,
+            }),
+        [
+            contractSignerOverrides,
+            resolvedContract?.contractPrefillOverrides,
+            additionalContractPrefillJson,
+        ],
+    );
+
+    const contractSignerRolesForCounts = useMemo(
+        () =>
+            (resolvedSignerRows ?? []).map((row) => ({
+                signerRole: row.role,
+                signerEmail: row.email,
+                signerName: row.name,
+            })),
+        [resolvedSignerRows],
+    );
 
     const activeOwnerCount = useMemo(
         () =>
             resolveActiveOwnerCount({
                 owners: contractRecords?.owners ?? null,
-                signerRoles: contractSignerRolesForCounts,
-            }),
-        [contractRecords?.owners, contractSignerRolesForCounts],
-    );
-    const activeGuarantorCount = useMemo(
-        () =>
-            resolveActiveGuarantorCount({
                 guarantors: contractRecords?.guarantors ?? null,
                 signerRoles: contractSignerRolesForCounts,
             }),
-        [contractRecords?.guarantors, contractSignerRolesForCounts],
+        [contractRecords?.owners, contractRecords?.guarantors, contractSignerRolesForCounts],
     );
-
     const owner2KeySet = useMemo(() => new Set<string>(OWNER2_PREFILL_FORM_KEYS), []);
     const guarantor2KeySet = useMemo(() => new Set<string>(GUARANTOR2_PREFILL_FORM_KEYS), []);
+    const showSecondPartyFields = activeOwnerCount >= 2;
 
     const prefillSections = useMemo((): ContractPrefillSection[] => {
         const filterGroupKeys = (keys: ContractPrefillFormFieldKey[]) =>
             keys.filter((key) => {
-                if (activeOwnerCount < 2 && owner2KeySet.has(key)) return false;
-                if (activeGuarantorCount < 2 && guarantor2KeySet.has(key)) return false;
+                if (!showSecondPartyFields && owner2KeySet.has(key)) return false;
+                if (!showSecondPartyFields && guarantor2KeySet.has(key)) return false;
                 return true;
             });
 
@@ -950,6 +1014,21 @@ export function ContractPrefillEditForm({
                 }))
                 .filter((group) => group.keys.length > 0),
         })).filter((section) => section.groups.length > 0);
+
+        if (activeOwnerCount >= 2) {
+            sections.splice(
+                sections.findIndex((s) => s.id === "owners_exhibit") + 1,
+                0,
+                {
+                    id: CONTRACT_SIGNERS_PREFILL_SECTION_ID,
+                    title: "Contract signers",
+                    description:
+                        "Name and email for each signer on the envelope. Owner 2 / secondary signer details also flow into owner-2 prefill fields below.",
+                    Icon: Users,
+                    groups: [],
+                },
+            );
+        }
 
         if (linkedAddendumMapping) {
             sections.push({
@@ -967,8 +1046,7 @@ export function ContractPrefillEditForm({
         linkedAddendumMapping,
         linkedAddendumTemplateName,
         linkedAddendumHasFieldMap,
-        activeOwnerCount,
-        activeGuarantorCount,
+        showSecondPartyFields,
         owner2KeySet,
         guarantor2KeySet,
     ]);
@@ -983,6 +1061,17 @@ export function ContractPrefillEditForm({
         seededAddendumMappingIdRef.current = linkedAddendumMapping.id;
         setAddendumFieldValues(Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""])));
     }, [open, linkedAddendumMapping?.id, addendumEditorRows]);
+
+    const seededSignerEditorRef = useRef(false);
+    useEffect(() => {
+        if (!open) {
+            seededSignerEditorRef.current = false;
+            return;
+        }
+        if (seededSignerEditorRef.current) return;
+        seededSignerEditorRef.current = true;
+        setSignerEditorRows(mergeSignerEditorRows(resolvedSignerRows, activeOwnerCount));
+    }, [open, resolvedSignerRows, activeOwnerCount]);
 
     const resetFromSources = useCallback(() => {
         const defaults = getContractPrefillEditDefaultsFromApplication(applicationData, {
@@ -1005,9 +1094,36 @@ export function ContractPrefillEditForm({
                 prefill: mergedBase,
             }),
         );
+        const ownerCount = resolveActiveOwnerCount({
+            owners: contractRecords?.owners ?? null,
+            guarantors: contractRecords?.guarantors ?? null,
+            signerRoles: contractSignerRolesForCounts,
+        });
+        if (ownerCount >= 2) {
+            const signerRoles = buildDocuSignRolesFromEditorRows(
+                mergeSignerEditorRows(resolvedSignerRows, ownerCount),
+            );
+            const secondOwnerName =
+                resolveOwnerRowFullName(contractRecords?.owners?.[1]) ||
+                resolveSecondOwnerSignerName(
+                    signerRoles,
+                    ownerCount,
+                    contractRecords?.owners ?? null,
+                );
+            applySecondOwnerNameToPrefillPartial(merged, secondOwnerName);
+        }
         setValues(mergeFormState(merged));
+        setSignerEditorRows(mergeSignerEditorRows(resolvedSignerRows, ownerCount));
         setFieldErrors({});
-    }, [applicationData, contractRecords, agreementDateForDefaults, persistedPrefillOverrides, offerDecision]);
+    }, [
+        applicationData,
+        contractRecords,
+        agreementDateForDefaults,
+        persistedPrefillOverrides,
+        offerDecision,
+        contractSignerRolesForCounts,
+        resolvedSignerRows,
+    ]);
 
     /** Stable ref so `resetFromSources` stays current without widening effect deps below. */
     const resetFromSourcesRef = useRef(resetFromSources);
@@ -1062,6 +1178,7 @@ export function ContractPrefillEditForm({
     const nextSection =
         activeIdx >= 0 && activeIdx < prefillSections.length - 1 ? prefillSections[activeIdx + 1] : null;
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
+    const isContractSignersSection = activeSectionId === CONTRACT_SIGNERS_PREFILL_SECTION_ID;
 
     const handleSave = async () => {
         setSaveError(null);
@@ -1115,10 +1232,28 @@ export function ContractPrefillEditForm({
                 priorBlob[linkedAddendumMapping.id] = { ...addendumFieldValues };
                 extras[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY] = priorBlob;
             }
-            const contractPrefillOverrides = {
+            let contractPrefillOverrides: Record<string, unknown> = {
                 ...(payload as Record<string, unknown>),
                 ...extras,
             };
+            const signerRowsToPersist = signerEditorRows
+                .map((row) => ({
+                    role: String(row.role || "").trim(),
+                    name: String(row.name || "").trim(),
+                    email: String(row.email || "").trim(),
+                }))
+                .filter((row) => row.role && row.email);
+            if (signerRowsToPersist.length) {
+                contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
+                    contractPrefillOverrides,
+                    signerRowsToPersist,
+                );
+            } else if (resolvedSignerRows?.length) {
+                contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
+                    contractPrefillOverrides,
+                    resolvedSignerRows,
+                );
+            }
             const columnSync = contractPrefillToContractColumnUpdate(payload);
             const updateRes = await dispatch(
                 updateContract({
@@ -1337,7 +1472,101 @@ export function ContractPrefillEditForm({
                                         </div>
                                     </div>
                                 </div>
-                                {isLinkedAddendumSection ? (
+                                {isContractSignersSection ? (
+                                    <div className="space-y-4">
+                                        {signerEditorRows.map((row, index) => (
+                                            <div
+                                                key={`signer-${index}`}
+                                                className="space-y-3 rounded-lg border border-slate-200/90 bg-white p-4 dark:border-slate-600 dark:bg-slate-950/40"
+                                            >
+                                                <h5 className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                    {index === 0 ? "Primary signer" : "Secondary signer (Owner 2)"}
+                                                </h5>
+                                                <div className="grid gap-3 sm:grid-cols-2">
+                                                    <div className="space-y-1.5">
+                                                        <Label
+                                                            htmlFor={`prefill-signer-role-${index}`}
+                                                            className="text-xs font-medium"
+                                                        >
+                                                            Role
+                                                        </Label>
+                                                        <Input
+                                                            id={`prefill-signer-role-${index}`}
+                                                            value={row.role}
+                                                            onChange={(e) =>
+                                                                setSignerEditorRows((prev) =>
+                                                                    prev.map((r, i) =>
+                                                                        i === index
+                                                                            ? { ...r, role: e.target.value }
+                                                                            : r,
+                                                                    ),
+                                                                )
+                                                            }
+                                                            disabled={readOnly}
+                                                            className="h-9 text-sm"
+                                                        />
+                                                    </div>
+                                                    <div className="space-y-1.5">
+                                                        <Label
+                                                            htmlFor={`prefill-signer-email-${index}`}
+                                                            className="text-xs font-medium"
+                                                        >
+                                                            Email
+                                                        </Label>
+                                                        <Input
+                                                            id={`prefill-signer-email-${index}`}
+                                                            type="email"
+                                                            value={row.email}
+                                                            onChange={(e) =>
+                                                                setSignerEditorRows((prev) =>
+                                                                    prev.map((r, i) =>
+                                                                        i === index
+                                                                            ? { ...r, email: e.target.value }
+                                                                            : r,
+                                                                    ),
+                                                                )
+                                                            }
+                                                            disabled={readOnly}
+                                                            className="h-9 text-sm"
+                                                        />
+                                                    </div>
+                                                    <div className="space-y-1.5 sm:col-span-2">
+                                                        <Label
+                                                            htmlFor={`prefill-signer-name-${index}`}
+                                                            className="text-xs font-medium"
+                                                        >
+                                                            Name
+                                                        </Label>
+                                                        <Input
+                                                            id={`prefill-signer-name-${index}`}
+                                                            value={row.name}
+                                                            onChange={(e) => {
+                                                                const name = e.target.value;
+                                                                setSignerEditorRows((prev) =>
+                                                                    prev.map((r, i) =>
+                                                                        i === index ? { ...r, name } : r,
+                                                                    ),
+                                                                );
+                                                                if (index === 1 && name.trim()) {
+                                                                    setValues((prev) => {
+                                                                        const next = { ...prev };
+                                                                        applySecondOwnerNameToPrefillPartial(
+                                                                            next,
+                                                                            name,
+                                                                        );
+                                                                        return next;
+                                                                    });
+                                                                }
+                                                            }}
+                                                            disabled={readOnly}
+                                                            className="h-9 text-sm"
+                                                        />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : isLinkedAddendumSection ? (
                                     <div className="space-y-4">
                                         {!linkedAddendumHasFieldMap ? (
                                             <p className="text-muted-foreground text-sm">

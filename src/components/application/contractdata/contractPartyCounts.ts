@@ -357,6 +357,7 @@ export function applySecondOwnerNameToPrefillFields(
 }
 
 export const OWNER2_PREFILL_FORM_KEYS = [
+    "merchant2Name",
     "owner2GuarantorName",
     "guarantyOwner2Name",
     "guarantyOwner2Ss",

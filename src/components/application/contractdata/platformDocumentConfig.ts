@@ -32,6 +32,23 @@ export const SUPPLEMENTAL_DOCUMENT_OPTIONS: SupplementalDocumentOption[] = [
     { layoutKey: PLATFORM_LAYOUT_KEYS.achAuthorization, label: "ACH Authorization" },
 ];
 
+/** Addendum picker — ACH is managed in its own Info Required section. */
+export const CONTRACT_ADDENDUM_DOCUMENT_OPTIONS: SupplementalDocumentOption[] =
+    SUPPLEMENTAL_DOCUMENT_OPTIONS.filter(
+        (o) => o.layoutKey !== PLATFORM_LAYOUT_KEYS.achAuthorization,
+    );
+
+export function isAchAuthorizationLayoutKey(value: unknown): boolean {
+    const key = String(value ?? "")
+        .trim()
+        .toLowerCase();
+    return (
+        key === PLATFORM_LAYOUT_KEYS.achAuthorization ||
+        key.includes("ach_authorization") ||
+        key.includes("ach-authorization")
+    );
+}
+
 const LAYOUT_KEY_SET = new Set<string>(Object.values(PLATFORM_LAYOUT_KEYS));
 
 export function isPlatformLayoutKey(value: unknown): value is PlatformLayoutKey {

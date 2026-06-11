@@ -450,7 +450,8 @@ export const applicationDetailSlice = createSlice({
                         state.data = {
                             ...state.data,
                             ...updatedApplication,
-                            note: updatedApplication.note, // Ensure note is updated
+                            note: updatedApplication.note,
+                            iso: updatedApplication.iso ?? (state.data as any).iso,
                         } as Application;
                     }
                 }

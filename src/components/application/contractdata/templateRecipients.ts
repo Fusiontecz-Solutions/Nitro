@@ -206,6 +206,19 @@ export function suggestedRowsToSummaryTemplateRoles(
     }));
 }
 
+/** Resolve persisted CRM signer rows from contract prefill JSON (ignores template-mapping-only blobs). */
+export function resolveContractSignerOverrideRows(options: {
+    explicit?: ContractSignerOverrideRow[] | null;
+    contractPrefillOverrides?: unknown;
+    additionalPrefillJson?: unknown;
+}): ContractSignerOverrideRow[] | null {
+    if (options.explicit?.length) return options.explicit;
+    return (
+        parseContractSignerOverridesFromPrefill(options.contractPrefillOverrides) ??
+        parseContractSignerOverridesFromPrefill(options.additionalPrefillJson)
+    );
+}
+
 export function parseContractSignerOverridesFromPrefill(
     raw: unknown,
 ): ContractSignerOverrideRow[] | null {

@@ -621,7 +621,14 @@ export const deleteApplication = createAsyncThunk(
 // Upload documents to an existing application
 export const uploadApplicationDocuments = createAsyncThunk(
     'application/uploadDocuments',
-    async ({ id, files }: { id: string; files: File[] }, { rejectWithValue }) => {
+    async (
+        {
+            id,
+            files,
+            requestedDocumentSlug,
+        }: { id: string; files: File[]; requestedDocumentSlug?: string },
+        { rejectWithValue },
+    ) => {
         try {
             const formData = new FormData();
 
@@ -630,6 +637,9 @@ export const uploadApplicationDocuments = createAsyncThunk(
                 files.forEach((file) => {
                     formData.append('files', file);
                 });
+            }
+            if (requestedDocumentSlug?.trim()) {
+                formData.append('requestedDocumentSlug', requestedDocumentSlug.trim());
             }
 
             const response = await axiosPostFormData(`/applications/${id}/files`, formData);

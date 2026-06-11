@@ -6,6 +6,21 @@ export interface SendDocumentRequestPayload {
     requestedDocuments: string[];
     requestAdditional?: boolean;
     reason?: string;
+    /** Contract modal ISO email flow — omit for underwriting send-back. */
+    isoEmail?: string;
+    additionalToEmails?: string[];
+    ccEmails?: string[];
+}
+
+export interface SendDocumentRequestResponse {
+    success: boolean;
+    message: string;
+    data?: unknown;
+    application?: unknown;
+    emailSent?: boolean;
+    emailError?: string;
+    emailedTo?: string[];
+    emailedCc?: string[];
 }
 
 export interface NotifyFinalUnderwriterPayload {
@@ -21,9 +36,17 @@ export const sendDocumentRequest = createAsyncThunk(
             const response = await axiosPost('/notifications/document-request', data);
             return response.data;
         } catch (error: any) {
-            const message = error.response?.data?.message || error.message || 'Failed to send document request';
-            console.error('Send document request error:', message, error.response?.data);
-            return rejectWithValue(message);
+            const responseData = error.response?.data;
+            const message =
+                responseData?.message || error.message || 'Failed to send document request';
+            console.error('Send document request error:', message, responseData);
+            return rejectWithValue({
+                message,
+                emailSent: responseData?.emailSent,
+                emailError: responseData?.emailError,
+                application: responseData?.application,
+                status: error.response?.status,
+            });
         }
     }
 );

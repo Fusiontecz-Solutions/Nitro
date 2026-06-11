@@ -27,6 +27,8 @@ export type BoldSignMergeAndSendPayload = {
   templateIds?: string[];
   /** Code-defined layout keys (e.g. flex_addendum, balance_transfer). */
   supplementalLayoutKeys?: string[];
+  /** When false, envelope omits the main contract PDF (standalone supplemental send). */
+  includeMainContract?: boolean;
   /** @deprecated Use supplementalLayoutKeys — accepts layout keys or legacy CRM row ids. */
   supplementalDocumentRefs?: string[];
   ownerCount?: number;

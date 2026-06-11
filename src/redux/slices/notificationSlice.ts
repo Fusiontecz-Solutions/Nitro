@@ -280,8 +280,13 @@ export const markAllAsReadSlice = createSlice({
 // Document Request State
 interface DocumentRequest {
     name: string;
+    label?: string;
     status: 'Complete' | 'Pending';
     createdAt: string;
+    fileUrl?: string;
+    fileId?: string;
+    contractUploadKey?: 'voidedCheck' | 'driverLicense';
+    message?: string;
     requestedBy?: {
         _id: string;
         firstName: string;

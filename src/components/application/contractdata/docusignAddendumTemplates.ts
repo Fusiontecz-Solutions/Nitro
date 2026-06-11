@@ -9,6 +9,8 @@ export const DOCUSIGN_ADDENDUM_LAYOUT_KEYS = {
     BALANCE_TRANSFER_SHEET: PLATFORM_LAYOUT_KEYS.balanceTransfer,
     FLEX_ADDENDUM: PLATFORM_LAYOUT_KEYS.flexAddendum,
     ACH_AUTHORIZATION: PLATFORM_LAYOUT_KEYS.achAuthorization,
+    /** Standalone ACH send — same PDF/coords, no owner 2 initial mirror. */
+    ACH_AUTHORIZATION_STANDALONE: "ach_authorization_standalone",
 } as const;
 
 export type DocusignAddendumLayoutKey =

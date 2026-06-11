@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
 import { type AppDispatch, type RootState } from "@/redux/store";
@@ -56,10 +56,17 @@ import BusinessInfoModal from "./BusinessInfoModal";
 import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Info, Landmark, Loader2 } from "lucide-react";
+import { Info, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
-import { axiosGet } from "@/redux/axios";
+import { mergeContractCcEmailList } from "./boldsignCcList";
+import { axiosGet, axiosPost } from "@/redux/axios";
+import {
+    achCapsuleClassName,
+    formatAchAuthorizationCapsuleLabel,
+    parseAchAuthorizationDocuSignFromPrefill,
+    type AchAuthorizationDocuSignCapsuleStatus,
+} from "./contractdata/achAuthorizationDocuSign";
 // import { US_STATES } from "@/constants/usStates";
 import {
     buildContractPrefillFieldsFromApplication,
@@ -281,6 +288,8 @@ export default function ContractTab({
     const [signedPdfPreviewUrl, setSignedPdfPreviewUrl] = useState<string | null>(null);
     const [signedPdfPreviewName, setSignedPdfPreviewName] = useState("Signed contract.pdf");
     const [fetchedContract, setFetchedContract] = useState<any | null>(null);
+    const [viewingAchDocument, setViewingAchDocument] = useState(false);
+    const [refreshingAchStatus, setRefreshingAchStatus] = useState(false);
 
     const appId =
         applicationId ??
@@ -426,6 +435,24 @@ export default function ContractTab({
         if (Number.isFinite(fetchedId) && fetchedId > 0) return true;
         return Number.isFinite(Number(selectedContractId)) && Number(selectedContractId) > 0;
     }, [fetchedContract, selectedContractId]);
+
+    const achAuthorizationDocuSign = useMemo(
+        () =>
+            parseAchAuthorizationDocuSignFromPrefill(
+                (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+            ),
+        [fetchedContract],
+    );
+
+    const achCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus =
+        achAuthorizationDocuSign?.status ?? "DRAFT";
+
+    const achTableStatusLabel = useMemo(() => {
+        if (!achAuthorizationDocuSign?.envelopeId) return "Pending";
+        if (achCapsuleStatus === "DRAFT") return "Draft";
+        return formatAchAuthorizationCapsuleLabel(achCapsuleStatus);
+    }, [achAuthorizationDocuSign?.envelopeId, achCapsuleStatus]);
 
     // Derive final calculations from offer decision + terms offer (aligned with OfferDecisionToggle).
     const offerRecord =
@@ -861,6 +888,100 @@ export default function ContractTab({
         }
     };
 
+    const reloadFetchedContract = useCallback(async () => {
+        if (!applicationUuid) return null;
+        const res = await dispatch(getByApplicationIdContract(String(applicationUuid))).unwrap();
+        const contract = (res as { data?: unknown })?.data ?? res ?? null;
+        setFetchedContract(contract);
+        const contractId = Number((contract as { id?: unknown })?.id);
+        if (Number.isFinite(contractId)) setSelectedContractId(contractId);
+        return contract;
+    }, [applicationUuid, dispatch]);
+
+    const refreshAchStatusOnContractTab = useCallback(
+        async (silent?: boolean) => {
+            const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
+            if (!envelopeId) return;
+            if (!silent) setRefreshingAchStatus(true);
+            try {
+                await axiosPost("/docusign/sync-envelope-status", { envelopeId });
+                await reloadFetchedContract();
+            } catch (err: unknown) {
+                if (!silent) {
+                    const msg =
+                        (err as { response?: { data?: { message?: string } }; message?: string })
+                            ?.response?.data?.message ||
+                        (err as { message?: string })?.message ||
+                        "Could not refresh ACH status.";
+                    toast.error(String(msg));
+                }
+            } finally {
+                if (!silent) setRefreshingAchStatus(false);
+            }
+        },
+        [achAuthorizationDocuSign?.envelopeId, reloadFetchedContract],
+    );
+
+    useEffect(() => {
+        const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
+        if (!envelopeId || achCapsuleStatus === "SIGNED") return;
+        void refreshAchStatusOnContractTab(true);
+        const id = window.setInterval(() => {
+            void refreshAchStatusOnContractTab(true);
+        }, 20_000);
+        return () => window.clearInterval(id);
+    }, [achAuthorizationDocuSign?.envelopeId, achCapsuleStatus, refreshAchStatusOnContractTab]);
+
+    const handleViewAchDocument = async () => {
+        const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
+        if (!envelopeId) {
+            toast.info("ACH authorization has not been sent via DocuSign yet.");
+            return;
+        }
+
+        setViewingAchDocument(true);
+        try {
+            const res = await axiosGet(
+                `/docusign/download/${encodeURIComponent(envelopeId)}`,
+                { responseType: "blob", timeout: 120000 },
+            );
+            const blob =
+                res.data instanceof Blob
+                    ? res.data
+                    : new Blob([res.data], { type: "application/pdf" });
+            if (!blob.size) {
+                toast.error("DocuSign returned an empty PDF.");
+                return;
+            }
+
+            const objectUrl = URL.createObjectURL(blob);
+            const fileLabel = String(
+                (applicationData as { applicationId?: unknown })?.applicationId ??
+                    applicationUuid,
+            ).replace(/[^\w.-]+/g, "_");
+            const fileName =
+                achCapsuleStatus === "SIGNED"
+                    ? `signed-ach-authorization-${fileLabel}.pdf`
+                    : `ach-authorization-${fileLabel}.pdf`;
+
+            setSignedPdfPreviewUrl((prev) => {
+                if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+                return objectUrl;
+            });
+            setSignedPdfPreviewName(fileName);
+            setSignedPdfPreviewOpen(true);
+        } catch (err: unknown) {
+            const msg =
+                (err as { response?: { data?: { message?: string } }; message?: string })
+                    ?.response?.data?.message ||
+                (err as { message?: string })?.message ||
+                "Could not load the ACH authorization PDF.";
+            toast.error(String(msg));
+        } finally {
+            setViewingAchDocument(false);
+        }
+    };
+
     /** Contract record created — not yet in DocuSign. Contract Out only after send. */
     const persistContractPendingStage = async () => {
         if (!applicationUuid) return;
@@ -1082,6 +1203,8 @@ export default function ContractTab({
         sendPayload: {
             ccEmails: string[];
             supplementalLayoutKey?: string | null;
+            /** When false, send supplemental layout only (e.g. standalone ACH authorization). */
+            includeMainContract?: boolean;
             /** Current funder from contract modal (may not be persisted yet). */
             funderName?: string | null;
             /** CRM recipient overrides for this send (does not edit DocuSign template). */
@@ -1105,17 +1228,17 @@ export default function ContractTab({
             throw new Error(message);
         };
 
-        if (!globalTemplateUrl || !applicationUuid) {
+        const includeMainContract = sendPayload.includeMainContract !== false;
+        if (includeMainContract && (!globalTemplateUrl || !applicationUuid)) {
             failDocuSignEnvelope(
                 "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
             );
         }
+        if (!applicationUuid) {
+            failDocuSignEnvelope("Application is required to send via DocuSign.");
+        }
 
-        const effectiveCcEmails = [
-            ...new Set(
-                (sendPayload.ccEmails || []).map((e) => String(e).trim()).filter(Boolean),
-            ),
-        ];
+        const effectiveCcEmails = mergeContractCcEmailList(sendPayload.ccEmails);
         const supplementalLayoutKey = String(sendPayload.supplementalLayoutKey ?? "").trim();
 
         const applicationSignerEmail = getPrimaryRecipientEmail().trim();
@@ -1234,9 +1357,12 @@ export default function ContractTab({
                 ).clientName.trim() ||
                 applicationSignerName.trim() ||
                 "Client";
-            const docuSignEmailSubject =
-                buildDocuSignEnvelopeEmailSubject(docuSignClientName);
-            const docuSignEmailMessage = `Please review and sign your agreement with ${DOCUSIGN_EMAIL_LENDER_NAME}.`;
+            const docuSignEmailSubject = includeMainContract
+                ? buildDocuSignEnvelopeEmailSubject(docuSignClientName)
+                : `ACH Authorization — ${docuSignClientName}`;
+            const docuSignEmailMessage = includeMainContract
+                ? `Please review and sign your agreement with ${DOCUSIGN_EMAIL_LENDER_NAME}.`
+                : `Please review and sign the ACH authorization for ${docuSignClientName}.`;
 
             const supplementalLayoutKeys = supplementalLayoutKey
                 ? [supplementalLayoutKey]
@@ -1336,6 +1462,7 @@ export default function ContractTab({
 
             const mergeRequest = {
                 supplementalLayoutKeys,
+                includeMainContract,
                 ownerCount,
                 roles,
                 prefillFields: prefillFieldsPayload,
@@ -1541,6 +1668,7 @@ export default function ContractTab({
     const prepareDocuSignDraft = async (payload: {
         ccEmails: string[];
         supplementalLayoutKey?: string | null;
+        includeMainContract?: boolean;
         funderName?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
         prefillFields?: Array<{ id: string; value: string }>;
@@ -2111,70 +2239,162 @@ export default function ContractTab({
                                     </TableCell>
                                 </TableRow>
                             ) : fetchedContract ? (
-                                <TableRow className={tableRowClass}>
-                                    <TableCell className={tableCellClass}>
-                                        {fetchedContract?.offer?.offer || fetchedContract?.program || "—"}
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        {fetchedContract?.offer?.term ?? "—"}
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        1
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        {formatContractCurrency(fetchedContract?.approvedAmount)}
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        {formatContractCurrency(fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit)}
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        {formatContractCurrency(
-                                            contractTableMetrics.perPeriodPayment,
-                                        )}
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        {contractTableMetrics.buyRate}
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        {contractTableMetrics.upsell}
-                                    </TableCell>
-                                    <TableCell className={tableCellClass}>
-                                        {contractTableMetrics.factor}
-                                    </TableCell>
-                                    <TableCell>
-                                        <div className="flex items-center gap-1.5">
-                                            <span className={statusBadgeClass}>
-                                                {String(fetchedContract?.status || "Generated")}
+                                <Fragment>
+                                    <TableRow className={tableRowClass}>
+                                        <TableCell className={tableCellClass}>
+                                            {fetchedContract?.offer?.offer ||
+                                                fetchedContract?.program ||
+                                                "Contract"}
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            {fetchedContract?.offer?.term ?? "—"}
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            1
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            {formatContractCurrency(fetchedContract?.approvedAmount)}
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            {formatContractCurrency(
+                                                fetchedContract?.totalAmount ??
+                                                    fetchedContract?.offer?.totalRemit,
+                                            )}
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            {formatContractCurrency(
+                                                contractTableMetrics.perPeriodPayment,
+                                            )}
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            {contractTableMetrics.buyRate}
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            {contractTableMetrics.upsell}
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>
+                                            {contractTableMetrics.factor}
+                                        </TableCell>
+                                        <TableCell>
+                                            <div className="flex items-center gap-1.5">
+                                                <span className={statusBadgeClass}>
+                                                    {String(fetchedContract?.status || "Generated")}
+                                                </span>
+                                                {isContractFullySigned(
+                                                    fetchedContract?.status,
+                                                    fetchedContract?.application?.document?.status,
+                                                ) ? (
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        onClick={() => void handleViewSignedContract()}
+                                                        disabled={viewingSignedContract}
+                                                        className={`h-7 w-7 shrink-0 ${isDark
+                                                            ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                                            : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                            }`}
+                                                        title="View signed contract"
+                                                    >
+                                                        {viewingSignedContract ? (
+                                                            <Loader2
+                                                                className="h-3.5 w-3.5 animate-spin"
+                                                                aria-hidden
+                                                            />
+                                                        ) : (
+                                                            <Info className="h-3.5 w-3.5" aria-hidden />
+                                                        )}
+                                                    </Button>
+                                                ) : null}
+                                            </div>
+                                        </TableCell>
+                                    </TableRow>
+                                    <TableRow className={tableRowClass}>
+                                        <TableCell className={tableCellClass}>
+                                            <span className="inline-flex items-center gap-1.5">
+                                                <Landmark
+                                                    className="h-3.5 w-3.5 shrink-0 text-teal-700 dark:text-teal-300"
+                                                    aria-hidden
+                                                />
+                                                ACH Authorization
                                             </span>
-                                            {isContractFullySigned(
-                                                fetchedContract?.status,
-                                                fetchedContract?.application?.document?.status,
-                                            ) ? (
-                                                <Button
-                                                    type="button"
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    onClick={() => void handleViewSignedContract()}
-                                                    disabled={viewingSignedContract}
-                                                    className={`h-7 w-7 shrink-0 ${isDark
-                                                        ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                                        : "text-[#276D9C] hover:bg-[#276D9C]/10"
-                                                        }`}
-                                                    title="View signed contract"
+                                        </TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
+                                        <TableCell>
+                                            <div className="flex items-center gap-1.5">
+                                                <span
+                                                    className={
+                                                        achCapsuleStatus !== "DRAFT" &&
+                                                        achAuthorizationDocuSign?.envelopeId
+                                                            ? `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${achCapsuleClassName(achCapsuleStatus)}`
+                                                            : statusBadgeClass
+                                                    }
                                                 >
-                                                    {viewingSignedContract ? (
-                                                        <Loader2
-                                                            className="h-3.5 w-3.5 animate-spin"
-                                                            aria-hidden
-                                                        />
-                                                    ) : (
-                                                        <Info className="h-3.5 w-3.5" aria-hidden />
-                                                    )}
-                                                </Button>
-                                            ) : null}
-                                        </div>
-                                    </TableCell>
-                                </TableRow>
+                                                    {achTableStatusLabel}
+                                                </span>
+                                                {achAuthorizationDocuSign?.envelopeId ? (
+                                                    <>
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            onClick={() => void handleViewAchDocument()}
+                                                            disabled={viewingAchDocument}
+                                                            className={`h-7 w-7 shrink-0 ${isDark
+                                                                ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                                                : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                                }`}
+                                                            title={
+                                                                achCapsuleStatus === "SIGNED"
+                                                                    ? "View signed ACH form"
+                                                                    : "View filled ACH form"
+                                                            }
+                                                        >
+                                                            {viewingAchDocument ? (
+                                                                <Loader2
+                                                                    className="h-3.5 w-3.5 animate-spin"
+                                                                    aria-hidden
+                                                                />
+                                                            ) : (
+                                                                <Info className="h-3.5 w-3.5" aria-hidden />
+                                                            )}
+                                                        </Button>
+                                                        {achCapsuleStatus !== "SIGNED" ? (
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                onClick={() =>
+                                                                    void refreshAchStatusOnContractTab(
+                                                                        false,
+                                                                    )
+                                                                }
+                                                                disabled={refreshingAchStatus}
+                                                                className={`h-7 w-7 shrink-0 ${isDark
+                                                                    ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                                                    : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                                    }`}
+                                                                title="Refresh ACH status"
+                                                            >
+                                                                <RefreshCw
+                                                                    className={`h-3.5 w-3.5 ${refreshingAchStatus ? "animate-spin" : ""}`}
+                                                                    aria-hidden
+                                                                />
+                                                            </Button>
+                                                        ) : null}
+                                                    </>
+                                                ) : null}
+                                            </div>
+                                        </TableCell>
+                                    </TableRow>
+                                </Fragment>
                             ) : (
                                 contractsForTable.map((offer) => (
                                     <TableRow
@@ -2386,6 +2606,7 @@ export default function ContractTab({
                 onClose={() => {
                     setPdfViewerOpen(false);
                     setPdfViewerInitialRightPaneTab("template");
+                    void reloadFetchedContract();
                 }}
                 fileUrl={pdfUrl}
                 fileName={pdfName}
