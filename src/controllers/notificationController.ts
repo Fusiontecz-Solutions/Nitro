@@ -9,6 +9,32 @@ import {
     isFundingCallStatusCallDone,
     notifyOperationsDisbursementReady,
 } from '../services/fundingCallDisbursementSideEffects';
+import { sendDocumentRequestEmail } from '../services/emailService';
+import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
+
+const DOCUMENT_REQUEST_LABELS: Record<string, string> = {
+    'bank-statements': 'Bank Statements - 12 months',
+    'additional-id': 'Additional ID Proof',
+    'business-license': 'Business License',
+    'proof-of-address': 'Proof of Address',
+    'financial-statement': 'Financial Statement',
+    'voided-check': 'Voided Check',
+    'tax-returns': 'Tax Returns- Last 2 Years',
+    'articles-of-incorporation': 'Articles of Incorporations',
+};
+
+function parseEmailList(value: unknown): string[] {
+    if (value == null) return [];
+    const raw = Array.isArray(value) ? value : [value];
+    const out = new Set<string>();
+    for (const entry of raw) {
+        const email = String(entry ?? '').trim().toLowerCase();
+        if (!email) continue;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+        out.add(email);
+    }
+    return [...out];
+}
 
 // Helper to map Prisma Application (with includes) to the API shape previously returned by Mongoose
 const mapApplicationToApi = (app: any) => {
@@ -199,7 +225,16 @@ class NotificationController {
     // Send document request notification
     async sendDocumentRequest(req: Request, res: Response) {
         try {
-            const { applicationId, requestedDocuments, requestAdditional, reason, additionalComments } = req.body;
+            const {
+                applicationId,
+                requestedDocuments,
+                requestAdditional,
+                reason,
+                additionalComments,
+                isoEmail,
+                additionalToEmails,
+                ccEmails,
+            } = req.body;
             const currentUserRole = (req as any).user?.role;
             const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
 
@@ -241,6 +276,7 @@ class NotificationController {
                     include: {
                         referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
                         salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        iso: { select: { id: true, name: true, email: true } },
                         client: true,
                     },
                 });
@@ -250,6 +286,7 @@ class NotificationController {
                     include: {
                         referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
                         salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                        iso: { select: { id: true, name: true, email: true } },
                         client: true,
                     },
                 });
@@ -277,18 +314,30 @@ class NotificationController {
                 });
             }
 
+            const isIsoEmailRequest = Object.prototype.hasOwnProperty.call(req.body ?? {}, 'isoEmail');
+            const defaultIsoEmail = String((application as any)?.iso?.email || '').trim();
+            const primaryIsoEmail = isIsoEmailRequest
+                ? String(isoEmail ?? '').trim()
+                : String(isoEmail || defaultIsoEmail || '').trim();
+            const extraTo = parseEmailList(additionalToEmails);
+            const ccList = parseEmailList(ccEmails);
+            const emailTo = [
+                ...parseEmailList(primaryIsoEmail ? [primaryIsoEmail] : []),
+                ...extraTo,
+            ].filter((email) => !ccList.includes(email));
+
+            if (isIsoEmailRequest && emailTo.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'ISO email is required to send the document request',
+                });
+            }
+
             // Determine recipient (agent) - prefer referringAgent, fallback to salesRepresentative
             const recipientId =
                 (application as any).referringAgent?.id ||
                 (application as any).salesRepresentative?.id ||
                 attributedCreatedById;
-            
-            if (!recipientId) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'No recipient available for this notification',
-                });
-            }
 
             // Get application and client details for the message
             const clientName = (application as any).client?.business?.name || 
@@ -327,11 +376,24 @@ class NotificationController {
                 underwriters.forEach((u) => addIfNotSender(u.id));
             }
 
-            if (recipientIds.size === 0) {
+            if (recipientIds.size === 0 && emailTo.length === 0) {
                 return res.status(400).json({
                     success: false,
                     message: 'No recipient available for this notification',
                 });
+            }
+
+            // Persist ISO email when provided (e.g. user entered it in the request modal)
+            const isoId = (application as any)?.isoId || (application as any)?.iso?.id;
+            if (isoId && primaryIsoEmail) {
+                try {
+                    await prisma.iso.update({
+                        where: { id: String(isoId) },
+                        data: { email: primaryIsoEmail },
+                    });
+                } catch (isoUpdateError) {
+                    console.error('Failed to update ISO email from document request:', isoUpdateError);
+                }
             }
 
             // Create one notification per recipient (so Agent and Underwriters all get notified)
@@ -345,11 +407,13 @@ class NotificationController {
                 createdById: attributedCreatedById,
             };
             let firstNotification: { id: string } | null = null;
-            for (const recId of recipientIds) {
-                const created = await prisma.notification.create({
-                    data: { ...notificationData, recipientId: String(recId) },
-                });
-                if (!firstNotification) firstNotification = created;
+            if (recipientIds.size > 0) {
+                for (const recId of recipientIds) {
+                    const created = await prisma.notification.create({
+                        data: { ...notificationData, recipientId: String(recId) },
+                    });
+                    if (!firstNotification) firstNotification = created;
+                }
             }
 
             // Update application: note, and queue/state for Final Underwriter
@@ -381,6 +445,34 @@ class NotificationController {
                 });
             }
 
+            const documentLabels = (documentsArray || [])
+                .map((id) => DOCUMENT_REQUEST_LABELS[String(id)] || String(id))
+                .filter(Boolean);
+
+            let documentRequestEmailSent = false;
+            let documentRequestEmailError: string | undefined;
+            if (emailTo.length > 0) {
+                const numericAppId = (application as any).applicationId;
+                const fallbackId = (application as any).id;
+                const feBase = resolveCrmFrontendBaseUrl() || '';
+                const viewApplicationUrl = feBase
+                    ? `${feBase.replace(/\/$/, '')}/applications/${numericAppId || fallbackId}`
+                    : undefined;
+                const emailResult = await sendDocumentRequestEmail({
+                    to: emailTo,
+                    cc: ccList,
+                    isoName: String((application as any)?.iso?.name || '').trim() || undefined,
+                    applicationNumber: numericAppId || fallbackId || 'N/A',
+                    clientName,
+                    requestedDocuments: documentLabels,
+                    requestAdditional: requestAdditional || false,
+                    note: fullNote || undefined,
+                    viewApplicationUrl,
+                });
+                documentRequestEmailSent = emailResult.sent;
+                documentRequestEmailError = emailResult.error;
+            }
+
             // Best-effort application activity log for document request
             try {
                 const authUserForLog = {
@@ -409,6 +501,9 @@ class NotificationController {
                             requestAdditional: requestAdditional || false,
                             reason: reasonText,
                             additionalComments: additionalCommentsText,
+                            emailedTo: emailTo,
+                            emailedCc: ccList,
+                            documentRequestEmailSent,
                         } as any,
                     },
                 });
@@ -423,6 +518,7 @@ class NotificationController {
                     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
                     salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
                     createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    iso: { select: { id: true, name: true, email: true } },
                     client: true,
                     files: true,
                 },
@@ -448,11 +544,41 @@ class NotificationController {
             // Map the updated application to API format
             const mappedApplication = updatedApplicationRecord ? mapApplicationToApi(updatedApplicationRecord) : null;
 
-            return res.status(201).json({
-                success: true,
-                message: 'Document request notification sent successfully',
+            let successMessage: string;
+            if (isIsoEmailRequest && emailTo.length > 0) {
+                if (documentRequestEmailSent && firstNotification) {
+                    successMessage =
+                        'Document request sent to ISO by email and in-app notification created';
+                } else if (documentRequestEmailSent) {
+                    successMessage = 'Document request sent to ISO by email';
+                } else {
+                    successMessage = documentRequestEmailError
+                        ? `Document request saved but ISO email was not sent: ${documentRequestEmailError}`
+                        : 'Document request saved but ISO email was not sent';
+                }
+            } else if (documentRequestEmailSent && firstNotification) {
+                successMessage =
+                    'Document request sent to ISO by email and in-app notification created';
+            } else if (documentRequestEmailSent) {
+                successMessage = 'Document request sent to ISO by email';
+            } else if (firstNotification) {
+                successMessage = 'Document request notification sent successfully';
+            } else {
+                successMessage = 'Document request saved successfully';
+            }
+
+            const isoEmailDeliveryFailed =
+                isIsoEmailRequest && emailTo.length > 0 && !documentRequestEmailSent;
+
+            return res.status(isoEmailDeliveryFailed ? 502 : 201).json({
+                success: !isoEmailDeliveryFailed,
+                message: successMessage,
                 data: populatedNotification,
                 application: mappedApplication,
+                emailSent: documentRequestEmailSent,
+                emailError: documentRequestEmailError,
+                emailedTo: emailTo,
+                emailedCc: ccList,
             });
         } catch (error: any) {
             console.error('Send document request notification error:', error?.message || error, error?.stack);

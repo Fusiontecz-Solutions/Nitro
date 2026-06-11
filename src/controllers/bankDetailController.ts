@@ -5,7 +5,8 @@ import {
   resolveApplicationAttributedUserId,
   resolveTenantUserId,
 } from '../middleware/authMiddleware';
-import { decryptField, encryptField } from '../utils/fieldEncryption';
+import { decryptSensitiveField, encryptField } from '../utils/fieldEncryption';
+import { syncBankDetailToContractPrefill } from '../services/bankDetailContractSync';
 
 const mapBankDetailToApi = (detail: any) => {
   if (!detail) return detail;
@@ -51,8 +52,8 @@ const mapBankDetailToApi = (detail: any) => {
     _id: id,
     id,
     bankName,
-    accountNumber: decryptField(accountNumber),
-    routingNumber: decryptField(routingNumber),
+    accountNumber: decryptSensitiveField(accountNumber) ?? '',
+    routingNumber: decryptSensitiveField(routingNumber) ?? null,
     application: mappedApplication ?? applicationId,
     createdBy: mappedCreatedBy ?? createdById,
     createdAt,
@@ -105,11 +106,19 @@ class BankDetailController {
         });
       }
 
+      const routingTrimmed = routingNumber != null ? String(routingNumber).trim() : '';
+      if (!routingTrimmed) {
+        return res.status(400).json({
+          success: false,
+          message: 'routingNumber is required for contract generation',
+        });
+      }
+
       const bankDetail = await prisma.bankDetail.create({
         data: {
           bankName: bankName ? String(bankName).trim() : '',
           accountNumber: encryptField(accountNumber),
-          routingNumber: routingNumber ? encryptField(String(routingNumber)) : null,
+          routingNumber: encryptField(routingTrimmed),
           applicationId: applicationRecord.id,
           createdById,
         } as any,
@@ -130,10 +139,21 @@ class BankDetailController {
         },
       });
 
+      const mapped = mapBankDetailToApi(bankDetail);
+      await syncBankDetailToContractPrefill(
+        applicationRecord.id,
+        {
+          bankName: mapped.bankName || '',
+          accountNumber: String(mapped.accountNumber || ''),
+          routingNumber: mapped.routingNumber ? String(mapped.routingNumber) : null,
+        },
+        { bankDetailId: mapped.id },
+      );
+
       return res.status(201).json({
         success: true,
         message: 'Bank detail created successfully',
-        data: mapBankDetailToApi(bankDetail),
+        data: mapped,
       });
     } catch (error) {
       console.error('Create bank detail error:', error);
@@ -425,10 +445,26 @@ class BankDetailController {
         },
       });
 
+      const mapped = mapBankDetailToApi(updatedBankDetail);
+      const appIdForSync =
+        (updatedBankDetail as { applicationId?: string }).applicationId ??
+        existing.applicationId;
+      if (appIdForSync) {
+        await syncBankDetailToContractPrefill(
+          String(appIdForSync),
+          {
+            bankName: mapped.bankName || '',
+            accountNumber: String(mapped.accountNumber || ''),
+            routingNumber: mapped.routingNumber ? String(mapped.routingNumber) : null,
+          },
+          { bankDetailId: mapped.id },
+        );
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Bank detail updated successfully',
-        data: mapBankDetailToApi(updatedBankDetail),
+        data: mapped,
       });
     } catch (error) {
       console.error('Update bank detail error:', error);

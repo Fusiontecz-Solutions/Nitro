@@ -1870,6 +1870,13 @@ class ContractService {
     originalFileName?: string;
     layoutKey?: string;
   }) {
+    const { resolveLayoutKeyFromBoldSignType } = await import(
+      './docusign/layouts/document-layout.registry'
+    );
+    const layoutKey =
+      data.layoutKey ||
+      resolveLayoutKeyFromBoldSignType(String(data.type || '')) ||
+      null;
     return (prisma as any).boldSignTemplate.create({
       data: {
         name: data.name,
@@ -1880,7 +1887,7 @@ class ContractService {
         pdfUrl: data.pdfUrl || null,
         pdfPublicId: data.pdfPublicId || null,
         originalFileName: data.originalFileName || null,
-        layoutKey: data.layoutKey || null,
+        layoutKey,
       },
     });
   }

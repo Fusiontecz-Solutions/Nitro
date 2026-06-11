@@ -321,6 +321,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       templates,
       templateIds,
       supplementalDocumentRefs,
+      standaloneDocumentRefs,
       contractTemplateFilters,
       roles,
       prefillFields,
@@ -332,6 +333,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       autoSend,
       ownerCount,
       guarantorCount,
+      skipApplicationEnvelopeLink,
     } = req.body;
 
     if (!roles?.length) {
@@ -342,6 +344,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       templates,
       templateIds,
       supplementalDocumentRefs,
+      standaloneDocumentRefs,
       contractTemplateFilters,
       roles,
       prefillFields,
@@ -353,6 +356,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       autoSend: autoSend === false ? false : autoSend === true ? true : undefined,
       ownerCount: ownerCount != null ? Number(ownerCount) : undefined,
       guarantorCount: guarantorCount != null ? Number(guarantorCount) : undefined,
+      skipApplicationEnvelopeLink: skipApplicationEnvelopeLink === true,
     });
 
     return res.json(result);

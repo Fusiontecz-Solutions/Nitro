@@ -198,6 +198,8 @@ export async function resolveSupplementalRefsFromDb(filters: {
 
 export async function buildPlatformLayoutEnvelopeDefinition(options: {
   supplementalRefs?: string[];
+  /** When set, builds an envelope from these templates only (no main contract PDF). */
+  standaloneDocumentRefs?: string[];
   roles: Array<Record<string, unknown>>;
   prefillFields?: Array<{ id: string; value: string }>;
   ownerCount?: number;
@@ -205,10 +207,20 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   title?: string;
   message?: string;
 }) {
-  const layouts: DocumentLayoutWithBase64[] = [await loadLatestContractLayoutPackage()];
+  const layouts: DocumentLayoutWithBase64[] = [];
+  const standaloneRefs = (options.standaloneDocumentRefs || [])
+    .map((r) => String(r).trim())
+    .filter(Boolean);
 
-  for (const ref of options.supplementalRefs || []) {
-    layouts.push(await loadSupplementalLayoutPackage(ref));
+  if (standaloneRefs.length > 0) {
+    for (const ref of standaloneRefs) {
+      layouts.push(await loadSupplementalLayoutPackage(ref));
+    }
+  } else {
+    layouts.push(await loadLatestContractLayoutPackage());
+    for (const ref of options.supplementalRefs || []) {
+      layouts.push(await loadSupplementalLayoutPackage(ref));
+    }
   }
 
   const ownerCount = options.ownerCount ?? countOwnersFromRoles(options.roles);

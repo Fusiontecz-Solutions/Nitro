@@ -178,7 +178,7 @@ function resolvePlacementSignerRoleName(
   }
 
   const legacy = String(placement.signerRole || '').trim();
-  if (!legacy || legacy.toLowerCase() === 'signer') {
+  if (!legacy || legacy.toLowerCase() === 'signer' || legacy.toLowerCase() === 'receiver') {
     return resolvePrimarySignerRoleName(signers);
   }
 

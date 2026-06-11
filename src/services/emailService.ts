@@ -1,4 +1,8 @@
-import sendMail, { isOutboundSmtpConfigured } from '../config/nodemailer';
+import sendMail, {
+    isOutboundSmtpConfigured,
+    isSendGridConfigured,
+    sendSendGridMail,
+} from '../config/nodemailer';
 import {
     buildBrandHeaderRowHtml,
     buildBrandHeaderStyles,
@@ -1398,6 +1402,127 @@ function decisionLogicInvitationHostKey(raw: string): string | null {
         return `${host}${port}`;
     } catch {
         return null;
+    }
+}
+
+export interface DocumentRequestEmailParams {
+    to: string[];
+    cc?: string[];
+    isoName?: string;
+    applicationNumber: string | number;
+    clientName: string;
+    requestedDocuments: string[];
+    requestAdditional?: boolean;
+    note?: string;
+    viewApplicationUrl?: string;
+}
+
+function formatDocumentRequestList(
+    requestedDocuments: string[],
+    requestAdditional?: boolean,
+): string {
+    const lines = (requestedDocuments || [])
+        .map((d) => String(d || '').trim())
+        .filter(Boolean);
+    if (requestAdditional) {
+        lines.push('Additional documents (as discussed)');
+    }
+    if (!lines.length) {
+        return '<li>See note below</li>';
+    }
+    return lines.map((line) => `<li>${line}</li>`).join('');
+}
+
+export type DocumentRequestEmailResult = {
+    sent: boolean;
+    error?: string;
+};
+
+/** Email ISO when underwriting requests documents on a deal (SendGrid SMTP). */
+export async function sendDocumentRequestEmail({
+    to,
+    cc,
+    isoName,
+    applicationNumber,
+    clientName,
+    requestedDocuments,
+    requestAdditional,
+    note,
+    viewApplicationUrl,
+}: DocumentRequestEmailParams): Promise<DocumentRequestEmailResult> {
+    const recipients = [...new Set((to || []).map((e) => String(e || '').trim()).filter(Boolean))];
+    if (!recipients.length) {
+        console.warn('[email] Document request skipped: no recipients');
+        return { sent: false, error: 'No email recipients' };
+    }
+    if (!isSendGridConfigured()) {
+        const message =
+            'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.';
+        console.warn(`[email] Document request skipped: ${message}`);
+        return { sent: false, error: message };
+    }
+
+    const safeIso = isoName?.trim() || 'there';
+    const appLabel = applicationNumber != null ? String(applicationNumber) : 'N/A';
+    const subject = `Document request — Application #${appLabel} (${clientName})`;
+    const overviewUrl = viewApplicationUrl
+        ? withApplicationDetailsOverviewHref(viewApplicationUrl)
+        : undefined;
+    const noteBlock = note?.trim()
+        ? `<p style="margin:16px 0 0;"><strong>Note from underwriting:</strong><br/>${note
+              .trim()
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/\n/g, '<br/>')}</p>`
+        : '';
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,Helvetica,sans-serif;color:#111827;line-height:1.5;margin:0;padding:0;">
+  <div style="max-width:600px;margin:0 auto;padding:24px;">
+    ${buildBrandHeaderRowHtml()}
+    <p>Hello ${safeIso},</p>
+    <p>Additional documents are needed for <strong>${clientName}</strong> (Application <strong>#${appLabel}</strong>).</p>
+    <p><strong>Requested documents:</strong></p>
+    <ul style="margin:8px 0 16px;padding-left:20px;">
+      ${formatDocumentRequestList(requestedDocuments, requestAdditional)}
+    </ul>
+    ${noteBlock}
+    ${
+        overviewUrl
+            ? `<p style="margin:24px 0 0;"><a href="${overviewUrl}" style="display:inline-block;background:#276D9C;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600;">View application</a></p>`
+            : ''
+    }
+    <p style="margin:24px 0 0;font-size:12px;color:#6B7280;">Please upload the requested files in the CRM Documents tab for this application.</p>
+  </div>
+</body>
+</html>`;
+
+    const ccList = [...new Set((cc || []).map((e) => String(e || '').trim()).filter(Boolean))];
+
+    try {
+        await sendSendGridMail({
+            to: recipients,
+            cc: ccList.length ? ccList : undefined,
+            subject,
+            html,
+            attachments: buildBrandLogoAttachments(),
+        });
+        console.info('[email] Document request sent via SendGrid', {
+            to: recipients,
+            cc: ccList.length ? ccList : undefined,
+        });
+        return { sent: true };
+    } catch (error: unknown) {
+        let message =
+            error instanceof Error ? error.message : 'SendGrid failed to deliver the document request email';
+        if (/maximum credits exceeded/i.test(message)) {
+            message =
+                'SendGrid email credits exceeded. Add credits to your SendGrid account or contact your administrator.';
+        }
+        console.error('Document request email send failed (SendGrid):', { to: recipients, error });
+        return { sent: false, error: message };
     }
 }
 

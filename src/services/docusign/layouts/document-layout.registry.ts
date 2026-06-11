@@ -1,4 +1,5 @@
 import type { DocumentLayout } from '../utils/convert-docusign-template-export';
+import achAuthorizationLayout from './ach_authorization.layout.json';
 import balanceTransferLayout from './balance_transfer.layout.json';
 import contractLayout from './contract.layout.json';
 import flexAddendumLayout from './flex_addendum.layout.json';
@@ -8,6 +9,7 @@ export const DOCUMENT_LAYOUT_KEYS = {
   contract: 'contract',
   balanceTransfer: 'balance_transfer',
   flexAddendum: 'flex_addendum',
+  achAuthorization: 'ach_authorization',
 } as const;
 
 export type DocumentLayoutKey =
@@ -19,12 +21,15 @@ export const BOLD_SIGN_TYPE_TO_LAYOUT_KEY: Record<string, DocumentLayoutKey> = {
   balance_transfer: DOCUMENT_LAYOUT_KEYS.balanceTransfer,
   addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
   flex_addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
+  ach: DOCUMENT_LAYOUT_KEYS.achAuthorization,
+  ach_authorization: DOCUMENT_LAYOUT_KEYS.achAuthorization,
 };
 
 const REGISTRY: Record<DocumentLayoutKey, DocumentLayout> = {
   [DOCUMENT_LAYOUT_KEYS.contract]: contractLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.balanceTransfer]: balanceTransferLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.flexAddendum]: flexAddendumLayout as DocumentLayout,
+  [DOCUMENT_LAYOUT_KEYS.achAuthorization]: achAuthorizationLayout as DocumentLayout,
 };
 
 export function getDocumentLayout(key: DocumentLayoutKey): DocumentLayout {

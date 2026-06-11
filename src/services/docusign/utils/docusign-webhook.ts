@@ -186,6 +186,21 @@ export function extractCrmApplicationIdFromWebhook(body: any): string | null {
   return s || null;
 }
 
+/** `standalone_ach` = ACH-only envelope; must never update main Contract.status. */
+export function extractCrmEnvelopeKindFromWebhook(body: any): string | null {
+  const fields = extractWebhookTextCustomFields(body);
+  const fromFields = fields.find((f) => f.name === 'crmEnvelopeKind')?.value;
+  if (fromFields != null && String(fromFields).trim()) {
+    return String(fromFields).trim().toLowerCase();
+  }
+  const direct =
+    body?.data?.crmEnvelopeKind ??
+    body?.crmEnvelopeKind ??
+    body?.data?.envelopeSummary?.crmEnvelopeKind;
+  const s = direct != null ? String(direct).trim().toLowerCase() : '';
+  return s || null;
+}
+
 function mapRecipientStatus(status: unknown): string | null {
   if (status == null) return null;
   const k = String(status).trim().toLowerCase();
