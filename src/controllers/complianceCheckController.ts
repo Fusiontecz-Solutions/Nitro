@@ -1,5 +1,9 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import {
+  APPLICATION_USER_ATTRIBUTION_ERROR,
+  resolveApplicationAttributedUserId,
+} from '../middleware/authMiddleware';
 
 const findApplication = async (applicationIdOrUuid: unknown) => {
   const raw = Array.isArray(applicationIdOrUuid) ? applicationIdOrUuid[0] : applicationIdOrUuid;
@@ -103,12 +107,18 @@ class ComplianceCheckController {
         });
       }
 
-      const createdBy = (req as any).user?.id;
-      if (!createdBy) {
-        console.error('User authentication error - req.user:', (req as any).user);
+      if (!req.user) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
+        });
+      }
+
+      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
+      if (!createdById) {
+        return res.status(400).json({
+          success: false,
+          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -129,7 +139,7 @@ class ComplianceCheckController {
             reason: answer === 'yes' ? (reason?.trim() || '') : null,
             signature: signature?.trim() || null,
             date: date?.trim() || null,
-            createdById: existingCheck.createdById ?? createdBy,
+            createdById: existingCheck.createdById ?? createdById,
           },
           include: {
             application: {
@@ -156,7 +166,7 @@ class ComplianceCheckController {
             signature: signature?.trim() || null,
             date: date?.trim() || null,
             applicationId: applicationRecord.id,
-            createdById: createdBy,
+            createdById,
           },
           include: {
             application: {

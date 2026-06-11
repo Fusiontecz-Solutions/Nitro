@@ -1,5 +1,4 @@
 import { Worker } from 'bullmq';
-import Redis from 'ioredis';
 import {
     APPLICATION_APPROVAL_QUEUE_NAME,
     type ApplicationApprovalJobData,
@@ -24,13 +23,13 @@ let workerInstance:
     | Worker<ApplicationApprovalJobData, void, ApplicationApprovalJobName>
     | null = null;
 
-const createRedisConnection = (): Redis =>
-    new Redis(String(process.env.REDIS_URL || '').trim(), {
-        maxRetriesPerRequest: null,
-        retryStrategy(times) {
-            return Math.min(times * 200, 2_000);
-        },
-    });
+const getRedisConnectionOptions = () => ({
+    url: String(process.env.REDIS_URL || '').trim(),
+    maxRetriesPerRequest: null as null,
+    retryStrategy(times: number) {
+        return Math.min(times * 200, 2_000);
+    },
+});
 
 const resolveConcurrency = (): number => {
     const raw = Number(process.env.APPROVAL_WORKER_CONCURRENCY);
@@ -55,7 +54,7 @@ export const startApplicationApprovalWorker = (): void => {
                 await processApplicationApprovalSideEffects(job.data);
             },
             {
-                connection: createRedisConnection(),
+                connection: getRedisConnectionOptions(),
                 concurrency: resolveConcurrency(),
             }
         );

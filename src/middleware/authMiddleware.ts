@@ -47,6 +47,136 @@ export function resolveTenantUserId(req: Request): string | null {
     return req.user?.id ?? null;
 }
 
+export type ApplicationAttributionContext = {
+    createdById: string | null;
+    salesRepresentativeId: string;
+};
+
+export const APPLICATION_USER_ATTRIBUTION_ERROR =
+    'Could not attribute this action to a tenant user. Ensure the application has a valid creator or sales representative.';
+
+/**
+ * Resolves a tenant User.id for required application FKs (BankDetail, BankAnalysis, Note, etc.).
+ * Regular users are attributed to themselves when their id exists in User.
+ * Super Admin proxy calls have no tenant User row — fall back to the application's
+ * creator or sales representative (same pattern as contract creation).
+ */
+export async function resolveApplicationAttributedUserId(
+    req: Request,
+    application: ApplicationAttributionContext,
+): Promise<string | null> {
+    const tenantUserId = resolveTenantUserId(req);
+    if (tenantUserId) {
+        const actor = await prisma.user.findUnique({
+            where: { id: tenantUserId },
+            select: { id: true },
+        });
+        if (actor) return actor.id;
+    }
+
+    const fallbackIds = [
+        application.createdById,
+        application.salesRepresentativeId,
+    ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+
+    for (const candidateId of fallbackIds) {
+        const user = await prisma.user.findUnique({
+            where: { id: candidateId },
+            select: { id: true },
+        });
+        if (user) return user.id;
+    }
+
+    return null;
+}
+
+/** @deprecated Use resolveApplicationAttributedUserId */
+export const resolveBankDetailCreatedById = resolveApplicationAttributedUserId;
+
+/**
+ * Tenant user id when it exists in User; otherwise null (safe for optional createdById FK).
+ * Super Admin proxy principals never write a synthetic id into the database.
+ */
+export async function resolveOptionalTenantUserId(req: Request): Promise<string | null> {
+    const tenantUserId = resolveTenantUserId(req);
+    if (!tenantUserId) return null;
+    const actor = await prisma.user.findUnique({
+        where: { id: tenantUserId },
+        select: { id: true },
+    });
+    return actor?.id ?? null;
+}
+
+export type AuditLogUserResolveOptions = {
+    user?: { id?: string; role?: string } | null;
+    applicationId?: string | null;
+};
+
+/**
+ * Resolves a tenant User.id safe for optional audit FKs
+ * (ApplicationActivityLog.userId, OutboundCommunication.createdById).
+ *
+ * - Regular JWT users: their row in User when it exists.
+ * - Super Admin proxy: no synthetic id; falls back to the application's
+ *   creator or sales representative when applicationId is known.
+ * - Invalid / missing user with applicationId: same application fallback.
+ */
+export async function resolveAuditLogUserId(
+    req: Request | null | undefined,
+    options?: AuditLogUserResolveOptions,
+): Promise<string | null> {
+    const applicationId =
+        options?.applicationId && String(options.applicationId).trim().length > 0
+            ? String(options.applicationId).trim()
+            : null;
+
+    if (req) {
+        const fromReq = await resolveOptionalTenantUserId(req);
+        if (fromReq) return fromReq;
+
+        if (applicationId) {
+            const app = await prisma.application.findUnique({
+                where: { id: applicationId },
+                select: { createdById: true, salesRepresentativeId: true },
+            });
+            if (app) {
+                return resolveApplicationAttributedUserId(req, app);
+            }
+        }
+        return null;
+    }
+
+    const userId = options?.user?.id;
+    if (userId) {
+        const actor = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { id: true },
+        });
+        if (actor) return actor.id;
+    }
+
+    if (applicationId) {
+        const app = await prisma.application.findUnique({
+            where: { id: applicationId },
+            select: { createdById: true, salesRepresentativeId: true },
+        });
+        if (app) {
+            const fallbackIds = [app.createdById, app.salesRepresentativeId].filter(
+                (id): id is string => typeof id === 'string' && id.length > 0,
+            );
+            for (const candidateId of fallbackIds) {
+                const row = await prisma.user.findUnique({
+                    where: { id: candidateId },
+                    select: { id: true },
+                });
+                if (row) return row.id;
+            }
+        }
+    }
+
+    return null;
+}
+
 export const authenticateToken = async (
     req: Request,
     res: Response,

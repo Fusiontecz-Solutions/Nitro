@@ -1,5 +1,7 @@
+import type { Request } from 'express';
 import type { PaymentMailLogStatus } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { resolveAuditLogUserId } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from './applicationService';
 import { createApplicationActivityLog } from './applicationActivityLogService';
 import { inferRecipientTypeFromCategory } from './outboundCommunicationService';
@@ -71,6 +73,7 @@ export async function createPaymentMailLog(
   applicationId: string,
   user: AuthenticatedUser | null,
   input: CreatePaymentMailLogInput,
+  req?: Request | null,
 ) {
   const access = await assertApplicationMailLogAccess(applicationId, user);
   if (!access.application) {
@@ -85,6 +88,8 @@ export async function createPaymentMailLog(
     return { forbidden: false, notFound: false, log: null, badRequest: true as const };
   }
 
+  const createdById = await resolveAuditLogUserId(req, { user, applicationId });
+
   const log = await prisma.paymentMailLog.create({
     data: {
       applicationId,
@@ -95,7 +100,7 @@ export async function createPaymentMailLog(
       subject: input.subject,
       body: input.body?.trim() ? input.body : null,
       status: prismaStatus,
-      createdById: user?.id ?? null,
+      createdById,
     },
   });
 
@@ -109,6 +114,7 @@ export async function createPaymentMailLog(
   await createApplicationActivityLog({
     applicationId,
     user,
+    req,
     actionType:
       prismaStatus === 'SENT'
         ? 'PAYMENT_MAIL_SENT'

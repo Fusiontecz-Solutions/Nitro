@@ -1,22 +1,11 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
-import { syncBankDetailToContractPrefill } from '../services/bankDetailContractSync';
-import { decryptSensitiveField, encryptField } from '../utils/fieldEncryption';
-
-function plainBankFromRequest(body: {
-  bankName?: unknown;
-  accountNumber?: unknown;
-  routingNumber?: unknown;
-}): { bankName: string; accountNumber: string; routingNumber: string | null } {
-  return {
-    bankName: body.bankName != null ? String(body.bankName).trim() : '',
-    accountNumber: String(body.accountNumber ?? '').trim(),
-    routingNumber:
-      body.routingNumber != null && String(body.routingNumber).trim()
-        ? String(body.routingNumber).trim()
-        : null,
-  };
-}
+import {
+  APPLICATION_USER_ATTRIBUTION_ERROR,
+  resolveApplicationAttributedUserId,
+  resolveTenantUserId,
+} from '../middleware/authMiddleware';
+import { decryptField, encryptField } from '../utils/fieldEncryption';
 
 const mapBankDetailToApi = (detail: any) => {
   if (!detail) return detail;
@@ -62,8 +51,8 @@ const mapBankDetailToApi = (detail: any) => {
     _id: id,
     id,
     bankName,
-    accountNumber: decryptSensitiveField(accountNumber),
-    routingNumber: decryptSensitiveField(routingNumber),
+    accountNumber: decryptField(accountNumber),
+    routingNumber: decryptField(routingNumber),
     application: mappedApplication ?? applicationId,
     createdBy: mappedCreatedBy ?? createdById,
     createdAt,
@@ -108,23 +97,21 @@ class BankDetailController {
         });
       }
 
-      const createdBy = (req as any).user?.id;
-      if (!createdBy) {
-        return res.status(401).json({
+      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
+      if (!createdById) {
+        return res.status(400).json({
           success: false,
-          message: 'User authentication required',
+          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
-      const plainBank = plainBankFromRequest({ bankName, accountNumber, routingNumber });
-
       const bankDetail = await prisma.bankDetail.create({
         data: {
-          bankName: plainBank.bankName,
-          accountNumber: encryptField(plainBank.accountNumber),
-          routingNumber: plainBank.routingNumber ? encryptField(plainBank.routingNumber) : null,
+          bankName: bankName ? String(bankName).trim() : '',
+          accountNumber: encryptField(accountNumber),
+          routingNumber: routingNumber ? encryptField(String(routingNumber)) : null,
           applicationId: applicationRecord.id,
-          createdById: createdBy,
+          createdById,
         } as any,
         include: {
           application: {
@@ -142,14 +129,6 @@ class BankDetailController {
           },
         },
       });
-
-      try {
-        await syncBankDetailToContractPrefill(applicationRecord.id, plainBank, {
-          bankDetailId: bankDetail.id,
-        });
-      } catch (syncErr) {
-        console.error('syncBankDetailToContractPrefill after create:', syncErr);
-      }
 
       return res.status(201).json({
         success: true,
@@ -192,11 +171,11 @@ class BankDetailController {
         });
       }
 
-      const createdBy = (req as any).user?.id;
-      if (!createdBy) {
-        return res.status(401).json({
+      const createdById = await resolveApplicationAttributedUserId(req, applicationRecord);
+      if (!createdById) {
+        return res.status(400).json({
           success: false,
-          message: 'User authentication required',
+          message: APPLICATION_USER_ATTRIBUTION_ERROR,
         });
       }
 
@@ -217,7 +196,7 @@ class BankDetailController {
             data: {
               ...data,
               applicationId: applicationRecord.id,
-              createdById: createdBy,
+              createdById,
             },
             include: {
               application: {
@@ -361,7 +340,7 @@ class BankDetailController {
       const { id } = req.params;
       const { bankName, accountNumber, routingNumber, application } = req.body;
 
-      if (!(req as any).user?.id) {
+      if (!req.user) {
         return res.status(401).json({
           success: false,
           message: 'User authentication required',
@@ -374,6 +353,33 @@ class BankDetailController {
           success: false,
           message: 'Bank detail not found',
         });
+      }
+
+      // Tenant CRM users must complete OTP verification; Super Admin proxy is trusted.
+      if (!req.isSuperAdminProxy) {
+        const currentUserId = resolveTenantUserId(req);
+        if (!currentUserId) {
+          return res.status(401).json({
+            success: false,
+            message: 'User authentication required',
+          });
+        }
+
+        const isBankEditApproved = await prisma.verificationToken.findFirst({
+          where: {
+            userId: currentUserId,
+            tokenType: 'BANK_EDIT_VERIFIED',
+            expiresAt: { gt: new Date() },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (!isBankEditApproved) {
+          return res.status(403).json({
+            success: false,
+            message: 'OTP verification required to edit bank details',
+          });
+        }
       }
 
       const data: any = {};
@@ -389,29 +395,14 @@ class BankDetailController {
         data.applicationId = applicationRecord.id;
       }
 
-      const plainBank = plainBankFromRequest({
-        bankName: bankName !== undefined ? bankName : existing.bankName,
-        accountNumber:
-          accountNumber !== undefined
-            ? accountNumber
-            : decryptSensitiveField(existing.accountNumber) ?? existing.accountNumber,
-        routingNumber:
-          routingNumber !== undefined
-            ? routingNumber
-            : decryptSensitiveField(existing.routingNumber ?? undefined) ??
-              existing.routingNumber,
-      });
-
       if (bankName !== undefined) {
-        data.bankName = plainBank.bankName;
+        data.bankName = String(bankName).trim();
       }
       if (accountNumber !== undefined) {
-        data.accountNumber = encryptField(plainBank.accountNumber);
+        data.accountNumber = encryptField(String(accountNumber));
       }
       if (routingNumber !== undefined) {
-        data.routingNumber = plainBank.routingNumber
-          ? encryptField(plainBank.routingNumber)
-          : null;
+        data.routingNumber = routingNumber ? encryptField(String(routingNumber)) : null;
       }
 
       const updatedBankDetail = await prisma.bankDetail.update({
@@ -433,14 +424,6 @@ class BankDetailController {
           },
         },
       });
-
-      try {
-        await syncBankDetailToContractPrefill(updatedBankDetail.applicationId, plainBank, {
-          bankDetailId: updatedBankDetail.id,
-        });
-      } catch (syncErr) {
-        console.error('syncBankDetailToContractPrefill after update:', syncErr);
-      }
 
       return res.status(200).json({
         success: true,

@@ -2,6 +2,10 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import {
+    APPLICATION_USER_ATTRIBUTION_ERROR,
+    resolveApplicationAttributedUserId,
+} from '../middleware/authMiddleware';
+import {
     isFundingCallStatusCallDone,
     notifyOperationsDisbursementReady,
 } from '../services/fundingCallDisbursementSideEffects';
@@ -258,21 +262,26 @@ class NotificationController {
                 });
             }
 
-            // Get current user (the one sending the request) first
-            const createdBy = (req as any).user?.id;
-            if (!createdBy) {
+            if (!req.user) {
                 return res.status(401).json({
                     success: false,
                     message: 'User authentication required',
                 });
             }
 
+            const attributedCreatedById = await resolveApplicationAttributedUserId(req, application);
+            if (!attributedCreatedById) {
+                return res.status(400).json({
+                    success: false,
+                    message: APPLICATION_USER_ATTRIBUTION_ERROR,
+                });
+            }
+
             // Determine recipient (agent) - prefer referringAgent, fallback to salesRepresentative
-            // If no agent is assigned, use the createdBy user as recipient (for general messages)
             const recipientId =
                 (application as any).referringAgent?.id ||
                 (application as any).salesRepresentative?.id ||
-                createdBy; // Fallback to the user creating the request
+                attributedCreatedById;
             
             if (!recipientId) {
                 return res.status(400).json({
@@ -305,7 +314,7 @@ class NotificationController {
             const app = application as any;
             const addIfNotSender = (id: string) => {
                 const sid = String(id);
-                if (sid && sid !== String(createdBy)) recipientIds.add(sid);
+                if (sid && sid !== String(attributedCreatedById)) recipientIds.add(sid);
             };
             addIfNotSender(recipientId);
             if (app.referringAgentId) addIfNotSender(app.referringAgentId);
@@ -333,7 +342,7 @@ class NotificationController {
                 applicationId: application.id,
                 documentRequestedDocuments: (documentsArray || []).map((d) => String(d || '').trim()).filter(Boolean),
                 documentRequestAdditional: requestAdditional || false,
-                createdById: createdBy,
+                createdById: attributedCreatedById,
             };
             let firstNotification: { id: string } | null = null;
             for (const recId of recipientIds) {
@@ -375,7 +384,7 @@ class NotificationController {
             // Best-effort application activity log for document request
             try {
                 const authUserForLog = {
-                    id: createdBy,
+                    id: attributedCreatedById,
                     role: (req as any).user?.role,
                 } as any;
                 const roleLabel = authUserForLog?.role
@@ -386,7 +395,7 @@ class NotificationController {
                 await prisma.applicationActivityLog.create({
                     data: {
                         applicationId: application.id,
-                        userId: createdBy,
+                        userId: attributedCreatedById,
                         userRole: authUserForLog.role as any,
                         actionType: 'DOCUMENT_REQUESTED',
                         actionDescription:
@@ -459,8 +468,7 @@ class NotificationController {
     async notifyApplicationSentToFinalUnderwriter(req: Request, res: Response) {
         try {
             const { applicationId, underwriterName } = req.body;
-            const createdBy = (req as any).user?.id;
-            if (!createdBy) {
+            if (!req.user) {
                 return res.status(401).json({
                     success: false,
                     message: 'User authentication required',
@@ -495,6 +503,14 @@ class NotificationController {
                 });
             }
 
+            const attributedCreatedById = await resolveApplicationAttributedUserId(req, application);
+            if (!attributedCreatedById) {
+                return res.status(400).json({
+                    success: false,
+                    message: APPLICATION_USER_ATTRIBUTION_ERROR,
+                });
+            }
+
             const senderName =
                 (underwriterName && String(underwriterName).trim()) ||
                 String((req as any).user?.name || '').trim() ||
@@ -514,7 +530,7 @@ class NotificationController {
                 select: { id: true },
             });
 
-            const senderId = String(createdBy);
+            const senderId = String(attributedCreatedById);
             const recipients = finalUnderwriters
                 .map((u) => String(u.id))
                 .filter((id) => id && id !== senderId);
@@ -534,7 +550,7 @@ class NotificationController {
                     type: 'application_update',
                     recipientId,
                     applicationId: application.id,
-                    createdById: senderId,
+                    createdById: attributedCreatedById,
                 })),
             });
 
@@ -558,8 +574,7 @@ class NotificationController {
      */
     async notifyOperationsDisbursement(req: Request, res: Response) {
         try {
-            const createdBy = (req as any).user?.id;
-            if (!createdBy) {
+            if (!req.user) {
                 return res.status(401).json({
                     success: false,
                     message: 'User authentication required',
@@ -602,6 +617,14 @@ class NotificationController {
                 });
             }
 
+            const attributedCreatedById = await resolveApplicationAttributedUserId(req, application);
+            if (!attributedCreatedById) {
+                return res.status(400).json({
+                    success: false,
+                    message: APPLICATION_USER_ATTRIBUTION_ERROR,
+                });
+            }
+
             const latestFundingCall = await prisma.fundingCall.findFirst({
                 where: { applicationId: application.id },
                 orderBy: { createdAt: 'desc' },
@@ -618,7 +641,7 @@ class NotificationController {
 
             const result = await notifyOperationsDisbursementReady({
                 applicationId: application.id,
-                createdById: String(createdBy),
+                createdById: attributedCreatedById,
                 skipIfAlreadyNotified: false,
             });
 
@@ -1032,3 +1055,4 @@ class NotificationController {
 
 const notificationController = new NotificationController();
 export default notificationController;
+

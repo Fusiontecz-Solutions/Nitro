@@ -1,5 +1,110 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import { resolveOptionalTenantUserId } from '../middleware/authMiddleware';
+
+const MONTH_NAME_TO_INDEX: Record<string, number> = {
+    january: 0, jan: 0,
+    february: 1, feb: 1,
+    march: 2, mar: 2,
+    april: 3, apr: 3,
+    may: 4,
+    june: 5, jun: 5,
+    july: 6, jul: 6,
+    august: 7, aug: 7,
+    september: 8, sep: 8, sept: 8,
+    october: 9, oct: 9,
+    november: 10, nov: 10,
+    december: 11, dec: 11,
+};
+
+/** Parse search text into a createdAt range when it looks like a date (year, month, or full date). */
+function parseClientCreatedAtRange(term: string): { start: Date; end: Date } | null {
+    const trimmed = term.trim();
+    if (!trimmed) return null;
+
+    if (/^\d{4}$/.test(trimmed)) {
+        const year = parseInt(trimmed, 10);
+        return {
+            start: new Date(year, 0, 1, 0, 0, 0, 0),
+            end: new Date(year, 11, 31, 23, 59, 59, 999),
+        };
+    }
+
+    const monthYear = trimmed.match(/^([a-zA-Z]+)\s+(\d{4})$/i);
+    if (monthYear) {
+        const monthIdx = MONTH_NAME_TO_INDEX[monthYear[1].toLowerCase()];
+        const year = parseInt(monthYear[2], 10);
+        if (monthIdx !== undefined && !Number.isNaN(year)) {
+            return {
+                start: new Date(year, monthIdx, 1, 0, 0, 0, 0),
+                end: new Date(year, monthIdx + 1, 0, 23, 59, 59, 999),
+            };
+        }
+    }
+
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+        const start = new Date(parsed);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(parsed);
+        end.setHours(23, 59, 59, 999);
+        return { start, end };
+    }
+
+    return null;
+}
+
+/** Build Prisma OR conditions for client list search across all visible columns. */
+function buildClientSearchConditions(search: string): Record<string, unknown>[] {
+    const searchStr = String(search).trim();
+    if (!searchStr) return [];
+
+    const insensitive = { contains: searchStr, mode: 'insensitive' as const };
+    const conditions: Record<string, unknown>[] = [
+        { businessName: insensitive },
+        { businessEmail: insensitive },
+        { ownerFirstName: insensitive },
+        { ownerLastName: insensitive },
+        { ownerMiddleName: insensitive },
+        { ownerEmail: insensitive },
+        { businessNumber: insensitive },
+        { ownerMobileNumber: insensitive },
+        { businessState: insensitive },
+        { businessIncorporationState: insensitive },
+        { ownerState: insensitive },
+        { businessCity: insensitive },
+        { ownerCity: insensitive },
+        { businessZipCode: insensitive },
+        { ownerZipCode: insensitive },
+    ];
+
+    const digitsOnly = searchStr.replace(/\D/g, '');
+    if (digitsOnly.length >= 3) {
+        conditions.push(
+            { businessNumber: { contains: digitsOnly } },
+            { ownerMobileNumber: { contains: digitsOnly } },
+        );
+    }
+
+    if (/^\d+$/.test(searchStr)) {
+        const clientIdNum = parseInt(searchStr, 10);
+        if (!Number.isNaN(clientIdNum)) {
+            conditions.push({ clientId: clientIdNum });
+        }
+    }
+
+    const createdAtRange = parseClientCreatedAtRange(searchStr);
+    if (createdAtRange) {
+        conditions.push({
+            createdAt: {
+                gte: createdAtRange.start,
+                lte: createdAtRange.end,
+            },
+        });
+    }
+
+    return conditions;
+}
 
 // Helper to map Prisma Client record to the Mongo-like shape the frontend expects
 const mapClientToApi = (client: any) => {
@@ -233,7 +338,7 @@ class ClientController {
                     ownerZipCode: ownerAddress.zipCode || null,
                     notes: notes || null,
                     assignedToId: assignedTo || null,
-                    createdById: (req as any).user?.id || null,
+                    createdById: await resolveOptionalTenantUserId(req),
                 },
             });
 
@@ -283,14 +388,10 @@ class ClientController {
             }
 
             if (search) {
-                const searchStr = String(search);
-                where.OR = [
-                    { businessName: { contains: searchStr, mode: 'insensitive' } },
-                    { businessEmail: { contains: searchStr, mode: 'insensitive' } },
-                    { ownerFirstName: { contains: searchStr, mode: 'insensitive' } },
-                    { ownerLastName: { contains: searchStr, mode: 'insensitive' } },
-                    { ownerEmail: { contains: searchStr, mode: 'insensitive' } },
-                ];
+                const searchConditions = buildClientSearchConditions(String(search));
+                if (searchConditions.length > 0) {
+                    where.OR = searchConditions;
+                }
             }
 
             let orderByField: string = 'createdAt';
@@ -607,3 +708,4 @@ class ClientController {
 const clientController = new ClientController();
 export default clientController;
 
+ 
