@@ -472,6 +472,17 @@ const ApplicationDetails = () => {
                 isOperationsTabBehindCurrentDeal)) ||
         isViewOnlyBrowse ||
         isStagePreview;
+    /**
+     * Documents tab upload/delete: workflow roles (Agent, Underwriter) keep upload even in
+     * stage-preview; Super Admin keeps upload on Documents. Operations pipeline early tabs
+     * stay view-only for OPERATIONS only.
+     */
+    const uploadedDocumentsReadOnly =
+        (useOperationsPipelineTabs &&
+            roleKey === "OPERATIONS" &&
+            (OPERATIONS_READ_ONLY_PIPELINE_TAB_IDS.has(activeTab) ||
+                isOperationsTabBehindCurrentDeal)) ||
+        isViewOnlyBrowse;
     /** Super Admin may edit offer, bank analysis, and positions on the Bank Analysis tab even when the deal has moved past that stage. */
     const superAdminBankAnalysisOverride =
         isSuperAdmin && activeTab === "bank-analysis";
@@ -995,7 +1006,7 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="documents" className="mt-6">
                                     <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
 
-                                    <UploadedDocuments readOnly={isOperationsReadOnlyPipelineTab} />
+                                    <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
                                     {canShowSendToUnderwriterButton ? (
                                         <div className="flex justify-end mb-4">
                                             <Button

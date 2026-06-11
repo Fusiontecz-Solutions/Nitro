@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams } from "react-router"
 import { Card, CardContent } from "../ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table"
@@ -7,12 +7,15 @@ import { Trash2, Eye } from "lucide-react"
 import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import type { ApplicationFiles } from "@/types/applicationTypes"
-import { deleteApplicationFile, getApplicationByApplicationId, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
+import { deleteApplicationFile, getApplicationByApplicationId, getApplicationById, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
+import { hydrateApplicationDetailFromCache } from "@/redux/slices/applicationSlice"
 import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions"
 import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
 import { formatDateTimeUS, cn } from "@/lib/utils"
+import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache"
+import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch"
 
 type UploadedDocumentsProps = {
     applicationId?: string
@@ -20,12 +23,16 @@ type UploadedDocumentsProps = {
     readOnly?: boolean
 }
 
+type PendingFile = {
+    id: string
+    file: File
+}
+
 const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocumentsProps) => {
     const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>()
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
-    const [uploadedFiles, setUploadedFiles] = useState<ApplicationFiles[]>([])
-    const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+    const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false)
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
     const [pdfFileName, setPdfFileName] = useState<string>("")
@@ -46,32 +53,36 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
 
     const effectiveApplicationId = applicationId ?? routeApplicationId
 
-    // Keep cached first paint, then always refresh detail once for this application
-    // so `files` are present even when list-cache rows were partial.
-    const lastFetchedApplicationIdRef = useRef<string | null>(null)
-    useEffect(() => {
+    const applicationMongoId = useMemo(() => {
+        const id = applicationData?._id ?? (applicationData as { id?: string } | null)?.id
+        return id != null ? String(id) : null
+    }, [applicationData])
+
+    const serverUploadedFiles: ApplicationFiles[] = useMemo(
+        () => (Array.isArray(applicationData?.files) ? applicationData.files : []),
+        [applicationData?.files],
+    )
+
+    const refreshApplicationDetail = useCallback(async () => {
         if (!effectiveApplicationId) return
         const requestedKey = String(effectiveApplicationId)
-        if (lastFetchedApplicationIdRef.current === requestedKey) return
-        lastFetchedApplicationIdRef.current = requestedKey
-
-        // Treat this as business applicationId (numeric id in route and preview sheet).
-        dispatch(getApplicationByApplicationId(requestedKey))
-    }, [effectiveApplicationId, dispatch])
-
-    useEffect(() => {
-        if (applicationData?.files) {
-            setUploadedFiles(applicationData.files)
+        invalidateApplicationDetailCache(requestedKey)
+        if (isNumericApplicationRouteParam(requestedKey)) {
+            await dispatch(getApplicationByApplicationId(requestedKey))
+        } else {
+            await dispatch(getApplicationById(requestedKey))
         }
-    }, [applicationData])
-    // Load existing files and acknowledged required docs for this application
-    useEffect(() => {
-        if (applicationData?.files) {
-            setUploadedFiles(applicationData.files)
-        }
+    }, [dispatch, effectiveApplicationId])
 
-        if (typeof window !== "undefined" && applicationData?._id) {
-            const key = `requiredDocsCompleted:${applicationData._id}`
+    // Always load full application detail (incl. files) — list-cache rows are often partial.
+    useEffect(() => {
+        void refreshApplicationDetail()
+    }, [refreshApplicationDetail])
+
+    // Load acknowledged required docs for this application
+    useEffect(() => {
+        if (typeof window !== "undefined" && applicationMongoId) {
+            const key = `requiredDocsCompleted:${applicationMongoId}`
             const raw = localStorage.getItem(key)
             if (raw) {
                 try {
@@ -84,14 +95,14 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                 }
             }
         }
-    }, [applicationData])
+    }, [applicationMongoId])
 
     // Fetch required / requested documents for this application
     useEffect(() => {
-        if (applicationData?._id) {
-            dispatch(getDocumentRequestsByApplication(applicationData._id))
+        if (applicationMongoId) {
+            dispatch(getDocumentRequestsByApplication(applicationMongoId))
         }
-    }, [dispatch, applicationData?._id])
+    }, [dispatch, applicationMongoId])
 
     // Utility function to format file size
     const formatFileSize = (bytes: number): string => {
@@ -105,20 +116,14 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
 
     // Handle file delete
     const handleDeleteFile = async (id: string) => {
-        // For file APIs the backend expects the Mongo _id in the /applications/:id/files route
-        if (!applicationData?._id) {
+        if (!applicationMongoId) {
             toast.error("Application ID not found")
             return
         }
 
-        await dispatch(deleteApplicationFile({ applicationId: applicationData._id, fileId: id as string }))
+        await dispatch(deleteApplicationFile({ applicationId: applicationMongoId, fileId: id }))
 
-        // Refresh the application (and its files) using the business applicationId if available,
-        // otherwise fall back to the applicationId prop coming from the sheet.
-        const refreshKey = applicationData.applicationId ?? effectiveApplicationId
-        if (refreshKey != null) {
-            await dispatch(getApplicationByApplicationId(refreshKey))
-        }
+        await refreshApplicationDetail()
 
         toast.success("File deleted successfully")
     }
@@ -126,8 +131,15 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
     // Handle local file selection (multiple)
     const handleSelectFiles = (files: FileList | null) => {
         if (!files || files.length === 0) return
-        const newFiles = Array.from(files)
-        setSelectedFiles((prev) => [...prev, ...newFiles])
+        const newFiles: PendingFile[] = Array.from(files).map((file) => ({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            file,
+        }))
+        setPendingFiles((prev) => [...prev, ...newFiles])
+    }
+
+    const handleRemovePendingFile = (id: string) => {
+        setPendingFiles((prev) => prev.filter((entry) => entry.id !== id))
     }
 
     const handleOpenFilePicker = () => {
@@ -136,35 +148,43 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
 
     // Upload selected documents for this application
     const handleUploadSelectedFiles = async () => {
-        // For upload the backend also expects the Mongo _id of the application
-        if (!applicationData?._id) {
+        if (!applicationMongoId) {
             toast.error("Application ID not found")
             return
         }
-        if (selectedFiles.length === 0) {
+        if (pendingFiles.length === 0) {
             toast.warning("Please select one or more documents to upload")
             return
         }
 
         try {
-            await dispatch(
+            const result = await dispatch(
                 uploadApplicationDocuments({
-                    id: applicationData._id,
-                    files: selectedFiles,
+                    id: applicationMongoId,
+                    files: pendingFiles.map((entry) => entry.file),
                 })
             ).unwrap()
 
-            toast.success("Documents uploaded successfully")
-            setSelectedFiles([])
-
-            // Refresh the application and its files
-            const refreshKey = applicationData.applicationId ?? effectiveApplicationId
-            if (refreshKey != null) {
-                await dispatch(getApplicationByApplicationId(refreshKey))
+            const updatedApplication =
+                (result as { data?: typeof applicationData })?.data ?? result
+            if (updatedApplication && typeof updatedApplication === "object") {
+                dispatch(
+                    hydrateApplicationDetailFromCache({
+                        success: true,
+                        data: updatedApplication,
+                    }),
+                )
             }
 
-            // Refresh required documents status after upload
-            await dispatch(getDocumentRequestsByApplication(applicationData._id))
+            toast.success("Documents uploaded successfully")
+            setPendingFiles([])
+            if (fileInputRef.current) {
+                fileInputRef.current.value = ""
+            }
+
+            await refreshApplicationDetail()
+
+            await dispatch(getDocumentRequestsByApplication(applicationMongoId))
         } catch (error: any) {
             const message =
                 typeof error === "string"
@@ -236,7 +256,10 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                 type="file"
                                 multiple
                                 className="hidden"
-                                onChange={(e) => handleSelectFiles(e.target.files)}
+                                onChange={(e) => {
+                                    handleSelectFiles(e.target.files)
+                                    e.target.value = ""
+                                }}
                             />
                             <Button
                                 type="button"
@@ -251,7 +274,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                 type="button"
                                 size="sm"
                                 onClick={handleUploadSelectedFiles}
-                                disabled={selectedFiles.length === 0 || uploadLoading}
+                                disabled={pendingFiles.length === 0 || uploadLoading}
                                 className="h-8 px-3 text-xs font-medium bg-[#276D9C] hover:bg-[#276D9C] text-white cursor-pointer shadow-md"
                             >
                                 {uploadLoading ? "Uploading..." : "Upload"}
@@ -259,10 +282,10 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                         </div>
                     )}
                 </div>
-                {!readOnly && selectedFiles.length > 0 && (
+                {!readOnly && pendingFiles.length > 0 && (
                     <p className={`px-6 pb-2 text-xs font-roboto ${isDark ? "text-gray-300" : "text-gray-600"
                         }`}>
-                        {selectedFiles.length} document(s) selected to upload
+                        {pendingFiles.length} document(s) ready to upload — remove any you do not want before clicking Upload.
                     </p>
                 )}
 
@@ -284,8 +307,8 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                     setAcknowledgedRequiredDocs((prev) => {
                                         if (prev.includes(doc.name)) return prev
                                         const updated = [...prev, doc.name]
-                                        if (typeof window !== "undefined" && applicationData?._id) {
-                                            const key = `requiredDocsCompleted:${applicationData._id}`
+                                        if (typeof window !== "undefined" && applicationMongoId) {
+                                            const key = `requiredDocsCompleted:${applicationMongoId}`
                                             localStorage.setItem(key, JSON.stringify(updated))
                                         }
                                         return updated
@@ -374,7 +397,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {uploadedFiles.length === 0 ? (
+                            {pendingFiles.length === 0 && serverUploadedFiles.length === 0 ? (
                                 <TableRow
                                     className={cn(
                                         'border-b transition-colors',
@@ -390,56 +413,102 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                             isDark ? 'text-foreground' : 'text-muted-foreground',
                                         )}
                                     >
-                                        No data available
+                                        No documents uploaded
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                uploadedFiles.map((file, rowIdx) => (
-                                    <TableRow
-                                        key={file._id}
-                                        className={cn(
-                                            'border-b transition-colors hover:bg-accent',
-                                            isDark ? 'border-[#374151]' : 'border-[#ECEFF5]',
-                                            rowIdx % 2 ? 'bg-muted/50' : '',
-                                        )}
-                                    >
-                                        <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
-                                            {file.originalName}
-                                        </TableCell>
-                                        <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
-                                            {formatFileSize(file.size || 0)}
-                                        </TableCell>
-                                        <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
-                                            {formatDateTimeUS(file.uploadedAt, "N/A")}
-                                        </TableCell>
-                                        <TableCell className="text-left py-3 px-6">
-                                            <div className="flex items-center justify-end gap-2">
-                                                <Button
-                                                    type="button"
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    onClick={() => handleViewFile(file)}
-                                                    className="text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 h-4 w-4 py-0 px-2"
-                                                    title="View file"
-                                                >
-                                                    <Eye className="size-4" />
-                                                </Button>
-                                                {!readOnly && (
-                                                    <Button
-                                                        type="button"
-                                                        variant="ghost"
-                                                        size="icon-sm"
-                                                        onClick={() => handleDeleteFile(file._id || '')}
-                                                        className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950 h-4 w-4 py-0 px-2"
-                                                        title="Delete file"
-                                                    >
-                                                        <Trash2 className="size-4" />
-                                                    </Button>
+                                <>
+                                    {!readOnly &&
+                                        pendingFiles.map((entry, rowIdx) => (
+                                            <TableRow
+                                                key={entry.id}
+                                                className={cn(
+                                                    'border-b transition-colors hover:bg-accent',
+                                                    isDark ? 'border-[#374151]' : 'border-[#ECEFF5]',
+                                                    rowIdx % 2 ? 'bg-muted/50' : '',
                                                 )}
-                                            </div>
-                                        </TableCell>
-                                    </TableRow>
-                                ))
+                                            >
+                                                <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
+                                                    <span className="inline-flex items-center gap-2">
+                                                        {entry.file.name}
+                                                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                                                            Pending
+                                                        </span>
+                                                    </span>
+                                                </TableCell>
+                                                <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
+                                                    {formatFileSize(entry.file.size)}
+                                                </TableCell>
+                                                <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-muted-foreground')}>
+                                                    —
+                                                </TableCell>
+                                                <TableCell className="text-left py-3 px-6">
+                                                    <div className="flex items-center justify-end gap-2">
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="icon-sm"
+                                                            onClick={() => handleRemovePendingFile(entry.id)}
+                                                            className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950 h-4 w-4 py-0 px-2"
+                                                            title="Remove file"
+                                                        >
+                                                            <Trash2 className="size-4" />
+                                                        </Button>
+                                                    </div>
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    {serverUploadedFiles.map((file, rowIdx) => {
+                                        const fileId = file._id ?? (file as { id?: string }).id ?? ""
+                                        return (
+                                            <TableRow
+                                                key={fileId || `${file.originalName}-${rowIdx}`}
+                                                className={cn(
+                                                    'border-b transition-colors hover:bg-accent',
+                                                    isDark ? 'border-[#374151]' : 'border-[#ECEFF5]',
+                                                    (pendingFiles.length + rowIdx) % 2 ? 'bg-muted/50' : '',
+                                                )}
+                                            >
+                                                <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
+                                                    {file.originalName}
+                                                </TableCell>
+                                                <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
+                                                    {formatFileSize(file.size || 0)}
+                                                </TableCell>
+                                                <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
+                                                    {formatDateTimeUS(file.uploadedAt, "N/A")}
+                                                </TableCell>
+                                                <TableCell className="text-left py-3 px-6">
+                                                    <div className="flex items-center justify-end gap-2">
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            onClick={() => handleViewFile(file)}
+                                                            className="text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950 h-4 w-4 py-0 px-2"
+                                                            title="View file"
+                                                        >
+                                                            <Eye className="size-4" />
+                                                        </Button>
+                                                        {!readOnly && (
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="icon-sm"
+                                                                onClick={() => handleDeleteFile(fileId)}
+                                                                className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950 h-4 w-4 py-0 px-2"
+                                                                title="Delete file"
+                                                                disabled={!fileId}
+                                                            >
+                                                                <Trash2 className="size-4" />
+                                                            </Button>
+                                                        )}
+                                                    </div>
+                                                </TableCell>
+                                            </TableRow>
+                                        )
+                                    })}
+                                </>
                             )}
                         </TableBody>
                     </Table>
