@@ -5,7 +5,6 @@ import { axiosGet, axiosPost } from "@/redux/axios";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import Approval from "@/components/application/Approval";
 import CommentSection from "@/components/application/CommentSection";
-import RequiredDocument from "@/components/application/RequiredDocument";
 import { getApplicationById } from "@/redux/actions/applicationActions";
 import type { AppDispatch } from "@/redux/store";
 import { formatDateTimeUS } from "@/lib/utils";
@@ -201,9 +200,6 @@ const PublicApprovalPage = () => {
                 applicationId={application?.id ?? application?._id}
                 publicMode
               />
-            </div>
-            <div className="mt-6">
-              <RequiredDocument publicMode />
             </div>
           </>
         ) : (

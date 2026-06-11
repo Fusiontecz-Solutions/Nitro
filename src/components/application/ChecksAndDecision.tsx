@@ -21,6 +21,8 @@ import { Check, X } from "lucide-react";
 interface ChecksAndDecisionProps {
     /** When true, Approved modal shows "Proceed to Generate Contract" (FINAL_UNDERWRITER only) */
     isFinalUnderwriter?: boolean;
+    /** Super Admin on Decision Making — same ISO approval-mail CTA as Final Underwriter. */
+    canSendApprovalMailToIso?: boolean;
     /** Called when FINAL_UNDERWRITER clicks Proceed to Generate Contract */
     onProceedToContract?: () => void;
     /** When true, hides the "Make Underwriting Decision" action buttons (e.g. deal pipeline read-only view). */
@@ -31,10 +33,12 @@ interface ChecksAndDecisionProps {
 
 const ChecksAndDecision = ({
     isFinalUnderwriter,
+    canSendApprovalMailToIso,
     onProceedToContract,
     hideUnderwritingDecision,
     previewMode,
 }: ChecksAndDecisionProps = {}) => {
+    const showIsoApprovalMailFlow = Boolean(isFinalUnderwriter || canSendApprovalMailToIso);
     const showUnderwritingDecision = !hideUnderwritingDecision && !previewMode;
     const { applicationId: paramApplicationId } = useParams<{ applicationId: string }>();
     const dispatch = useDispatch<AppDispatch>();
@@ -90,14 +94,14 @@ const ChecksAndDecision = ({
     // between "Approved application" (no offer change yet OR mail already sent) and
     // "Send Approval Mail to ISO" (FU updated the offer, mail not yet sent).
     useEffect(() => {
-        if (isFinalUnderwriter && applicationUuid) {
+        if (showIsoApprovalMailFlow && applicationUuid) {
             dispatch(getApplicationActivityLogs(paramApplicationId ?? applicationUuid));
         }
-    }, [isFinalUnderwriter, applicationUuid, paramApplicationId, dispatch]);
+    }, [showIsoApprovalMailFlow, applicationUuid, paramApplicationId, dispatch]);
 
-    // Keep FU button state fresh after ISO comments / offer edits without requiring manual refresh.
+    // Keep ISO approval-mail CTA state fresh after ISO comments / offer edits without requiring manual refresh.
     useEffect(() => {
-        if (!isFinalUnderwriter || !applicationUuid) return;
+        if (!showIsoApprovalMailFlow || !applicationUuid) return;
 
         const refresh = () => {
             dispatch(getApplicationActivityLogs(paramApplicationId ?? applicationUuid));
@@ -113,7 +117,7 @@ const ChecksAndDecision = ({
             window.clearInterval(intervalId);
             document.removeEventListener("visibilitychange", onVisibilityChange);
         };
-    }, [isFinalUnderwriter, applicationUuid, paramApplicationId, dispatch]);
+    }, [showIsoApprovalMailFlow, applicationUuid, paramApplicationId, dispatch]);
 
     const activityLogs = useSelector((state: RootState) => state.activityLogs.logs) as Array<{
         actionType?: string;
@@ -139,14 +143,14 @@ const ChecksAndDecision = ({
         : false;
 
     const shouldResendApprovalMail =
-        isFinalUnderwriter &&
+        showIsoApprovalMailFlow &&
         hasSentApprovalMailOnce;
 
-    const finalUnderwriterButtonLabel = shouldResendApprovalMail
+    const isoApprovalMailButtonLabel = shouldResendApprovalMail
         ? "Resend Approval Mail to ISO"
         : "Send Approval Mail to ISO";
 
-    const finalUnderwriterButtonDescription = shouldResendApprovalMail
+    const isoApprovalMailButtonDescription = shouldResendApprovalMail
         ? "ISO commented and offer was updated. Send the updated offer email."
         : "Send the approval email to the linked ISO";
 
@@ -173,10 +177,10 @@ const ChecksAndDecision = ({
     const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
 
     useEffect(() => {
-        if (isFinalUnderwriter && applicationUuid && isApprovalModalOpen) {
+        if (showIsoApprovalMailFlow && applicationUuid && isApprovalModalOpen) {
             dispatch(getApplicationActivityLogs(paramApplicationId ?? applicationUuid));
         }
-    }, [isFinalUnderwriter, applicationUuid, isApprovalModalOpen, paramApplicationId, dispatch]);
+    }, [showIsoApprovalMailFlow, applicationUuid, isApprovalModalOpen, paramApplicationId, dispatch]);
     return (
         <div className="space-y-6 w-full">
             {/* Checks Section */}
@@ -305,17 +309,17 @@ const ChecksAndDecision = ({
                     {/* Approved Button */}
                     <Button
                         onClick={() => setIsApprovalModalOpen(true)}
-                        disabled={isFinalUnderwriter ? false : disablePrimaryDecisionButton}
+                        disabled={showIsoApprovalMailFlow ? false : disablePrimaryDecisionButton}
                         className="rounded-sm bg-[#16A34A] hover:bg-green-700 text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">
-                            {isFinalUnderwriter
-                                ? finalUnderwriterButtonLabel
+                            {showIsoApprovalMailFlow
+                                ? isoApprovalMailButtonLabel
                                 : "Send application to Final-underwriter"}
                         </span>
                         <span className="text-xs font-normal opacity-90 whitespace-normal break-words w-full leading-snug px-1">
-                            {isFinalUnderwriter
-                                ? finalUnderwriterButtonDescription
+                            {showIsoApprovalMailFlow
+                                ? isoApprovalMailButtonDescription
                                 : "Confirm terms and send for final underwriting review"}
                         </span>
                     </Button>
@@ -370,11 +374,11 @@ const ChecksAndDecision = ({
             <ApprovedApplicationModal
                 open={isApprovalModalOpen}
                 onOpenChange={setIsApprovalModalOpen}
-                isFinalUnderwriter={isFinalUnderwriter}
+                isFinalUnderwriter={showIsoApprovalMailFlow}
                 onProceedToContract={onProceedToContract}
                 resendApprovalEmail={shouldResendApprovalMail}
                 onOfferUpdated={() => {
-                    if (isFinalUnderwriter && applicationUuid) {
+                    if (showIsoApprovalMailFlow && applicationUuid) {
                         dispatch(
                             getApplicationActivityLogs(
                                 paramApplicationId ?? applicationUuid,

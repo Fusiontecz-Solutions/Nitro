@@ -1058,7 +1058,7 @@ export default function ContractTab({
 
         const anyApp = applicationData as any;
 
-        await persistContractsOutStage();
+        await persistContractPendingStage();
 
         const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
         const userFromStorage = (() => {
@@ -1097,6 +1097,8 @@ export default function ContractTab({
             anyApp?.paymentBank?.id ??
             anyApp?.bankDetail?.id;
 
+        setCreatingEnvelope(true);
+        try {
             const createRes = await dispatch(
                 createContract({
                     applicationId: String(applicationUuid),

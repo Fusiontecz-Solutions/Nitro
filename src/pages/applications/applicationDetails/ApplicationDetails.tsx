@@ -1163,9 +1163,11 @@ const ApplicationDetails = () => {
                                     <div className="flex flex-row mt-6 gap-4 w-full items-stretch">
                                         <ChecksAndDecision
                                             hideUnderwritingDecision={roleKey === "OPERATIONS"}
+                                            canSendApprovalMailToIso={superAdminDecisionMakingOverride}
                                             previewMode={
-                                                isStagePreview ||
-                                                isOperationsTabBehindCurrentDeal
+                                                (isStagePreview ||
+                                                    isOperationsTabBehindCurrentDeal) &&
+                                                !superAdminDecisionMakingOverride
                                             }
                                         />
                                         <div className="w-[50%]"><CommentSection readOnly={commentsReadOnly} /></div>

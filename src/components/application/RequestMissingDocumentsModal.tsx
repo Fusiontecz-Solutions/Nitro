@@ -380,7 +380,7 @@ const RequestMissingDocumentsModal = ({
                                         <Checkbox
                                             checked={isSelected}
                                             className="mt-0.5 size-4 shrink-0"
-                                            onCheckedChange={(checked) =>
+                                            onCheckedChange={(checked: boolean | "indeterminate") =>
                                                 setDocumentSelected(doc.id, checked === true)
                                             }
                                         />
@@ -417,7 +417,9 @@ const RequestMissingDocumentsModal = ({
                         <Checkbox
                             checked={requestAdditional}
                             className="size-4 shrink-0"
-                            onCheckedChange={(checked) => setRequestAdditional(checked === true)}
+                            onCheckedChange={(checked: boolean | "indeterminate") =>
+                                setRequestAdditional(checked === true)
+                            }
                         />
                         <span className={`text-sm ${isDark ? "text-gray-200" : "text-slate-800"}`}>
                             Request Additional Documents
