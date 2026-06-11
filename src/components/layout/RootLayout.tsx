@@ -16,9 +16,8 @@ import {
     fetchOperationsDashboardSummary,
     fetchOperationsDashboardRecentCases,
 } from "@/redux/actions/operationsDashboardActions";
-import { getPaymentDashboard } from "@/redux/actions/paymentDashboardActions";
+import { fetchPaymentFinancialOverviewSummary } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
-import { fetchPaymentDashboardCreditDebitTrend } from "@/redux/actions/paymentDashboardTrendActions";
 import { DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
 import { OnlineStatusSync } from "@/components/chat/OnlineStatusSync";
 import RealtimeNotificationsListener from "@/components/notifications/RealtimeNotificationsListener";
@@ -186,7 +185,13 @@ const RootLayout = () => {
         if (!localStorage.getItem("token")) return;
         if (!isPaymentsRoute(pathname)) return;
         if (!paymentDashboardFetched && !paymentDashboardLoading) {
-            void dispatch(getPaymentDashboard());
+            const year = new Date().getFullYear();
+            void dispatch(
+                fetchPaymentFinancialOverviewSummary({
+                    chartYear: year,
+                    chartMonth: new Date().getMonth(),
+                }),
+            );
         }
         if (!paymentCohortFetched && !paymentCohortInFlight) {
             void dispatch(
@@ -205,20 +210,6 @@ const RootLayout = () => {
         paymentCohortFetched,
         paymentCohortInFlight,
     ]);
-
-    useEffect(() => {
-        if (isPublicRoute) return;
-        if (!localStorage.getItem("token")) return;
-        if (!isPaymentsRoute(pathname)) return;
-        const year = new Date().getFullYear();
-        void dispatch(
-            fetchPaymentDashboardCreditDebitTrend({
-                view: "monthly",
-                year,
-                month: new Date().getMonth(),
-            }),
-        );
-    }, [dispatch, isPublicRoute, pathname]);
 
     useEffect(() => {
         if (isPublicRoute) return;

@@ -3,36 +3,65 @@ import { axiosGet } from "@/redux/axios";
 import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch";
 import { writeApplicationDetailCache } from "@/lib/applicationDetailCache";
 import {
-  CRM_CACHE_NS,
-  crmCacheGet,
-  crmCacheGetFreshest,
-  crmCacheHydrateKey,
-  crmCacheSet,
   idbClearNamespace,
-  memoryClearNamespace,
-  memoryEntriesForNamespace,
-} from "@/lib/crmCache";
-import { invalidateApplicationsListQueries } from "@/lib/applicationsListQuerySync";
+  idbDelete,
+  idbGet,
+  idbGetAllInNamespace,
+  idbSet,
+} from "@/lib/persistentCache/idbStore";
 
-/** Cache key for a list fetch (strips client-only thunk flags). */
-export function listFetchKeyFromGetApplicationsParams(
-  params: GetApplicationsParams | undefined,
-): string {
-  if (!params) return applicationsListParamsCacheKey({});
-  const {
-    clearListOnFetch: _clear,
-    skipListCacheRead: _read,
-    skipListCache: _skip,
-    requestTimeoutMs: _timeout,
-    fetchAllPages,
-    ...fetchParams
-  } = params;
-  return applicationsListParamsCacheKey(
-    fetchAllPages ? { ...fetchParams, fetchAllPages: true } : fetchParams,
-  );
+const TTL_MS = 60_000;
+const MAX_ENTRIES = 40;
+const IDB_NAMESPACE = "applications-list.v1";
+
+type CacheEntry = { at: number; data: unknown };
+
+const cache = new Map<string, CacheEntry>();
+const inFlight = new Map<string, Promise<unknown>>();
+
+function pruneIfNeeded() {
+  while (cache.size > MAX_ENTRIES) {
+    const first = cache.keys().next().value;
+    if (first === undefined) break;
+    cache.delete(first);
+    void idbDeleteEntry(first);
+  }
 }
 
-/** Stable key for list requests (defaults match `Applications` first-page fetch). */
+function idbDeleteEntry(key: string): void {
+  void idbDelete(IDB_NAMESPACE, key);
+}
+
+function isExpired(entry: CacheEntry): boolean {
+  return Date.now() - entry.at > TTL_MS;
+}
+
+function remember(key: string, entry: CacheEntry) {
+  cache.set(key, entry);
+  void idbSet(IDB_NAMESPACE, key, entry);
+  pruneIfNeeded();
+}
+
+/** Warm L1 from IndexedDB (call once on app boot). */
+export async function hydrateApplicationsListCacheFromIdb(): Promise<void> {
+  const rows = await idbGetAllInNamespace<CacheEntry>(IDB_NAMESPACE);
+  for (const row of rows) {
+    if (!row.payload || typeof row.payload.at !== "number") continue;
+    if (isExpired(row.payload)) {
+      void idbDeleteEntry(row.key);
+      continue;
+    }
+    if (!cache.has(row.key) || row.payload.at > (cache.get(row.key)?.at ?? 0)) {
+      cache.set(row.key, row.payload);
+    }
+  }
+  pruneIfNeeded();
+}
+
+/** Stable key for list requests (defaults match list first-page fetch). */
+export const listFetchKeyFromGetApplicationsParams =
+  applicationsListParamsCacheKey;
+
 export function applicationsListParamsCacheKey(
   params: GetApplicationsParams,
 ): string {
@@ -45,7 +74,6 @@ export function applicationsListParamsCacheKey(
     statsBucket: params.statsBucket ?? "",
     operationsStatus: params.operationsStatus ?? "",
     priority: params.priority ?? "",
-    organization: params.organization ?? "",
     type: params.type ?? "",
     clientId: params.clientId ?? "",
     currentQueue: params.currentQueue ?? "",
@@ -56,31 +84,6 @@ export function applicationsListParamsCacheKey(
     underwriterClaim: params.underwriterClaim ?? "",
   };
   return JSON.stringify(p);
-}
-
-const LIST_CACHE_PAGINATION_KEYS = new Set(["page", "limit"]);
-
-/** True when two list cache keys differ only by page and/or page size (pagination). */
-export function applicationsListCacheKeyDiffersOnlyByPage(
-  prevKey: string,
-  nextKey: string,
-): boolean {
-  try {
-    const prev = JSON.parse(prevKey) as Record<string, string>;
-    const next = JSON.parse(nextKey) as Record<string, string>;
-    const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
-    let paginationChanged = false;
-    for (const k of keys) {
-      if (LIST_CACHE_PAGINATION_KEYS.has(k)) {
-        if ((prev[k] ?? "") !== (next[k] ?? "")) paginationChanged = true;
-        continue;
-      }
-      if ((prev[k] ?? "") !== (next[k] ?? "")) return false;
-    }
-    return paginationChanged;
-  } catch {
-    return false;
-  }
 }
 
 export function buildApplicationsListUrl(
@@ -96,9 +99,6 @@ export function buildApplicationsListUrl(
     queryParams.append("operationsStatus", params.operationsStatus);
   }
   if (params.priority) queryParams.append("priority", params.priority);
-  if (params.organization) {
-    queryParams.append("organization", params.organization);
-  }
   if (params.type) queryParams.append("type", params.type);
   if (params.clientId) queryParams.append("clientId", params.clientId);
   if (params.currentQueue) {
@@ -117,117 +117,139 @@ export function buildApplicationsListUrl(
   return `/applications${q ? `?${q}` : ""}`;
 }
 
-const NS = CRM_CACHE_NS.APPLICATIONS_LIST;
-
 export function getCachedApplicationsList(
   key: string,
 ): unknown | undefined {
-  return crmCacheGet<unknown>(NS, key);
-}
-
-/** Pull one list key from IndexedDB (L2) into memory (L1) when L1 missed. */
-export async function warmApplicationsListCacheFromIdb(
-  key: string,
-): Promise<void> {
-  if (getCachedApplicationsList(key) !== undefined) return;
-  await crmCacheHydrateKey(NS, key);
-}
-
-function deferDetailCacheSyncFromListPayload(data: unknown) {
-  const run = () => syncDetailCacheFromListPayload(data);
-  if (typeof requestIdleCallback === "function") {
-    requestIdleCallback(run);
-  } else {
-    setTimeout(run, 0);
+  const entry = cache.get(key);
+  if (!entry) return undefined;
+  if (isExpired(entry)) {
+    cache.delete(key);
+    void idbDeleteEntry(key);
+    return undefined;
   }
+  return entry.data;
 }
 
 /**
- * Returns the freshest non-expired cached list across all keys.
- * Useful as a first-paint fallback when the exact filter key has no cache yet.
+ * Returns the freshest non-expired cached list across all keys (L1 only).
  */
 export function getMostRecentCachedApplicationsList(): unknown | undefined {
-  return crmCacheGetFreshest<unknown>(NS);
-}
+  const now = Date.now();
+  let freshest: CacheEntry | undefined;
 
-/** Rows from any cached list API payload (`{ data: [] }` or merged fetch-all). */
-export function extractApplicationsFromListPayload(
-  payload: unknown,
-): Application[] {
-  if (!payload || typeof payload !== "object") return [];
-  const body = payload as { data?: unknown };
-  if (!Array.isArray(body.data)) return [];
-  return body.data.filter(
-    (row): row is Application =>
-      row != null &&
-      typeof row === "object" &&
-      (Boolean((row as Application)._id) ||
-        Boolean((row as Application & { id?: string }).id) ||
-        (row as Application).applicationId != null),
-  );
-}
-
-/** Mirror list rows into per-application detail cache (L1 + IndexedDB). */
-function syncDetailCacheFromListPayload(payload: unknown) {
-  for (const app of extractApplicationsFromListPayload(payload)) {
-    writeApplicationDetailCache(app);
-  }
-}
-
-/**
- * Find an application row in any non-expired cached list response.
- * Used to open Application Details without a second GET when the list already loaded the row.
- */
-export function findApplicationInListCache(
-  routeParam: string,
-): Application | undefined {
-  const key = String(routeParam).trim();
-  if (!key) return undefined;
-
-  const rows = memoryEntriesForNamespace(NS);
-  rows.sort((a, b) => b.entry.at - a.entry.at);
-
-  for (const { entry } of rows) {
-    for (const app of extractApplicationsFromListPayload(entry.data)) {
-      if (routeParamMatchesApplication(key, app)) {
-        return app;
-      }
+  for (const entry of cache.values()) {
+    if (now - entry.at > TTL_MS) continue;
+    if (!freshest || entry.at > freshest.at) {
+      freshest = entry;
     }
   }
-  return undefined;
+
+  return freshest?.data;
 }
 
 export function setCachedApplicationsList(key: string, data: unknown) {
-  crmCacheSet(NS, key, data);
-  deferDetailCacheSyncFromListPayload(data);
+  remember(key, { at: Date.now(), data });
 }
 
-/** After IndexedDB bootstrap, seed per-app detail keys from cached list blobs. */
-export function hydrateApplicationDetailCacheFromCachedLists() {
-  for (const { entry } of memoryEntriesForNamespace(NS)) {
-    syncDetailCacheFromListPayload(entry.data);
+/**
+ * Run `fetcher` once per cache key; concurrent callers share the same promise.
+ * Returns fresh cache when available.
+ */
+export function coalesceApplicationsListFetch(
+  key: string,
+  fetcher: () => Promise<unknown>,
+): Promise<unknown> {
+  const existing = cache.get(key);
+  if (existing && Date.now() - existing.at < TTL_MS) {
+    return Promise.resolve(existing.data);
   }
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const promise = fetcher()
+    .then((data) => {
+      setCachedApplicationsList(key, data);
+      return data;
+    })
+    .finally(() => {
+      inFlight.delete(key);
+    });
+  inFlight.set(key, promise);
+  return promise;
 }
 
-/** Clears L1 + L2 list cache, then marks TanStack Query list queries stale (active queries refetch). */
-export async function invalidateApplicationsListCache(): Promise<void> {
-  memoryClearNamespace(NS);
-  await idbClearNamespace(NS);
-  invalidateApplicationsListQueries();
+export function invalidateApplicationsListCache() {
+  cache.clear();
+  void idbClearNamespace(IDB_NAMESPACE);
 }
 
-/** Warm cache for deal-pipeline links (hover). Ignores errors. */
+/**
+ * Warm list cache for a single filter key (hover / active filter only).
+ * Skips network when cache is fresh or an identical request is in flight.
+ */
 export function prefetchApplicationsList(
   params: GetApplicationsParams = {},
 ): void {
   const key = applicationsListParamsCacheKey(params);
-  if (getCachedApplicationsList(key) !== undefined) return;
   const url = buildApplicationsListUrl(params);
-  void axiosGet(url)
-    .then((res) => {
-      setCachedApplicationsList(key, res.data);
-    })
-    .catch(() => {
-      /* prefetch only */
-    });
+  void coalesceApplicationsListFetch(key, async () => {
+    const res = await axiosGet(url);
+    return res.data;
+  }).catch(() => {
+    /* prefetch only */
+  });
+}
+
+function applicationsFromListPayload(data: unknown): Application[] | undefined {
+  if (!data) return undefined;
+  if (Array.isArray(data)) return data as Application[];
+  if (typeof data === "object") {
+    const payload = data as { data?: Application[] };
+    if (Array.isArray(payload.data)) return payload.data;
+  }
+  return undefined;
+}
+
+/** Load one list cache key from IndexedDB into L1 (when memory miss on filter change). */
+export async function warmApplicationsListCacheFromIdb(
+  key: string,
+): Promise<void> {
+  const row = await idbGet<CacheEntry>(IDB_NAMESPACE, key);
+  if (!row?.payload || typeof row.payload.at !== "number") return;
+  if (isExpired(row.payload)) {
+    void idbDeleteEntry(key);
+    return;
+  }
+  if (!cache.has(key) || row.payload.at > (cache.get(key)?.at ?? 0)) {
+    cache.set(key, row.payload);
+    pruneIfNeeded();
+  }
+}
+
+/** Find a lite list row across all cached list responses for instant detail paint. */
+export function findApplicationInListCache(
+  routeParam: string,
+): Application | undefined {
+  if (!routeParam?.trim()) return undefined;
+  for (const entry of cache.values()) {
+    if (isExpired(entry)) continue;
+    const rows = applicationsFromListPayload(entry.data);
+    if (!rows?.length) continue;
+    const found = rows.find((row) =>
+      routeParamMatchesApplication(routeParam, row),
+    );
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Seed detail cache from every non-expired cached applications list. */
+export function hydrateApplicationDetailCacheFromCachedLists(): void {
+  for (const entry of cache.values()) {
+    if (isExpired(entry)) continue;
+    const rows = applicationsFromListPayload(entry.data);
+    if (!rows?.length) continue;
+    for (const row of rows) {
+      writeApplicationDetailCache(row);
+    }
+  }
 }

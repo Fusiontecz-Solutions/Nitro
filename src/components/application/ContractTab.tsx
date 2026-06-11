@@ -1058,9 +1058,7 @@ export default function ContractTab({
 
         const anyApp = applicationData as any;
 
-        setCreatingEnvelope(true);
-        try {
-        await persistContractPendingStage();
+        await persistContractsOutStage();
 
         const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
         const userFromStorage = (() => {

@@ -1397,6 +1397,7 @@ function EditableFrequencyField({
         >
           <option value="Daily">Daily</option>
           <option value="Weekly">Weekly</option>
+          <option value="Bi-Weekly">Bi-Weekly</option>
           <option value="Monthly">Monthly</option>
         </select>
       ) : (

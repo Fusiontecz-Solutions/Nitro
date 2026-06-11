@@ -1,11 +1,10 @@
 import type { Application } from '@/types/applicationTypes';
 import type { PaymentDashboardData } from '@/types/paymentDashboardTypes';
 import type { FundedDealBalanceApiRow } from '@/lib/collectionPaymentDashboardApi';
-import { CRM_CACHE_NS, crmCacheClearNamespace, crmCacheGet, crmCacheSet } from '@/lib/crmCache';
-
-const NS = CRM_CACHE_NS.PAYMENT_DASHBOARD;
+import { idbClearNamespace, idbGet, idbSet } from '@/lib/persistentCache/idbStore';
 
 const CACHE_VERSION = 1 as const;
+const IDB_NAMESPACE = 'payment-dashboard.v1';
 
 export type PaymentDashboardSessionBundle = {
     v: typeof CACHE_VERSION;
@@ -26,38 +25,56 @@ export type PaymentDashboardSessionBundle = {
     } | null;
 };
 
+let memoryBundle: PaymentDashboardSessionBundle | null = null;
+
 function cacheKeyForSession(): string {
     try {
         const token = localStorage.getItem('token');
-        if (!token) return 'ih.paymentDashboard.v1.__no_token__';
+        if (!token) return '__no_token__';
         const parts = token.split('.');
-        if (parts.length < 2) return 'ih.paymentDashboard.v1.__bad_token__';
+        if (parts.length < 2) return '__bad_token__';
         const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
         const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
         const json = JSON.parse(atob(padded)) as { id?: string; sub?: string; _id?: string };
-        const uid = String(json.id ?? json.sub ?? json._id ?? 'user');
-        return `ih.paymentDashboard.v1.${uid}`;
+        return String(json.id ?? json.sub ?? json._id ?? 'user');
     } catch {
-        return 'ih.paymentDashboard.v1.__err__';
+        return '__err__';
+    }
+}
+
+function safeParse(payload: unknown): PaymentDashboardSessionBundle | null {
+    try {
+        const parsed = payload as PaymentDashboardSessionBundle;
+        if (parsed?.v !== CACHE_VERSION) return null;
+        return parsed;
+    } catch {
+        return null;
     }
 }
 
 export function readPaymentDashboardSessionCache(): PaymentDashboardSessionBundle | null {
-    if (typeof window === 'undefined') return null;
-    const bundle = crmCacheGet<PaymentDashboardSessionBundle>(NS, cacheKeyForSession());
-    if (!bundle || bundle.v !== CACHE_VERSION) return null;
-    return bundle;
+    return memoryBundle;
 }
 
-/** Merge the latest successful API slice into sessionStorage so refresh can restore instantly. */
+/** Load payment dashboard snapshot from IndexedDB into L1 (app boot). */
+export async function hydratePaymentDashboardCacheFromIdb(): Promise<PaymentDashboardSessionBundle | null> {
+    const uid = cacheKeyForSession();
+    const hit = await idbGet<PaymentDashboardSessionBundle>(IDB_NAMESPACE, uid);
+    const parsed = hit ? safeParse(hit.payload) : null;
+    if (parsed) {
+        memoryBundle = parsed;
+    }
+    return parsed;
+}
+
+/** Merge the latest successful API slice into IndexedDB + L1. */
 export function writePaymentDashboardSessionCache(partial: {
     dashboard?: PaymentDashboardData | null;
     cohort?: PaymentDashboardSessionBundle['cohort'];
     money?: PaymentDashboardSessionBundle['money'];
 }): void {
     if (typeof window === 'undefined') return;
-    const key = cacheKeyForSession();
-    const prev = readPaymentDashboardSessionCache();
+    const prev = memoryBundle ?? readPaymentDashboardSessionCache();
 
     const bundle: PaymentDashboardSessionBundle = {
         v: CACHE_VERSION,
@@ -74,22 +91,24 @@ export function writePaymentDashboardSessionCache(partial: {
 
     if (!hasAnything) return;
 
-    const tryWrite = (b: PaymentDashboardSessionBundle) => {
-        crmCacheSet(NS, key, b);
+    const slimIfNeeded = (): PaymentDashboardSessionBundle => {
+        if (bundle.cohort && bundle.cohort.data.length > 400) {
+            return {
+                ...bundle,
+                cohort: {
+                    data: bundle.cohort.data.slice(0, 400),
+                    pagination: bundle.cohort.pagination,
+                },
+            };
+        }
+        return bundle;
     };
 
-    tryWrite(bundle);
-    if (bundle.cohort && bundle.cohort.data.length > 400) {
-        tryWrite({
-            ...bundle,
-            cohort: {
-                data: bundle.cohort.data.slice(0, 400),
-                pagination: bundle.cohort.pagination,
-            },
-        });
-    }
+    memoryBundle = slimIfNeeded();
+    void idbSet(IDB_NAMESPACE, cacheKeyForSession(), memoryBundle);
 }
 
 export function clearPaymentDashboardSessionCache(): void {
-    crmCacheClearNamespace(NS);
+    memoryBundle = null;
+    void idbClearNamespace(IDB_NAMESPACE);
 }

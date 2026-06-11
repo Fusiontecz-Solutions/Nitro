@@ -16,6 +16,7 @@ import { useSelector, useDispatch } from "react-redux";
 import type { RootState, AppDispatch } from "@/redux/store";
 import { getComplianceChecks } from "@/redux/actions/complianceCheckActions";
 import { getApplicationActivityLogs } from "@/redux/actions/applicationActivityLogActions";
+import { Check, X } from "lucide-react";
 
 interface ChecksAndDecisionProps {
     /** When true, Approved modal shows "Proceed to Generate Contract" (FINAL_UNDERWRITER only) */
@@ -24,13 +25,17 @@ interface ChecksAndDecisionProps {
     onProceedToContract?: () => void;
     /** When true, hides the "Make Underwriting Decision" action buttons (e.g. deal pipeline read-only view). */
     hideUnderwritingDecision?: boolean;
+    /** When true, hides decision actions while browsing a past workflow stage. */
+    previewMode?: boolean;
 }
 
 const ChecksAndDecision = ({
     isFinalUnderwriter,
     onProceedToContract,
     hideUnderwritingDecision,
+    previewMode,
 }: ChecksAndDecisionProps = {}) => {
+    const showUnderwritingDecision = !hideUnderwritingDecision && !previewMode;
     const { applicationId: paramApplicationId } = useParams<{ applicationId: string }>();
     const dispatch = useDispatch<AppDispatch>();
     const { resolvedTheme } = useTheme();
@@ -200,7 +205,14 @@ const ChecksAndDecision = ({
                                     )}
                              
                                 </div>
-                                <div className={`w-16 h-16 rounded-full ${isDark ? 'bg-red-200' : 'bg-red-100'} opacity-50`}></div>
+                                <div
+                                    className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full ${isDark ? 'bg-red-950/50 ring-1 ring-red-500/30' : 'bg-red-100 ring-1 ring-red-200/80'}`}
+                                    aria-hidden
+                                >
+                                    <Check
+                                        className={`h-8 w-8 stroke-[2.5] ${isDark ? 'text-red-400' : 'text-red-600'}`}
+                                    />
+                                </div>
                             </div>
                         </CardContent>
                     </Card>
@@ -214,11 +226,19 @@ const ChecksAndDecision = ({
                                     <p className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-black'} mb-2`}>{noCount}</p>
                                     {/* <p className="text-xs text-[#16A34A] font-inter font-[400]">All Clear</p> */}
                                 </div>
-                                <div className={`w-16 h-16 rounded-full ${isDark ? 'bg-green-200' : 'bg-green-100'} opacity-50`}></div>
+                                <div
+                                    className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full ${isDark ? 'bg-green-950/50 ring-1 ring-green-500/30' : 'bg-green-100 ring-1 ring-green-200/80'}`}
+                                    aria-hidden
+                                >
+                                    <X
+                                        className={`h-8 w-8 stroke-[2.5] ${isDark ? 'text-green-400' : 'text-green-600'}`}
+                                    />
+                                </div>
                             </div>
                         </CardContent>
                     </Card>
                 </div>
+
 
                 {/* Compliance Checks Progress Bar */}
                 <div className="px-6 py-2">
@@ -277,7 +297,7 @@ const ChecksAndDecision = ({
             </div>
 
             {/* Make Underwriting Decision Section */}
-            {!hideUnderwritingDecision && (
+            {showUnderwritingDecision && (
             <div className={`border border-[#FDFDFD] shadow-[0px_4px_20px_0px_#00000005] my-6 flex flex-col gap-4 w-full pt-0 rounded-lg overflow-hidden ${isDark ? 'bg-card border-white' : 'bg-white'}`}>
             <h2 className={`text-base font-roboto w-full font-semibold ${isDark ? 'bg-card' : 'bg-[#F9FAFD]'} px-6 py-2 ${isDark ? 'text-gray-200' : 'text-[#374151]'}`}>Make Underwriting Decision</h2>
                 
@@ -344,7 +364,7 @@ const ChecksAndDecision = ({
                 </DialogContent>
             </Dialog>
 
-            {!hideUnderwritingDecision && (
+            {showUnderwritingDecision && (
                 <>
             {/* Approved Application Modal */}
             <ApprovedApplicationModal

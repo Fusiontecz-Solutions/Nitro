@@ -192,6 +192,18 @@ function sanitizeDecimalInput(str: unknown): string {
   return s;
 }
 
+/** Canonical frequency label for dropdown + API (handles legacy "Bi-weekly" casing). */
+function normalizeFrequencyOption(freq?: string): string {
+  const f = (freq || "").trim();
+  if (!f || f === "Select") return "";
+  const key = f.toLowerCase().replace(/\s+/g, "");
+  if (key === "daily") return "Daily";
+  if (key === "weekly") return "Weekly";
+  if (key === "bi-weekly" || key === "biweekly") return "Bi-Weekly";
+  if (key === "monthly") return "Monthly";
+  return f;
+}
+
 /** FREQUENCY_MULTIPLIER: payments per month (Daily=22, Weekly=4.2, Bi-weekly=2, Monthly=1). */
 function getPaymentsPerMonth(freq?: string): number {
   const f = (freq || "").toLowerCase().replace(/\s+/g, "");
@@ -813,7 +825,7 @@ function FootPlainEditCell({ children }: { children: React.ReactNode }) {
 
 export default function PositionsTableCalculator({
   positions: positionsProp,
-  frequencyOptions = ["Weekly", "Daily", "Bi-weekly", "Monthly"],
+  frequencyOptions = ["Select", "Daily", "Weekly", "Bi-Weekly", "Monthly"],
   statusOptions = ["Select", "ACTIVE", "REVERSE", "REFI", "PIF", "ONE TIME", "STOP", "RECOVERY", "LOWER"],
   avgBankNetCredit,
   applicationId,
@@ -890,7 +902,7 @@ export default function PositionsTableCalculator({
       return {
         _id: p._id,
         lender: p.funder ?? "",
-        frequency: p.frequency ?? "",
+        frequency: normalizeFrequencyOption(p.frequency ?? ""),
         installment:
           p.ach != null ? formatMoneyInputCommit(p.ach) : "",
         status: p.status ?? (p.activeStatus ? "ACTIVE" : "SELECT"),
@@ -1231,7 +1243,7 @@ export default function PositionsTableCalculator({
       return;
     }
 
-    if (!frequency) {
+    if (!frequency || frequency === "Select") {
       toast.error("Please select a FREQUENCY before saving this position.");
       return;
     }
@@ -1933,12 +1945,14 @@ export default function PositionsTableCalculator({
                     >
                       {readMode ? (
                         <div className={roCellInner}>
-                          {(row.frequency || frequencyOptions[0] || "").trim() ||
-                            "-"}
+                          {(row.frequency && row.frequency !== "Select"
+                            ? row.frequency
+                            : ""
+                          ).trim() || "-"}
                         </div>
                       ) : (
                         <select
-                          value={row.frequency || frequencyOptions[0] || ""}
+                          value={row.frequency || "Select"}
                           disabled={locked}
                           onChange={(e) =>
                             handleUpdateRow(index, "frequency", e.target.value)

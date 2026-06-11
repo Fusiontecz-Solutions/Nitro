@@ -1,6 +1,9 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { PaymentDashboardData } from '@/types/paymentDashboardTypes';
-import { getPaymentDashboard } from '../actions/paymentDashboardActions';
+import {
+    fetchPaymentFinancialOverviewSummary,
+    getPaymentDashboard,
+} from '../actions/paymentDashboardActions';
 
 interface PaymentDashboardState {
   /** True only before the first successful load. */
@@ -41,26 +44,33 @@ export const paymentDashboardSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    const handlePending = (state: PaymentDashboardState) => {
+      state.error = null;
+      if (state.data) {
+        state.isRefreshing = true;
+      } else {
+        state.loading = true;
+      }
+    };
+    const handleFulfilled = (state: PaymentDashboardState, action: PayloadAction<PaymentDashboardData>) => {
+      state.loading = false;
+      state.isRefreshing = false;
+      state.data = action.payload;
+      state.fetched = true;
+    };
+    const handleRejected = (state: PaymentDashboardState, action: { payload?: unknown }) => {
+      state.loading = false;
+      state.isRefreshing = false;
+      state.error = action.payload as string;
+    };
+
     builder
-      .addCase(getPaymentDashboard.pending, (state) => {
-        state.error = null;
-        if (state.data) {
-          state.isRefreshing = true;
-        } else {
-          state.loading = true;
-        }
-      })
-      .addCase(getPaymentDashboard.fulfilled, (state, action) => {
-        state.loading = false;
-        state.isRefreshing = false;
-        state.data = action.payload;
-        state.fetched = true;
-      })
-      .addCase(getPaymentDashboard.rejected, (state, action) => {
-        state.loading = false;
-        state.isRefreshing = false;
-        state.error = action.payload as string;
-      });
+      .addCase(getPaymentDashboard.pending, handlePending)
+      .addCase(getPaymentDashboard.fulfilled, handleFulfilled)
+      .addCase(getPaymentDashboard.rejected, handleRejected)
+      .addCase(fetchPaymentFinancialOverviewSummary.pending, handlePending)
+      .addCase(fetchPaymentFinancialOverviewSummary.fulfilled, handleFulfilled)
+      .addCase(fetchPaymentFinancialOverviewSummary.rejected, handleRejected);
   },
 });
 

@@ -42,7 +42,7 @@ export type OperationsApplicationsListStatus =
 const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Contract_Pending: "Contract Pending",
   Contract_Out: "Contract Out",
-  Contracted: "Contract",
+  Contracted: "Contracted",
   Contract_Signed: "Contract Signed",
   Signed_Contracts: "Signed Contracts",
   "Funding Call": "Funding Call",
@@ -138,13 +138,7 @@ export function inferOperationsListStatusFromApplication(
   if (state === "signedcontracts" || state === "signed_contracts") {
     return "Contract_Signed";
   }
-  if (q === "contractpending" || state === "contractpending" || st === "contractpending") {
-    return "Contract_Pending";
-  }
-  if (q === "contractgenerated" || state === "contractgenerated" || st === "contractgenerated") {
-    return "Contracted";
-  }
-  if (q === "contracted" || st === "contracted") {
+  if (q === "contracted" || q === "contractpending" || st === "contracted") {
     return "Contracted";
   }
   if (q === "new" || q === "agent" || q === "draft") return "Agent";
@@ -153,38 +147,69 @@ export function inferOperationsListStatusFromApplication(
   return null;
 }
 
-/**
- * Whether the Disbursement tab may be opened for this application.
- * Requires Funding Call stage or later (Disbursement / Funded), using the same
- * queue / status / state signals as {@link inferOperationsListStatusFromApplication}.
- */
-export function isApplicationAtOrPastFundingCallForDisbursement(
-  currentQueue: string | null | undefined,
-  options?: { explicitStatus?: string | null; currentState?: string | null },
+export function normalizeFundingCallStatus(
+  value: string | null | undefined,
+): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/[\s_-]+/g, "")
+    .toLowerCase();
+}
+
+/** Latest persisted funding call status is "Call Done" (case / spacing insensitive). */
+export function isFundingCallStatusCallDone(
+  value: string | null | undefined,
 ): boolean {
+  return normalizeFundingCallStatus(value) === "calldone";
+}
+
+/**
+ * Whether the Disbursement tab may be opened for Operations / Super Admin.
+ * Unlocks when funding call is Call Done, or the deal is already in Disbursement / Funded.
+ */
+export function canOpenDisbursementTab(
+  currentQueue: string | null | undefined,
+  options?: {
+    explicitStatus?: string | null;
+    currentState?: string | null;
+    latestFundingCallStatus?: string | null;
+  },
+): boolean {
+  if (isFundingCallStatusCallDone(options?.latestFundingCallStatus)) {
+    return true;
+  }
+
   const inferred = inferOperationsListStatusFromApplication(currentQueue, options);
-  if (
-    inferred === "Funding Call" ||
-    inferred === "Disbursment" ||
-    inferred === "Funded"
-  ) {
+  if (inferred === "Disbursment" || inferred === "Funded") {
     return true;
   }
 
   const st = normalizePipelineKey(options?.explicitStatus);
   const state = normalizePipelineKey(options?.currentState);
 
-  if (st === "fundingcall" || (st.includes("funding") && st.includes("call"))) {
-    return true;
-  }
+  if (st === "funded" || state === "funded") return true;
   if (
-    state === "fundingcall" ||
-    (state.includes("funding") && state.includes("call"))
+    st === "disbursment" ||
+    st === "disbursement" ||
+    state === "disbursment" ||
+    state === "disbursement"
   ) {
     return true;
   }
 
   return false;
+}
+
+/** @deprecated Use {@link canOpenDisbursementTab} — kept for existing imports. */
+export function isApplicationAtOrPastFundingCallForDisbursement(
+  currentQueue: string | null | undefined,
+  options?: {
+    explicitStatus?: string | null;
+    currentState?: string | null;
+    latestFundingCallStatus?: string | null;
+  },
+): boolean {
+  return canOpenDisbursementTab(currentQueue, options);
 }
 
 export function operationsDashboardStatusTitle(
