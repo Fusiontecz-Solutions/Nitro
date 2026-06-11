@@ -27,6 +27,10 @@ export type BoldSignMergeAndSendPayload = {
   templateIds?: string[];
   /** CRM document-template row ids for addendum / supplemental PDFs (main contract PDF from ContractTemplate). */
   supplementalDocumentRefs?: string[];
+  /** Standalone docs only (e.g. ACH form) — no main contract PDF in the envelope. */
+  standaloneDocumentRefs?: string[];
+  /** Do not overwrite Application.document.envelopeId (standalone ACH stores envelope on contract mapping). */
+  skipApplicationEnvelopeLink?: boolean;
   /** Resolve supplemental refs from CRM document templates (AND on provided fields). */
   contractTemplateFilters?: BoldSignContractTemplateFilters;
   /** Active owner count (1 or 2) — controls Owner 2 signature slots. */

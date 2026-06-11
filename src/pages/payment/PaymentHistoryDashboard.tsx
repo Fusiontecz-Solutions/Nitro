@@ -7,13 +7,11 @@ import {
   fetchPaymentFinancialOverviewSummary,
 } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
+import { fetchPaymentDashboardMoney } from "@/redux/actions/paymentDashboardMoneyActions";
 import { axiosPost, axiosPostFormData } from "@/redux/axios";
 import type { FundedDealBalanceApiRow } from "@/lib/collectionPaymentDashboardApi";
 import type { Application } from "@/types/applicationTypes";
-import {
-  buildPaymentFundedCohortParams,
-  isFundedApplication,
-} from "@/lib/paymentDashboardFunded";
+import { buildPaymentFundedCohortParams } from "@/lib/paymentDashboardFunded";
 import type { MoneyFlowPoint, PaymentDashboardData } from "@/types/paymentDashboardTypes";
 import {
   DropdownMenu,
@@ -30,7 +28,6 @@ import {
   type ColumnDef,
   type PaginationState,
   getCoreRowModel,
-  getPaginationRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import { useTheme } from "@/context/ThemeContext";
@@ -897,9 +894,6 @@ export const PaymentHistoryDashboard = () => {
     return () => window.clearTimeout(t);
   }, [pendingViewDealId]);
 
-  const hasApplicationsRows = (cohortApplications?.length ?? 0) > 0;
-  /** Empty overview fetch in progress (no session snapshot) — avoid blocking when API returns 0 funded deals. */
-  const blockPaymentTableLoader = cohortLoading && !hasApplicationsRows && !cohortFetched;
   const showProminentMoneySync =
     paymentDashboardApiLoading && !dashboard.creditDebitTrend;
   const showQuietMoneySync = paymentDashboardRefreshing || cohortRefreshing;
@@ -1651,9 +1645,7 @@ export const PaymentHistoryDashboard = () => {
     const list = cohortApplications ?? [];
     const rows: PaymentTransactionRow[] = [];
 
-    list
-      .filter(isFundedApplication)
-      .forEach((app) => {
+    list.forEach((app) => {
         const appId = String(app._id ?? (app as { id?: string }).id ?? "");
         const collectionRows = dashboardPaymentsByApp[appId] ?? [];
         const dealId = String(app.dealId ?? "").trim();
@@ -1698,6 +1690,11 @@ export const PaymentHistoryDashboard = () => {
   const debouncedSearchTerm = useDebouncedValue(searchTerm, 400);
   /** Rows for the current server page (search is applied via `GET /applications?search=`). */
   const filteredTransactions = transactions;
+
+  /** Payment deals table — server returns one page; show loader until cohort data is ready. */
+  const paymentDealsTableLoading =
+    !cohortError &&
+    (cohortLoading || !cohortFetched || (cohortRefreshing && filteredTransactions.length === 0));
 
   const cohortListTotal = cohortPagination?.total ?? filteredTransactions.length;
 
@@ -1888,7 +1885,6 @@ export const PaymentHistoryDashboard = () => {
     columns: paymentDealColumns,
     pageCount: cohortPageCount,
     getCoreRowModel: getCoreRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
     onPaginationChange: setPagination,
     manualPagination: true,
     state: { pagination },
@@ -1942,6 +1938,13 @@ export const PaymentHistoryDashboard = () => {
     pagination.pageSize,
     debouncedSearchTerm,
   ]);
+
+  /** Balances + collection rows for the current funded-deals page. */
+  useEffect(() => {
+    if (location.pathname !== "/payments") return;
+    if (!cohortFetched) return;
+    void dispatch(fetchPaymentDashboardMoney());
+  }, [dispatch, location.pathname, cohortFetched, cohortApplications]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
@@ -2519,7 +2522,7 @@ export const PaymentHistoryDashboard = () => {
             Payment deals
           </span>
           <span className="text-xs text-muted-foreground">
-            {blockPaymentTableLoader
+            {paymentDealsTableLoading
               ? "Loading…"
               : showProminentMoneySync
                 ? "Syncing balances & transactions…"
@@ -2534,17 +2537,17 @@ export const PaymentHistoryDashboard = () => {
             cohortRefreshing ? "opacity-85" : "opacity-100"
           }`}
         >
-          {blockPaymentTableLoader ? (
+          {paymentDealsTableLoading && viewMode === "grid" ? (
             <div className="flex items-center justify-center gap-2 px-6 py-16 text-sm text-muted-foreground">
               <Loader2 className="size-5 animate-spin text-[#276D9C]" aria-hidden />
-              Loading payment dashboard…
+              Loading payment deals…
             </div>
           ) : viewMode === "list" ? (
             <div className="max-lg:min-h-[min(24rem,55vh)] min-h-[min(32rem,65vh)] overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable]">
               <DataTableContent
                 table={paymentDealsTable}
-                loading={false}
-                loadingMessage="Loading payment dashboard…"
+                loading={paymentDealsTableLoading}
+                loadingMessage="Loading payment deals…"
                 emptyMessage={
                   (transactions?.length ?? 0) > 0 && !filteredTransactions.length && debouncedSearchTerm.trim()
                     ? "No matching deals"
@@ -2641,7 +2644,7 @@ export const PaymentHistoryDashboard = () => {
           )}
         </div>
 
-        {!blockPaymentTableLoader && filteredTransactions.length > 0 && (
+        {!paymentDealsTableLoading && filteredTransactions.length > 0 && (
           <DataTablePagination
             table={paymentDealsTable}
             totalItems={cohortListTotal}

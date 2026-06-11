@@ -182,8 +182,10 @@ export default function ApplicationDetailsSheet({
   if (!application) return null
 
   const clientName = getClientNameFromApplication(application.client)
-  const appId = String(application.applicationId ?? application._id)
-  const applicationId = String(application._id)
+  const appId = String(application.applicationId ?? application._id ?? (application as { id?: string }).id ?? "")
+  const applicationId = String(
+    application._id ?? (application as { id?: string }).id ?? application.applicationId ?? "",
+  ).trim()
 
 
   const business: Client["business"] | null = clientData?.business ?? null

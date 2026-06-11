@@ -94,6 +94,10 @@ export default function ApplicationSheetBankDetail({
       toast.error("Please enter an account number.");
       return;
     }
+    if (!String(form.routingNumber || "").trim()) {
+      toast.error("Please enter a routing number (required for contracts).");
+      return;
+    }
 
     try {
       setSaving(true);
@@ -120,6 +124,8 @@ export default function ApplicationSheetBankDetail({
         ).unwrap();
         toast.success("Bank details saved successfully.");
       }
+
+      await dispatch(getBankDetails({ application: applicationId })).unwrap();
 
       resetForm();
       onClose?.();
@@ -181,7 +187,7 @@ export default function ApplicationSheetBankDetail({
 
         <div className="flex flex-col gap-1">
           <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            Routing Number
+            Routing Number <span className="text-red-500">*</span>
           </label>
           <Input
             type="text"

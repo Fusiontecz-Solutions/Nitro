@@ -3,13 +3,12 @@ import { useParams } from "react-router"
 import { Card, CardContent } from "../ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table"
 import { Button } from "../ui/button"
-import { Trash2, Eye } from "lucide-react"
+import { Trash2, Eye, FileUp } from "lucide-react"
 import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import type { ApplicationFiles } from "@/types/applicationTypes"
 import { deleteApplicationFile, getApplicationByApplicationId, getApplicationById, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
 import { hydrateApplicationDetailFromCache } from "@/redux/slices/applicationSlice"
-import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions"
 import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
@@ -19,7 +18,7 @@ import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch"
 
 type UploadedDocumentsProps = {
     applicationId?: string
-    /** Hide upload/delete and required-doc acknowledgements (e.g. OPERATIONS view-only). */
+    /** Hide upload/delete (e.g. OPERATIONS view-only). */
     readOnly?: boolean
 }
 
@@ -28,7 +27,10 @@ type PendingFile = {
     file: File
 }
 
-const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocumentsProps) => {
+const UploadedDocuments = ({
+    applicationId,
+    readOnly = false,
+}: UploadedDocumentsProps) => {
     const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>()
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
@@ -36,7 +38,6 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false)
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
     const [pdfFileName, setPdfFileName] = useState<string>("")
-    const [acknowledgedRequiredDocs, setAcknowledgedRequiredDocs] = useState<string[]>([])
     const fileInputRef = useRef<HTMLInputElement | null>(null)
 
     const { data: applicationData } = useSelector(
@@ -44,9 +45,6 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
     )
     const { loading: uploadLoading } = useSelector(
         (state: RootState) => state.uploadDocuments
-    )
-    const { data: documentRequests } = useSelector(
-        (state: RootState) => state.documentRequests
     )
 
     const dispatch: AppDispatch = useDispatch()
@@ -78,31 +76,6 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
     useEffect(() => {
         void refreshApplicationDetail()
     }, [refreshApplicationDetail])
-
-    // Load acknowledged required docs for this application
-    useEffect(() => {
-        if (typeof window !== "undefined" && applicationMongoId) {
-            const key = `requiredDocsCompleted:${applicationMongoId}`
-            const raw = localStorage.getItem(key)
-            if (raw) {
-                try {
-                    const parsed = JSON.parse(raw)
-                    if (Array.isArray(parsed)) {
-                        setAcknowledgedRequiredDocs(parsed as string[])
-                    }
-                } catch {
-                    // ignore parse errors
-                }
-            }
-        }
-    }, [applicationMongoId])
-
-    // Fetch required / requested documents for this application
-    useEffect(() => {
-        if (applicationMongoId) {
-            dispatch(getDocumentRequestsByApplication(applicationMongoId))
-        }
-    }, [dispatch, applicationMongoId])
 
     // Utility function to format file size
     const formatFileSize = (bytes: number): string => {
@@ -183,8 +156,6 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
             }
 
             await refreshApplicationDetail()
-
-            await dispatch(getDocumentRequestsByApplication(applicationMongoId))
         } catch (error: any) {
             const message =
                 typeof error === "string"
@@ -211,22 +182,6 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
         setPdfFileName("")
     }
 
-    // Format required document name nicely
-    const formatRequiredDocName = (name: string) => {
-        if (!name) return ""
-        return name
-            .replace(/[-_]/g, " ")
-            .split(" ")
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(" ")
-    }
-
-    // Documents still visible in this list (not acknowledged in this session)
-    const visibleRequiredDocuments =
-        (documentRequests || []).filter(
-            (doc: any) => !acknowledgedRequiredDocs.includes(doc.name)
-        )
-
     return (
         <Card
             className={`rounded-lg box-border p-0 border py-0 gap-0 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.14),0_4px_14px_-4px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_40px_-8px_rgba(0,0,0,0.55)] ${isDark ? "border-[#374151] bg-[#141517]" : "border-slate-200/90 bg-card"
@@ -250,7 +205,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                         Uploaded Documents
                     </h2>
                     {!readOnly && (
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center justify-end gap-2">
                             <input
                                 ref={fileInputRef}
                                 type="file"
@@ -268,6 +223,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                 onClick={handleOpenFilePicker}
                                 className="h-8 px-3 text-xs font-medium cursor-pointer shadow-sm"
                             >
+                                <FileUp className="mr-1.5 h-3.5 w-3.5" aria-hidden />
                                 Choose files
                             </Button>
                             <Button
@@ -287,66 +243,6 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                         }`}>
                         {pendingFiles.length} document(s) ready to upload — remove any you do not want before clicking Upload.
                     </p>
-                )}
-
-                {/* Required documents coming from Underwriter requests */}
-                {!readOnly && visibleRequiredDocuments.length > 0 && (
-                    <div className="px-6 pb-4">
-                        <h3
-                            className={`text-xs font-semibold tracking-wide uppercase mb-2 ${isDark ? "text-gray-300" : "text-gray-600"
-                                }`}
-                        >
-                            Required Documents
-                        </h3>
-                        <div className="flex flex-wrap gap-2">
-                            {visibleRequiredDocuments.map((doc: any, index: number) => {
-                                const isChecked = acknowledgedRequiredDocs.includes(doc.name)
-
-                                const handleCheck = () => {
-                                    // Mark this required document as acknowledged/completed for this application
-                                    setAcknowledgedRequiredDocs((prev) => {
-                                        if (prev.includes(doc.name)) return prev
-                                        const updated = [...prev, doc.name]
-                                        if (typeof window !== "undefined" && applicationMongoId) {
-                                            const key = `requiredDocsCompleted:${applicationMongoId}`
-                                            localStorage.setItem(key, JSON.stringify(updated))
-                                        }
-                                        return updated
-                                    })
-                                }
-
-                                return (
-                                    <button
-                                        key={`${doc.name}-${index}`}
-                                        type="button"
-                                        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] ${isDark
-                                                ? "border-[#374151] bg-[#111827] text-gray-100"
-                                                : "border-gray-200 bg-white text-gray-800"
-                                            }`}
-                                        onClick={() => {
-                                            if (isChecked) return
-                                            handleCheck()
-                                        }}
-                                    >
-                                        <input
-                                            type="checkbox"
-                                            className="h-3 w-3 accent-[#276D9C] cursor-pointer"
-                                            checked={isChecked}
-                                            onChange={(e) => {
-                                                if (e.target.checked && !isChecked) {
-                                                    handleCheck()
-                                                }
-                                            }}
-                                            onClick={(e) => e.stopPropagation()}
-                                        />
-                                        <span className="font-semibold truncate max-w-[150px]">
-                                            {formatRequiredDocName(doc.name)}
-                                        </span>
-                                    </button>
-                                )
-                            })}
-                        </div>
-                    </div>
                 )}
 
                 <div className={cn('overflow-hidden border-none p-1', isDark ? 'bg-[#141517]' : 'bg-card')}>

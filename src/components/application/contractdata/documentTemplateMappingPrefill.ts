@@ -1,5 +1,10 @@
-import type { BuildContractPrefillFieldsArgs, ContractPrefillField } from "./Contract";
+import type {
+    BuildContractPrefillFieldsArgs,
+    ContractPrefillContractRecords,
+    ContractPrefillField,
+} from "./Contract";
 import {
+    buildContractPrefillFieldsFromApplication,
     getContractPrefillEditDefaultsFromApplication,
     resolveBalanceTransferMerchantContext,
 } from "./Contract";
@@ -38,6 +43,83 @@ import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
 
 /** Stored on `Contract.contractPrefillOverrides` alongside main prefill keys. */
 export const DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY = "documentTemplatePrefillByMappingId";
+
+/** DocuSign envelope ids per `ContractDocumentTemplateMapping.id` (e.g. standalone ACH). */
+export const DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY = "documentTemplateEnvelopeByMappingId";
+
+export type DocumentTemplateEnvelopeMeta = {
+    envelopeId: string;
+    status?: string;
+    updatedAt?: string;
+};
+
+/** DocuSign send history for Contracts Generated table (contract + ACH envelopes). */
+export const DOCUMENT_SEND_HISTORY_KEY = "documentSendHistory";
+
+export type DocumentSendKind = "contract" | "ach";
+
+export type DocumentSendHistoryEntry = {
+    envelopeId: string;
+    documentKind: DocumentSendKind;
+    label: string;
+    status?: string;
+    updatedAt?: string;
+};
+
+export function parseDocumentSendHistory(raw: unknown): DocumentSendHistoryEntry[] {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const blob = (raw as Record<string, unknown>)[DOCUMENT_SEND_HISTORY_KEY];
+    if (!Array.isArray(blob)) return [];
+    const out: DocumentSendHistoryEntry[] = [];
+    for (const row of blob) {
+        if (!row || typeof row !== "object") continue;
+        const envelopeId = String((row as Record<string, unknown>).envelopeId ?? "").trim();
+        const documentKind = (row as Record<string, unknown>).documentKind;
+        const label = String((row as Record<string, unknown>).label ?? "").trim();
+        if (!envelopeId || (documentKind !== "contract" && documentKind !== "ach")) continue;
+        const status = String((row as Record<string, unknown>).status ?? "").trim();
+        const updatedAt = String((row as Record<string, unknown>).updatedAt ?? "").trim();
+        out.push({
+            envelopeId,
+            documentKind,
+            label: label || (documentKind === "ach" ? "ACH Authorization" : "Contract"),
+            ...(status ? { status } : {}),
+            ...(updatedAt ? { updatedAt } : {}),
+        });
+    }
+    return out;
+}
+
+export function upsertDocumentSendHistory(
+    existing: DocumentSendHistoryEntry[],
+    entry: DocumentSendHistoryEntry,
+): DocumentSendHistoryEntry[] {
+    const idx = existing.findIndex((e) => e.envelopeId === entry.envelopeId);
+    if (idx >= 0) {
+        const next = [...existing];
+        next[idx] = { ...next[idx], ...entry };
+        return next;
+    }
+    return [...existing, entry];
+}
+
+export function formatDocumentSendStatusLabel(status?: string | null): string {
+    const s = String(status ?? "").trim().toLowerCase();
+    if (!s) return "Generated";
+    if (s === "completed" || s === "signed") return "Signed";
+    if (s === "sent" || s === "delivered") return "Sent";
+    if (s === "viewed") return "Viewed";
+    if (s === "draft" || s === "created") return "Draft";
+    if (s === "revoked" || s === "voided") return "Voided";
+    if (s === "declined") return "Declined";
+    if (s === "expired") return "Expired";
+    return s.toUpperCase();
+}
+
+export function isDocumentSendEntryViewable(status?: string | null): boolean {
+    const s = String(status ?? "").trim().toLowerCase();
+    return s === "completed" || s === "signed";
+}
 
 const DUMMY = ".";
 
@@ -382,6 +464,8 @@ export function stripDocumentTemplateBlobFromPrefillOverrides<
     if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return raw;
     const o = { ...raw } as Record<string, unknown>;
     delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+    delete o[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
+    delete o[DOCUMENT_SEND_HISTORY_KEY];
     delete o[CONTRACT_SIGNER_OVERRIDES_KEY];
     return o as T;
 }
@@ -445,19 +529,172 @@ export function parseDocumentTemplatePrefillByMappingId(raw: unknown): Record<st
     return out;
 }
 
+export function parseDocumentTemplateEnvelopeByMappingId(
+    raw: unknown,
+): Record<string, DocumentTemplateEnvelopeMeta> {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const blob = (raw as Record<string, unknown>)[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
+    if (blob == null || typeof blob !== "object" || Array.isArray(blob)) return {};
+    const out: Record<string, DocumentTemplateEnvelopeMeta> = {};
+    for (const [mappingId, row] of Object.entries(blob)) {
+        if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+        const envelopeId = String((row as Record<string, unknown>).envelopeId ?? "").trim();
+        if (!envelopeId) continue;
+        const status = String((row as Record<string, unknown>).status ?? "").trim();
+        const updatedAt = String((row as Record<string, unknown>).updatedAt ?? "").trim();
+        out[mappingId] = {
+            envelopeId,
+            ...(status ? { status } : {}),
+            ...(updatedAt ? { updatedAt } : {}),
+        };
+    }
+    return out;
+}
+
 /**
  * Rows for the template-mapping editor: every BoldSign field id for this template, labels from builders,
  * values from CRM-derived defaults merged with optional saved overrides for this mapping row.
  */
 export const LINKED_DOCUSIGN_ADDENDUM_SECTION_ID = "linked_docusign_addendum";
+export const LINKED_DOCUSIGN_ACH_SECTION_ID = "linked_docusign_ach";
+
+/** Field ids on `ach_authorization.layout.json` — keep in sync with backend layout. */
+const ACH_AUTHORIZATION_LAYOUT_FIELD_IDS = [
+    "ach_authorization_account_holder_address",
+    "ach_authorization_account_holder_bank_account_number",
+    "ach_authorization_account_holder_bank_branch_city",
+    "ach_authorization_account_holder_bank_name",
+    "ach_authorization_account_holder_bank_routing_number",
+    "ach_authorization_account_holder_bank_state",
+    "ach_authorization_account_holder_bank_transaction_fee",
+    "ach_authorization_account_holder_bank_zip",
+    "ach_authorization_account_holder_city",
+    "ach_authorization_account_holder_dba",
+    "ach_authorization_account_holder_name",
+    "ach_authorization_account_holder_phone",
+    "ach_authorization_account_holder_state",
+    "ach_authorization_account_holder_zip",
+    "ach_authorization_concent_account_holder_name",
+    "authorization_client_bank_account",
+    "authorization_client_bank_name",
+    "authorization_client_bank_routing",
+    "authorization_client_name",
+    "authorization_client_name_print",
+    "authorization_client_tax_id",
+    "authorized_business_phone",
+    "signature_date",
+] as const;
+
+const ACH_AUTHORIZATION_FIELD_LABELS: Record<string, string> = {
+    ach_authorization_account_holder_name: "Account holder name",
+    ach_authorization_account_holder_dba: "DBA",
+    ach_authorization_account_holder_phone: "Phone",
+    ach_authorization_account_holder_address: "Street address",
+    ach_authorization_account_holder_city: "City",
+    ach_authorization_account_holder_state: "State",
+    ach_authorization_account_holder_zip: "ZIP",
+    ach_authorization_account_holder_bank_name: "Bank name",
+    ach_authorization_account_holder_bank_branch_city: "Bank branch city",
+    ach_authorization_account_holder_bank_state: "Bank state",
+    ach_authorization_account_holder_bank_zip: "Bank ZIP",
+    ach_authorization_account_holder_bank_routing_number: "Routing number",
+    ach_authorization_account_holder_bank_account_number: "Account number",
+    ach_authorization_account_holder_bank_transaction_fee: "Transaction fee",
+    ach_authorization_concent_account_holder_name: "Consent — account holder name",
+    authorization_client_bank_account: "Client bank account",
+    authorization_client_bank_name: "Client bank name",
+    authorization_client_bank_routing: "Client bank routing",
+    authorization_client_name: "Client name",
+    authorization_client_name_print: "Client name (print)",
+    authorization_client_tax_id: "Client tax ID / EIN",
+    authorized_business_phone: "Business phone",
+    signature_date: "Signature date",
+};
+
+export function usesCoordinateLayoutTemplate(row: {
+    documentType?: string | null;
+    template?: {
+        type?: string | null;
+        layoutKey?: string | null;
+        pdfUrl?: string | null;
+        templateId?: string | null;
+    } | null;
+} | null): boolean {
+    if (!row) return false;
+    const docType = normalizeKey(row.documentType ?? "");
+    const type = normalizeKey(row.template?.type ?? "");
+    const layoutKey = String(row.template?.layoutKey ?? "").trim();
+    const pdfUrl = String(row.template?.pdfUrl ?? "").trim();
+    if (docType === "ach" || type === "ach" || layoutKey === "ach_authorization") return true;
+    if (layoutKey && pdfUrl) return true;
+    return false;
+}
+
+function resolveAchAuthorizationTemplate(
+    templateType?: string | null,
+    templateName?: string | null,
+    layoutKey?: string | null,
+): boolean {
+    const typeNorm = normalizeKey(templateType ?? "");
+    const layoutNorm = normalizeKey(layoutKey ?? "");
+    const nameNorm = normalizeKey(templateName ?? "");
+    return (
+        typeNorm === "ach" ||
+        layoutNorm === "ach_authorization" ||
+        nameNorm.includes("ach")
+    );
+}
+
+function achAuthorizationAllDefs(): ContractPrefillField[] {
+    return ACH_AUTHORIZATION_LAYOUT_FIELD_IDS.map((id) => ({
+        id,
+        label: ACH_AUTHORIZATION_FIELD_LABELS[id] || id.replace(/_/g, " "),
+        value: "",
+    }));
+}
+
+function achAuthorizationComputed(
+    contract: Record<string, unknown> | null,
+    application: Record<string, unknown> | null,
+    agreementDate?: string,
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null,
+    contractRecords?: ContractPrefillContractRecords | null,
+): ContractPrefillField[] {
+    const effectiveContract = buildEffectiveContractForTemplatePrefill({
+        contract,
+        application,
+        agreementDate,
+        mainPrefillOverrides,
+    });
+    const computed = buildContractPrefillFieldsFromApplication(application, {
+        agreementDate,
+        contractRecords: {
+            contract: effectiveContract,
+            ach: contractRecords?.ach ?? null,
+            bankDetail: contractRecords?.bankDetail,
+        },
+    });
+    const allowed = new Set<string>(ACH_AUTHORIZATION_LAYOUT_FIELD_IDS);
+    const rows = computed.filter((f) => allowed.has(f.id));
+    if (!rows.some((f) => f.id === "signature_date" && str(f.value))) {
+        const dateRow = rows.find((f) => f.id === "signature_date");
+        if (dateRow && agreementDate) {
+            dateRow.value = agreementDate;
+        }
+    }
+    return rows;
+}
 
 export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     templateId?: string | null;
     templateName?: string | null;
+    templateType?: string | null;
+    templateLayoutKey?: string | null;
     templateState?: string | null;
     templateFrequency?: string | null;
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    contractRecords?: ContractPrefillContractRecords | null;
     agreementDate?: string;
     /** Main contract prefill overrides (excludes per-mapping blob); same source as Deal Review. */
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
@@ -500,6 +737,24 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
         return mergeFieldRows(all, computed, options.savedOverridesForMapping);
     }
 
+    if (
+        resolveAchAuthorizationTemplate(
+            options.templateType,
+            name,
+            options.templateLayoutKey,
+        )
+    ) {
+        const all = achAuthorizationAllDefs();
+        const computed = achAuthorizationComputed(
+            effectiveContract,
+            options.application ?? null,
+            options.agreementDate,
+            options.mainPrefillOverrides,
+            options.contractRecords ?? null,
+        );
+        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+    }
+
     return [];
 }
 
@@ -538,6 +793,9 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
             templateId: row.template?.templateId ?? null,
             templateName: row.template?.name ?? null,
+            templateType: (row.template as { type?: string } | null | undefined)?.type ?? null,
+            templateLayoutKey:
+                (row.template as { layoutKey?: string } | null | undefined)?.layoutKey ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
             contract: args.contract ?? null,

@@ -12,12 +12,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
-import { axiosPut } from "@/redux/axios";
 import { toast } from "react-toastify";
-import type { BuildContractPrefillFieldsArgs } from "./Contract";
+import type {
+    BuildContractPrefillFieldsArgs,
+    ContractPrefillContractRecords,
+} from "./Contract";
 import {
+    DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    parseDocumentTemplateEnvelopeByMappingId,
     getDocumentTemplatePrefillFieldRowsForEditor,
+    usesCoordinateLayoutTemplate,
 } from "./documentTemplateMappingPrefill";
 
 export type TemplateMappingPrefillEditRow = {
@@ -29,9 +34,11 @@ export type TemplateMappingPrefillEditRow = {
         id?: string;
         name?: string | null;
         type?: string;
+        layoutKey?: string | null;
         state?: string | null;
         frequency?: string | null;
         templateId?: string;
+        pdfUrl?: string | null;
     } | null;
 };
 
@@ -44,6 +51,7 @@ type TemplateMappingPrefillEditDialogProps = {
     applicationUuid?: string | null;
     applicationData: unknown;
     resolvedContract: Record<string, unknown> | null;
+    contractRecords?: ContractPrefillContractRecords;
     /** Agreement / disclosure date default (e.g. today). */
     agreementDate: string;
     /** Full map: mapping row id → BoldSign field id → value. */
@@ -62,15 +70,17 @@ export function TemplateMappingPrefillEditDialog({
     applicationUuid = null,
     applicationData,
     resolvedContract,
+    contractRecords,
     agreementDate,
     documentTemplatePrefillByMappingId,
     mainPrefillOverrides,
     onSaved,
 }: TemplateMappingPrefillEditDialogProps) {
     const dispatch = useDispatch<AppDispatch>();
-    const [templateRef, setTemplateRef] = useState("");
     const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
+
+    const coordinateLayout = usesCoordinateLayoutTemplate(row);
 
     const editorRows = useMemo(() => {
         if (!row) return [];
@@ -78,10 +88,13 @@ export function TemplateMappingPrefillEditDialog({
         return getDocumentTemplatePrefillFieldRowsForEditor({
             templateId: row.template?.templateId ?? null,
             templateName: row.template?.name ?? null,
+            templateType: row.template?.type ?? row.documentType ?? null,
+            templateLayoutKey: row.template?.layoutKey ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
+            contractRecords,
             agreementDate,
             mainPrefillOverrides: mainPrefillOverrides ?? undefined,
             savedOverridesForMapping: saved,
@@ -91,14 +104,10 @@ export function TemplateMappingPrefillEditDialog({
         documentTemplatePrefillByMappingId,
         resolvedContract,
         applicationData,
+        contractRecords,
         agreementDate,
         mainPrefillOverrides,
     ]);
-
-    useEffect(() => {
-        if (!open || !row) return;
-        setTemplateRef(String(row.template?.templateId ?? "").trim());
-    }, [open, row]);
 
     useEffect(() => {
         if (!open || !row) return;
@@ -111,19 +120,8 @@ export function TemplateMappingPrefillEditDialog({
             toast.error("Missing contract or mapping row.");
             return;
         }
-        const nextTemplateRef = String(templateRef ?? "").trim();
-        if (!nextTemplateRef) {
-            toast.error("DocuSign template ID is required.");
-            return;
-        }
         setSaving(true);
         try {
-            if (nextTemplateRef !== String(row.template?.templateId ?? "").trim()) {
-                await axiosPut(`/contract/${cid}/document-template-mappings/${row.id}`, {
-                    templateRef: nextTemplateRef,
-                });
-            }
-
             const nextBlob = {
                 ...documentTemplatePrefillByMappingId,
                 [row.id]: { ...fieldValues },
@@ -131,9 +129,16 @@ export function TemplateMappingPrefillEditDialog({
 
             const main = { ...(mainPrefillOverrides ?? {}) } as Record<string, unknown>;
             delete main[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+            delete main[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
+            const envelopeBlob = parseDocumentTemplateEnvelopeByMappingId(
+                resolvedContract?.contractPrefillOverrides,
+            );
             const contractPrefillOverrides = {
                 ...main,
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
+                ...(Object.keys(envelopeBlob).length
+                    ? { [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: envelopeBlob }
+                    : {}),
             };
 
             await dispatch(
@@ -152,7 +157,11 @@ export function TemplateMappingPrefillEditDialog({
                 }
             }
 
-            toast.success("Template mapping and DocuSign field overrides saved.");
+            toast.success(
+                coordinateLayout
+                    ? "ACH form field values saved."
+                    : "Template mapping and DocuSign field overrides saved.",
+            );
             onSaved();
             onOpenChange(false);
         } catch (e: unknown) {
@@ -168,7 +177,7 @@ export function TemplateMappingPrefillEditDialog({
     }, [
         contractId,
         row,
-        templateRef,
+        coordinateLayout,
         fieldValues,
         documentTemplatePrefillByMappingId,
         mainPrefillOverrides,
@@ -180,42 +189,37 @@ export function TemplateMappingPrefillEditDialog({
 
     const titleName = row?.template?.name?.trim()
         ? row.template.name
-        : row?.template?.templateId || "DocuSign template";
+        : coordinateLayout
+          ? "ACH authorization"
+          : row?.template?.templateId || "DocuSign template";
+
+    const dialogTitle = coordinateLayout
+        ? `Edit ACH form — ${titleName}`
+        : `Edit template mapping — ${titleName}`;
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
-                className="flex max-h-[90vh] w-[min(100vw-2rem,640px)] flex-col gap-0 p-0 sm:max-w-[640px]"
+                className="flex max-h-[90vh] w-[min(100vw-2rem,960px)] flex-col gap-0 p-0 sm:max-w-[960px]"
                 onOpenAutoFocus={(e : any) => e.preventDefault()}
             >
                 <DialogHeader className="shrink-0 border-b px-6 py-4">
-                    <DialogTitle className="text-base">Edit template mapping — {titleName}</DialogTitle>
-                    <p className="text-muted-foreground text-sm font-normal leading-snug">
-                        Change the DocuSign template ID if needed, then adjust field values used when prefilling this
-                        document. Values are saved on the contract under{" "}
-                        <span className="font-mono text-xs">documentTemplatePrefillByMappingId</span>.
-                    </p>
+                    <DialogTitle className="text-base">{dialogTitle}</DialogTitle>
+                    {!coordinateLayout ? (
+                        <p className="text-muted-foreground text-sm font-normal leading-snug">
+                            Adjust field values used when prefilling this document. Values are saved on the
+                            contract.
+                        </p>
+                    ) : null}
                 </DialogHeader>
                 <div className="max-h-[min(65vh,520px)] overflow-y-auto px-6 py-4">
                     <div className="space-y-4">
-                        <div className="space-y-1.5">
-                            <Label htmlFor="tmpl-mapping-bsid" className="text-xs font-medium">
-                                DocuSign template ID (GUID)
-                            </Label>
-                            <Input
-                                id="tmpl-mapping-bsid"
-                                value={templateRef}
-                                onChange={(e) => setTemplateRef(e.target.value)}
-                                className="font-mono text-xs"
-                                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                            />
-                        </div>
                         {editorRows.length === 0 ? (
                             <p className="text-muted-foreground text-sm">
-                                No registered field map for this template name. You can still update the template ID
-                                above; add a matching entry in{" "}
-                                <span className="font-mono text-xs">documentTemplateMappingPrefill.ts</span> to edit
-                                fields here.
+                                No registered field map for this template. For ACH, ensure BoldSignTemplate has{" "}
+                                <span className="font-mono text-xs">type=ach</span>,{" "}
+                                <span className="font-mono text-xs">layoutKey=ach_authorization</span>, and{" "}
+                                <span className="font-mono text-xs">pdfUrl</span> set.
                             </p>
                         ) : (
                             <>
@@ -230,7 +234,7 @@ export function TemplateMappingPrefillEditDialog({
                                     <span className="font-mono">client_name</span>.
                                 </p>
                             ) : null}
-                            <div className="grid gap-3 sm:grid-cols-1">
+                            <div className="grid gap-3 sm:grid-cols-2">
                                 {editorRows.map((r) => (
                                     <div key={r.id} className="space-y-1.5">
                                         <Label htmlFor={`tmpl-field-${r.id}`} className="text-xs font-medium">

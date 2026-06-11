@@ -17,7 +17,7 @@ import {
 } from "@/redux/actions/operationsDashboardActions";
 import { fetchPaymentFinancialOverviewSummary } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
-import { DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
+import { buildPaymentFundedCohortParams } from "@/lib/paymentDashboardFunded";
 import { OnlineStatusSync } from "@/components/chat/OnlineStatusSync";
 import RealtimeNotificationsListener from "@/components/notifications/RealtimeNotificationsListener";
 import NotificationsSync from "@/components/notifications/NotificationsSync";
@@ -67,7 +67,8 @@ const RootLayout = () => {
         (state: RootState) => state.paymentDashboardCohort.fetched,
     );
     const paymentCohortInFlight = useSelector(
-        (state: RootState) => state.paymentDashboardCohort.loading,
+        (state: RootState) =>
+            state.paymentDashboardCohort.loading || state.paymentDashboardCohort.isRefreshing,
     );
     const paymentDashboardFetched = useSelector(
         (state: RootState) => state.paymentDashboard.data,
@@ -192,10 +193,7 @@ const RootLayout = () => {
         }
         if (!paymentCohortFetched && !paymentCohortInFlight) {
             void dispatch(
-                fetchPaymentDashboardFundedDeals({
-                    page: 1,
-                    limit: DEFAULT_APPLICATIONS_PAGE_SIZE,
-                }),
+                fetchPaymentDashboardFundedDeals(buildPaymentFundedCohortParams()),
             );
         }
     }, [

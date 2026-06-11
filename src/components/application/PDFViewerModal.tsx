@@ -21,7 +21,7 @@ import {
     Plus,
     RefreshCw,
     ScrollText,
-
+    Send,
     Trash2,
     UploadCloud,
     User,
@@ -85,6 +85,7 @@ import {
     type UpdateContractData,
 } from "@/redux/actions/contractActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
+import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions";
 import { toast } from "react-toastify";
 import {
     buildContractPrefillFieldsFromApplication,
@@ -104,6 +105,8 @@ import {
     type ContractPrefillField,
 } from "./contractdata/Contract";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
+import { normalizeRoleKey } from "@/lib/sessionRole";
+import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import { resolveOfferDecisionFeesDisplayDollars } from "@/lib/offerDecisionFees";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -127,9 +130,14 @@ import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm"
 import { ExhibitACompaniesSummarySection } from "./contractdata/ExhibitACompaniesSummarySection";
 import { TemplateMappingPrefillEditDialog } from "./contractdata/TemplateMappingPrefillEditDialog";
 import {
+    DOCUMENT_SEND_HISTORY_KEY,
+    DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    parseDocumentSendHistory,
+    parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
     stripDocumentTemplateBlobFromPrefillOverrides,
+    upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
@@ -152,7 +160,10 @@ import {
     type ContractSignerOverrideRow,
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
-import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
+import {
+    collapseDocuSignRolesToSignerSlots,
+    resolveActiveOwnerCount,
+} from "./contractdata/contractPartyCounts";
 import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
@@ -217,6 +228,8 @@ function writeDocuSignErrorTab(doc: Document, message: string): void {
 interface PDFViewerModalProps {
     isOpen: boolean;
     onClose: () => void;
+    /** Called after contract / ACH DocuSign envelope metadata is saved on the contract row. */
+    onContractDocumentsChanged?: () => void;
     fileUrl: string | null;
     fileName?: string;
     contractId?: number | null;
@@ -227,6 +240,8 @@ interface PDFViewerModalProps {
         ccEmails: string[];
         addendumDocumentRef?: string | null;
         addendumBoldSignTemplateId?: string | null;
+        achDocumentRef?: string | null;
+        standaloneAchOnly?: boolean;
         roles?: DocuSignTemplateRolePayload[];
     }) => void | Promise<
         void | {
@@ -415,14 +430,22 @@ function isContractAlreadySent(
     sessionSentAt: Date | null,
 ): boolean {
     if (sessionSentAt) return true;
-    if (isContractStatusAtLeastSent(contract?.status)) return true;
     const doc = pickContractEnvelopeDocument(contract);
-    if (!doc) return false;
-    if (doc.sentAt) return true;
-    const docStatus = String(doc.status ?? "").trim().toLowerCase();
-    if (DOCUSIGN_DOC_DRAFT_STATUSES.has(docStatus)) return false;
-    if (DOCUSIGN_DOC_SENT_STATUSES.has(docStatus)) return true;
-    return false;
+    if (doc?.sentAt) return true;
+    if (doc?.envelopeId) {
+        const docStatus = String(doc.status ?? "").trim().toLowerCase();
+        if (DOCUSIGN_DOC_DRAFT_STATUSES.has(docStatus)) {
+            /**
+             * Document row can lag after send while Contract.status / send history already show Sent
+             * (Contracts Generated table). Backend only bumps Contract.status for the primary envelope.
+             */
+            if (isContractStatusAtLeastSent(contract?.status)) return true;
+            return false;
+        }
+        if (DOCUSIGN_DOC_SENT_STATUSES.has(docStatus)) return true;
+        return false;
+    }
+    return isContractStatusAtLeastSent(contract?.status);
 }
 
 /** Cache bust suffix — only draft / sent / completed (ignore viewed, delivered, etc.). */
@@ -458,44 +481,100 @@ function envelopeDocStatusIsTerminal(doc: Record<string, unknown> | null): boole
     return ["revoked", "voided", "declined", "expired", "completed"].includes(docStatus);
 }
 
-/** In-flight envelope (sent to signers, not completed or voided). */
+/** Main contract envelope only — standalone ACH must not affect cancel / review actions. */
+function getPrimaryContractEnvelopeView(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt: Date | null,
+) {
+    const doc = pickContractEnvelopeDocument(contract);
+    const docStatus = String(doc?.status ?? "").trim().toLowerCase();
+    const hasEnvelope = Boolean(String(doc?.envelopeId ?? "").trim());
+    const isDraft =
+        !hasEnvelope ||
+        (DOCUSIGN_DOC_DRAFT_STATUSES.has(docStatus) && !doc?.sentAt);
+    const isCompleted = docStatus === "completed";
+    const isTerminal = envelopeDocStatusIsTerminal(doc);
+    const isOutForSignature =
+        hasEnvelope &&
+        !isDraft &&
+        !isCompleted &&
+        !isTerminal &&
+        (Boolean(doc?.sentAt) ||
+            ["sent", "viewed", "signed", "delivered"].includes(docStatus));
+    const sessionContractActive = Boolean(sessionSentAt) && isOutForSignature;
+    return {
+        doc,
+        docStatus,
+        isDraft,
+        isCompleted,
+        isOutForSignature: isOutForSignature || sessionContractActive,
+    };
+}
+
+/** In-flight main contract envelope (sent to signers, not completed or voided). */
 function canCancelDocuSignContract(
     contract: Record<string, unknown> | null | undefined,
     sessionSentAt: Date | null,
 ): boolean {
-    const status = String(contract?.status ?? "").trim().toUpperCase();
-    if (["REVOKED", "DECLINED", "EXPIRED", "COMPLETED"].includes(status)) return false;
-    if (["SENT", "VIEWED", "SIGNED"].includes(status)) return true;
-
-    if (!isContractAlreadySent(contract, sessionSentAt)) return false;
-    const doc = pickContractEnvelopeDocument(contract);
-    if (envelopeDocStatusIsTerminal(doc)) return false;
-    if (status === "COMPLETED") return false;
-    if (["REVOKED", "DECLINED", "EXPIRED"].includes(status)) return false;
-    return true;
+    const { isCompleted, isOutForSignature } = getPrimaryContractEnvelopeView(
+        contract,
+        sessionSentAt,
+    );
+    if (isCompleted) return false;
+    return isOutForSignature;
 }
 
-/** Open DocuSign to send — not while an active envelope is out for signature. */
+/** Open DocuSign for the main contract — draft, after void, or resend after fully signed. */
 function canReviewAndSendToDocuSign(
     contract: Record<string, unknown> | null | undefined,
     sessionSentAt: Date | null,
 ): boolean {
-    if (canCancelDocuSignContract(contract, sessionSentAt)) return false;
-    const status = String(contract?.status ?? "").trim().toUpperCase();
-    const doc = pickContractEnvelopeDocument(contract);
-    const docStatus = String(doc?.status ?? "").trim().toLowerCase();
-    if (status === "COMPLETED" || docStatus === "completed") return false;
-    if (
-        ["REVOKED", "DECLINED", "EXPIRED"].includes(status) ||
-        ["revoked", "voided", "declined", "expired"].includes(docStatus)
-    ) {
-        return true;
-    }
+    if (canResendMainContract(contract, sessionSentAt)) return true;
+    const { isDraft, isOutForSignature } = getPrimaryContractEnvelopeView(
+        contract,
+        sessionSentAt,
+    );
+    if (isOutForSignature) return false;
     if (isContractAlreadySent(contract, sessionSentAt)) return false;
-    return true;
+    return isDraft || !pickContractEnvelopeDocument(contract)?.envelopeId;
+}
+
+/**
+ * Resend / new send allowed only after the previous envelope is fully signed or voided —
+ * never while signers still have an open envelope.
+ */
+function canResendMainContract(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt: Date | null,
+): boolean {
+    const view = getPrimaryContractEnvelopeView(contract, sessionSentAt);
+    const contractStatus = String(contract?.status ?? "").trim().toUpperCase();
+    const docStatus = view.docStatus;
+
+    if (view.isOutForSignature) return false;
+
+    if (view.isCompleted || contractStatus === "COMPLETED") return true;
+    if (docStatus === "signed") return true;
+
+    if (["revoked", "voided", "declined", "expired"].includes(docStatus)) return true;
+    if (["REVOKED", "DECLINED", "EXPIRED"].includes(contractStatus)) return true;
+
+    return false;
+}
+
+function resolveLatestEnvelopeStatus(
+    contract: Record<string, unknown> | null | undefined,
+): string {
+    const doc = pickContractEnvelopeDocument(contract);
+    const docStatus = String(doc?.status ?? "").trim();
+    if (docStatus && !DOCUSIGN_DOC_DRAFT_STATUSES.has(docStatus.toLowerCase())) {
+        return docStatus;
+    }
+    return String(contract?.status ?? "").trim();
 }
 
 type PdfRightPaneTab = "template" | "docusign";
+type DocuSignSentDocumentSource = "contract" | "ach";
 
 /**
  * Template roles often embed placeholder `defaultSignerEmail` in BoldSign that drifts from CRM.
@@ -616,6 +695,7 @@ const PDFViewerModal = ({
     onPrepareDocuSignDraft,
     prefillFieldsPreview = [],
     onSendToDocusign,
+    onContractDocumentsChanged,
 }: PDFViewerModalProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const [effectiveTemplateId, setEffectiveTemplateId] = useState<string | null>(templateId ?? null);
@@ -628,6 +708,8 @@ const PDFViewerModal = ({
     type ContractWizardStep = "documents" | "info" | "summary" | "sent";
     const [activeStep, setActiveStep] = useState<ContractWizardStep>("documents");
     const [sentAt, setSentAt] = useState<Date | null>(null);
+    /** Sticky unlock for step 4 — survives modal close until void or contract change. */
+    const [sentStepUnlocked, setSentStepUnlocked] = useState(false);
     const [sentCcEmails, setSentCcEmails] = useState<string[]>([]);
     /** True only while user clicks Refresh on the Sent-step signing status card. */
     const [signingStatusRefreshing, setSigningStatusRefreshing] = useState(false);
@@ -635,6 +717,14 @@ const PDFViewerModal = ({
     const [lastSigningStatusSyncAt, setLastSigningStatusSyncAt] = useState<Date | null>(null);
     /** After user explicitly opens Documents during this modal session, stop auto-switching Documents → Sent. */
     const didSuggestSentTabThisOpenRef = useRef(false);
+    const awaitingDocuSignSendRef = useRef(false);
+    const refreshContractSigningStateRef = useRef<
+        (
+            silent?: boolean,
+            options?: { syncDocuSign?: boolean; forceDocuSignSync?: boolean },
+        ) => Promise<void>
+    >(() => Promise.resolve());
+    const prevContractIdForSentRef = useRef<number | null | undefined>(undefined);
     const stepSequence: ContractWizardStep[] = ["documents", "info", "summary", "sent"];
     const activeStepIndex = stepSequence.indexOf(activeStep);
     const canGoPreviousStep = activeStepIndex > 0;
@@ -662,6 +752,8 @@ const PDFViewerModal = ({
     const [sessionEnvelopeId, setSessionEnvelopeId] = useState<string | null>(null);
     /** Right pane: template PDF, DocuSign draft prefilled (summary), or DocuSign PDF after send. */
     const [pdfRightPaneTab, setPdfRightPaneTab] = useState<PdfRightPaneTab>("template");
+    const [docuSignSentDocumentSource, setDocuSignSentDocumentSource] =
+        useState<DocuSignSentDocumentSource>("contract");
 
     useEffect(() => {
         if (!isOpen) return;
@@ -732,6 +824,7 @@ const PDFViewerModal = ({
     const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
     const [updatingUploadedFileId, setUpdatingUploadedFileId] = useState<string | null>(null);
     const [deletingUploadedFileId, setDeletingUploadedFileId] = useState<string | null>(null);
+    const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
     const [openDocumentActionMenuId, setOpenDocumentActionMenuId] = useState<string | null>(null);
     const [templateMappings, setTemplateMappings] = useState<ContractDocumentTemplateMappingRow[]>([]);
 
@@ -751,6 +844,34 @@ const PDFViewerModal = ({
             (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
         )[0];
     }, [addendumTemplateMappings]);
+
+    const achTemplateMappings = useMemo(
+        () =>
+            templateMappings.filter((row) => {
+                const t = String(row.documentType || "").toLowerCase();
+                return t === "ach";
+            }),
+        [templateMappings],
+    );
+
+    const linkedAchMapping = useMemo(() => {
+        if (!achTemplateMappings.length) return null;
+        return [...achTemplateMappings].sort(
+            (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
+        )[0];
+    }, [achTemplateMappings]);
+    const documentTemplateEnvelopeByMappingId = useMemo(
+        () =>
+            parseDocumentTemplateEnvelopeByMappingId(
+                (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+            ),
+        [resolvedContract],
+    );
+    const linkedAchEnvelope = useMemo(() => {
+        if (!linkedAchMapping?.id) return null;
+        return documentTemplateEnvelopeByMappingId[linkedAchMapping.id] ?? null;
+    }, [linkedAchMapping, documentTemplateEnvelopeByMappingId]);
     const [documentTemplatePrefillByMappingId, setDocumentTemplatePrefillByMappingId] = useState<
         Record<string, Record<string, string>>
     >({});
@@ -761,6 +882,8 @@ const PDFViewerModal = ({
     const templatePreviewBlobUrlRef = useRef<string | null>(null);
     /** `bs:<boldSignTemplateGuid>` | `up:<uploadedFileId>` | `` */
     const [selectedAddendumOption, setSelectedAddendumOption] = useState<string>("");
+    const [isSendingAch, setIsSendingAch] = useState(false);
+    const [viewingAchEnvelopeId, setViewingAchEnvelopeId] = useState<string | null>(null);
     // const [selectedPayoffLetterFileId, setSelectedPayoffLetterFileId] = useState<string>("");
     const [activeInfoPanel, setActiveInfoPanel] = useState<InfoPanelId | null>(null);
     const [, setSelectedInfoPanels] = useState<InfoPanelId[]>([]);
@@ -896,6 +1019,10 @@ const PDFViewerModal = ({
         ? boldSignTemplatesState.data
         : [];
     const boldSignState = useSelector((state: RootState) => state.boldSign);
+    const { data: loginData } = useSelector((state: RootState) => state.login);
+    const { data: documentRequests, loading: documentRequestsLoading } = useSelector(
+        (state: RootState) => state.documentRequests,
+    );
     const templateRecipients = boldSignState?.templateRecipients;
 
     const templateRoleRowsForSigner = useMemo(
@@ -1074,6 +1201,23 @@ const PDFViewerModal = ({
         ).toLowerCase();
         return typeText.includes("addendum") || nameText.includes("addendum");
     });
+    const achTemplateOptions = boldSignTemplates.filter((template: any) => {
+        const typeText = String(template?.type || "").toLowerCase();
+        const nameText = String(
+            template?.name || template?.title || template?.templateName || "",
+        ).toLowerCase();
+        const layoutKey = String(template?.layoutKey || "").toLowerCase();
+        return (
+            typeText === "ach" ||
+            layoutKey === "ach_authorization" ||
+            (nameText.includes("ach") && !nameText.includes("attach"))
+        );
+    });
+    /** Single platform ACH form — first previewable BoldSignTemplate row with type ach. */
+    const primaryAchTemplate = useMemo(() => {
+        const previewable = achTemplateOptions.filter((t: any) => boldSignTemplateIsPreviewable(t));
+        return previewable[0] ?? null;
+    }, [achTemplateOptions]);
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
             file?.documentType || file?.fileName || "",
@@ -1093,6 +1237,41 @@ const PDFViewerModal = ({
         const d = applicationData as { _id?: string; id?: string } | undefined;
         return String(d?._id ?? d?.id ?? "").trim() || null;
     }, [applicationId, applicationData]);
+
+    const requestDocsRoleKey = normalizeRoleKey(
+        (loginData as { user?: { role?: string } } | null)?.user?.role ||
+            (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
+            "",
+    );
+    const showRequestDocuments =
+        Boolean(onPrepareDocuSignDraft) &&
+        (requestDocsRoleKey === "UNDERWRITER" ||
+            requestDocsRoleKey === "FINAL_UNDERWRITER" ||
+            requestDocsRoleKey === "SUPER_ADMIN" ||
+            requestDocsRoleKey === "OPERATIONS");
+
+    const formatRequiredDocName = (name: string) => {
+        if (!name) return "";
+        return name
+            .replace(/[-_]/g, " ")
+            .split(" ")
+            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(" ");
+    };
+
+    const pendingDocumentRequests = useMemo(
+        () => (documentRequests || []).filter((doc) => doc.status === "Pending"),
+        [documentRequests],
+    );
+    const completedDocumentRequests = useMemo(
+        () => (documentRequests || []).filter((doc) => doc.status === "Complete"),
+        [documentRequests],
+    );
+
+    useEffect(() => {
+        if (!isOpen || !applicationIdForLookup) return;
+        void dispatch(getDocumentRequestsByApplication(applicationIdForLookup));
+    }, [isOpen, applicationIdForLookup, dispatch]);
 
     const contractPrefillRecords: ContractPrefillContractRecords = useMemo(() => {
         const firstRow = (data: unknown): Record<string, unknown> | null =>
@@ -1184,8 +1363,8 @@ const PDFViewerModal = ({
     const showDocuSignContractTab = useMemo(
         () =>
             activeStep === "sent" &&
-            isContractAlreadySent(resolvedContract, sentAt),
-        [activeStep, resolvedContract, sentAt],
+            (sentStepUnlocked || isContractAlreadySent(resolvedContract, sentAt)),
+        [activeStep, resolvedContract, sentAt, sentStepUnlocked],
     );
 
     const signingFinishedForPoll = useMemo(
@@ -1202,6 +1381,30 @@ const PDFViewerModal = ({
         () => canReviewAndSendToDocuSign(resolvedContract, sentAt),
         [resolvedContract, sentAt],
     );
+
+    const canResendContract = useMemo(
+        () => canResendMainContract(resolvedContract, sentAt),
+        [resolvedContract, sentAt],
+    );
+
+    const isContractOutForSignature = useMemo(() => {
+        return getPrimaryContractEnvelopeView(resolvedContract, sentAt).isOutForSignature;
+    }, [resolvedContract, sentAt]);
+
+    const latestEnvelopeStatusLabel = useMemo(
+        () => formatContractSigningStatusLabel(resolveLatestEnvelopeStatus(resolvedContract)),
+        [resolvedContract],
+    );
+
+    const showResendContractOnSentStep = useMemo(
+        () => activeStep === "sent" && canResendContract,
+        [activeStep, canResendContract],
+    );
+
+    const docuSignPrimaryActionLabel = useMemo(() => {
+        if (showResendContractOnSentStep) return "Resend contract";
+        return "Review & send in DocuSign";
+    }, [showResendContractOnSentStep]);
 
     /** Application client/businessInfo + contract ACH/addendum/EPO/owners/guarantors + optional preview overrides. */
     const dealReviewFields = useMemo(() => {
@@ -1299,6 +1502,15 @@ const PDFViewerModal = ({
         void dispatch(getOfferDecisionByApplication(applicationIdForLookup));
     }, [isOpen, applicationIdForLookup, dispatch]);
 
+    /** Sent step always shows the latest CRM + DocuSign envelope state. */
+    useEffect(() => {
+        if (!isOpen || activeStep !== "sent") return;
+        void refreshContractSigningStateRef.current(true, {
+            syncDocuSign: true,
+            forceDocuSignSync: true,
+        });
+    }, [isOpen, activeStep]);
+
     useEffect(() => {
         if (!isOpen) {
             setResolvedContractId(null);
@@ -1310,6 +1522,7 @@ const PDFViewerModal = ({
             setSelectedAddendumOption("");
             setSessionEnvelopeId(null);
             setDocuSignOpenUrl(null);
+            setDocuSignSentDocumentSource("contract");
             setContractSignerOverrides(null);
             setShowRecipientEditor(false);
             draftPreparedAddendumIdRef.current = undefined;
@@ -1443,6 +1656,16 @@ const PDFViewerModal = ({
         return fromContract || null;
     }, [sessionEnvelopeId, resolvedContract]);
 
+    const docuSignPreviewEnvelopeId = useMemo(() => {
+        if (
+            docuSignSentDocumentSource === "ach" &&
+            String(linkedAchEnvelope?.envelopeId ?? "").trim()
+        ) {
+            return String(linkedAchEnvelope!.envelopeId).trim();
+        }
+        return linkedEnvelopeId;
+    }, [docuSignSentDocumentSource, linkedAchEnvelope, linkedEnvelopeId]);
+
     const docuSignPdfCacheSuffix = useMemo(
         () => getDocuSignPdfCacheSuffix(resolvedContract, sentAt),
         [resolvedContract, sentAt],
@@ -1531,6 +1754,7 @@ const PDFViewerModal = ({
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
+    const linkedAchMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
     const templateRecipientsFetchedForIdRef = useRef<string | null>(null);
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
@@ -1538,6 +1762,7 @@ const PDFViewerModal = ({
     selectedAddendumOptionRef.current = selectedAddendumOption;
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
     linkedAddendumMappingRef.current = linkedAddendumMapping;
+    linkedAchMappingRef.current = linkedAchMapping;
     docuSignPdfCacheSuffixRef.current = docuSignPdfCacheSuffix;
 
     const buildDocuSignPdfCacheKey = (envelopeId: string) =>
@@ -1666,13 +1891,11 @@ const PDFViewerModal = ({
         const opt = String(selectedAddendumOptionRef.current || "").trim();
         if (opt.startsWith("up:")) return null;
         if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
-        return (
-            String(
-                linkedAddendumMappingRef.current?.template?.templateId ??
-                    linkedAddendumMappingRef.current?.templateId ??
-                    "",
-            ).trim() || null
-        );
+        return getBoldSignTemplateMappingRef(linkedAddendumMappingRef.current?.template) || null;
+    }, []);
+
+    const resolveAchTemplateIdForDocuSign = useCallback((): string | null => {
+        return getBoldSignTemplateMappingRef(linkedAchMappingRef.current?.template) || null;
     }, []);
 
     const primarySignerEmailRef = useRef("");
@@ -1733,6 +1956,7 @@ const PDFViewerModal = ({
         async (
             envelopeId: string,
             ccForSync: string[],
+            rolesOverride?: DocuSignTemplateRolePayload[],
         ): Promise<{ url: string | null; error: string | null }> => {
             const returnUrl =
                 typeof window !== "undefined"
@@ -1740,7 +1964,7 @@ const PDFViewerModal = ({
                     : "https://www.docusign.com";
             const signerEmail = String(primarySignerEmailRef.current || "").trim();
             const appId = applicationIdForLookupRef.current;
-            const roles = buildDocuSignRolesForSync();
+            const roles = rolesOverride ?? buildDocuSignRolesForSync();
             try {
                 const res = await axiosPost("/docusign/sender-view", {
                     envelopeId,
@@ -1776,6 +2000,7 @@ const PDFViewerModal = ({
             envelopeId: string,
             ccForSync: string[],
             justCreated: boolean,
+            rolesOverride?: DocuSignTemplateRolePayload[],
         ): Promise<{ url: string | null; error: string | null }> => {
             const delays = justCreated
                 ? DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS.justCreated
@@ -1785,7 +2010,11 @@ const PDFViewerModal = ({
                 if (delay > 0) {
                     await new Promise((r) => setTimeout(r, delay));
                 }
-                const result = await fetchDocuSignSenderViewUrl(envelopeId, ccForSync);
+                const result = await fetchDocuSignSenderViewUrl(
+                    envelopeId,
+                    ccForSync,
+                    rolesOverride,
+                );
                 if (result.url) return result;
                 if (result.error) lastError = result.error;
             }
@@ -1811,7 +2040,7 @@ const PDFViewerModal = ({
             return;
         }
 
-        void loadPrefilledPdfFromDocuSign();
+        void loadPrefilledPdfFromDocuSign(docuSignPreviewEnvelopeId ?? undefined);
         return () => {
             prefilledLoadGenRef.current += 1;
         };
@@ -1819,8 +2048,7 @@ const PDFViewerModal = ({
         isOpen,
         pdfRightPaneTab,
         showDocuSignContractTab,
-        linkedEnvelopeId,
-        sessionEnvelopeId,
+        docuSignPreviewEnvelopeId,
         docuSignPdfCacheSuffix,
         loadPrefilledPdfFromDocuSign,
     ]);
@@ -1841,7 +2069,8 @@ const PDFViewerModal = ({
 
     const downloadFilledContractPdf = useCallback(async () => {
         const envelopeId =
-            String(linkedEnvelopeIdRef.current || linkedEnvelopeId || "").trim() || null;
+            String(docuSignPreviewEnvelopeId || linkedEnvelopeIdRef.current || linkedEnvelopeId || "")
+                .trim() || null;
         const appId = applicationIdForLookupRef.current;
 
         if (!envelopeId && !appId) {
@@ -1872,19 +2101,26 @@ const PDFViewerModal = ({
             const objectUrl = URL.createObjectURL(blob);
             const anchor = document.createElement("a");
             anchor.href = objectUrl;
-            anchor.download = `filled-contract-${fileLabel}.pdf`;
+            anchor.download =
+                docuSignSentDocumentSource === "ach"
+                    ? `filled-ach-${fileLabel}.pdf`
+                    : `filled-contract-${fileLabel}.pdf`;
             document.body.appendChild(anchor);
             anchor.click();
             anchor.remove();
             URL.revokeObjectURL(objectUrl);
-            toast.success("Filled contract download started.");
+            toast.success(
+                docuSignSentDocumentSource === "ach"
+                    ? "ACH PDF download started."
+                    : "Filled contract download started.",
+            );
         } catch (err: unknown) {
             const msg = await parseApiErrorMessageFromAxios(err);
             toast.error(msg || "Could not download filled contract.");
         } finally {
             setDownloadingFilledContract(false);
         }
-    }, [linkedEnvelopeId, applicationIdForLookup]);
+    }, [docuSignPreviewEnvelopeId, docuSignSentDocumentSource, linkedEnvelopeId, applicationIdForLookup]);
 
     const persistContractStateAndFunder = useCallback(
         async (patch: { state?: string | null; funderName?: string | null }) => {
@@ -2001,8 +2237,10 @@ const PDFViewerModal = ({
             ).unwrap();
             invalidateDocuSignDraftSession();
             setDocuSignOpenUrl(null);
+            setSentStepUnlocked(false);
             setSentAt(null);
             contractWasSentRef.current = false;
+            awaitingDocuSignSendRef.current = false;
             pendingCcForSentRef.current = [];
             ccEmailDeliveredRef.current = false;
             invalidateDocuSignPdfCache();
@@ -2119,8 +2357,10 @@ const PDFViewerModal = ({
                 const ownerCountMatchesPrepared =
                     draftPreparedOwnerCountRef.current == null ||
                     draftPreparedOwnerCountRef.current === currentOwnerCount;
+                const isResendAfterSigned = canResendMainContract(resolvedContract, sentAt);
                 /** Always create a fresh envelope when CC is set — reusing an old draft can keep broken recipients. */
                 const draftMatchesSelection =
+                    !isResendAfterSigned &&
                     Boolean(sessionEnv) &&
                     draftPreparedAddendumIdRef.current !== undefined &&
                     (draftPreparedAddendumIdRef.current || "") === (addendumTemplateId || "") &&
@@ -2133,7 +2373,11 @@ const PDFViewerModal = ({
                 let preparedSenderUrl: string | null = null;
 
                 if (!envelopeId) {
-                    if (sessionEnv && !ccListsEqual(toSend, draftPreparedCcRef.current)) {
+                    if (isResendAfterSigned) {
+                        toast.info(
+                            "Creating a new DocuSign envelope to resend the contract.",
+                        );
+                    } else if (sessionEnv && !ccListsEqual(toSend, draftPreparedCcRef.current)) {
                         toast.info(
                             "Creating a new DocuSign draft so CC recipients are configured correctly with the signer.",
                         );
@@ -2173,6 +2417,7 @@ const PDFViewerModal = ({
                         draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
                         draftPreparedSignerRolesRef.current = signerFingerprintForSend;
                         draftPreparedOwnerCountRef.current = currentOwnerCount;
+                        await persistContractEnvelopeHistory(envelopeId, "draft");
                     }
                 }
 
@@ -2214,10 +2459,19 @@ const PDFViewerModal = ({
                 pendingCcForSentRef.current = toSend;
                 ccEmailDeliveredRef.current = false;
 
+                const beginAwaitingDocuSignSend = () => {
+                    awaitingDocuSignSendRef.current = true;
+                    void refreshContractSigningStateRef.current(true, {
+                        syncDocuSign: true,
+                        forceDocuSignSync: true,
+                    });
+                };
+
                 if (docuSignTab) {
                     try {
                         docuSignTab.location.href = senderUrl;
                         setDocuSignOpenUrl(null);
+                        beginAwaitingDocuSignSend();
                         toast.success(
                             "DocuSign opened in a new tab. Click Send there to email signers. CC addresses will receive a contract copy by email once DocuSign marks the envelope sent.",
                             { autoClose: 12000 },
@@ -2231,6 +2485,7 @@ const PDFViewerModal = ({
                 const opened = tryOpenDocuSignSenderUrl(senderUrl);
                 if (!opened) {
                     setDocuSignOpenUrl(senderUrl);
+                    beginAwaitingDocuSignSend();
                     toast.info(
                         "Your browser blocked the DocuSign tab. Click Open DocuSign below (or allow pop-ups for this site).",
                         { autoClose: 12000 },
@@ -2239,6 +2494,7 @@ const PDFViewerModal = ({
                 }
 
                 setDocuSignOpenUrl(null);
+                beginAwaitingDocuSignSend();
                 toast.success(
                     "DocuSign opened in a new tab. Click Send there to email signers. CC addresses will receive a contract copy by email once DocuSign marks the envelope sent.",
                     { autoClose: 12000 },
@@ -2511,6 +2767,17 @@ const PDFViewerModal = ({
     activeStepRef.current = activeStep;
     const sentAtRef = useRef(sentAt);
     sentAtRef.current = sentAt;
+    const sentStepUnlockedRef = useRef(sentStepUnlocked);
+    sentStepUnlockedRef.current = sentStepUnlocked;
+
+    const hydrateSentAtFromContract = useCallback(
+        (contract: Record<string, unknown> | null | undefined) => {
+            if (sentAtRef.current) return;
+            const docSentAt = pickContractEnvelopeDocument(contract)?.sentAt;
+            setSentAt(docSentAt ? new Date(String(docSentAt)) : new Date());
+        },
+        [],
+    );
 
     /** Refresh contract row from CRM; optional DocuSign sync (throttled, sent contracts only). */
     const refreshContractSigningState = useCallback(
@@ -2568,7 +2835,9 @@ const PDFViewerModal = ({
                             ?.application?.document?.envelopeId ?? "",
                     ).trim() ||
                     null;
-                const alreadySent = isContractAlreadySent(c, sentAtRef.current);
+                const alreadySent =
+                    sentStepUnlockedRef.current ||
+                    isContractAlreadySent(c, sentAtRef.current);
                 const onSentStep = activeStepRef.current === "sent";
                 const wantsSync = options?.syncDocuSign === true;
                 const contractStatus = String(c.status ?? "").trim().toUpperCase();
@@ -2580,6 +2849,7 @@ const PDFViewerModal = ({
                     Boolean(envelopeForSync || appId) &&
                     !signingFinished &&
                     (options?.forceDocuSignSync === true ||
+                        awaitingDocuSignSendRef.current ||
                         (alreadySent && onSentStep) ||
                         (!alreadySent && Boolean(envelopeForSync)));
 
@@ -2588,13 +2858,15 @@ const PDFViewerModal = ({
                     const hasPendingCc =
                         pendingCcForSentRef.current.length > 0 ||
                         ccEmailsRef.current.length > 0;
-                    const syncMinInterval = onSentStep
-                        ? ccEmailDeliveredRef.current
-                            ? DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS
-                            : DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
-                        : hasPendingCc
-                          ? DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
-                          : DOCUSIGN_SYNC_MIN_INTERVAL_MS;
+                    const syncMinInterval = awaitingDocuSignSendRef.current
+                        ? DOCUSIGN_AWAITING_SEND_POLL_MS
+                        : onSentStep
+                          ? ccEmailDeliveredRef.current
+                              ? DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS
+                              : DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
+                          : hasPendingCc
+                            ? DOCUSIGN_SYNC_CC_PENDING_INTERVAL_MS
+                            : DOCUSIGN_SYNC_MIN_INTERVAL_MS;
                     if (
                         options?.forceDocuSignSync ||
                         now - lastDocuSignSyncAtRef.current >= syncMinInterval
@@ -2660,12 +2932,19 @@ const PDFViewerModal = ({
                     }
                 }
 
-                const nowSent = isContractAlreadySent(c, sentAtRef.current);
+                const nowSent =
+                    sentStepUnlockedRef.current ||
+                    isContractAlreadySent(c, sentAtRef.current);
                 const statusUpper = String(c.status ?? "").trim().toUpperCase();
                 const prevStatus = prevContractStatusRef.current;
 
+                if (nowSent) {
+                    awaitingDocuSignSendRef.current = false;
+                }
+
                 if (nowSent && !contractWasSentRef.current) {
                     contractWasSentRef.current = true;
+                    setSentStepUnlocked(true);
                     setSentAt(new Date());
                     const cc = mergeWithDefaultCcEmails(
                         pendingCcForSentRef.current.length
@@ -2717,26 +2996,63 @@ const PDFViewerModal = ({
         },
         [applicationIdForLookup, contractId, dispatch],
     );
+    refreshContractSigningStateRef.current = refreshContractSigningState;
+
+    /** Reset sent-step session only when switching to a different contract row. */
+    useEffect(() => {
+        const nextId =
+            contractId != null && Number.isFinite(Number(contractId))
+                ? Number(contractId)
+                : null;
+        const prevId = prevContractIdForSentRef.current;
+        prevContractIdForSentRef.current = nextId;
+        if (prevId === undefined || prevId === nextId) return;
+        awaitingDocuSignSendRef.current = false;
+        setSentStepUnlocked(false);
+        setSentAt(null);
+        contractWasSentRef.current = false;
+    }, [contractId]);
+
+    /** Keep step 4 in sync when contract row refresh shows Sent (e.g. Contracts Generated table). */
+    useEffect(() => {
+        if (!isOpen) return;
+        if (!isContractAlreadySent(resolvedContract, sentAtRef.current)) return;
+        if (!sentStepUnlockedRef.current) {
+            setSentStepUnlocked(true);
+            hydrateSentAtFromContract(resolvedContract);
+        }
+        contractWasSentRef.current = true;
+    }, [isOpen, resolvedContract, hydrateSentAtFromContract]);
 
     /** Once per modal open — not on every contract row refresh (avoids sync-envelope-status storms). */
     useEffect(() => {
         if (!isOpen) {
             contractModalWasOpenRef.current = false;
-            contractWasSentRef.current = false;
+            awaitingDocuSignSendRef.current = false;
             prevContractStatusRef.current = "";
             pendingCcForSentRef.current = [];
             ccEmailDeliveredRef.current = false;
-            setSentAt(null);
+            if (!sentStepUnlockedRef.current) {
+                contractWasSentRef.current = false;
+                setSentAt(null);
+            }
             return;
         }
         if (contractModalWasOpenRef.current) return;
         contractModalWasOpenRef.current = true;
-        contractWasSentRef.current = isContractAlreadySent(resolvedContract, sentAt);
+        const alreadySent =
+            sentStepUnlockedRef.current ||
+            isContractAlreadySent(resolvedContract, sentAtRef.current);
+        if (alreadySent) {
+            setSentStepUnlocked(true);
+            hydrateSentAtFromContract(resolvedContract);
+        }
+        contractWasSentRef.current = alreadySent;
         prevContractStatusRef.current = String(resolvedContract?.status ?? "")
             .trim()
             .toUpperCase();
         void refreshContractSigningState(true, { syncDocuSign: true, forceDocuSignSync: true });
-    }, [isOpen, refreshContractSigningState, resolvedContract, sentAt]);
+    }, [isOpen, refreshContractSigningState, resolvedContract, hydrateSentAtFromContract]);
 
     const envelopeIdForSigningPoll = useMemo(
         () =>
@@ -2759,7 +3075,10 @@ const PDFViewerModal = ({
         const pollMs =
             activeStep === "sent" ? SIGNING_STATUS_CRM_POLL_MS : DOCUSIGN_AWAITING_SEND_POLL_MS;
         const pollId = window.setInterval(() => {
-            void refreshContractSigningState(true, { syncDocuSign: true });
+            void refreshContractSigningState(true, {
+                syncDocuSign: true,
+                forceDocuSignSync: awaitingDocuSignSendRef.current,
+            });
         }, pollMs);
         return () => window.clearInterval(pollId);
     }, [
@@ -2769,6 +3088,19 @@ const PDFViewerModal = ({
         envelopeIdForSigningPoll,
         refreshContractSigningState,
     ]);
+
+    /** When user returns from DocuSign after clicking Send, sync immediately. */
+    useEffect(() => {
+        if (!isOpen || !envelopeIdForSigningPoll) return;
+        const onFocus = () => {
+            void refreshContractSigningState(true, {
+                syncDocuSign: true,
+                forceDocuSignSync: true,
+            });
+        };
+        window.addEventListener("focus", onFocus);
+        return () => window.removeEventListener("focus", onFocus);
+    }, [isOpen, envelopeIdForSigningPoll, refreshContractSigningState]);
 
     const invalidateDocuSignPdfCache = useCallback(() => {
         prefilledPdfCachedForEnvelopeRef.current = null;
@@ -2794,12 +3126,12 @@ const PDFViewerModal = ({
             didSuggestSentTabThisOpenRef.current = false;
             return;
         }
-        if (!isContractAlreadySent(resolvedContract, sentAt)) return;
+        if (!sentStepUnlocked && !isContractAlreadySent(resolvedContract, sentAt)) return;
         if (didSuggestSentTabThisOpenRef.current) return;
         if (activeStep !== "documents") return;
         setActiveStep("sent");
         didSuggestSentTabThisOpenRef.current = true;
-    }, [isOpen, activeStep, resolvedContract, sentAt]);
+    }, [isOpen, activeStep, resolvedContract, sentAt, sentStepUnlocked]);
 
     /** Only one addendum DocuSign template is merged per send — replace any existing addendum mapping. */
     const setAddendumTemplateMapping = useCallback(
@@ -2840,6 +3172,359 @@ const PDFViewerModal = ({
         [effectiveContractId, fetchTemplateMappings],
     );
 
+    /** Only one ACH DocuSign template per contract — replace any existing ACH mapping. */
+    const setAchTemplateMapping = useCallback(
+        async (templateRef: string | null) => {
+            if (effectiveContractId == null) return;
+            const ref = String(templateRef || "").trim();
+            try {
+                const res = await axiosGet(
+                    `/contract/${effectiveContractId}/document-template-mappings`,
+                );
+                const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
+                const achRows = rows.filter(
+                    (row) => String(row.documentType || "").toLowerCase() === "ach",
+                );
+                await Promise.all(
+                    achRows.map((row) =>
+                        axiosDelete(
+                            `/contract/${effectiveContractId}/document-template-mappings/${row.id}`,
+                        ),
+                    ),
+                );
+                if (ref) {
+                    await axiosPost(`/contract/${effectiveContractId}/document-template-mappings`, {
+                        documentType: "ach",
+                        templateRef: ref,
+                    });
+                }
+                await fetchTemplateMappings();
+            } catch (error: any) {
+                setDocumentUploadMessage(error?.message || "Failed to update ACH template.");
+            }
+        },
+        [effectiveContractId, fetchTemplateMappings],
+    );
+
+    const persistAchEnvelopeOnContract = useCallback(
+        async (mappingId: string, envelopeId: string, status = "draft") => {
+            const cid = effectiveContractId;
+            if (cid == null || !Number.isFinite(Number(cid))) return;
+            const rawOverrides =
+                normalizeContractPrefillOverrides(
+                    (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides,
+                ) ?? {};
+            const main = stripDocumentTemplateBlobFromPrefillOverrides(
+                rawOverrides,
+            ) as Record<string, unknown>;
+            const nextEnvelopeBlob = {
+                ...documentTemplateEnvelopeByMappingId,
+                [mappingId]: {
+                    envelopeId,
+                    status,
+                    updatedAt: new Date().toISOString(),
+                },
+            };
+            const sendHistory = upsertDocumentSendHistory(parseDocumentSendHistory(rawOverrides), {
+                envelopeId,
+                documentKind: "ach",
+                label: "ACH Authorization",
+                status,
+                updatedAt: new Date().toISOString(),
+            });
+            const contractPrefillOverrides = {
+                ...main,
+                [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
+                [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: nextEnvelopeBlob,
+                [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
+            };
+            await dispatch(
+                updateContract({
+                    id: Number(cid),
+                    data: { contractPrefillOverrides },
+                }),
+            ).unwrap();
+            const appKey = String(applicationIdForLookup ?? "").trim();
+            if (appKey) {
+                try {
+                    const res = await dispatch(getByApplicationIdContract(appKey)).unwrap();
+                    const contract = (res as { data?: unknown })?.data ?? res;
+                    if (contract && typeof contract === "object") {
+                        setResolvedContract(contract as Record<string, unknown>);
+                    }
+                } catch {
+                    /* ignore */
+                }
+            }
+            onContractDocumentsChanged?.();
+        },
+        [
+            effectiveContractId,
+            resolvedContract,
+            documentTemplateEnvelopeByMappingId,
+            documentTemplatePrefillByMappingId,
+            dispatch,
+            applicationIdForLookup,
+            onContractDocumentsChanged,
+        ],
+    );
+
+    const persistContractEnvelopeHistory = useCallback(
+        async (envelopeId: string, status = "draft") => {
+            const cid = effectiveContractId;
+            if (cid == null || !Number.isFinite(Number(cid))) return;
+            const rawOverrides =
+                normalizeContractPrefillOverrides(
+                    (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides,
+                ) ?? {};
+            const main = stripDocumentTemplateBlobFromPrefillOverrides(
+                rawOverrides,
+            ) as Record<string, unknown>;
+            const sendHistory = upsertDocumentSendHistory(parseDocumentSendHistory(rawOverrides), {
+                envelopeId,
+                documentKind: "contract",
+                label: "Contract",
+                status,
+                updatedAt: new Date().toISOString(),
+            });
+            const contractPrefillOverrides = {
+                ...main,
+                [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
+                [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: documentTemplateEnvelopeByMappingId,
+                [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
+            };
+            await dispatch(
+                updateContract({
+                    id: Number(cid),
+                    data: { contractPrefillOverrides },
+                }),
+            ).unwrap();
+            onContractDocumentsChanged?.();
+        },
+        [
+            effectiveContractId,
+            resolvedContract,
+            documentTemplatePrefillByMappingId,
+            documentTemplateEnvelopeByMappingId,
+            dispatch,
+            onContractDocumentsChanged,
+        ],
+    );
+
+    const handleViewAchFromDocuSign = useCallback(async () => {
+        const mappingId = linkedAchMapping?.id;
+        const envelopeId = String(linkedAchEnvelope?.envelopeId ?? "").trim();
+        if (!mappingId || !envelopeId) {
+            toast.info("Send the ACH form via DocuSign first.");
+            return;
+        }
+        setViewingAchEnvelopeId(envelopeId);
+        try {
+            try {
+                const syncRes = await axiosPost("/docusign/sync-envelope-status", {
+                    envelopeId,
+                });
+                const syncedStatus = String(
+                    (syncRes.data as { internalStatus?: string } | undefined)?.internalStatus ??
+                        "",
+                ).trim();
+                if (syncedStatus && syncedStatus !== linkedAchEnvelope?.status) {
+                    await persistAchEnvelopeOnContract(mappingId, envelopeId, syncedStatus);
+                }
+            } catch {
+                /* non-fatal — still try PDF download */
+            }
+            const res = await axiosGet(`/docusign/download/${encodeURIComponent(envelopeId)}`, {
+                responseType: "blob",
+                timeout: 120000,
+            });
+            const blob = res.data as Blob;
+            if (!blob?.size) {
+                toast.error("DocuSign returned an empty ACH PDF.");
+                return;
+            }
+            if (templatePreviewBlobUrlRef.current) {
+                URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
+            }
+            const url = URL.createObjectURL(blob);
+            templatePreviewBlobUrlRef.current = url;
+            setActivePreview(null);
+            setUploadedPreviewUrl(url);
+            setPdfRightPaneTab("template");
+            const achStatus = String(linkedAchEnvelope?.status ?? "").toUpperCase();
+            const signed = achStatus === "COMPLETED" || achStatus === "SIGNED";
+            setDocumentUploadMessage(
+                signed
+                    ? "Showing signed ACH from DocuSign in the PDF panel →"
+                    : "Showing filled ACH from DocuSign in the PDF panel →",
+            );
+        } catch (error: unknown) {
+            const msg = await parseApiErrorMessageFromAxios(error);
+            toast.error(msg || "Could not load ACH PDF from DocuSign.");
+        } finally {
+            setViewingAchEnvelopeId(null);
+        }
+    }, [
+        linkedAchMapping,
+        linkedAchEnvelope,
+        applicationIdForLookup,
+        persistAchEnvelopeOnContract,
+    ]);
+
+    const handleSendAchViaDocuSign = useCallback(async () => {
+        if (!onPrepareDocuSignDraft) {
+            toast.error("DocuSign is not available for this view.");
+            return;
+        }
+        const achTemplateId = resolveAchTemplateIdForDocuSign();
+        if (!achTemplateId) {
+            toast.info("Select an ACH template before sending.");
+            return;
+        }
+
+        let docuSignTab: Window | null = null;
+        try {
+            setDocuSignOpenUrl(null);
+            docuSignTab = window.open("about:blank", "_blank");
+            if (docuSignTab) {
+                try {
+                    writeDocuSignLoadingTab(docuSignTab.document);
+                } catch {
+                    /* ignore */
+                }
+            }
+            flushSync(() => setIsSendingAch(true));
+
+            const signerRolesForSend = collapseDocuSignRolesToSignerSlots(
+                buildDocuSignRolesForSync(),
+                1,
+            );
+            const signerValidation = validateDocuSignSignerRoles(signerRolesForSend);
+            if (!signerValidation.valid) {
+                const msg =
+                    signerValidation.message ||
+                    "Add signer role names and emails in Contract Signers before sending to DocuSign.";
+                if (docuSignTab) {
+                    try {
+                        writeDocuSignErrorTab(docuSignTab.document, msg);
+                    } catch {
+                        /* ignore */
+                    }
+                }
+                toast.error(msg);
+                return;
+            }
+            const userCc = mergeWithDefaultCcEmails(
+                [...new Set(ccEmails.map((e) => e.trim()).filter(Boolean))],
+            );
+
+            const prepared = await onPrepareDocuSignDraft({
+                ccEmails: userCc,
+                achDocumentRef: achTemplateId,
+                standaloneAchOnly: true,
+                roles: signerRolesForSend,
+            });
+            const envelopeId = String(
+                (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
+            ).trim();
+            const preparedSenderUrl =
+                String((prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "").trim() ||
+                null;
+            if (!envelopeId) {
+                const msg = "Could not create the ACH DocuSign draft.";
+                if (docuSignTab) {
+                    try {
+                        writeDocuSignErrorTab(docuSignTab.document, msg);
+                    } catch {
+                        /* ignore */
+                    }
+                }
+                toast.error(msg);
+                return;
+            }
+            const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
+                envelopeId,
+                userCc,
+                Boolean(preparedSenderUrl),
+                signerRolesForSend,
+            );
+            const senderUrl = senderViewResult.url;
+            if (!senderUrl) {
+                const msg =
+                    senderViewResult.error ||
+                    "ACH draft was created but DocuSign did not return a review URL yet.";
+                if (docuSignTab) {
+                    try {
+                        writeDocuSignErrorTab(docuSignTab.document, msg);
+                    } catch {
+                        /* ignore */
+                    }
+                }
+                toast.error(msg, { autoClose: 12000 });
+                return;
+            }
+
+            if (linkedAchMapping?.id) {
+                await persistAchEnvelopeOnContract(linkedAchMapping.id, envelopeId, "draft");
+            }
+
+            if (docuSignTab) {
+                try {
+                    docuSignTab.location.href = senderUrl;
+                    setDocuSignOpenUrl(null);
+                    toast.success(
+                        "ACH form opened in DocuSign. Review prefilled fields, edit if needed, then click Send.",
+                        { autoClose: 12000 },
+                    );
+                    return;
+                } catch {
+                    /* fall through to popup-blocked fallback */
+                }
+            }
+
+            const opened = tryOpenDocuSignSenderUrl(senderUrl);
+            if (!opened) {
+                setDocuSignOpenUrl(senderUrl);
+                toast.info(
+                    "Your browser blocked the DocuSign tab. Click Open DocuSign below (or allow pop-ups for this site).",
+                    { autoClose: 12000 },
+                );
+                return;
+            }
+
+            setDocuSignOpenUrl(null);
+            toast.success(
+                "ACH form opened in DocuSign. Review prefilled fields, edit if needed, then click Send.",
+                { autoClose: 12000 },
+            );
+        } catch (error: unknown) {
+            const msg =
+                typeof error === "string"
+                    ? error
+                    : (error as Error)?.message || "Failed to prepare ACH form in DocuSign.";
+            if (docuSignTab) {
+                try {
+                    writeDocuSignErrorTab(docuSignTab.document, msg);
+                } catch {
+                    /* ignore */
+                }
+            }
+            toast.error(msg);
+        } finally {
+            setIsSendingAch(false);
+        }
+    }, [
+        onPrepareDocuSignDraft,
+        resolveAchTemplateIdForDocuSign,
+        buildDocuSignRolesForSync,
+        ccEmails,
+        fetchDocuSignSenderViewUrlWithRetry,
+        linkedAchMapping,
+        persistAchEnvelopeOnContract,
+    ]);
+
     const handlePreviewBoldSignTemplate = useCallback(
         async (row: ContractDocumentTemplateMappingRow) => {
             if (!boldSignTemplateIsPreviewable(row?.template)) {
@@ -2862,10 +3547,8 @@ const PDFViewerModal = ({
                 templatePreviewBlobUrlRef.current = url;
                 setActivePreview(null);
                 setUploadedPreviewUrl(url);
-                if (
-                    String(row.documentType || "").toLowerCase() === "addendum" &&
-                    mappingRef
-                ) {
+                const docType = String(row.documentType || "").toLowerCase();
+                if (docType === "addendum" && mappingRef) {
                     setSelectedAddendumOption(`bs:${mappingRef}`);
                 }
                 setDocumentUploadMessage(
@@ -2948,6 +3631,22 @@ const PDFViewerModal = ({
         addendumTemplateMappings,
         linkedAddendumMapping,
         fetchTemplateMappings,
+    ]);
+
+    /** Auto-link the single ACH template when the contract modal opens. */
+    useEffect(() => {
+        if (!isOpen || effectiveContractId == null || loadingTemplateMappings) return;
+        if (linkedAchMapping) return;
+        const ref = getBoldSignTemplateMappingRef(primaryAchTemplate);
+        if (!ref) return;
+        void setAchTemplateMapping(ref);
+    }, [
+        isOpen,
+        effectiveContractId,
+        loadingTemplateMappings,
+        linkedAchMapping,
+        primaryAchTemplate,
+        setAchTemplateMapping,
     ]);
 
     // Reset preview to contract when leaving Documents tab
@@ -3960,7 +4659,9 @@ const PDFViewerModal = ({
                                 const infoGreenActive = onInfo || onSummary || onSent;
                                 const summaryGreenActive = onSummary || onSent;
                                 const sentGreenActive = onSent;
-                                const canOpenSentStep = isContractAlreadySent(resolvedContract, sentAt);
+                                const canOpenSentStep =
+                                    sentStepUnlocked ||
+                                    isContractAlreadySent(resolvedContract, sentAt);
 
                                 const circleDone = "w-5 h-5 shrink-0 rounded-full border-2 border-[#276D9C] bg-[#276D9C]/10 text-[#276D9C] flex items-center justify-center text-[10px]";
                                 const circleCurrent = "w-5 h-5 shrink-0 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-semibold";
@@ -4086,14 +4787,87 @@ const PDFViewerModal = ({
 
                                 {activeStep === "documents" && (
                                     <section className="space-y-3 border rounded-lg p-4 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/40">
-                                        <div className="flex items-center justify-between">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
                                             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                                                 Upload Documents
                                             </h3>
-                                            <p className="text-[11px] text-slate-500">
-                                                Drag &amp; drop or click — uploads start automatically.
-                                            </p>
+                                            <div className="flex flex-wrap items-center justify-end gap-2">
+                                                {showRequestDocuments ? (
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        size="sm"
+                                                        onClick={() => setIsRequestModalOpen(true)}
+                                                        className="h-8 border-[#CA8A03] px-3 text-xs font-medium text-[#CA8A03] hover:bg-[#CA8A03]/10"
+                                                    >
+                                                        <Send className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                                                        Request documents
+                                                    </Button>
+                                                ) : null}
+                                                <p className="text-[11px] text-slate-500">
+                                                    Drag &amp; drop or click — uploads start automatically.
+                                                </p>
+                                            </div>
                                         </div>
+
+                                        {showRequestDocuments ? (
+                                            <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-600 dark:bg-slate-900/50">
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
+                                                        Document requests
+                                                    </p>
+                                                    {documentRequestsLoading ? (
+                                                        <span className="text-[11px] text-slate-500">
+                                                            Loading…
+                                                        </span>
+                                                    ) : null}
+                                                </div>
+
+                                                {pendingDocumentRequests.length > 0 ? (
+                                                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900/50 dark:bg-amber-950/20">
+                                                        <p className="mb-2 text-xs font-medium text-amber-900 dark:text-amber-200">
+                                                            Pending — upload matching files below
+                                                        </p>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {pendingDocumentRequests.map((doc, index) => (
+                                                                <span
+                                                                    key={`pending-${doc.name}-${index}`}
+                                                                    className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-950 dark:border-amber-800/60 dark:bg-[#111827] dark:text-amber-100"
+                                                                >
+                                                                    {formatRequiredDocName(doc.name)}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ) : null}
+
+                                                {completedDocumentRequests.length > 0 ? (
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {completedDocumentRequests.map((doc, index) => (
+                                                            <span
+                                                                key={`complete-${doc.name}-${index}`}
+                                                                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-200"
+                                                            >
+                                                                {formatRequiredDocName(doc.name)} — received
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                ) : null}
+
+                                                {!documentRequestsLoading &&
+                                                pendingDocumentRequests.length === 0 &&
+                                                completedDocumentRequests.length === 0 ? (
+                                                    <p className="text-xs text-slate-500">
+                                                        No requests yet. Click{" "}
+                                                        <span className="font-medium text-[#CA8A03]">
+                                                            Request documents
+                                                        </span>{" "}
+                                                        above to notify the agent.
+                                                    </p>
+                                                ) : null}
+                                            </div>
+                                        ) : null}
+
                                         <div className="space-y-2">
                                             {requiredDocumentRows.map(({ key, label, inputRef }) => {
                                                 const uploadedFile = uploadedDocumentByTypeKey.get(
@@ -4792,6 +5566,158 @@ const PDFViewerModal = ({
                                                     </div>
                                                 </>
                                             ) : null}
+                                        </div>
+
+                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                            <div className="mb-3 flex items-start justify-between gap-2">
+                                                <div className="flex min-w-0 items-start gap-2.5">
+                                                    <div
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        aria-hidden
+                                                    >
+                                                        <Landmark className="h-4 w-4" />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                            ACH Authorization
+                                                        </h4>
+                                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                            Prefill, edit, and send the ACH authorization via DocuSign.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                {linkedAchMapping ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#276D9C]/10 px-2.5 py-0.5 text-[10px] font-medium text-[#276D9C] ring-1 ring-[#276D9C]/20 dark:bg-[#276D9C]/20 dark:text-[#5a9fd4] dark:ring-[#276D9C]/30">
+                                                        <CheckCircle2 className="h-3 w-3" aria-hidden />
+                                                        Ready
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                            {linkedAchMapping ? (
+                                                <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-[#276D9C]/20 bg-gradient-to-r from-[#276D9C]/5 to-white px-2.5 py-2.5 shadow-sm dark:border-slate-600 dark:from-[#276D9C]/10 dark:to-slate-900/80">
+                                                    <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
+                                                        <div
+                                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C] text-white shadow-sm"
+                                                            aria-hidden
+                                                        >
+                                                            <FileText className="h-4 w-4" />
+                                                        </div>
+                                                        <div className="min-w-0">
+                                                            <span className="inline-flex rounded-full bg-[#276D9C]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                                ACH
+                                                            </span>
+                                                            <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                                                                {formatDropdownLabel(
+                                                                    linkedAchMapping?.template?.name ||
+                                                                        primaryAchTemplate?.name ||
+                                                                        linkedAchMapping?.templateId ||
+                                                                        "ACH Authorization",
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex shrink-0 items-center gap-0.5">
+                                                        <Button
+                                                            type="button"
+                                                            size="icon"
+                                                            variant="ghost"
+                                                            className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                            title="Blank ACH template PDF"
+                                                            disabled={previewingTemplateId === String(linkedAchMapping.id)}
+                                                            onClick={() =>
+                                                                void handlePreviewBoldSignTemplate(linkedAchMapping)
+                                                            }
+                                                        >
+                                                            {previewingTemplateId === String(linkedAchMapping.id) ? (
+                                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                            ) : (
+                                                                <Eye className="h-3.5 w-3.5" />
+                                                            )}
+                                                        </Button>
+                                                        {linkedAchEnvelope?.envelopeId ? (
+                                                            <Button
+                                                                type="button"
+                                                                size="icon"
+                                                                variant="ghost"
+                                                                className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                title="View filled or signed ACH from DocuSign"
+                                                                disabled={
+                                                                    viewingAchEnvelopeId ===
+                                                                    linkedAchEnvelope.envelopeId
+                                                                }
+                                                                onClick={() => void handleViewAchFromDocuSign()}
+                                                            >
+                                                                {viewingAchEnvelopeId ===
+                                                                linkedAchEnvelope.envelopeId ? (
+                                                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                ) : (
+                                                                    <FileSignature className="h-3.5 w-3.5" />
+                                                                )}
+                                                            </Button>
+                                                        ) : null}
+                                                        <Button
+                                                            type="button"
+                                                            size="icon"
+                                                            variant="ghost"
+                                                            className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                            title="Edit ACH prefill fields"
+                                                            onClick={() => setTemplateMappingPrefillEditRow(linkedAchMapping)}
+                                                        >
+                                                            <Pencil className="h-3.5 w-3.5" />
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <p className="mb-3 text-[11px] text-slate-500 dark:text-slate-400">
+                                                    ACH form is not configured. Add one BoldSignTemplate row with type{" "}
+                                                    <span className="font-mono text-[10px]">ach</span>,{" "}
+                                                    <span className="font-mono text-[10px]">layoutKey=ach_authorization</span>, and a Cloudinary{" "}
+                                                    <span className="font-mono text-[10px]">pdfUrl</span>.
+                                                </p>
+                                            )}
+                                            {linkedAchEnvelope?.envelopeId ? (
+                                                <p className="mb-2 text-[11px] text-slate-500 dark:text-slate-400">
+                                                    DocuSign envelope saved. Use the{" "}
+                                                    <FileSignature className="inline h-3 w-3 align-text-bottom text-[#276D9C]" />{" "}
+                                                    button to view the filled or signed ACH in the PDF panel →
+                                                    {linkedAchEnvelope.status ? (
+                                                        <span className="ml-1 font-medium text-[#276D9C]">
+                                                            (
+                                                            {["COMPLETED", "SIGNED"].includes(
+                                                                String(
+                                                                    linkedAchEnvelope.status,
+                                                                ).toUpperCase(),
+                                                            )
+                                                                ? "Signed"
+                                                                : String(
+                                                                      linkedAchEnvelope.status,
+                                                                  ).toUpperCase() === "SENT" ||
+                                                                    String(
+                                                                        linkedAchEnvelope.status,
+                                                                    ).toUpperCase() === "DELIVERED"
+                                                                  ? "Sent"
+                                                                  : "Draft"}
+                                                            )
+                                                        </span>
+                                                    ) : null}
+                                                </p>
+                                            ) : null}
+                                            <Button
+                                                type="button"
+                                                variant="default"
+                                                className={`w-full ${DOCUSIGN_PRIMARY_BTN_CLASS}`}
+                                                disabled={!linkedAchMapping || isSendingAch || !onPrepareDocuSignDraft}
+                                                onClick={() => void handleSendAchViaDocuSign()}
+                                            >
+                                                {isSendingAch ? (
+                                                    <>
+                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                        Preparing ACH in DocuSign…
+                                                    </>
+                                                ) : (
+                                                    "Send ACH via DocuSign"
+                                                )}
+                                            </Button>
                                         </div>
 
 
@@ -6095,16 +7021,16 @@ const PDFViewerModal = ({
                                                             Sent successfully
                                                         </p>
                                                         <h3 className="mt-1 text-lg font-semibold tracking-tight">
-                                                            {String(resolvedContract?.status ?? "").toUpperCase() ===
-                                                            "COMPLETED"
+                                                            {canResendContract
                                                                 ? "Contract fully signed"
                                                                 : "Contract is on its way for signature"}
                                                         </h3>
                                                         <p className="mt-1 text-sm leading-relaxed text-white/85">
-                                                            {String(resolvedContract?.status ?? "").toUpperCase() ===
-                                                            "COMPLETED"
-                                                                ? "All signers completed. The PDF on the right includes signatures."
-                                                                : "The DocuSign envelope was sent. Status and PDF refresh automatically."}
+                                                            {canResendContract
+                                                                ? "All signers completed. Use Resend contract below to start a new envelope, or view the signed PDF on the right."
+                                                                : isContractOutForSignature
+                                                                  ? "Signers have an open envelope. Void the contract to send again, or wait until signing completes."
+                                                                  : "The DocuSign envelope was sent. Status and contract details refresh automatically."}
                                                         </p>
                                                     </div>
                                                 </div>
@@ -6118,6 +7044,9 @@ const PDFViewerModal = ({
                                                     </div>
                                                     <p className="break-words text-sm font-semibold text-slate-900 dark:text-slate-100">
                                                         {fileName || "Contract PDF"}
+                                                    </p>
+                                                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                                                        Status: {latestEnvelopeStatusLabel}
                                                     </p>
                                                 </div>
                                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
@@ -6138,6 +7067,40 @@ const PDFViewerModal = ({
                                                             }
                                                             return "—";
                                                         })()}
+                                                    </p>
+                                                </div>
+                                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
+                                                    <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                        Envelope ID
+                                                    </div>
+                                                    <p className="break-all text-xs font-medium text-slate-900 dark:text-slate-100">
+                                                        {String(
+                                                            pickContractEnvelopeDocument(resolvedContract)
+                                                                ?.envelopeId ??
+                                                                linkedEnvelopeId ??
+                                                                sessionEnvelopeId ??
+                                                                "—",
+                                                        )}
+                                                    </p>
+                                                </div>
+                                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
+                                                    <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                                                        Funder / State
+                                                    </div>
+                                                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                        {[
+                                                            resolvedContract?.funderName,
+                                                            selectedFunder,
+                                                        ]
+                                                            .map((v) => String(v ?? "").trim())
+                                                            .find(Boolean) || "—"}
+                                                        {" · "}
+                                                        {[
+                                                            resolvedContract?.state,
+                                                            selectedState,
+                                                        ]
+                                                            .map((v) => String(v ?? "").trim())
+                                                            .find(Boolean) || "—"}
                                                     </p>
                                                 </div>
                                             </div>
@@ -6201,7 +7164,11 @@ const PDFViewerModal = ({
 
                                             </div>
                                             {(() => {
-                                                const status = String(resolvedContract?.status ?? "").trim().toUpperCase();
+                                                const status = String(
+                                                    resolveLatestEnvelopeStatus(resolvedContract) || "",
+                                                )
+                                                    .trim()
+                                                    .toUpperCase();
                                                 const chain = [
                                                     { key: "SENT", label: "Sent", hint: "Envelope sent" },
                                                     { key: "VIEWED", label: "Viewed", hint: "Signer opened" },
@@ -6223,7 +7190,7 @@ const PDFViewerModal = ({
                                                     <div className="space-y-3">
                                                         <div className="flex flex-wrap items-center gap-2">
                                                             <span className="inline-flex items-center rounded-full bg-[#276D9C]/12 px-3 py-1 text-xs font-semibold text-[#276D9C]">
-                                                                {formatContractSigningStatusLabel(resolvedContract?.status)}
+                                                                {latestEnvelopeStatusLabel}
                                                             </span>
                                                         </div>
                                                         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 dark:border-slate-700 dark:bg-slate-900/60">
@@ -6330,6 +7297,52 @@ const PDFViewerModal = ({
                                             </p>
                                         </div>
 
+                                        <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                            <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                Latest contract details
+                                            </h3>
+                                            {dealReviewFields.length > 0 ? (
+                                                <div className="mb-4 grid max-h-64 grid-cols-2 gap-x-4 gap-y-2 overflow-y-auto text-sm">
+                                                    {dealReviewFields.map((field) => (
+                                                        <Fragment key={field.id}>
+                                                            <div className="text-slate-500 dark:text-slate-400">
+                                                                {field.label}
+                                                            </div>
+                                                            <div className="font-medium break-all text-slate-900 dark:text-slate-100">
+                                                                {formatDisplayValueForUs(
+                                                                    field.id || field.label || "",
+                                                                    field.value,
+                                                                )}
+                                                            </div>
+                                                        </Fragment>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <p className="mb-4 text-xs text-slate-500 dark:text-slate-400">
+                                                    No prefill details loaded yet. Click refresh on signing status
+                                                    above.
+                                                </p>
+                                            )}
+                                            {offerDecisionSummaryRows.length > 0 ? (
+                                                <>
+                                                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-[#276D9C]">
+                                                        Offer decision
+                                                    </h4>
+                                                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                                                        {offerDecisionSummaryRows.map((field) => (
+                                                            <Fragment key={field.label}>
+                                                                <div className="text-slate-500 dark:text-slate-400">
+                                                                    {field.label}
+                                                                </div>
+                                                                <div className="font-medium break-all text-slate-900 dark:text-slate-100">
+                                                                    {field.value}
+                                                                </div>
+                                                            </Fragment>
+                                                        ))}
+                                                    </div>
+                                                </>
+                                            ) : null}
+                                        </div>
 
                                     </section>
                                 )}
@@ -6394,13 +7407,38 @@ const PDFViewerModal = ({
                                             }`}
                                         onClick={() => setPdfRightPaneTab("docusign")}
                                     >
-                                        {String(resolvedContract?.status ?? "").toUpperCase() ===
-                                        "COMPLETED"
-                                            ? "Signed contract"
-                                            : "DocuSign envelope"}
+                                        {docuSignSentDocumentSource === "ach"
+                                            ? "ACH envelope"
+                                            : String(resolvedContract?.status ?? "").toUpperCase() ===
+                                                "COMPLETED"
+                                              ? "Signed contract"
+                                              : "DocuSign envelope"}
                                     </button>
                                 ) : null}
                             </div>
+                            {showDocuSignContractTab &&
+                            pdfRightPaneTab === "docusign" &&
+                            linkedAchEnvelope?.envelopeId ? (
+                                <Select
+                                    value={docuSignSentDocumentSource}
+                                    onValueChange={(value: DocuSignSentDocumentSource) => {
+                                        setDocuSignSentDocumentSource(value);
+                                        prefilledPdfCachedForEnvelopeRef.current = null;
+                                        prefilledBoldSignPdfUrlRef.current = null;
+                                    }}
+                                >
+                                    <SelectTrigger
+                                        className="h-8 w-[9.5rem] shrink-0 border-slate-500 bg-slate-800/90 text-[11px] text-white"
+                                        aria-label="Sent document to preview"
+                                    >
+                                        <SelectValue placeholder="Document" />
+                                    </SelectTrigger>
+                                    <SelectContent position="popper" className="z-[10100]">
+                                        <SelectItem value="contract">Contract</SelectItem>
+                                        <SelectItem value="ach">ACH</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            ) : null}
                             {canDownloadFilledContract ? (
                                 <Button
                                     type="button"
@@ -6435,7 +7473,9 @@ const PDFViewerModal = ({
                                     <div className="absolute inset-0 flex min-h-[200px] items-center justify-center bg-white px-4 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                                         {prefilledBoldSignPdfHint
                                             ? prefilledBoldSignPdfHint
-                                              : "DocuSign PDF appears on step 4 (Sent) after the envelope is sent."}
+                                              : docuSignSentDocumentSource === "ach"
+                                                ? "ACH PDF appears here after the ACH envelope is sent in DocuSign."
+                                                : "DocuSign PDF appears on step 4 (Sent) after the contract envelope is sent."}
                                     </div>
                                 )}
                             </div>
@@ -6586,7 +7626,17 @@ const PDFViewerModal = ({
                                     {isCancellingContract ? "Voiding contract…" : "Void Contract"}
                                 </Button>
                             ) : null}
-                            {activeStep === "sent" && !canCancelSentContract ? (
+                            {showResendContractOnSentStep ? (
+                                <Button
+                                    type="button"
+                                    variant="default"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    onClick={handleSend}
+                                    disabled={isSending || isCancellingContract}
+                                >
+                                    {isSending ? "Preparing DocuSign…" : "Resend contract"}
+                                </Button>
+                            ) : activeStep === "sent" && !canCancelSentContract ? (
                                     <Button
                                         type="button"
                                         variant="default"
@@ -6630,7 +7680,7 @@ const PDFViewerModal = ({
                                     onClick={handleSend}
                                     disabled={isSending || isCancellingContract}
                                 >
-                                    {isSending ? "Preparing DocuSign…" : "Review & send in DocuSign"}
+                                    {isSending ? "Preparing DocuSign…" : docuSignPrimaryActionLabel}
                                 </Button>
                             ) : null}
                             </div>
@@ -6721,6 +7771,7 @@ const PDFViewerModal = ({
                 applicationUuid={applicationIdForLookup}
                 applicationData={applicationData}
                 resolvedContract={resolvedContract}
+                contractRecords={contractPrefillRecords}
                 agreementDate={formatDate(new Date())}
                 documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
                 mainPrefillOverrides={mainPrefillOverridesForTemplateDialog}
@@ -6730,6 +7781,20 @@ const PDFViewerModal = ({
                     void reloadContractPrefillSnapshots();
                 }}
             />
+            {showRequestDocuments ? (
+                <RequestMissingDocumentsModal
+                    open={isRequestModalOpen}
+                    onOpenChange={setIsRequestModalOpen}
+                    variant="request"
+                    onSuccess={() => {
+                        if (applicationIdForLookup) {
+                            void dispatch(
+                                getDocumentRequestsByApplication(applicationIdForLookup),
+                            );
+                        }
+                    }}
+                />
+            ) : null}
         </>
     );
 };

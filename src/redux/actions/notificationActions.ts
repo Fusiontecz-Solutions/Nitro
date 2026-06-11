@@ -6,6 +6,11 @@ export interface SendDocumentRequestPayload {
     requestedDocuments: string[];
     requestAdditional?: boolean;
     reason?: string;
+    /** Primary ISO recipient (editable in UI). */
+    isoEmail?: string;
+    /** Extra To addresses besides ISO. */
+    additionalToEmails?: string[];
+    ccEmails?: string[];
 }
 
 export interface NotifyFinalUnderwriterPayload {
