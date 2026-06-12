@@ -11,17 +11,11 @@ import {
 } from '../services/fundingCallDisbursementSideEffects';
 import { sendDocumentRequestEmail } from '../services/emailService';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
-
-const DOCUMENT_REQUEST_LABELS: Record<string, string> = {
-    'bank-statements': 'Bank Statements - 12 months',
-    'additional-id': 'Additional ID Proof',
-    'business-license': 'Business License',
-    'proof-of-address': 'Proof of Address',
-    'financial-statement': 'Financial Statement',
-    'voided-check': 'Voided Check',
-    'tax-returns': 'Tax Returns- Last 2 Years',
-    'articles-of-incorporation': 'Articles of Incorporations',
-};
+import {
+    DOCUMENT_REQUEST_LABELS,
+    documentRequestDisplayLabel,
+    isDocumentRequestFulfilled,
+} from '../utils/documentRequestMatch';
 
 function parseEmailList(value: unknown): string[] {
     if (value == null) return [];
@@ -453,16 +447,16 @@ class NotificationController {
             let documentRequestEmailError: string | undefined;
             if (emailTo.length > 0) {
                 const numericAppId = (application as any).applicationId;
-                const fallbackId = (application as any).id;
                 const feBase = resolveCrmFrontendBaseUrl() || '';
-                const viewApplicationUrl = feBase
-                    ? `${feBase.replace(/\/$/, '')}/applications/${numericAppId || fallbackId}`
-                    : undefined;
+                const viewApplicationUrl =
+                    feBase && numericAppId != null && String(numericAppId).trim() !== ''
+                        ? `${feBase.replace(/\/$/, '')}/application-details/${numericAppId}/documents`
+                        : undefined;
                 const emailResult = await sendDocumentRequestEmail({
                     to: emailTo,
                     cc: ccList,
                     isoName: String((application as any)?.iso?.name || '').trim() || undefined,
-                    applicationNumber: numericAppId || fallbackId || 'N/A',
+                    applicationNumber: numericAppId != null ? numericAppId : 'N/A',
                     clientName,
                     requestedDocuments: documentLabels,
                     requestAdditional: requestAdditional || false,
@@ -1101,6 +1095,11 @@ class NotificationController {
                     applicationId: application.id,
                     type: 'document_request',
                 },
+                include: {
+                    createdBy: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                },
                 orderBy: { createdAt: 'desc' },
             });
 
@@ -1113,16 +1112,15 @@ class NotificationController {
 
                 // Specific document requests
                 requestedDocs.forEach((docName: string) => {
-                    const isUploaded = application.files?.some((file: any) => {
-                        const fileName = file.originalName?.toLowerCase() || '';
-                        const docNameLower = docName.toLowerCase();
-                        return fileName.includes(docNameLower) || docNameLower.includes(fileName.split('.')[0]);
-                    });
+                    const isUploaded = isDocumentRequestFulfilled(docName, application.files);
 
-                    if (
-                        !documentMap.has(docName) ||
-                        (documentMap.get(docName)?.createdAt && notification.createdAt > documentMap.get(docName)!.createdAt)
-                    ) {
+                    const existing = documentMap.get(docName);
+                    const shouldReplace =
+                        !existing ||
+                        (existing.status === 'Pending' && isUploaded) ||
+                        notification.createdAt > existing.createdAt;
+
+                    if (shouldReplace) {
                         documentMap.set(docName, {
                             status: isUploaded ? 'Complete' : 'Pending',
                             createdAt: notification.createdAt,
@@ -1144,11 +1142,23 @@ class NotificationController {
             });
 
             // Convert map to array, then append general requests (Final Underwriter send-back)
+            const mapRequestUser = (user: any) =>
+                user
+                    ? {
+                          _id: user.id,
+                          id: user.id,
+                          firstName: user.firstName,
+                          lastName: user.lastName,
+                          email: user.email,
+                      }
+                    : undefined;
+
             const documents = Array.from(documentMap.entries()).map(([name, data]) => ({
                 name,
+                label: documentRequestDisplayLabel(name),
                 status: data.status,
                 createdAt: data.createdAt,
-                requestedBy: data.requestedBy,
+                requestedBy: mapRequestUser(data.requestedBy),
                 message: data.message,
             }));
 

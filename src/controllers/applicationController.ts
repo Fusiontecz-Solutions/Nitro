@@ -60,6 +60,7 @@ import {
 } from '../services/emailService';
 import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
+import { notifyDocumentRequestRecipientsOnUpload } from '../services/documentRequestNotificationService';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 import { generateNextDealId } from '../utils/generateNextDealId';
 import {
@@ -1206,6 +1207,19 @@ class ApplicationController {
                 });
             } catch (logError) {
                 console.error('Failed to create activity log for file upload:', logError);
+            }
+
+            try {
+                const authUserForNotify = getAuthenticatedUser(req);
+                await notifyDocumentRequestRecipientsOnUpload({
+                    applicationId: updatedApplicationRecord.id,
+                    applicationNumber: updatedApplicationRecord.applicationId,
+                    uploaderUserId: authUserForNotify?.id ?? null,
+                    filesBefore: (application as { files?: Array<{ originalName?: string | null }> }).files || [],
+                    filesAfter: updatedApplicationRecord.files || [],
+                });
+            } catch (notifyError) {
+                console.error('Failed to notify document request recipients on upload:', notifyError);
             }
 
             return res.status(200).json({

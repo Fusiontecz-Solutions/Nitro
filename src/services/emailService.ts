@@ -1418,9 +1418,7 @@ export async function sendDocumentRequestEmail({
     const safeIso = isoName?.trim() || 'there';
     const appLabel = applicationNumber != null ? String(applicationNumber) : 'N/A';
     const subject = `Document request — Application #${appLabel} (${clientName})`;
-    const overviewUrl = viewApplicationUrl
-        ? withApplicationDetailsOverviewHref(viewApplicationUrl)
-        : undefined;
+    const uploadUrl = (viewApplicationUrl || '').trim() || undefined;
     const noteBlock = note?.trim()
         ? `<p style="margin:16px 0 0;"><strong>Note from underwriting:</strong><br/>${note
               .trim()
@@ -1443,11 +1441,11 @@ export async function sendDocumentRequestEmail({
     </ul>
     ${noteBlock}
     ${
-        overviewUrl
-            ? `<p style="margin:24px 0 0;"><a href="${overviewUrl}" style="display:inline-block;background:#276D9C;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600;">View application</a></p>`
+        uploadUrl
+            ? `<p style="margin:24px 0 0;"><a href="${uploadUrl}" style="display:inline-block;background:#276D9C;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600;">Upload requested documents</a></p>`
             : ''
     }
-    <p style="margin:24px 0 0;font-size:12px;color:#6B7280;">Please upload the requested files in the CRM Documents tab for this application.</p>
+    <p style="margin:24px 0 0;font-size:12px;color:#6B7280;">Open the link above, go to the Documents tab, and upload each requested file. The CRM will mark items as received once uploaded.</p>
   </div>
 </body>
 </html>`;
