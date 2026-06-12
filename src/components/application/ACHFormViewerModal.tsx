@@ -53,11 +53,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 const DOCUSIGN_PRIMARY_BTN_CLASS =
     "h-9 shrink-0 cursor-pointer border-0 bg-[#276D9C] px-6 text-white shadow-sm hover:bg-[#276D9C]/90 focus-visible:ring-[#276D9C]/40";
 
-const DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS = {
-    existing: [0, 800, 1600, 2600],
-    justCreated: [400, 1100, 2200, 3400],
-} as const;
-
 const ACH_STATUS_POLL_MS = 20_000;
 
 const ACH_TERMINAL_VOID_STATUSES = new Set(["revoked", "voided", "declined", "expired"]);
@@ -677,7 +672,7 @@ export default function ACHFormViewerModal({
 
     return (
         <>
-            <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+            <Dialog open={isOpen} onOpenChange={(open: boolean) => !open && onClose()}>
                 <DialogContent className="flex h-[min(94vh,calc(100dvh-1.5rem))] max-h-[min(94vh,calc(100dvh-1.5rem))] min-h-0 w-[1400px] max-w-[95vw] flex-col gap-0 overflow-hidden bg-white p-0 dark:bg-slate-900 dark:text-slate-100">
                     <div className="flex shrink-0 flex-col border-b bg-white px-6 py-3 dark:border-slate-700 dark:bg-slate-900">
                         <DialogTitle className="text-lg font-bold text-slate-900 dark:text-slate-100">

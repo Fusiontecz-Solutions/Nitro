@@ -137,9 +137,6 @@ import {
     DOCUMENT_SEND_HISTORY_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
-    canPreviewFilledOrSignedEnvelope,
-    formatDocumentSendStatusLabel,
-    getDocumentSendStatusCapsuleClasses,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
@@ -167,10 +164,7 @@ import {
     type ContractSignerOverrideRow,
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
-import {
-    collapseDocuSignRolesToSignerSlots,
-    resolveActiveOwnerCount,
-} from "./contractdata/contractPartyCounts";
+import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
 import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
