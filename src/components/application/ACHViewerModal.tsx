@@ -4,11 +4,11 @@ import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import {
+    Eye,
     FileText,
     Landmark,
     Loader2,
     Pencil,
-    RefreshCw,
 } from "lucide-react";
 import { toast } from "react-toastify";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -16,14 +16,14 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import { DocuSignSigningStatusPanel } from "./contractdata/DocuSignSigningStatusPanel";
+import { resolveAchSigningStepperState } from "./contractdata/achSigningStatusStepper";
 import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract } from "@/redux/actions/contractActions";
 import { mergeContractCcEmailList } from "./boldsignCcList";
 import {
-    achCapsuleClassName,
     canResendAchAuthorization,
     canVoidAchAuthorization,
-    formatAchAuthorizationCapsuleLabel,
     mergeAchAuthorizationDocuSignIntoPrefill,
     parseAchAuthorizationDocuSignFromPrefill,
     type AchAuthorizationDocuSignCapsuleStatus,
@@ -45,7 +45,7 @@ import {
     TemplateMappingPrefillEditDialog,
     type TemplateMappingPrefillEditRow,
 } from "./contractdata/TemplateMappingPrefillEditDialog";
-import { formatDate, formatDateTimeUS } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 import {
     DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS,
     navigateDocuSignTab,
@@ -108,7 +108,7 @@ function AchInlinePdfViewer({ fileUrl }: { fileUrl: string }) {
         if (!el) return;
         const measure = () => {
             const w = el.clientWidth;
-            if (w > 0) setPageWidth(Math.max(280, w - 24));
+            if (w > 0) setPageWidth(Math.max(280, w - 16));
         };
         measure();
         const ro = new ResizeObserver(measure);
@@ -117,7 +117,10 @@ function AchInlinePdfViewer({ fileUrl }: { fileUrl: string }) {
     }, []);
 
     return (
-        <div ref={wrapRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-slate-100 dark:bg-slate-950">
+        <div
+            ref={wrapRef}
+            className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-slate-100 dark:bg-slate-950"
+        >
             <Document
                 file={fileUrl}
                 onLoadSuccess={({ numPages: n }) => setNumPages(n)}
@@ -131,7 +134,7 @@ function AchInlinePdfViewer({ fileUrl }: { fileUrl: string }) {
                         Could not render this PDF.
                     </div>
                 }
-                className="flex w-full flex-col items-center gap-3 py-3"
+                className="flex w-full flex-col gap-3 px-2 py-3"
             >
                 {numPages
                     ? Array.from({ length: numPages }, (_, i) => (
@@ -139,7 +142,7 @@ function AchInlinePdfViewer({ fileUrl }: { fileUrl: string }) {
                               key={i + 1}
                               pageNumber={i + 1}
                               width={pageWidth}
-                              className="bg-white shadow-md"
+                              className="max-w-full bg-white shadow-md"
                               renderTextLayer
                               renderAnnotationLayer
                           />
@@ -181,6 +184,7 @@ export default function ACHViewerModal({
     const [statusRefreshing, setStatusRefreshing] = useState(false);
     const [isVoiding, setIsVoiding] = useState(false);
     const [sessionEnvelopeId, setSessionEnvelopeId] = useState<string | null>(null);
+    const [lastSigningStatusSyncAt, setLastSigningStatusSyncAt] = useState<Date | null>(null);
     const modalWasOpenRef = useRef(false);
 
     const contractPrefillFromDb = useMemo(
@@ -222,10 +226,6 @@ export default function ACHViewerModal({
     const hasFilledPdf = Boolean(linkedEnvelopeId);
     const isSigned = achCapsuleStatus === "SIGNED";
     const isVoided = achCapsuleStatus === "VOIDED";
-    const showStatusCapsule =
-        hasFilledPdf && achCapsuleStatus !== "DRAFT" && achCapsuleStatus !== "VOIDED"
-            ? true
-            : isVoided;
     const canVoidAch =
         !readOnly && canVoidAchAuthorization(achAuthorizationDocuSign, sessionEnvelopeId);
     const canResendAch =
@@ -241,6 +241,16 @@ export default function ACHViewerModal({
         !readOnly && Boolean(onPrepareDocuSignDraft) && !hasFilledPdf;
     const canReviewAndSend = canResendAch || canContinueDraft || canInitialSend;
 
+    const achSigningStepper = useMemo(
+        () => resolveAchSigningStepperState(achCapsuleStatus, hasFilledPdf),
+        [achCapsuleStatus, hasFilledPdf],
+    );
+
+    const achCrmUpdatedAt =
+        achAuthorizationDocuSign?.updatedAt ??
+        (resolvedContract as { updatedAt?: unknown } | null)?.updatedAt ??
+        null;
+
     const templateLabel = useMemo(() => {
         const key = String(
             linkedAchMapping?.template?.layoutKey ??
@@ -253,6 +263,24 @@ export default function ACHViewerModal({
             "ACH Authorization"
         );
     }, [linkedAchMapping]);
+
+    const headerEntityLabel = useMemo(() => {
+        if (!templateLabel || templateLabel === "ACH Authorization") return null;
+        const withoutAchSuffix = templateLabel
+            .replace(/\s*[-–]\s*ACH\s+Authorization\s*$/i, "")
+            .trim();
+        if (withoutAchSuffix && withoutAchSuffix.toLowerCase() !== "ach authorization") {
+            return withoutAchSuffix;
+        }
+        return templateLabel;
+    }, [templateLabel]);
+
+    const showResendButton =
+        canResendAch && !canContinueDraft && !docuSignOpenUrl && !isSigned;
+    const showReviewAndSendButton =
+        (canInitialSend || canContinueDraft) && !docuSignOpenUrl && !isSigned;
+    const showOpenDocuSignInFooter =
+        Boolean(docuSignOpenUrl) && canReviewAndSend && !isSigned;
 
     const revokeBlob = useCallback((url: string | null) => {
         if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
@@ -423,6 +451,9 @@ export default function ACHViewerModal({
                 } catch {
                     /* still surface sync error below */
                 }
+                if (!syncError) {
+                    setLastSigningStatusSyncAt(new Date());
+                }
                 if (!silent && syncError) {
                     toast.error(syncError);
                 }
@@ -476,6 +507,7 @@ export default function ACHViewerModal({
             if (syncError) {
                 toast.error(syncError);
             } else {
+                setLastSigningStatusSyncAt(new Date());
                 toast.success("ACH status updated.");
             }
         } finally {
@@ -711,71 +743,104 @@ export default function ACHViewerModal({
     return (
         <>
             <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-                <DialogContent className="flex h-[min(94vh,calc(100dvh-1.5rem))] max-h-[min(94vh,calc(100dvh-1.5rem))] min-h-0 w-[1200px] max-w-[95vw] flex-col gap-0 overflow-hidden bg-white p-0 dark:bg-slate-900">
-                    <div className="flex shrink-0 items-center justify-between gap-3 border-b px-6 py-4 dark:border-slate-700">
-                        <div className="flex min-w-0 items-center gap-3">
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-teal-600/12 text-teal-700 dark:text-teal-300">
-                                <Landmark className="h-5 w-5" aria-hidden />
-                            </div>
-                            <div className="min-w-0">
-                                <DialogTitle className="text-lg font-bold text-slate-900 dark:text-slate-100">
-                                    ACH Authorization
-                                </DialogTitle>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">
-                                    Review prefilled fields, then send via DocuSign.
-                                </p>
-                            </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                            {showStatusCapsule ? (
-                                <span
-                                    className={cn(
-                                        "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1",
-                                        achCapsuleClassName(achCapsuleStatus),
-                                    )}
-                                >
-                                    {formatAchAuthorizationCapsuleLabel(achCapsuleStatus)}
+                <DialogContent className="flex h-[min(94vh,calc(100dvh-1.5rem))] max-h-[min(94vh,calc(100dvh-1.5rem))] min-h-0 w-[1280px] max-w-[96vw] flex-col gap-0 overflow-hidden bg-white p-0 dark:bg-slate-900">
+                    <div className="shrink-0 border-b border-slate-200 px-6 py-4 dark:border-slate-700">
+                        <DialogTitle className="text-base font-bold uppercase tracking-wide text-slate-900 dark:text-slate-100">
+                            ACH Authorization
+                            {headerEntityLabel ? (
+                                <span className="font-semibold normal-case text-slate-600 dark:text-slate-300">
+                                    {" "}
+                                    — {headerEntityLabel}
                                 </span>
-                            ) : isVoided ? (
-                                <span
-                                    className={cn(
-                                        "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1",
-                                        achCapsuleClassName("VOIDED"),
-                                    )}
-                                >
-                                    Voided
-                                </span>
-                            ) : (
-                                <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-300">
-                                    {hasFilledPdf ? "Draft" : "Not sent"}
-                                </span>
-                            )}
-                            {hasFilledPdf && !isSigned && !isVoided ? (
-                                <Button
-                                    type="button"
-                                    size="icon"
-                                    variant="ghost"
-                                    className="h-8 w-8"
-                                    title="Refresh ACH status"
-                                    disabled={statusRefreshing}
-                                    onClick={() => void refreshAchStatus(false)}
-                                >
-                                    <RefreshCw
-                                        className={cn(
-                                            "h-4 w-4",
-                                            statusRefreshing && "animate-spin",
-                                        )}
-                                    />
-                                </Button>
                             ) : null}
-                        </div>
+                        </DialogTitle>
+                        <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                            Preview the ACH form, edit prefilled fields, then review and send in
+                            DocuSign. Status updates when DocuSign webhooks are received.
+                        </p>
                     </div>
 
-                    <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_360px]">
-                        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col gap-2 bg-slate-700 p-3">
-                            <div className="flex shrink-0 items-center gap-2">
+                    <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(400px,44%)_minmax(0,56%)]">
+                        <div className="flex min-h-0 shrink-0 flex-col gap-4 overflow-y-auto border-r border-slate-200 p-4 dark:border-slate-700">
+                            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950/50">
+                                <div className="mb-4 flex items-start justify-between gap-2">
+                                    <div className="flex min-w-0 items-start gap-2.5">
+                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/10 text-[#276D9C]">
+                                            <Landmark className="h-4 w-4" aria-hidden />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <h4 className="text-xs font-bold uppercase tracking-wide text-slate-900 dark:text-slate-100">
+                                                ACH Authorization
+                                            </h4>
+                                            <p className="mt-0.5 truncate text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                                                {mappingLoading ? "Loading…" : templateLabel}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <span
+                                        className={cn(
+                                            "shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide",
+                                            achSigningStepper.badgeClassName,
+                                        )}
+                                    >
+                                        {achSigningStepper.statusLabel}
+                                    </span>
+                                </div>
+
+                                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-900/60">
+                                    <FileText
+                                        className="h-4 w-4 shrink-0 text-[#276D9C]"
+                                        aria-hidden
+                                    />
+                                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800 dark:text-slate-100">
+                                        {mappingLoading ? "Loading…" : templateLabel}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        title="View ACH template"
+                                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-white hover:text-[#276D9C] dark:hover:bg-slate-800"
+                                        onClick={() => setPdfTab("template")}
+                                    >
+                                        <Eye className="h-4 w-4" aria-hidden />
+                                    </button>
+                                    {!readOnly && linkedAchMapping ? (
+                                        <button
+                                            type="button"
+                                            title="Edit prefill fields"
+                                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-white hover:text-[#276D9C] dark:hover:bg-slate-800"
+                                            onClick={() => setAchPrefillEditOpen(true)}
+                                        >
+                                            <Pencil className="h-4 w-4" aria-hidden />
+                                        </button>
+                                    ) : null}
+                                </div>
+
+                            </div>
+
+                            <div className="shrink-0">
+                                <DocuSignSigningStatusPanel
+                                    title="ACH signing status"
+                                    description="Updated via DocuSign webhooks (viewed, signed, completed)."
+                                    statusLabel={achSigningStepper.statusLabel}
+                                    badgeClassName={achSigningStepper.badgeClassName}
+                                    activeIndex={achSigningStepper.activeIndex}
+                                    isTerminal={achSigningStepper.isTerminal}
+                                    terminalMessage={achSigningStepper.terminalMessage}
+                                    onRefresh={() => void handleManualStatusUpdate()}
+                                    refreshing={statusRefreshing}
+                                    refreshDisabled={!hasFilledPdf && !linkedEnvelopeId}
+                                    refreshInHeader
+                                    lastCheckedAt={lastSigningStatusSyncAt}
+                                    crmUpdatedAt={
+                                        achCrmUpdatedAt != null ? String(achCrmUpdatedAt) : null
+                                    }
+                                />
+                            </div>
+                        </div>
+
+                        <div className="relative flex min-h-0 min-w-0 flex-col gap-3 bg-slate-700 p-4">
                             <div
-                                className="flex min-w-0 flex-1 rounded-lg border border-slate-600 bg-slate-800/80 p-0.5"
+                                className="flex w-full shrink-0 rounded-lg border border-slate-600 bg-slate-800/80 p-0.5"
                                 role="tablist"
                                 aria-label="ACH PDF preview"
                             >
@@ -791,7 +856,7 @@ export default function ACHViewerModal({
                                     )}
                                     onClick={() => setPdfTab("template")}
                                 >
-                                    Template PDF
+                                    ACH template
                                 </button>
                                 <button
                                     type="button"
@@ -810,11 +875,10 @@ export default function ACHViewerModal({
                                         void loadFilledPdf();
                                     }}
                                 >
-                                    {isSigned ? "Signed PDF" : "Filled PDF"}
+                                    DocuSign envelope
                                 </button>
                             </div>
-                            </div>
-                            <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
+                            <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
                                 {activePdfLoading ? (
                                     <div className="absolute inset-0 flex items-center justify-center">
                                         <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
@@ -831,110 +895,14 @@ export default function ACHViewerModal({
                                 )}
                             </div>
                         </div>
-
-                        <div className="flex min-h-0 flex-col overflow-y-auto p-4">
-                            <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900">
-                                <div className="mb-3 flex items-start gap-2.5">
-                                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-600 text-white">
-                                        <FileText className="h-4 w-4" />
-                                    </div>
-                                    <div className="min-w-0">
-                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C]">
-                                            ACH Form
-                                        </h4>
-                                        <p className="mt-0.5 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                                            {mappingLoading ? "Loading…" : templateLabel}
-                                        </p>
-                                    </div>
-                                </div>
-                                {!readOnly && linkedAchMapping ? (
-                                    <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-8 text-xs"
-                                        onClick={() => setAchPrefillEditOpen(true)}
-                                    >
-                                        <Pencil className="mr-1.5 h-3.5 w-3.5" />
-                                        Edit prefill fields
-                                    </Button>
-                                ) : null}
-                            </div>
-
-                            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/60">
-                                <div className="flex items-center justify-between gap-2">
-                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
-                                        Signing status
-                                    </h4>
-                                    <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-7 shrink-0 text-[11px]"
-                                        disabled={statusRefreshing}
-                                        onClick={() => void handleManualStatusUpdate()}
-                                    >
-                                        <RefreshCw
-                                            className={cn(
-                                                "mr-1.5 h-3 w-3",
-                                                statusRefreshing && "animate-spin",
-                                            )}
-                                        />
-                                        Update status
-                                    </Button>
-                                </div>
-                                <div className="mt-2 flex flex-wrap items-center gap-2">
-                                    <span
-                                        className={cn(
-                                            "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1",
-                                            hasFilledPdf && achCapsuleStatus !== "DRAFT"
-                                                ? achCapsuleClassName(achCapsuleStatus)
-                                                : "bg-slate-200 text-slate-700 ring-slate-300 dark:bg-slate-700 dark:text-slate-200",
-                                        )}
-                                    >
-                                        {hasFilledPdf
-                                            ? achCapsuleStatus === "DRAFT"
-                                                ? "Draft"
-                                                : achCapsuleStatus === "VOIDED"
-                                                  ? "Voided"
-                                                  : formatAchAuthorizationCapsuleLabel(
-                                                        achCapsuleStatus,
-                                                    )
-                                            : "Not sent"}
-                                    </span>
-                                </div>
-                                <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
-                                    {isSigned
-                                        ? "ACH authorization is fully signed. Void is not available; use Resend to create a new form if needed."
-                                        : isVoided
-                                          ? "Previous ACH envelope was voided. Use Resend ACH form to send a new one."
-                                          : achCapsuleStatus === "VIEWED"
-                                            ? "Signer has viewed the ACH form."
-                                            : achCapsuleStatus === "SENT"
-                                              ? "ACH form was sent and is awaiting signature."
-                                              : hasFilledPdf
-                                                ? "Draft is ready in DocuSign. Click Send in DocuSign to email the signer."
-                                                : "Not sent yet. Use Review & send to open DocuSign."}
-                                </p>
-                                {achAuthorizationDocuSign?.sentAt ? (
-                                    <p className="mt-2 text-[11px] text-slate-500">
-                                        Sent:{" "}
-                                        {formatDateTimeUS(achAuthorizationDocuSign.sentAt, "—")}
-                                    </p>
-                                ) : null}
-                                <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-                                    The Contract tab refreshes status periodically. After sending in
-                                    DocuSign, click Update status if the badge looks stale.
-                                </p>
-                            </div>
-                        </div>
                     </div>
 
-                    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-6 py-3 dark:border-slate-700">
-                        <div className="min-w-0 text-xs text-amber-800 dark:text-amber-200">
+                    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-6 py-3 dark:border-slate-700">
+                        <div className="min-w-0 flex-1 text-xs text-amber-800 dark:text-amber-200">
                             {docuSignOpenUrl ? (
                                 <span>
-                                    Pop-up blocked. Click Open DocuSign to continue in a new tab.
+                                    Pop-up blocked. Click Open DocuSign or allow pop-ups for this
+                                    site.
                                 </span>
                             ) : null}
                         </div>
@@ -960,7 +928,26 @@ export default function ACHViewerModal({
                                     )}
                                 </Button>
                             ) : null}
-                            {docuSignOpenUrl && canReviewAndSend ? (
+                            {showResendButton ? (
+                                <Button
+                                    type="button"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    disabled={isSending || mappingLoading || isVoiding}
+                                    onClick={() =>
+                                        void handleReviewInDocuSign({ forceNewEnvelope: true })
+                                    }
+                                >
+                                    {isSending ? (
+                                        <span className="inline-flex items-center gap-2">
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                            Preparing DocuSign…
+                                        </span>
+                                    ) : (
+                                        "Resend ACH form"
+                                    )}
+                                </Button>
+                            ) : null}
+                            {showOpenDocuSignInFooter ? (
                                 <Button
                                     type="button"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
@@ -975,15 +962,13 @@ export default function ACHViewerModal({
                                     Open DocuSign
                                 </Button>
                             ) : null}
-                            {canReviewAndSend && !docuSignOpenUrl ? (
+                            {showReviewAndSendButton ? (
                                 <Button
                                     type="button"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
                                     disabled={isSending || mappingLoading || isVoiding}
                                     onClick={() =>
-                                        void handleReviewInDocuSign({
-                                            forceNewEnvelope: canResendAch && !canContinueDraft,
-                                        })
+                                        void handleReviewInDocuSign({ forceNewEnvelope: false })
                                     }
                                 >
                                     {isSending ? (
@@ -991,12 +976,10 @@ export default function ACHViewerModal({
                                             <Loader2 className="h-4 w-4 animate-spin" />
                                             Preparing DocuSign…
                                         </span>
-                                    ) : canResendAch && !canContinueDraft ? (
-                                        "Resend ACH form"
                                     ) : canContinueDraft ? (
                                         "Continue in DocuSign"
                                     ) : (
-                                        "Review & send in DocuSign"
+                                        "Review & send ACH form"
                                     )}
                                 </Button>
                             ) : null}
