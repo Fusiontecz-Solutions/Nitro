@@ -192,6 +192,30 @@ function sanitizeDecimalInput(str: unknown): string {
   return s;
 }
 
+const DEFAULT_FREQUENCY_OPTIONS = [
+  "Select",
+  "Daily",
+  "Weekly",
+  "Bi-weekly",
+  "Monthly",
+] as const;
+
+function isFrequencySelected(freq?: string): boolean {
+  const f = (freq || "").trim().toLowerCase().replace(/\s+/g, "");
+  return (
+    f === "daily" ||
+    f === "weekly" ||
+    f === "bi-weekly" ||
+    f === "biweekly" ||
+    f === "monthly"
+  );
+}
+
+function frequencySelectValue(freq?: string, placeholder = "Select"): string {
+  if (!freq || freq.trim().toLowerCase() === "select") return placeholder;
+  return freq.trim();
+}
+
 /** FREQUENCY_MULTIPLIER: payments per month (Daily=22, Weekly=4.2, Bi-weekly=2, Monthly=1). */
 function getPaymentsPerMonth(freq?: string): number {
   const f = (freq || "").toLowerCase().replace(/\s+/g, "");
@@ -486,7 +510,7 @@ function calculateMCAValues(row: IPosition, options?: CalculateMCAOptions): MCAV
       amountFunded <= 0 ||
       Number.isNaN(installment) ||
       installment <= 0 ||
-      !row.frequency)
+      !isFrequencySelected(row.frequency))
   ) {
     out.pmtsLeft = "0";
     out.mcaEstBalance = "0";
@@ -813,7 +837,7 @@ function FootPlainEditCell({ children }: { children: React.ReactNode }) {
 
 export default function PositionsTableCalculator({
   positions: positionsProp,
-  frequencyOptions = ["Weekly", "Daily", "Bi-weekly", "Monthly"],
+  frequencyOptions = [...DEFAULT_FREQUENCY_OPTIONS],
   statusOptions = ["Select", "ACTIVE", "REVERSE", "REFI", "PIF", "ONE TIME", "STOP", "RECOVERY", "LOWER"],
   avgBankNetCredit,
   applicationId,
@@ -1231,7 +1255,7 @@ export default function PositionsTableCalculator({
       return;
     }
 
-    if (!frequency) {
+    if (!isFrequencySelected(frequency)) {
       toast.error("Please select a FREQUENCY before saving this position.");
       return;
     }
@@ -1933,12 +1957,16 @@ export default function PositionsTableCalculator({
                     >
                       {readMode ? (
                         <div className={roCellInner}>
-                          {(row.frequency || frequencyOptions[0] || "").trim() ||
-                            "-"}
+                          {isFrequencySelected(row.frequency)
+                            ? frequencySelectValue(row.frequency)
+                            : frequencyOptions[0] || "Select"}
                         </div>
                       ) : (
                         <select
-                          value={row.frequency || frequencyOptions[0] || ""}
+                          value={frequencySelectValue(
+                            row.frequency,
+                            frequencyOptions[0] || "Select",
+                          )}
                           disabled={locked}
                           onChange={(e) =>
                             handleUpdateRow(index, "frequency", e.target.value)

@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useTheme } from "@/context/ThemeContext";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { updateApplicationQueue, updateApplication, sendApprovalEmail } from "@/redux/actions/applicationActions";
+import { updateApplicationQueue, sendApprovalEmail } from "@/redux/actions/applicationActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { notifyFinalUnderwriterOnAssignment } from "@/redux/actions/notificationActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
@@ -503,10 +503,10 @@ const ApprovedApplicationModal = ({
             return;
         }
         void loadOfferDecision();
-        if (!isFinalUnderwriter && complianceApplicationId) {
+        if (complianceApplicationId) {
             dispatch(getComplianceChecks({ application: complianceApplicationId }));
         }
-    }, [open, applicationId, applicationData?.loanAmount, isFinalUnderwriter, complianceApplicationId, dispatch]);
+    }, [open, applicationId, applicationData?.loanAmount, complianceApplicationId, dispatch]);
 
     const handleStartEdit = () => {
         editSnapshotRef.current = getValues();
@@ -678,16 +678,8 @@ const ApprovedApplicationModal = ({
                 id: applicationUuid,
                 data: { currentQueue: "Final Underwriter" },
             })).unwrap();
-            await dispatch(updateApplication({
-                id: applicationUuid,
-                data: {
-                    status: "Sent to Final Underwriter",
-                    underwriterApproval: true,
-                    approvedAt: new Date().toISOString(),
-                },
-            })).unwrap();
 
-            // Trigger in-app + email notification for Final Underwriter
+            // Trigger in-app notification for Final Underwriter (non-blocking)
             try {
                 await dispatch(
                     notifyFinalUnderwriterOnAssignment({
@@ -708,11 +700,17 @@ const ApprovedApplicationModal = ({
             onOpenChange(false);
         } catch (err) {
             console.error("Failed to send to Final Underwriter:", err);
+            const apiMessage =
+                typeof err === "string"
+                    ? err
+                    : (err as { message?: string })?.message;
             toast.update(toastId, {
-                render: "Failed to send application to Final Underwriter. Please try again.",
+                render:
+                    apiMessage ||
+                    "Failed to send application to Final Underwriter. Please try again.",
                 type: "error",
                 isLoading: false,
-                autoClose: 4000,
+                autoClose: 5000,
             });
         } finally {
             setIsSubmitting(false);
@@ -763,11 +761,7 @@ const ApprovedApplicationModal = ({
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
-                className={
-                    isFinalUnderwriter
-                        ? "sm:max-w-2xl w-[calc(100%-2rem)] max-h-[90vh] overflow-y-auto flex flex-col gap-3"
-                        : "sm:max-w-6xl max-h-[min(88vh,780px)] overflow-hidden flex flex-col"
-                }
+                className="sm:max-w-6xl max-h-[min(88vh,780px)] overflow-hidden flex flex-col"
             >
                 <DialogHeader>
                     <DialogTitle className={`text-xl font-semibold ${isDark ? 'text-gray-200' : 'text-black'}`}>
@@ -775,7 +769,7 @@ const ApprovedApplicationModal = ({
                     </DialogTitle>
                     <DialogDescription className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                         {isFinalUnderwriter
-                            ? "Review loan terms, update the offer if needed, then send the approval email to the ISO."
+                            ? "Review loan terms, complete compliance checks, then send the approval email to the ISO."
                             : "Review loan terms, complete compliance checks, then send this application to the Final Underwriter."}
                     </DialogDescription>
                 </DialogHeader>
@@ -790,13 +784,7 @@ const ApprovedApplicationModal = ({
                             variant="compact"
                         />
                     ) : null}
-                    <div
-                        className={
-                            isFinalUnderwriter
-                                ? "space-y-0"
-                                : "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start"
-                        }
-                    >
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                     {/* Requested & Approval Loan Details — left column */}
                     <div className={loanDetailsPanelClass}>
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1146,36 +1134,34 @@ const ApprovedApplicationModal = ({
                         )}
                     </div>
 
-                    {!isFinalUnderwriter ? (
-                        <div
-                            className={`rounded-lg p-5 ${
-                                isDark
-                                    ? "bg-[#262827] lg:border-l lg:border-gray-700"
-                                    : "bg-white lg:border-l lg:border-gray-200 shadow-sm"
+                    <div
+                        className={`rounded-lg p-5 ${
+                            isDark
+                                ? "bg-[#262827] lg:border-l lg:border-gray-700"
+                                : "bg-white lg:border-l lg:border-gray-200 shadow-sm"
+                        }`}
+                    >
+                        <h3
+                            className={`text-sm font-semibold mb-1 ${
+                                isDark ? "text-gray-200" : "text-black"
                             }`}
                         >
-                            <h3
-                                className={`text-sm font-semibold mb-1 ${
-                                    isDark ? "text-gray-200" : "text-black"
-                                }`}
-                            >
-                                Compliance Checks
-                            </h3>
-                            <p
-                                className={`text-xs mb-4 shrink-0 ${
-                                    isDark ? "text-gray-400" : "text-gray-600"
-                                }`}
-                            >
-                                Answer each question before sending. Selecting
-                                &quot;Yes&quot; requires details.
-                            </p>
-                            <ComplianceChecksQuestionnaire
-                                applicationId={complianceApplicationId}
-                                compact
-                                onProgressChange={setChecksProgress}
-                            />
-                        </div>
-                    ) : null}
+                            Compliance Checks
+                        </h3>
+                        <p
+                            className={`text-xs mb-4 shrink-0 ${
+                                isDark ? "text-gray-400" : "text-gray-600"
+                            }`}
+                        >
+                            Answer each question before sending. Selecting
+                            &quot;Yes&quot; requires details.
+                        </p>
+                        <ComplianceChecksQuestionnaire
+                            applicationId={complianceApplicationId}
+                            compact
+                            onProgressChange={setChecksProgress}
+                        />
+                    </div>
                     </div>
                 </div>
 
@@ -1197,6 +1183,12 @@ const ApprovedApplicationModal = ({
                                 if (!applicationUuid) {
                                     onProceedToContract?.();
                                     onOpenChange(false);
+                                    return;
+                                }
+                                if (!checksProgress.allComplete) {
+                                    toast.error(
+                                        `Please complete all compliance checks (${checksProgress.completed} of ${checksProgress.total} answered).`,
+                                    );
                                     return;
                                 }
                                 setIsSubmitting(true);
@@ -1250,7 +1242,8 @@ const ApprovedApplicationModal = ({
                                 offerDecisionLoading ||
                                 isSubmitting ||
                                 isEditMode ||
-                                isUpdatingOffer
+                                isUpdatingOffer ||
+                                !checksProgress.allComplete
                             }
                             className="cursor-pointer bg-green-600 px-6 text-white hover:bg-green-700 disabled:cursor-not-allowed"
                         >
@@ -1260,9 +1253,11 @@ const ApprovedApplicationModal = ({
                                   ? "Updating…"
                                   : isEditMode
                                     ? "Save offer changes first"
-                                    : resendApprovalEmail
-                                      ? "Resend approval mail"
-                                      : "Send approval mail"}
+                                    : !checksProgress.allComplete
+                                      ? `Complete checks (${checksProgress.completed}/${checksProgress.total})`
+                                      : resendApprovalEmail
+                                        ? "Resend approval mail"
+                                        : "Send approval mail"}
                         </Button>
                     ) : (
                         <Button

@@ -25,7 +25,11 @@ export const complianceChecksSlice = createSlice({
     extraReducers: (builder) => {
         builder
             .addCase(getComplianceChecks.pending, (state) => {
-                state.loading = true;
+                // Only show loading on the first fetch — refetches must not wipe the UI
+                // or overwrite in-flight optimistic saves with stale list data.
+                if (!state.data) {
+                    state.loading = true;
+                }
                 state.error = null;
             })
             .addCase(getComplianceChecks.fulfilled, (state, action) => {

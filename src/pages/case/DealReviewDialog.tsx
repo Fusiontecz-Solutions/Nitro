@@ -55,6 +55,7 @@ import {
   getScheduleEndDate,
   getScheduleFrequencyLabel,
   isWeekend,
+  patchPaymentScheduleEntry,
   toNextBusinessDay,
   type PaymentScheduleEntry,
 } from "@/lib/paymentScheduleDates";
@@ -497,6 +498,10 @@ export default function DealReviewDialog({
   const [editableSchedule, setEditableSchedule] = useState<
     PaymentScheduleEntry[]
   >([]);
+  const lastScheduleInputsKeyRef = useRef<string | null>(null);
+  const scheduleEditedRef = useRef(false);
+  const applicationDataRef = useRef(applicationData);
+  applicationDataRef.current = applicationData;
 
   useEffect(() => {
     editModeRef.current = editMode;
@@ -509,6 +514,8 @@ export default function DealReviewDialog({
       setPaymentStartTouched(false);
       setPaymentStartDate("");
       setEditableSchedule([]);
+      lastScheduleInputsKeyRef.current = null;
+      scheduleEditedRef.current = false;
     }
   }, [open]);
   const [offerDecision, setOfferDecision] = useState<OfferDecisionRecord | null>(
@@ -572,7 +579,7 @@ export default function DealReviewDialog({
     let od: OfferDecisionRecord | null = null;
     let latest: TermsOffer | null = null;
     let resolvedAppRecord: Record<string, unknown> | null =
-      applicationData as Record<string, unknown> | null;
+      applicationDataRef.current as Record<string, unknown> | null;
 
     try {
       // Collection payments require a resolvable deal id — try each key; ignore 404s.
@@ -693,7 +700,6 @@ export default function DealReviewDialog({
   }, [
     applicationDealId,
     applicationId,
-    applicationData,
     dispatch,
     numericApplicationId,
     primaryApplicationId,
@@ -795,23 +801,71 @@ export default function DealReviewDialog({
           ? toNextBusinessDay(fromDeal)
           : fromDeal
         : getDefaultPaymentStartDate();
-    setPaymentStartDate(initial);
+    setPaymentStartDate((prev) => (prev === initial ? prev : initial));
   }, [open, dealView?.schedule?.startDate, form.frequency, paymentStartTouched]);
 
-  const generatedSchedule = useMemo(
-    () =>
+  const scheduleInputsKey = useMemo(() => {
+    const roundedDaily =
+      Number.isFinite(form.daily) && form.daily > 0
+        ? Math.round(form.daily * 100) / 100
+        : 0;
+    return [
+      paymentStartDate,
+      form.term,
+      form.frequency,
+      String(roundedDaily),
+    ].join("|");
+  }, [paymentStartDate, form.term, form.frequency, form.daily]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (lastScheduleInputsKeyRef.current === scheduleInputsKey) return;
+
+    const prevKey = lastScheduleInputsKeyRef.current;
+    if (scheduleEditedRef.current && prevKey) {
+      const [prevDate = "", prevTerm = "", prevFreq = ""] = prevKey.split("|");
+      const [nextDate = "", nextTerm = "", nextFreq = ""] =
+        scheduleInputsKey.split("|");
+      if (
+        prevDate === nextDate &&
+        prevTerm === nextTerm &&
+        prevFreq === nextFreq
+      ) {
+        lastScheduleInputsKeyRef.current = scheduleInputsKey;
+        return;
+      }
+    }
+
+    lastScheduleInputsKeyRef.current = scheduleInputsKey;
+    scheduleEditedRef.current = false;
+    setEditableSchedule(
       buildPaymentSchedule({
         startDate: paymentStartDate,
         term: form.term,
         frequency: form.frequency,
         paymentAmount: form.daily,
       }),
-    [paymentStartDate, form.term, form.frequency, form.daily],
-  );
+    );
+  }, [
+    open,
+    scheduleInputsKey,
+    paymentStartDate,
+    form.term,
+    form.frequency,
+    form.daily,
+  ]);
 
-  useEffect(() => {
-    setEditableSchedule(generatedSchedule);
-  }, [generatedSchedule]);
+  const handleScheduleRowPatch = useCallback(
+    (index: number, patch: { date?: string; amount?: number }) => {
+      scheduleEditedRef.current = true;
+      setEditableSchedule((prev) =>
+        prev.map((row) =>
+          row.index === index ? patchPaymentScheduleEntry(row, patch) : row,
+        ),
+      );
+    },
+    [],
+  );
 
   const paymentSchedule = editableSchedule;
 
@@ -1085,13 +1139,14 @@ export default function DealReviewDialog({
                 paymentStartDate={paymentStartDate}
                 onPaymentStartDateChange={(value) => {
                   setPaymentStartTouched(true);
+                  scheduleEditedRef.current = false;
                   setPaymentStartDate(value);
                 }}
                 frequency={form.frequency}
                 term={form.term}
                 paymentAmount={form.daily}
                 schedule={paymentSchedule}
-                onScheduleChange={setEditableSchedule}
+                onPatchScheduleRow={handleScheduleRowPatch}
                 scheduleEndDate={scheduleEndDate}
                 effectiveFirstPaymentDate={effectiveFirstPaymentDate}
                 skipsWeekendsForDaily={skipsWeekendsForDaily}

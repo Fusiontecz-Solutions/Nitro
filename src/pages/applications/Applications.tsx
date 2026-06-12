@@ -25,7 +25,10 @@ import {
   Activity,
   Upload,
   Download,
+  TrendingUp,
 } from "lucide-react";
+import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
+import { motion } from "framer-motion";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
 import { useLocation, useNavigate } from "react-router";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
@@ -313,6 +316,9 @@ const Applications = () => {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = useState({});
+  const [expandedProgressRowId, setExpandedProgressRowId] = useState<
+    string | null
+  >(null);
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: 10,
@@ -685,6 +691,10 @@ const Applications = () => {
     if (id) prefetchApplicationDetail(id);
   }, []);
 
+  const handleToggleApplicationProgress = useCallback((rowId: string) => {
+    setExpandedProgressRowId((prev) => (prev === rowId ? null : rowId));
+  }, []);
+
   // Define columns
   const columns: ColumnDef<Application>[] = useMemo(() => {
     const selectColumn: ColumnDef<Application> = {
@@ -787,6 +797,52 @@ const Applications = () => {
             {getClientEmail(row.original.client)}
           </span>
         ),
+      },
+      {
+        id: "seeProgress",
+        header: () => (
+          <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
+            See Progress
+          </span>
+        ),
+        cell: ({ row }) => {
+          const isOpen = expandedProgressRowId === row.id;
+          return (
+            <motion.button
+              type="button"
+              data-row-click-ignore
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleApplicationProgress(row.id);
+              }}
+              className={cn(
+                "inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50",
+                isOpen
+                  ? "bg-gradient-to-br from-amber-300 to-amber-500 text-white shadow-md shadow-amber-500/30"
+                  : "bg-amber-50 text-amber-500 hover:bg-amber-100 hover:text-amber-600 dark:bg-amber-950/40 dark:text-amber-400 dark:hover:bg-amber-950/60",
+              )}
+              whileHover={{ scale: 1.08 }}
+              whileTap={{ scale: 0.94 }}
+              transition={{ type: "spring", stiffness: 420, damping: 24 }}
+              aria-label={
+                isOpen
+                  ? "Hide application progress"
+                  : "See application progress"
+              }
+              aria-expanded={isOpen}
+              title={isOpen ? "Hide progress" : "See progress"}
+            >
+              <TrendingUp
+                className="h-5 w-5 drop-shadow-sm"
+                strokeWidth={2.75}
+                aria-hidden
+              />
+            </motion.button>
+          );
+        },
+        enableSorting: false,
+        enableHiding: false,
       },
       {
         id: "iso",
@@ -1064,6 +1120,8 @@ const Applications = () => {
     getClientEmail,
     getApplicationQueueLabel,
     handleOpenApplicationDetails,
+    expandedProgressRowId,
+    handleToggleApplicationProgress,
     showUwDealPoolUi,
     showClaimedByColumn,
     underwriterPoolTab,
@@ -1161,6 +1219,10 @@ const Applications = () => {
     () => applicationsListParamsCacheKey(listFetchParams),
     [listFetchParams],
   );
+
+  useEffect(() => {
+    setExpandedProgressRowId(null);
+  }, [pagination.pageIndex, listFetchKey]);
 
   const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
@@ -2261,6 +2323,15 @@ const Applications = () => {
                 onRowMouseEnter={(row) =>
                   handlePrefetchApplicationDetail(row.original)
                 }
+                isRowExpanded={(row) => expandedProgressRowId === row.id}
+                renderExpandedRow={(row) => (
+                  <div className="border-t border-amber-200/50 bg-gradient-to-b from-amber-50/50 via-white to-white px-4 py-4 dark:border-amber-900/30 dark:from-amber-950/20 dark:via-slate-950/40 dark:to-slate-950/20 sm:px-6">
+                    <ApplicationProgressBar
+                      application={row.original}
+                      className="shadow-sm"
+                    />
+                  </div>
+                )}
               />
             </div>
           ) : loading && !(applications?.length) ? (
