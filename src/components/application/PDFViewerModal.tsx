@@ -687,6 +687,10 @@ function resolveSignerEmailForSummary(
 }
 
 /** Direct PDF renderer using react-pdf (template PDF and post-send downloads). */
+function isCloudinaryAssetUrl(url: string): boolean {
+    return /^https:\/\/res\.cloudinary\.com\/[^/]+\/(image|raw|video)\//.test(url.trim());
+}
+
 function DirectPdfViewer({ fileUrl, errorMessage = "Could not render this PDF in the viewer." }: { fileUrl: string; errorMessage?: string }) {
     const wrapRef = useRef<HTMLDivElement>(null);
     const [numPages, setNumPages] = useState<number | null>(null);
@@ -940,6 +944,8 @@ const PDFViewerModal = ({
     const [loadingTemplateMappings, setLoadingTemplateMappings] = useState(false);
     const [previewingTemplateId, setPreviewingTemplateId] = useState<string | null>(null);
     const templatePreviewBlobUrlRef = useRef<string | null>(null);
+    const inlinePreviewBlobUrlRef = useRef<string | null>(null);
+    const [loadingInlinePreview, setLoadingInlinePreview] = useState(false);
     /** `bs:<boldSignTemplateGuid>` | `up:<uploadedFileId>` | `` */
     const [selectedAddendumOption, setSelectedAddendumOption] = useState<string>("");
     // const [selectedPayoffLetterFileId, setSelectedPayoffLetterFileId] = useState<string>("");
@@ -2536,6 +2542,54 @@ const PDFViewerModal = ({
         [dispatch, effectiveContractId, businessApplicationId, applicationIdForLookup],
     );
 
+    const revokeInlinePreviewBlob = useCallback(() => {
+        if (inlinePreviewBlobUrlRef.current) {
+            URL.revokeObjectURL(inlinePreviewBlobUrlRef.current);
+            inlinePreviewBlobUrlRef.current = null;
+        }
+    }, []);
+
+    const previewDocumentInPane = useCallback(
+        async (remoteUrl: string, fileName = "document") => {
+            const url = remoteUrl.trim();
+            if (!url) return;
+            try {
+                setLoadingInlinePreview(true);
+                let previewUrl = url;
+                if (isCloudinaryAssetUrl(url)) {
+                    const res = await axiosGet("/uploads/inline-preview", {
+                        params: { url, name: fileName },
+                        responseType: "blob",
+                    });
+                    const rawBlob = res.data as Blob;
+                    const headerCt =
+                        typeof res.headers["content-type"] === "string"
+                            ? res.headers["content-type"].split(";")[0]?.trim()
+                            : "";
+                    const blob = new Blob([rawBlob], {
+                        type: headerCt || "application/pdf",
+                    });
+                    revokeInlinePreviewBlob();
+                    previewUrl = URL.createObjectURL(blob);
+                    inlinePreviewBlobUrlRef.current = previewUrl;
+                } else {
+                    revokeInlinePreviewBlob();
+                }
+                setActivePreview(null);
+                setUploadedPreviewUrl(previewUrl);
+                setPdfRightPaneTab("template");
+            } catch (error: any) {
+                const msg =
+                    error?.message || "Failed to load document preview.";
+                setDocumentUploadMessage(msg);
+                toast.error(msg);
+            } finally {
+                setLoadingInlinePreview(false);
+            }
+        },
+        [revokeInlinePreviewBlob],
+    );
+
     const handlePreviewUploadedDocument = async (fileId: string) => {
         if (effectiveContractId == null || !fileId) return;
         try {
@@ -2548,8 +2602,8 @@ const PDFViewerModal = ({
                 setDocumentUploadMessage("No preview URL found for this document.");
                 return;
             }
-            setActivePreview(null);
-            setUploadedPreviewUrl(url);
+            const name = String(file?.fileName || file?.originalName || "Document").trim();
+            await previewDocumentInPane(url, name);
         } catch (error: any) {
             setDocumentUploadMessage(
                 error?.message || "Failed to load uploaded document preview.",
@@ -3164,8 +3218,19 @@ const PDFViewerModal = ({
                 URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
                 templatePreviewBlobUrlRef.current = null;
             }
+            if (inlinePreviewBlobUrlRef.current) {
+                URL.revokeObjectURL(inlinePreviewBlobUrlRef.current);
+                inlinePreviewBlobUrlRef.current = null;
+            }
         };
     }, []);
+
+    useEffect(() => {
+        if (isOpen) return;
+        revokeInlinePreviewBlob();
+        setUploadedPreviewUrl(null);
+        setLoadingInlinePreview(false);
+    }, [isOpen, revokeInlinePreviewBlob]);
 
     // Legacy contracts may have multiple addendum rows — keep one linked to the dropdown.
     useEffect(() => {
@@ -3225,9 +3290,10 @@ const PDFViewerModal = ({
     useEffect(() => {
         if (activeStep !== "documents") {
             setActivePreview(null);
+            revokeInlinePreviewBlob();
             setUploadedPreviewUrl(null);
         }
-    }, [activeStep]);
+    }, [activeStep, revokeInlinePreviewBlob]);
 
     useEffect(() => {
         if (!isOpen || effectiveContractId == null) return;
@@ -4315,6 +4381,9 @@ const PDFViewerModal = ({
                                                             : "driverLicense";
                                                     await autoUploadDocumentFile(key, file);
                                                 }}
+                                                onViewDocument={(url, fileName) => {
+                                                    void previewDocumentInPane(url, fileName);
+                                                }}
                                             />
                                         ) : null}
 
@@ -4568,8 +4637,10 @@ const PDFViewerModal = ({
                                                             setDocumentUploadMessage("Application PDF is not available.");
                                                             return;
                                                         }
-                                                        setUploadedPreviewUrl(sourceApplicationPdf.url);
-                                                        setActivePreview(null);
+                                                        void previewDocumentInPane(
+                                                            sourceApplicationPdf.url,
+                                                            sourceApplicationPdf.name,
+                                                        );
                                                     }}
                                                 >
                                                     <Eye className="h-3.5 w-3.5" />
@@ -6689,10 +6760,18 @@ const PDFViewerModal = ({
                             </div>
                             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
                                 {pdfRightPaneTab === "template" ? (
-                                    <DirectPdfViewer
-                                        fileUrl={currentPreviewUrl}
-                                        errorMessage="Could not render this PDF. Please check that the PDF URL is reachable and allows browser access."
-                                    />
+                                    loadingInlinePreview ? (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
+                                            <Loader2 className="h-6 w-6 animate-spin text-[#276D9C]" aria-hidden />
+                                            <span>Loading document preview…</span>
+                                        </div>
+                                    ) : (
+                                        <DirectPdfViewer
+                                            key={currentPreviewUrl}
+                                            fileUrl={currentPreviewUrl}
+                                            errorMessage="Could not render this PDF. Please check that the PDF URL is reachable and allows browser access."
+                                        />
+                                    )
                                 ) : prefilledBoldSignPdfLoading ? (
                                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
                                         <Loader2 className="h-6 w-6 animate-spin text-[#276D9C]" aria-hidden />

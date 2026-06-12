@@ -12,6 +12,7 @@ import {
 } from "@/constants/documentRequestTypes";
 import { cn } from "@/lib/utils";
 import { toast } from "react-toastify";
+import PDFViewerDocsModal from "./PDFViewerDocsModal";
 
 type RequestedDocumentsPanelProps = {
     applicationLookupId: string | number | null;
@@ -22,6 +23,8 @@ type RequestedDocumentsPanelProps = {
         contractUploadKey: "voidedCheck" | "driverLicense",
         file: File,
     ) => Promise<void>;
+    /** When set (e.g. contract modal), preview inline instead of opening a separate modal. */
+    onViewDocument?: (fileUrl: string, fileName?: string) => void;
     readOnly?: boolean;
     compact?: boolean;
     className?: string;
@@ -33,6 +36,7 @@ export function RequestedDocumentsPanel({
     businessApplicationId,
     contractId,
     onUploadContractDocument,
+    onViewDocument,
     readOnly = false,
     compact = false,
     className,
@@ -42,7 +46,25 @@ export function RequestedDocumentsPanel({
         (state: RootState) => state.documentRequests,
     );
     const [uploadingSlug, setUploadingSlug] = useState<string | null>(null);
+    const [previewModal, setPreviewModal] = useState<{ url: string; name: string } | null>(null);
     const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+    const handleViewDocument = useCallback(
+        (doc: DocumentRequestRow) => {
+            const url = String(doc.fileUrl || "").trim();
+            if (!url) {
+                toast.error("File URL not available.");
+                return;
+            }
+            const name = documentRequestDisplayLabel(doc);
+            if (onViewDocument) {
+                onViewDocument(url, name);
+            } else {
+                setPreviewModal({ url, name });
+            }
+        },
+        [onViewDocument],
+    );
 
     const refreshAfterUpload = useCallback(async () => {
         const lookup = applicationLookupId ?? businessApplicationId;
@@ -181,13 +203,14 @@ export function RequestedDocumentsPanel({
                                 {isReceived && doc.fileUrl ? (
                                     <Button
                                         type="button"
-                                        size="sm"
+                                        size="icon"
                                         variant="ghost"
-                                        className="h-8 gap-1 px-2 text-xs"
-                                        onClick={() => window.open(doc.fileUrl, "_blank", "noopener,noreferrer")}
+                                        className="h-8 w-8 shrink-0"
+                                        title={`View ${label}`}
+                                        aria-label={`View ${label}`}
+                                        onClick={() => handleViewDocument(doc)}
                                     >
                                         <Eye className="h-3.5 w-3.5" />
-                                        View
                                     </Button>
                                 ) : null}
 
@@ -232,6 +255,13 @@ export function RequestedDocumentsPanel({
                     );
                 })}
             </div>
+
+            <PDFViewerDocsModal
+                isOpen={previewModal != null}
+                onClose={() => setPreviewModal(null)}
+                fileUrl={previewModal?.url}
+                fileName={previewModal?.name}
+            />
         </div>
     );
 }
