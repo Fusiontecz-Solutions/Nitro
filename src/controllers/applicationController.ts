@@ -2907,19 +2907,37 @@ class ApplicationController {
                 });
             }
 
-            if (blockIfUnderwriterUnclaimedDeal(res, authUser, existingApplication)) {
+            const previousQueue = existingApplication.currentQueue;
+            const roleUpper = String((req as any).user?.role || '')
+                .toUpperCase()
+                .replace(/-/g, '_');
+            const transition = resolveWorkflowQueueTransition(currentQueue, roleUpper);
+
+            const isUnderwriterSendToFinalUw =
+                transition.action === 'SEND_TO_FINAL_UNDERWRITER' && roleUpper === 'UNDERWRITER';
+
+            if (isUnderwriterSendToFinalUw) {
+                const claimId = existingApplication.claimedByUnderwriterId ?? null;
+                const userId = authUser?.id ?? null;
+                if (claimId && userId && claimId !== userId) {
+                    return res.status(403).json({
+                        success: false,
+                        message:
+                            'This deal is claimed by another underwriter. You cannot send it to Final Underwriter.',
+                    });
+                }
+            } else if (blockIfUnderwriterUnclaimedDeal(res, authUser, existingApplication)) {
                 return;
             }
-
-            const previousQueue = existingApplication.currentQueue;
-            const roleUpper = String((req as any).user?.role || '').toUpperCase();
-            const transition = resolveWorkflowQueueTransition(currentQueue, roleUpper);
 
             const updateData: Prisma.ApplicationUpdateInput = {
                 currentQueue: transition.queue,
             };
             if (transition.state) {
                 updateData.currentState = transition.state;
+            }
+            if (transition.action === 'SEND_TO_FINAL_UNDERWRITER') {
+                updateData.status = 'Sent to Final Underwriter';
             }
             const claimClear = patchClearUnderwriterClaimIfQueueChanged(previousQueue, transition.queue);
             if (claimClear) {

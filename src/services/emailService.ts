@@ -16,6 +16,60 @@ import {
 export { buildBrandLogoAttachments } from '../constants/brand';
 
 /**
+ * Logo shown **above** the dark title box on ISO "Application Approved" and
+ * "Offer Updated" emails (white background — use a dark/black logo URL, not white).
+ *
+ * Set once in `.env` for both templates:
+ *   ISO_EMAIL_LOGO_URL=https://example.com/black_logo.png
+ *
+ * Per-template overrides (optional):
+ *   APPROVAL_BANNER_LOGO_URL=...
+ *   OFFER_UPDATED_BANNER_LOGO_URL=...
+ *
+ * When empty, falls back to the inline Woodmere brand header (CID attachments).
+ */
+export const ISO_EMAIL_LOGO_URL ="https://res.cloudinary.com/dygyjjbb6/image/upload/v1781203521/black_logo_vnjhof.svg" ;
+
+export const APPROVAL_BANNER_LOGO_URL = 'https://res.cloudinary.com/dygyjjbb6/image/upload/v1781203521/black_logo_vnjhof.svg';
+
+export const OFFER_UPDATED_BANNER_LOGO_URL = 'https://res.cloudinary.com/dygyjjbb6/image/upload/v1781203521/black_logo_vnjhof.svg';
+
+/**
+ * Shared header for Application Approved + Offer Updated:
+ * logo row on white (above the dark box), then dark title strip.
+ */
+function buildIsoBrandedEmailHeaderHtml(
+    logoUrl: string | undefined,
+    title: string,
+    subtitle: string,
+): string {
+    const url = String(logoUrl || '').trim();
+    const logoRow = url
+        ? `
+                    <tr>
+                        <td align="center" style="padding: 24px 20px 16px; background-color: #ffffff;">
+                            <img src="${url}" alt="Woodmere Financial" width="180" style="display: block; margin: 0 auto; max-width: 180px; width: 180px; height: auto; border: 0; outline: none;" />
+                        </td>
+                    </tr>`
+        : buildBrandHeaderRowHtml();
+
+    return `
+                    ${logoRow}
+                    <tr>
+                        <td style="padding: 0 20px 4px;">
+                            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: linear-gradient(to right, #2c2c2c, #111111); background-color: #111111; border-radius: 8px;">
+                                <tr>
+                                    <td align="center" style="padding: 28px 24px; color: #ffffff;">
+                                        <div style="font-size: 22px; font-weight: bold; letter-spacing: 1px; margin-bottom: 5px;">${title}</div>
+                                        <div style="font-size: 14px; opacity: 0.9;">${subtitle}</div>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>`;
+}
+
+/**
  * Href values in these templates (`viewApplicationUrl`, `publicPortalUrl`, `calculateApprovalUrl`, etc.)
  * are supplied by callers (e.g. `applicationController`) using `resolveCrmFrontendBaseUrl()` from `../utils/crmFrontendUrl`.
  * For local testing, set `LOCAL_FRONTEND_URL` (or `DEV_FRONTEND_URL`) in the API `.env` so links open your dev SPA;
@@ -92,105 +146,24 @@ export interface ApplicationApprovalEmailParams {
     companyName: string;
     viewApplicationUrl?: string;
     calculateApprovalUrl?: string;
+    /** Optional logo image link shown at the top (overrides APPROVAL_BANNER_LOGO_URL). */
+    bannerLogoUrl?: string;
 }
-
-const buildStatusStep = (
-    label: string,
-    position: 'first' | 'middle' | 'last',
-    isActive: boolean,
-    isCompleted: boolean
-): string => {
-    const circleColor = isCompleted || isActive ? '#1E88E5' : '#E5E7EB';
-    const circleBorder = isActive ? '2px solid #1E88E5' : '2px solid #E5E7EB';
-    const circleBackground = isActive ? '#ffffff' : circleColor;
-    const textColor = isActive || isCompleted ? '#111827' : '#9CA3AF';
-
-    const connectorTop = position !== 'first'
-        ? `<tr>
-          <td width="40" align="center">
-              <table width="2" border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-                  <tr>
-                      <td style="background-color:#E5E7EB; height:20px; font-size:0; line-height:0;">&nbsp;</td>
-                  </tr>
-              </table>
-          </td>
-          <td>&nbsp;</td>
-      </tr>`
-        : '';
-
-    const connectorBottom = position !== 'last'
-        ? `<tr>
-          <td width="40" align="center">
-              <table width="2" border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-                  <tr>
-                      <td style="background-color:#E5E7EB; height:20px; font-size:0; line-height:0;">&nbsp;</td>
-                  </tr>
-              </table>
-          </td>
-          <td>&nbsp;</td>
-      </tr>`
-        : '';
-
-    return `
-    ${connectorTop}
-    <tr>
-        <td width="40" align="center" valign="middle">
-            <table width="26" height="26" border="0" cellspacing="0" cellpadding="0" style="border-radius:50%; border:${circleBorder}; background-color:${circleBackground};">
-                <tr>
-                    <td align="center" valign="middle" style="font-size:14px; line-height:14px; color:${isCompleted || isActive ? '#1E88E5' : '#9CA3AF'};">
-                        ${isCompleted ? '&#10003;' : isActive ? '&#9679;' : '&nbsp;'}
-                    </td>
-                </tr>
-            </table>
-        </td>
-        <td align="left" valign="middle" style="font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px; color:${textColor}; padding-left:8px;">
-            ${label}
-        </td>
-    </tr>
-    ${connectorBottom}
-  `;
-};
 
 export const buildApplicationApprovalEmailHtml = ({
     clientName,
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
+    bannerLogoUrl,
 }: Omit<ApplicationApprovalEmailParams, 'to'>): string => {
     const safeClientName = clientName || 'Valued Client';
     const safeCompanyName = companyName || 'your company';
-
-    const steps: Array<{ label: string; key: string }> = [
-        { label: 'Application Submitted', key: 'submitted' },
-        { label: 'Underwriting', key: 'underwriting' },
-        { label: 'Approved', key: 'approved' },
-        { label: 'Contract', key: 'Contract' },
-        { label: 'Final Call', key: 'finalCall' },
-        { label: 'Funded', key: 'funded' },
-    ];
-
-    const currentKey = 'approved';
-
-    const stepsHtml = steps
-        .map((step, index) => {
-            const position: 'first' | 'middle' | 'last' =
-                index === 0 ? 'first' : index === steps.length - 1 ? 'last' : 'middle';
-            const isCompleted = ['submitted', 'underwriting'].includes(step.key);
-            const isActive = step.key === currentKey;
-            return buildStatusStep(step.label, position, isActive, isCompleted);
-        })
-        .join('');
-
-    const buttonHtml = viewApplicationUrl
-        ? `<tr>
-            <td align="center" style="padding:24px 0 8px 0;">
-                <a href="${viewApplicationUrl}"
-                   style="display:inline-block; padding:12px 24px; background-color:#1E88E5; color:#ffffff; text-decoration:none; font-family:Arial,Helvetica,sans-serif; font-size:14px; font-weight:bold; border-radius:4px;">
-                    View Your Application
-                </a>
-            </td>
-        </tr>`
-        : '';
+    const emailHeader = buildIsoBrandedEmailHeaderHtml(
+        bannerLogoUrl || APPROVAL_BANNER_LOGO_URL,
+        'APPLICATION APPROVED',
+        'Congratulations! Your application has been successfully processed.',
+    );
 
     return `
 <!DOCTYPE html>
@@ -201,29 +174,13 @@ export const buildApplicationApprovalEmailHtml = ({
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     ${buildBrandHeaderStyles()}
 </head>
-<body style="margin: 0; padding: 0; background-color: #f4f7f9; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+<body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
     <table border="0" cellpadding="0" cellspacing="0" width="100%">
         <tr>
             <td style="padding: 20px 0;">
-                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border: 1px solid #dddddd;">
+                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border: 1px solid #e0e0e0;">
                     
-                    ${buildBrandHeaderRowHtml()}
-
-                    <tr>
-                        <td style="padding: 0 20px;">
-                            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: linear-gradient(to right, #3b7ab0, #1a4a7c); background-color: #1a4a7c; border-radius: 8px;">
-                                <tr>
-                                    <td width="100" align="center" style="padding: 30px 0 30px 20px;">
-                                        <div style="width: 70px; height: 70px; border: 2px solid #ffffff; border-radius: 50%; line-height: 70px; text-align: center; font-size: 35px; color: #ffffff;">📄</div>
-                                    </td>
-                                    <td style="padding: 30px 20px; color: #ffffff;">
-                                        <div style="font-size: 22px; font-weight: bold; letter-spacing: 1px; margin-bottom: 5px;">APPLICATION APPROVED</div>
-                                        <div style="font-size: 14px; opacity: 0.9;">Congratulations! Your application has been successfully processed.</div>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
+                    ${emailHeader}
 
                     <tr>
                         <td style="padding: 30px 20px;">
@@ -231,14 +188,14 @@ export const buildApplicationApprovalEmailHtml = ({
                                 <tr>
                                     <td width="110" valign="top" align="center">
                                         <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #0b71a9; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
-                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #333; line-height: 1.2;">Application<br/>Submitted</td></tr>
-                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #0b71a9; height: 35px;"></div></td></tr>
-                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #0b71a9; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
-                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #333;">Underwriting</td></tr>
-                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #0b71a9; height: 35px;"></div></td></tr>
-                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #0b71a9; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
-                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #333;">Approved</td></tr>
+                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #111111; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
+                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #111111; line-height: 1.2; font-weight: bold;">Application<br/>Submitted</td></tr>
+                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #111111; height: 35px;"></div></td></tr>
+                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #111111; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
+                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #111111; font-weight: bold;">Underwriting</td></tr>
+                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #111111; height: 35px;"></div></td></tr>
+                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #111111; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
+                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #111111; font-weight: bold;">Approved</td></tr>
                                             <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #cccccc; height: 35px;"></div></td></tr>
                                             <tr><td align="center"><div style="width: 32px; height: 32px; background: #cccccc; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">X</div></td></tr>
                                             <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #888;">Contract</td></tr>
@@ -252,62 +209,62 @@ export const buildApplicationApprovalEmailHtml = ({
                                     </td>
 
                                     <td valign="top" style="padding-left: 25px;">
-                                        <p style="margin: 0 0 15px 0; font-size: 16px; color: #444;">Hi ${safeClientName}!</p>
+                                        <p style="margin: 0 0 15px 0; font-size: 16px; color: #111111;">Hi ${safeClientName}!</p>
                                         
-                                        <p style="font-size: 15px; color: #666; line-height: 1.5;">
+                                        <p style="font-size: 15px; color: #444444; line-height: 1.5;">
                                             We are pleased to inform you that your application for 
-                                            <strong style="color: #0b71a9;">'${safeCompanyName}'</strong> 
+                                            <strong style="color: #111111;">'${safeCompanyName}'</strong> 
                                             has been pre-approved for a Woodmere Financial!
                                         </p>
 
-                                        <p style="font-size: 14px; color: #666; line-height: 1.5;">
+                                        <p style="font-size: 14px; color: #666666; line-height: 1.5;">
                                             Please click on the button below to calculate your approvals. You do not need a Woodmere Financial CRM login to use our calculator! Everyone on your team will have immediate access via this email.
                                         </p>
 
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
                                             <tr>
-                                                <td align="center" bgcolor="#3b7ab0" style="border-radius: 5px;">
+                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
                                                     <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Calculate your Approval</a>
                                                 </td>
                                             </tr>
                                         </table>
 
-                                        <h4 style="margin: 30px 0 10px 0; font-size: 15px; color: #333; text-decoration: underline;">REQUIRED STIPS FOR FUNDING</h4>
+                                        <h4 style="margin: 30px 0 10px 0; font-size: 15px; color: #111111; text-decoration: underline; letter-spacing: 0.5px;">REQUIRED STIPS FOR FUNDING</h4>
                                         <table border="0" cellpadding="0" cellspacing="0" width="100%">
                                             <tr>
-                                                <td width="50%" valign="top" style="font-size: 12px; color: #444; padding-right: 10px;">
+                                                <td width="50%" valign="top" style="font-size: 12px; color: #444444; padding-right: 10px;">
                                                     <strong>Provide with signed contracts:</strong>
-                                                    <ul style="padding-left: 15px; margin-top: 8px; color: #0b71a9;">
-                                                        <li><span style="color: #444;">Void Check</span></li>
-                                                        <li><span style="color: #444;">Driver's License</span></li>
+                                                    <ul style="padding-left: 15px; margin-top: 8px; color: #111111;">
+                                                        <li><span style="color: #444444;">Void Check</span></li>
+                                                        <li><span style="color: #444444;">Driver's License</span></li>
                                                     </ul>
                                                 </td>
-                                                <td width="50%" valign="top" style="font-size: 12px; color: #444;">
+                                                <td width="50%" valign="top" style="font-size: 12px; color: #444444;">
                                                     <strong>Abc Company will take care of:</strong>
-                                                    <ul style="padding-left: 15px; margin-top: 8px; color: #0b71a9;">
-                                                        <li><span style="color: #444;">Merchant Interview</span></li>
-                                                        <li><span style="color: #444;">Decision Logic/Bank Login</span></li>
-                                                        <li><span style="color: #444;">Recent Bank Statements</span></li>
+                                                    <ul style="padding-left: 15px; margin-top: 8px; color: #111111;">
+                                                        <li><span style="color: #444444;">Merchant Interview</span></li>
+                                                        <li><span style="color: #444444;">Decision Logic/Bank Login</span></li>
+                                                        <li><span style="color: #444444;">Recent Bank Statements</span></li>
                                                     </ul>
                                                 </td>
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #0b71a9; margin-top: 30px; font-weight: bold;">To view your application in Woodmere Financial CRM, click on the button below.</p>
+                                        <p style="font-size: 14px; color: #111111; margin-top: 30px; font-weight: bold;">To view your application in Woodmere Financial CRM, click on the button below.</p>
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
                                             <tr>
-                                                <td align="center" bgcolor="#3b7ab0" style="border-radius: 5px;">
-                                                    <a href="${viewApplicationUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
+                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
+                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
                                                 </td>
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 13px; color: #777; margin-top: 20px; line-height: 1.4;">If you need more information or have any questions/comments, contact your representative directly or leave a comment in the portal by clicking on the button below.</p>
+                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you need more information or have any questions/comments, contact your representative directly or leave a comment in the portal by clicking on the button below.</p>
                                         
                                         <table border="0" cellpadding="0" cellspacing="0">
                                             <tr>
-                                                <td align="center" bgcolor="#3b7ab0" style="border-radius: 5px;">
-                                                    <a href="#" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">Write Comment</a>
+                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
+                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">Write Comment</a>
                                                 </td>
                                             </tr>
                                         </table>
@@ -332,6 +289,7 @@ export async function sendApplicationApprovalEmail({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
+    bannerLogoUrl,
 }: ApplicationApprovalEmailParams): Promise<boolean> {
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
@@ -346,6 +304,7 @@ export async function sendApplicationApprovalEmail({
         companyName,
         viewApplicationUrl,
         calculateApprovalUrl,
+        bannerLogoUrl,
     });
 
     try {
@@ -553,6 +512,8 @@ export interface ApplicationOfferUpdatedEmailParams {
     companyName: string;
     viewApplicationUrl?: string;
     calculateApprovalUrl?: string;
+    /** Optional logo image link shown at the top (overrides OFFER_UPDATED_BANNER_LOGO_URL). */
+    bannerLogoUrl?: string;
 }
 
 export const buildApplicationOfferUpdatedEmailHtml = ({
@@ -560,9 +521,15 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
+    bannerLogoUrl,
 }: Omit<ApplicationOfferUpdatedEmailParams, 'to'>): string => {
     const safeClientName = clientName || 'Valued Client';
     const safeCompanyName = companyName || 'your company';
+    const emailHeader = buildIsoBrandedEmailHeaderHtml(
+        bannerLogoUrl || OFFER_UPDATED_BANNER_LOGO_URL,
+        'OFFER UPDATED',
+        'Your offer values have been updated based on the latest approval mail comment.',
+    );
 
     return `
 <!DOCTYPE html>
@@ -573,29 +540,13 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     ${buildBrandHeaderStyles()}
 </head>
-<body style="margin: 0; padding: 0; background-color: #f4f7f9; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
+<body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
     <table border="0" cellpadding="0" cellspacing="0" width="100%">
         <tr>
             <td style="padding: 20px 0;">
-                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border: 1px solid #dddddd;">
+                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #ffffff; border: 1px solid #e0e0e0;">
                     
-                    ${buildBrandHeaderRowHtml()}
-
-                    <tr>
-                        <td style="padding: 0 20px;">
-                            <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: linear-gradient(to right, #3b7ab0, #1a4a7c); background-color: #1a4a7c; border-radius: 8px;">
-                                <tr>
-                                    <td width="100" align="center" style="padding: 30px 0 30px 20px;">
-                                        <div style="width: 70px; height: 70px; border: 2px solid #ffffff; border-radius: 50%; line-height: 70px; text-align: center; font-size: 35px; color: #ffffff;">📄</div>
-                                    </td>
-                                    <td style="padding: 30px 20px; color: #ffffff;">
-                                        <div style="font-size: 22px; font-weight: bold; letter-spacing: 1px; margin-bottom: 5px;">OFFER UPDATED</div>
-                                        <div style="font-size: 14px; opacity: 0.9;">Your offer values have been updated based on the latest approval mail comment.</div>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
+                    ${emailHeader}
 
                     <tr>
                         <td style="padding: 30px 20px;">
@@ -603,17 +554,17 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
                                 <tr>
                                     <td width="110" valign="top" align="center">
                                         <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #0b71a9; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
-                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #333; line-height: 1.2;">Application<br/>Submitted</td></tr>
-                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #0b71a9; height: 35px;"></div></td></tr>
-                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #0b71a9; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
-                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #333;">Underwriting</td></tr>
-                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #0b71a9; height: 35px;"></div></td></tr>
-                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #0b71a9; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
-                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #333;">Approved</td></tr>
-                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #0b71a9; height: 35px;"></div></td></tr>
-                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #0b71a9; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
-                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #333;">Offer Updated</td></tr>
+                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #111111; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
+                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #111111; line-height: 1.2; font-weight: bold;">Application<br/>Submitted</td></tr>
+                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #111111; height: 35px;"></div></td></tr>
+                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #111111; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
+                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #111111; font-weight: bold;">Underwriting</td></tr>
+                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #111111; height: 35px;"></div></td></tr>
+                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #111111; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
+                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #111111; font-weight: bold;">Approved</td></tr>
+                                            <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #111111; height: 35px;"></div></td></tr>
+                                            <tr><td align="center"><div style="width: 32px; height: 32px; background: #111111; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">✓</div></td></tr>
+                                            <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #111111; font-weight: bold;">Offer Updated</td></tr>
                                             <tr><td align="center" style="padding: 5px 0;"><div style="width: 0px; border-left: 2px dotted #cccccc; height: 35px;"></div></td></tr>
                                             <tr><td align="center"><div style="width: 32px; height: 32px; background: #cccccc; border-radius: 50%; color: #ffffff; line-height: 32px; font-size: 16px;">X</div></td></tr>
                                             <tr><td align="center" style="font-size: 11px; padding: 5px 0; color: #888;">Final Call</td></tr>
@@ -624,36 +575,36 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
                                     </td>
 
                                     <td valign="top" style="padding-left: 25px;">
-                                        <p style="margin: 0 0 15px 0; font-size: 16px; color: #444;">Hi ${safeClientName}!</p>
+                                        <p style="margin: 0 0 15px 0; font-size: 16px; color: #111111;">Hi ${safeClientName}!</p>
                                         
-                                        <p style="font-size: 15px; color: #666; line-height: 1.5;">
+                                        <p style="font-size: 15px; color: #444444; line-height: 1.5;">
                                             Your offer values for
-                                            <strong style="color: #0b71a9;">'${safeCompanyName}'</strong>
+                                            <strong style="color: #111111;">'${safeCompanyName}'</strong>
                                             are now updated as mentioned in the last approval mail comment.
                                         </p>
 
-                                        <p style="font-size: 14px; color: #666; line-height: 1.5;">
+                                        <p style="font-size: 14px; color: #666666; line-height: 1.5;">
                                             Please review the updated offer details and recalculate approval values if needed.
                                         </p>
 
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
                                             <tr>
-                                                <td align="center" bgcolor="#3b7ab0" style="border-radius: 5px;">
+                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
                                                     <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Review Updated Offer</a>
                                                 </td>
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #0b71a9; margin-top: 24px; font-weight: bold;">To view your application in Woodmere Financial CRM, click the button below.</p>
+                                        <p style="font-size: 14px; color: #111111; margin-top: 24px; font-weight: bold;">To view your application in Woodmere Financial CRM, click the button below.</p>
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
                                             <tr>
-                                                <td align="center" bgcolor="#3b7ab0" style="border-radius: 5px;">
-                                                    <a href="${viewApplicationUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
+                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
+                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
                                                 </td>
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 13px; color: #777; margin-top: 20px; line-height: 1.4;">If you have questions, please reply to the latest approval mail comment thread or contact your representative.</p>
+                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you have questions, please reply to the latest approval mail comment thread or contact your representative.</p>
                                     </td>
                                 </tr>
                             </table>
@@ -674,6 +625,7 @@ export async function sendApplicationOfferUpdatedEmail({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
+    bannerLogoUrl,
 }: ApplicationOfferUpdatedEmailParams): Promise<boolean> {
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
@@ -688,6 +640,7 @@ export async function sendApplicationOfferUpdatedEmail({
         companyName,
         viewApplicationUrl,
         calculateApprovalUrl,
+        bannerLogoUrl,
     });
 
     try {

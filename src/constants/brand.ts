@@ -1,3 +1,4 @@
+import fs from 'fs';
 import path from 'path';
 
 /** Display name used in transactional email copy (matches outbound mail From name). */
@@ -27,22 +28,32 @@ export function buildBrandLogoAttachments(): Array<{
     contentType: string;
     contentDisposition: 'inline';
 }> {
-    return [
+    const candidates = [
         {
-            filename: false,
+            filename: false as const,
             path: BRAND_LIGHT_LOGO_PATH,
             cid: BRAND_LIGHT_LOGO_CID,
             contentType: 'image/png',
-            contentDisposition: 'inline',
+            contentDisposition: 'inline' as const,
         },
         {
-            filename: false,
+            filename: false as const,
             path: BRAND_DARK_LOGO_PATH,
             cid: BRAND_DARK_LOGO_CID,
             contentType: 'image/png',
-            contentDisposition: 'inline',
+            contentDisposition: 'inline' as const,
         },
     ];
+
+    const existing = candidates.filter((attachment) => fs.existsSync(attachment.path));
+    if (existing.length < candidates.length) {
+        const missing = candidates
+            .filter((attachment) => !fs.existsSync(attachment.path))
+            .map((attachment) => attachment.path);
+        console.warn('[email] Brand logo files missing; sending without inline logos:', missing);
+    }
+
+    return existing;
 }
 
 /**

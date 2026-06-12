@@ -375,6 +375,7 @@ model ComplianceCheck {
   application   Application @relation(fields: [applicationId], references: [id])
   createdBy     User        @relation(fields: [createdById], references: [id])
 
+  @@unique([applicationId, question])
   @@index([applicationId])
   @@index([createdById])
 }
