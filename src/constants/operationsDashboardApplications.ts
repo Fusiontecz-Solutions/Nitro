@@ -184,6 +184,13 @@ export function isFundingCallStatusCallDone(
   return normalizeFundingCallStatus(value) === "calldone";
 }
 
+/** Latest persisted funding call status is "Rejected" (case / spacing insensitive). */
+export function isFundingCallStatusRejected(
+  value: string | null | undefined,
+): boolean {
+  return normalizeFundingCallStatus(value) === "rejected";
+}
+
 /**
  * Whether the Disbursement tab may be opened for Operations / Super Admin.
  * Unlocks when funding call is Call Done, or the deal is already in Disbursement / Funded.

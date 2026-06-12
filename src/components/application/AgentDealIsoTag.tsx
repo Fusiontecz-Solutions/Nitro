@@ -344,8 +344,9 @@ export default function AgentDealIsoTag({
             </SelectTrigger>
             <SelectContent
                 position="popper"
-                className="z-[10060] max-h-72 rounded-xl backdrop-blur-xl border border-blue-500/10 shadow-xl"
-                header={
+                className="z-[10060] max-h-72 rounded-xl border border-blue-500/10 shadow-xl backdrop-blur-xl"
+            >
+                <div className="sticky top-0 z-10 border-b bg-popover p-2">
                     <div className="relative">
                         <Search
                             className={cn(
@@ -369,8 +370,7 @@ export default function AgentDealIsoTag({
                             onKeyDown={(e) => e.stopPropagation()}
                         />
                     </div>
-                }
-            >
+                </div>
                 {filteredIsos.length > 0 ? (
                     filteredIsos.map((iso) => (
                         <SelectItem

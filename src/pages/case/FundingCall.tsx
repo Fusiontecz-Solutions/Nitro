@@ -8,7 +8,7 @@ import { notifyOperationsForDisbursement } from '@/redux/actions/notificationAct
 import { resetNotifyOperationsDisbursement } from '@/redux/slices/notificationSlice';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { isFundingCallStatusCallDone } from '@/constants/operationsDashboardApplications';
+import { isFundingCallStatusCallDone, isFundingCallStatusRejected } from '@/constants/operationsDashboardApplications';
 
 type FundingCallProps = {
   applicationId?: string;
@@ -140,7 +140,13 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
       setShowSuccess(true);
       setCanNotifyOps(true);
       const callDone = isFundingCallStatusCallDone(form.callStatus);
-      if (callDone) {
+      const rejected = isFundingCallStatusRejected(form.callStatus);
+      if (rejected) {
+        setOpsNotified(false);
+        toast.success(
+          'Funding call saved. The deal has been declined.',
+        );
+      } else if (callDone) {
         setOpsNotified(true);
         toast.success(
           'Funding call saved. Operations has been notified to proceed with disbursement.',
@@ -287,7 +293,10 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
             'dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
           )}
         >
-          <span>✓</span> Application status updated successfully.
+          <span>✓</span>{' '}
+          {isFundingCallStatusRejected(form.callStatus)
+            ? 'Deal declined successfully.'
+            : 'Application status updated successfully.'}
         </div>
       )}
 
@@ -524,13 +533,15 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
                 !canNotifyOps ||
                 notifyingOps ||
                 isBusy ||
-                !isFundingCallStatusCallDone(form.callStatus)
+                !isFundingCallStatusCallDone(form.callStatus) ||
+                isFundingCallStatusRejected(form.callStatus)
               }
               aria-disabled={
                 !canNotifyOps ||
                 notifyingOps ||
                 isBusy ||
-                !isFundingCallStatusCallDone(form.callStatus)
+                !isFundingCallStatusCallDone(form.callStatus) ||
+                isFundingCallStatusRejected(form.callStatus)
               }
               aria-describedby="notify-ops-tooltip"
               className={cn(
