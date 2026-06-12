@@ -109,7 +109,6 @@ import {
     saveBoldSignCcEmailList,
 } from "./boldsignCcList";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
-import { TemplateMappingPrefillEditDialog } from "./contractdata/TemplateMappingPrefillEditDialog";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import { RequestedDocumentsPanel } from "./RequestedDocumentsPanel";
 import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions";
@@ -125,7 +124,6 @@ import {
     getPlatformSignerRoleRows,
     isAchAuthorizationLayoutKey,
     isPlatformLayoutKey,
-    PLATFORM_LAYOUT_KEYS,
     supplementalOptionLabel,
 } from "./contractdata/platformDocumentConfig";
 import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
@@ -654,6 +652,15 @@ function persistSentStepUnlocked(key: string | null) {
     if (!key || typeof window === "undefined") return;
     try {
         sessionStorage.setItem(key, "1");
+    } catch {
+        /* ignore */
+    }
+}
+
+function clearPersistedSentStepUnlocked(key: string | null) {
+    if (!key || typeof window === "undefined") return;
+    try {
+        sessionStorage.removeItem(key);
     } catch {
         /* ignore */
     }
@@ -1630,6 +1637,24 @@ const PDFViewerModal = ({
         [resolvedContract, sentAt, sentStepUnlocked],
     );
 
+    const contractIsFullySigned = useMemo(() => {
+        const doc = pickContractEnvelopeDocument(resolvedContract);
+        const cs = String(resolvedContract?.status ?? "").trim().toUpperCase();
+        const ds = String(doc?.status ?? "").trim().toLowerCase();
+        return cs === "COMPLETED" || cs === "SIGNED" || ds === "completed";
+    }, [resolvedContract]);
+
+    const canResendSignedContract = useMemo(
+        () =>
+            Boolean(onPrepareDocuSignDraft) &&
+            canResendMainContract(resolvedContract, sentAt) &&
+            contractIsFullySigned,
+        [onPrepareDocuSignDraft, resolvedContract, sentAt, contractIsFullySigned],
+    );
+
+    const showResendContractButton =
+        canResendSignedContract && !canCancelSentContract && !docuSignOpenUrl;
+
     const contractSignersValidationError = useMemo(() => {
         const roles = contractSignerOverrides?.length
             ? buildDocuSignRolesFromEditorRows(contractSignerOverrides)
@@ -2197,12 +2222,27 @@ const PDFViewerModal = ({
         setCcEmailDraft("");
     };
 
-    async function finishDocuSignReviewSend(docuSignTab: Window | null) {
+    async function finishDocuSignReviewSend(
+        docuSignTab: Window | null,
+        options?: { forceNewEnvelope?: boolean },
+    ) {
         try {
             flushSync(() => {
                 setIsSending(true);
                 setDocuSignOpenUrl(null);
             });
+
+            if (options?.forceNewEnvelope) {
+                setSessionEnvelopeId(null);
+                linkedEnvelopeIdRef.current = null;
+                sentStepUnlockedRef.current = false;
+                setSentStepUnlocked(false);
+                setSentAt(null);
+                clearPersistedSentStepUnlocked(sentStepPersistKey);
+                setActiveStep("summary");
+                prefilledPdfCachedForEnvelopeRef.current = null;
+                prefilledBoldSignPdfUrlRef.current = null;
+            }
             const draft = ccEmailDraft.trim();
             let toSend = [...ccEmails];
             if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
@@ -2407,9 +2447,15 @@ const PDFViewerModal = ({
         }
     }
 
-    const handleReviewInDocuSignClick = () => {
+    const handleReviewInDocuSignClick = (options?: { forceNewEnvelope?: boolean }) => {
         if (!fileUrl || isSending || docuSignSendInFlightRef.current) return;
-        if (!canReviewAndSendDocuSign) {
+        const forceNewEnvelope = options?.forceNewEnvelope === true;
+        if (forceNewEnvelope) {
+            if (!canResendSignedContract) {
+                toast.error("This contract cannot be resent yet.");
+                return;
+            }
+        } else if (!canReviewAndSendDocuSign) {
             toast.error(
                 "This contract is already out for signature. Void it in DocuSign before sending again.",
             );
@@ -2429,7 +2475,7 @@ const PDFViewerModal = ({
                 { autoClose: 8000 },
             );
         }
-        void finishDocuSignReviewSend(docuSignTab);
+        void finishDocuSignReviewSend(docuSignTab, options);
     };
 
     /**
@@ -6907,7 +6953,7 @@ const PDFViewerModal = ({
                                     {isCancellingContract ? "Voiding contract…" : "Void Contract"}
                                 </Button>
                             ) : null}
-                            {activeStep === "sent" && !canCancelSentContract ? (
+                            {activeStep === "sent" && !canCancelSentContract && !showResendContractButton ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -6915,6 +6961,23 @@ const PDFViewerModal = ({
                                     onClick={onClose}
                                 >
                                     Done
+                                </Button>
+                            ) : null}
+                            {showResendContractButton ? (
+                                <Button
+                                    type="button"
+                                    variant="default"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    disabled={
+                                        isSending ||
+                                        isCancellingContract ||
+                                        Boolean(contractSignersValidationError)
+                                    }
+                                    onClick={() =>
+                                        handleReviewInDocuSignClick({ forceNewEnvelope: true })
+                                    }
+                                >
+                                    {isSending ? "Preparing DocuSign…" : "Resend contract"}
                                 </Button>
                             ) : null}
                             {canReviewAndSendDocuSign && docuSignOpenUrl ? (

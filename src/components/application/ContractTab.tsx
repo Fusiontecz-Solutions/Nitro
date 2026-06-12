@@ -56,7 +56,7 @@ import BusinessInfoModal from "./BusinessInfoModal";
 import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
+import { FileText, Info, Landmark, Loader2, RefreshCw, Send } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
@@ -71,6 +71,13 @@ import {
     type AchAuthorizationDocuSignCapsuleStatus,
 } from "./contractdata/achAuthorizationDocuSign";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import {
+    buildContractSendTableRows,
+    canResendMainContract,
+    isContractFullySigned,
+    pickContractEnvelopeDocument,
+    type ContractSendTableRow,
+} from "./contractdata/contractSendHistory";
 // import { US_STATES } from "@/constants/usStates";
 import {
     buildContractPrefillFieldsFromApplication,
@@ -114,6 +121,7 @@ import {
     formatCurrencyFull,
     formatDate,
     formatDateTimeUS,
+    type DateInput,
     formatNumberUSForInput,
     parseNumberUS,
 } from "@/lib/utils";
@@ -141,28 +149,6 @@ const parseMaybeNumber = (value: unknown): number | null => {
 };
 
 const CONTRACT_VALUES_SECTION = "CONTRACT_VALUES";
-
-const isContractFullySigned = (
-    contractStatus: unknown,
-    documentStatus?: unknown,
-) => {
-    const cs = String(contractStatus ?? "").trim().toUpperCase();
-    const ds = String(documentStatus ?? "").trim().toLowerCase();
-    if (cs === "COMPLETED" || cs === "SIGNED") return true;
-    if (ds === "completed") return true;
-    return false;
-};
-
-function pickContractEnvelopeDocument(
-    contract: Record<string, unknown> | null | undefined,
-): Record<string, unknown> | null {
-    const app = contract?.application;
-    const doc =
-        app && typeof app === "object"
-            ? (app as { document?: unknown }).document
-            : null;
-    return doc && typeof doc === "object" ? (doc as Record<string, unknown>) : null;
-}
 
 function formatContractTableStatusLabel(
     contractStatus: unknown,
@@ -197,7 +183,7 @@ function contractStatusToCapsuleStatus(
 }
 
 function formatTableSentAt(value: unknown): string {
-    return formatDateTimeUS(value, "—");
+    return formatDateTimeUS(value as DateInput, "—");
 }
 
 /** BoldSign 400 when signers are rejected; show success toast instead of raw validation noise. */
@@ -336,6 +322,8 @@ export default function ContractTab({
     );
     const [creatingEnvelope, setCreatingEnvelope] = useState(false);
     const [viewingSignedContract, setViewingSignedContract] = useState(false);
+    const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
+    const [resendingContract, setResendingContract] = useState(false);
     const [signedPdfPreviewOpen, setSignedPdfPreviewOpen] = useState(false);
     const [signedPdfPreviewUrl, setSignedPdfPreviewUrl] = useState<string | null>(null);
     const [signedPdfPreviewName, setSignedPdfPreviewName] = useState("Signed contract.pdf");
@@ -520,35 +508,6 @@ export default function ContractTab({
 
     const contractEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
 
-    const contractTableStatusLabel = useMemo(
-        () =>
-            formatContractTableStatusLabel(
-                (fetchedContract as { status?: unknown } | null)?.status,
-                contractEnvelopeDocument?.status,
-                Boolean(contractEnvelopeId),
-            ),
-        [fetchedContract, contractEnvelopeDocument?.status, contractEnvelopeId],
-    );
-
-    const contractCapsuleStatus = useMemo(
-        () =>
-            contractStatusToCapsuleStatus(
-                (fetchedContract as { status?: unknown } | null)?.status,
-                contractEnvelopeDocument?.status,
-            ),
-        [fetchedContract, contractEnvelopeDocument?.status],
-    );
-
-    const contractSentAtDisplay = useMemo(
-        () =>
-            formatTableSentAt(
-                contractEnvelopeDocument?.sentAt ??
-                    contractEnvelopeDocument?.updatedAt ??
-                    null,
-            ),
-        [contractEnvelopeDocument?.sentAt, contractEnvelopeDocument?.updatedAt],
-    );
-
     const achSentAtDisplay = useMemo(
         () => formatTableSentAt(achAuthorizationDocuSign?.sentAt ?? null),
         [achAuthorizationDocuSign?.sentAt],
@@ -557,6 +516,26 @@ export default function ContractTab({
     const contractFullySigned = isContractFullySigned(
         (fetchedContract as { status?: unknown } | null)?.status,
         contractEnvelopeDocument?.status,
+    );
+
+    const canResendSignedContract =
+        !isReadOnly &&
+        hasGeneratedContract &&
+        canResendMainContract(
+            fetchedContract && typeof fetchedContract === "object"
+                ? (fetchedContract as Record<string, unknown>)
+                : null,
+        ) &&
+        contractFullySigned;
+
+    const contractSendTableRows = useMemo(
+        () =>
+            buildContractSendTableRows(
+                fetchedContract && typeof fetchedContract === "object"
+                    ? (fetchedContract as Record<string, unknown>)
+                    : null,
+            ),
+        [fetchedContract],
     );
 
     // Derive final calculations from offer decision + terms offer (aligned with OfferDecisionToggle).
@@ -916,12 +895,14 @@ export default function ContractTab({
         });
     };
 
-    const handleViewSignedContract = async () => {
+    const handleViewSignedContract = async (envelopeIdOverride?: string) => {
         if (!applicationUuid) {
             toast.error("Missing application ID.");
             return;
         }
 
+        const envelopeKey = String(envelopeIdOverride ?? "").trim() || null;
+        setViewingSignedEnvelopeId(envelopeKey);
         setViewingSignedContract(true);
         try {
             let contract = fetchedContract;
@@ -939,20 +920,24 @@ export default function ContractTab({
                 return;
             }
 
-            const documentStatus = (contract as any)?.application?.document?.status;
-            if (!isContractFullySigned((contract as any)?.status, documentStatus)) {
-                toast.info("The contract is not fully signed yet.");
-                return;
-            }
-
             const envelopeId = String(
-                (contract as any)?.application?.document?.envelopeId ?? "",
+                envelopeIdOverride ??
+                    (contract as any)?.application?.document?.envelopeId ??
+                    "",
             ).trim();
             if (!envelopeId) {
                 toast.error(
                     "No DocuSign envelope found. Refresh contract status after signing completes.",
                 );
                 return;
+            }
+
+            if (!envelopeIdOverride) {
+                const documentStatus = (contract as any)?.application?.document?.status;
+                if (!isContractFullySigned((contract as any)?.status, documentStatus)) {
+                    toast.info("The contract is not fully signed yet.");
+                    return;
+                }
             }
 
             const res = await axiosGet(
@@ -990,6 +975,20 @@ export default function ContractTab({
             toast.error(String(msg));
         } finally {
             setViewingSignedContract(false);
+            setViewingSignedEnvelopeId(null);
+        }
+    };
+
+    const handleResendContract = async () => {
+        if (!canResendSignedContract) return;
+        setResendingContract(true);
+        try {
+            const opened = await tryOpenExistingDraftViewer();
+            if (!opened) {
+                toast.info("No contract is available to resend.");
+            }
+        } finally {
+            setResendingContract(false);
         }
     };
 
@@ -1868,6 +1867,7 @@ export default function ContractTab({
             throw new Error("DocuSign did not return an envelope ID after creating the draft.");
         }
         await persistContractGeneratedStage();
+        await reloadFetchedContract();
         const ccEmailed = result.ccPrefilledEmail?.emailed;
         if (ccEmailed?.length) {
             toast.success(`CC copy emailed to: ${ccEmailed.join(", ")}`);
@@ -1939,6 +1939,156 @@ export default function ContractTab({
         !isReadOnly &&
         !hasGeneratedContract &&
         (bankDetailsLoading || !hasCompleteBankDetailsForContract);
+
+    const renderContractSendTableRow = (row: ContractSendTableRow) => {
+        const rowStatusLabel = formatContractTableStatusLabel(
+            row.contractStatus,
+            row.documentStatus,
+            Boolean(row.envelopeId),
+        );
+        const rowCapsuleStatus = contractStatusToCapsuleStatus(
+            row.contractStatus,
+            row.documentStatus,
+        );
+        const rowFullySigned = isContractFullySigned(
+            row.contractStatus,
+            row.documentStatus,
+        );
+        const rowSentAtDisplay = formatTableSentAt(row.sentAt);
+        const rowEnvelopeId = String(row.envelopeId ?? "").trim();
+        const isViewingRow =
+            viewingSignedContract &&
+            (viewingSignedEnvelopeId
+                ? viewingSignedEnvelopeId === rowEnvelopeId
+                : row.isCurrent);
+
+        return (
+            <TableRow key={row.key} className={tableRowClass}>
+                <TableCell className={tableCellClass}>
+                    <span className="inline-flex items-center gap-1.5">
+                        <FileText
+                            className="h-3.5 w-3.5 shrink-0 text-[#276D9C] dark:text-[#5AACEA]"
+                            aria-hidden
+                        />
+                        {row.label}
+                    </span>
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {fetchedContract?.offer?.term ?? "—"}
+                </TableCell>
+                <TableCell className={tableCellClass}>1</TableCell>
+                <TableCell className={tableCellClass}>
+                    {formatContractCurrency(fetchedContract?.approvedAmount)}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {formatContractCurrency(
+                        fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit,
+                    )}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {formatContractCurrency(contractTableMetrics.perPeriodPayment)}
+                </TableCell>
+                <TableCell className={tableCellClass}>{contractTableMetrics.buyRate}</TableCell>
+                <TableCell className={tableCellClass}>{contractTableMetrics.upsell}</TableCell>
+                <TableCell className={tableCellClass}>{contractTableMetrics.factor}</TableCell>
+                <TableCell>
+                    <div className="flex items-center gap-1.5">
+                        <span
+                            className={
+                                rowEnvelopeId && rowCapsuleStatus !== "DRAFT"
+                                    ? `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${achCapsuleClassName(rowCapsuleStatus)}`
+                                    : statusBadgeClass
+                            }
+                        >
+                            {rowStatusLabel}
+                        </span>
+                        {rowEnvelopeId ? (
+                            <>
+                                {rowFullySigned ? (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() =>
+                                            void handleViewSignedContract(
+                                                row.isCurrent ? undefined : rowEnvelopeId,
+                                            )
+                                        }
+                                        disabled={isViewingRow}
+                                        className={`h-7 w-7 shrink-0 ${isDark
+                                            ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                            : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                            }`}
+                                        title="View signed contract"
+                                    >
+                                        {isViewingRow ? (
+                                            <Loader2
+                                                className="h-3.5 w-3.5 animate-spin"
+                                                aria-hidden
+                                            />
+                                        ) : (
+                                            <Info className="h-3.5 w-3.5" aria-hidden />
+                                        )}
+                                    </Button>
+                                ) : null}
+                                {row.isCurrent && !rowFullySigned ? (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() =>
+                                            void refreshSigningStatusesOnContractTab(false, {
+                                                force: true,
+                                            })
+                                        }
+                                        disabled={refreshingSigningStatus}
+                                        className={`h-7 w-7 shrink-0 ${isDark
+                                            ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                            : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                            }`}
+                                        title="Refresh contract status"
+                                    >
+                                        <RefreshCw
+                                            className={`h-3.5 w-3.5 ${refreshingSigningStatus ? "animate-spin" : ""}`}
+                                            aria-hidden
+                                        />
+                                    </Button>
+                                ) : null}
+                                {row.isCurrent && rowFullySigned && canResendSignedContract ? (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() => void handleResendContract()}
+                                        disabled={resendingContract}
+                                        className={`h-7 w-7 shrink-0 ${isDark
+                                            ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                            : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                            }`}
+                                        title="Resend contract"
+                                    >
+                                        {resendingContract ? (
+                                            <Loader2
+                                                className="h-3.5 w-3.5 animate-spin"
+                                                aria-hidden
+                                            />
+                                        ) : (
+                                            <Send className="h-3.5 w-3.5" aria-hidden />
+                                        )}
+                                    </Button>
+                                ) : null}
+                            </>
+                        ) : null}
+                    </div>
+                </TableCell>
+                <TableCell
+                    className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
+                >
+                    {rowSentAtDisplay}
+                </TableCell>
+            </TableRow>
+        );
+    };
 
     const showBankDetailsHint =
         Boolean(applicationUuid) &&
@@ -2096,6 +2246,30 @@ export default function ContractTab({
                                 "Generate Contract"
                             )}
                         </Button>
+                        {canResendSignedContract ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleResendContract()}
+                                disabled={resendingContract || creatingEnvelope}
+                                className={`h-10 cursor-pointer px-6 py-2 font-medium rounded-md disabled:opacity-70 disabled:cursor-not-allowed ${isDark
+                                    ? "border-[#5AACEA] text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                    : "border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                                    }`}
+                            >
+                                {resendingContract ? (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Opening…
+                                    </span>
+                                ) : (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Send className="h-4 w-4 shrink-0" aria-hidden />
+                                        Resend Contract
+                                    </span>
+                                )}
+                            </Button>
+                        ) : null}
                         {!isReadOnly && (
                             <Button
                                 type="button"
@@ -2452,121 +2626,7 @@ export default function ContractTab({
                                 </TableRow>
                             ) : hasGeneratedContract ? (
                                 <Fragment>
-                                    <TableRow className={tableRowClass}>
-                                        <TableCell className={tableCellClass}>
-                                            <span className="inline-flex items-center gap-1.5">
-                                                <FileText
-                                                    className="h-3.5 w-3.5 shrink-0 text-[#276D9C] dark:text-[#5AACEA]"
-                                                    aria-hidden
-                                                />
-                                                Contract
-                                            </span>
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {fetchedContract?.offer?.term ?? "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            1
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(fetchedContract?.approvedAmount)}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(
-                                                fetchedContract?.totalAmount ??
-                                                    fetchedContract?.offer?.totalRemit,
-                                            )}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(
-                                                contractTableMetrics.perPeriodPayment,
-                                            )}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {contractTableMetrics.buyRate}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {contractTableMetrics.upsell}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {contractTableMetrics.factor}
-                                        </TableCell>
-                                        <TableCell>
-                                            <div className="flex items-center gap-1.5">
-                                                <span
-                                                    className={
-                                                        contractEnvelopeId &&
-                                                        contractCapsuleStatus !== "DRAFT"
-                                                            ? `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${achCapsuleClassName(contractCapsuleStatus)}`
-                                                            : statusBadgeClass
-                                                    }
-                                                >
-                                                    {contractTableStatusLabel}
-                                                </span>
-                                                {contractEnvelopeId ? (
-                                                    <>
-                                                        {contractFullySigned ? (
-                                                            <Button
-                                                                type="button"
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                onClick={() =>
-                                                                    void handleViewSignedContract()
-                                                                }
-                                                                disabled={viewingSignedContract}
-                                                                className={`h-7 w-7 shrink-0 ${isDark
-                                                                    ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                                                    : "text-[#276D9C] hover:bg-[#276D9C]/10"
-                                                                    }`}
-                                                                title="View signed contract"
-                                                            >
-                                                                {viewingSignedContract ? (
-                                                                    <Loader2
-                                                                        className="h-3.5 w-3.5 animate-spin"
-                                                                        aria-hidden
-                                                                    />
-                                                                ) : (
-                                                                    <Info
-                                                                        className="h-3.5 w-3.5"
-                                                                        aria-hidden
-                                                                    />
-                                                                )}
-                                                            </Button>
-                                                        ) : null}
-                                                        {!contractFullySigned ? (
-                                                            <Button
-                                                                type="button"
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                onClick={() =>
-                                                                    void refreshSigningStatusesOnContractTab(
-                                                                        false,
-                                                                        { force: true },
-                                                                    )
-                                                                }
-                                                                disabled={refreshingSigningStatus}
-                                                                className={`h-7 w-7 shrink-0 ${isDark
-                                                                    ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                                                    : "text-[#276D9C] hover:bg-[#276D9C]/10"
-                                                                    }`}
-                                                                title="Refresh contract status"
-                                                            >
-                                                                <RefreshCw
-                                                                    className={`h-3.5 w-3.5 ${refreshingSigningStatus ? "animate-spin" : ""}`}
-                                                                    aria-hidden
-                                                                />
-                                                            </Button>
-                                                        ) : null}
-                                                    </>
-                                                ) : null}
-                                            </div>
-                                        </TableCell>
-                                        <TableCell
-                                            className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
-                                        >
-                                            {contractSentAtDisplay}
-                                        </TableCell>
-                                    </TableRow>
+                                    {contractSendTableRows.map(renderContractSendTableRow)}
                                     <TableRow className={tableRowClass}>
                                         <TableCell className={tableCellClass}>
                                             <span className="inline-flex items-center gap-1.5">
@@ -2590,8 +2650,7 @@ export default function ContractTab({
                                                 <span
                                                     className={
                                                         achAuthorizationDocuSign?.envelopeId &&
-                                                        (achCapsuleStatus !== "DRAFT" ||
-                                                            achCapsuleStatus === "VOIDED")
+                                                        achCapsuleStatus !== "DRAFT"
                                                             ? `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${achCapsuleClassName(achCapsuleStatus)}`
                                                             : statusBadgeClass
                                                     }

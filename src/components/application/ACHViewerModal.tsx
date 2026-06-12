@@ -225,7 +225,6 @@ export default function ACHViewerModal({
 
     const hasFilledPdf = Boolean(linkedEnvelopeId);
     const isSigned = achCapsuleStatus === "SIGNED";
-    const isVoided = achCapsuleStatus === "VOIDED";
     const canVoidAch =
         !readOnly && canVoidAchAuthorization(achAuthorizationDocuSign, sessionEnvelopeId);
     const canResendAch =
@@ -742,7 +741,7 @@ export default function ACHViewerModal({
 
     return (
         <>
-            <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+            <Dialog open={isOpen} onOpenChange={(open: boolean) => !open && onClose()}>
                 <DialogContent className="flex h-[min(94vh,calc(100dvh-1.5rem))] max-h-[min(94vh,calc(100dvh-1.5rem))] min-h-0 w-[1280px] max-w-[96vw] flex-col gap-0 overflow-hidden bg-white p-0 dark:bg-slate-900">
                     <div className="shrink-0 border-b border-slate-200 px-6 py-4 dark:border-slate-700">
                         <DialogTitle className="text-base font-bold uppercase tracking-wide text-slate-900 dark:text-slate-100">
