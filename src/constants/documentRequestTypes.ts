@@ -1,5 +1,6 @@
 export type DocumentRequestSlug =
     | "bank-statements"
+    | "bank-statements-mtd"
     | "additional-id"
     | "business-license"
     | "proof-of-address"
@@ -21,6 +22,7 @@ export type DocumentRequestRow = {
 
 export const DOCUMENT_REQUEST_LABELS: Record<string, string> = {
     "bank-statements": "Bank Statements - 12 months",
+    "bank-statements-mtd": "Bank Statements - MTD",
     "additional-id": "Additional ID Proof",
     "business-license": "Business License",
     "proof-of-address": "Proof of Address",
