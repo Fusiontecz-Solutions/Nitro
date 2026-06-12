@@ -189,6 +189,12 @@ const CreateApplication = () => {
         defaultValues: defaultFormValues,
     })
 
+    // Clear stale create/update flags so a prior edit does not toast on this page.
+    useEffect(() => {
+        dispatch(resetCreateApplication())
+        dispatch(resetUpdateApplication())
+    }, [dispatch])
+
     // Fetch clients and users on mount
     useEffect(() => {
         dispatch(getClients({ limit: 100 })) // Fetch all clients for dropdown
@@ -273,35 +279,42 @@ const CreateApplication = () => {
         }
     }, [fetchError])
 
-    // Handle create success/error
+    // Handle create/update success/error (mode-guarded to avoid wrong toast)
     useEffect(() => {
-        if (createSuccess) {
+        if (!isEditMode && createSuccess) {
             toast.success('Application created successfully!')
             dispatch(resetCreateApplication())
             navigate('/applications', {
                 state: { refreshApplicationsList: true },
             })
+            return
         }
-        if (createError) {
+        if (!isEditMode && createError) {
             toast.error(createError)
             dispatch(resetCreateApplication())
+            return
         }
-    }, [createSuccess, createError, dispatch, navigate])
-
-    // Handle update success/error
-    useEffect(() => {
-        if (updateSuccess) {
+        if (isEditMode && updateSuccess) {
             toast.success('Application updated successfully!')
             dispatch(resetUpdateApplication())
             navigate('/applications', {
                 state: { refreshApplicationsList: true },
             })
+            return
         }
-        if (updateError) {
+        if (isEditMode && updateError) {
             toast.error(updateError)
             dispatch(resetUpdateApplication())
         }
-    }, [updateSuccess, updateError, dispatch, navigate])
+    }, [
+        isEditMode,
+        createSuccess,
+        createError,
+        updateSuccess,
+        updateError,
+        dispatch,
+        navigate,
+    ])
 
     // Cleanup on unmount
     useEffect(() => {

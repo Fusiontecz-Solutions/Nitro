@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Check } from "lucide-react";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -90,30 +90,18 @@ const ComplianceChecksQuestionnaire = ({
     const [questions, setQuestions] = useState<CheckQuestion[]>(
         DEFAULT_COMPLIANCE_QUESTIONS,
     );
+    const initialLoadDoneRef = useRef(false);
+    const savingQuestionsRef = useRef(new Set<string>());
+    const [isInitialLoading, setIsInitialLoading] = useState(true);
 
-    useEffect(() => {
-        setUser(loginData?.user);
-        if (!loginData?.user) {
-            const storedUser = localStorage.getItem("user");
-            if (storedUser) {
-                setUser(JSON.parse(storedUser));
-            }
-        }
-    }, [loginData, loginLoading]);
-
-    useEffect(() => {
-        if (!applicationId) return;
-        dispatch(getComplianceChecks({ application: String(applicationId) }));
-    }, [applicationId, dispatch]);
-
-    useEffect(() => {
-        if (complianceChecksData && Array.isArray(complianceChecksData)) {
+    const mergeServerChecksIntoQuestions = useCallback(
+        (checks: ComplianceCheck[]): CheckQuestion[] => {
             const checksMap = new Map<string, ComplianceCheck>();
-            complianceChecksData.forEach((check) => {
+            checks.forEach((check) => {
                 checksMap.set(check.question, check);
             });
 
-            const mergedQuestions = DEFAULT_COMPLIANCE_QUESTIONS.map((q) => {
+            return DEFAULT_COMPLIANCE_QUESTIONS.map((q) => {
                 const existingCheck = checksMap.get(q.question);
                 if (existingCheck) {
                     return {
@@ -127,12 +115,66 @@ const ComplianceChecksQuestionnaire = ({
                 }
                 return q;
             });
+        },
+        [],
+    );
 
-            setQuestions(mergedQuestions);
-        } else if (!complianceChecksLoading) {
+    const applySavedCheckToQuestions = useCallback((savedCheck: ComplianceCheck) => {
+        setQuestions((prev) =>
+            prev.map((q) =>
+                q.question === savedCheck.question
+                    ? {
+                          id: savedCheck._id,
+                          question: savedCheck.question,
+                          answer: savedCheck.answer,
+                          reason: savedCheck.reason,
+                          signature: savedCheck.signature,
+                          date: savedCheck.date,
+                      }
+                    : q,
+            ),
+        );
+    }, []);
+
+    useEffect(() => {
+        setUser(loginData?.user);
+        if (!loginData?.user) {
+            const storedUser = localStorage.getItem("user");
+            if (storedUser) {
+                setUser(JSON.parse(storedUser));
+            }
+        }
+    }, [loginData, loginLoading]);
+
+    useEffect(() => {
+        initialLoadDoneRef.current = false;
+        savingQuestionsRef.current.clear();
+        setIsInitialLoading(true);
+        setQuestions(DEFAULT_COMPLIANCE_QUESTIONS);
+
+        if (!applicationId) {
+            setIsInitialLoading(false);
+            return;
+        }
+        dispatch(getComplianceChecks({ application: String(applicationId) }));
+    }, [applicationId, dispatch]);
+
+    useEffect(() => {
+        if (complianceChecksLoading || initialLoadDoneRef.current) return;
+
+        if (complianceChecksData && Array.isArray(complianceChecksData)) {
+            setQuestions(mergeServerChecksIntoQuestions(complianceChecksData));
+        } else {
             setQuestions(DEFAULT_COMPLIANCE_QUESTIONS);
         }
-    }, [complianceChecksData, complianceChecksLoading]);
+
+        initialLoadDoneRef.current = true;
+        setIsInitialLoading(false);
+    }, [
+        complianceChecksData,
+        complianceChecksLoading,
+        mergeServerChecksIntoQuestions,
+    ]);
 
     const progress = useMemo((): ComplianceChecksProgress => {
         const total = questions.length;
@@ -162,7 +204,12 @@ const ComplianceChecksQuestionnaire = ({
                 return;
             }
 
+            if (savingQuestionsRef.current.has(questionText)) {
+                return;
+            }
+
             const previousQuestions = questions;
+            savingQuestionsRef.current.add(questionText);
 
             setQuestions((prev) =>
                 prev.map((q) =>
@@ -179,13 +226,17 @@ const ComplianceChecksQuestionnaire = ({
             );
 
             try {
-                await dispatch(
+                const result = await dispatch(
                     createOrUpdateComplianceCheck({
                         question: questionText,
                         answer: "no",
                         application: String(applicationId),
                     }),
                 ).unwrap();
+                const savedCheck = (result as { data?: ComplianceCheck }).data ?? result;
+                if (savedCheck && typeof savedCheck === "object" && "question" in savedCheck) {
+                    applySavedCheckToQuestions(savedCheck as ComplianceCheck);
+                }
             } catch (error: unknown) {
                 console.error("Save compliance check error:", error);
                 setQuestions(previousQuestions);
@@ -193,9 +244,11 @@ const ComplianceChecksQuestionnaire = ({
                     (error as { message?: string })?.message ||
                         "Failed to save compliance check",
                 );
+            } finally {
+                savingQuestionsRef.current.delete(questionText);
             }
         },
-        [applicationId, dispatch, questions],
+        [applicationId, applySavedCheckToQuestions, dispatch, questions],
     );
 
     const handleSaveDetails = useCallback(
@@ -220,7 +273,12 @@ const ComplianceChecksQuestionnaire = ({
                 return;
             }
 
+            if (savingQuestionsRef.current.has(question.question)) {
+                return;
+            }
+
             const previousQuestions = questions;
+            savingQuestionsRef.current.add(question.question);
 
             setQuestions((prev) =>
                 prev.map((q) =>
@@ -238,7 +296,7 @@ const ComplianceChecksQuestionnaire = ({
             setOpenModalQuestionId(null);
 
             try {
-                await dispatch(
+                const result = await dispatch(
                     createOrUpdateComplianceCheck({
                         question: question.question,
                         answer: "yes",
@@ -248,6 +306,10 @@ const ComplianceChecksQuestionnaire = ({
                         application: String(applicationId),
                     }),
                 ).unwrap();
+                const savedCheck = (result as { data?: ComplianceCheck }).data ?? result;
+                if (savedCheck && typeof savedCheck === "object" && "question" in savedCheck) {
+                    applySavedCheckToQuestions(savedCheck as ComplianceCheck);
+                }
 
                 toast.success("Compliance check saved successfully");
             } catch (error: unknown) {
@@ -257,9 +319,11 @@ const ComplianceChecksQuestionnaire = ({
                     (error as { message?: string })?.message ||
                         "Failed to save compliance check",
                 );
+            } finally {
+                savingQuestionsRef.current.delete(question.question);
             }
         },
-        [applicationId, dispatch, questions, user],
+        [applicationId, applySavedCheckToQuestions, dispatch, questions, user],
     );
 
     const getBorderColor = (answer?: "yes" | "no") => {
@@ -360,7 +424,7 @@ const ComplianceChecksQuestionnaire = ({
                 </div>
             ) : null}
 
-            {complianceChecksLoading ? (
+            {isInitialLoading ? (
                 <p className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"}`}>
                     Loading compliance checks…
                 </p>

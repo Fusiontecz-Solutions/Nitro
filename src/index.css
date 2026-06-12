@@ -314,3 +314,13 @@ body {
   min-height: calc(100dvh - 11rem);
   box-sizing: border-box;
 }
+
+/* Hide native scrollbar; pair with arrow controls in HorizontalScrollFade */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
