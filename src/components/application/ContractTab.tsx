@@ -441,6 +441,31 @@ export default function ContractTab({
         )[0];
     }, [achTemplateMappings]);
 
+    /** ACH template for the viewer — uses contract mapping when present, else the global ACH template. */
+    const effectiveAchMapping = useMemo((): AchDocumentTemplateMappingRow | null => {
+        if (linkedAchMapping) return linkedAchMapping;
+        const template = primaryAchTemplate;
+        if (!template || !boldSignTemplateIsPreviewable(template)) return null;
+        const ref = getBoldSignTemplateMappingRef(template);
+        if (!ref) return null;
+        const templateId = String(template.id ?? ref);
+        return {
+            id: `ach-template-${ref}`,
+            contractId: Number(selectedContractId) || 0,
+            templateId,
+            documentType: "ach",
+            order: 0,
+            template: {
+                id: templateId,
+                name: template.name,
+                type: template.type,
+                templateId: template.templateId,
+                pdfUrl: template.pdfUrl,
+                layoutKey: template.layoutKey,
+            },
+        };
+    }, [linkedAchMapping, primaryAchTemplate, selectedContractId]);
+
     const ensureAchTemplateMapping = useCallback(
         async (templateRef: string | null) => {
             if (!selectedContractId) return;
@@ -1882,13 +1907,16 @@ export default function ContractTab({
     );
 
     const openAchFormViewer = () => {
-        if (!hasGeneratedContract || !selectedContractId) {
-            toast.info("Generate a contract before sending the ACH form.");
-            return;
-        }
-        if (!linkedAchMapping) {
+        if (!effectiveAchMapping) {
             toast.info("ACH form is not configured. Add a BoldSign template with type ach.");
             return;
+        }
+        if (selectedContractId && !linkedAchMapping && primaryAchTemplate) {
+            const ref = getBoldSignTemplateMappingRef(primaryAchTemplate);
+            if (ref) {
+                void ensureAchTemplateMapping(ref).then(() => setAchViewerOpen(true));
+                return;
+            }
         }
         setAchViewerOpen(true);
     };
@@ -2073,17 +2101,18 @@ export default function ContractTab({
                                 Add Bank Details
                             </Button>
                         )}
-                        {!isReadOnly && hasGeneratedContract ? (
+                        {!isReadOnly && applicationUuid ? (
                             <Button
                                 type="button"
                                 onClick={openAchFormViewer}
                                 disabled={
                                     creatingEnvelope ||
-                                    loadingAchMappings ||
-                                    !linkedAchMapping
+                                    (Boolean(selectedContractId) && loadingAchMappings) ||
+                                    !effectiveAchMapping
                                 }
                                 title={
-                                    !linkedAchMapping && !loadingAchMappings
+                                    !effectiveAchMapping &&
+                                    !(Boolean(selectedContractId) && loadingAchMappings)
                                         ? "ACH form template is not configured."
                                         : undefined
                                 }
@@ -2776,7 +2805,7 @@ export default function ContractTab({
                 contractId={selectedContractId}
                 applicationId={applicationUuid ? String(applicationUuid) : null}
                 applicationData={applicationData}
-                achMapping={linkedAchMapping}
+                achMapping={effectiveAchMapping}
                 contract={
                     fetchedContract && typeof fetchedContract === "object"
                         ? (fetchedContract as Record<string, unknown>)

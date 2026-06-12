@@ -50,6 +50,8 @@ export const DOCUMENT_REQUEST_OPTIONS = [
 
     { id: "bank-statements", label: "Bank Statements - 12 months" },
 
+    { id: "bank-statements-mtd", label: "Bank Statements - MTD" },
+
     { id: "additional-id", label: "Additional ID Proof" },
 
     { id: "business-license", label: "Business License" },

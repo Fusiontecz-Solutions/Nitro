@@ -15,6 +15,7 @@ import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
 import { formatDateTimeUS, cn } from "@/lib/utils"
+import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch"
 import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache"
 import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch"
 
@@ -222,6 +223,26 @@ const UploadedDocuments = ({
         }
     }
 
+    const handleViewRequestedDocument = useCallback(
+        (requestDocId: string) => {
+            const match = findApplicationFileForDocumentRequest(requestDocId, serverUploadedFiles)
+            if (!match?.url) {
+                toast.error("File URL not available")
+                return
+            }
+            setPdfFileUrl(match.url)
+            setPdfFileName(match.displayName || "Document")
+            setIsPDFModalOpen(true)
+        },
+        [serverUploadedFiles],
+    )
+
+    const canViewRequestedDocument = useCallback(
+        (requestDocId: string) =>
+            Boolean(findApplicationFileForDocumentRequest(requestDocId, serverUploadedFiles)?.url),
+        [serverUploadedFiles],
+    )
+
     // Handle file view (open in PDF modal)
     const handleViewFile = (file: ApplicationFiles) => {
         if (file.url) {
@@ -301,6 +322,8 @@ const UploadedDocuments = ({
                         pending={pendingDocumentRequests}
                         completed={completedDocumentRequests}
                         onUpload={uploadRequestedDocument}
+                        onView={handleViewRequestedDocument}
+                        canView={canViewRequestedDocument}
                     />
                 ) : null}
                 {!readOnly && pendingFiles.length > 0 && (

@@ -105,6 +105,7 @@ import {
     type ContractPrefillField,
 } from "./contractdata/Contract";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
+import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import RequestedDocumentUploadRows, {
@@ -137,9 +138,6 @@ import {
     DOCUMENT_SEND_HISTORY_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
-    canPreviewFilledOrSignedEnvelope,
-    formatDocumentSendStatusLabel,
-    getDocumentSendStatusCapsuleClasses,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
@@ -167,10 +165,7 @@ import {
     type ContractSignerOverrideRow,
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
-import {
-    collapseDocuSignRolesToSignerSlots,
-    resolveActiveOwnerCount,
-} from "./contractdata/contractPartyCounts";
+import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
 import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
@@ -2630,6 +2625,49 @@ const PDFViewerModal = ({
         [applicationMongoId, dispatch, documentRequestLookupId],
     );
 
+    const applicationFilesForDocumentRequests = useMemo(
+        () =>
+            Array.isArray((applicationData as { files?: unknown[] } | null)?.files)
+                ? ((applicationData as { files: unknown[] }).files as Array<{
+                      originalName?: string | null;
+                      fileName?: string | null;
+                      url?: string | null;
+                      fileUrl?: string | null;
+                      downloadUrl?: string | null;
+                  }>)
+                : [],
+        [applicationData],
+    );
+
+    const canViewRequestedDocument = useCallback(
+        (requestDocId: string) =>
+            Boolean(
+                findApplicationFileForDocumentRequest(
+                    requestDocId,
+                    applicationFilesForDocumentRequests,
+                )?.url,
+            ),
+        [applicationFilesForDocumentRequests],
+    );
+
+    const handleViewRequestedDocument = useCallback(
+        (requestDocId: string) => {
+            const match = findApplicationFileForDocumentRequest(
+                requestDocId,
+                applicationFilesForDocumentRequests,
+            );
+            if (!match?.url) {
+                setDocumentUploadMessage("No preview URL found for this document.");
+                toast.error("No preview URL found for this document.");
+                return;
+            }
+            setActivePreview(null);
+            setUploadedPreviewUrl(match.url);
+            setPdfRightPaneTab("template");
+        },
+        [applicationFilesForDocumentRequests],
+    );
+
     const handlePreviewUploadedDocument = async (fileId: string) => {
         if (effectiveContractId == null || !fileId) return;
         try {
@@ -4477,41 +4515,22 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
 
-                                        {showRequestDocuments ? (
-                                            <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-600 dark:bg-slate-900/50">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
-                                                        Document requests
-                                                    </p>
-                                                    {documentRequestsLoading ? (
-                                                        <span className="text-[11px] text-slate-500">
-                                                            Loading…
-                                                        </span>
-                                                    ) : null}
-                                                </div>
+                                        {documentRequestsLoading ? (
+                                            <p className="text-[11px] text-slate-500">Loading document requests…</p>
+                                        ) : null}
 
-                                                {!documentRequestsLoading &&
-                                                (pendingDocumentRequests.length > 0 ||
-                                                    completedDocumentRequests.length > 0) ? (
-                                                    <RequestedDocumentUploadRows
-                                                        pending={pendingDocumentRequests}
-                                                        completed={completedDocumentRequests}
-                                                        onUpload={autoUploadRequestedDocument}
-                                                    />
-                                                ) : null}
-
-                                                {!documentRequestsLoading &&
-                                                pendingDocumentRequests.length === 0 &&
-                                                completedDocumentRequests.length === 0 ? (
-                                                    <p className="text-xs text-slate-500">
-                                                        No requests yet. Click{" "}
-                                                        <span className="font-medium text-[#CA8A03]">
-                                                            Request documents
-                                                        </span>{" "}
-                                                        above to email the ISO.
-                                                    </p>
-                                                ) : null}
-                                            </div>
+                                        {showRequestDocuments &&
+                                        !documentRequestsLoading &&
+                                        (pendingDocumentRequests.length > 0 ||
+                                            completedDocumentRequests.length > 0) ? (
+                                            <RequestedDocumentUploadRows
+                                                embedded
+                                                pending={pendingDocumentRequests}
+                                                completed={completedDocumentRequests}
+                                                onUpload={autoUploadRequestedDocument}
+                                                onView={handleViewRequestedDocument}
+                                                canView={canViewRequestedDocument}
+                                            />
                                         ) : null}
 
                                         <div className="space-y-2">
