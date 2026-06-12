@@ -20,6 +20,32 @@ import {
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasAddendumPrefillFieldMap,
 } from "./documentTemplateMappingPrefill";
+import { cn } from "@/lib/utils";
+
+/** Fields that span both columns in the addendum prefill editor (2-col layout). */
+const ADDENDUM_PREFILL_FULL_WIDTH_FIELD_IDS = new Set([
+    "achAuthorizationAccountHolderName",
+    "achAuthorizationAccountHolderAddress",
+    "achAuthorizationAccountHolderBankName",
+    "achAuthorizationConcentAccountHolderName",
+    "authorizationClientBankName",
+    "authorizationClientName",
+    "authorizationClientNamePrint",
+]);
+
+function addendumPrefillFieldColSpan(fieldId: string): 1 | 2 {
+    if (ADDENDUM_PREFILL_FULL_WIDTH_FIELD_IDS.has(fieldId)) return 2;
+    const k = fieldId.toLowerCase();
+    if (
+        (k.includes("address") || k.includes("street") || k.includes("mailing")) &&
+        !k.includes("city") &&
+        !k.includes("state") &&
+        !k.includes("zip")
+    ) {
+        return 2;
+    }
+    return 1;
+}
 
 export type TemplateMappingPrefillEditRow = {
     id: string;
@@ -213,7 +239,12 @@ export function TemplateMappingPrefillEditDialog({
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
-                className="flex max-h-[90vh] w-[min(100vw-2rem,640px)] flex-col gap-0 p-0 sm:max-w-[640px]"
+                className={cn(
+                    "flex max-h-[90vh] flex-col gap-0 p-0",
+                    addendumOnly
+                        ? "w-[min(100vw-2rem,768px)] sm:max-w-[768px]"
+                        : "w-[min(100vw-2rem,640px)] sm:max-w-[640px]",
+                )}
                 onOpenAutoFocus={(e : any) => e.preventDefault()}
             >
                 <DialogHeader className="shrink-0 border-b px-6 py-4">
@@ -256,21 +287,44 @@ export function TemplateMappingPrefillEditDialog({
                                     <span className="font-mono">client_name</span>.
                                 </p>
                             ) : null}
-                            <div className="grid gap-3 sm:grid-cols-1">
-                                {editorRows.map((r) => (
-                                    <div key={r.id} className="space-y-1.5">
-                                        <Label htmlFor={`tmpl-field-${r.id}`} className="text-xs font-medium">
-                                            {r.label}
-                                        </Label>
-                                        <Input
-                                            id={`tmpl-field-${r.id}`}
-                                            value={fieldValues[r.id] ?? ""}
-                                            onChange={(e) =>
-                                                setFieldValues((prev) => ({ ...prev, [r.id]: e.target.value }))
-                                            }
-                                        />
-                                    </div>
-                                ))}
+                            <div
+                                className={cn(
+                                    "grid gap-3",
+                                    addendumOnly ? "sm:grid-cols-2" : "sm:grid-cols-1",
+                                )}
+                            >
+                                {editorRows.map((r) => {
+                                    const colSpan = addendumOnly
+                                        ? addendumPrefillFieldColSpan(r.id)
+                                        : 1;
+                                    return (
+                                        <div
+                                            key={r.id}
+                                            className={cn(
+                                                "space-y-1.5",
+                                                colSpan === 2 && "sm:col-span-2",
+                                            )}
+                                        >
+                                            <Label
+                                                htmlFor={`tmpl-field-${r.id}`}
+                                                className="text-xs font-medium"
+                                            >
+                                                {r.label}
+                                            </Label>
+                                            <Input
+                                                id={`tmpl-field-${r.id}`}
+                                                value={fieldValues[r.id] ?? ""}
+                                                onChange={(e) =>
+                                                    setFieldValues((prev) => ({
+                                                        ...prev,
+                                                        [r.id]: e.target.value,
+                                                    }))
+                                                }
+                                                className="h-9 text-sm"
+                                            />
+                                        </div>
+                                    );
+                                })}
                             </div>
                             </>
                         )}

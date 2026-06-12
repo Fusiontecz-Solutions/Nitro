@@ -8,7 +8,6 @@ import {
     Clock,
     Download,
     Eye,
-    FileCheck,
     FileSignature,
     FileText,
     Info,
@@ -120,13 +119,6 @@ import {
     parseDocumentTemplatePrefillByMappingId,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./contractdata/documentTemplateMappingPrefill";
-import {
-    achCapsuleClassName,
-    formatAchAuthorizationCapsuleLabel,
-    parseAchAuthorizationDocuSignFromPrefill,
-    type AchAuthorizationDocuSignCapsuleStatus,
-} from "./contractdata/achAuthorizationDocuSign";
-import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./contractdata/docusignAddendumTemplates";
 import { DOCUSIGN_DEFAULT_SIGNER_ROLE } from "./contractdata/docusignTemplateConfig";
 import {
     CONTRACT_ADDENDUM_DOCUMENT_OPTIONS,
@@ -923,11 +915,6 @@ const PDFViewerModal = ({
     const [deletingUploadedFileId, setDeletingUploadedFileId] = useState<string | null>(null);
     const [openDocumentActionMenuId, setOpenDocumentActionMenuId] = useState<string | null>(null);
     const [templateMappings, setTemplateMappings] = useState<ContractDocumentTemplateMappingRow[]>([]);
-    const [achPrefillEditOpen, setAchPrefillEditOpen] = useState(false);
-    const [sendingAchDocuSign, setSendingAchDocuSign] = useState(false);
-    const [previewingAchEnvelope, setPreviewingAchEnvelope] = useState(false);
-    const [achStatusRefreshing, setAchStatusRefreshing] = useState(false);
-    const lastAchDocuSignSyncAtRef = useRef(0);
 
     const addendumTemplateMappings = useMemo(
         () => templateMappings.filter(isNonAchAddendumMappingRow),
@@ -947,35 +934,6 @@ const PDFViewerModal = ({
         )[0];
     }, [addendumTemplateMappings]);
 
-    const achAuthorizationDocuSign = useMemo(() => {
-        const fromDb = parseAchAuthorizationDocuSignFromPrefill(
-            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
-                ?.contractPrefillOverrides,
-        );
-        const fromLocal = parseAchAuthorizationDocuSignFromPrefill(contractPrefillFromDb);
-        if (!fromDb && !fromLocal) return null;
-        if (!fromDb) return fromLocal;
-        if (!fromLocal) return fromDb;
-        const dbAt = Date.parse(String(fromDb.updatedAt ?? fromDb.sentAt ?? ""));
-        const localAt = Date.parse(String(fromLocal.updatedAt ?? fromLocal.sentAt ?? ""));
-        return localAt > dbAt ? fromLocal : fromDb;
-    }, [resolvedContract, contractPrefillFromDb]);
-
-    const achCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus =
-        achAuthorizationDocuSign?.status ?? "DRAFT";
-
-    const achHasDocuSignEnvelope = Boolean(
-        String(achAuthorizationDocuSign?.envelopeId ?? "").trim(),
-    );
-
-    const achShowStatusCapsule = achHasDocuSignEnvelope && achCapsuleStatus !== "DRAFT";
-
-    const linkedAchMapping = useMemo(() => {
-        if (!achTemplateMappings.length) return null;
-        return [...achTemplateMappings].sort(
-            (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
-        )[0];
-    }, [achTemplateMappings]);
     const [documentTemplatePrefillByMappingId, setDocumentTemplatePrefillByMappingId] = useState<
         Record<string, Record<string, string>>
     >({});
@@ -2443,99 +2401,6 @@ const PDFViewerModal = ({
         }
     }
 
-    const handleSendAchViaDocuSign = async () => {
-        if (!onPrepareDocuSignDraft || sendingAchDocuSign) return;
-        if (!linkedAchMapping) {
-            toast.error("ACH authorization template is not linked yet.");
-            return;
-        }
-        const signerValidationMsg =
-            contractSignersValidationError ||
-            getContractSignerValidationMessage(
-                buildDocuSignRolesForSync(),
-                contractSignerOverrides,
-            );
-        if (signerValidationMsg) {
-            toast.error(signerValidationMsg);
-            setShowRecipientEditor(true);
-            return;
-        }
-
-        const docuSignTab = openDocuSignLoadingTab();
-        if (!docuSignTab) {
-            toast.warning("Allow pop-ups for this site so DocuSign can open in a new tab.", {
-                autoClose: 8000,
-            });
-        }
-
-        setSendingAchDocuSign(true);
-        try {
-            const toSend = mergeContractCcEmailList(
-                [...new Set(ccEmails.map((e) => e.trim()).filter(Boolean))],
-            );
-            const signerRolesForSend = buildDocuSignRolesForSync();
-            const prepared = await onPrepareDocuSignDraft({
-                ccEmails: toSend,
-                supplementalLayoutKey: DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE,
-                includeMainContract: false,
-                funderName: selectedFunder.trim() || null,
-                signerRoles: signerRolesForSend,
-            });
-            const envelopeId = String(
-                (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
-            ).trim();
-            if (!envelopeId) {
-                const msg = "Could not create the ACH DocuSign draft. Check signers and template configuration.";
-                toast.error(msg);
-                showDocuSignTabMessage(docuSignTab, "Could not open DocuSign", msg);
-                return;
-            }
-
-            const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
-                envelopeId,
-                toSend,
-                true,
-            );
-            const senderUrl = senderViewResult.url;
-            if (!senderUrl) {
-                const detail = String(senderViewResult.error ?? "").trim();
-                const msg =
-                    detail ||
-                    "ACH draft was created but DocuSign did not return a review URL yet. Try again in a few seconds.";
-                toast.error(msg, { autoClose: 12000 });
-                showDocuSignTabMessage(docuSignTab, "Could not open DocuSign", msg);
-                return;
-            }
-
-            const opened = navigateDocuSignTab(docuSignTab, senderUrl);
-            if (!opened) {
-                setDocuSignOpenUrl(senderUrl);
-                toast.info(
-                    "Your browser blocked the DocuSign tab. Click Open DocuSign below (or allow pop-ups for this site).",
-                    { autoClose: 12000 },
-                );
-                return;
-            }
-
-            setDocuSignOpenUrl(null);
-            toast.success(
-                "ACH authorization opened in DocuSign. Review the form and click Send to email the signer.",
-                { autoClose: 12000 },
-            );
-            void refreshAchSigningStateRef.current(false);
-        } catch (error) {
-            console.error("Failed to open ACH DocuSign draft:", error);
-            showDocuSignTabMessage(
-                docuSignTab,
-                "Could not open DocuSign",
-                "Something went wrong while preparing the ACH draft. Try again.",
-            );
-            toast.error("Failed to open ACH authorization in DocuSign.");
-        } finally {
-            setSendingAchDocuSign(false);
-        }
-    };
-
     const handleReviewInDocuSignClick = () => {
         if (!fileUrl || isSending || docuSignSendInFlightRef.current) return;
         if (!canReviewAndSendDocuSign) {
@@ -2762,7 +2627,6 @@ const PDFViewerModal = ({
     }, [effectiveContractId]);
 
     const lastDocuSignSyncAtRef = useRef(0);
-    const refreshAchSigningStateRef = useRef<(silent?: boolean) => Promise<void>>(async () => {});
     const contractWasSentRef = useRef(false);
     const prevContractStatusRef = useRef("");
     const pendingCcForSentRef = useRef<string[]>([]);
@@ -2988,54 +2852,6 @@ const PDFViewerModal = ({
         },
         [applicationIdForLookup, contractId, dispatch],
     );
-
-    const refreshAchSigningState = useCallback(
-        async (silent?: boolean) => {
-            const eid = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
-            if (!eid) return;
-            if (!silent) setAchStatusRefreshing(true);
-            try {
-                const now = Date.now();
-                const forceSync = !silent;
-                if (forceSync || now - lastAchDocuSignSyncAtRef.current >= 12_000) {
-                    lastAchDocuSignSyncAtRef.current = now;
-                    await axiosPost("/docusign/sync-envelope-status", { envelopeId: eid });
-                }
-                await refreshContractSigningState(true);
-            } catch (err: unknown) {
-                if (!silent) {
-                    const msg = await parseApiErrorMessageFromAxios(err);
-                    toast.error(msg || "Could not refresh ACH signing status.");
-                }
-            } finally {
-                if (!silent) setAchStatusRefreshing(false);
-            }
-        },
-        [achAuthorizationDocuSign?.envelopeId, refreshContractSigningState],
-    );
-
-    refreshAchSigningStateRef.current = refreshAchSigningState;
-
-    const ACH_SIGNING_STATUS_POLL_MS = 20_000;
-
-    useEffect(() => {
-        if (!isOpen || activeStep !== "info") return;
-        const eid = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
-        if (!eid) return;
-        if (achCapsuleStatus === "SIGNED") return;
-
-        void refreshAchSigningState(true);
-        const id = window.setInterval(() => {
-            void refreshAchSigningState(true);
-        }, ACH_SIGNING_STATUS_POLL_MS);
-        return () => window.clearInterval(id);
-    }, [
-        isOpen,
-        activeStep,
-        achAuthorizationDocuSign?.envelopeId,
-        achCapsuleStatus,
-        refreshAchSigningState,
-    ]);
 
     /** Once per modal open — not on every contract row refresh (avoids sync-envelope-status storms). */
     useEffect(() => {
@@ -3295,79 +3111,6 @@ const PDFViewerModal = ({
         [effectiveContractId, fetchTemplateMappings],
     );
 
-    const setAchTemplateMapping = useCallback(
-        async (templateRef: string | null) => {
-            if (effectiveContractId == null) return;
-            const ref = String(templateRef || "").trim();
-            try {
-                const res = await axiosGet(
-                    `/contract/${effectiveContractId}/document-template-mappings`,
-                );
-                const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
-                const achRows = rows.filter(isAchContractMappingRow);
-                await Promise.all(
-                    achRows.map((row) =>
-                        axiosDelete(
-                            `/contract/${effectiveContractId}/document-template-mappings/${row.id}`,
-                        ),
-                    ),
-                );
-                if (ref) {
-                    await axiosPost(`/contract/${effectiveContractId}/document-template-mappings`, {
-                        documentType: "ach",
-                        templateRef: ref,
-                    });
-                }
-                await fetchTemplateMappings();
-            } catch (error: any) {
-                setDocumentUploadMessage(
-                    error?.message || "Failed to update ACH authorization template.",
-                );
-            }
-        },
-        [effectiveContractId, fetchTemplateMappings],
-    );
-
-    const handlePreviewAchDocuSignEnvelope = useCallback(async () => {
-        const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
-        if (!envelopeId) {
-            toast.error("Send the ACH authorization via DocuSign first.");
-            return;
-        }
-        try {
-            setPreviewingAchEnvelope(true);
-            const response = await axiosGet(
-                `/docusign/download/${encodeURIComponent(envelopeId)}`,
-                { responseType: "blob", timeout: 120000 },
-            );
-            const blob =
-                response?.data instanceof Blob
-                    ? response.data
-                    : new Blob([response?.data], { type: "application/pdf" });
-            if (!blob.size) {
-                toast.error("DocuSign returned an empty ACH PDF.");
-                return;
-            }
-            if (templatePreviewBlobUrlRef.current) {
-                URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
-            }
-            const url = URL.createObjectURL(blob);
-            templatePreviewBlobUrlRef.current = url;
-            setActivePreview(null);
-            setUploadedPreviewUrl(url);
-            setDocumentUploadMessage(
-                achCapsuleStatus === "SIGNED"
-                    ? "Showing signed ACH authorization from DocuSign."
-                    : "Showing filled ACH authorization from DocuSign.",
-            );
-        } catch (error: unknown) {
-            const msg = await parseApiErrorMessageFromAxios(error);
-            toast.error(msg || "Failed to load ACH form from DocuSign.");
-        } finally {
-            setPreviewingAchEnvelope(false);
-        }
-    }, [achAuthorizationDocuSign?.envelopeId, achCapsuleStatus]);
-
     const handlePreviewBoldSignTemplate = useCallback(
         async (row: ContractDocumentTemplateMappingRow) => {
             const templateRef = String(
@@ -3476,21 +3219,6 @@ const PDFViewerModal = ({
         achTemplateMappings,
         linkedAddendumMapping,
         fetchTemplateMappings,
-    ]);
-
-    useEffect(() => {
-        if (!isOpen || activeStep !== "info" || effectiveContractId == null || loadingTemplateMappings) {
-            return;
-        }
-        if (linkedAchMapping) return;
-        void setAchTemplateMapping(DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION);
-    }, [
-        isOpen,
-        activeStep,
-        effectiveContractId,
-        loadingTemplateMappings,
-        linkedAchMapping,
-        setAchTemplateMapping,
     ]);
 
     // Reset preview to contract when leaving Documents tab
@@ -5366,201 +5094,6 @@ const PDFViewerModal = ({
                                         </div> */}
 
 
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
-                                            <div className="mb-3 flex items-start justify-between gap-2">
-                                                <div className="flex min-w-0 items-start gap-2.5">
-                                                    <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-600/12 text-teal-700 dark:text-teal-300"
-                                                        aria-hidden
-                                                    >
-                                                        <Landmark className="h-4 w-4" />
-                                                    </div>
-                                                    <div className="min-w-0">
-                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
-                                                            ACH Authorization
-                                                        </h4>
-                                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                            Prefill, edit, and send the ACH authorization via
-                                                            DocuSign.
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                                {linkedAchMapping && achHasDocuSignEnvelope ? (
-                                                    <div className="flex shrink-0 items-center gap-1">
-                                                        {achShowStatusCapsule ? (
-                                                            <span
-                                                                className={cn(
-                                                                    "inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1",
-                                                                    achCapsuleClassName(achCapsuleStatus),
-                                                                )}
-                                                            >
-                                                                {formatAchAuthorizationCapsuleLabel(
-                                                                    achCapsuleStatus,
-                                                                )}
-                                                            </span>
-                                                        ) : null}
-                                                        <Button
-                                                            type="button"
-                                                            size="icon"
-                                                            variant="ghost"
-                                                            className="h-7 w-7 shrink-0 cursor-pointer text-slate-600 hover:bg-slate-100 hover:text-[#276D9C] dark:hover:bg-slate-800"
-                                                            title={
-                                                                achStatusRefreshing
-                                                                    ? "Refreshing ACH status…"
-                                                                    : "Refresh ACH status"
-                                                            }
-                                                            disabled={achStatusRefreshing}
-                                                            onClick={() =>
-                                                                void refreshAchSigningState(false)
-                                                            }
-                                                        >
-                                                            <RefreshCw
-                                                                className={cn(
-                                                                    "h-3.5 w-3.5",
-                                                                    achStatusRefreshing && "animate-spin",
-                                                                )}
-                                                            />
-                                                        </Button>
-                                                    </div>
-                                                ) : linkedAchMapping ? null : loadingTemplateMappings ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#276D9C]">
-                                                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                                                        Loading
-                                                    </span>
-                                                ) : null}
-                                            </div>
-
-                                            <div className="space-y-2">
-                                                {linkedAchMapping ? (
-                                                    <div
-                                                        key={linkedAchMapping.id}
-                                                        className="flex items-center justify-between gap-2 rounded-lg border border-teal-200/90 bg-gradient-to-r from-teal-50/80 to-white px-2.5 py-2.5 shadow-sm transition-colors dark:border-slate-600 dark:from-teal-950/25 dark:to-slate-900/80"
-                                                    >
-                                                        <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
-                                                            <div
-                                                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-600 text-white shadow-sm"
-                                                                aria-hidden
-                                                            >
-                                                                <FileText className="h-4 w-4" />
-                                                            </div>
-                                                            <div className="min-w-0">
-                                                                <div className="flex flex-wrap items-center gap-1.5">
-                                                                    <span className="inline-flex rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:bg-sky-900/50 dark:text-sky-200">
-                                                                        ACH
-                                                                    </span>
-                                                                </div>
-                                                                <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                                                                    {formatDropdownLabel(
-                                                                        linkedAchMapping?.template?.name ||
-                                                                            supplementalOptionLabel(
-                                                                                contractMappingLayoutKey(
-                                                                                    linkedAchMapping,
-                                                                                ) ||
-                                                                                    PLATFORM_LAYOUT_KEYS.achAuthorization,
-                                                                            ) ||
-                                                                            "ACH Authorization",
-                                                                    )}
-                                                                </p>
-                                                            </div>
-                                                        </div>
-                                                        <div className="flex shrink-0 items-center gap-0.5">
-                                                            <Button
-                                                                type="button"
-                                                                size="icon"
-                                                                variant="ghost"
-                                                                className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
-                                                                title="View ACH template PDF"
-                                                                disabled={
-                                                                    previewingTemplateId ===
-                                                                    String(linkedAchMapping.id)
-                                                                }
-                                                                onClick={() =>
-                                                                    void handlePreviewBoldSignTemplate(
-                                                                        linkedAchMapping,
-                                                                    )
-                                                                }
-                                                            >
-                                                                {previewingTemplateId ===
-                                                                String(linkedAchMapping.id) ? (
-                                                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                                ) : (
-                                                                    <Eye className="h-3.5 w-3.5" />
-                                                                )}
-                                                            </Button>
-                                                            {achHasDocuSignEnvelope ? (
-                                                                <Button
-                                                                    type="button"
-                                                                    size="icon"
-                                                                    variant="ghost"
-                                                                    className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-emerald-50 hover:text-emerald-800 dark:hover:bg-emerald-950/40"
-                                                                    title={
-                                                                        achCapsuleStatus === "SIGNED"
-                                                                            ? "View signed ACH form"
-                                                                            : "View filled ACH form"
-                                                                    }
-                                                                    disabled={previewingAchEnvelope}
-                                                                    onClick={() =>
-                                                                        void handlePreviewAchDocuSignEnvelope()
-                                                                    }
-                                                                >
-                                                                    {previewingAchEnvelope ? (
-                                                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                                    ) : (
-                                                                        <FileCheck className="h-3.5 w-3.5" />
-                                                                    )}
-                                                                </Button>
-                                                            ) : null}
-                                                            {canEditContractPrefill ? (
-                                                                <Button
-                                                                    type="button"
-                                                                    size="icon"
-                                                                    variant="ghost"
-                                                                    className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-teal-50 hover:text-teal-800 dark:hover:bg-teal-950/40"
-                                                                    title="Edit ACH form fields"
-                                                                    onClick={() => setAchPrefillEditOpen(true)}
-                                                                >
-                                                                    <Pencil className="h-3.5 w-3.5" />
-                                                                </Button>
-                                                            ) : null}
-                                                        </div>
-                                                    </div>
-                                                ) : (
-                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
-                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-teal-600/10 text-teal-700">
-                                                            <Landmark className="h-5 w-5" aria-hidden />
-                                                        </div>
-                                                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
-                                                            Linking ACH authorization template…
-                                                        </p>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            {onPrepareDocuSignDraft ? (
-                                                <Button
-                                                    type="button"
-                                                    className={cn(
-                                                        "mt-4 h-10 w-full cursor-pointer border-0 bg-[#276D9C] text-sm font-medium text-white shadow-sm hover:bg-[#276D9C]/90",
-                                                    )}
-                                                    disabled={
-                                                        !linkedAchMapping ||
-                                                        sendingAchDocuSign ||
-                                                        loadingTemplateMappings
-                                                    }
-                                                    onClick={() => void handleSendAchViaDocuSign()}
-                                                >
-                                                    {sendingAchDocuSign ? (
-                                                        <>
-                                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                            Opening DocuSign…
-                                                        </>
-                                                    ) : (
-                                                        "Send ACH via DocuSign"
-                                                    )}
-                                                </Button>
-                                            ) : null}
-                                        </div>
-
                                         {activeInfoPanel && (
                                             <div className="overflow-hidden rounded-xl border border-[#276D9C]/20 bg-white shadow-sm animate-in fade-in slide-in-from-top-1 duration-200 dark:border-slate-700 dark:bg-slate-900">
                                                 <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-[#276D9C]/5 to-transparent px-4 py-3">
@@ -7435,42 +6968,6 @@ const PDFViewerModal = ({
                 linkedAddendumMapping={linkedAddendumMapping}
                 resolvedContract={resolvedContract}
                 contractSignerOverrides={contractSignerOverrides}
-            />
-            <TemplateMappingPrefillEditDialog
-                open={achPrefillEditOpen}
-                onOpenChange={setAchPrefillEditOpen}
-                row={
-                    linkedAchMapping
-                        ? {
-                              id: linkedAchMapping.id,
-                              contractId: linkedAchMapping.contractId,
-                              templateId: String(
-                                  linkedAchMapping.template?.templateId ??
-                                      linkedAchMapping.templateId ??
-                                      "",
-                              ),
-                              documentType: String(linkedAchMapping.documentType || "ach"),
-                              template: linkedAchMapping.template ?? null,
-                          }
-                        : null
-                }
-                contractId={effectiveContractId}
-                applicationUuid={applicationIdForLookup}
-                applicationData={applicationData}
-                resolvedContract={resolvedContract}
-                agreementDate={formatDate(new Date())}
-                documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
-                mainPrefillOverrides={
-                    contractPrefillLoaded ? contractPrefillFromDb ?? null : null
-                }
-                bankDetail={contractPrefillRecords.bankDetail ?? null}
-                addendumOnly
-                onSaved={() => {
-                    void fetchTemplateMappings();
-                    if (applicationIdForLookup) {
-                        void dispatch(getByApplicationIdContract(applicationIdForLookup));
-                    }
-                }}
             />
             <RequestMissingDocumentsModal
                 variant="request"

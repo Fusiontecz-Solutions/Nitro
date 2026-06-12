@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
 import { type AppDispatch, type RootState } from "@/redux/store";
@@ -56,17 +56,21 @@ import BusinessInfoModal from "./BusinessInfoModal";
 import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Info, Landmark, Loader2, RefreshCw } from "lucide-react";
+import { FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
+import ACHViewerModal from "./ACHViewerModal";
 import { mergeContractCcEmailList } from "./boldsignCcList";
-import { axiosGet, axiosPost } from "@/redux/axios";
+import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
+import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./contractdata/docusignAddendumTemplates";
+import { isAchAuthorizationLayoutKey } from "./contractdata/platformDocumentConfig";
 import {
     achCapsuleClassName,
     formatAchAuthorizationCapsuleLabel,
     parseAchAuthorizationDocuSignFromPrefill,
     type AchAuthorizationDocuSignCapsuleStatus,
 } from "./contractdata/achAuthorizationDocuSign";
+import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
 // import { US_STATES } from "@/constants/usStates";
 import {
     buildContractPrefillFieldsFromApplication,
@@ -109,6 +113,7 @@ import {
     formatCurrency,
     formatCurrencyFull,
     formatDate,
+    formatDateTimeUS,
     formatNumberUSForInput,
     parseNumberUS,
 } from "@/lib/utils";
@@ -147,6 +152,53 @@ const isContractFullySigned = (
     if (ds === "completed") return true;
     return false;
 };
+
+function pickContractEnvelopeDocument(
+    contract: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+    const app = contract?.application;
+    const doc =
+        app && typeof app === "object"
+            ? (app as { document?: unknown }).document
+            : null;
+    return doc && typeof doc === "object" ? (doc as Record<string, unknown>) : null;
+}
+
+function formatContractTableStatusLabel(
+    contractStatus: unknown,
+    documentStatus?: unknown,
+    hasEnvelope?: boolean,
+): string {
+    if (!hasEnvelope) return "Pending";
+    const ds = String(documentStatus ?? "").trim().toLowerCase();
+    const cs = String(contractStatus ?? "").trim().toUpperCase();
+    if (ds === "completed" || cs === "COMPLETED" || cs === "SIGNED") return "Signed";
+    if (ds === "viewed" || ds === "delivered" || cs === "VIEWED") return "Viewed";
+    if (ds === "sent" || cs === "SENT") return "Sent";
+    if (ds === "draft" || ds === "created" || cs === "DRAFT") return "Draft";
+    if (cs === "GENERATED") return "Generated";
+    return cs
+        ? cs
+              .replace(/_/g, " ")
+              .toLowerCase()
+              .replace(/\b\w/g, (c) => c.toUpperCase())
+        : "Pending";
+}
+
+function contractStatusToCapsuleStatus(
+    contractStatus: unknown,
+    documentStatus?: unknown,
+): AchAuthorizationDocuSignCapsuleStatus {
+    const label = formatContractTableStatusLabel(contractStatus, documentStatus, true);
+    if (label === "Signed") return "SIGNED";
+    if (label === "Viewed") return "VIEWED";
+    if (label === "Sent") return "SENT";
+    return "DRAFT";
+}
+
+function formatTableSentAt(value: unknown): string {
+    return formatDateTimeUS(value, "—");
+}
 
 /** BoldSign 400 when signers are rejected; show success toast instead of raw validation noise. */
 function isBoldSignMissingSignerMessage(message: string): boolean {
@@ -289,7 +341,10 @@ export default function ContractTab({
     const [signedPdfPreviewName, setSignedPdfPreviewName] = useState("Signed contract.pdf");
     const [fetchedContract, setFetchedContract] = useState<any | null>(null);
     const [viewingAchDocument, setViewingAchDocument] = useState(false);
-    const [refreshingAchStatus, setRefreshingAchStatus] = useState(false);
+    const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
+    const signingStatusSyncInFlightRef = useRef(false);
+    const [achViewerOpen, setAchViewerOpen] = useState(false);
+    const [achViewerInitialTab, setAchViewerInitialTab] = useState<"template" | "filled">("template");
 
     const appId =
         applicationId ??
@@ -451,8 +506,58 @@ export default function ContractTab({
     const achTableStatusLabel = useMemo(() => {
         if (!achAuthorizationDocuSign?.envelopeId) return "Pending";
         if (achCapsuleStatus === "DRAFT") return "Draft";
+        if (achCapsuleStatus === "VOIDED") return "Voided";
         return formatAchAuthorizationCapsuleLabel(achCapsuleStatus);
     }, [achAuthorizationDocuSign?.envelopeId, achCapsuleStatus]);
+
+    const contractEnvelopeDocument = useMemo(
+        () =>
+            pickContractEnvelopeDocument(
+                fetchedContract as Record<string, unknown> | null | undefined,
+            ),
+        [fetchedContract],
+    );
+
+    const contractEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
+
+    const contractTableStatusLabel = useMemo(
+        () =>
+            formatContractTableStatusLabel(
+                (fetchedContract as { status?: unknown } | null)?.status,
+                contractEnvelopeDocument?.status,
+                Boolean(contractEnvelopeId),
+            ),
+        [fetchedContract, contractEnvelopeDocument?.status, contractEnvelopeId],
+    );
+
+    const contractCapsuleStatus = useMemo(
+        () =>
+            contractStatusToCapsuleStatus(
+                (fetchedContract as { status?: unknown } | null)?.status,
+                contractEnvelopeDocument?.status,
+            ),
+        [fetchedContract, contractEnvelopeDocument?.status],
+    );
+
+    const contractSentAtDisplay = useMemo(
+        () =>
+            formatTableSentAt(
+                contractEnvelopeDocument?.sentAt ??
+                    contractEnvelopeDocument?.updatedAt ??
+                    null,
+            ),
+        [contractEnvelopeDocument?.sentAt, contractEnvelopeDocument?.updatedAt],
+    );
+
+    const achSentAtDisplay = useMemo(
+        () => formatTableSentAt(achAuthorizationDocuSign?.sentAt ?? null),
+        [achAuthorizationDocuSign?.sentAt],
+    );
+
+    const contractFullySigned = isContractFullySigned(
+        (fetchedContract as { status?: unknown } | null)?.status,
+        contractEnvelopeDocument?.status,
+    );
 
     // Derive final calculations from offer decision + terms offer (aligned with OfferDecisionToggle).
     const offerRecord =
@@ -898,39 +1003,156 @@ export default function ContractTab({
         return contract;
     }, [applicationUuid, dispatch]);
 
-    const refreshAchStatusOnContractTab = useCallback(
-        async (silent?: boolean) => {
-            const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
-            if (!envelopeId) return;
-            if (!silent) setRefreshingAchStatus(true);
+    const refreshSigningStatusesOnContractTab = useCallback(
+        async (silent?: boolean, options?: { force?: boolean }) => {
+            const mainEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
+            const achEnvelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
+            if (!mainEnvelopeId && !achEnvelopeId) return;
+            if (signingStatusSyncInFlightRef.current) return;
+
+            signingStatusSyncInFlightRef.current = true;
+            if (!silent) setRefreshingSigningStatus(true);
+            const syncErrors: string[] = [];
+            const appId = applicationUuid ? String(applicationUuid) : undefined;
+            const syncOpts = {
+                applicationId: appId,
+                contractId: selectedContractId,
+                force: options?.force,
+                silent,
+            };
             try {
-                await axiosPost("/docusign/sync-envelope-status", { envelopeId });
-                await reloadFetchedContract();
-            } catch (err: unknown) {
-                if (!silent) {
-                    const msg =
-                        (err as { response?: { data?: { message?: string } }; message?: string })
-                            ?.response?.data?.message ||
-                        (err as { message?: string })?.message ||
-                        "Could not refresh ACH status.";
-                    toast.error(String(msg));
+                if (mainEnvelopeId) {
+                    try {
+                        await syncDocuSignEnvelopeStatus(mainEnvelopeId, syncOpts);
+                    } catch (err: unknown) {
+                        const msg =
+                            err instanceof Error
+                                ? err.message
+                                : String(
+                                      (err as { response?: { data?: { message?: string } } })
+                                          ?.response?.data?.message ||
+                                          "Could not refresh contract status.",
+                                  );
+                        syncErrors.push(msg);
+                    }
+                }
+                if (achEnvelopeId && achEnvelopeId !== mainEnvelopeId) {
+                    try {
+                        await syncDocuSignEnvelopeStatus(achEnvelopeId, syncOpts);
+                    } catch (err: unknown) {
+                        const msg =
+                            err instanceof Error
+                                ? err.message
+                                : String(
+                                      (err as { response?: { data?: { message?: string } } })
+                                          ?.response?.data?.message ||
+                                          "Could not refresh ACH status.",
+                                  );
+                        syncErrors.push(msg);
+                    }
                 }
             } finally {
-                if (!silent) setRefreshingAchStatus(false);
+                signingStatusSyncInFlightRef.current = false;
+                try {
+                    await reloadFetchedContract();
+                } catch {
+                    /* parent table still benefits from partial sync */
+                }
+                if (!silent && syncErrors.length > 0) {
+                    toast.error(syncErrors[0]);
+                }
+                if (!silent) setRefreshingSigningStatus(false);
             }
         },
-        [achAuthorizationDocuSign?.envelopeId, reloadFetchedContract],
+        [
+            achAuthorizationDocuSign?.envelopeId,
+            applicationUuid,
+            contractEnvelopeDocument?.envelopeId,
+            reloadFetchedContract,
+            selectedContractId,
+        ],
     );
 
     useEffect(() => {
-        const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
-        if (!envelopeId || achCapsuleStatus === "SIGNED") return;
-        void refreshAchStatusOnContractTab(true);
+        const mainEnvelopeId = contractEnvelopeId;
+        const achEnvelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
+        const shouldPollContract = Boolean(mainEnvelopeId) && !contractFullySigned;
+        const shouldPollAch =
+            Boolean(achEnvelopeId) &&
+            achCapsuleStatus !== "SIGNED" &&
+            achCapsuleStatus !== "VOIDED";
+        if (!shouldPollContract && !shouldPollAch) return;
+
+        void refreshSigningStatusesOnContractTab(true);
         const id = window.setInterval(() => {
-            void refreshAchStatusOnContractTab(true);
-        }, 20_000);
+            void refreshSigningStatusesOnContractTab(true);
+        }, 30_000);
         return () => window.clearInterval(id);
-    }, [achAuthorizationDocuSign?.envelopeId, achCapsuleStatus, refreshAchStatusOnContractTab]);
+    }, [
+        contractEnvelopeId,
+        contractFullySigned,
+        achAuthorizationDocuSign?.envelopeId,
+        achCapsuleStatus,
+        refreshSigningStatusesOnContractTab,
+    ]);
+
+    const ensureAchTemplateLinked = useCallback(async (contractId: number) => {
+        const res = await axiosGet(`/contract/${contractId}/document-template-mappings`);
+        const rows = (res?.data?.data ?? []) as Array<{
+            id: string;
+            documentType?: string;
+            template?: { layoutKey?: string; templateId?: string } | null;
+            templateId?: string;
+        }>;
+        const achRows = rows.filter((row) => {
+            const docType = String(row.documentType ?? "").toLowerCase();
+            if (docType === "ach") return true;
+            const key = String(
+                row.template?.layoutKey ?? row.template?.templateId ?? row.templateId ?? "",
+            )
+                .trim()
+                .toLowerCase();
+            return isAchAuthorizationLayoutKey(key);
+        });
+        await Promise.all(
+            achRows.slice(1).map((row) =>
+                axiosDelete(`/contract/${contractId}/document-template-mappings/${row.id}`),
+            ),
+        );
+        if (achRows.length > 0) return;
+        await axiosPost(`/contract/${contractId}/document-template-mappings`, {
+            documentType: "ach",
+            templateRef: DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION,
+        });
+    }, []);
+
+    useEffect(() => {
+        const contractId = Number(selectedContractId);
+        if (!Number.isFinite(contractId) || contractId <= 0) return;
+        void ensureAchTemplateLinked(contractId).catch((err) => {
+            console.warn("[ContractTab] ACH template auto-link skipped:", err);
+        });
+    }, [selectedContractId, ensureAchTemplateLinked]);
+
+    const openAchViewer = async (initialTab: "template" | "filled" = "template") => {
+        if (!hasGeneratedContract) {
+            toast.error("Generate a contract before sending the ACH form.");
+            return;
+        }
+        const contractId = Number(selectedContractId);
+        if (!Number.isFinite(contractId) || contractId <= 0) {
+            toast.error("No contract found for this application.");
+            return;
+        }
+        try {
+            await ensureAchTemplateLinked(contractId);
+            setAchViewerInitialTab(initialTab);
+            setAchViewerOpen(true);
+        } catch (error) {
+            console.error("Failed to prepare ACH viewer:", error);
+            toast.error("Could not open ACH form viewer.");
+        }
+    };
 
     const handleViewAchDocument = async () => {
         const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
@@ -938,45 +1160,9 @@ export default function ContractTab({
             toast.info("ACH authorization has not been sent via DocuSign yet.");
             return;
         }
-
         setViewingAchDocument(true);
         try {
-            const res = await axiosGet(
-                `/docusign/download/${encodeURIComponent(envelopeId)}`,
-                { responseType: "blob", timeout: 120000 },
-            );
-            const blob =
-                res.data instanceof Blob
-                    ? res.data
-                    : new Blob([res.data], { type: "application/pdf" });
-            if (!blob.size) {
-                toast.error("DocuSign returned an empty PDF.");
-                return;
-            }
-
-            const objectUrl = URL.createObjectURL(blob);
-            const fileLabel = String(
-                (applicationData as { applicationId?: unknown })?.applicationId ??
-                    applicationUuid,
-            ).replace(/[^\w.-]+/g, "_");
-            const fileName =
-                achCapsuleStatus === "SIGNED"
-                    ? `signed-ach-authorization-${fileLabel}.pdf`
-                    : `ach-authorization-${fileLabel}.pdf`;
-
-            setSignedPdfPreviewUrl((prev) => {
-                if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
-                return objectUrl;
-            });
-            setSignedPdfPreviewName(fileName);
-            setSignedPdfPreviewOpen(true);
-        } catch (err: unknown) {
-            const msg =
-                (err as { response?: { data?: { message?: string } }; message?: string })
-                    ?.response?.data?.message ||
-                (err as { message?: string })?.message ||
-                "Could not load the ACH authorization PDF.";
-            toast.error(String(msg));
+            await openAchViewer("filled");
         } finally {
             setViewingAchDocument(false);
         }
@@ -1910,6 +2096,29 @@ export default function ContractTab({
                                 "Generate Contract"
                             )}
                         </Button>
+                        {!isReadOnly && (
+                            <Button
+                                type="button"
+                                onClick={() =>
+                                    void openAchViewer(
+                                        achAuthorizationDocuSign?.envelopeId
+                                            ? "filled"
+                                            : "template",
+                                    )
+                                }
+                                disabled={!hasGeneratedContract}
+                                title={
+                                    !hasGeneratedContract
+                                        ? "Generate a contract before sending the ACH form."
+                                        : undefined
+                                }
+                                className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
+                            >
+                                {achAuthorizationDocuSign?.envelopeId
+                                    ? "View ACH Form"
+                                    : "Send ACH Form"}
+                            </Button>
+                        )}
 
                     </div>
                 </div>
@@ -2226,25 +2435,32 @@ export default function ContractTab({
                                 <TableHead className={tableHeaderCellClass}>
                                     STATUS
                                 </TableHead>
+                                <TableHead className={tableHeaderCellClass}>
+                                    SENT
+                                </TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {(!fetchedContract && contractsForTable.length === 0) ? (
+                            {(!hasGeneratedContract && contractsForTable.length === 0) ? (
                                 <TableRow className={tableRowClass}>
                                     <TableCell
-                                        colSpan={10}
+                                        colSpan={11}
                                         className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
                                     >
                                         No contracts generated yet.
                                     </TableCell>
                                 </TableRow>
-                            ) : fetchedContract ? (
+                            ) : hasGeneratedContract ? (
                                 <Fragment>
                                     <TableRow className={tableRowClass}>
                                         <TableCell className={tableCellClass}>
-                                            {fetchedContract?.offer?.offer ||
-                                                fetchedContract?.program ||
-                                                "Contract"}
+                                            <span className="inline-flex items-center gap-1.5">
+                                                <FileText
+                                                    className="h-3.5 w-3.5 shrink-0 text-[#276D9C] dark:text-[#5AACEA]"
+                                                    aria-hidden
+                                                />
+                                                Contract
+                                            </span>
                                         </TableCell>
                                         <TableCell className={tableCellClass}>
                                             {fetchedContract?.offer?.term ?? "—"}
@@ -2277,36 +2493,78 @@ export default function ContractTab({
                                         </TableCell>
                                         <TableCell>
                                             <div className="flex items-center gap-1.5">
-                                                <span className={statusBadgeClass}>
-                                                    {String(fetchedContract?.status || "Generated")}
+                                                <span
+                                                    className={
+                                                        contractEnvelopeId &&
+                                                        contractCapsuleStatus !== "DRAFT"
+                                                            ? `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${achCapsuleClassName(contractCapsuleStatus)}`
+                                                            : statusBadgeClass
+                                                    }
+                                                >
+                                                    {contractTableStatusLabel}
                                                 </span>
-                                                {isContractFullySigned(
-                                                    fetchedContract?.status,
-                                                    fetchedContract?.application?.document?.status,
-                                                ) ? (
-                                                    <Button
-                                                        type="button"
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        onClick={() => void handleViewSignedContract()}
-                                                        disabled={viewingSignedContract}
-                                                        className={`h-7 w-7 shrink-0 ${isDark
-                                                            ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                                            : "text-[#276D9C] hover:bg-[#276D9C]/10"
-                                                            }`}
-                                                        title="View signed contract"
-                                                    >
-                                                        {viewingSignedContract ? (
-                                                            <Loader2
-                                                                className="h-3.5 w-3.5 animate-spin"
-                                                                aria-hidden
-                                                            />
-                                                        ) : (
-                                                            <Info className="h-3.5 w-3.5" aria-hidden />
-                                                        )}
-                                                    </Button>
+                                                {contractEnvelopeId ? (
+                                                    <>
+                                                        {contractFullySigned ? (
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                onClick={() =>
+                                                                    void handleViewSignedContract()
+                                                                }
+                                                                disabled={viewingSignedContract}
+                                                                className={`h-7 w-7 shrink-0 ${isDark
+                                                                    ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                                                    : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                                    }`}
+                                                                title="View signed contract"
+                                                            >
+                                                                {viewingSignedContract ? (
+                                                                    <Loader2
+                                                                        className="h-3.5 w-3.5 animate-spin"
+                                                                        aria-hidden
+                                                                    />
+                                                                ) : (
+                                                                    <Info
+                                                                        className="h-3.5 w-3.5"
+                                                                        aria-hidden
+                                                                    />
+                                                                )}
+                                                            </Button>
+                                                        ) : null}
+                                                        {!contractFullySigned ? (
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                onClick={() =>
+                                                                    void refreshSigningStatusesOnContractTab(
+                                                                        false,
+                                                                        { force: true },
+                                                                    )
+                                                                }
+                                                                disabled={refreshingSigningStatus}
+                                                                className={`h-7 w-7 shrink-0 ${isDark
+                                                                    ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+                                                                    : "text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                                    }`}
+                                                                title="Refresh contract status"
+                                                            >
+                                                                <RefreshCw
+                                                                    className={`h-3.5 w-3.5 ${refreshingSigningStatus ? "animate-spin" : ""}`}
+                                                                    aria-hidden
+                                                                />
+                                                            </Button>
+                                                        ) : null}
+                                                    </>
                                                 ) : null}
                                             </div>
+                                        </TableCell>
+                                        <TableCell
+                                            className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
+                                        >
+                                            {contractSentAtDisplay}
                                         </TableCell>
                                     </TableRow>
                                     <TableRow className={tableRowClass}>
@@ -2331,8 +2589,9 @@ export default function ContractTab({
                                             <div className="flex items-center gap-1.5">
                                                 <span
                                                     className={
-                                                        achCapsuleStatus !== "DRAFT" &&
-                                                        achAuthorizationDocuSign?.envelopeId
+                                                        achAuthorizationDocuSign?.envelopeId &&
+                                                        (achCapsuleStatus !== "DRAFT" ||
+                                                            achCapsuleStatus === "VOIDED")
                                                             ? `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${achCapsuleClassName(achCapsuleStatus)}`
                                                             : statusBadgeClass
                                                     }
@@ -2366,17 +2625,19 @@ export default function ContractTab({
                                                                 <Info className="h-3.5 w-3.5" aria-hidden />
                                                             )}
                                                         </Button>
-                                                        {achCapsuleStatus !== "SIGNED" ? (
+                                                        {achCapsuleStatus !== "SIGNED" &&
+                                                        achCapsuleStatus !== "VOIDED" ? (
                                                             <Button
                                                                 type="button"
                                                                 variant="ghost"
                                                                 size="icon"
                                                                 onClick={() =>
-                                                                    void refreshAchStatusOnContractTab(
+                                                                    void refreshSigningStatusesOnContractTab(
                                                                         false,
+                                                                        { force: true },
                                                                     )
                                                                 }
-                                                                disabled={refreshingAchStatus}
+                                                                disabled={refreshingSigningStatus}
                                                                 className={`h-7 w-7 shrink-0 ${isDark
                                                                     ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
                                                                     : "text-[#276D9C] hover:bg-[#276D9C]/10"
@@ -2384,7 +2645,7 @@ export default function ContractTab({
                                                                 title="Refresh ACH status"
                                                             >
                                                                 <RefreshCw
-                                                                    className={`h-3.5 w-3.5 ${refreshingAchStatus ? "animate-spin" : ""}`}
+                                                                    className={`h-3.5 w-3.5 ${refreshingSigningStatus ? "animate-spin" : ""}`}
                                                                     aria-hidden
                                                                 />
                                                             </Button>
@@ -2392,6 +2653,11 @@ export default function ContractTab({
                                                     </>
                                                 ) : null}
                                             </div>
+                                        </TableCell>
+                                        <TableCell
+                                            className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
+                                        >
+                                            {achSentAtDisplay}
                                         </TableCell>
                                     </TableRow>
                                 </Fragment>
@@ -2442,6 +2708,7 @@ export default function ContractTab({
                                                 Generated
                                             </span>
                                         </TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
                                     </TableRow>
                                 ))
                             )}
@@ -2625,6 +2892,28 @@ export default function ContractTab({
                 fileUrl={signedPdfPreviewUrl}
                 fileName={signedPdfPreviewName}
                 showPrintButton
+            />
+
+            <ACHViewerModal
+                isOpen={achViewerOpen}
+                onClose={() => {
+                    setAchViewerOpen(false);
+                    void reloadFetchedContract();
+                }}
+                contractId={selectedContractId}
+                applicationId={applicationUuid ? String(applicationUuid) : null}
+                applicationData={applicationData}
+                fetchedContract={
+                    fetchedContract && typeof fetchedContract === "object"
+                        ? (fetchedContract as Record<string, unknown>)
+                        : null
+                }
+                initialPdfTab={achViewerInitialTab}
+                readOnly={isReadOnly}
+                onPrepareDocuSignDraft={
+                    isReadOnly ? undefined : (payload) => prepareDocuSignDraft(payload)
+                }
+                onReloadContract={reloadFetchedContract}
             />
         </div>
     );

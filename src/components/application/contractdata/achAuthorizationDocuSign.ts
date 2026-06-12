@@ -1,7 +1,12 @@
 /** Stored on `Contract.contractPrefillOverrides` — separate from main contract envelope. */
 export const ACH_AUTHORIZATION_DOCUSIGN_KEY = "achAuthorizationDocuSign";
 
-export type AchAuthorizationDocuSignCapsuleStatus = "DRAFT" | "SENT" | "VIEWED" | "SIGNED";
+export type AchAuthorizationDocuSignCapsuleStatus =
+    | "DRAFT"
+    | "SENT"
+    | "VIEWED"
+    | "SIGNED"
+    | "VOIDED";
 
 export type AchAuthorizationDocuSignMeta = {
     envelopeId: string;
@@ -16,6 +21,9 @@ export function mapInternalEnvelopeStatusToAchCapsule(
     const k = String(internalStatus ?? "")
         .trim()
         .toLowerCase();
+    if (k === "voided" || k === "revoked" || k === "declined" || k === "expired") {
+        return "VOIDED";
+    }
     if (k === "completed" || k === "signed") return "SIGNED";
     if (k === "viewed" || k === "delivered") return "VIEWED";
     if (k === "sent" || k === "processing") return "SENT";
@@ -33,7 +41,10 @@ export function parseAchAuthorizationDocuSignFromPrefill(
     if (!envelopeId) return null;
     const statusRaw = String(o.status ?? "DRAFT").trim().toUpperCase();
     const status: AchAuthorizationDocuSignCapsuleStatus =
-        statusRaw === "SENT" || statusRaw === "VIEWED" || statusRaw === "SIGNED"
+        statusRaw === "SENT" ||
+        statusRaw === "VIEWED" ||
+        statusRaw === "SIGNED" ||
+        statusRaw === "VOIDED"
             ? statusRaw
             : "DRAFT";
     return {
@@ -64,9 +75,11 @@ export function mergeAchAuthorizationDocuSignIntoPrefill(
         sentAt:
             patch.sentAt !== undefined
                 ? patch.sentAt
-                : status === "SENT" || status === "VIEWED" || status === "SIGNED"
-                  ? (prior.sentAt ?? now)
-                  : (prior.sentAt ?? null),
+                : status === "VOIDED"
+                  ? null
+                  : status === "SENT" || status === "VIEWED" || status === "SIGNED"
+                    ? (prior.sentAt ?? now)
+                    : (prior.sentAt ?? null),
         updatedAt: patch.updatedAt ?? now,
     };
     return {
@@ -85,6 +98,8 @@ export function formatAchAuthorizationCapsuleLabel(
             return "Viewed";
         case "SIGNED":
             return "Signed";
+        case "VOIDED":
+            return "Voided";
         default:
             return "Ready";
     }
@@ -98,7 +113,34 @@ export function achCapsuleClassName(status: AchAuthorizationDocuSignCapsuleStatu
             return "bg-amber-100 text-amber-900 ring-amber-200/80 dark:bg-amber-900/35 dark:text-amber-100 dark:ring-amber-800/50";
         case "SIGNED":
             return "bg-emerald-100 text-emerald-800 ring-emerald-200/80 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-800/50";
+        case "VOIDED":
+            return "bg-slate-200 text-slate-700 ring-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-600";
         default:
             return "bg-sky-100 text-sky-800 ring-sky-200/80 dark:bg-sky-900/40 dark:text-sky-200 dark:ring-sky-800/50";
     }
+}
+
+/** ACH envelope is in-flight (draft, sent, or viewed) — void before resending. */
+export function achEnvelopeIsActive(status: AchAuthorizationDocuSignCapsuleStatus): boolean {
+    return status === "DRAFT" || status === "SENT" || status === "VIEWED";
+}
+
+export function canVoidAchAuthorization(
+    meta: AchAuthorizationDocuSignMeta | null,
+    sessionEnvelopeId?: string | null,
+): boolean {
+    const envelopeId = String(meta?.envelopeId ?? sessionEnvelopeId ?? "").trim();
+    if (!envelopeId) return false;
+    const status = meta?.status ?? "DRAFT";
+    return achEnvelopeIsActive(status);
+}
+
+export function canResendAchAuthorization(
+    meta: AchAuthorizationDocuSignMeta | null,
+    sessionEnvelopeId?: string | null,
+): boolean {
+    const envelopeId = String(meta?.envelopeId ?? sessionEnvelopeId ?? "").trim();
+    if (!envelopeId) return true;
+    const status = meta?.status ?? "DRAFT";
+    return status === "VOIDED" || status === "SIGNED";
 }
