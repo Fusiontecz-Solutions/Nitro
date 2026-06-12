@@ -8,6 +8,8 @@ import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import type { ApplicationFiles } from "@/types/applicationTypes"
 import { deleteApplicationFile, getApplicationByApplicationId, getApplicationById, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
+import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions"
+import RequestedDocumentUploadRows, { getRequestedDocumentLabel } from "./RequestedDocumentUploadRows"
 import { hydrateApplicationDetailFromCache } from "@/redux/slices/applicationSlice"
 import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
@@ -46,10 +48,28 @@ const UploadedDocuments = ({
     const { loading: uploadLoading } = useSelector(
         (state: RootState) => state.uploadDocuments
     )
+    const { data: documentRequests, loading: documentRequestsLoading } = useSelector(
+        (state: RootState) => state.documentRequests,
+    )
 
     const dispatch: AppDispatch = useDispatch()
 
     const effectiveApplicationId = applicationId ?? routeApplicationId
+
+    const documentRequestLookupId = useMemo(() => {
+        const numeric = (applicationData as { applicationId?: number } | null)?.applicationId
+        if (numeric != null) return String(numeric)
+        return effectiveApplicationId ? String(effectiveApplicationId) : null
+    }, [applicationData, effectiveApplicationId])
+
+    const pendingDocumentRequests = useMemo(
+        () => (documentRequests || []).filter((doc) => doc.status === "Pending"),
+        [documentRequests],
+    )
+    const completedDocumentRequests = useMemo(
+        () => (documentRequests || []).filter((doc) => doc.status === "Complete"),
+        [documentRequests],
+    )
 
     const applicationMongoId = useMemo(() => {
         const id = applicationData?._id ?? (applicationData as { id?: string } | null)?.id
@@ -76,6 +96,43 @@ const UploadedDocuments = ({
     useEffect(() => {
         void refreshApplicationDetail()
     }, [refreshApplicationDetail])
+
+    useEffect(() => {
+        if (!documentRequestLookupId) return
+        void dispatch(getDocumentRequestsByApplication(documentRequestLookupId))
+    }, [dispatch, documentRequestLookupId])
+
+    const uploadRequestedDocument = useCallback(
+        async (requestDocId: string, file: File) => {
+            if (!applicationMongoId) {
+                toast.error("Application ID not found")
+                throw new Error("Application ID not found")
+            }
+
+            const allowed = ["pdf", "jpg", "jpeg", "png"]
+            const ext = (file.name.split(".").pop() || "").toLowerCase()
+            if (!allowed.includes(ext)) {
+                toast.error("Unsupported file. Please upload a PDF, JPG, or PNG.")
+                throw new Error("Unsupported file type")
+            }
+
+            const taggedFile = new File([file], `${requestDocId}__${file.name}`, { type: file.type })
+
+            await dispatch(
+                uploadApplicationDocuments({
+                    id: applicationMongoId,
+                    files: [taggedFile],
+                }),
+            ).unwrap()
+
+            toast.success(`${getRequestedDocumentLabel({ name: requestDocId })} uploaded.`)
+            await refreshApplicationDetail()
+            if (documentRequestLookupId) {
+                await dispatch(getDocumentRequestsByApplication(documentRequestLookupId))
+            }
+        },
+        [applicationMongoId, dispatch, documentRequestLookupId, refreshApplicationDetail],
+    )
 
     // Utility function to format file size
     const formatFileSize = (bytes: number): string => {
@@ -238,6 +295,14 @@ const UploadedDocuments = ({
                         </div>
                     )}
                 </div>
+                {!readOnly && !documentRequestsLoading &&
+                (pendingDocumentRequests.length > 0 || completedDocumentRequests.length > 0) ? (
+                    <RequestedDocumentUploadRows
+                        pending={pendingDocumentRequests}
+                        completed={completedDocumentRequests}
+                        onUpload={uploadRequestedDocument}
+                    />
+                ) : null}
                 {!readOnly && pendingFiles.length > 0 && (
                     <p className={`px-6 pb-2 text-xs font-roboto ${isDark ? "text-gray-300" : "text-gray-600"
                         }`}>

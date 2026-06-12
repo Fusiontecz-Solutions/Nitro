@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
 import { store, type AppDispatch, type RootState } from "@/redux/store";
@@ -11,6 +11,7 @@ import {
 } from "@/redux/actions/applicationActions";
 import {
     createContract,
+    getBoldSignTemplates,
     getAllACH,
     getAllAddendum,
     getAllContractGuarantors,
@@ -67,7 +68,8 @@ import {
 } from "@/lib/bankDetailUtils";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
-import { axiosGet } from "@/redux/axios";
+import ACHFormViewerModal from "./ACHFormViewerModal";
+import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 // import { US_STATES } from "@/constants/usStates";
 import {
     buildContractPrefillFieldsFromApplication,
@@ -129,6 +131,31 @@ import {
     resolveOfferFactorRate,
     resolveOfferPayback,
 } from "@/lib/offerRepaymentCalculations";
+import {
+    boldSignTemplateIsPreviewable,
+    getBoldSignTemplateMappingRef,
+} from "./contractdata/boldSignTemplateDocument";
+
+type AchDocumentTemplateMappingRow = {
+    id: string;
+    contractId: number;
+    templateId: string;
+    documentType: string;
+    order: number;
+    template?: {
+        id: string;
+        name?: string;
+        type?: string;
+        templateId?: string;
+        pdfUrl?: string;
+        layoutKey?: string;
+    } | null;
+};
+
+const DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS = {
+    existing: [0, 800, 1600, 2600],
+    justCreated: [400, 1100, 2200, 3400],
+} as const;
 
 function formatContractCurrency(value: number | string | null | undefined) {
     return formatCurrency(value, { fallback: "—" });
@@ -235,6 +262,10 @@ export default function ContractTab({
         (state: RootState) => state.bankDetails,
     );
     const achListState = useSelector((state: RootState) => state.achList);
+    const boldSignTemplatesState = useSelector((state: RootState) => state.boldSignTemplates);
+    const boldSignTemplates = Array.isArray(boldSignTemplatesState.data)
+        ? boldSignTemplatesState.data
+        : [];
     const addendumListState = useSelector((state: RootState) => state.addendumList);
     const epoListState = useSelector((state: RootState) => state.epoList);
     const contractOwnerListState = useSelector((state: RootState) => state.contractOwnerList);
@@ -268,6 +299,9 @@ export default function ContractTab({
     const [ownerModalOpen, setOwnerModalOpen] = useState(false);
     const [pdfViewerOpen, setPdfViewerOpen] = useState(false);
     const [pdfViewerInitialRightPaneTab, setPdfViewerInitialRightPaneTab] = useState<"template" | "prefilled">("template");
+    const [achTemplateMappings, setAchTemplateMappings] = useState<AchDocumentTemplateMappingRow[]>([]);
+    const [loadingAchMappings, setLoadingAchMappings] = useState(false);
+    const [achViewerOpen, setAchViewerOpen] = useState(false);
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
     const [pdfName, setPdfName] = useState<string>("Contract.pdf");
     const [selectedContractId, setSelectedContractId] = useState<number | null>(null);
@@ -347,6 +381,114 @@ export default function ContractTab({
         void dispatch(getAllContractOwners({ contractId: id }));
         void dispatch(getAllContractGuarantors({ contractId: id }));
     }, [dispatch, selectedContractId]);
+
+    useEffect(() => {
+        void dispatch(getBoldSignTemplates({}));
+    }, [dispatch]);
+
+    const fetchAchTemplateMappings = useCallback(async () => {
+        if (!selectedContractId) {
+            setAchTemplateMappings([]);
+            return;
+        }
+        try {
+            setLoadingAchMappings(true);
+            const res = await axiosGet(
+                `/contract/${selectedContractId}/document-template-mappings`,
+            );
+            const rows = (res?.data?.data ?? []) as AchDocumentTemplateMappingRow[];
+            const achRows = Array.isArray(rows)
+                ? rows.filter((row) => String(row.documentType || "").toLowerCase() === "ach")
+                : [];
+            setAchTemplateMappings(achRows);
+        } catch {
+            setAchTemplateMappings([]);
+        } finally {
+            setLoadingAchMappings(false);
+        }
+    }, [selectedContractId]);
+
+    useEffect(() => {
+        void fetchAchTemplateMappings();
+    }, [fetchAchTemplateMappings]);
+
+    const achTemplateOptions = useMemo(
+        () =>
+            boldSignTemplates.filter((template: { type?: string; name?: string; layoutKey?: string }) => {
+                const typeText = String(template?.type || "").toLowerCase();
+                const nameText = String(template?.name || "").toLowerCase();
+                const layoutKey = String(template?.layoutKey || "").toLowerCase();
+                return (
+                    typeText === "ach" ||
+                    layoutKey === "ach_authorization" ||
+                    (nameText.includes("ach") && !nameText.includes("attach"))
+                );
+            }),
+        [boldSignTemplates],
+    );
+
+    const primaryAchTemplate = useMemo(() => {
+        const previewable = achTemplateOptions.filter((template) =>
+            boldSignTemplateIsPreviewable(template),
+        );
+        return previewable[0] ?? null;
+    }, [achTemplateOptions]);
+
+    const linkedAchMapping = useMemo(() => {
+        if (!achTemplateMappings.length) return null;
+        return [...achTemplateMappings].sort(
+            (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
+        )[0];
+    }, [achTemplateMappings]);
+
+    const ensureAchTemplateMapping = useCallback(
+        async (templateRef: string | null) => {
+            if (!selectedContractId) return;
+            const ref = String(templateRef || "").trim();
+            try {
+                const res = await axiosGet(
+                    `/contract/${selectedContractId}/document-template-mappings`,
+                );
+                const rows = (res?.data?.data ?? []) as AchDocumentTemplateMappingRow[];
+                const achRows = rows.filter(
+                    (row) => String(row.documentType || "").toLowerCase() === "ach",
+                );
+                await Promise.all(
+                    achRows.map((row) =>
+                        axiosDelete(
+                            `/contract/${selectedContractId}/document-template-mappings/${row.id}`,
+                        ),
+                    ),
+                );
+                if (ref) {
+                    await axiosPost(`/contract/${selectedContractId}/document-template-mappings`, {
+                        documentType: "ach",
+                        templateRef: ref,
+                    });
+                }
+                await fetchAchTemplateMappings();
+            } catch (error: unknown) {
+                const msg =
+                    (error as { message?: string })?.message ||
+                    "Failed to link ACH template to contract.";
+                toast.error(msg);
+            }
+        },
+        [selectedContractId, fetchAchTemplateMappings],
+    );
+
+    useEffect(() => {
+        if (!selectedContractId || loadingAchMappings || linkedAchMapping) return;
+        const ref = getBoldSignTemplateMappingRef(primaryAchTemplate);
+        if (!ref) return;
+        void ensureAchTemplateMapping(ref);
+    }, [
+        selectedContractId,
+        loadingAchMappings,
+        linkedAchMapping,
+        primaryAchTemplate,
+        ensureAchTemplateMapping,
+    ]);
 
     const bankDetailApplicationKeys = useMemo(
         () => [
@@ -1183,7 +1325,7 @@ export default function ContractTab({
 
         if (achDocumentRef && !standaloneAchOnly) {
             failDocuSignEnvelope(
-                "ACH forms are sent individually only. Use Send ACH via DocuSign instead of Review & send.",
+                "ACH forms are sent individually only. Use Send ACH Form on the Contract tab.",
             );
         }
 
@@ -1625,6 +1767,132 @@ export default function ContractTab({
         };
     };
 
+    const persistAchEnvelopeOnContract = useCallback(
+        async (mappingId: string, envelopeId: string, status = "draft") => {
+            const cid = selectedContractId;
+            if (cid == null || !Number.isFinite(Number(cid))) return;
+            const rawOverrides =
+                normalizeContractPrefillOverrides(
+                    (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides,
+                ) ?? {};
+            const main = stripDocumentTemplateBlobFromPrefillOverrides(
+                rawOverrides,
+            ) as Record<string, unknown>;
+            const nextEnvelopeBlob = {
+                ...parseDocumentTemplateEnvelopeByMappingId(rawOverrides),
+                [mappingId]: {
+                    envelopeId,
+                    status,
+                    updatedAt: new Date().toISOString(),
+                },
+            };
+            const sendHistory = upsertDocumentSendHistory(parseDocumentSendHistory(rawOverrides), {
+                envelopeId,
+                documentKind: "ach",
+                label: "ACH Authorization",
+                status,
+                updatedAt: new Date().toISOString(),
+            });
+            const prefillBlob = (rawOverrides as Record<string, unknown>)[
+                DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY
+            ];
+            await dispatch(
+                updateContract({
+                    id: Number(cid),
+                    data: {
+                        contractPrefillOverrides: {
+                            ...main,
+                            ...(prefillBlob != null
+                                ? {
+                                      [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: prefillBlob,
+                                  }
+                                : {}),
+                            [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: nextEnvelopeBlob,
+                            [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
+                        },
+                    },
+                }),
+            ).unwrap();
+            await refreshFetchedContract();
+        },
+        [selectedContractId, fetchedContract, dispatch],
+    );
+
+    const fetchDocuSignSenderViewUrl = useCallback(
+        async (
+            envelopeId: string,
+            ccForSync: string[],
+        ): Promise<{ url: string | null; error: string | null }> => {
+            const returnUrl =
+                typeof window !== "undefined"
+                    ? window.location.href
+                    : "https://www.docusign.com";
+            const signerEmail = getPrimaryRecipientEmail().trim();
+            try {
+                const res = await axiosPost("/docusign/sender-view", {
+                    envelopeId,
+                    returnUrl,
+                    ccEmails: mergeWithDefaultCcEmails(ccForSync),
+                    ...(applicationUuid ? { applicationId: String(applicationUuid) } : {}),
+                    ...(signerEmail
+                        ? {
+                              signerEmail,
+                              signerName: getPrimaryRecipientName(),
+                          }
+                        : {}),
+                });
+                const url = String((res as { data?: { url?: string } })?.data?.url ?? "").trim();
+                return { url: url || null, error: null };
+            } catch (err: unknown) {
+                const ax = err as {
+                    response?: { data?: { message?: string } };
+                    message?: string;
+                };
+                const apiMessage = String(
+                    ax?.response?.data?.message || ax?.message || "",
+                ).trim();
+                return { url: null, error: apiMessage || null };
+            }
+        },
+        [applicationUuid, applicationData],
+    );
+
+    const fetchDocuSignSenderViewUrlWithRetry = useCallback(
+        async (
+            envelopeId: string,
+            ccForSync: string[],
+            justCreated: boolean,
+        ): Promise<{ url: string | null; error: string | null }> => {
+            const delays = justCreated
+                ? DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS.justCreated
+                : DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS.existing;
+            let lastError: string | null = null;
+            for (const delay of delays) {
+                if (delay > 0) {
+                    await new Promise((r) => setTimeout(r, delay));
+                }
+                const result = await fetchDocuSignSenderViewUrl(envelopeId, ccForSync);
+                if (result.url) return result;
+                if (result.error) lastError = result.error;
+            }
+            return { url: null, error: lastError };
+        },
+        [fetchDocuSignSenderViewUrl],
+    );
+
+    const openAchFormViewer = () => {
+        if (!hasGeneratedContract || !selectedContractId) {
+            toast.info("Generate a contract before sending the ACH form.");
+            return;
+        }
+        if (!linkedAchMapping) {
+            toast.info("ACH form is not configured. Add a BoldSign template with type ach.");
+            return;
+        }
+        setAchViewerOpen(true);
+    };
+
     const appendStructuredNote = (sectionLabel: string, payload: unknown) => {
         const existingNote = (applicationData as any)?.note ?? "";
         const serialized = JSON.stringify(payload);
@@ -1805,6 +2073,25 @@ export default function ContractTab({
                                 Add Bank Details
                             </Button>
                         )}
+                        {!isReadOnly && hasGeneratedContract ? (
+                            <Button
+                                type="button"
+                                onClick={openAchFormViewer}
+                                disabled={
+                                    creatingEnvelope ||
+                                    loadingAchMappings ||
+                                    !linkedAchMapping
+                                }
+                                title={
+                                    !linkedAchMapping && !loadingAchMappings
+                                        ? "ACH form template is not configured."
+                                        : undefined
+                                }
+                                className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
+                            >
+                                Send ACH Form
+                            </Button>
+                        ) : null}
                         <Button
                             type="button"
                             onClick={handleGenerateContract}
@@ -2479,6 +2766,33 @@ export default function ContractTab({
             </Dialog>
 
             {/* Document Viewer for generated contract */}
+
+            <ACHFormViewerModal
+                isOpen={achViewerOpen}
+                onClose={() => {
+                    setAchViewerOpen(false);
+                    void refreshFetchedContract();
+                }}
+                contractId={selectedContractId}
+                applicationId={applicationUuid ? String(applicationUuid) : null}
+                applicationData={applicationData}
+                achMapping={linkedAchMapping}
+                contract={
+                    fetchedContract && typeof fetchedContract === "object"
+                        ? (fetchedContract as Record<string, unknown>)
+                        : null
+                }
+                contractPrefillRecords={contractPrefillRecords}
+                readOnly={isReadOnly}
+                onContractDocumentsChanged={() => void refreshFetchedContract()}
+                onPrepareDocuSignDraft={
+                    isReadOnly ? undefined : (payload) => prepareDocuSignDraft(payload)
+                }
+                persistAchEnvelopeOnContract={persistAchEnvelopeOnContract}
+                fetchDocuSignSenderViewUrlWithRetry={fetchDocuSignSenderViewUrlWithRetry}
+                getSignerEmail={getPrimaryRecipientEmail}
+                getSignerName={getPrimaryRecipientName}
+            />
 
             <PDFViewerModal
                 isOpen={pdfViewerOpen}

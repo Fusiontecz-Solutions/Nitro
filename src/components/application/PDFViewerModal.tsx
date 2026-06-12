@@ -107,6 +107,10 @@ import {
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 import { normalizeRoleKey } from "@/lib/sessionRole";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
+import RequestedDocumentUploadRows, {
+    getRequestedDocumentLabel,
+} from "./RequestedDocumentUploadRows";
+import { uploadApplicationDocuments } from "@/redux/actions/applicationActions";
 import { resolveOfferDecisionFeesDisplayDollars } from "@/lib/offerDecisionFees";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -133,6 +137,9 @@ import {
     DOCUMENT_SEND_HISTORY_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    canPreviewFilledOrSignedEnvelope,
+    formatDocumentSendStatusLabel,
+    getDocumentSendStatusCapsuleClasses,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
@@ -574,8 +581,6 @@ function resolveLatestEnvelopeStatus(
 }
 
 type PdfRightPaneTab = "template" | "docusign";
-type DocuSignSentDocumentSource = "contract" | "ach";
-
 /**
  * Template roles often embed placeholder `defaultSignerEmail` in BoldSign that drifts from CRM.
  * For Client / Owner / Merchant slots, prefer resolved CRM email (`Contract.clientEmail`, then Client).
@@ -752,8 +757,6 @@ const PDFViewerModal = ({
     const [sessionEnvelopeId, setSessionEnvelopeId] = useState<string | null>(null);
     /** Right pane: template PDF, DocuSign draft prefilled (summary), or DocuSign PDF after send. */
     const [pdfRightPaneTab, setPdfRightPaneTab] = useState<PdfRightPaneTab>("template");
-    const [docuSignSentDocumentSource, setDocuSignSentDocumentSource] =
-        useState<DocuSignSentDocumentSource>("contract");
 
     useEffect(() => {
         if (!isOpen) return;
@@ -845,21 +848,6 @@ const PDFViewerModal = ({
         )[0];
     }, [addendumTemplateMappings]);
 
-    const achTemplateMappings = useMemo(
-        () =>
-            templateMappings.filter((row) => {
-                const t = String(row.documentType || "").toLowerCase();
-                return t === "ach";
-            }),
-        [templateMappings],
-    );
-
-    const linkedAchMapping = useMemo(() => {
-        if (!achTemplateMappings.length) return null;
-        return [...achTemplateMappings].sort(
-            (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
-        )[0];
-    }, [achTemplateMappings]);
     const documentTemplateEnvelopeByMappingId = useMemo(
         () =>
             parseDocumentTemplateEnvelopeByMappingId(
@@ -868,10 +856,6 @@ const PDFViewerModal = ({
             ),
         [resolvedContract],
     );
-    const linkedAchEnvelope = useMemo(() => {
-        if (!linkedAchMapping?.id) return null;
-        return documentTemplateEnvelopeByMappingId[linkedAchMapping.id] ?? null;
-    }, [linkedAchMapping, documentTemplateEnvelopeByMappingId]);
     const [documentTemplatePrefillByMappingId, setDocumentTemplatePrefillByMappingId] = useState<
         Record<string, Record<string, string>>
     >({});
@@ -882,8 +866,6 @@ const PDFViewerModal = ({
     const templatePreviewBlobUrlRef = useRef<string | null>(null);
     /** `bs:<boldSignTemplateGuid>` | `up:<uploadedFileId>` | `` */
     const [selectedAddendumOption, setSelectedAddendumOption] = useState<string>("");
-    const [isSendingAch, setIsSendingAch] = useState(false);
-    const [viewingAchEnvelopeId, setViewingAchEnvelopeId] = useState<string | null>(null);
     // const [selectedPayoffLetterFileId, setSelectedPayoffLetterFileId] = useState<string>("");
     const [activeInfoPanel, setActiveInfoPanel] = useState<InfoPanelId | null>(null);
     const [, setSelectedInfoPanels] = useState<InfoPanelId[]>([]);
@@ -1201,23 +1183,6 @@ const PDFViewerModal = ({
         ).toLowerCase();
         return typeText.includes("addendum") || nameText.includes("addendum");
     });
-    const achTemplateOptions = boldSignTemplates.filter((template: any) => {
-        const typeText = String(template?.type || "").toLowerCase();
-        const nameText = String(
-            template?.name || template?.title || template?.templateName || "",
-        ).toLowerCase();
-        const layoutKey = String(template?.layoutKey || "").toLowerCase();
-        return (
-            typeText === "ach" ||
-            layoutKey === "ach_authorization" ||
-            (nameText.includes("ach") && !nameText.includes("attach"))
-        );
-    });
-    /** Single platform ACH form — first previewable BoldSignTemplate row with type ach. */
-    const primaryAchTemplate = useMemo(() => {
-        const previewable = achTemplateOptions.filter((t: any) => boldSignTemplateIsPreviewable(t));
-        return previewable[0] ?? null;
-    }, [achTemplateOptions]);
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
             file?.documentType || file?.fileName || "",
@@ -1238,6 +1203,18 @@ const PDFViewerModal = ({
         return String(d?._id ?? d?.id ?? "").trim() || null;
     }, [applicationId, applicationData]);
 
+    const applicationMongoId = useMemo(() => {
+        const d = applicationData as { _id?: string; id?: string } | undefined;
+        return String(d?._id ?? d?.id ?? "").trim() || null;
+    }, [applicationData]);
+
+    const numericApplicationId = useMemo(() => {
+        const n = (applicationData as { applicationId?: number } | null)?.applicationId;
+        return n != null ? String(n) : null;
+    }, [applicationData]);
+
+    const documentRequestLookupId = numericApplicationId || applicationIdForLookup;
+
     const requestDocsRoleKey = normalizeRoleKey(
         (loginData as { user?: { role?: string } } | null)?.user?.role ||
             (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
@@ -1250,15 +1227,6 @@ const PDFViewerModal = ({
             requestDocsRoleKey === "SUPER_ADMIN" ||
             requestDocsRoleKey === "OPERATIONS");
 
-    const formatRequiredDocName = (name: string) => {
-        if (!name) return "";
-        return name
-            .replace(/[-_]/g, " ")
-            .split(" ")
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(" ");
-    };
-
     const pendingDocumentRequests = useMemo(
         () => (documentRequests || []).filter((doc) => doc.status === "Pending"),
         [documentRequests],
@@ -1269,9 +1237,9 @@ const PDFViewerModal = ({
     );
 
     useEffect(() => {
-        if (!isOpen || !applicationIdForLookup) return;
-        void dispatch(getDocumentRequestsByApplication(applicationIdForLookup));
-    }, [isOpen, applicationIdForLookup, dispatch]);
+        if (!isOpen || !documentRequestLookupId) return;
+        void dispatch(getDocumentRequestsByApplication(documentRequestLookupId));
+    }, [isOpen, documentRequestLookupId, dispatch]);
 
     const contractPrefillRecords: ContractPrefillContractRecords = useMemo(() => {
         const firstRow = (data: unknown): Record<string, unknown> | null =>
@@ -1522,7 +1490,6 @@ const PDFViewerModal = ({
             setSelectedAddendumOption("");
             setSessionEnvelopeId(null);
             setDocuSignOpenUrl(null);
-            setDocuSignSentDocumentSource("contract");
             setContractSignerOverrides(null);
             setShowRecipientEditor(false);
             draftPreparedAddendumIdRef.current = undefined;
@@ -1656,15 +1623,7 @@ const PDFViewerModal = ({
         return fromContract || null;
     }, [sessionEnvelopeId, resolvedContract]);
 
-    const docuSignPreviewEnvelopeId = useMemo(() => {
-        if (
-            docuSignSentDocumentSource === "ach" &&
-            String(linkedAchEnvelope?.envelopeId ?? "").trim()
-        ) {
-            return String(linkedAchEnvelope!.envelopeId).trim();
-        }
-        return linkedEnvelopeId;
-    }, [docuSignSentDocumentSource, linkedAchEnvelope, linkedEnvelopeId]);
+    const docuSignPreviewEnvelopeId = linkedEnvelopeId;
 
     const docuSignPdfCacheSuffix = useMemo(
         () => getDocuSignPdfCacheSuffix(resolvedContract, sentAt),
@@ -1754,7 +1713,6 @@ const PDFViewerModal = ({
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
-    const linkedAchMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
     const templateRecipientsFetchedForIdRef = useRef<string | null>(null);
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
@@ -1762,7 +1720,6 @@ const PDFViewerModal = ({
     selectedAddendumOptionRef.current = selectedAddendumOption;
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
     linkedAddendumMappingRef.current = linkedAddendumMapping;
-    linkedAchMappingRef.current = linkedAchMapping;
     docuSignPdfCacheSuffixRef.current = docuSignPdfCacheSuffix;
 
     const buildDocuSignPdfCacheKey = (envelopeId: string) =>
@@ -1892,10 +1849,6 @@ const PDFViewerModal = ({
         if (opt.startsWith("up:")) return null;
         if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
         return getBoldSignTemplateMappingRef(linkedAddendumMappingRef.current?.template) || null;
-    }, []);
-
-    const resolveAchTemplateIdForDocuSign = useCallback((): string | null => {
-        return getBoldSignTemplateMappingRef(linkedAchMappingRef.current?.template) || null;
     }, []);
 
     const primarySignerEmailRef = useRef("");
@@ -2101,26 +2054,19 @@ const PDFViewerModal = ({
             const objectUrl = URL.createObjectURL(blob);
             const anchor = document.createElement("a");
             anchor.href = objectUrl;
-            anchor.download =
-                docuSignSentDocumentSource === "ach"
-                    ? `filled-ach-${fileLabel}.pdf`
-                    : `filled-contract-${fileLabel}.pdf`;
+            anchor.download = `filled-contract-${fileLabel}.pdf`;
             document.body.appendChild(anchor);
             anchor.click();
             anchor.remove();
             URL.revokeObjectURL(objectUrl);
-            toast.success(
-                docuSignSentDocumentSource === "ach"
-                    ? "ACH PDF download started."
-                    : "Filled contract download started.",
-            );
+            toast.success("Filled contract download started.");
         } catch (err: unknown) {
             const msg = await parseApiErrorMessageFromAxios(err);
             toast.error(msg || "Could not download filled contract.");
         } finally {
             setDownloadingFilledContract(false);
         }
-    }, [docuSignPreviewEnvelopeId, docuSignSentDocumentSource, linkedEnvelopeId, applicationIdForLookup]);
+    }, [docuSignPreviewEnvelopeId, linkedEnvelopeId, applicationIdForLookup]);
 
     const persistContractStateAndFunder = useCallback(
         async (patch: { state?: string | null; funderName?: string | null }) => {
@@ -2635,6 +2581,53 @@ const PDFViewerModal = ({
             }
         },
         [dispatch, effectiveContractId],
+    );
+
+    const autoUploadRequestedDocument = useCallback(
+        async (requestDocId: string, file: File) => {
+            if (!file || !requestDocId) return;
+
+            if (!applicationMongoId) {
+                toast.error("Application ID not found. Cannot upload requested document.");
+                return;
+            }
+
+            const allowed = ["pdf", "jpg", "jpeg", "png"];
+            const ext = (file.name.split(".").pop() || "").toLowerCase();
+            if (!allowed.includes(ext)) {
+                toast.error("Unsupported file. Please upload a PDF, JPG, or PNG.");
+                return;
+            }
+
+            const taggedFile = new File(
+                [file],
+                `${requestDocId}__${file.name}`,
+                { type: file.type },
+            );
+
+            try {
+                await dispatch(
+                    uploadApplicationDocuments({
+                        id: applicationMongoId,
+                        files: [taggedFile],
+                    }),
+                ).unwrap();
+
+                toast.success(`${getRequestedDocumentLabel({ name: requestDocId })} uploaded.`);
+
+                if (documentRequestLookupId) {
+                    await dispatch(getDocumentRequestsByApplication(documentRequestLookupId));
+                }
+            } catch (error: unknown) {
+                const msg =
+                    typeof error === "string"
+                        ? error
+                        : (error as { message?: string })?.message || "Failed to upload document.";
+                toast.error(msg);
+                throw error;
+            }
+        },
+        [applicationMongoId, dispatch, documentRequestLookupId],
     );
 
     const handlePreviewUploadedDocument = async (fileId: string) => {
@@ -3172,104 +3165,6 @@ const PDFViewerModal = ({
         [effectiveContractId, fetchTemplateMappings],
     );
 
-    /** Only one ACH DocuSign template per contract — replace any existing ACH mapping. */
-    const setAchTemplateMapping = useCallback(
-        async (templateRef: string | null) => {
-            if (effectiveContractId == null) return;
-            const ref = String(templateRef || "").trim();
-            try {
-                const res = await axiosGet(
-                    `/contract/${effectiveContractId}/document-template-mappings`,
-                );
-                const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
-                const achRows = rows.filter(
-                    (row) => String(row.documentType || "").toLowerCase() === "ach",
-                );
-                await Promise.all(
-                    achRows.map((row) =>
-                        axiosDelete(
-                            `/contract/${effectiveContractId}/document-template-mappings/${row.id}`,
-                        ),
-                    ),
-                );
-                if (ref) {
-                    await axiosPost(`/contract/${effectiveContractId}/document-template-mappings`, {
-                        documentType: "ach",
-                        templateRef: ref,
-                    });
-                }
-                await fetchTemplateMappings();
-            } catch (error: any) {
-                setDocumentUploadMessage(error?.message || "Failed to update ACH template.");
-            }
-        },
-        [effectiveContractId, fetchTemplateMappings],
-    );
-
-    const persistAchEnvelopeOnContract = useCallback(
-        async (mappingId: string, envelopeId: string, status = "draft") => {
-            const cid = effectiveContractId;
-            if (cid == null || !Number.isFinite(Number(cid))) return;
-            const rawOverrides =
-                normalizeContractPrefillOverrides(
-                    (resolvedContract as { contractPrefillOverrides?: unknown } | null)
-                        ?.contractPrefillOverrides,
-                ) ?? {};
-            const main = stripDocumentTemplateBlobFromPrefillOverrides(
-                rawOverrides,
-            ) as Record<string, unknown>;
-            const nextEnvelopeBlob = {
-                ...documentTemplateEnvelopeByMappingId,
-                [mappingId]: {
-                    envelopeId,
-                    status,
-                    updatedAt: new Date().toISOString(),
-                },
-            };
-            const sendHistory = upsertDocumentSendHistory(parseDocumentSendHistory(rawOverrides), {
-                envelopeId,
-                documentKind: "ach",
-                label: "ACH Authorization",
-                status,
-                updatedAt: new Date().toISOString(),
-            });
-            const contractPrefillOverrides = {
-                ...main,
-                [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
-                [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: nextEnvelopeBlob,
-                [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
-            };
-            await dispatch(
-                updateContract({
-                    id: Number(cid),
-                    data: { contractPrefillOverrides },
-                }),
-            ).unwrap();
-            const appKey = String(applicationIdForLookup ?? "").trim();
-            if (appKey) {
-                try {
-                    const res = await dispatch(getByApplicationIdContract(appKey)).unwrap();
-                    const contract = (res as { data?: unknown })?.data ?? res;
-                    if (contract && typeof contract === "object") {
-                        setResolvedContract(contract as Record<string, unknown>);
-                    }
-                } catch {
-                    /* ignore */
-                }
-            }
-            onContractDocumentsChanged?.();
-        },
-        [
-            effectiveContractId,
-            resolvedContract,
-            documentTemplateEnvelopeByMappingId,
-            documentTemplatePrefillByMappingId,
-            dispatch,
-            applicationIdForLookup,
-            onContractDocumentsChanged,
-        ],
-    );
-
     const persistContractEnvelopeHistory = useCallback(
         async (envelopeId: string, status = "draft") => {
             const cid = effectiveContractId;
@@ -3312,218 +3207,6 @@ const PDFViewerModal = ({
             onContractDocumentsChanged,
         ],
     );
-
-    const handleViewAchFromDocuSign = useCallback(async () => {
-        const mappingId = linkedAchMapping?.id;
-        const envelopeId = String(linkedAchEnvelope?.envelopeId ?? "").trim();
-        if (!mappingId || !envelopeId) {
-            toast.info("Send the ACH form via DocuSign first.");
-            return;
-        }
-        setViewingAchEnvelopeId(envelopeId);
-        try {
-            try {
-                const syncRes = await axiosPost("/docusign/sync-envelope-status", {
-                    envelopeId,
-                });
-                const syncedStatus = String(
-                    (syncRes.data as { internalStatus?: string } | undefined)?.internalStatus ??
-                        "",
-                ).trim();
-                if (syncedStatus && syncedStatus !== linkedAchEnvelope?.status) {
-                    await persistAchEnvelopeOnContract(mappingId, envelopeId, syncedStatus);
-                }
-            } catch {
-                /* non-fatal — still try PDF download */
-            }
-            const res = await axiosGet(`/docusign/download/${encodeURIComponent(envelopeId)}`, {
-                responseType: "blob",
-                timeout: 120000,
-            });
-            const blob = res.data as Blob;
-            if (!blob?.size) {
-                toast.error("DocuSign returned an empty ACH PDF.");
-                return;
-            }
-            if (templatePreviewBlobUrlRef.current) {
-                URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
-            }
-            const url = URL.createObjectURL(blob);
-            templatePreviewBlobUrlRef.current = url;
-            setActivePreview(null);
-            setUploadedPreviewUrl(url);
-            setPdfRightPaneTab("template");
-            const achStatus = String(linkedAchEnvelope?.status ?? "").toUpperCase();
-            const signed = achStatus === "COMPLETED" || achStatus === "SIGNED";
-            setDocumentUploadMessage(
-                signed
-                    ? "Showing signed ACH from DocuSign in the PDF panel →"
-                    : "Showing filled ACH from DocuSign in the PDF panel →",
-            );
-        } catch (error: unknown) {
-            const msg = await parseApiErrorMessageFromAxios(error);
-            toast.error(msg || "Could not load ACH PDF from DocuSign.");
-        } finally {
-            setViewingAchEnvelopeId(null);
-        }
-    }, [
-        linkedAchMapping,
-        linkedAchEnvelope,
-        applicationIdForLookup,
-        persistAchEnvelopeOnContract,
-    ]);
-
-    const handleSendAchViaDocuSign = useCallback(async () => {
-        if (!onPrepareDocuSignDraft) {
-            toast.error("DocuSign is not available for this view.");
-            return;
-        }
-        const achTemplateId = resolveAchTemplateIdForDocuSign();
-        if (!achTemplateId) {
-            toast.info("Select an ACH template before sending.");
-            return;
-        }
-
-        let docuSignTab: Window | null = null;
-        try {
-            setDocuSignOpenUrl(null);
-            docuSignTab = window.open("about:blank", "_blank");
-            if (docuSignTab) {
-                try {
-                    writeDocuSignLoadingTab(docuSignTab.document);
-                } catch {
-                    /* ignore */
-                }
-            }
-            flushSync(() => setIsSendingAch(true));
-
-            const signerRolesForSend = collapseDocuSignRolesToSignerSlots(
-                buildDocuSignRolesForSync(),
-                1,
-            );
-            const signerValidation = validateDocuSignSignerRoles(signerRolesForSend);
-            if (!signerValidation.valid) {
-                const msg =
-                    signerValidation.message ||
-                    "Add signer role names and emails in Contract Signers before sending to DocuSign.";
-                if (docuSignTab) {
-                    try {
-                        writeDocuSignErrorTab(docuSignTab.document, msg);
-                    } catch {
-                        /* ignore */
-                    }
-                }
-                toast.error(msg);
-                return;
-            }
-            const userCc = mergeWithDefaultCcEmails(
-                [...new Set(ccEmails.map((e) => e.trim()).filter(Boolean))],
-            );
-
-            const prepared = await onPrepareDocuSignDraft({
-                ccEmails: userCc,
-                achDocumentRef: achTemplateId,
-                standaloneAchOnly: true,
-                roles: signerRolesForSend,
-            });
-            const envelopeId = String(
-                (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
-            ).trim();
-            const preparedSenderUrl =
-                String((prepared as { sendUrl?: string | null } | undefined)?.sendUrl ?? "").trim() ||
-                null;
-            if (!envelopeId) {
-                const msg = "Could not create the ACH DocuSign draft.";
-                if (docuSignTab) {
-                    try {
-                        writeDocuSignErrorTab(docuSignTab.document, msg);
-                    } catch {
-                        /* ignore */
-                    }
-                }
-                toast.error(msg);
-                return;
-            }
-            const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
-                envelopeId,
-                userCc,
-                Boolean(preparedSenderUrl),
-                signerRolesForSend,
-            );
-            const senderUrl = senderViewResult.url;
-            if (!senderUrl) {
-                const msg =
-                    senderViewResult.error ||
-                    "ACH draft was created but DocuSign did not return a review URL yet.";
-                if (docuSignTab) {
-                    try {
-                        writeDocuSignErrorTab(docuSignTab.document, msg);
-                    } catch {
-                        /* ignore */
-                    }
-                }
-                toast.error(msg, { autoClose: 12000 });
-                return;
-            }
-
-            if (linkedAchMapping?.id) {
-                await persistAchEnvelopeOnContract(linkedAchMapping.id, envelopeId, "draft");
-            }
-
-            if (docuSignTab) {
-                try {
-                    docuSignTab.location.href = senderUrl;
-                    setDocuSignOpenUrl(null);
-                    toast.success(
-                        "ACH form opened in DocuSign. Review prefilled fields, edit if needed, then click Send.",
-                        { autoClose: 12000 },
-                    );
-                    return;
-                } catch {
-                    /* fall through to popup-blocked fallback */
-                }
-            }
-
-            const opened = tryOpenDocuSignSenderUrl(senderUrl);
-            if (!opened) {
-                setDocuSignOpenUrl(senderUrl);
-                toast.info(
-                    "Your browser blocked the DocuSign tab. Click Open DocuSign below (or allow pop-ups for this site).",
-                    { autoClose: 12000 },
-                );
-                return;
-            }
-
-            setDocuSignOpenUrl(null);
-            toast.success(
-                "ACH form opened in DocuSign. Review prefilled fields, edit if needed, then click Send.",
-                { autoClose: 12000 },
-            );
-        } catch (error: unknown) {
-            const msg =
-                typeof error === "string"
-                    ? error
-                    : (error as Error)?.message || "Failed to prepare ACH form in DocuSign.";
-            if (docuSignTab) {
-                try {
-                    writeDocuSignErrorTab(docuSignTab.document, msg);
-                } catch {
-                    /* ignore */
-                }
-            }
-            toast.error(msg);
-        } finally {
-            setIsSendingAch(false);
-        }
-    }, [
-        onPrepareDocuSignDraft,
-        resolveAchTemplateIdForDocuSign,
-        buildDocuSignRolesForSync,
-        ccEmails,
-        fetchDocuSignSenderViewUrlWithRetry,
-        linkedAchMapping,
-        persistAchEnvelopeOnContract,
-    ]);
 
     const handlePreviewBoldSignTemplate = useCallback(
         async (row: ContractDocumentTemplateMappingRow) => {
@@ -3631,22 +3314,6 @@ const PDFViewerModal = ({
         addendumTemplateMappings,
         linkedAddendumMapping,
         fetchTemplateMappings,
-    ]);
-
-    /** Auto-link the single ACH template when the contract modal opens. */
-    useEffect(() => {
-        if (!isOpen || effectiveContractId == null || loadingTemplateMappings) return;
-        if (linkedAchMapping) return;
-        const ref = getBoldSignTemplateMappingRef(primaryAchTemplate);
-        if (!ref) return;
-        void setAchTemplateMapping(ref);
-    }, [
-        isOpen,
-        effectiveContractId,
-        loadingTemplateMappings,
-        linkedAchMapping,
-        primaryAchTemplate,
-        setAchTemplateMapping,
     ]);
 
     // Reset preview to contract when leaving Documents tab
@@ -4823,35 +4490,14 @@ const PDFViewerModal = ({
                                                     ) : null}
                                                 </div>
 
-                                                {pendingDocumentRequests.length > 0 ? (
-                                                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900/50 dark:bg-amber-950/20">
-                                                        <p className="mb-2 text-xs font-medium text-amber-900 dark:text-amber-200">
-                                                            Pending — upload matching files below
-                                                        </p>
-                                                        <div className="flex flex-wrap gap-2">
-                                                            {pendingDocumentRequests.map((doc, index) => (
-                                                                <span
-                                                                    key={`pending-${doc.name}-${index}`}
-                                                                    className="inline-flex items-center rounded-full border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-medium text-amber-950 dark:border-amber-800/60 dark:bg-[#111827] dark:text-amber-100"
-                                                                >
-                                                                    {formatRequiredDocName(doc.name)}
-                                                                </span>
-                                                            ))}
-                                                        </div>
-                                                    </div>
-                                                ) : null}
-
-                                                {completedDocumentRequests.length > 0 ? (
-                                                    <div className="flex flex-wrap gap-2">
-                                                        {completedDocumentRequests.map((doc, index) => (
-                                                            <span
-                                                                key={`complete-${doc.name}-${index}`}
-                                                                className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-200"
-                                                            >
-                                                                {formatRequiredDocName(doc.name)} — received
-                                                            </span>
-                                                        ))}
-                                                    </div>
+                                                {!documentRequestsLoading &&
+                                                (pendingDocumentRequests.length > 0 ||
+                                                    completedDocumentRequests.length > 0) ? (
+                                                    <RequestedDocumentUploadRows
+                                                        pending={pendingDocumentRequests}
+                                                        completed={completedDocumentRequests}
+                                                        onUpload={autoUploadRequestedDocument}
+                                                    />
                                                 ) : null}
 
                                                 {!documentRequestsLoading &&
@@ -4862,7 +4508,7 @@ const PDFViewerModal = ({
                                                         <span className="font-medium text-[#CA8A03]">
                                                             Request documents
                                                         </span>{" "}
-                                                        above to notify the agent.
+                                                        above to email the ISO.
                                                     </p>
                                                 ) : null}
                                             </div>
@@ -5567,159 +5213,6 @@ const PDFViewerModal = ({
                                                 </>
                                             ) : null}
                                         </div>
-
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
-                                            <div className="mb-3 flex items-start justify-between gap-2">
-                                                <div className="flex min-w-0 items-start gap-2.5">
-                                                    <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
-                                                        aria-hidden
-                                                    >
-                                                        <Landmark className="h-4 w-4" />
-                                                    </div>
-                                                    <div className="min-w-0">
-                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
-                                                            ACH Authorization
-                                                        </h4>
-                                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                            Prefill, edit, and send the ACH authorization via DocuSign.
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                                {linkedAchMapping ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#276D9C]/10 px-2.5 py-0.5 text-[10px] font-medium text-[#276D9C] ring-1 ring-[#276D9C]/20 dark:bg-[#276D9C]/20 dark:text-[#5a9fd4] dark:ring-[#276D9C]/30">
-                                                        <CheckCircle2 className="h-3 w-3" aria-hidden />
-                                                        Ready
-                                                    </span>
-                                                ) : null}
-                                            </div>
-                                            {linkedAchMapping ? (
-                                                <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-[#276D9C]/20 bg-gradient-to-r from-[#276D9C]/5 to-white px-2.5 py-2.5 shadow-sm dark:border-slate-600 dark:from-[#276D9C]/10 dark:to-slate-900/80">
-                                                    <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
-                                                        <div
-                                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C] text-white shadow-sm"
-                                                            aria-hidden
-                                                        >
-                                                            <FileText className="h-4 w-4" />
-                                                        </div>
-                                                        <div className="min-w-0">
-                                                            <span className="inline-flex rounded-full bg-[#276D9C]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
-                                                                ACH
-                                                            </span>
-                                                            <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                                                                {formatDropdownLabel(
-                                                                    linkedAchMapping?.template?.name ||
-                                                                        primaryAchTemplate?.name ||
-                                                                        linkedAchMapping?.templateId ||
-                                                                        "ACH Authorization",
-                                                                )}
-                                                            </p>
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex shrink-0 items-center gap-0.5">
-                                                        <Button
-                                                            type="button"
-                                                            size="icon"
-                                                            variant="ghost"
-                                                            className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
-                                                            title="Blank ACH template PDF"
-                                                            disabled={previewingTemplateId === String(linkedAchMapping.id)}
-                                                            onClick={() =>
-                                                                void handlePreviewBoldSignTemplate(linkedAchMapping)
-                                                            }
-                                                        >
-                                                            {previewingTemplateId === String(linkedAchMapping.id) ? (
-                                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                            ) : (
-                                                                <Eye className="h-3.5 w-3.5" />
-                                                            )}
-                                                        </Button>
-                                                        {linkedAchEnvelope?.envelopeId ? (
-                                                            <Button
-                                                                type="button"
-                                                                size="icon"
-                                                                variant="ghost"
-                                                                className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
-                                                                title="View filled or signed ACH from DocuSign"
-                                                                disabled={
-                                                                    viewingAchEnvelopeId ===
-                                                                    linkedAchEnvelope.envelopeId
-                                                                }
-                                                                onClick={() => void handleViewAchFromDocuSign()}
-                                                            >
-                                                                {viewingAchEnvelopeId ===
-                                                                linkedAchEnvelope.envelopeId ? (
-                                                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                                ) : (
-                                                                    <FileSignature className="h-3.5 w-3.5" />
-                                                                )}
-                                                            </Button>
-                                                        ) : null}
-                                                        <Button
-                                                            type="button"
-                                                            size="icon"
-                                                            variant="ghost"
-                                                            className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
-                                                            title="Edit ACH prefill fields"
-                                                            onClick={() => setTemplateMappingPrefillEditRow(linkedAchMapping)}
-                                                        >
-                                                            <Pencil className="h-3.5 w-3.5" />
-                                                        </Button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <p className="mb-3 text-[11px] text-slate-500 dark:text-slate-400">
-                                                    ACH form is not configured. Add one BoldSignTemplate row with type{" "}
-                                                    <span className="font-mono text-[10px]">ach</span>,{" "}
-                                                    <span className="font-mono text-[10px]">layoutKey=ach_authorization</span>, and a Cloudinary{" "}
-                                                    <span className="font-mono text-[10px]">pdfUrl</span>.
-                                                </p>
-                                            )}
-                                            {linkedAchEnvelope?.envelopeId ? (
-                                                <p className="mb-2 text-[11px] text-slate-500 dark:text-slate-400">
-                                                    DocuSign envelope saved. Use the{" "}
-                                                    <FileSignature className="inline h-3 w-3 align-text-bottom text-[#276D9C]" />{" "}
-                                                    button to view the filled or signed ACH in the PDF panel →
-                                                    {linkedAchEnvelope.status ? (
-                                                        <span className="ml-1 font-medium text-[#276D9C]">
-                                                            (
-                                                            {["COMPLETED", "SIGNED"].includes(
-                                                                String(
-                                                                    linkedAchEnvelope.status,
-                                                                ).toUpperCase(),
-                                                            )
-                                                                ? "Signed"
-                                                                : String(
-                                                                      linkedAchEnvelope.status,
-                                                                  ).toUpperCase() === "SENT" ||
-                                                                    String(
-                                                                        linkedAchEnvelope.status,
-                                                                    ).toUpperCase() === "DELIVERED"
-                                                                  ? "Sent"
-                                                                  : "Draft"}
-                                                            )
-                                                        </span>
-                                                    ) : null}
-                                                </p>
-                                            ) : null}
-                                            <Button
-                                                type="button"
-                                                variant="default"
-                                                className={`w-full ${DOCUSIGN_PRIMARY_BTN_CLASS}`}
-                                                disabled={!linkedAchMapping || isSendingAch || !onPrepareDocuSignDraft}
-                                                onClick={() => void handleSendAchViaDocuSign()}
-                                            >
-                                                {isSendingAch ? (
-                                                    <>
-                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                        Preparing ACH in DocuSign…
-                                                    </>
-                                                ) : (
-                                                    "Send ACH via DocuSign"
-                                                )}
-                                            </Button>
-                                        </div>
-
 
                                         {/* <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start gap-2.5">
@@ -7407,38 +6900,13 @@ const PDFViewerModal = ({
                                             }`}
                                         onClick={() => setPdfRightPaneTab("docusign")}
                                     >
-                                        {docuSignSentDocumentSource === "ach"
-                                            ? "ACH envelope"
-                                            : String(resolvedContract?.status ?? "").toUpperCase() ===
-                                                "COMPLETED"
-                                              ? "Signed contract"
-                                              : "DocuSign envelope"}
+                                        {String(resolvedContract?.status ?? "").toUpperCase() ===
+                                        "COMPLETED"
+                                            ? "Signed contract"
+                                            : "DocuSign envelope"}
                                     </button>
                                 ) : null}
                             </div>
-                            {showDocuSignContractTab &&
-                            pdfRightPaneTab === "docusign" &&
-                            linkedAchEnvelope?.envelopeId ? (
-                                <Select
-                                    value={docuSignSentDocumentSource}
-                                    onValueChange={(value: DocuSignSentDocumentSource) => {
-                                        setDocuSignSentDocumentSource(value);
-                                        prefilledPdfCachedForEnvelopeRef.current = null;
-                                        prefilledBoldSignPdfUrlRef.current = null;
-                                    }}
-                                >
-                                    <SelectTrigger
-                                        className="h-8 w-[9.5rem] shrink-0 border-slate-500 bg-slate-800/90 text-[11px] text-white"
-                                        aria-label="Sent document to preview"
-                                    >
-                                        <SelectValue placeholder="Document" />
-                                    </SelectTrigger>
-                                    <SelectContent position="popper" className="z-[10100]">
-                                        <SelectItem value="contract">Contract</SelectItem>
-                                        <SelectItem value="ach">ACH</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            ) : null}
                             {canDownloadFilledContract ? (
                                 <Button
                                     type="button"
@@ -7473,9 +6941,7 @@ const PDFViewerModal = ({
                                     <div className="absolute inset-0 flex min-h-[200px] items-center justify-center bg-white px-4 text-center text-xs leading-relaxed text-slate-500 dark:text-slate-400">
                                         {prefilledBoldSignPdfHint
                                             ? prefilledBoldSignPdfHint
-                                              : docuSignSentDocumentSource === "ach"
-                                                ? "ACH PDF appears here after the ACH envelope is sent in DocuSign."
-                                                : "DocuSign PDF appears on step 4 (Sent) after the contract envelope is sent."}
+                                            : "DocuSign PDF appears on step 4 (Sent) after the contract envelope is sent."}
                                     </div>
                                 )}
                             </div>
@@ -7787,9 +7253,9 @@ const PDFViewerModal = ({
                     onOpenChange={setIsRequestModalOpen}
                     variant="request"
                     onSuccess={() => {
-                        if (applicationIdForLookup) {
+                        if (documentRequestLookupId) {
                             void dispatch(
-                                getDocumentRequestsByApplication(applicationIdForLookup),
+                                getDocumentRequestsByApplication(documentRequestLookupId),
                             );
                         }
                     }}

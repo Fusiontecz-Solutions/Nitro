@@ -327,6 +327,7 @@ export const notifyOperationsDisbursementSlice = createSlice({
 // Document Request State
 interface DocumentRequest {
     name: string;
+    label?: string;
     status: 'Complete' | 'Pending';
     createdAt: string;
     requestedBy?: {
