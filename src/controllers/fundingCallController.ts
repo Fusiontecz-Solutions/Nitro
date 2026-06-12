@@ -8,7 +8,11 @@ import {
   resolveApplicationAttributedUserId,
 } from '../middleware/authMiddleware';
 import {
+  createApplicationActivityLog,
+} from '../services/applicationActivityLogService';
+import {
   isFundingCallStatusCallDone,
+  isFundingCallStatusRejected,
   notifyOperationsDisbursementReady,
 } from '../services/fundingCallDisbursementSideEffects';
 
@@ -176,8 +180,48 @@ class FundingCallController {
       }
 
       let applicationForResponse = record.Application;
+      const callStatusStr = String(callStatus);
+      const isRejected = isFundingCallStatusRejected(callStatusStr);
+      const previousQueue = appRecord.currentQueue;
+      const previousState = appRecord.currentState;
 
-      if (shouldSetApplicationQueueToFundingCall(appRecord.currentQueue)) {
+      if (isRejected) {
+        const declineNote =
+          (remarks && String(remarks).trim()) ||
+          'Rejected during funding call';
+        const updatedApp = await prisma.application.update({
+          where: { id: appRecord.id },
+          data: {
+            currentQueue: 'Declined',
+            currentState: 'CANCELLED',
+            note: declineNote,
+          },
+        });
+        applicationForResponse = updatedApp
+          ? { ...record.Application, ...updatedApp }
+          : record.Application;
+
+        try {
+          const actorName = String((req as any).user?.name || '').trim();
+          await createApplicationActivityLog({
+            applicationId: appRecord.id,
+            user: req.user ?? null,
+            req,
+            actionType: 'APPLICATION_REJECTED',
+            actionDescription:
+              `${actorName || 'User'} declined the deal during funding call. Reason: ${declineNote}`.trim(),
+            previousStatus: `${previousQueue} / ${previousState}`,
+            currentStatus: `${updatedApp.currentQueue} / ${updatedApp.currentState}`,
+            metadata: {
+              reason: declineNote,
+              source: 'funding_call',
+              callStatus: callStatusStr,
+            },
+          });
+        } catch (activityError) {
+          console.error('Funding call decline activity log error:', activityError);
+        }
+      } else if (shouldSetApplicationQueueToFundingCall(appRecord.currentQueue)) {
         const updatedApp = await prisma.application.update({
           where: { id: appRecord.id },
           data: {
@@ -193,7 +237,7 @@ class FundingCallController {
       const client = appRecord.client;
       const iso = (appRecord as any).iso;
       const isoEmail = String(iso?.email || '').trim();
-      if (isoEmail && isOutboundSmtpConfigured()) {
+      if (!isRejected && isoEmail && isOutboundSmtpConfigured()) {
         const clientName =
           `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
           client?.businessName ||
@@ -211,7 +255,6 @@ class FundingCallController {
         );
       }
 
-      const callStatusStr = String(callStatus);
       let operationsNotified = false;
       if (
         isFundingCallStatusCallDone(callStatusStr) &&
@@ -227,10 +270,13 @@ class FundingCallController {
 
       return res.status(201).json({
         success: true,
-        message: 'Funding call saved successfully',
+        message: isRejected
+          ? 'Funding call saved and deal declined'
+          : 'Funding call saved successfully',
         data: {
           ...mapFundingCallToApi({ ...record, Application: applicationForResponse }),
           operationsNotified,
+          dealDeclined: isRejected,
         },
       });
     } catch (error) {

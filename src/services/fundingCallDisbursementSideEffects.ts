@@ -33,6 +33,10 @@ export function isFundingCallStatusCallDone(value: string | null | undefined): b
     return normalized === 'calldone';
 }
 
+export function isFundingCallStatusRejected(value: string | null | undefined): boolean {
+    return normalizeFundingCallStatus(value) === 'rejected';
+}
+
 const toApiNotification = (notification: any) => {
     if (!notification) return notification;
     const recipient = notification.recipient;
