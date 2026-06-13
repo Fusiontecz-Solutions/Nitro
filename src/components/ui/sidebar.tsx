@@ -27,9 +27,9 @@ import {
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-/** Desktop expanded sidebar width (was 16rem). */
-const SIDEBAR_WIDTH = "13.5rem"
-const SIDEBAR_WIDTH_MOBILE = "16rem"
+/** Desktop expanded sidebar width. */
+const SIDEBAR_WIDTH = "17rem"
+const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "4.5rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 

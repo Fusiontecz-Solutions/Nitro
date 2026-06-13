@@ -336,20 +336,43 @@ const Approval = ({
         }
     };
 
-    const effectiveQueue = String(
+    /**
+     * A deal is considered "approved" for this button once it has reached the
+     * approval transition or anything past it. ISO approvals advance straight to
+     * the Contract Pending stage, so we treat the whole contract/funding workflow
+     * as approved to keep the button disabled after a reload.
+     */
+    const POST_APPROVAL_TOKENS = new Set<string>([
+        "approved",
+        "completed",
+        "contractpending",
+        "contractgenerated",
+        "contractsent",
+        "contractout",
+        "contractsout",
+        "contractcancelled",
+        "contractsigned",
+        "signedcontracts",
+        "fundingcall",
+        "disbursment",
+        "disbursement",
+        "funded",
+        "final",
+    ]);
+    const normalizeStageToken = (value: unknown) =>
+        String(value ?? "")
+            .trim()
+            .toLowerCase()
+            .replace(/[\s_-]+/g, "");
+    const effectiveQueueToken = normalizeStageToken(
         approvalStatusOverride?.currentQueue ?? (applicationData as any)?.currentQueue ?? "",
-    )
-        .trim()
-        .toLowerCase();
-    const effectiveState = String(
+    );
+    const effectiveStateToken = normalizeStageToken(
         approvalStatusOverride?.currentState ?? (applicationData as any)?.currentState ?? "",
-    )
-        .trim()
-        .toLowerCase();
+    );
     const currentlyApproved =
-        effectiveQueue === "approved" ||
-        effectiveState === "approved" ||
-        effectiveState === "completed";
+        POST_APPROVAL_TOKENS.has(effectiveQueueToken) ||
+        POST_APPROVAL_TOKENS.has(effectiveStateToken);
     const isApproved = currentlyApproved || locallyApproved;
 
     // Fetch underwriter terms offers for this application (skip when preloaded or in read-only mode)

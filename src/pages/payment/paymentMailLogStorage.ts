@@ -3,7 +3,18 @@ import { axiosGet, axiosPost } from "@/redux/axios";
 
 const STORAGE_KEY = "inhouse-payment-mail-logs-v1";
 
-export type PaymentMailLogStatus = "queued" | "sent" | "failed";
+export type PaymentMailLogStatus =
+  | "queued"
+  | "sent"
+  | "failed"
+  | "delivered"
+  | "opened"
+  | "clicked"
+  | "deferred"
+  | "bounced"
+  | "dropped"
+  | "spam"
+  | "unsubscribed";
 
 export type PaymentMailLogEntry = {
   id: string;
@@ -51,7 +62,23 @@ export function normalizePaymentMailLogRow(row: unknown): PaymentMailLogEntry | 
     typeof o.applicationId === "string" ? o.applicationId : null;
   if (!id || !at) return null;
   if (!["contract", "email", "letter"].includes(String(category))) return null;
-  if (!["queued", "sent", "failed"].includes(String(status))) return null;
+  if (
+    ![
+      "queued",
+      "sent",
+      "failed",
+      "delivered",
+      "opened",
+      "clicked",
+      "deferred",
+      "bounced",
+      "dropped",
+      "spam",
+      "unsubscribed",
+    ].includes(String(status))
+  ) {
+    return null;
+  }
   return {
     id,
     at,
@@ -84,6 +111,13 @@ export async function fetchPaymentMailLogsForApplication(
     .map((row) => normalizePaymentMailLogRow(row))
     .filter((e): e is PaymentMailLogEntry => e != null)
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+}
+
+export function savePaymentMailLogEntry(entry: PaymentMailLogEntry): void {
+  const prev = safeParse(localStorage.getItem(STORAGE_KEY));
+  const withoutDup = prev.filter((row) => row.id !== entry.id);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([entry, ...withoutDup]));
+  window.dispatchEvent(new Event("payment-mail-log-updated"));
 }
 
 export async function appendPaymentMailLog(

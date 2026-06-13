@@ -87,8 +87,10 @@ export function getOperationsTabsForDashboardEntry(
       const end = TAB_INDEX.fundingCall;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
     }
+    case "Finals_And_Funding_Call":
     case "Funded":
     case "Disbursment":
+    case "Declined":
       return [...full];
     default:
       return [...full];
@@ -123,9 +125,13 @@ export function getOperationsPipelineStageTabId(
       return "final";
     case "Funding Call":
       return "funding-call";
+    case "Finals_And_Funding_Call":
+      return "funding-call";
     case "Funded":
     case "Disbursment":
       return "disbursement";
+    case "Declined":
+      return "overview";
     default:
       return "disbursement";
   }

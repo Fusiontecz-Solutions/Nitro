@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
 import AgentDealIsoTag from "@/components/application/AgentDealIsoTag";
 import ApplicationBasicDetails from "@/components/application/ApplicationBasicDetails";
+import ApplicationOverviewBankDetails from "@/components/application/ApplicationOverviewBankDetails";
 import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
 import Approval from "@/components/application/Approval";
@@ -65,8 +66,10 @@ import { ChevronLeft, ChevronRight, ScrollText, Mail } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
+import { canManageBankDetailsOnOverview } from "@/lib/bankDetailsAccess";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
+import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 
 
 const ApplicationDetails = () => {
@@ -129,13 +132,11 @@ const ApplicationDetails = () => {
         }
     }, [data, loading])
 
-    const userRole = user?.role || localStorage.getItem('role') || ''
-    const roleKey = String(userRole || "").replace(/-/g, "_").toUpperCase();
-    const isSuperAdmin =
-        roleKey === "SUPER_ADMIN" || roleKey === "SUPERADMIN";
+    const userRole = resolveEffectiveRole(user);
+    const roleKey = normalizeRoleKey(userRole);
+    const isSuperAdmin = roleKey === "SUPER_ADMIN";
     const isFundingUploaderRole =
         roleKey === "SUPER_ADMIN" ||
-        roleKey === "SUPERADMIN" ||
         roleKey === "UNDERWRITER" ||
         roleKey === "FINAL_UNDERWRITER";
     const isUnderwriter = roleKey === 'UNDERWRITER' || roleKey === 'FINAL_UNDERWRITER';
@@ -144,16 +145,20 @@ const ApplicationDetails = () => {
     const isAgent = roleKey === 'AGENT';
     const canEditIsoDetails =
         isSuperAdmin || isAgent || roleKey === "OPERATIONS";
+    const showBankDetailsOnOverview = canManageBankDetailsOnOverview(userRole);
     const hideBusinessProfileOnDecisionMakingTab =
         roleKey === "UNDERWRITER" ||
         roleKey === "OPERATIONS" ||
-        roleKey === "SUPER_ADMIN" ||
-        roleKey === "SUPERADMIN";
+        roleKey === "SUPER_ADMIN";
     /** Operations + Super Admin use the same funding-pipeline tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
-        roleKey === 'OPERATIONS' ||
-        roleKey === 'SUPER_ADMIN' ||
-        roleKey === 'SUPERADMIN';
+        roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
+    const bankDetailsApplicationId =
+        applicationUuid != null
+            ? String(applicationUuid)
+            : resolvedApplicationId != null
+              ? String(resolvedApplicationId)
+              : applicationId ?? "";
 
     const operationsStatusQueryRaw = searchParams.get("operationsStatus");
     const operationsEntryStatus = useMemo(
@@ -181,9 +186,7 @@ const ApplicationDetails = () => {
         const trimmedOpsStatus = operationsStatusQueryRaw?.trim() ?? "";
         /** Same as Operations: browsing Applications / “all” without a stage should show the full pipeline strip. */
         const operationsOpenedWithoutStageFilter =
-            (roleKey === "OPERATIONS" ||
-                roleKey === "SUPER_ADMIN" ||
-                roleKey === "SUPERADMIN") &&
+            (roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN") &&
             (!trimmedOpsStatus ||
                 trimmedOpsStatus.toLowerCase() ===
                 OPERATIONS_APPLICATIONS_LIST_ALL_QUERY);
@@ -998,6 +1001,11 @@ const ApplicationDetails = () => {
                                         <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
                                         <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
                                         <ApplicationBasicDetails applicationId={applicationId} />
+                                        {showBankDetailsOnOverview && bankDetailsApplicationId ? (
+                                            <ApplicationOverviewBankDetails
+                                                applicationId={bankDetailsApplicationId}
+                                            />
+                                        ) : null}
                                         {canShowSendToUnderwriterButton ? (
                                             <div className="flex justify-end mb-4">
                                                 <Button
@@ -1226,6 +1234,7 @@ const ApplicationDetails = () => {
                         >
                             <ApplicationSheetMailLog
                                 applicationId={activityLogApplicationId}
+                                active={mailLogOpen}
                                 className="max-h-[90vh] min-h-0 flex-1"
                                 headerClassName="shrink-0 px-6 pb-3 pt-6 pr-12"
                             />

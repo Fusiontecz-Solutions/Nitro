@@ -51,15 +51,56 @@ const STATUS_TABS: { id: "all" | PaymentMailLogStatus; label: string }[] = [
 
 
 
-function statusBadgeClass(status: PaymentMailLogStatus) {
-  switch (status) {
+function statusBadgeClass(status: string) {
+  const normalized = status.toLowerCase();
+  switch (normalized) {
     case "sent":
+    case "processed":
       return "border-emerald-500/25 bg-emerald-500/10 text-emerald-700";
+    case "delivered":
+      return "border-sky-500/25 bg-sky-500/10 text-sky-700";
+    case "opened":
+    case "open":
+      return "border-violet-500/25 bg-violet-500/10 text-violet-700";
+    case "clicked":
+    case "click":
+      return "border-indigo-500/25 bg-indigo-500/10 text-indigo-700";
     case "failed":
+    case "bounced":
+    case "bounce":
+    case "dropped":
       return "border-red-500/25 bg-red-500/10 text-red-700";
-    default:
+    case "spam":
+      return "border-orange-500/25 bg-orange-500/10 text-orange-700";
+    case "deferred":
+    case "queued":
       return "border-amber-500/25 bg-amber-500/10 text-amber-800";
+    default:
+      return "border-slate-500/25 bg-slate-500/10 text-slate-700";
   }
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  sent: "Sent",
+  processed: "Sent",
+  delivered: "Delivered",
+  opened: "Opened",
+  open: "Opened",
+  clicked: "Clicked",
+  click: "Clicked",
+  deferred: "Deferred",
+  queued: "Queued",
+  failed: "Failed",
+  bounced: "Bounced",
+  bounce: "Bounced",
+  dropped: "Dropped",
+  spam: "Spam",
+  unsubscribed: "Unsubscribed",
+};
+
+function statusLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  return STATUS_LABELS[normalized] ?? status;
 }
 
 function formatWhen(iso: string) {
@@ -313,7 +354,7 @@ export default function MailLogs() {
                         statusBadgeClass(row.status)
                       )}
                     >
-                      {row.status}
+                      {statusLabel(row.status)}
                     </Badge>
                   </TableCell>
                 </TableRow>

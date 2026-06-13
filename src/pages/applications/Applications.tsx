@@ -79,6 +79,7 @@ import {
   inferOperationsListStatusFromApplication,
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
+  OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS,
   operationsDashboardStatusTitle,
 } from "@/constants/operationsDashboardApplications";
 import {
@@ -950,7 +951,10 @@ const Applications = () => {
             const normalized = normalizeOperationsDashboardStatusParam(
               dashboardStateFilter,
             );
-            if (normalized === "Contracted") {
+            if (
+              normalized &&
+              OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS.has(normalized)
+            ) {
               const inferred = inferOperationsListStatusFromApplication(
                 row.original.currentQueue ?? row.original.queue,
                 {

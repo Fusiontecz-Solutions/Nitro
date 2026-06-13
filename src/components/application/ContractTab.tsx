@@ -29,12 +29,6 @@ import {
 import { mergeWithDefaultCcEmails } from "./docusignCcList";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
-import {
-    Dialog,
-    DialogContent,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -58,7 +52,6 @@ import ACHModal, { type ACHEntry } from "./ACHModal";
 import GuarantorModal, { type GuarantorEntry } from "./GuarantorModal";
 import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
-import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
 import { Info, Landmark, Loader2 } from "lucide-react";
@@ -291,7 +284,6 @@ export default function ContractTab({
     // const [guarantor, setGuarantor] = useState(false);
     // const [owner, setOwner] = useState(false);
     const [businessInfoModalOpen, setBusinessInfoModalOpen] = useState(false);
-    const [bankDetailsEditorOpen, setBankDetailsEditorOpen] = useState(false);
     const [addendumModalOpen, setAddendumModalOpen] = useState(false);
     const [epoModalOpen, setEPOModalOpen] = useState(false);
     const [achModalOpen, setACHModalOpen] = useState(false);
@@ -2063,8 +2055,7 @@ export default function ContractTab({
                     />
                     <p className={`min-w-0 ${isDark ? "text-amber-100/90" : "text-amber-950/90"}`}>
                         <span className="font-semibold">Bank details required for contracts.</span>{" "}
-                        Click <span className="font-medium">Add Bank Details</span> on this page
-                        (or use the eye-icon preview → Bank Details tab) and save both{" "}
+                        Go to the <span className="font-medium">Overview</span> tab and save both{" "}
                         <span className="font-medium">account number</span> and{" "}
                         <span className="font-medium">routing number</span> for this application.
                         {bankDetailsForApplication.length > 0 &&
@@ -2087,20 +2078,6 @@ export default function ContractTab({
 
                     </div>
                     <div className="flex items-center gap-3">
-                        {!isReadOnly && applicationUuid && (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => setBankDetailsEditorOpen(true)}
-                                className={`h-10 cursor-pointer px-6 py-2 font-medium rounded-md disabled:opacity-70 disabled:cursor-not-allowed ${isDark
-                                    ? "border-[#5AACEA] text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                    : "border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
-                                    }`}
-                            >
-                                <Landmark className="mr-2 h-4 w-4 shrink-0" aria-hidden />
-                                Add Bank Details
-                            </Button>
-                        )}
                         {!isReadOnly && applicationUuid ? (
                             <Button
                                 type="button"
@@ -2132,7 +2109,7 @@ export default function ContractTab({
                                 generateContractBlockedByBank && !creatingEnvelope
                                     ? bankDetailsLoading
                                         ? "Loading bank details…"
-                                        : "Add bank account number and routing number first (use Add Bank Details)."
+                                        : "Add bank account number and routing number on the Overview tab first."
                                     : undefined
                             }
                             className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer  px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
@@ -2754,45 +2731,6 @@ export default function ContractTab({
                     </Button>
                 </div>
             )}
-
-            <Dialog
-                open={bankDetailsEditorOpen}
-                onOpenChange={setBankDetailsEditorOpen}
-            >
-                <DialogContent
-                    className={`max-h-[90vh] max-w-lg overflow-y-auto sm:max-w-2xl ${isDark ? "border-[#374151]" : ""
-                        }`}
-                >
-                    <DialogHeader>
-                        <DialogTitle>Bank Details</DialogTitle>
-                    </DialogHeader>
-                    {applicationUuid ? (
-                        <ApplicationSheetBankDetail
-                            applicationId={String(applicationUuid)}
-                            onClose={() => {
-                                setBankDetailsEditorOpen(false);
-                                if (applicationUuid) {
-                                    void dispatch(
-                                        getBankDetails({ application: String(applicationUuid) }),
-                                    );
-                                    void dispatch(
-                                        getByApplicationIdContract(String(applicationUuid)),
-                                    )
-                                        .unwrap()
-                                        .then((res) => {
-                                            const contract = (res as { data?: unknown })?.data ?? res ?? null;
-                                            setFetchedContract(contract);
-                                        })
-                                        .catch(() => undefined);
-                                }
-                                if (selectedContractId != null) {
-                                    void dispatch(getAllACH({ contractId: selectedContractId }));
-                                }
-                            }}
-                        />
-                    ) : null}
-                </DialogContent>
-            </Dialog>
 
             {/* Document Viewer for generated contract */}
 

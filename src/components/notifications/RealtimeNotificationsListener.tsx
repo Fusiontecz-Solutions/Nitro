@@ -8,6 +8,7 @@ import {
     prependNotification,
     type Notification,
 } from "@/redux/slices/notificationSlice";
+import { normalizeRoleKey } from "@/lib/sessionRole";
 
 /**
  * Real-time notifications bridge.
@@ -71,11 +72,11 @@ const RealtimeNotificationsListener = () => {
             // Reconcile into the inbox immediately for badge / dropdown / page.
             dispatch(prependNotification(incoming));
 
-            const role = userRoleRef.current;
+            const role = normalizeRoleKey(userRoleRef.current);
             const kind = event?.meta?.realtimeKind;
             const isOpsRecipient = role === "OPERATIONS";
-            const isSuperAdmin =
-                role === "SUPER_ADMIN" || role === "SUPERADMIN";
+            const isSuperAdmin = role === "SUPER_ADMIN";
+            const isAdminRecipient = role === "ADMIN";
             const applicationLink = (() => {
                 if (event?.meta?.actionUrl) return event.meta.actionUrl;
                 const app = incoming.application;
@@ -132,14 +133,20 @@ const RealtimeNotificationsListener = () => {
                 return;
             }
 
-            // Operations users get a high-priority CTA toast; everyone else
-            // gets a quiet info toast so they're aware without distraction.
-            if (kind === "iso_approval_for_operations" && isOpsRecipient) {
+            // Operations / Admins (the contract-generation owners) get a
+            // high-priority CTA toast; everyone else gets a quiet info toast so
+            // they're aware without distraction.
+            if (
+                kind === "iso_approval_for_operations" &&
+                (isOpsRecipient || isSuperAdmin || isAdminRecipient)
+            ) {
                 toast.success(
                     () => (
                         <div className="flex flex-col gap-1">
-                            <span className="font-semibold">{incoming.title}</span>
-                            <span className="text-sm">{incoming.message}</span>
+                            <span className="text-sm leading-snug">
+                                <span className="font-semibold">{incoming.title}</span>
+                                {incoming.message ? `. ${incoming.message}` : null}
+                            </span>
                             {applicationLink ? (
                                 <span className="text-xs underline mt-1">
                                     Click to open the application

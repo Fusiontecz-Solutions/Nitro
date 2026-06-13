@@ -15,8 +15,10 @@ export const OPERATIONS_DASHBOARD_APPLICATION_STATUSES = [
   "Contract_Signed",
   "Signed_Contracts",
   "Funding Call",
+  "Finals_And_Funding_Call",
   "Disbursment",
   "Funded",
+  "Declined",
 ] as const;
 
 export type OperationsDashboardApplicationStatus =
@@ -52,8 +54,10 @@ const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Contract_Signed: "Contract Signed",
   Signed_Contracts: "Signed Contracts",
   "Funding Call": "Funding Call",
+  Finals_And_Funding_Call: "Finals and Funding Call",
   Disbursment: "Disbursement",
   Funded: "Funded",
+  Declined: "Rejected",
   Agent: "Agent",
   Underwriter: "Underwriter",
   "Final Underwriter": "Final Underwriter",
@@ -83,9 +87,12 @@ export function normalizeOperationsDashboardStatusParam(
     contract_signed: "Contract_Signed",
     signed_contracts: "Contract_Signed",
     funding_call: "Funding Call",
+    finals_and_funding_call: "Finals_And_Funding_Call",
     disbursment: "Disbursment",
     disbursement: "Disbursment",
     funded: "Funded",
+    declined: "Declined",
+    rejected: "Declined",
     agent: "Agent",
     underwriter: "Underwriter",
     final_underwriter: "Final Underwriter",
@@ -118,6 +125,9 @@ export function inferOperationsListStatusFromApplication(
   const st = normalizePipelineKey(options?.explicitStatus);
   const state = normalizePipelineKey(options?.currentState);
 
+  if (q === "declined" || st === "declined" || state === "cancelled") {
+    return "Declined";
+  }
   if (st === "funded" || q === "funded") return "Funded";
   if (
     q === "disbursment" ||
@@ -126,10 +136,19 @@ export function inferOperationsListStatusFromApplication(
   ) {
     return "Disbursment";
   }
-  if (q === "fundingcall" || (q.includes("funding") && q.includes("call"))) {
+  if (
+    state === "fundingcall" ||
+    q === "fundingcall" ||
+    (q.includes("funding") && q.includes("call"))
+  ) {
     return "Funding Call";
   }
-  if (q === "final" && !q.includes("underwriter")) return "Final";
+  if (
+    (state === "final" && !state.includes("underwriter")) ||
+    (q === "final" && !q.includes("underwriter"))
+  ) {
+    return "Final";
+  }
   if (q === "finalunderwriter" || q === "finalreview") return "Final Underwriter";
   if (
     q === "underwriter" ||
@@ -167,6 +186,11 @@ export function inferOperationsListStatusFromApplication(
 
   return null;
 }
+
+/** Operations list filters that combine multiple stages — table rows show each deal's actual status. */
+export const OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS = new Set<
+  OperationsApplicationsListStatus
+>(["Contracted", "Finals_And_Funding_Call"]);
 
 export function normalizeFundingCallStatus(
   value: string | null | undefined,

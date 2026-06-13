@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import {
@@ -40,9 +40,17 @@ import {
 
 type ApplicationSheetMailLogProps = {
   applicationId: string;
+  /** When false, polling pauses (e.g. mail log dialog closed). Defaults to true. */
+  active?: boolean;
+  /** How often to refetch delivery status while active. Defaults to 10s. */
+  pollIntervalMs?: number;
   className?: string;
   headerClassName?: string;
 };
+
+const DEFAULT_MAIL_LOG_POLL_MS = Number(
+  import.meta.env.VITE_MAIL_LOG_POLL_MS ?? 10_000,
+);
 
 type MailLogRow = {
   id: string;
@@ -84,7 +92,17 @@ function resolveActivityMailStatus(log: ApplicationActivityLog): string {
   const type = String(log.actionType ?? '').toUpperCase();
   if (type.includes('FAILED')) return 'failed';
   if (type.includes('QUEUED')) return 'queued';
-  const metaStatus = log.metadata?.status;
+
+  const meta = log.metadata ?? {};
+  const deliveryStatus =
+    meta.delivery &&
+    typeof meta.delivery === 'object' &&
+    typeof (meta.delivery as Record<string, unknown>).status === 'string'
+      ? String((meta.delivery as Record<string, unknown>).status).trim().toLowerCase()
+      : '';
+  if (deliveryStatus) return deliveryStatus;
+
+  const metaStatus = meta.status;
   if (typeof metaStatus === 'string' && metaStatus.trim()) {
     return metaStatus.trim().toLowerCase();
   }
@@ -125,16 +143,75 @@ function extractAttachmentNames(
 
 function statusBadgeClass(status: string) {
   const normalized = status.toLowerCase();
-  if (normalized === 'sent') {
-    return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+  switch (normalized) {
+    case 'sent':
+    case 'processed':
+      return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
+    case 'delivered':
+      return 'border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300';
+    case 'opened':
+    case 'open':
+      return 'border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300';
+    case 'clicked':
+    case 'click':
+      return 'border-indigo-500/25 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300';
+    case 'failed':
+    case 'bounced':
+    case 'bounce':
+    case 'dropped':
+      return 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300';
+    case 'spam':
+      return 'border-orange-500/25 bg-orange-500/10 text-orange-700 dark:text-orange-300';
+    case 'deferred':
+    case 'queued':
+      return 'border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300';
+    default:
+      return 'border-slate-500/25 bg-slate-500/10 text-slate-700 dark:text-slate-300';
   }
-  if (normalized === 'failed') {
-    return 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300';
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  sent: 'Sent',
+  processed: 'Sent',
+  delivered: 'Delivered',
+  opened: 'Opened',
+  open: 'Opened',
+  clicked: 'Clicked',
+  click: 'Clicked',
+  deferred: 'Deferred',
+  queued: 'Queued',
+  failed: 'Failed',
+  bounced: 'Bounced',
+  bounce: 'Bounced',
+  dropped: 'Dropped',
+  spam: 'Spam',
+  unsubscribed: 'Unsubscribed',
+};
+
+function statusLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  return STATUS_LABELS[normalized] ?? status;
+}
+
+type DeliveryMeta = {
+  status?: string;
+  deliveredAt?: string;
+  openedAt?: string;
+  clickedAt?: string;
+  bouncedAt?: string;
+  openCount?: number;
+  clickCount?: number;
+  bounceReason?: string;
+  lastEvent?: string;
+  lastEventAt?: string;
+};
+
+function extractDeliveryMeta(log?: ApplicationActivityLog): DeliveryMeta | null {
+  const delivery = log?.metadata?.delivery;
+  if (delivery && typeof delivery === 'object') {
+    return delivery as DeliveryMeta;
   }
-  if (normalized === 'queued') {
-    return 'border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-300';
-  }
-  return 'border-slate-500/25 bg-slate-500/10 text-slate-700 dark:text-slate-300';
+  return null;
 }
 
 function bodyLooksLikeHtml(body: string): boolean {
@@ -143,6 +220,8 @@ function bodyLooksLikeHtml(body: string): boolean {
 
 export default function ApplicationSheetMailLog({
   applicationId,
+  active = true,
+  pollIntervalMs = DEFAULT_MAIL_LOG_POLL_MS,
   className,
   headerClassName,
 }: ApplicationSheetMailLogProps) {
@@ -151,39 +230,115 @@ export default function ApplicationSheetMailLog({
 
   const [paymentLogs, setPaymentLogs] = useState<PaymentMailLogEntry[]>([]);
   const [paymentLoading, setPaymentLoading] = useState(false);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   const [viewOpen, setViewOpen] = useState(false);
   const [viewLoading, setViewLoading] = useState(false);
   const [viewContent, setViewContent] = useState<ActivityLogContent | null>(null);
   const [viewPayment, setViewPayment] = useState<PaymentMailLogEntry | null>(null);
+  const [viewActivityLogId, setViewActivityLogId] = useState<string | null>(null);
   const [viewAttachments, setViewAttachments] = useState<string[]>([]);
   const [viewError, setViewError] = useState<string | null>(null);
+  const [viewDelivery, setViewDelivery] = useState<DeliveryMeta | null>(null);
 
-  useEffect(() => {
+  const refreshPaymentMailLogs = useCallback(
+    async (opts?: { showLoading?: boolean }) => {
+      if (!applicationId) return;
+      const showLoading = opts?.showLoading ?? false;
+      if (showLoading) setPaymentLoading(true);
+      try {
+        const data = await fetchPaymentMailLogsForApplication(applicationId);
+        setPaymentLogs(data);
+      } catch {
+        if (showLoading) setPaymentLogs([]);
+      } finally {
+        if (showLoading) setPaymentLoading(false);
+      }
+    },
+    [applicationId],
+  );
+
+  const refreshActivityMailLogs = useCallback(() => {
     if (!applicationId) return;
-    dispatch(getApplicationActivityLogs(applicationId));
+    void dispatch(getApplicationActivityLogs(applicationId));
   }, [applicationId, dispatch]);
 
+  const refreshAllMailLogs = useCallback(
+    (opts?: { showLoading?: boolean }) => {
+      refreshActivityMailLogs();
+      void refreshPaymentMailLogs(opts);
+    },
+    [refreshActivityMailLogs, refreshPaymentMailLogs],
+  );
+
   useEffect(() => {
-    if (!applicationId) return;
-    setPaymentLoading(true);
-    void fetchPaymentMailLogsForApplication(applicationId)
-      .then(setPaymentLogs)
-      .catch(() => setPaymentLogs([]))
-      .finally(() => setPaymentLoading(false));
+    setInitialLoadDone(false);
   }, [applicationId]);
 
+  useEffect(() => {
+    if (!applicationId || !active) return;
+
+    refreshAllMailLogs({ showLoading: true });
+
+    const intervalMs = Math.max(5_000, pollIntervalMs);
+    const intervalId = window.setInterval(() => {
+      if (document.hidden) return;
+      refreshAllMailLogs({ showLoading: false });
+    }, intervalMs);
+
+    const onPaymentLogUpdated = () => refreshAllMailLogs({ showLoading: false });
+    window.addEventListener('payment-mail-log-updated', onPaymentLogUpdated);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('payment-mail-log-updated', onPaymentLogUpdated);
+    };
+  }, [applicationId, active, pollIntervalMs, refreshAllMailLogs]);
+
+  useEffect(() => {
+    if (!loading && !paymentLoading) {
+      setInitialLoadDone(true);
+    }
+  }, [loading, paymentLoading]);
+
+  useEffect(() => {
+    if (!viewOpen) return;
+
+    if (viewActivityLogId) {
+      const updated = logs.find(
+        (row): row is ApplicationActivityLog =>
+          typeof row === 'object' &&
+          row !== null &&
+          'id' in row &&
+          (row as ApplicationActivityLog).id === viewActivityLogId,
+      );
+      if (updated) setViewDelivery(extractDeliveryMeta(updated));
+      return;
+    }
+
+    if (viewPayment) {
+      const linkedActivity = logs.find(
+        (row): row is ApplicationActivityLog =>
+          typeof row === 'object' &&
+          row !== null &&
+          'metadata' in row &&
+          (row as ApplicationActivityLog).metadata?.paymentMailLogId === viewPayment.id,
+      );
+      setViewDelivery(extractDeliveryMeta(linkedActivity));
+    }
+  }, [logs, viewOpen, viewActivityLogId, viewPayment]);
+
   const rows = useMemo((): MailLogRow[] => {
-    const activityRows = logs
-      .filter(
-        (log): log is ApplicationActivityLog =>
-          typeof log === 'object' &&
-          log !== null &&
-          'id' in log &&
-          'actionDescription' in log &&
-          isCommunicationLog(log as ApplicationActivityLog),
-      )
-      .map((log) => ({
+    const communicationActivityLogs = logs.filter(
+      (log): log is ApplicationActivityLog =>
+        typeof log === 'object' &&
+        log !== null &&
+        'id' in log &&
+        'actionDescription' in log &&
+        isCommunicationLog(log as ApplicationActivityLog),
+    );
+
+    const activityRows = communicationActivityLogs.map((log) => ({
         id: `activity-${log.id}`,
         at: log.createdAt,
         recipient: log.recipientName ?? '—',
@@ -196,7 +351,18 @@ export default function ApplicationSheetMailLog({
         activityLog: log,
       }));
 
-    const paymentRows = paymentLogs.map((log) => ({
+    const paymentLogIdsInActivity = new Set(
+      communicationActivityLogs
+        .map((log) => {
+          const meta = log.metadata ?? {};
+          return typeof meta.paymentMailLogId === 'string' ? meta.paymentMailLogId : null;
+        })
+        .filter((id): id is string => Boolean(id)),
+    );
+
+    const paymentRows = paymentLogs
+      .filter((log) => !paymentLogIdsInActivity.has(log.id))
+      .map((log) => ({
       id: `payment-${log.id}`,
       at: log.at,
       recipient: log.recipient,
@@ -219,7 +385,9 @@ export default function ApplicationSheetMailLog({
     setViewLoading(true);
     setViewContent(null);
     setViewPayment(null);
+    setViewActivityLogId(log.id);
     setViewError(null);
+    setViewDelivery(extractDeliveryMeta(log));
     setViewAttachments(extractAttachmentNames(log));
     try {
       const content = await dispatch(
@@ -239,14 +407,23 @@ export default function ApplicationSheetMailLog({
     setViewLoading(false);
     setViewContent(null);
     setViewPayment(log);
+    setViewActivityLogId(null);
     setViewError(null);
+    const linkedActivity = logs.find(
+      (row): row is ApplicationActivityLog =>
+        typeof row === 'object' &&
+        row !== null &&
+        'metadata' in row &&
+        (row as ApplicationActivityLog).metadata?.paymentMailLogId === log.id,
+    );
+    setViewDelivery(extractDeliveryMeta(linkedActivity));
     setViewAttachments(log.templateName ? [log.templateName] : []);
   };
 
   const previewBody =
     viewPayment?.body?.trim() ?? viewContent?.body?.trim() ?? '';
   const previewIsHtml = previewBody ? bodyLooksLikeHtml(previewBody) : false;
-  const isLoading = loading || paymentLoading;
+  const isLoading = !initialLoadDone && (loading || paymentLoading);
 
   return (
     <div
@@ -347,7 +524,7 @@ export default function ApplicationSheetMailLog({
                           statusBadgeClass(row.status),
                         )}
                       >
-                        {row.status}
+                        {statusLabel(row.status)}
                       </Badge>
                     </TableCell>
                     <TableCell className="pr-4 text-right">
@@ -406,13 +583,19 @@ export default function ApplicationSheetMailLog({
                       className={cn(
                         'mt-2 text-[11px] font-semibold uppercase',
                         statusBadgeClass(
-                          viewPayment?.status ??
+                          viewDelivery?.status ??
+                            viewPayment?.status ??
                             viewContent?.status ??
                             'sent',
                         ),
                       )}
                     >
-                      {viewPayment?.status ?? viewContent?.status ?? 'sent'}
+                      {statusLabel(
+                        viewDelivery?.status ??
+                          viewPayment?.status ??
+                          viewContent?.status ??
+                          'sent',
+                      )}
                     </Badge>
                   </div>
                   <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
@@ -474,6 +657,63 @@ export default function ApplicationSheetMailLog({
                           {name}
                         </span>
                       ))}
+                    </div>
+                  </div>
+                )}
+
+                {viewDelivery && (
+                  <div className="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+                    <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Delivery tracking
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {viewDelivery.deliveredAt && (
+                        <div className="flex items-center gap-2 text-xs text-foreground">
+                          <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" />
+                          <span className="font-medium">Delivered</span>
+                          <span className="text-muted-foreground">
+                            {formatDateTimeUS(viewDelivery.deliveredAt, viewDelivery.deliveredAt)}
+                          </span>
+                        </div>
+                      )}
+                      {viewDelivery.openedAt && (
+                        <div className="flex items-center gap-2 text-xs text-foreground">
+                          <span className="h-2 w-2 shrink-0 rounded-full bg-violet-500" />
+                          <span className="font-medium">
+                            Opened
+                            {viewDelivery.openCount && viewDelivery.openCount > 1
+                              ? ` (${viewDelivery.openCount}×)`
+                              : ''}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {formatDateTimeUS(viewDelivery.openedAt, viewDelivery.openedAt)}
+                          </span>
+                        </div>
+                      )}
+                      {viewDelivery.clickedAt && (
+                        <div className="flex items-center gap-2 text-xs text-foreground">
+                          <span className="h-2 w-2 shrink-0 rounded-full bg-indigo-500" />
+                          <span className="font-medium">
+                            Clicked
+                            {viewDelivery.clickCount && viewDelivery.clickCount > 1
+                              ? ` (${viewDelivery.clickCount}×)`
+                              : ''}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {formatDateTimeUS(viewDelivery.clickedAt, viewDelivery.clickedAt)}
+                          </span>
+                        </div>
+                      )}
+                      {viewDelivery.bouncedAt && (
+                        <div className="flex items-center gap-2 text-xs text-foreground">
+                          <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
+                          <span className="font-medium">Bounced</span>
+                          <span className="break-all text-muted-foreground">
+                            {formatDateTimeUS(viewDelivery.bouncedAt, viewDelivery.bouncedAt)}
+                            {viewDelivery.bounceReason ? ` — ${viewDelivery.bounceReason}` : ''}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

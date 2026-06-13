@@ -25,7 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { appendPaymentMailLog } from "./paymentMailLogStorage";
+import { savePaymentMailLogEntry } from "./paymentMailLogStorage";
 import {
   getPaymentTemplates,
   readPaymentTemplatesCache,
@@ -586,49 +586,32 @@ export default function Letters() {
             })
           : `${selectedTemplate.name} - Deal #${dealLabel}`);
 
-      await dispatch(
+      const sendResult = await dispatch(
         sendPaymentMail({
           to: recipient,
           subject: resolvedSubject,
           body: mergedBody,
+          applicationId: application?._id ?? null,
+          dealKey: dealLabel,
+          templateName: selectedTemplate.name,
+          category: selectedTemplate.category,
         })
       ).unwrap();
 
       toast.success(
         `Email sent to ${recipient} (${selectedTemplate.name})`
       );
-      await appendPaymentMailLog(
-        {
-          dealKey: dealLabel,
-          applicationId: application?._id ?? null,
-          templateName: selectedTemplate.name,
-          category: selectedTemplate.category,
-          recipient,
-          subject: resolvedSubject,
-          body: mergedBody,
-          status: "sent",
-        },
-        { persistApplicationId: application?._id ?? null }
-      );
+
+      const paymentMailLog = sendResult?.data?.paymentMailLog;
+      if (paymentMailLog) {
+        savePaymentMailLogEntry(paymentMailLog);
+      }
     } catch (error: any) {
       const message =
         typeof error === "string"
           ? error
           : error?.message || "Failed to send email";
       toast.error(message);
-      await appendPaymentMailLog(
-        {
-          dealKey: dealLabel,
-          applicationId: application?._id ?? null,
-          templateName: selectedTemplate.name,
-          category: selectedTemplate.category,
-          recipient: recipientEmail.trim(),
-          subject: subject.trim(),
-          body: mergedBody,
-          status: "failed",
-        },
-        { persistApplicationId: application?._id ?? null }
-      );
     } finally {
       setIsSending(false);
     }
