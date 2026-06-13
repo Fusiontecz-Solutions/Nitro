@@ -4,9 +4,9 @@ import prisma from '../config/prismaClient';
 import { createApplicationActivityLog } from './applicationActivityLogService';
 import type { AuthenticatedUser } from './applicationService';
 import {
-    enqueueApplicationApprovalSideEffects,
-    isApplicationApprovalQueueEnabled,
-} from '../queues/applicationApprovalQueue';
+    APPLICATION_QUEUE_CONTRACT_PENDING,
+    APPLICATION_STATE_CONTRACT_PENDING,
+} from './contractApplicationWorkflowSync';
 
 /* ============================================================================
  * Application Approval domain service
@@ -32,6 +32,22 @@ import {
 /** Canonical labels persisted on `Application.currentQueue` / `currentState`. */
 export const APPLICATION_APPROVED_QUEUE = 'Approved' as const;
 export const APPLICATION_APPROVED_STATE = 'Approved' as const;
+
+/**
+ * When an ISO approves from the public portal, the deal does not stop at the
+ * generic "Approved" bucket — it advances straight into the Contract Pending
+ * stage so Operations can immediately generate the contract. Internal (non-ISO)
+ * approvals keep the legacy Approved/Approved labels.
+ */
+const isIsoApprovalActor = (actorType: string | null | undefined): boolean =>
+    String(actorType ?? '').trim().toUpperCase() === 'ISO';
+
+const resolveApprovalTarget = (
+    actorType: string | null | undefined
+): { queue: string; state: string } =>
+    isIsoApprovalActor(actorType)
+        ? { queue: APPLICATION_QUEUE_CONTRACT_PENDING, state: APPLICATION_STATE_CONTRACT_PENDING }
+        : { queue: APPLICATION_APPROVED_QUEUE, state: APPLICATION_APPROVED_STATE };
 
 /** Public contract returned to the controller / API. */
 export interface ApproveApplicationResult {
@@ -96,11 +112,46 @@ const includeForApiResponse: Prisma.ApplicationInclude = {
     files: true,
 };
 
-const isAlreadyApproved = (queue: string | null | undefined, state: string | null | undefined): boolean => {
-    const q = String(queue ?? '').trim().toLowerCase();
-    const s = String(state ?? '').trim().toLowerCase();
-    return q === 'approved' || s === 'approved' || s === 'completed';
-};
+/**
+ * Normalized queue/state tokens that mean the deal has already reached (or moved
+ * past) the approval transition. Used to keep `approveApplication` idempotent so
+ * repeat clicks / retried webhooks never re-fire side-effects and — critically —
+ * never overwrite a more-advanced contract stage back to an earlier one.
+ */
+const POST_APPROVAL_WORKFLOW_TOKENS = new Set<string>([
+    'approved',
+    'completed',
+    'contractpending',
+    'contractgenerated',
+    'contractsent',
+    'contractout',
+    'contractsout',
+    'contractcancelled',
+    'contractsigned',
+    'signedcontracts',
+    'fundingcall',
+    'disbursment',
+    'disbursement',
+    'funded',
+    'final',
+]);
+
+const normalizeWorkflowToken = (value: string | null | undefined): string =>
+    String(value ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '');
+
+const isAlreadyApproved = (queue: string | null | undefined, state: string | null | undefined): boolean =>
+    POST_APPROVAL_WORKFLOW_TOKENS.has(normalizeWorkflowToken(queue)) ||
+    POST_APPROVAL_WORKFLOW_TOKENS.has(normalizeWorkflowToken(state));
+
+const isContractPendingStage = (
+    queue: string | null | undefined,
+    state: string | null | undefined
+): boolean =>
+    normalizeWorkflowToken(queue) === 'contractpending' ||
+    normalizeWorkflowToken(state) === 'contractpending';
 
 /* ============================ Core action ================================= */
 
@@ -187,18 +238,65 @@ async function runApproval(
     const alreadyApproved = isAlreadyApproved(previousQueue, previousState);
 
     /**
-     * Direct unconditional update by primary key.
-     *
-     * - Always writes the canonical Approved labels so the column values are
-     *   guaranteed to be set, regardless of the prior state.
-     * - Uses a single non-interactive query to avoid Prisma interactive
-     *   transaction timeout failures (P2028) under DB latency spikes.
+     * Idempotent fast-path: the deal has already reached (or moved past) the
+     * approval transition. Return the canonical record untouched so a repeat
+     * click / retried webhook never overwrites a more-advanced contract stage
+     * (e.g. Contract Generated → back to Approved) and never re-fires emails.
      */
+    if (alreadyApproved) {
+        const current = await prisma.application.findUnique({
+            where: { id: existing.id },
+            include: includeForApiResponse,
+        });
+        console.log('[approveApplication] already at/past approval — no-op:', {
+            applicationDbId: existing.id,
+            previousQueue,
+            previousState,
+        });
+
+        // Backfill: state may have advanced on a prior attempt while notifications
+        // failed (e.g. Redis queue never processed). Re-run fan-out idempotently.
+        if (
+            current &&
+            isContractPendingStage(current.currentQueue, current.currentState)
+        ) {
+            dispatchApprovalSideEffects({
+                applicationId: existing.id,
+                applicationNumber: existing.applicationId,
+                actorId: options.actor?.id ?? null,
+                actorRole: options.actor?.role ? String(options.actor.role) : null,
+                actorType: options.actorType ?? null,
+                actorName: options.actorName ?? null,
+                previousQueue: previousQueue ?? null,
+                previousState: previousState ?? null,
+                targetQueue: current.currentQueue,
+                targetState: current.currentState,
+            });
+        }
+
+        return {
+            application: current,
+            alreadyApproved: true,
+            previousQueue,
+            previousState,
+        };
+    }
+
+    /**
+     * Target stage depends on who approved:
+     *   - ISO (public portal)  → Contract Pending (ready for contract generation).
+     *   - Internal CRM actor   → legacy Approved/Approved bucket.
+     *
+     * Single non-interactive update by primary key to avoid Prisma interactive
+     * transaction timeout failures (P2028) under DB latency spikes.
+     */
+    const target = resolveApprovalTarget(options.actorType);
+
     const application = await prisma.application.update({
         where: { id: existing.id },
         data: {
-            currentQueue: APPLICATION_APPROVED_QUEUE,
-            currentState: APPLICATION_APPROVED_STATE,
+            currentQueue: target.queue,
+            currentState: target.state,
         },
         include: includeForApiResponse,
     });
@@ -211,7 +309,7 @@ async function runApproval(
     });
 
     /**
-     * Defensive read-back to confirm the row really shows Approved
+     * Defensive read-back to confirm the row really shows the target stage
      * (catches replicas, triggers, or concurrent writers that might revert).
      */
     const readback = await prisma.application.findUnique({
@@ -221,10 +319,9 @@ async function runApproval(
     console.log('[approveApplication] readback after commit:', readback);
 
     /**
-     * Activity log + side-effects only when this call is the one that
-     * actually transitioned the state (avoids spamming on repeat clicks).
+     * Activity log + side-effects (this call performed the real transition).
      */
-    if (!alreadyApproved) {
+    {
         try {
             await createApplicationActivityLog({
                 applicationId: existing.id,
@@ -233,7 +330,7 @@ async function runApproval(
                 actionType: 'APPROVED',
                 actionDescription: buildApprovalActivityDescription(options),
                 previousStatus: `${previousQueue ?? ''} / ${previousState ?? ''}`,
-                currentStatus: `${APPLICATION_APPROVED_QUEUE} / ${APPLICATION_APPROVED_STATE}`,
+                currentStatus: `${target.queue} / ${target.state}`,
                 metadata: {
                     actorType: options.actorType ?? null,
                     actorName: options.actorName ?? null,
@@ -257,6 +354,8 @@ async function runApproval(
             actorName: options.actorName ?? null,
             previousQueue: previousQueue ?? null,
             previousState: previousState ?? null,
+            targetQueue: target.queue,
+            targetState: target.state,
         });
     }
 
@@ -299,20 +398,18 @@ export interface ApprovalSideEffectPayload {
     actorName: string | null;
     previousQueue: string | null;
     previousState: string | null;
+    /** Post-transition queue label (e.g. Contract Pending) — drives notification routing. */
+    targetQueue?: string | null;
+    /** Post-transition state label (e.g. CONTRACT_PENDING) — drives notification routing. */
+    targetState?: string | null;
 }
 
 function dispatchApprovalSideEffects(payload: ApprovalSideEffectPayload): void {
-    if (isApplicationApprovalQueueEnabled()) {
-        enqueueApplicationApprovalSideEffects(payload).catch((err) => {
-            console.error(
-                '[applicationApprovalService] enqueue failed; falling back to inline fan-out:',
-                err
-            );
-            void runApprovalSideEffectsInline(payload);
-        });
-        return;
-    }
-
+    /**
+     * Always fan out inline so in-app notifications are never blocked by a
+     * Redis/BullMQ outage (REDIS_URL is set locally but Redis is not running,
+     * worker failed to start, etc.).
+     */
     setImmediate(() => {
         void runApprovalSideEffectsInline(payload);
     });

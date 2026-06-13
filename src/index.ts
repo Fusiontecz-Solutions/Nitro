@@ -39,7 +39,16 @@ app.use(
   })
 );
 // Middleware
-app.use(express.json({ limit: '50mb' }));
+// Keep the raw request bytes around so the SendGrid Event Webhook signature
+// (computed over timestamp + raw body) can be verified before trusting events.
+app.use(
+  express.json({
+    limit: '50mb',
+    verify: (req, _res, buf) => {
+      (req as Request & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // File upload middleware - handles multipart/form-data (req.files) for most routes.
@@ -75,15 +84,20 @@ console.log('Starting CRM Email Bot...');
 console.log(
     `[mail] Outbound sender: ${getDefaultMailFrom()} (SendGrid: ${isSendGridConfigured() ? 'yes' : 'no'})`,
 );
+const sendgridWebhookBase = process.env.SENDGRID_WEBHOOK_URL?.trim().replace(/\/$/, '');
+if (sendgridWebhookBase) {
+    console.log(`[mail] SendGrid event webhook (configure in SendGrid dashboard): ${sendgridWebhookBase}/sendgrid/webhook`);
+}
 startCronJob();
 startSuperAdminPlatformCronJob();
 // Test Redis connection
 testRedisConnection().catch(console.error);
+
+// Socket.IO must be ready before background workers emit real-time events.
+initializeSocketIO(httpServer);
+
 startCollectionPaymentUploadWorker();
 startApplicationApprovalWorker();
-
-// Initialize Socket.IO
-initializeSocketIO(httpServer);
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {

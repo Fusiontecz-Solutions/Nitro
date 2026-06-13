@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import type { PaymentMailLogStatus } from '@prisma/client';
+import type { PaymentMailLog, PaymentMailLogStatus } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { resolveAuditLogUserId } from '../middleware/authMiddleware';
 import type { AuthenticatedUser } from './applicationService';
@@ -28,6 +28,161 @@ export function fromPrismaMailLogStatus(status: PaymentMailLogStatus): 'queued' 
   }
 }
 
+/** Delivery statuses from SendGrid webhooks (stored on linked activity log metadata). */
+export type PaymentMailDeliveryStatus =
+  | 'delivered'
+  | 'opened'
+  | 'clicked'
+  | 'deferred'
+  | 'bounced'
+  | 'dropped'
+  | 'spam'
+  | 'unsubscribed'
+  | 'failed';
+
+export type PaymentMailLogApiStatus = 'queued' | 'sent' | 'failed' | PaymentMailDeliveryStatus;
+
+export function resolvePaymentMailDisplayStatus(
+  prismaStatus: PaymentMailLogStatus,
+  deliveryStatus?: string | null,
+): PaymentMailLogApiStatus {
+  const normalized = deliveryStatus?.trim().toLowerCase();
+  if (normalized && normalized !== 'sent' && normalized !== 'processed') {
+    return normalized as PaymentMailLogApiStatus;
+  }
+  return fromPrismaMailLogStatus(prismaStatus);
+}
+
+export function formatPaymentMailLogApiRow(
+  log: PaymentMailLog,
+  deliveryStatus?: string | null,
+) {
+  return {
+    id: log.id,
+    at: log.createdAt?.toISOString() ?? new Date().toISOString(),
+    dealKey: log.dealKey,
+    applicationId: log.applicationId,
+    templateName: log.templateName,
+    category: log.category,
+    recipient: log.recipient,
+    subject: log.subject,
+    body: log.body ?? undefined,
+    status: resolvePaymentMailDisplayStatus(log.status, deliveryStatus),
+  };
+}
+
+function deliveryStatusFromActivityMetadata(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const meta = metadata as Record<string, unknown>;
+  const delivery = meta.delivery;
+  if (delivery && typeof delivery === 'object' && !Array.isArray(delivery)) {
+    const status = (delivery as Record<string, unknown>).status;
+    if (typeof status === 'string' && status.trim()) return status.trim().toLowerCase();
+  }
+  const metaStatus = meta.status;
+  if (typeof metaStatus === 'string' && metaStatus.trim()) return metaStatus.trim().toLowerCase();
+  return null;
+}
+
+export async function enrichPaymentMailLogsForApi(logs: PaymentMailLog[]) {
+  if (!logs.length) return [];
+
+  const applicationId = logs[0]?.applicationId;
+  if (!applicationId) {
+    return logs.map((log) => formatPaymentMailLogApiRow(log));
+  }
+
+  const activityLogs = await prisma.applicationActivityLog.findMany({
+    where: { applicationId },
+    orderBy: { createdAt: 'desc' },
+    select: { metadata: true },
+  });
+
+  const deliveryByPaymentLogId = new Map<string, string>();
+  for (const row of activityLogs) {
+    const meta = row.metadata;
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) continue;
+    const paymentMailLogId = (meta as Record<string, unknown>).paymentMailLogId;
+    if (typeof paymentMailLogId !== 'string' || deliveryByPaymentLogId.has(paymentMailLogId)) {
+      continue;
+    }
+    const deliveryStatus = deliveryStatusFromActivityMetadata(meta);
+    if (deliveryStatus) deliveryByPaymentLogId.set(paymentMailLogId, deliveryStatus);
+  }
+
+  return logs.map((log) =>
+    formatPaymentMailLogApiRow(log, deliveryByPaymentLogId.get(log.id) ?? null),
+  );
+}
+
+export async function insertPaymentMailLogRecord(
+  applicationId: string,
+  user: AuthenticatedUser | null,
+  input: CreatePaymentMailLogInput,
+  req?: Request | null,
+) {
+  const prismaStatus = toPrismaMailLogStatus(input.status);
+  if (!prismaStatus) {
+    throw new Error('Invalid payment mail log status');
+  }
+
+  const createdById = await resolveAuditLogUserId(req, { user, applicationId });
+
+  return prisma.paymentMailLog.create({
+    data: {
+      applicationId,
+      dealKey: input.dealKey,
+      templateName: input.templateName,
+      category: input.category,
+      recipient: input.recipient,
+      subject: input.subject,
+      body: input.body?.trim() ? input.body : null,
+      status: prismaStatus,
+      createdById,
+    },
+  });
+}
+
+export async function markPaymentMailLogFailed(
+  paymentMailLogId: string,
+  input: Pick<CreatePaymentMailLogInput, 'dealKey' | 'templateName' | 'category' | 'recipient' | 'subject'>,
+) {
+  const log = await prisma.paymentMailLog.update({
+    where: { id: paymentMailLogId },
+    data: { status: 'FAILED' },
+  });
+
+  const summary = `Failed to send ${input.category} "${input.templateName}" to ${input.recipient}`;
+  const activityLog = await prisma.applicationActivityLog.findFirst({
+    where: {
+      metadata: {
+        path: ['paymentMailLogId'],
+        equals: paymentMailLogId,
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (activityLog) {
+    const prior =
+      activityLog.metadata &&
+      typeof activityLog.metadata === 'object' &&
+      !Array.isArray(activityLog.metadata)
+        ? (activityLog.metadata as Record<string, unknown>)
+        : {};
+    await prisma.applicationActivityLog.update({
+      where: { id: activityLog.id },
+      data: {
+        actionType: 'PAYMENT_MAIL_FAILED',
+        actionDescription: summary,
+        metadata: { ...prior, status: 'failed' } as object,
+      },
+    });
+  }
+
+  return log;
+}
+
 export interface CreatePaymentMailLogInput {
   dealKey: string;
   templateName: string;
@@ -38,7 +193,7 @@ export interface CreatePaymentMailLogInput {
   status: 'queued' | 'sent' | 'failed';
 }
 
-async function assertApplicationMailLogAccess(applicationId: string, user: AuthenticatedUser | null) {
+export async function assertApplicationMailLogAccess(applicationId: string, user: AuthenticatedUser | null) {
   const application = await prisma.application.findUnique({
     where: { id: applicationId },
     select: {

@@ -7,6 +7,8 @@ export type CommunicationChannel = 'EMAIL' | 'TEMPLATE' | 'DOCUMENT';
 export type CommunicationRecipientType = 'ISO' | 'CLIENT' | 'MERCHANT' | 'USER' | 'OTHER';
 
 export interface CreateOutboundCommunicationInput {
+  /** Optional explicit id so the value can be pre-generated and used as the SendGrid tracking arg before the email is sent. */
+  id?: string;
   applicationId?: string | null;
   channel: CommunicationChannel;
   recipientType?: CommunicationRecipientType | string | null;
@@ -38,6 +40,7 @@ export function formatRecipientList(to: string | string[] | undefined): string {
 
 export async function createOutboundCommunication(input: CreateOutboundCommunicationInput) {
   const {
+    id,
     applicationId,
     channel,
     recipientType,
@@ -60,6 +63,7 @@ export async function createOutboundCommunication(input: CreateOutboundCommunica
 
   return prisma.outboundCommunication.create({
     data: {
+      ...(id ? { id } : {}),
       applicationId: applicationId ?? null,
       channel,
       recipientType: recipientType ? String(recipientType).toUpperCase() : null,

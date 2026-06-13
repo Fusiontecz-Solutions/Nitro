@@ -3,6 +3,10 @@ import { sendApplicationApprovalEmail } from './emailService';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { createPublicPortalToken } from './publicPortalTokenService';
 import { emitToUser } from '../socket';
+import {
+    APPLICATION_QUEUE_CONTRACT_PENDING,
+    APPLICATION_STATE_CONTRACT_PENDING,
+} from './contractApplicationWorkflowSync';
 // Type-only to avoid a runtime cycle (applicationApprovalService -> queue -> worker -> here).
 import type { ApprovalSideEffectPayload } from './applicationApprovalService';
 
@@ -51,6 +55,47 @@ const dedupeById = (rows: RecipientUser[]): RecipientUser[] => {
     }
     return out;
 };
+
+const normalizeStageToken = (value: unknown): string =>
+    String(value ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '');
+
+const ISO_APPROVAL_NOTIFICATION_TITLE_PREFIX = 'ISO approved application #';
+
+/** Roles that own contract generation after an ISO approval. */
+const ISO_CONTRACT_NOTIFY_ROLES = ['OPERATIONS', 'ADMIN', 'SUPER_ADMIN'] as const;
+
+async function findIsoContractNotifyRecipients(): Promise<RecipientUser[]> {
+    const users = await prisma.user.findMany({
+        where: {
+            role: { in: [...ISO_CONTRACT_NOTIFY_ROLES] },
+            isActive: true,
+        },
+        select: { id: true, email: true, firstName: true, lastName: true, role: true },
+    });
+
+    return users.map((u) => ({
+        id: String(u.id),
+        email: u.email ? String(u.email) : null,
+        name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+    }));
+}
+
+function isContractPendingStage(
+    queue: string | null | undefined,
+    state: string | null | undefined
+): boolean {
+    const queueToken = normalizeStageToken(queue);
+    const stateToken = normalizeStageToken(state);
+    return (
+        queueToken === normalizeStageToken(APPLICATION_QUEUE_CONTRACT_PENDING) ||
+        stateToken === normalizeStageToken(APPLICATION_STATE_CONTRACT_PENDING) ||
+        queueToken === 'contractpending' ||
+        stateToken === 'contractpending'
+    );
+}
 
 /**
  * Notification include shape matching {@link mapNotificationToApi} in the
@@ -153,12 +198,34 @@ async function createAndPushNotifications(
         applicationId: string;
         createdById: string | null;
     },
-    meta: RealtimeMeta = {}
+    meta: RealtimeMeta = {},
+    options: { skipIfTitleExists?: boolean } = {}
 ): Promise<void> {
     if (!recipients.length) return;
 
+    let recipientsToCreate = recipients;
+    if (options.skipIfTitleExists) {
+        const existing = await prisma.notification.findMany({
+            where: {
+                applicationId: base.applicationId,
+                title: base.title,
+                recipientId: { in: recipients.map((r) => r.id) },
+            },
+            select: { recipientId: true },
+        });
+        const alreadyNotified = new Set(existing.map((row) => String(row.recipientId)));
+        recipientsToCreate = recipients.filter((r) => !alreadyNotified.has(r.id));
+        if (!recipientsToCreate.length) {
+            console.log('[approvalSideEffects] notifications already exist — skipping duplicate fan-out:', {
+                applicationId: base.applicationId,
+                title: base.title,
+            });
+            return;
+        }
+    }
+
     const created = await Promise.allSettled(
-        recipients.map((r) =>
+        recipientsToCreate.map((r) =>
             prisma.notification.create({
                 data: {
                     title: base.title,
@@ -175,7 +242,7 @@ async function createAndPushNotifications(
 
     for (let i = 0; i < created.length; i += 1) {
         const result = created[i];
-        const recipient = recipients[i];
+        const recipient = recipientsToCreate[i];
         if (result.status === 'rejected') {
             console.error('[approvalSideEffects] notification create failed:', {
                 recipientId: recipient?.id,
@@ -188,6 +255,11 @@ async function createAndPushNotifications(
         emitToUser(recipient.id, 'notification:new', {
             notification: apiPayload,
             meta,
+        });
+        console.log('[approvalSideEffects] notification pushed:', {
+            recipientId: recipient.id,
+            notificationId: apiPayload.id,
+            title: base.title,
         });
     }
 }
@@ -213,10 +285,37 @@ export async function processApplicationApprovalSideEffects(
         return;
     }
 
-    const currentQueue = String(application.currentQueue ?? '').trim().toLowerCase();
-    const currentState = String(application.currentState ?? '').trim().toLowerCase();
-    if (currentQueue !== 'approved' && currentState !== 'approved') {
-        console.warn('[approvalSideEffects] application no longer Approved — skipping fan-out:', {
+    /*
+     * Idempotency guard: only fan out while the deal is still at (or just past)
+     * the approval transition. ISO approvals land on "Contract Pending"; internal
+     * approvals on "Approved". If a webhook retries after the deal already moved
+     * deep into the contract workflow we still proceed (notifications were the
+     * point), but if it was rolled back to a pre-approval stage we skip.
+     */
+    const APPROVAL_STAGE_TOKENS = new Set<string>([
+        'approved',
+        'completed',
+        'contractpending',
+        'contractgenerated',
+        'contractsent',
+        'contractout',
+        'contractsout',
+        'contractcancelled',
+        'contractsigned',
+        'signedcontracts',
+        'fundingcall',
+        'disbursment',
+        'disbursement',
+        'funded',
+        'final',
+    ]);
+    const currentQueueToken = normalizeStageToken(application.currentQueue);
+    const currentStateToken = normalizeStageToken(application.currentState);
+    if (
+        !APPROVAL_STAGE_TOKENS.has(currentQueueToken) &&
+        !APPROVAL_STAGE_TOKENS.has(currentStateToken)
+    ) {
+        console.warn('[approvalSideEffects] application no longer at approval stage — skipping fan-out:', {
             applicationId,
             currentQueue: application.currentQueue,
             currentState: application.currentState,
@@ -232,30 +331,39 @@ export async function processApplicationApprovalSideEffects(
     const clientName = businessName || ownerName || 'Client';
     const actorType = String(payload.actorType ?? '').trim().toUpperCase();
     const isIsoActor = actorType === 'ISO';
+    const movedToContractPending =
+        isContractPendingStage(application.currentQueue, application.currentState) ||
+        isContractPendingStage(payload.targetQueue, payload.targetState);
+    const shouldNotifyContractGenerationTeam = isIsoActor || movedToContractPending;
     const applicationNumber =
         application.applicationId != null && String(application.applicationId).trim() !== ''
             ? String(application.applicationId)
             : applicationId;
 
+    console.log('[approvalSideEffects] fan-out context:', {
+        applicationId,
+        applicationNumber,
+        actorType,
+        isIsoActor,
+        movedToContractPending,
+        shouldNotifyContractGenerationTeam,
+        currentQueue: application.currentQueue,
+        currentState: application.currentState,
+    });
+
     /* ----------------------------- Notifications ----------------------------- */
     try {
-        const internalUsers = await prisma.user.findMany({
-            where: {
-                role: { in: CRM_INTERNAL_NOTIFY_ROLES as unknown as any },
-                isActive: true,
-            },
-            select: { id: true, email: true, firstName: true, lastName: true, role: true },
-        });
+        const contractNotifyRecipients = await findIsoContractNotifyRecipients();
 
-        const operationsRecipients: RecipientUser[] = internalUsers
-            .filter((u) => String(u.role || '').toUpperCase() === 'OPERATIONS')
-            .map((u) => ({
-                id: String(u.id),
-                email: u.email ? String(u.email) : null,
-                name: `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
-            }));
-
-        const nonOperationsInternalRecipients: RecipientUser[] = internalUsers
+        const nonOperationsInternalRecipients: RecipientUser[] = (
+            await prisma.user.findMany({
+                where: {
+                    role: { in: CRM_INTERNAL_NOTIFY_ROLES as unknown as any },
+                    isActive: true,
+                },
+                select: { id: true, email: true, firstName: true, lastName: true, role: true },
+            })
+        )
             .filter((u) => String(u.role || '').toUpperCase() !== 'OPERATIONS')
             .map((u) => ({
                 id: String(u.id),
@@ -276,28 +384,46 @@ export async function processApplicationApprovalSideEffects(
             }));
 
         /*
-         * ISO-approved branch: ONLY notify Operations users.
-         *   - No fan-out to Final Underwriter / Underwriter / Admin / Accountant.
-         *   - No fan-out to referring agent / sales rep / createdBy.
-         * This is the strict requirement when an ISO performs the approval action.
+         * ISO / Contract-Pending branch: notify Operations + Admin + Super Admin
+         * so they can generate the contract. Triggered when the actor is ISO OR
+         * the deal landed on the Contract Pending stage (belt-and-suspenders).
          */
-        if (isIsoActor) {
-            const operationNotifications = dedupeById(operationsRecipients).filter(
+        if (shouldNotifyContractGenerationTeam) {
+            const operationNotifications = dedupeById(contractNotifyRecipients).filter(
                 (r) => r.id !== payload.actorId
             );
 
+            console.log('[approvalSideEffects] contract-generation notify targets:', {
+                applicationId,
+                recipientCount: operationNotifications.length,
+                recipientIds: operationNotifications.map((r) => r.id),
+            });
+
             if (operationNotifications.length > 0) {
+                const title = `${ISO_APPROVAL_NOTIFICATION_TITLE_PREFIX}${applicationNumber}`;
+                const message = `Deal moved to the Contract Pending stage. Now you can proceed to generate contract.`;
+                const baseUrl = resolveCrmFrontendBaseUrl() || '';
+                const actionUrl = baseUrl
+                    ? `${baseUrl.replace(/\/$/, '')}/application-details/${applicationNumber}`
+                    : `/application-details/${applicationNumber}`;
+
                 await createAndPushNotifications(
                     operationNotifications,
                     {
-                        title: `ISO approved application #${applicationNumber}`,
-                        message: `ISO approved application #${applicationNumber}. Now you can proceed to generate contract.`,
+                        title,
+                        message,
                         type: 'application_update',
                         applicationId: application.id,
                         createdById: payload.actorId,
                     },
-                    { realtimeKind: 'iso_approval_for_operations' }
+                    { realtimeKind: 'iso_approval_for_operations', actionUrl },
+                    { skipIfTitleExists: true }
                 );
+            } else {
+                console.warn('[approvalSideEffects] no Operations/Admin/Super Admin recipients to notify:', {
+                    applicationId,
+                    activeContractNotifyUsers: contractNotifyRecipients.length,
+                });
             }
         } else {
             /*
@@ -373,7 +499,7 @@ export async function processApplicationApprovalSideEffects(
                 viewApplicationUrl,
                 calculateApprovalUrl,
             });
-            if (!result) {
+            if (!result.sent) {
                 console.warn(
                     '[approvalSideEffects] ISO approval email was not delivered for application',
                     applicationNumber

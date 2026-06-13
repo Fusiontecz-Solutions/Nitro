@@ -312,6 +312,23 @@ function contractsOutBroadMatchWhere(): Prisma.ApplicationWhereInput {
     };
 }
 
+/** Merged deal-pipeline stage: Final + Funding Call queues/states. */
+export function finalsAndFundingCallCombinedMatchWhere(): Prisma.ApplicationWhereInput {
+    return {
+        OR: [
+            { currentState: { in: expandStoredCurrentStateValues('FINAL') } },
+            { currentQueue: { in: ['Final', 'FINAL'] } },
+            { currentState: { in: expandStoredCurrentStateValues('FUNDING_CALL') } },
+            { currentQueue: { in: ['Funding Call', 'Funding_Call'] } },
+        ],
+    };
+}
+
+/** Declined / rejected applications (`currentQueue=Declined`). */
+export function declinedMatchWhere(): Prisma.ApplicationWhereInput {
+    return { currentQueue: 'Declined' };
+}
+
 /**
  * Umbrella `operationsStatus=Contracted`: every contract workflow stage from pending
  * through signed (includes legacy Contracted / Contract Out spellings).
@@ -370,6 +387,12 @@ export function buildOperationsStatusFilterWhere(
     mode: OperationsStatusFilterMode,
 ): Prisma.ApplicationWhereInput {
     const canonical = normalizeOperationsStatusKey(rawValue);
+    if (canonical === 'Finals_And_Funding_Call') {
+        return finalsAndFundingCallCombinedMatchWhere();
+    }
+    if (canonical === 'Declined' || canonical === 'Rejected') {
+        return declinedMatchWhere();
+    }
     if (canonical === 'Contract_Pending') {
         return contractPendingStrictMatchWhere();
     }

@@ -11,6 +11,7 @@ const SKIP_PATH_PREFIXES = [
   '/notifications',
   '/chat',
   '/team-chat',
+  '/sendgrid',
 ];
 
 function shouldSkip(path: string, method: string): boolean {

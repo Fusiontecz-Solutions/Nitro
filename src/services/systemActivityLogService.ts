@@ -13,10 +13,15 @@ import {
   type CommunicationRecipientType,
   markActivityLogged,
 } from './outboundCommunicationService';
-
 export type AuditCategory = 'GENERAL' | 'COMMUNICATION' | 'AUTH';
 
 export interface RecordCommunicationAuditInput {
+  /**
+   * Optional explicit OutboundCommunication id. Pre-generate this id, pass it
+   * to the mailer as the SendGrid `trackingId`, then pass the same value here so
+   * the Event Webhook can correlate delivery/open/click events back to this row.
+   */
+  outboundCommunicationId?: string;
   applicationId?: string | null;
   channel: CommunicationChannel;
   recipientType?: CommunicationRecipientType | string | null;
@@ -43,6 +48,7 @@ export async function recordCommunicationAudit(
     (req?.user ? ({ id: req.user.id, role: req.user.role } as AuthenticatedUser) : null);
 
   const outbound = await createOutboundCommunication({
+    id: input.outboundCommunicationId,
     applicationId: input.applicationId,
     channel: input.channel,
     recipientType: input.recipientType,
@@ -85,6 +91,7 @@ export async function recordCommunicationAudit(
   });
 
   if (req) markActivityLogged(req);
+
   return outbound;
 }
 

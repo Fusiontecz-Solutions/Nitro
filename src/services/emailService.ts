@@ -148,6 +148,8 @@ export interface ApplicationApprovalEmailParams {
     calculateApprovalUrl?: string;
     /** Optional logo image link shown at the top (overrides APPROVAL_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
+    /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
+    trackingId?: string;
 }
 
 export const buildApplicationApprovalEmailHtml = ({
@@ -282,7 +284,7 @@ export const buildApplicationApprovalEmailHtml = ({
 `
 };
 
-/** @returns true when SMTP accepted the message; false if disabled, invalid `to`, or send failed */
+/** @returns send result; `sgMessageId` is stored for webhook fallback matching */
 export async function sendApplicationApprovalEmail({
     to,
     clientName,
@@ -290,12 +292,13 @@ export async function sendApplicationApprovalEmail({
     viewApplicationUrl,
     calculateApprovalUrl,
     bannerLogoUrl,
-}: ApplicationApprovalEmailParams): Promise<boolean> {
+    trackingId,
+}: ApplicationApprovalEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Application approval skipped: empty recipient');
-        return false;
+        return { sent: false };
     }
 
     const subject = 'Your Application Has Been Approved';
@@ -308,17 +311,19 @@ export async function sendApplicationApprovalEmail({
     });
 
     try {
-        await sendMail({
+        const response = await sendMail({
             to: toTrimmed,
             subject,
             html,
             attachments: buildBrandLogoAttachments(),
+            trackingId,
+            categories: ['application-approval'],
         });
-        return true;
+        return { sent: true, sgMessageId: response?.messageId };
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Application approval email send failed:', { to: toTrimmed, error });
-        return false;
+        return { sent: false };
     }
 }
 
@@ -514,6 +519,8 @@ export interface ApplicationOfferUpdatedEmailParams {
     calculateApprovalUrl?: string;
     /** Optional logo image link shown at the top (overrides OFFER_UPDATED_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
+    /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
+    trackingId?: string;
 }
 
 export const buildApplicationOfferUpdatedEmailHtml = ({
@@ -626,12 +633,13 @@ export async function sendApplicationOfferUpdatedEmail({
     viewApplicationUrl,
     calculateApprovalUrl,
     bannerLogoUrl,
-}: ApplicationOfferUpdatedEmailParams): Promise<boolean> {
+    trackingId,
+}: ApplicationOfferUpdatedEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Offer update skipped: empty recipient');
-        return false;
+        return { sent: false };
     }
 
     const subject = 'Your Offer Values Have Been Updated';
@@ -644,17 +652,19 @@ export async function sendApplicationOfferUpdatedEmail({
     });
 
     try {
-        await sendMail({
+        const response = await sendMail({
             to: toTrimmed,
             subject,
             html,
             attachments: buildBrandLogoAttachments(),
+            trackingId,
+            categories: ['offer-updated'],
         });
-        return true;
+        return { sent: true, sgMessageId: response?.messageId };
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Offer update email send failed:', { to: toTrimmed, error });
-        return false;
+        return { sent: false };
     }
 }
 

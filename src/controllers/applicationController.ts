@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import prisma from '../config/prismaClient';
 import uploadService from '../services/uploadService';
 import pdfExtractionService from '../services/pdfExtractionService';
@@ -76,7 +77,8 @@ import {
 import {
     listPaymentMailLogs,
     createPaymentMailLog as persistPaymentMailLog,
-    fromPrismaMailLogStatus,
+    enrichPaymentMailLogsForApi,
+    formatPaymentMailLogApiRow,
 } from '../services/paymentMailLogService';
 import { extractPdfPlainTextForParsing } from '../services/pdfIngestionService';
 import { normalizeOcrTextForParsing } from '../services/ocrFieldExtraction';
@@ -98,7 +100,6 @@ import {
     buildApplicationOfferUpdatedEmailHtml,
 } from '../services/emailService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
-
 type ApplicationState =
     | 'DRAFT'
     | 'PENDING'
@@ -5446,40 +5447,17 @@ class ApplicationController {
                     calculateApprovalUrl,
                 });
 
-            const deliveryResults = await Promise.all(
-                recipients.map(async ({ to, clientName }) => {
-                    const ok = resend
-                        ? await sendApplicationOfferUpdatedEmail({
-                            to,
-                            clientName,
-                            companyName,
-                            viewApplicationUrl,
-                            calculateApprovalUrl,
-                        })
-                        : await sendApplicationApprovalEmail({
-                            to,
-                            clientName,
-                            companyName,
-                            viewApplicationUrl,
-                            calculateApprovalUrl,
-                        });
-                    return { to, ok };
-                }),
-            );
-            const anyDelivered = deliveryResults.some((r) => r.ok);
-            if (!anyDelivered) {
-                return res.status(502).json({
-                    success: false,
-                    message:
-                        'Could not deliver approval notification email. Check: (1) DISABLE_CLIENT_APPLICATION_EMAILS is not true, (2) SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS, (3) recipient spam folder.',
-                    data: { attempted: deliveryResults },
-                });
-            }
+            // Pre-generate the OutboundCommunication id so it can ride along as the
+            // SendGrid tracking arg (`ocid`); the Event Webhook later uses it to flip
+            // this mail-log row to delivered / opened / clicked / bounced.
+            const approvalTrackingId = randomUUID();
 
             const approvalEmailLogSuffix = resend
                 ? ' resent updated offer email to the linked ISO.'
                 : ' sent approval email to the linked ISO.';
 
+            // Create the mail-log row BEFORE sending so webhook events (which can
+            // arrive within seconds) always find the OutboundCommunication by ocid.
             try {
                 const authUserForLog = getAuthenticatedUser(req);
                 const roleLabel = authUserForLog?.role
@@ -5488,6 +5466,7 @@ class ApplicationController {
                 const actorName = (req as any).user?.name || '';
 
                 await recordCommunicationAudit(req, {
+                    outboundCommunicationId: approvalTrackingId,
                     applicationId: (application as any).id,
                     channel: 'EMAIL',
                     recipientType: 'ISO',
@@ -5502,13 +5481,67 @@ class ApplicationController {
                     metadata: {
                         emailSentTo: recipients.map((r) => r.to),
                         sentToLinkedIsoOnly: true,
-                        emailDelivery: deliveryResults,
                         resend: !!resend,
                         template: resend ? 'offer-updated' : 'approval',
+                        status: 'sent',
                     },
                 });
             } catch (logError) {
                 console.error('Failed to create activity log for approval email:', logError);
+            }
+
+            const deliveryResults = await Promise.all(
+                recipients.map(async ({ to, clientName }) => {
+                    const result = resend
+                        ? await sendApplicationOfferUpdatedEmail({
+                            to,
+                            clientName,
+                            companyName,
+                            viewApplicationUrl,
+                            calculateApprovalUrl,
+                            trackingId: approvalTrackingId,
+                        })
+                        : await sendApplicationApprovalEmail({
+                            to,
+                            clientName,
+                            companyName,
+                            viewApplicationUrl,
+                            calculateApprovalUrl,
+                            trackingId: approvalTrackingId,
+                        });
+                    return { to, ok: result.sent, sgMessageId: result.sgMessageId };
+                }),
+            );
+            const anyDelivered = deliveryResults.some((r) => r.ok);
+            if (!anyDelivered) {
+                return res.status(502).json({
+                    success: false,
+                    message:
+                        'Could not deliver approval notification email. Check: (1) DISABLE_CLIENT_APPLICATION_EMAILS is not true, (2) SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS, (3) recipient spam folder.',
+                    data: { attempted: deliveryResults },
+                });
+            }
+
+            const sgMessageId = deliveryResults.find((r) => r.sgMessageId)?.sgMessageId;
+            if (sgMessageId) {
+                try {
+                    const existing = await prisma.outboundCommunication.findUnique({
+                        where: { id: approvalTrackingId },
+                        select: { metadata: true },
+                    });
+                    const mergedMeta = {
+                        ...(existing?.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+                            ? (existing.metadata as Record<string, unknown>)
+                            : {}),
+                        sgMessageId,
+                    };
+                    await prisma.outboundCommunication.update({
+                        where: { id: approvalTrackingId },
+                        data: { metadata: mergedMeta as object },
+                    });
+                } catch (metaErr) {
+                    console.error('[approvalEmail] failed to store sgMessageId:', metaErr);
+                }
             }
 
             return res.status(200).json({
@@ -5753,18 +5786,7 @@ class ApplicationController {
                 });
             }
 
-            const data = result.logs.map((log: any) => ({
-                id: log.id,
-                at: log.createdAt?.toISOString() ?? new Date().toISOString(),
-                dealKey: log.dealKey,
-                applicationId: log.applicationId,
-                templateName: log.templateName,
-                category: log.category,
-                recipient: log.recipient,
-                subject: log.subject,
-                body: log.body ?? undefined,
-                status: fromPrismaMailLogStatus(log.status),
-            }));
+            const data = await enrichPaymentMailLogsForApi([...result.logs]);
 
             return res.status(200).json({ success: true, data });
         } catch (error: any) {
@@ -5852,18 +5874,7 @@ class ApplicationController {
             const log = result.log;
             return res.status(201).json({
                 success: true,
-                data: {
-                    id: log.id,
-                    at: log.createdAt?.toISOString() ?? new Date().toISOString(),
-                    dealKey: log.dealKey,
-                    applicationId: log.applicationId,
-                    templateName: log.templateName,
-                    category: log.category,
-                    recipient: log.recipient,
-                    subject: log.subject,
-                    body: log.body ?? undefined,
-                    status: fromPrismaMailLogStatus(log.status),
-                },
+                data: formatPaymentMailLogApiRow(log),
             });
         } catch (error: any) {
             console.error('Create payment mail log error:', error);
@@ -6520,10 +6531,18 @@ class ApplicationController {
                 return;
             }
 
+            const publicApprovalActor = String(reqUser?.publicApprovalActor ?? '')
+                .trim()
+                .toUpperCase();
+            const approvalActorType =
+                publicApprovalActor === 'ISO' || publicApprovalActor === 'CLIENT'
+                    ? publicApprovalActor
+                    : authUser?.role || null;
+
             const result = await approveApplication(whereClause, {
                 actor: authUser,
                 req,
-                actorType: reqUser?.publicApprovalActor || authUser?.role || null,
+                actorType: approvalActorType,
                 actorName: reqUser?.name ?? null,
                 note: typeof note === 'string' ? note : null,
                 idempotencyKey: typeof idempotencyKeyHeader === 'string' ? idempotencyKeyHeader : null,
