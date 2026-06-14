@@ -370,7 +370,6 @@ const superAdminSections: SidebarNavSection[] = [
   {
     title: "DEAL PIPELINE",
     items: [
-      { label: "Agent", url: "/applications", operationsStatus: "Agent", icon: PersonIcon },
       { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon },
       {
         label: "Final Underwriter",

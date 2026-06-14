@@ -999,13 +999,26 @@ const ApplicationDetails = () => {
 	                            <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <>
                                         <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
-                                        <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
-                                        <ApplicationBasicDetails applicationId={applicationId} />
                                         {showBankDetailsOnOverview && bankDetailsApplicationId ? (
-                                            <ApplicationOverviewBankDetails
-                                                applicationId={bankDetailsApplicationId}
+                                            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-stretch">
+                                                <AgentDealIsoTag
+                                                    applicationId={applicationId}
+                                                    alwaysEditable={canEditIsoDetails}
+                                                    splitLayout
+                                                    className="mb-0 h-full"
+                                                />
+                                                <ApplicationOverviewBankDetails
+                                                    applicationId={bankDetailsApplicationId}
+                                                    className="mt-0 h-full"
+                                                />
+                                            </div>
+                                        ) : (
+                                            <AgentDealIsoTag
+                                                applicationId={applicationId}
+                                                alwaysEditable={canEditIsoDetails}
                                             />
-                                        ) : null}
+                                        )}
+                                        <ApplicationBasicDetails applicationId={applicationId} />
                                         {canShowSendToUnderwriterButton ? (
                                             <div className="flex justify-end mb-4">
                                                 <Button

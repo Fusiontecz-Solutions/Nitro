@@ -20,6 +20,7 @@ import {
     filterBankDetailsForApplication,
     hasCompleteBankDetailRow,
 } from "@/lib/bankDetailUtils";
+import { cn } from "@/lib/utils";
 
 type ApplicationSheetBankDetailProps = {
     applicationId: string;
@@ -27,12 +28,14 @@ type ApplicationSheetBankDetailProps = {
     onClose?: () => void;
     /** Compact card layout for the application Overview tab. */
     variant?: "default" | "overview";
+    className?: string;
 };
 
 export default function ApplicationSheetBankDetail({
     applicationId,
     onClose,
     variant = "default",
+    className,
 }: ApplicationSheetBankDetailProps) {
     const isOverview = variant === "overview";
     const dispatch = useDispatch<AppDispatch>();
@@ -385,7 +388,11 @@ export default function ApplicationSheetBankDetail({
     if (isOverview) {
         return (
             <Card
-                className={`mt-6 gap-0 border shadow-md dark:shadow-lg p-0 rounded-b-md pb-3 ${isDark ? "bg-[#141517] border-[#374151]" : "border-[#FDFDFD]"}`}
+                className={cn(
+                    "mt-6 gap-0 border shadow-md dark:shadow-lg p-0 rounded-b-md pb-3",
+                    isDark ? "bg-[#141517] border-[#374151]" : "border-[#FDFDFD]",
+                    className,
+                )}
             >
                 <CardHeader className="pb-0 p-0">
                     <CardTitle

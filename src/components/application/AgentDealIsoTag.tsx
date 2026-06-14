@@ -41,12 +41,17 @@ type AgentDealIsoTagProps = {
     alwaysEditable?: boolean;
     /** Tighter vertical layout for dialogs (e.g. Approved Application modal). */
     variant?: "default" | "compact";
+    /** Side-by-side with bank details — fills card height vertically. */
+    splitLayout?: boolean;
+    className?: string;
 };
 
 export default function AgentDealIsoTag({
     applicationId,
     alwaysEditable = true,
     variant = "default",
+    splitLayout = false,
+    className,
 }: AgentDealIsoTagProps) {
     const isCompact = variant === "compact";
     const dispatch = useDispatch<AppDispatch>();
@@ -274,9 +279,11 @@ export default function AgentDealIsoTag({
     const shell = cn(
         "overflow-hidden rounded-xl border p-0 shadow-sm",
         isCompact ? "mb-0" : "mb-6",
+        splitLayout && "flex h-full flex-col",
         isDark
             ? "border-[#374151] bg-[#141517]"
             : "border-[#FDFDFD] bg-white",
+        className,
     );
 
     const sectionTitle = fetchLoading
@@ -407,7 +414,7 @@ export default function AgentDealIsoTag({
         <div
             className={cn(
                 "flex w-full flex-col items-stretch gap-1.5",
-                !isCompact && "shrink-0 lg:items-end lg:max-w-[14rem]",
+                !isCompact && !splitLayout && "shrink-0 lg:items-end lg:max-w-[14rem]",
             )}
         >
             {isCompact ? (
@@ -546,7 +553,7 @@ export default function AgentDealIsoTag({
             </div>
 
             {fetchLoading ? (
-                <div className={cn(bodyPad, "flex items-center gap-4")}>
+                <div className={cn(bodyPad, "flex flex-1 items-center gap-4")}>
                     <Skeleton className="h-10 w-10 shrink-0 rounded-xl" />
                     <div className="space-y-1.5 flex-1">
                         <Skeleton className="h-4 max-w-[200px] rounded" />
@@ -554,9 +561,115 @@ export default function AgentDealIsoTag({
                     </div>
                 </div>
             ) : hasIso ? (
-                <div className={cn(isCompact ? "" : bodyPad, "flex flex-col gap-3.5")}>
+                <div
+                    className={cn(
+                        isCompact ? "" : bodyPad,
+                        "flex flex-col gap-3.5",
+                        splitLayout && !isCompact && "min-h-0 flex-1",
+                    )}
+                >
                     {isCompact ? (
                         compactLinkedIsoOneLiner
+                    ) : splitLayout ? (
+                        <>
+                            {alwaysEditable && !editingEmail ? (
+                                <div
+                                    className={cn(
+                                        "w-full border-b pb-4",
+                                        isDark ? "border-zinc-800" : "border-slate-100",
+                                    )}
+                                >
+                                    {isoSelectControl}
+                                </div>
+                            ) : null}
+
+                            <div className="flex min-w-0 items-start gap-3">
+                                <div
+                                    className={cn(
+                                        "flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-sm font-bold tracking-wider shadow-inner",
+                                        isDark
+                                            ? "border border-blue-500/10 bg-gradient-to-br from-blue-500/20 to-blue-600/5 text-blue-300"
+                                            : "border border-blue-200/50 bg-gradient-to-br from-blue-100 to-blue-50 text-blue-700",
+                                    )}
+                                >
+                                    {isoInitials(displayName)}
+                                </div>
+
+                                <div className="min-w-0 flex-1 space-y-2">
+                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                        <span
+                                            className={cn(
+                                                "text-base font-semibold tracking-tight break-words",
+                                                isDark ? "text-zinc-100" : "text-slate-800",
+                                            )}
+                                        >
+                                            {linkedIso.name || displayName}
+                                        </span>
+                                        <span
+                                            className={cn(
+                                                "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                                isDark
+                                                    ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                                                    : "border border-emerald-200 bg-emerald-50 text-emerald-700",
+                                            )}
+                                        >
+                                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                            Linked
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {!editingEmail ? (
+                                <div
+                                    className={cn(
+                                        "flex flex-1 flex-col gap-3 rounded-lg border px-3 py-3",
+                                        isDark
+                                            ? "border-zinc-800 bg-zinc-900/30"
+                                            : "border-slate-100 bg-slate-50/80",
+                                    )}
+                                >
+                                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                        {contactChip(
+                                            <Mail
+                                                className="h-4 w-4"
+                                                strokeWidth={2}
+                                                aria-hidden
+                                            />,
+                                            linkedIso.email || EMPTY_FIELD,
+                                        )}
+                                        {alwaysEditable ? editEmailButton : null}
+                                    </div>
+                                    {contactChip(
+                                        <PhoneCall
+                                            className="h-4 w-4"
+                                            strokeWidth={2}
+                                            aria-hidden
+                                        />,
+                                        formatIsoPhoneDisplay(linkedIso.phone),
+                                    )}
+                                </div>
+                            ) : (
+                                <div
+                                    className={cn(
+                                        "flex flex-1 flex-col gap-3 rounded-lg border px-3 py-3",
+                                        isDark
+                                            ? "border-zinc-800 bg-zinc-900/30"
+                                            : "border-slate-100 bg-slate-50/80",
+                                    )}
+                                >
+                                    {contactChip(
+                                        <PhoneCall
+                                            className="h-4 w-4"
+                                            strokeWidth={2}
+                                            aria-hidden
+                                        />,
+                                        formatIsoPhoneDisplay(linkedIso.phone),
+                                    )}
+                                </div>
+                            )}
+
+                        </>
                     ) : (
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                             <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -654,7 +767,7 @@ export default function AgentDealIsoTag({
                     {alwaysEditable && editingEmail ? (
                         <div className={cn(
                             "flex min-w-0 flex-col gap-2.5 border-t pt-3 mt-1 sm:flex-row sm:items-center sm:gap-3 animation-fadeIn",
-                            isCompact ? "px-4 pb-3 sm:px-4" : "",
+                            isCompact ? "px-4 pb-3 sm:px-4" : splitLayout ? "mt-auto" : "",
                             isDark ? "border-zinc-800/80" : "border-slate-100"
                         )}>
                             <div className="relative flex-1">
@@ -724,15 +837,26 @@ export default function AgentDealIsoTag({
                     className={cn(
                         bodyPad,
                         "flex flex-col gap-3",
-                        !isCompact && "gap-3.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4",
+                        splitLayout && "min-h-0 flex-1",
+                        !isCompact && !splitLayout && "gap-3.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4",
                     )}
                 >
+                    {splitLayout && alwaysEditable ? (
+                        <div
+                            className={cn(
+                                "w-full border-b pb-4",
+                                isDark ? "border-zinc-800" : "border-slate-100",
+                            )}
+                        >
+                            {isoSelectControl}
+                        </div>
+                    ) : null}
                     <p className={cn("min-w-0 text-sm font-medium leading-relaxed", metaMuted)}>
                         {alwaysEditable
                             ? "Connect a sales partner to track commissions and contact details on this deal."
                             : "No ISO linked."}
                     </p>
-                    {alwaysEditable ? (
+                    {alwaysEditable && !splitLayout ? (
                         <div className={cn("w-full shrink-0", !isCompact && "sm:w-auto sm:min-w-[11rem]")}>
                             {isoSelectControl}
                         </div>
