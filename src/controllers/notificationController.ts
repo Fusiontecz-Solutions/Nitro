@@ -10,11 +10,14 @@ import {
     notifyOperationsDisbursementReady,
 } from '../services/fundingCallDisbursementSideEffects';
 import { sendDocumentRequestEmail } from '../services/emailService';
+import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import {
     DOCUMENT_REQUEST_LABELS,
     documentRequestDisplayLabel,
     isDocumentRequestFulfilled,
+    isSentBackDocumentationRequest,
+    SENT_BACK_DOCUMENTATION_REQUEST_ID,
 } from '../utils/documentRequestMatch';
 
 function parseEmailList(value: unknown): string[] {
@@ -452,6 +455,19 @@ class NotificationController {
                     feBase && numericAppId != null && String(numericAppId).trim() !== ''
                         ? `${feBase.replace(/\/$/, '')}/application-details/${numericAppId}/documents`
                         : undefined;
+
+                let publicPortalUrl: string | undefined;
+                try {
+                    const portalToken = await createPublicPortalToken(application.id, {
+                        expiresInDays: 90,
+                    });
+                    if (portalToken && feBase) {
+                        publicPortalUrl = `${feBase.replace(/\/$/, '')}/public/application/documents/${portalToken}`;
+                    }
+                } catch (tokenErr) {
+                    console.error('Public portal token failed (document request email):', tokenErr);
+                }
+
                 const emailResult = await sendDocumentRequestEmail({
                     to: emailTo,
                     cc: ccList,
@@ -462,6 +478,7 @@ class NotificationController {
                     requestAdditional: requestAdditional || false,
                     note: fullNote || undefined,
                     viewApplicationUrl,
+                    publicPortalUrl,
                 });
                 documentRequestEmailSent = emailResult.sent;
                 documentRequestEmailError = emailResult.error;
@@ -1132,7 +1149,7 @@ class NotificationController {
                 // General "Sent Back for Documentation" requests (no specific docs - e.g. from Final Underwriter)
                 if (requestedDocs.length === 0 && notification.message) {
                     generalRequests.push({
-                        name: 'Sent Back for Documentation',
+                        name: SENT_BACK_DOCUMENTATION_REQUEST_ID,
                         status: 'Pending',
                         createdAt: notification.createdAt,
                         requestedBy: notification.createdBy,
@@ -1157,6 +1174,7 @@ class NotificationController {
                 name,
                 label: documentRequestDisplayLabel(name),
                 status: data.status,
+                uploadable: true,
                 createdAt: data.createdAt,
                 requestedBy: mapRequestUser(data.requestedBy),
                 message: data.message,
@@ -1168,7 +1186,9 @@ class NotificationController {
                 .forEach((req) => {
                     documents.push({
                         name: req.name,
+                        label: documentRequestDisplayLabel(req.name),
                         status: req.status,
+                        uploadable: false,
                         createdAt: req.createdAt,
                         requestedBy: req.requestedBy,
                         message: req.message,
@@ -1181,6 +1201,97 @@ class NotificationController {
             });
         } catch (error: any) {
             console.error('Get document requests by application error:', error);
+            return res.status(500).json({
+                success: false,
+                message: error.message || 'Internal server error',
+            });
+        }
+    }
+
+    // Remove a specific document from active document requests for an application
+    async removeDocumentRequest(req: Request, res: Response) {
+        try {
+            const { applicationId, documentId } = req.params;
+            const docId = String(documentId || '').trim().toLowerCase();
+
+            if (!applicationId || !docId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application ID and document ID are required',
+                });
+            }
+
+            const applicationStr = String(applicationId);
+            let application = null;
+
+            if (/^\d+$/.test(applicationStr)) {
+                application = await prisma.application.findUnique({
+                    where: { applicationId: Number(applicationStr) },
+                });
+            } else {
+                application = await prisma.application.findUnique({
+                    where: { id: applicationStr },
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const notificationsRecords = await prisma.notification.findMany({
+                where: {
+                    applicationId: application.id,
+                    type: 'document_request',
+                },
+            });
+
+            let updatedCount = 0;
+
+            if (isSentBackDocumentationRequest(docId)) {
+                for (const notification of notificationsRecords) {
+                    const docs = (notification.documentRequestedDocuments || [])
+                        .map((d) => String(d || '').trim())
+                        .filter(Boolean);
+                    if (docs.length > 0) continue;
+                    if (!notification.message) continue;
+
+                    await prisma.notification.delete({
+                        where: { id: notification.id },
+                    });
+                    updatedCount += 1;
+                }
+            } else {
+                for (const notification of notificationsRecords) {
+                    const docs = (notification.documentRequestedDocuments || [])
+                        .map((d) => String(d || '').trim())
+                        .filter(Boolean);
+                    const filtered = docs.filter((d) => d.toLowerCase() !== docId);
+                    if (filtered.length === docs.length) continue;
+
+                    await prisma.notification.update({
+                        where: { id: notification.id },
+                        data: { documentRequestedDocuments: filtered },
+                    });
+                    updatedCount += 1;
+                }
+            }
+
+            if (updatedCount === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Document request not found',
+                });
+            }
+
+            return res.status(200).json({
+                success: true,
+                message: 'Document request removed',
+            });
+        } catch (error: any) {
+            console.error('Remove document request error:', error);
             return res.status(500).json({
                 success: false,
                 message: error.message || 'Internal server error',

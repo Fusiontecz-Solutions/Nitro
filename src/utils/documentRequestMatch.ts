@@ -10,10 +10,33 @@ export const DOCUMENT_REQUEST_LABELS: Record<string, string> = {
     'articles-of-incorporation': 'Articles of Incorporations',
 };
 
+/** Stable id for Final Underwriter send-back (no specific document list). */
+export const SENT_BACK_DOCUMENTATION_REQUEST_ID = 'sent-back-for-documentation';
+
+export const SENT_BACK_DOCUMENTATION_LABEL = 'Sent Back for Documentation';
+
 function normalizeSlug(value: string): string {
     return String(value || '')
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '');
+}
+
+export function isSentBackDocumentationRequest(name: string): boolean {
+    const normalized = String(name || '').trim().toLowerCase();
+    const slug = normalizeSlug(normalized);
+    return (
+        normalized === SENT_BACK_DOCUMENTATION_REQUEST_ID ||
+        slug === 'sentbackfordocumentation' ||
+        normalized === SENT_BACK_DOCUMENTATION_LABEL.toLowerCase()
+    );
+}
+
+export function isUploadableDocumentRequest(doc: {
+    name: string;
+    uploadable?: boolean;
+}): boolean {
+    if (doc.uploadable === false) return false;
+    return !isSentBackDocumentationRequest(doc.name);
 }
 
 /** True when an application file satisfies a requested document id (e.g. bank-statements). */
@@ -59,5 +82,6 @@ export function documentRequestIdsMatchedByFileName(
 
 export function documentRequestDisplayLabel(docId: string): string {
     const id = String(docId || '').trim();
+    if (isSentBackDocumentationRequest(id)) return SENT_BACK_DOCUMENTATION_LABEL;
     return DOCUMENT_REQUEST_LABELS[id] || id.replace(/[-_]/g, ' ');
 }

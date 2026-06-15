@@ -1377,7 +1377,10 @@ export interface DocumentRequestEmailParams {
     requestedDocuments: string[];
     requestAdditional?: boolean;
     note?: string;
+    /** Optional CRM deep link for internal staff only. */
     viewApplicationUrl?: string;
+    /** Public secure URL: /public/application/documents/:token (no CRM login). */
+    publicPortalUrl?: string;
 }
 
 function formatDocumentRequestList(
@@ -1412,6 +1415,7 @@ export async function sendDocumentRequestEmail({
     requestAdditional,
     note,
     viewApplicationUrl,
+    publicPortalUrl,
 }: DocumentRequestEmailParams): Promise<DocumentRequestEmailResult> {
     const recipients = [...new Set((to || []).map((e) => String(e || '').trim()).filter(Boolean))];
     if (!recipients.length) {
@@ -1428,7 +1432,9 @@ export async function sendDocumentRequestEmail({
     const safeIso = isoName?.trim() || 'there';
     const appLabel = applicationNumber != null ? String(applicationNumber) : 'N/A';
     const subject = `Document request — Application #${appLabel} (${clientName})`;
-    const uploadUrl = (viewApplicationUrl || '').trim() || undefined;
+    const uploadUrl =
+        (publicPortalUrl || '').trim() || (viewApplicationUrl || '').trim() || undefined;
+    const isPublicTokenLink = Boolean((publicPortalUrl || '').trim());
     const noteBlock = note?.trim()
         ? `<p style="margin:16px 0 0;"><strong>Note from underwriting:</strong><br/>${note
               .trim()
@@ -1455,7 +1461,11 @@ export async function sendDocumentRequestEmail({
             ? `<p style="margin:24px 0 0;"><a href="${uploadUrl}" style="display:inline-block;background:#276D9C;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600;">Upload requested documents</a></p>`
             : ''
     }
-    <p style="margin:24px 0 0;font-size:12px;color:#6B7280;">Open the link above, go to the Documents tab, and upload each requested file. The CRM will mark items as received once uploaded.</p>
+    <p style="margin:24px 0 0;font-size:12px;color:#6B7280;">${
+        isPublicTokenLink
+            ? 'Open the link above and upload each requested file. No CRM login required. The system will mark items as received once uploaded.'
+            : 'Open the link above, go to the Documents tab, and upload each requested file. The CRM will mark items as received once uploaded.'
+    }</p>
   </div>
 </body>
 </html>`;

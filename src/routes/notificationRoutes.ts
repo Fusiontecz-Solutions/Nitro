@@ -35,6 +35,12 @@ router.get('/', notificationController.getNotifications.bind(notificationControl
 // Get document requests for an application
 router.get('/document-requests/:applicationId', notificationController.getDocumentRequestsByApplication.bind(notificationController));
 
+// Remove a specific document from active document requests
+router.delete(
+    '/document-requests/:applicationId/:documentId',
+    notificationController.removeDocumentRequest.bind(notificationController),
+);
+
 // Mark notification as read
 router.patch('/:id/read', notificationController.markAsRead.bind(notificationController));
 

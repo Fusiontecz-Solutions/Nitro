@@ -803,7 +803,11 @@ export class DocusignService {
   }
 
   /** Default Woodmere CC plus any user-added addresses (deduped, case-insensitive). */
-  private normalizeCcEmails(ccEmails?: string[] | null): string[] {
+  private normalizeCcEmails(
+    ccEmails?: string[] | null,
+    options?: { includeDefault?: boolean },
+  ): string[] {
+    const includeDefault = options?.includeDefault !== false;
     const merged = new Map<string, string>();
     const add = (raw: string) => {
       const trimmed = String(raw || '').trim();
@@ -811,9 +815,13 @@ export class DocusignService {
       const key = trimmed.toLowerCase();
       if (!merged.has(key)) merged.set(key, trimmed);
     };
-    add(DOCUSIGN_DEFAULT_CC_EMAIL);
+    if (includeDefault) add(DOCUSIGN_DEFAULT_CC_EMAIL);
     for (const e of ccEmails || []) add(String(e));
     return [...merged.values()];
+  }
+
+  private includeDefaultCcForEnvelopeKind(envelopeKind: string | null | undefined): boolean {
+    return String(envelopeKind || '').trim().toLowerCase() !== 'standalone_ach';
   }
 
   private async upsertEnvelopeTextCustomFields(
@@ -927,7 +935,9 @@ export class DocusignService {
     if (appId) {
       fields.push({ name: 'crmApplicationId', value: appId, show: 'false' });
     }
-    const cc = this.normalizeCcEmails(ccEmails);
+    const cc = this.normalizeCcEmails(ccEmails, {
+      includeDefault: this.includeDefaultCcForEnvelopeKind(envelopeKind),
+    });
     if (cc.length) {
       fields.push({ name: 'crmCcEmails', value: cc.join(','), show: 'false' });
     }
@@ -952,6 +962,55 @@ export class DocusignService {
     } catch {
       return null;
     }
+  }
+
+  /** True when envelope has left draft / pre-send (CC PDF already applicable). */
+  private isSentLikeEnvelopeStatus(status: string): boolean {
+    const s = String(status || '').trim().toLowerCase();
+    return ['sent', 'delivered', 'viewed', 'signed', 'completed'].includes(s);
+  }
+
+  /** Read last stored CRM status for an envelope (ACH mapping blob or send history). */
+  private async getStoredEnvelopeStatusFromContract(
+    applicationId: string,
+    envelopeId: string,
+  ): Promise<string> {
+    const appId = String(applicationId || '').trim();
+    const eid = String(envelopeId || '').trim();
+    if (!appId || !eid) return '';
+    try {
+      const contract = await prisma.contract.findUnique({
+        where: { applicationId: appId },
+        select: { contractPrefillOverrides: true },
+      });
+      const prefill = contract?.contractPrefillOverrides;
+      if (!prefill || typeof prefill !== 'object' || Array.isArray(prefill)) return '';
+      const raw = prefill as Record<string, unknown>;
+      const envelopeMap = raw.documentTemplateEnvelopeByMappingId;
+      if (envelopeMap && typeof envelopeMap === 'object' && !Array.isArray(envelopeMap)) {
+        for (const meta of Object.values(envelopeMap)) {
+          if (!meta || typeof meta !== 'object') continue;
+          if (String((meta as Record<string, unknown>).envelopeId ?? '').trim() === eid) {
+            return String((meta as Record<string, unknown>).status ?? '')
+              .trim()
+              .toLowerCase();
+          }
+        }
+      }
+      const history = raw.documentSendHistory;
+      if (Array.isArray(history)) {
+        for (const row of history) {
+          if (!row || typeof row !== 'object') continue;
+          const r = row as Record<string, unknown>;
+          if (String(r.envelopeId ?? '').trim() === eid) {
+            return String(r.status ?? '').trim().toLowerCase();
+          }
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return '';
   }
 
   /** True when envelopeId is stored on contract prefill as standalone ACH (legacy envelopes). */
@@ -1570,7 +1629,9 @@ export class DocusignService {
       rolesToApply,
     );
 
-    const list = this.normalizeCcEmails(ccEmails);
+    const envelopeKind = await this.getEnvelopeCrmKindFromApi(client, accountId, eid);
+    const includeDefaultCc = this.includeDefaultCcForEnvelopeKind(envelopeKind);
+    const list = this.normalizeCcEmails(ccEmails, { includeDefault: includeDefaultCc });
 
     await this.removeEnvelopeCarbonCopies(client, accountId, eid);
 
@@ -1591,7 +1652,11 @@ export class DocusignService {
           'Set default signer emails on the template in DocuSign Admin, or add them in CRM.',
       );
     }
-    const textCustomFields = this.buildEnvelopeTextCustomFields(applicationId, list);
+    const textCustomFields = this.buildEnvelopeTextCustomFields(
+      applicationId,
+      list,
+      envelopeKind === 'standalone_ach' ? 'standalone_ach' : 'contract',
+    );
     if (!textCustomFields.some((f) => f.name === 'crmCcEmails')) {
       textCustomFields.push({ name: 'crmCcEmails', value: list.join(','), show: 'false' });
     }
@@ -2505,7 +2570,10 @@ export class DocusignService {
       options.autoSend !== false &&
       (options.autoSend === true || DOCUSIGN_AUTO_SEND_ENVELOPE);
 
-    const normalizedCc = this.normalizeCcEmails(options.ccEmails);
+    const includeDefaultCc = !options.skipApplicationEnvelopeLink;
+    const normalizedCc = this.normalizeCcEmails(options.ccEmails, {
+      includeDefault: includeDefaultCc,
+    });
     await this.removeEnvelopeCarbonCopies(
       options.client,
       options.accountId,
@@ -3169,11 +3237,10 @@ export class DocusignService {
     },
   ) {
     const eid = String(envelopeId || '').trim();
-    const ccList = this.normalizeCcEmails(options?.ccEmails);
     await this.syncEnvelopeCcEmails(
       userId,
       eid,
-      ccList,
+      options?.ccEmails || [],
       options?.applicationId,
       options?.signerEmail,
       options?.signerName,
@@ -3229,10 +3296,13 @@ export class DocusignService {
         return { emailed: [], skippedReason: 'already_emailed' };
       }
 
-      let ccEmails = this.normalizeCcEmails(ccEmailsOverride);
+      const envelopeKind = await this.getEnvelopeCrmKindFromApi(client, accountId, envelopeId);
+      const includeDefaultCc = this.includeDefaultCcForEnvelopeKind(envelopeKind);
+      let ccEmails = this.normalizeCcEmails(ccEmailsOverride, { includeDefault: includeDefaultCc });
       if (!ccEmails.length) {
         ccEmails = this.normalizeCcEmails(
           await this.getEnvelopeCcEmailsFromApi(client, accountId, envelopeId),
+          { includeDefault: includeDefaultCc },
         );
       }
       if (!ccEmails.length) {
@@ -3316,7 +3386,7 @@ export class DocusignService {
       eid,
       appId || undefined,
       null,
-      this.normalizeCcEmails(ccFromRequest),
+      ccFromRequest,
       options?.title,
     );
 
@@ -3462,8 +3532,11 @@ export class DocusignService {
       where: { envelopeId: String(envelopeId) },
     });
 
-    const priorStatus = String(existingDoc?.status || '').toLowerCase();
     const appId = applicationId || existingDoc?.applicationId || null;
+    let priorStatus = String(existingDoc?.status || '').toLowerCase();
+    if (!priorStatus && appId) {
+      priorStatus = await this.getStoredEnvelopeStatusFromContract(String(appId), envelopeId);
+    }
     const envelopeKind = await this.getEnvelopeCrmKindFromApi(client, accountId, envelopeId);
     const status = await this.applySigningStatusUpdate(
       envelopeId,
@@ -3476,14 +3549,29 @@ export class DocusignService {
     let ccPrefilledEmail: { emailed: string[]; skippedReason?: string } = {
       emailed: [],
     };
-    if (incomingResolved === 'sent' || incomingResolved === 'completed') {
-      ccPrefilledEmail = await this.notifyCcRecipientsOnEnvelopeSent(
-        userId,
+    const incomingSentLike =
+      incomingResolved === 'sent' || incomingResolved === 'completed';
+    if (incomingSentLike) {
+      const priorSentLike = this.isSentLikeEnvelopeStatus(priorStatus);
+      const alreadyEmailed = await this.isEnvelopeCcAlreadyEmailed(
+        client,
+        accountId,
         envelopeId,
-        appId,
-        existingDoc,
-        options.ccEmails,
       );
+      if (alreadyEmailed || priorSentLike) {
+        ccPrefilledEmail = {
+          emailed: [],
+          skippedReason: alreadyEmailed ? 'already_emailed' : 'already_sent_in_crm',
+        };
+      } else {
+        ccPrefilledEmail = await this.notifyCcRecipientsOnEnvelopeSent(
+          userId,
+          envelopeId,
+          appId,
+          existingDoc,
+          options.ccEmails,
+        );
+      }
     }
 
     if (
