@@ -19,8 +19,18 @@ import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasAddendumPrefillFieldMap,
+    isAchAuthorizationPrefillTemplate,
 } from "./documentTemplateMappingPrefill";
 import { cn } from "@/lib/utils";
+
+function achFormPrefillTitleName(templateName: string): string {
+    const cleaned = String(templateName ?? "")
+        .trim()
+        .replace(/\s*[-–]\s*ACH\s+Authorization\s*$/i, "")
+        .trim();
+    if (cleaned && cleaned.toLowerCase() !== "ach authorization") return cleaned;
+    return "ACH Form";
+}
 
 /** Fields that span both columns in the addendum prefill editor (2-col layout). */
 const ADDENDUM_PREFILL_FULL_WIDTH_FIELD_IDS = new Set([
@@ -79,8 +89,10 @@ type TemplateMappingPrefillEditDialogProps = {
     mainPrefillOverrides: Partial<BuildContractPrefillFieldsArgs> | null;
     /** After a successful save, parent refreshes contract + mapping list. */
     onSaved: () => void;
-    /** Addendum flow: edit field values only (hide template GUID editor). */
+    /** Supplemental-doc flow: edit field values only (hide template GUID editor). */
     addendumOnly?: boolean;
+    /** When set with `addendumOnly`, controls dialog copy (ACH form vs addendum). */
+    prefillDocumentKind?: "ach_form" | "addendum";
     bankDetail?: Record<string, unknown> | null;
 };
 
@@ -97,6 +109,7 @@ export function TemplateMappingPrefillEditDialog({
     mainPrefillOverrides,
     onSaved,
     addendumOnly = false,
+    prefillDocumentKind,
     bankDetail = null,
 }: TemplateMappingPrefillEditDialogProps) {
     const dispatch = useDispatch<AppDispatch>();
@@ -145,6 +158,26 @@ export function TemplateMappingPrefillEditDialog({
         seededMappingIdRef.current = row.id;
         setFieldValues(Object.fromEntries(editorRows.map((r) => [r.id, r.value ?? ""])));
     }, [open, row, editorRows]);
+
+    const titleName = row?.template?.name?.trim()
+        ? row.template.name
+        : row?.template?.templateId || "DocuSign template";
+
+    const templateGuid = String(row?.template?.templateId ?? row?.templateId ?? "").trim();
+    const supportsPrefill = hasAddendumPrefillFieldMap(templateGuid, row?.template?.name ?? null);
+    const isAchFormPrefill =
+        prefillDocumentKind === "ach_form" ||
+        (prefillDocumentKind !== "addendum" &&
+            isAchAuthorizationPrefillTemplate(templateGuid, row?.template?.name ?? null));
+    const supplementalPrefillTitle = isAchFormPrefill
+        ? `Edit ACH form prefill — ${achFormPrefillTitleName(titleName)}`
+        : `Edit addendum prefill — ${titleName}`;
+    const supplementalPrefillSavedToast = isAchFormPrefill
+        ? "ACH form prefill values saved."
+        : "Addendum prefill values saved.";
+    const supplementalPrefillMissingMapMessage = isAchFormPrefill
+        ? "No registered field map for this ACH form template. Contact support to register its DocuSign Data Labels."
+        : "No registered field map for this addendum template. Contact support to register its DocuSign Data Labels.";
 
     const handleSave = useCallback(async () => {
         const cid = contractId != null && Number.isFinite(Number(contractId)) ? Number(contractId) : null;
@@ -200,7 +233,7 @@ export function TemplateMappingPrefillEditDialog({
 
             toast.success(
                 addendumOnly
-                    ? "Addendum prefill values saved."
+                    ? supplementalPrefillSavedToast
                     : "Template mapping and DocuSign field overrides saved.",
             );
             onSaved();
@@ -227,14 +260,8 @@ export function TemplateMappingPrefillEditDialog({
         onSaved,
         onOpenChange,
         addendumOnly,
+        supplementalPrefillSavedToast,
     ]);
-
-    const titleName = row?.template?.name?.trim()
-        ? row.template.name
-        : row?.template?.templateId || "DocuSign template";
-
-    const templateGuid = String(row?.template?.templateId ?? row?.templateId ?? "").trim();
-    const supportsPrefill = hasAddendumPrefillFieldMap(templateGuid, row?.template?.name ?? null);
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -249,7 +276,7 @@ export function TemplateMappingPrefillEditDialog({
             >
                 <DialogHeader className="shrink-0 border-b px-6 py-4">
                     <DialogTitle className="text-base">
-                        {addendumOnly ? `Edit addendum prefill — ${titleName}` : `Edit template mapping — ${titleName}`}
+                        {addendumOnly ? supplementalPrefillTitle : `Edit template mapping — ${titleName}`}
                     </DialogTitle>
                 </DialogHeader>
                 <div className="max-h-[min(65vh,520px)] overflow-y-auto px-6 py-4">
@@ -272,7 +299,7 @@ export function TemplateMappingPrefillEditDialog({
                             <p className="text-muted-foreground text-sm">
                                 {supportsPrefill
                                     ? "Loading field definitions…"
-                                    : "No registered field map for this addendum template. Contact support to register its DocuSign Data Labels."}
+                                    : supplementalPrefillMissingMapMessage}
                             </p>
                         ) : (
                             <>

@@ -30,6 +30,7 @@ export const DOCUMENT_REQUEST_LABELS: Record<string, string> = {
     "voided-check": "Voided Check",
     "tax-returns": "Tax Returns - Last 2 Years",
     "articles-of-incorporation": "Articles of Incorporations",
+    "additional-documents": "Additional documents (as discussed)",
 };
 
 export function documentRequestDisplayLabel(doc: DocumentRequestRow): string {

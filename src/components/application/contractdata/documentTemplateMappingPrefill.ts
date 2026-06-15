@@ -268,6 +268,13 @@ function dotBarclaysFlex(): BarclaysFlexAddendumContractPrefillFields {
 function dotKatanAch(): KatanAchAuthorizationAddendumPrefillFields {
     const d = DUMMY;
     return {
+        authorizationClientName: d,
+        authorizationClientBankName: d,
+        authorizationClientBankRouting: d,
+        authorizationClientBankAccount: d,
+        authorizationClientNamePrint: d,
+        authorizationClientTaxId: d,
+        authorizedBusinessPhone: d,
         achAuthorizationAccountHolderName: d,
         achAuthorizationAccountHolderDba: d,
         achAuthorizationAccountHolderPhone: d,
@@ -283,19 +290,19 @@ function dotKatanAch(): KatanAchAuthorizationAddendumPrefillFields {
         achAuthorizationAccountHolderBankAccountNumber: d,
         achAuthorizationAccountHolderBankTransactionFee: d,
         achAuthorizationConcentAccountHolderName: d,
-        authorizationClientBankName: d,
-        authorizationClientBankRouting: d,
-        authorizationClientBankAccount: d,
-        authorizationClientName: d,
-        authorizationClientNamePrint: d,
-        authorizationClientTaxId: d,
-        authorizedBusinessPhone: d,
     };
 }
 
 function buildKatanAchComputed(contract: Record<string, unknown> | null): ContractPrefillField[] {
     const c = contract ?? {};
     return buildKatanAchAuthorizationAddendumPrefillFields({
+        authorizationClientName: str(c.authorizationClientName),
+        authorizationClientBankName: str(c.authorizationClientBankName),
+        authorizationClientBankRouting: str(c.authorizationClientBankRouting),
+        authorizationClientBankAccount: str(c.authorizationClientBankAccount),
+        authorizationClientNamePrint: str(c.authorizationClientNamePrint),
+        authorizationClientTaxId: str(c.authorizationClientTaxId),
+        authorizedBusinessPhone: str(c.authorizedBusinessPhone),
         achAuthorizationAccountHolderName: str(c.achAuthorizationAccountHolderName),
         achAuthorizationAccountHolderDba: str(c.achAuthorizationAccountHolderDba),
         achAuthorizationAccountHolderPhone: str(c.achAuthorizationAccountHolderPhone),
@@ -311,13 +318,6 @@ function buildKatanAchComputed(contract: Record<string, unknown> | null): Contra
         achAuthorizationAccountHolderBankAccountNumber: str(c.achAuthorizationAccountHolderBankAccountNumber),
         achAuthorizationAccountHolderBankTransactionFee: str(c.achAuthorizationAccountHolderBankTransactionFee),
         achAuthorizationConcentAccountHolderName: str(c.achAuthorizationConcentAccountHolderName),
-        authorizationClientBankName: str(c.authorizationClientBankName),
-        authorizationClientBankRouting: str(c.authorizationClientBankRouting),
-        authorizationClientBankAccount: str(c.authorizationClientBankAccount),
-        authorizationClientName: str(c.authorizationClientName),
-        authorizationClientNamePrint: str(c.authorizationClientNamePrint),
-        authorizationClientTaxId: str(c.authorizationClientTaxId),
-        authorizedBusinessPhone: str(c.authorizedBusinessPhone),
     });
 }
 
@@ -428,6 +428,14 @@ function resolveAddendumKind(normName: string, templateId?: string | null): Adde
     if (normName.includes("discover") && (normName.includes("refi") || normName.includes("balance_transfer")))
         return "discover_refi_balance";
     return null;
+}
+
+export function isAchAuthorizationPrefillTemplate(
+    templateId?: string | null,
+    templateName?: string | null,
+): boolean {
+    const kind = resolveAddendumKind(normalizeKey(templateName ?? ""), templateId);
+    return kind === "katan_ach_authorization";
 }
 
 /** Whether the addendum prefill editor has registered fields for this DocuSign template. */

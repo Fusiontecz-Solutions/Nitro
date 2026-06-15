@@ -60,6 +60,7 @@ import Cases from '../pages/case/Cases';
 import { CasesDashboard } from '../pages/case/CasesDashboard';
 import UserSetting from '../pages/Userssettings/UserSetting';
 import PublicApprovalPage from '../pages/public/PublicApprovalPage';
+import PublicDocumentRequestPage from '../pages/public/PublicDocumentRequestPage';
 import PublicApplicationStatusPage from '../pages/public/PublicApplicationStatusPage';
 import DecisionLogicPage from '../pages/public/DecisionLogicPage';
 import DecisionLogicSuccessPage from '../pages/public/DecisionLogicSuccessPage';
@@ -189,6 +190,19 @@ const Routes: RouteObject[] = [
         path: '/forgot-password',
         element: <ForgotPasswordPage />
     }),
+    // Public shareable links (no CRM login — top-level so SPA routing always matches email URLs)
+    createRoute({
+        path: '/public/application/status/:token',
+        element: <PublicApplicationStatusPage />,
+    }),
+    createRoute({
+        path: '/public/application/approval/:token',
+        element: <PublicApprovalPage />,
+    }),
+    createRoute({
+        path: '/public/application/documents/:token',
+        element: <PublicDocumentRequestPage />,
+    }),
     createRoute({
         path: '/',
         element: <RootLayout />,
@@ -288,9 +302,6 @@ const Routes: RouteObject[] = [
             { path: 'cases', element: <Cases /> },
             { path: 'cases-dashboard', element: <CasesDashboard /> },
             { path: 'user-setting', element: <UserSetting /> },
-            // Public shareable links (no CRM login)
-            { path: 'public/application/status/:token', element: <PublicApplicationStatusPage /> },
-            { path: 'public/application/approval/:token', element: <PublicApprovalPage /> },
             { path: 'syndicator-portfolio', element: <SyndicatorPortfolio /> },
             { path: 'syndicator-funding', element: <SyndicatorFunding /> },
             { path: 'syndicator-payouts', element: <SyndicatorPayouts /> },

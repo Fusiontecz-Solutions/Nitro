@@ -2,6 +2,13 @@ import type { ContractPrefillField } from "./Contract";
 
 /** DocuSign Data Labels on `KATAN LLC - ACH Authorization` (text tabs only). */
 export interface KatanAchAuthorizationAddendumPrefillFields {
+    authorizationClientName?: string;
+    authorizationClientBankName?: string;
+    authorizationClientBankRouting?: string;
+    authorizationClientBankAccount?: string;
+    authorizationClientNamePrint?: string;
+    authorizationClientTaxId?: string;
+    authorizedBusinessPhone?: string;
     achAuthorizationAccountHolderName?: string;
     achAuthorizationAccountHolderDba?: string;
     achAuthorizationAccountHolderPhone?: string;
@@ -17,38 +24,35 @@ export interface KatanAchAuthorizationAddendumPrefillFields {
     achAuthorizationAccountHolderBankAccountNumber?: string;
     achAuthorizationAccountHolderBankTransactionFee?: string;
     achAuthorizationConcentAccountHolderName?: string;
-    authorizationClientBankName?: string;
-    authorizationClientBankRouting?: string;
-    authorizationClientBankAccount?: string;
-    authorizationClientName?: string;
-    authorizationClientNamePrint?: string;
-    authorizationClientTaxId?: string;
-    authorizedBusinessPhone?: string;
 }
 
+/** Field order matches the ACH form PDF (page 1 direct deposit, then page 2 ACH authorization). */
 const FIELD_DEFS: Array<{ id: keyof KatanAchAuthorizationAddendumPrefillFields; label: string }> = [
-    { id: "achAuthorizationAccountHolderName", label: "Account holder business name" },
-    { id: "achAuthorizationAccountHolderDba", label: "Account holder DBA" },
-    { id: "achAuthorizationAccountHolderPhone", label: "Account holder phone" },
-    { id: "achAuthorizationAccountHolderAddress", label: "Account holder street" },
-    { id: "achAuthorizationAccountHolderCity", label: "Account holder city" },
-    { id: "achAuthorizationAccountHolderState", label: "Account holder state" },
-    { id: "achAuthorizationAccountHolderZip", label: "Account holder ZIP" },
-    { id: "achAuthorizationAccountHolderBankName", label: "Bank name" },
-    { id: "achAuthorizationAccountHolderBankBranchCity", label: "Bank branch city" },
-    { id: "achAuthorizationAccountHolderBankState", label: "Bank state" },
-    { id: "achAuthorizationAccountHolderBankZip", label: "Bank ZIP" },
-    { id: "achAuthorizationAccountHolderBankRoutingNumber", label: "Routing number" },
-    { id: "achAuthorizationAccountHolderBankAccountNumber", label: "Account number" },
-    { id: "achAuthorizationAccountHolderBankTransactionFee", label: "Transaction fee" },
-    { id: "achAuthorizationConcentAccountHolderName", label: "Consent account holder name" },
-    { id: "authorizationClientBankName", label: "Authorization bank name" },
-    { id: "authorizationClientBankRouting", label: "Authorization routing" },
-    { id: "authorizationClientBankAccount", label: "Authorization account" },
-    { id: "authorizationClientName", label: "Authorization business name" },
-    { id: "authorizationClientNamePrint", label: "Authorization business name (print)" },
-    { id: "authorizationClientTaxId", label: "Authorization tax ID" },
-    { id: "authorizedBusinessPhone", label: "Authorized business phone" },
+    { id: "authorizationClientName", label: "Seller's Name" },
+    { id: "authorizationClientBankName", label: "Name of Bank" },
+    { id: "authorizationClientBankRouting", label: "ABA Transit/Routing #" },
+    { id: "authorizationClientBankAccount", label: "Checking Account" },
+    { id: "authorizationClientNamePrint", label: "Print Name" },
+    { id: "authorizationClientTaxId", label: "Seller's Tax ID" },
+    { id: "authorizedBusinessPhone", label: "Authorized Business Phone Number" },
+    { id: "achAuthorizationAccountHolderName", label: "Account Holder Name" },
+    {
+        id: "achAuthorizationAccountHolderDba",
+        label: "Account Holder DBA Name (If Business Account)",
+    },
+    { id: "achAuthorizationAccountHolderPhone", label: "Account Holder Phone" },
+    { id: "achAuthorizationAccountHolderAddress", label: "Account Holder Address" },
+    { id: "achAuthorizationAccountHolderCity", label: "City" },
+    { id: "achAuthorizationAccountHolderState", label: "ST" },
+    { id: "achAuthorizationAccountHolderZip", label: "Zip" },
+    { id: "achAuthorizationAccountHolderBankName", label: "Account Holders Bank Name" },
+    { id: "achAuthorizationAccountHolderBankBranchCity", label: "Branch City" },
+    { id: "achAuthorizationAccountHolderBankState", label: "ST (bank)" },
+    { id: "achAuthorizationAccountHolderBankZip", label: "Zip (bank)" },
+    { id: "achAuthorizationAccountHolderBankRoutingNumber", label: "Bank Routing Number (9 digits)" },
+    { id: "achAuthorizationAccountHolderBankAccountNumber", label: "Bank Account Number" },
+    { id: "achAuthorizationAccountHolderBankTransactionFee", label: "Fee Amount" },
+    { id: "achAuthorizationConcentAccountHolderName", label: "Name/Title of Account Holder" },
 ];
 
 export function buildKatanAchAuthorizationAddendumPrefillFields(
