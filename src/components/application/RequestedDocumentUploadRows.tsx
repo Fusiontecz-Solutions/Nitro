@@ -1,14 +1,21 @@
 import { useRef, useState } from "react";
-import { CheckCircle2, Eye, Loader2, Upload, UploadCloud } from "lucide-react";
+import { CheckCircle2, Eye, Loader2, Upload, UploadCloud, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { DOCUMENT_REQUEST_OPTIONS } from "./RequestMissingDocumentsModal";
+import {
+    isSentBackDocumentationRequest,
+    isUploadableDocumentRequest,
+    SENT_BACK_DOCUMENTATION_LABEL,
+} from "@/lib/documentRequestMatch";
 
 export type RequestedDocumentRow = {
     name: string;
     label?: string;
     status: "Complete" | "Pending";
+    uploadable?: boolean;
+    message?: string;
 };
 
 function formatDocName(name: string): string {
@@ -22,6 +29,7 @@ function formatDocName(name: string): string {
 
 export function getRequestedDocumentLabel(doc: { name: string; label?: string }): string {
     if (doc.label?.trim()) return doc.label.trim();
+    if (isSentBackDocumentationRequest(doc.name)) return SENT_BACK_DOCUMENTATION_LABEL;
     const match = DOCUMENT_REQUEST_OPTIONS.find((opt) => opt.id === doc.name);
     if (match) return match.label;
     return formatDocName(doc.name);
@@ -36,6 +44,10 @@ type RequestedDocumentUploadRowsProps = {
     /** When true, rows render without outer section chrome (for contract modal document list). */
     embedded?: boolean;
     canView?: (requestDocId: string) => boolean;
+    /** Allow replacing an already-received document (public portal / request flows). */
+    allowReplace?: boolean;
+    /** Remove/cancel a document request (contract modal — staff only). */
+    onRemove?: (requestDocId: string) => Promise<void> | void;
 };
 
 export default function RequestedDocumentUploadRows({
@@ -45,10 +57,13 @@ export default function RequestedDocumentUploadRows({
     onView,
     embedded = false,
     canView,
+    allowReplace = false,
+    onRemove,
 }: RequestedDocumentUploadRowsProps) {
     const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
     const [pendingName, setPendingName] = useState<Record<string, string>>({});
     const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+    const [removingKey, setRemovingKey] = useState<string | null>(null);
     const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
     const allRows = [...pending, ...completed];
@@ -89,31 +104,35 @@ export default function RequestedDocumentUploadRows({
                 const isDragOver = dragOverKey === requestKey;
                 const uploadingName = pendingName[requestKey];
                 const viewable = isComplete && Boolean(onView) && (canView?.(requestKey) ?? true);
+                const rowUploadable = isUploadableDocumentRequest(doc);
+                const canUpload = rowUploadable && (!isComplete || allowReplace);
+                const isRemoving = removingKey === requestKey;
+                const rowInteractive = canUpload && !isUploading && !isRemoving;
 
                 return (
                     <div
                         key={`req-doc-${requestKey}`}
-                        role={!isComplete && !isUploading ? "button" : undefined}
-                        tabIndex={!isComplete && !isUploading ? 0 : -1}
+                        role={rowInteractive ? "button" : undefined}
+                        tabIndex={rowInteractive ? 0 : -1}
                         onClick={() => {
-                            if (isComplete || isUploading) return;
+                            if (!rowInteractive) return;
                             inputRefs.current[requestKey]?.click();
                         }}
                         onKeyDown={(e) => {
-                            if (isComplete || isUploading) return;
+                            if (!rowInteractive) return;
                             if (e.key === "Enter" || e.key === " ") {
                                 e.preventDefault();
                                 inputRefs.current[requestKey]?.click();
                             }
                         }}
                         onDragOver={(e) => {
-                            if (isComplete || isUploading) return;
+                            if (!rowInteractive) return;
                             e.preventDefault();
                             setDragOverKey(requestKey);
                         }}
                         onDragLeave={() => setDragOverKey((k) => (k === requestKey ? null : k))}
                         onDrop={(e) => {
-                            if (isComplete || isUploading) return;
+                            if (!rowInteractive) return;
                             e.preventDefault();
                             setDragOverKey(null);
                             void handlePick(requestKey, e.dataTransfer?.files ?? null);
@@ -124,14 +143,14 @@ export default function RequestedDocumentUploadRows({
                                 ? "border-emerald-200 bg-emerald-50"
                                 : isUploading
                                   ? "border-blue-200 bg-blue-50"
-                                  : isDragOver
+                                    : isDragOver
                                     ? "border-blue-400 bg-blue-50 ring-2 ring-blue-200"
                                     : "border-amber-200 bg-amber-50",
-                            !isComplete && !isUploading && "cursor-pointer hover:bg-amber-100/70",
+                            rowInteractive && "cursor-pointer hover:bg-amber-100/70",
                         )}
                     >
                         <div className="flex min-w-0 items-center gap-2">
-                            {!isComplete && (
+                            {rowUploadable && (!isComplete || isUploading) && (
                                 <span
                                     className={cn(
                                         "flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
@@ -150,17 +169,21 @@ export default function RequestedDocumentUploadRows({
                             <div className="min-w-0">
                                 <p className="text-sm font-medium text-slate-800">{label}</p>
                                 <p className="truncate text-[11px] text-slate-500">
-                                    {isComplete
-                                        ? "Document received"
-                                        : isUploading
-                                          ? uploadingName || "Uploading..."
-                                          : "Pending — upload required"}
+                                    {!rowUploadable
+                                        ? doc.message?.trim() || "Underwriting send-back — no file upload required"
+                                        : isComplete
+                                          ? allowReplace
+                                              ? "Document received — replace if needed"
+                                              : "Document received"
+                                          : isUploading
+                                            ? uploadingName || "Uploading..."
+                                            : "Pending — upload required"}
                                 </p>
                             </div>
                         </div>
 
                         <div className="flex items-center gap-2">
-                            {!isComplete && !isUploading && (
+                            {canUpload && !isUploading && (
                                 <Input
                                     ref={(el) => {
                                         inputRefs.current[requestKey] = el;
@@ -184,15 +207,21 @@ export default function RequestedDocumentUploadRows({
                                 <span
                                     className={cn(
                                         "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
-                                        isComplete
-                                            ? "bg-emerald-100 text-emerald-700"
-                                            : "bg-amber-100 text-amber-700",
+                                        !rowUploadable
+                                            ? "bg-slate-100 text-slate-700"
+                                            : isComplete
+                                              ? "bg-emerald-100 text-emerald-700"
+                                              : "bg-amber-100 text-amber-700",
                                     )}
                                 >
                                     {isComplete ? (
                                         <CheckCircle2 className="h-3.5 w-3.5" />
                                     ) : null}
-                                    {isComplete ? "Received" : "Pending"}
+                                    {!rowUploadable
+                                        ? "Send-back"
+                                        : isComplete
+                                          ? "Received"
+                                          : "Pending"}
                                 </span>
                             )}
 
@@ -212,7 +241,7 @@ export default function RequestedDocumentUploadRows({
                                 </Button>
                             ) : null}
 
-                            {!isComplete && !isUploading ? (
+                            {canUpload && !isUploading ? (
                                 <Button
                                     type="button"
                                     variant="outline"
@@ -224,7 +253,31 @@ export default function RequestedDocumentUploadRows({
                                     }}
                                 >
                                     <Upload className="h-3.5 w-3.5" aria-hidden />
-                                    Upload
+                                    {isComplete ? "Replace" : "Upload"}
+                                </Button>
+                            ) : null}
+
+                            {onRemove ? (
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 w-7 p-0 text-slate-500 hover:text-red-600"
+                                    disabled={isRemoving || isUploading}
+                                    title="Remove document request"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setRemovingKey(requestKey);
+                                        Promise.resolve(onRemove(requestKey)).finally(() => {
+                                            setRemovingKey((k) => (k === requestKey ? null : k));
+                                        });
+                                    }}
+                                >
+                                    {isRemoving ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                                    ) : (
+                                        <X className="h-3.5 w-3.5" aria-hidden />
+                                    )}
                                 </Button>
                             ) : null}
                         </div>

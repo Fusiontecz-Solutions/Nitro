@@ -85,7 +85,7 @@ import {
     type UpdateContractData,
 } from "@/redux/actions/contractActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
-import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions";
+import { getDocumentRequestsByApplication, removeDocumentRequest } from "@/redux/actions/notificationActions";
 import { toast } from "react-toastify";
 import {
     buildContractPrefillFieldsFromApplication,
@@ -105,7 +105,7 @@ import {
     type ContractPrefillField,
 } from "./contractdata/Contract";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
-import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
+import { findApplicationFileForDocumentRequest, isUploadableDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import RequestedDocumentUploadRows, {
@@ -2625,6 +2625,37 @@ const PDFViewerModal = ({
         [applicationMongoId, dispatch, documentRequestLookupId],
     );
 
+    const handleRemoveDocumentRequest = useCallback(
+        async (requestDocId: string) => {
+            if (!documentRequestLookupId) {
+                toast.error("Application ID not found");
+                return;
+            }
+
+            try {
+                await dispatch(
+                    removeDocumentRequest({
+                        applicationId: documentRequestLookupId,
+                        documentId: requestDocId,
+                    }),
+                ).unwrap();
+                toast.success(
+                    `${getRequestedDocumentLabel({ name: requestDocId })} request removed.`,
+                );
+                await dispatch(getDocumentRequestsByApplication(documentRequestLookupId));
+            } catch (error: unknown) {
+                const msg =
+                    typeof error === "string"
+                        ? error
+                        : (error as { message?: string })?.message ||
+                          "Failed to remove document request.";
+                toast.error(msg);
+                throw error;
+            }
+        },
+        [dispatch, documentRequestLookupId],
+    );
+
     const applicationFilesForDocumentRequests = useMemo(
         () =>
             Array.isArray((applicationData as { files?: unknown[] } | null)?.files)
@@ -4530,6 +4561,7 @@ const PDFViewerModal = ({
                                                 onUpload={autoUploadRequestedDocument}
                                                 onView={handleViewRequestedDocument}
                                                 canView={canViewRequestedDocument}
+                                                onRemove={handleRemoveDocumentRequest}
                                             />
                                         ) : null}
 

@@ -82,9 +82,11 @@ import {
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     formatDocumentSendStatusLabel,
+    isAchEnvelopeDraftLikeStatus,
     isDocumentSendEntryViewable,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
+    resolveAchHistoryEntryDisplayStatus,
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
     type DocumentSendHistoryEntry,
@@ -1109,13 +1111,19 @@ export default function ContractTab({
                 }
                 return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
             })
-            .map((row) => ({
-                ...row,
-                key: row.envelopeId,
-                displayStatus: formatDocumentSendStatusLabel(row.status),
-                isFinancial: row.documentKind === "contract",
-                viewable: isDocumentSendEntryViewable(row.status),
-            }));
+            .map((row) => {
+                const resolvedStatus =
+                    row.documentKind === "ach"
+                        ? resolveAchHistoryEntryDisplayStatus(row, history)
+                        : String(row.status ?? "").trim();
+                return {
+                    ...row,
+                    key: row.envelopeId,
+                    displayStatus: formatDocumentSendStatusLabel(resolvedStatus),
+                    isFinancial: row.documentKind === "contract",
+                    viewable: isDocumentSendEntryViewable(resolvedStatus || row.status),
+                };
+            });
     }, [fetchedContract]);
 
     /** Draft created — Contract Generated (not sent until DocuSign envelope is delivered). */
@@ -1359,9 +1367,12 @@ export default function ContractTab({
             );
         }
 
-        const effectiveCcEmails = mergeWithDefaultCcEmails(
-            (sendPayload.ccEmails || []).map((e) => String(e).trim()).filter(Boolean),
-        );
+        const userCcEmails = (sendPayload.ccEmails || [])
+            .map((e) => String(e).trim())
+            .filter(Boolean);
+        const effectiveCcEmails = standaloneAchOnly
+            ? [...new Set(userCcEmails)]
+            : mergeWithDefaultCcEmails(userCcEmails);
 
         const applicationSignerEmail = getPrimaryRecipientEmail().trim();
         const applicationSignerName = getPrimaryRecipientName();
@@ -1796,21 +1807,44 @@ export default function ContractTab({
             const main = stripDocumentTemplateBlobFromPrefillOverrides(
                 rawOverrides,
             ) as Record<string, unknown>;
+            const statusTrim = String(status ?? "").trim();
+            const updatedAt = new Date().toISOString();
+            const previousEnvelopeBlob = parseDocumentTemplateEnvelopeByMappingId(rawOverrides);
+            const previousMeta = previousEnvelopeBlob[mappingId];
+            let sendHistory = parseDocumentSendHistory(rawOverrides);
+            const previousEnvelopeId = String(previousMeta?.envelopeId ?? "").trim();
+            const previousStatus = String(previousMeta?.status ?? "").trim();
+            if (
+                previousEnvelopeId &&
+                previousEnvelopeId !== envelopeId &&
+                previousStatus &&
+                !isAchEnvelopeDraftLikeStatus(previousStatus)
+            ) {
+                sendHistory = upsertDocumentSendHistory(sendHistory, {
+                    envelopeId: previousEnvelopeId,
+                    documentKind: "ach",
+                    label: "ACH Authorization",
+                    status: previousStatus,
+                    updatedAt: String(previousMeta?.updatedAt ?? updatedAt),
+                });
+            }
             const nextEnvelopeBlob = {
-                ...parseDocumentTemplateEnvelopeByMappingId(rawOverrides),
+                ...previousEnvelopeBlob,
                 [mappingId]: {
                     envelopeId,
-                    status,
-                    updatedAt: new Date().toISOString(),
+                    ...(statusTrim ? { status: statusTrim } : {}),
+                    updatedAt,
                 },
             };
-            const sendHistory = upsertDocumentSendHistory(parseDocumentSendHistory(rawOverrides), {
-                envelopeId,
-                documentKind: "ach",
-                label: "ACH Authorization",
-                status,
-                updatedAt: new Date().toISOString(),
-            });
+            if (statusTrim) {
+                sendHistory = upsertDocumentSendHistory(sendHistory, {
+                    envelopeId,
+                    documentKind: "ach",
+                    label: "ACH Authorization",
+                    status: statusTrim,
+                    updatedAt,
+                });
+            }
             const prefillBlob = (rawOverrides as Record<string, unknown>)[
                 DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY
             ];
@@ -1840,6 +1874,7 @@ export default function ContractTab({
         async (
             envelopeId: string,
             ccForSync: string[],
+            rolesOverride?: DocuSignTemplateRolePayload[],
         ): Promise<{ url: string | null; error: string | null }> => {
             const returnUrl =
                 typeof window !== "undefined"
@@ -1850,7 +1885,8 @@ export default function ContractTab({
                 const res = await axiosPost("/docusign/sender-view", {
                     envelopeId,
                     returnUrl,
-                    ccEmails: mergeWithDefaultCcEmails(ccForSync),
+                    ccEmails: [...new Set(ccForSync.map((e) => e.trim()).filter(Boolean))],
+                    ...(rolesOverride?.length ? { roles: rolesOverride } : {}),
                     ...(applicationUuid ? { applicationId: String(applicationUuid) } : {}),
                     ...(signerEmail
                         ? {
@@ -1880,6 +1916,7 @@ export default function ContractTab({
             envelopeId: string,
             ccForSync: string[],
             justCreated: boolean,
+            rolesOverride?: DocuSignTemplateRolePayload[],
         ): Promise<{ url: string | null; error: string | null }> => {
             const delays = justCreated
                 ? DOCUSIGN_SENDER_VIEW_RETRY_DELAYS_MS.justCreated
@@ -1889,7 +1926,11 @@ export default function ContractTab({
                 if (delay > 0) {
                     await new Promise((r) => setTimeout(r, delay));
                 }
-                const result = await fetchDocuSignSenderViewUrl(envelopeId, ccForSync);
+                const result = await fetchDocuSignSenderViewUrl(
+                    envelopeId,
+                    ccForSync,
+                    rolesOverride,
+                );
                 if (result.url) return result;
                 if (result.error) lastError = result.error;
             }

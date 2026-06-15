@@ -15,7 +15,7 @@ import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
 import { formatDateTimeUS, cn } from "@/lib/utils"
-import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch"
+import { findApplicationFileForDocumentRequest, isUploadableDocumentRequest } from "@/lib/documentRequestMatch"
 import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache"
 import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch"
 
@@ -23,6 +23,8 @@ type UploadedDocumentsProps = {
     applicationId?: string
     /** Hide upload/delete (e.g. OPERATIONS view-only). */
     readOnly?: boolean
+    /** Public document-request portal: only show requested docs, not all application files. */
+    requestOnlyMode?: boolean
 }
 
 type PendingFile = {
@@ -33,6 +35,7 @@ type PendingFile = {
 const UploadedDocuments = ({
     applicationId,
     readOnly = false,
+    requestOnlyMode = false,
 }: UploadedDocumentsProps) => {
     const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>()
     const { resolvedTheme } = useTheme();
@@ -63,13 +66,18 @@ const UploadedDocuments = ({
         return effectiveApplicationId ? String(effectiveApplicationId) : null
     }, [applicationData, effectiveApplicationId])
 
-    const pendingDocumentRequests = useMemo(
-        () => (documentRequests || []).filter((doc) => doc.status === "Pending"),
+    const uploadableDocumentRequests = useMemo(
+        () => (documentRequests || []).filter(isUploadableDocumentRequest),
         [documentRequests],
     )
+
+    const pendingDocumentRequests = useMemo(
+        () => uploadableDocumentRequests.filter((doc) => doc.status === "Pending"),
+        [uploadableDocumentRequests],
+    )
     const completedDocumentRequests = useMemo(
-        () => (documentRequests || []).filter((doc) => doc.status === "Complete"),
-        [documentRequests],
+        () => uploadableDocumentRequests.filter((doc) => doc.status === "Complete"),
+        [uploadableDocumentRequests],
     )
 
     const applicationMongoId = useMemo(() => {
@@ -260,6 +268,9 @@ const UploadedDocuments = ({
         setPdfFileName("")
     }
 
+    const hasDocumentRequests =
+        pendingDocumentRequests.length > 0 || completedDocumentRequests.length > 0
+
     return (
         <Card
             className={`rounded-lg box-border p-0 border py-0 gap-0 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.14),0_4px_14px_-4px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_40px_-8px_rgba(0,0,0,0.55)] ${isDark ? "border-[#374151] bg-[#141517]" : "border-slate-200/90 bg-card"
@@ -280,9 +291,9 @@ const UploadedDocuments = ({
                             isDark ? 'text-foreground' : 'text-slate-800',
                         )}
                     >
-                        Uploaded Documents
+                        {requestOnlyMode ? "Requested Documents" : "Uploaded Documents"}
                     </h2>
-                    {!readOnly && (
+                    {!readOnly && !requestOnlyMode && (
                         <div className="flex flex-wrap items-center justify-end gap-2">
                             <input
                                 ref={fileInputRef}
@@ -316,23 +327,29 @@ const UploadedDocuments = ({
                         </div>
                     )}
                 </div>
-                {!readOnly && !documentRequestsLoading &&
-                (pendingDocumentRequests.length > 0 || completedDocumentRequests.length > 0) ? (
+                {!readOnly && !documentRequestsLoading && hasDocumentRequests ? (
                     <RequestedDocumentUploadRows
                         pending={pendingDocumentRequests}
                         completed={completedDocumentRequests}
                         onUpload={uploadRequestedDocument}
                         onView={handleViewRequestedDocument}
                         canView={canViewRequestedDocument}
+                        allowReplace={requestOnlyMode}
                     />
                 ) : null}
-                {!readOnly && pendingFiles.length > 0 && (
+                {requestOnlyMode && !documentRequestsLoading && !hasDocumentRequests ? (
+                    <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+                        No documents are currently requested for this application.
+                    </div>
+                ) : null}
+                {!requestOnlyMode && !readOnly && pendingFiles.length > 0 && (
                     <p className={`px-6 pb-2 text-xs font-roboto ${isDark ? "text-gray-300" : "text-gray-600"
                         }`}>
                         {pendingFiles.length} document(s) ready to upload — remove any you do not want before clicking Upload.
                     </p>
                 )}
 
+                {!requestOnlyMode ? (
                 <div className={cn('overflow-hidden border-none p-1', isDark ? 'bg-[#141517]' : 'bg-card')}>
                     <Table>
                         <TableHeader>
@@ -497,6 +514,7 @@ const UploadedDocuments = ({
                         </TableBody>
                     </Table>
                 </div>
+                ) : null}
             </CardContent>
             {/* PDF Viewer Modal */}
             <PDFViewerDocsModal
