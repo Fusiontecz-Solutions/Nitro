@@ -275,7 +275,7 @@ export default function ACHViewerModal({
     }, [templateLabel]);
 
     const showResendButton =
-        canResendAch && !canContinueDraft && !docuSignOpenUrl && !isSigned;
+        canResendAch && !canContinueDraft && !canInitialSend && !docuSignOpenUrl && !isSigned;
     const showReviewAndSendButton =
         (canInitialSend || canContinueDraft) && !docuSignOpenUrl && !isSigned;
     const showOpenDocuSignInFooter =
@@ -1015,6 +1015,7 @@ export default function ACHViewerModal({
                 }
                 bankDetail={null}
                 addendumOnly
+                prefillDocumentKind="ach_form"
                 onSaved={() => {
                     void fetchTemplateMappings();
                     void reloadContractLocal();

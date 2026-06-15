@@ -140,7 +140,7 @@ export function canResendAchAuthorization(
     sessionEnvelopeId?: string | null,
 ): boolean {
     const envelopeId = String(meta?.envelopeId ?? sessionEnvelopeId ?? "").trim();
-    if (!envelopeId) return true;
+    if (!envelopeId) return false;
     const status = meta?.status ?? "DRAFT";
     return status === "VOIDED" || status === "SIGNED";
 }
