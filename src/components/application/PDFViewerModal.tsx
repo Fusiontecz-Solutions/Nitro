@@ -7017,7 +7017,7 @@ const PDFViewerModal = ({
                                     type="button"
                                     variant="default"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
-                                    onClick={handleReviewInDocuSignClick}
+                                    onClick={() => handleReviewInDocuSignClick()}
                                     disabled={
                                         isSending ||
                                         isCancellingContract ||
