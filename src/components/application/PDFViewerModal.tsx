@@ -105,7 +105,7 @@ import {
     type ContractPrefillField,
 } from "./contractdata/Contract";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
-import { findApplicationFileForDocumentRequest, isUploadableDocumentRequest } from "@/lib/documentRequestMatch";
+import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import RequestedDocumentUploadRows, {
