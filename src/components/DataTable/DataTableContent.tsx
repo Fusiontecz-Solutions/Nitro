@@ -12,7 +12,9 @@ import {
     type Row,
     flexRender,
 } from "@tanstack/react-table";
+import { Fragment } from "react";
 import { Loader2 } from "lucide-react";
+import { AnimatePresence } from "framer-motion";
 
 interface DataTableContentProps<TData> {
     table: ReactTable<TData>;
@@ -22,6 +24,9 @@ interface DataTableContentProps<TData> {
     emptySubMessage?: string;
     /** Whole-row click (e.g. open record). Ignored when the click originates from interactive controls. */
     onRowClick?: (row: Row<TData>) => void;
+    onRowMouseEnter?: (row: Row<TData>) => void;
+    isRowExpanded?: (row: Row<TData>) => boolean;
+    renderExpandedRow?: (row: Row<TData>) => React.ReactNode;
 }
 
 function isInteractiveTableClickTarget(target: EventTarget | null): boolean {
@@ -42,6 +47,9 @@ export default function DataTableContent<TData>({
     emptyMessage = "No data available",
     emptySubMessage,
     onRowClick,
+    onRowMouseEnter,
+    isRowExpanded,
+    renderExpandedRow,
 }: DataTableContentProps<TData>) {
     if (loading) {
         return (
@@ -72,34 +80,52 @@ export default function DataTableContent<TData>({
             </TableHeader>
             <TableBody>
                 {table.getRowModel().rows.length > 0 ? (
-                    table.getRowModel().rows.map((row, idx) => (
-                        <TableRow
-                            key={row.id}
-                            data-state={row.getIsSelected() && "selected"}
-                            tabIndex={onRowClick ? 0 : undefined}
-                            className={`hover:bg-accent ${idx % 2 ? 'bg-muted/50' : ''} ${row.getIsSelected() ? 'bg-blue-50 dark:bg-blue-950' : ''} ${onRowClick ? "cursor-pointer" : ""}`}
-                            onClick={(e) => {
-                                if (!onRowClick) return;
-                                if (isInteractiveTableClickTarget(e.target)) return;
-                                onRowClick(row);
-                            }}
-                            onKeyDown={(e) => {
-                                if (!onRowClick) return;
-                                if (e.key !== "Enter" && e.key !== " ") return;
-                                e.preventDefault();
-                                onRowClick(row);
-                            }}
-                        >
-                            {row.getVisibleCells().map((cell) => (
-                                <TableCell key={cell.id} className="text-left px-6 text-[0.85rem] text-foreground">
-                                    {flexRender(
-                                        cell.column.columnDef.cell,
-                                        cell.getContext()
-                                    )}
-                                </TableCell>
-                            ))}
-                        </TableRow>
-                    ))
+                    table.getRowModel().rows.map((row, idx) => {
+                        const expanded = Boolean(isRowExpanded?.(row) && renderExpandedRow);
+                        const columnCount =
+                            table.getHeaderGroups()[0]?.headers.length || 1;
+
+                        return (
+                            <Fragment key={row.id}>
+                                <TableRow
+                                    key={row.id}
+                                    data-state={row.getIsSelected() && "selected"}
+                                    tabIndex={onRowClick ? 0 : undefined}
+                                    className={`hover:bg-accent ${idx % 2 ? 'bg-muted/50' : ''} ${row.getIsSelected() ? 'bg-blue-50 dark:bg-blue-950' : ''} ${onRowClick ? "cursor-pointer" : ""}`}
+                                    onClick={(e) => {
+                                        if (!onRowClick) return;
+                                        if (isInteractiveTableClickTarget(e.target)) return;
+                                        onRowClick(row);
+                                    }}
+                                    onMouseEnter={() => onRowMouseEnter?.(row)}
+                                    onKeyDown={(e) => {
+                                        if (!onRowClick) return;
+                                        if (e.key !== "Enter" && e.key !== " ") return;
+                                        e.preventDefault();
+                                        onRowClick(row);
+                                    }}
+                                >
+                                    {row.getVisibleCells().map((cell) => (
+                                        <TableCell key={cell.id} className="text-left px-6 text-[0.85rem] text-foreground">
+                                            {flexRender(
+                                                cell.column.columnDef.cell,
+                                                cell.getContext()
+                                            )}
+                                        </TableCell>
+                                    ))}
+                                </TableRow>
+                                <AnimatePresence initial={false}>
+                                    {expanded ? (
+                                        <TableRow key={`${row.id}-expanded`}>
+                                            <TableCell colSpan={columnCount} className="p-0">
+                                                {renderExpandedRow?.(row)}
+                                            </TableCell>
+                                        </TableRow>
+                                    ) : null}
+                                </AnimatePresence>
+                            </Fragment>
+                        );
+                    })
                 ) : (
                     <TableRow>
                         <TableCell

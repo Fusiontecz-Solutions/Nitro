@@ -8,6 +8,7 @@ import {
     prependNotification,
     type Notification,
 } from "@/redux/slices/notificationSlice";
+import { normalizeRoleKey } from "@/lib/sessionRole";
 
 /**
  * Real-time notifications bridge.
@@ -23,8 +24,8 @@ import {
  *     returned by GET /notifications, so the existing reducer can prepend it
  *     directly without an extra REST round-trip.
  *   - `meta.realtimeKind`: tag the UI uses to render context-specific in-app
- *     toasts (e.g. "ISO approved Application #X — you can now create the
- *     contract" for OPERATIONS users, click-through deep-link to the app).
+ *     toasts (e.g. ISO approval for OPERATIONS, contract completed for Super
+ *     Admin with a deep-link to the Final tab).
  *
  * Mounted once at the app root (inside SocketProvider) so it runs for every
  * authenticated user and never duplicates listeners.
@@ -32,7 +33,8 @@ import {
 type RealtimeKind =
     | "iso_approval_for_operations"
     | "application_approved"
-    | "contract_signing_status";
+    | "contract_completed_for_super_admin"
+    | "funding_call_disbursement_ready";
 
 interface IncomingNotificationEvent {
     notification: Notification;
@@ -70,9 +72,11 @@ const RealtimeNotificationsListener = () => {
             // Reconcile into the inbox immediately for badge / dropdown / page.
             dispatch(prependNotification(incoming));
 
-            const role = userRoleRef.current;
+            const role = normalizeRoleKey(userRoleRef.current);
             const kind = event?.meta?.realtimeKind;
             const isOpsRecipient = role === "OPERATIONS";
+            const isSuperAdmin = role === "SUPER_ADMIN";
+            const isAdminRecipient = role === "ADMIN";
             const applicationLink = (() => {
                 if (event?.meta?.actionUrl) return event.meta.actionUrl;
                 const app = incoming.application;
@@ -83,14 +87,66 @@ const RealtimeNotificationsListener = () => {
                 return null;
             })();
 
-            // Operations users get a high-priority CTA toast; everyone else
-            // gets a quiet info toast so they're aware without distraction.
-            if (kind === "iso_approval_for_operations" && isOpsRecipient) {
+            if (kind === "funding_call_disbursement_ready" && isOpsRecipient) {
                 toast.success(
                     () => (
                         <div className="flex flex-col gap-1">
                             <span className="font-semibold">{incoming.title}</span>
                             <span className="text-sm">{incoming.message}</span>
+                            {applicationLink ? (
+                                <span className="text-xs underline mt-1">
+                                    Open Disbursement tab to continue
+                                </span>
+                            ) : null}
+                        </div>
+                    ),
+                    {
+                        autoClose: 8000,
+                        onClick: () => {
+                            if (applicationLink) navigate(applicationLink);
+                        },
+                    },
+                );
+                return;
+            }
+
+            if (kind === "contract_completed_for_super_admin" && isSuperAdmin) {
+                toast.success(
+                    () => (
+                        <div className="flex flex-col gap-1">
+                            <span className="font-semibold">{incoming.title}</span>
+                            <span className="text-sm">{incoming.message}</span>
+                            {applicationLink ? (
+                                <span className="text-xs underline mt-1">
+                                    Open Final tab to continue
+                                </span>
+                            ) : null}
+                        </div>
+                    ),
+                    {
+                        autoClose: 8000,
+                        onClick: () => {
+                            if (applicationLink) navigate(applicationLink);
+                        },
+                    },
+                );
+                return;
+            }
+
+            // Operations / Admins (the contract-generation owners) get a
+            // high-priority CTA toast; everyone else gets a quiet info toast so
+            // they're aware without distraction.
+            if (
+                kind === "iso_approval_for_operations" &&
+                (isOpsRecipient || isSuperAdmin || isAdminRecipient)
+            ) {
+                toast.success(
+                    () => (
+                        <div className="flex flex-col gap-1">
+                            <span className="text-sm leading-snug">
+                                <span className="font-semibold">{incoming.title}</span>
+                                {incoming.message ? `. ${incoming.message}` : null}
+                            </span>
                             {applicationLink ? (
                                 <span className="text-xs underline mt-1">
                                     Click to open the application
@@ -100,24 +156,6 @@ const RealtimeNotificationsListener = () => {
                     ),
                     {
                         autoClose: 6000,
-                        onClick: () => {
-                            if (applicationLink) navigate(applicationLink);
-                        },
-                    },
-                );
-                return;
-            }
-
-            if (kind === "contract_signing_status") {
-                toast.info(
-                    () => (
-                        <div className="flex flex-col gap-1">
-                            <span className="font-semibold">{incoming.title}</span>
-                            <span className="text-sm">{incoming.message}</span>
-                        </div>
-                    ),
-                    {
-                        autoClose: 5000,
                         onClick: () => {
                             if (applicationLink) navigate(applicationLink);
                         },

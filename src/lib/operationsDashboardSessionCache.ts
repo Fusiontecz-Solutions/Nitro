@@ -12,6 +12,7 @@ type StoredBlob = {
   summaryCounts: {
     totalCases: number;
     contractPending: number;
+    contractGenerated: number;
     contractsOut: number;
     signedContracts: number;
     fundingCall: number;

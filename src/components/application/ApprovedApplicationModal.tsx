@@ -36,7 +36,6 @@ import { DollarSign, Pencil } from "lucide-react";
 import ComplianceChecksQuestionnaire, {
     type ComplianceChecksProgress,
 } from "./ComplianceChecksQuestionnaire";
-import { getComplianceChecks } from "@/redux/actions/complianceCheckActions";
 import AgentDealIsoTag from "./AgentDealIsoTag";
 
 const ORIGINATION_FEE_FIXED = "10";
@@ -295,8 +294,10 @@ function ReadOnlyDetailField({
 interface ApprovedApplicationModalProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    /** When true, show "Proceed to Generate Contract" and read-only details (FINAL_UNDERWRITER only) */
+    /** When true, show ISO approval-mail CTA (Final Underwriter or Super Admin). */
     isFinalUnderwriter?: boolean;
+    /** When true, show compliance checks in the right column (Super Admin approval flow). */
+    showComplianceChecks?: boolean;
     /** Called when FINAL_UNDERWRITER clicks Proceed to Generate Contract */
     onProceedToContract?: () => void;
     /** When true, send the "offer updated" resend template to ISO. */
@@ -390,6 +391,7 @@ const ApprovedApplicationModal = ({
     open,
     onOpenChange,
     isFinalUnderwriter,
+    showComplianceChecks: showComplianceChecksProp,
     onProceedToContract,
     resendApprovalEmail,
     onOfferUpdated,
@@ -453,6 +455,10 @@ const ApprovedApplicationModal = ({
         (applicationData as { applicationId?: string | number })?.applicationId?.toString() ??
         (applicationId != null ? String(applicationId) : null);
 
+    const showComplianceChecks =
+        showComplianceChecksProp ?? !isFinalUnderwriter;
+    const useWideApprovalLayout = showComplianceChecks;
+
     const loadOfferDecision = async () => {
         if (!open || !applicationId) return;
         try {
@@ -504,10 +510,7 @@ const ApprovedApplicationModal = ({
             return;
         }
         void loadOfferDecision();
-        if (!isFinalUnderwriter && complianceApplicationId) {
-            dispatch(getComplianceChecks({ application: complianceApplicationId }));
-        }
-    }, [open, applicationId, applicationData?.loanAmount, isFinalUnderwriter, complianceApplicationId, dispatch]);
+    }, [open, applicationId, applicationData?.loanAmount]);
 
     const handleStartEdit = () => {
         editSnapshotRef.current = getValues();
@@ -725,13 +728,13 @@ const ApprovedApplicationModal = ({
 
     const inputClass = `${FIELD_CONTROL_H} ${isDark ? "bg-muted border-gray-700 text-gray-200" : "bg-white border-gray-200"} px-3 py-0 text-sm rounded-sm outline-none`;
 
-    const loanFieldsGridClass = isFinalUnderwriter
-        ? "grid grid-cols-2 gap-x-4 gap-y-3"
-        : "grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4";
+    const loanFieldsGridClass = useWideApprovalLayout
+        ? "grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4"
+        : "grid grid-cols-2 gap-x-4 gap-y-3";
 
-    const loanDetailsPanelClass = isFinalUnderwriter
-        ? `${isDark ? "bg-[#262827]" : "bg-green-50"} p-4 rounded-lg`
-        : `${isDark ? "bg-[#262827]" : "bg-green-50"} p-6 rounded-lg`;
+    const loanDetailsPanelClass = `${isDark ? "bg-[#262827]" : "bg-green-50"} ${
+        useWideApprovalLayout ? "p-6" : "p-4"
+    } rounded-lg`;
 
     const formValues = useWatch({ control });
     const watchedApprovedAmount = useWatch({ control, name: "approvedAmount" });
@@ -765,9 +768,9 @@ const ApprovedApplicationModal = ({
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
                 className={
-                    isFinalUnderwriter
-                        ? "sm:max-w-2xl w-[calc(100%-2rem)] max-h-[90vh] overflow-y-auto flex flex-col gap-3"
-                        : "sm:max-w-6xl max-h-[min(88vh,780px)] overflow-hidden flex flex-col"
+                    useWideApprovalLayout
+                        ? "sm:max-w-6xl max-h-[min(88vh,780px)] overflow-hidden flex flex-col"
+                        : "sm:max-w-2xl w-[calc(100%-2rem)] max-h-[90vh] overflow-y-auto flex flex-col gap-3"
                 }
             >
                 <DialogHeader>
@@ -776,19 +779,14 @@ const ApprovedApplicationModal = ({
                     </DialogTitle>
                     <DialogDescription className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                         {isFinalUnderwriter
-                            ? "Review loan terms, update the offer if needed, then send the approval email to the ISO."
+                            ? showComplianceChecks
+                                ? "Review loan terms, complete compliance checks, then send the approval email to the ISO."
+                                : "Review loan terms, update the offer if needed, then send the approval email to the ISO."
                             : "Review loan terms, complete compliance checks, then send this application to the Final Underwriter."}
                     </DialogDescription>
                 </DialogHeader>
 
                 <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
-                    <div
-                        className={
-                            isFinalUnderwriter
-                                ? "space-y-4"
-                                : "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start"
-                        }
-                    >
                     {isFinalUnderwriter ? (
                         <AgentDealIsoTag
                             applicationId={
@@ -800,6 +798,13 @@ const ApprovedApplicationModal = ({
                         />
                     ) : null}
 
+                    <div
+                        className={
+                            useWideApprovalLayout
+                                ? "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start"
+                                : "space-y-4"
+                        }
+                    >
                     {/* Requested & Approval Loan Details — left column */}
                     <div className={loanDetailsPanelClass}>
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1149,7 +1154,7 @@ const ApprovedApplicationModal = ({
                         )}
                     </div>
 
-                    {!isFinalUnderwriter ? (
+                    {showComplianceChecks ? (
                         <div
                             className={`rounded-lg p-5 ${
                                 isDark
@@ -1259,7 +1264,8 @@ const ApprovedApplicationModal = ({
                                 offerDecisionLoading ||
                                 isSubmitting ||
                                 isEditMode ||
-                                isUpdatingOffer
+                                isUpdatingOffer ||
+                                (showComplianceChecks && !checksProgress.allComplete)
                             }
                             className="bg-green-600 hover:bg-green-700 text-white px-6"
                         >
@@ -1269,9 +1275,11 @@ const ApprovedApplicationModal = ({
                                   ? "Updating…"
                                   : isEditMode
                                     ? "Save offer changes first"
-                                    : resendApprovalEmail
-                                      ? "Resend approval mail"
-                                      : "Send approval mail"}
+                                    : showComplianceChecks && !checksProgress.allComplete
+                                      ? `Complete checks (${checksProgress.completed}/${checksProgress.total})`
+                                      : resendApprovalEmail
+                                        ? "Resend approval mail"
+                                        : "Send approval mail"}
                         </Button>
                     ) : (
                         <Button

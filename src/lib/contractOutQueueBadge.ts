@@ -21,3 +21,25 @@ export function isContractOutQueueBadgeLabel(label: string): boolean {
   const compact = n.replace(/\s+/g, "");
   return compact === "contractout" || compact === "contractsout";
 }
+
+/** Contract workflow queue pill colors (pending → generated → sent → signed / cancelled). */
+export function getContractWorkflowQueueBadgeClass(label: string): string | null {
+  const compact = normalizeQueueBadgeLabel(label).replace(/\s+/g, "");
+
+  if (compact === "contractpending") {
+    return "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200";
+  }
+  if (compact === "contractgenerated") {
+    return "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200";
+  }
+  if (compact === "contractsent") {
+    return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
+  }
+  if (compact === "contractcancelled" || compact === "contractcanceled") {
+    return "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-200";
+  }
+  if (isContractOutQueueBadgeLabel(label)) {
+    return CONTRACT_OUT_QUEUE_BADGE_CLASS;
+  }
+  return null;
+}

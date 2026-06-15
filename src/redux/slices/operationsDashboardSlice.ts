@@ -10,6 +10,7 @@ export type { OperationsDashboardRecentCase };
 const defaultSummaryCounts = {
   totalCases: 0,
   contractPending: 0,
+  contractGenerated: 0,
   contractsOut: 0,
   signedContracts: 0,
   fundingCall: 0,

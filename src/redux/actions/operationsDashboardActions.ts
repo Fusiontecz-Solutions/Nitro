@@ -89,6 +89,7 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
     summaryCounts: {
       totalCases: number;
       contractPending: number;
+      contractGenerated: number;
       contractsOut: number;
       signedContracts: number;
       fundingCall: number;
@@ -122,6 +123,10 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         summaryCounts: {
           totalCases: Number(data.summaryCounts.totalCases) || 0,
           contractPending: Number(data.summaryCounts.contractPending) || 0,
+          contractGenerated:
+            Number(data.summaryCounts.contractGenerated) ||
+            Number(data.summaryCounts.contractsGenerated) ||
+            0,
           contractsOut: Number(data.summaryCounts.contractsOut) || 0,
           signedContracts: Number(data.summaryCounts.signedContracts) || 0,
           fundingCall: Number(data.summaryCounts.fundingCall) || 0,

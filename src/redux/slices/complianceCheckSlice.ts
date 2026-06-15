@@ -25,7 +25,9 @@ export const complianceChecksSlice = createSlice({
     extraReducers: (builder) => {
         builder
             .addCase(getComplianceChecks.pending, (state) => {
-                state.loading = true;
+                if (state.data === null) {
+                    state.loading = true;
+                }
                 state.error = null;
             })
             .addCase(getComplianceChecks.fulfilled, (state, action) => {
@@ -38,9 +40,11 @@ export const complianceChecksSlice = createSlice({
                 state.error = action.payload as string;
             })
             .addCase(createOrUpdateComplianceCheck.fulfilled, (state, action) => {
-                const updatedCheck = action.payload.data || action.payload;
+                const updatedCheck = action.payload?.data ?? action.payload;
+                if (!updatedCheck || typeof updatedCheck !== 'object') return;
+
                 if (state.data) {
-                    const index = state.data.findIndex(check => 
+                    const index = state.data.findIndex(check =>
                         check.question === updatedCheck.question || check._id === updatedCheck._id
                     );
                     if (index !== -1) {
@@ -51,6 +55,7 @@ export const complianceChecksSlice = createSlice({
                 } else {
                     state.data = [updatedCheck];
                 }
+                state.loading = false;
             });
     },
 });

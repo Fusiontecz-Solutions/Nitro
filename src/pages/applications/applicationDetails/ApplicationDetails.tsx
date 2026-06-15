@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
 import AgentDealIsoTag from "@/components/application/AgentDealIsoTag";
 import ApplicationBasicDetails from "@/components/application/ApplicationBasicDetails";
+import ApplicationOverviewBankDetails from "@/components/application/ApplicationOverviewBankDetails";
 import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
 import Approval from "@/components/application/Approval";
@@ -49,7 +50,6 @@ import {
     canOpenDisbursementTab,
     inferOperationsListStatusFromApplication,
     normalizeOperationsDashboardStatusParam,
-    operationsDashboardStatusTitle,
     OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
 } from "@/constants/operationsDashboardApplications";
 import { getFundingCalls } from "@/redux/actions/fundingCallActions";
@@ -61,11 +61,15 @@ import {
 import { useTabAccess } from "@/hooks/useTabAccess.ts";
 import FinalUnderwriterApplicationSummary from "@/components/application/FinalUnderwriterApplicationSummary";
 import ApplicationSheetActivityLog from "@/components/application/ApplicationSheetActivityLog";
-import { ChevronLeft, ChevronRight, ScrollText, Lock } from "lucide-react";
+import ApplicationSheetMailLog from "@/components/application/ApplicationSheetMailLog";
+import { ChevronLeft, ChevronRight, ScrollText, Mail } from "lucide-react";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
-import { canRoleEditDecisionMakingTab } from "@/lib/decisionMakingAccess";
-import { normalizeRoleKey } from "@/lib/sessionRole";
+import { canManageBankDetailsOnOverview } from "@/lib/bankDetailsAccess";
+import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
+import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
+import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 
 
 const ApplicationDetails = () => {
@@ -76,6 +80,7 @@ const ApplicationDetails = () => {
     const [sendingToUnderwriter, setSendingToUnderwriter] = useState(false);
     const [agentSentToUnderwriter, setAgentSentToUnderwriter] = useState(false);
     const [auditLogOpen, setAuditLogOpen] = useState(false);
+    const [mailLogOpen, setMailLogOpen] = useState(false);
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
 
@@ -127,29 +132,29 @@ const ApplicationDetails = () => {
         }
     }, [data, loading])
 
-    const userRole = user?.role || localStorage.getItem('role') || ''
+    const userRole = resolveEffectiveRole(user);
     const roleKey = normalizeRoleKey(userRole);
     const isSuperAdmin = roleKey === "SUPER_ADMIN";
-    const isFundingUploaderRole =
-        roleKey === "SUPER_ADMIN" ||
-        roleKey === "UNDERWRITER" ||
-        roleKey === "FINAL_UNDERWRITER";
     const isUnderwriter = roleKey === 'UNDERWRITER' || roleKey === 'FINAL_UNDERWRITER';
+    const isPlainUnderwriter = roleKey === 'UNDERWRITER';
     const isFinalUnderwriter = roleKey === 'FINAL_UNDERWRITER';
     const isAgent = roleKey === 'AGENT';
-    const isAdmin = roleKey === "ADMIN";
     const canEditIsoDetails =
         isSuperAdmin || isAgent || roleKey === "OPERATIONS";
+    const showBankDetailsOnOverview = canManageBankDetailsOnOverview(userRole);
     const hideBusinessProfileOnDecisionMakingTab =
         roleKey === "UNDERWRITER" ||
         roleKey === "OPERATIONS" ||
-        isAdmin ||
         roleKey === "SUPER_ADMIN";
-    /** Operations, Admin, and Super Admin use the funding-pipeline tab strip and `?operationsStatus=` depth rules. */
+    /** Operations + Super Admin use the same funding-pipeline tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
-        roleKey === 'OPERATIONS' ||
-        isAdmin ||
-        roleKey === 'SUPER_ADMIN';
+        roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
+    const bankDetailsApplicationId =
+        applicationUuid != null
+            ? String(applicationUuid)
+            : resolvedApplicationId != null
+              ? String(resolvedApplicationId)
+              : applicationId ?? "";
 
     const operationsStatusQueryRaw = searchParams.get("operationsStatus");
     const operationsEntryStatus = useMemo(
@@ -177,9 +182,7 @@ const ApplicationDetails = () => {
         const trimmedOpsStatus = operationsStatusQueryRaw?.trim() ?? "";
         /** Same as Operations: browsing Applications / “all” without a stage should show the full pipeline strip. */
         const operationsOpenedWithoutStageFilter =
-            (roleKey === "OPERATIONS" ||
-                isAdmin ||
-                roleKey === "SUPER_ADMIN") &&
+            (roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN") &&
             (!trimmedOpsStatus ||
                 trimmedOpsStatus.toLowerCase() ===
                 OPERATIONS_APPLICATIONS_LIST_ALL_QUERY);
@@ -226,6 +229,11 @@ const ApplicationDetails = () => {
         /** After "Generate contract", queue moves here — keep CONTRACT tab so FUW is not locked out. */
         const isContractedQueue =
             queueNorm === 'contracted' ||
+            queueNorm === 'contract pending' ||
+            queueNorm === 'contract generated' ||
+            queueNorm === 'contract sent' ||
+            queueNorm === 'contract cancelled' ||
+            queueNorm === 'contract signed' ||
             queueNorm === 'contract out' ||
             queueNorm === 'contracts out';
         // const stateNorm =
@@ -280,7 +288,7 @@ const ApplicationDetails = () => {
     const tabs = useMemo((): TabOption[] => {
         let list: TabOption[];
         if (useOperationsPipelineTabs) {
-            list = isSuperAdmin || isAdmin
+            list = isSuperAdmin
                 ? [...SUPER_ADMIN_PIPELINE_TABS]
                 : getOperationsTabsForDashboardEntry(effectiveOperationsStatus);
         } else {
@@ -291,7 +299,6 @@ const ApplicationDetails = () => {
         effectiveOperationsStatus,
         useOperationsPipelineTabs,
         isSuperAdmin,
-        isAdmin,
         status,
         explicitStatus,
         queue,
@@ -331,9 +338,7 @@ const ApplicationDetails = () => {
     const tabsForOperationsUi = useMemo(() => {
         if (!useOperationsPipelineTabs) return tabs;
         const disbursementLocked =
-            !isSuperAdmin &&
-            !canSelectOperationsDisbursementTab &&
-            !fundingCallsLoading;
+            !canSelectOperationsDisbursementTab && !fundingCallsLoading;
         return tabs.map((t) =>
             t.id === "disbursement" && disbursementLocked
                 ? { ...t, disabled: true as const }
@@ -342,7 +347,6 @@ const ApplicationDetails = () => {
     }, [
         tabs,
         useOperationsPipelineTabs,
-        isSuperAdmin,
         canSelectOperationsDisbursementTab,
         fundingCallsLoading,
     ]);
@@ -384,7 +388,6 @@ const ApplicationDetails = () => {
 
     useEffect(() => {
         if (!isTabsReady || !useOperationsPipelineTabs) return;
-        if (isSuperAdmin) return;
         if (activeTab !== "disbursement") return;
         if (canSelectOperationsDisbursementTab) return;
         if (!applicationId) return;
@@ -394,7 +397,6 @@ const ApplicationDetails = () => {
     }, [
         isTabsReady,
         useOperationsPipelineTabs,
-        isSuperAdmin,
         activeTab,
         canSelectOperationsDisbursementTab,
         applicationId,
@@ -467,47 +469,56 @@ const ApplicationDetails = () => {
         [applicationData, roleKey],
     );
     const isStagePreview = stageAccess.isPreview;
-    const previewBannerReason = stageAccess.reason;
     const isOperationsReadOnlyPipelineTab =
         (useOperationsPipelineTabs &&
             (OPERATIONS_READ_ONLY_PIPELINE_TAB_IDS.has(activeTab) ||
                 isOperationsTabBehindCurrentDeal)) ||
         isViewOnlyBrowse ||
         isStagePreview;
-    /** Super Admin may edit offer, bank analysis, and positions on the Bank Analysis tab even when the deal has moved past that stage. */
-    const superAdminBankAnalysisOverride =
-        isSuperAdmin && activeTab === "bank-analysis";
-    /** Super Admin may edit offer, bank analysis, and positions on Decision Making even when the deal has moved past that stage. */
-    const superAdminDecisionMakingOverride =
-        isSuperAdmin && activeTab === "decision-making";
-    /** Most pipeline stages: no edits for Operations / Super Admin on past tabs / view-only browse / workflow preview. */
+    /**
+     * Documents tab upload/delete: workflow roles (Agent, Underwriter) keep upload even in
+     * stage-preview; Super Admin keeps upload on Documents. Operations pipeline early tabs
+     * stay view-only for OPERATIONS only.
+     */
+    const uploadedDocumentsReadOnly =
+        (useOperationsPipelineTabs &&
+            roleKey === "OPERATIONS" &&
+            (OPERATIONS_READ_ONLY_PIPELINE_TAB_IDS.has(activeTab) ||
+                isOperationsTabBehindCurrentDeal)) ||
+        isViewOnlyBrowse;
+    /**
+     * Super Admin may edit offer, bank analysis, positions, and workflow actions on any
+     * pipeline tab (including past stages), same as full access on Bank Analysis.
+     */
+    const superAdminPipelineEditOverride = isSuperAdmin && !isViewOnlyBrowse;
+    /**
+     * OPERATIONS may edit offer, bank analysis, and position values on any pipeline
+     * stage (including past tabs), regardless of where the deal currently sits.
+     * Scope is limited to those values — all other Operations access (documents,
+     * contract, workflow actions) keeps the existing stage rules. View-only browse
+     * links stay read-only.
+     */
+    const operationsValueEditOverride =
+        roleKey === "OPERATIONS" && !isViewOnlyBrowse;
+    /** Most pipeline stages: no edits for Operations on past tabs / view-only browse / workflow preview. */
     const pipelineStageReadOnly =
-        isOperationsReadOnlyPipelineTab || isViewOnlyBrowse || isStagePreview;
+        !superAdminPipelineEditOverride &&
+        (isOperationsReadOnlyPipelineTab || isViewOnlyBrowse || isStagePreview);
+    /**
+     * UNDERWRITER (not Final Underwriter): full offer / bank / position edits on deals
+     * still at the underwriter stage. Other roles keep existing rules.
+     */
+    const plainUnderwriterWorkflowEdit =
+        isPlainUnderwriter && !pipelineStageReadOnly && !isViewOnlyBrowse;
     const bankAnalysisTabReadOnly =
-        isOperationsReadOnlyPipelineTab && !superAdminBankAnalysisOverride;
-    /** Underwriter / FUW on bank-analysis or decision-making while the deal is not preview-only for their role. */
-    const workflowEditorOnOwnStage =
-        (roleKey === "UNDERWRITER" || roleKey === "FINAL_UNDERWRITER") &&
-        !isViewOnlyBrowse &&
-        !isStagePreview &&
-        (activeTab === "bank-analysis" || activeTab === "decision-making");
-    /** Offer, bank analysis, and positions on Decision Making for underwriting / ops / admin roles. */
+        pipelineStageReadOnly && !operationsValueEditOverride;
+    /** Offer + positions on Decision Making (underwriters, Operations always, Super Admin always). */
     const canEditDecisionMakingFinalValues =
-        canRoleEditDecisionMakingTab(roleKey) &&
-        (!pipelineStageReadOnly ||
-            superAdminDecisionMakingOverride ||
-            workflowEditorOnOwnStage);
-    const canEditBankAnalysisContent =
-        canRoleEditDecisionMakingTab(roleKey) &&
-        (!bankAnalysisTabReadOnly ||
-            superAdminBankAnalysisOverride ||
-            workflowEditorOnOwnStage);
-    const showDecisionMakingBankAnalysisTable =
-        canRoleEditDecisionMakingTab(roleKey);
+        operationsValueEditOverride ||
+        ((isUnderwriter || superAdminPipelineEditOverride) &&
+            !pipelineStageReadOnly);
     /** OPERATIONS may comment; block composer for `?viewOnly=1` browse links and stage-preview viewers. */
     const commentsReadOnly = isViewOnlyBrowse || isStagePreview;
-    const disableDecisionMakingFundingUpload =
-        isViewOnlyBrowse || isStagePreview || !isFundingUploaderRole;
     const normalizeWorkflowToken = (value: unknown) =>
         String(value ?? "")
             .trim()
@@ -541,11 +552,8 @@ const ApplicationDetails = () => {
     const isPreUnderwriterStage =
         !isPastAgentIntakeQueue &&
         (agentIntakeQueues.has(queueKey) || pendingLikeState);
-    const canActSendToUnderwriter =
-        roleKey === "AGENT" ||
-        roleKey === "ADMIN" ||
-        roleKey === "SUPER_ADMIN" ||
-        roleKey === "OPERATIONS";
+    /** Agent intake only — Super Admin / Admin / Operations must not send from Documents. */
+    const canActSendToUnderwriter = isAgent;
     const canShowSendToUnderwriterButton =
         canActSendToUnderwriter &&
         !isViewOnlyBrowse &&
@@ -625,6 +633,7 @@ const ApplicationDetails = () => {
 
     useEffect(() => {
         setAuditLogOpen(false);
+        setMailLogOpen(false);
     }, [applicationId]);
 
     useEffect(() => {
@@ -708,90 +717,68 @@ const ApplicationDetails = () => {
 
 
 
-    const pipelineTabHeaderRowClass =
-        "grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4";
-    const pipelineTabScrollerClass =
-        "min-w-0 overflow-x-auto overscroll-x-contain";
-    const pipelineTabLinksSlotClass =
-        "flex shrink-0 items-center justify-end gap-4 pl-2";
-
     const externalLinksRow = (
-        <div className="flex shrink-0 items-center justify-end gap-4 flex-nowrap">
+        <div className="flex items-center gap-6 flex-wrap">
             {isSuperAdmin && activityLogApplicationId ? (
-                <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setAuditLogOpen((open) => !open)}
-                    aria-expanded={auditLogOpen}
-                    aria-haspopup="dialog"
-                    aria-pressed={auditLogOpen}
-                    className="group shrink-0 gap-2 rounded-full border border-[#151357]/30 bg-gradient-to-b from-[#151357]/[0.1] to-[#151357]/[0.04] px-4 py-2 text-sm font-semibold text-[#151357] shadow-sm transition-all hover:border-[#151357]/45 hover:from-[#151357]/15 hover:to-[#151357]/08 hover:shadow-md active:scale-[0.98] dark:border-primary/35 dark:from-primary/20 dark:to-primary/8 dark:text-foreground dark:hover:border-primary/50"
-                >
-                    <ScrollText
-                        className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
-                        aria-hidden
-                    />
-                    Activity log
-                </Button>
+                <>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                            setMailLogOpen((open) => !open);
+                            if (!mailLogOpen) setAuditLogOpen(false);
+                        }}
+                        aria-expanded={mailLogOpen}
+                        aria-haspopup="dialog"
+                        aria-pressed={mailLogOpen}
+                        className="group shrink-0 gap-2 rounded-full border border-cyan-700/25 bg-gradient-to-b from-cyan-500/[0.08] to-cyan-500/[0.03] px-4 py-2 text-sm font-semibold text-cyan-900 shadow-sm transition-all hover:border-cyan-700/40 hover:from-cyan-500/15 hover:to-cyan-500/08 hover:shadow-md active:scale-[0.98] dark:border-cyan-400/35 dark:from-cyan-400/15 dark:to-cyan-400/5 dark:text-cyan-100"
+                    >
+                        <Mail
+                            className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
+                            aria-hidden
+                        />
+                        Mail log
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                            setAuditLogOpen((open) => !open);
+                            if (!auditLogOpen) setMailLogOpen(false);
+                        }}
+                        aria-expanded={auditLogOpen}
+                        aria-haspopup="dialog"
+                        aria-pressed={auditLogOpen}
+                        className="group shrink-0 gap-2 rounded-full border border-[#151357]/30 bg-gradient-to-b from-[#151357]/[0.1] to-[#151357]/[0.04] px-4 py-2 text-sm font-semibold text-[#151357] shadow-sm transition-all hover:border-[#151357]/45 hover:from-[#151357]/15 hover:to-[#151357]/08 hover:shadow-md active:scale-[0.98] dark:border-primary/35 dark:from-primary/20 dark:to-primary/8 dark:text-foreground dark:hover:border-primary/50"
+                    >
+                        <ScrollText
+                            className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
+                            aria-hidden
+                        />
+                        Activity log
+                    </Button>
+                </>
             ) : null}
-            {EXTERNAL_LINKS.map((link) => (
+            {EXTERNAL_LINKS.map((link, i) => (
                 <a
                     key={link.label}
                     href={link.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="whitespace-nowrap text-sm font-semibold text-[#3B8BD1] underline"
+                    className="flex flex-col"
                 >
-                    {link.label}
+                    <span className="text-sm font-semibold text-[#3B8BD1] underline">
+                        {link.label}
+                    </span>
+                    <span className="text-xs text-[#687182]">
+                        {i === 0 ? "Link" : "Link"}
+                    </span>
                 </a>
             ))}
         </div>
     );
-
-    const opsPastStageLabel = applicationOperationsDealStatus
-        ? operationsDashboardStatusTitle(applicationOperationsDealStatus)
-        : null;
-
-    const previewBanner =
-        (isStagePreview || isOperationsTabBehindCurrentDeal) &&
-        !superAdminBankAnalysisOverride ? (
-            <div
-                role="status"
-                aria-live="polite"
-                className="mb-5 flex items-center gap-3 rounded-xl border border-slate-200 bg-gradient-to-r from-slate-50 via-white to-slate-50 px-4 py-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-slate-700/70 dark:from-slate-900/70 dark:via-slate-900/40 dark:to-slate-900/70"
-            >
-                <span
-                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-[#276D9C] shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-sky-300"
-                    aria-hidden
-                >
-                    <Lock className="h-4 w-4" />
-                </span>
-                <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-                            Read-only preview
-                        </p>
-                        {isStagePreview && stageAccess.nextStageLabel ? (
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-[#276D9C]/15 bg-[#276D9C]/[0.07] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#276D9C] dark:border-sky-400/25 dark:bg-sky-400/10 dark:text-sky-300">
-                                Now with {stageAccess.nextStageLabel}
-                            </span>
-                        ) : null}
-                        {isOperationsTabBehindCurrentDeal && opsPastStageLabel ? (
-                            <span className="inline-flex items-center gap-1.5 rounded-full border border-[#276D9C]/15 bg-[#276D9C]/[0.07] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#276D9C] dark:border-sky-400/25 dark:bg-sky-400/10 dark:text-sky-300">
-                                Deal at {opsPastStageLabel}
-                            </span>
-                        ) : null}
-                    </div>
-                    <p className="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
-                        {isStagePreview
-                            ? previewBannerReason ??
-                              "This deal has moved past your stage. Editing and workflow actions are disabled for your role."
-                            : `This tab is view-only because the application is already at ${opsPastStageLabel ?? "a later stage"}.`}
-                    </p>
-                </div>
-            </div>
-        ) : null;
 
     return (
         <div
@@ -799,15 +786,20 @@ const ApplicationDetails = () => {
                 applicationDetailRefreshing ? "opacity-90" : "opacity-100"
             }`}
         >
-            <div className="max-w-screen-2xl mx-auto">
-                {previewBanner}
+            <div className="mx-auto min-w-0 max-w-screen-2xl">
+                {applicationAligned ? (
+                    <ApplicationProgressBar
+                        application={applicationData as any}
+                        className="mb-6"
+                    />
+                ) : null}
                 {isFinalUnderwriter ? (
                     /* FINAL_UNDERWRITER: 1) Tab row (tabs + links) 2) Application Summary below tabs 3) Tab content */
                     <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
                         {/* Row 1: Tabs (left) + Links (right) */}
-                        <div className={`mb-4 ${pipelineTabHeaderRowClass}`}>
-                            <div className={pipelineTabScrollerClass}>
-                            <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex w-max items-center">
+                        <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                            <HorizontalScrollFade className="w-full" scrollKey={activeTab}>
+                            <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex w-max flex-nowrap items-center shrink-0">
                                 {tabs.map((tab, index) => {
                                     const isActive = activeTab === tab.id;
                                     const isFirst = index === 0;
@@ -828,7 +820,7 @@ const ApplicationDetails = () => {
                                             <div className={`absolute inset-0 ${isDark ? 'bg-gray-600' : 'bg-white'}`} style={{ clipPath }} />
                                             <TabsTrigger
                                                 value={tab.id}
-                                                className="relative cursor-pointer px-8 py-2.5 text-sm font-bold border-0 shadow-none rounded-none"
+                                                className="relative cursor-pointer whitespace-nowrap px-5 py-2.5 text-xs font-bold border-0 shadow-none rounded-none sm:px-6 sm:text-sm lg:px-8"
                                                 style={{
                                                     backgroundColor: isActive ? '#151357' : '#E8E9EC80',
                                                     color: isActive ? '#FFFFFF' : '#000000',
@@ -841,10 +833,8 @@ const ApplicationDetails = () => {
                                     );
                                 })}
                             </TabsList>
-                            </div>
-                            <div className={pipelineTabLinksSlotClass}>
-                                {externalLinksRow}
-                            </div>
+                            </HorizontalScrollFade>
+                            <div className="shrink-0">{externalLinksRow}</div>
                         </div>
                         {/* Row 2: Application Summary (same five-column layout as all roles) */}
                         <FinalUnderwriterApplicationSummary
@@ -863,26 +853,14 @@ const ApplicationDetails = () => {
                                 <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     {/* Final Underwriter decision-making view (without duplicate ApplicationSummary) */}
                                     <ApplicationBasicDetails applicationId={applicationId} />
-                                    <RequiredDocument
-                                        isDecisionMaking={true}
-                                        readOnly={isViewOnlyBrowse}
-                                        disableFundingUpload={
-                                            disableDecisionMakingFundingUpload
-                                        }
-                                    />
                                     <div className="mt-10">
                                         <DecisionMakeFinalValues
                                             applicationId={applicationId}
-                                            allowOfferEdit={!isStagePreview}
-                                            allowPositionsEdit={!isStagePreview}
+                                            allowOfferEdit
+                                            allowPositionsEdit
                                             onSummaryMetricsChange={handleSummaryMetricsChange}
                                             betweenOfferAndPositions={
-                                                <BankAnalysisTable
-                                                    applicationId={applicationId}
-                                                    disableDelete
-                                                    readOnly={isStagePreview}
-                                                    disableCreate={isStagePreview}
-                                                />
+                                                <BankAnalysisTable disableDelete disableCreate />
                                             }
                                         />
                                     </div>
@@ -936,9 +914,9 @@ const ApplicationDetails = () => {
                         }
                         className="w-full"
                     >
-                        <div className={pipelineTabHeaderRowClass}>
-                            <div className={pipelineTabScrollerClass}>
-                            <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex w-max items-center">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                            <HorizontalScrollFade className="w-full" scrollKey={activeTab}>
+                            <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex w-max flex-nowrap items-center shrink-0">
                                 {tabsForOperationsUi.map((tab, index) => {
                                     const isActive = activeTab === tab.id;
                                     const isDisabled = Boolean(tab.disabled);
@@ -975,7 +953,7 @@ const ApplicationDetails = () => {
                                             <TabsTrigger
                                                 value={tab.id}
                                                 disabled={isDisabled}
-                                                className={`relative px-8 py-2 text-sm font-bold border-0 shadow-none transition-all duration-200 rounded-none ${isDisabled
+                                                className={`relative whitespace-nowrap px-5 py-2 text-xs font-bold border-0 shadow-none transition-all duration-200 rounded-none sm:px-6 sm:text-sm lg:px-8 ${isDisabled
                                                         ? "cursor-not-allowed opacity-45"
                                                         : "cursor-pointer"
                                                     }`}
@@ -999,10 +977,8 @@ const ApplicationDetails = () => {
                                     );
                                 })}
                             </TabsList>
-                            </div>
-                            <div className={pipelineTabLinksSlotClass}>
-                                {externalLinksRow}
-                            </div>
+                            </HorizontalScrollFade>
+                            <div className="shrink-0">{externalLinksRow}</div>
                         </div>
 
                         {canRenderTabContent ? (
@@ -1010,7 +986,25 @@ const ApplicationDetails = () => {
 	                            <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <>
                                         <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
-                                        <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
+                                        {showBankDetailsOnOverview && bankDetailsApplicationId ? (
+                                            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-stretch">
+                                                <AgentDealIsoTag
+                                                    applicationId={applicationId}
+                                                    alwaysEditable={canEditIsoDetails}
+                                                    splitLayout
+                                                    className="mb-0 h-full"
+                                                />
+                                                <ApplicationOverviewBankDetails
+                                                    applicationId={bankDetailsApplicationId}
+                                                    className="mt-0 h-full"
+                                                />
+                                            </div>
+                                        ) : (
+                                            <AgentDealIsoTag
+                                                applicationId={applicationId}
+                                                alwaysEditable={canEditIsoDetails}
+                                            />
+                                        )}
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                         {canShowSendToUnderwriterButton ? (
                                             <div className="flex justify-end mb-4">
@@ -1031,7 +1025,7 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="documents" className="mt-6">
                                     <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
 
-                                    <UploadedDocuments readOnly={isOperationsReadOnlyPipelineTab} />
+                                    <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
                                     {canShowSendToUnderwriterButton ? (
                                         <div className="flex justify-end mb-4">
                                             <Button
@@ -1050,7 +1044,7 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="approval" className="mt-6">
                                     <Approval readOnly={pipelineStageReadOnly} />
                                     <div className="mt-6"><CommentSection styles="flex-row" readOnly={commentsReadOnly} /></div>
-                                    <RequiredDocument readOnly={isOperationsReadOnlyPipelineTab} />
+                                    <RequiredDocument readOnly={pipelineStageReadOnly} />
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
@@ -1102,10 +1096,13 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="bank-analysis" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
                                     <BankAnalysis
-                                        readOnly={!canEditBankAnalysisContent}
-                                        enableCreate={canEditBankAnalysisContent}
+                                        readOnly={bankAnalysisTabReadOnly}
+                                        enableCreate={
+                                            superAdminPipelineEditOverride ||
+                                            plainUnderwriterWorkflowEdit
+                                        }
                                     />
-                                    <RequiredDocument isBankAnalysis={true} readOnly={!canEditBankAnalysisContent} />
+                                    <RequiredDocument isBankAnalysis={true} readOnly={bankAnalysisTabReadOnly} />
                                     <div className="mt-6"><CommentSection readOnly={commentsReadOnly} /></div>
                             </LazyTabContent>
 
@@ -1125,36 +1122,48 @@ const ApplicationDetails = () => {
                                     {!hideBusinessProfileOnDecisionMakingTab && (
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                     )}
-                                    <div className="flex flex-row mt-6 gap-4 w-full">
-                                        <RequiredDocument
-                                            isDecisionMaking={true}
-                                            isBankAnalysis={false}
-                                            readOnly={pipelineStageReadOnly}
-                                            disableFundingUpload={
-                                                disableDecisionMakingFundingUpload
-                                            }
-                                            hideFundingDocuments={
-                                                roleKey === "OPERATIONS"
-                                            }
-                                        />
-                                    </div>
                                     <div className="mt-6">
                                         <DecisionMakeFinalValues
                                             applicationId={applicationId}
                                             allowOfferEdit={canEditDecisionMakingFinalValues}
                                             allowPositionsEdit={canEditDecisionMakingFinalValues}
+                                            positionsDisableDelete={
+                                                !superAdminPipelineEditOverride
+                                            }
+                                            positionsDisableCreate={
+                                                canEditDecisionMakingFinalValues &&
+                                                !superAdminPipelineEditOverride &&
+                                                !isPlainUnderwriter
+                                            }
                                             betweenOfferAndPositions={
-                                                showDecisionMakingBankAnalysisTable ? (
+                                                isUnderwriter ||
+                                                roleKey === "OPERATIONS" ||
+                                                superAdminPipelineEditOverride ? (
                                                     <BankAnalysisTable
-                                                        applicationId={applicationId}
-                                                        disableDelete={!canEditDecisionMakingFinalValues}
-                                                        readOnly={!canEditDecisionMakingFinalValues}
-                                                        disableCreate={!canEditDecisionMakingFinalValues}
+                                                        disableDelete={
+                                                            !superAdminPipelineEditOverride
+                                                        }
+                                                        disableCreate={
+                                                            !superAdminPipelineEditOverride &&
+                                                            !plainUnderwriterWorkflowEdit &&
+                                                            (pipelineStageReadOnly ||
+                                                                isOperationsReadOnlyPipelineTab)
+                                                        }
+                                                        readOnly={
+                                                            !superAdminPipelineEditOverride &&
+                                                            !plainUnderwriterWorkflowEdit &&
+                                                            !operationsValueEditOverride &&
+                                                            (pipelineStageReadOnly ||
+                                                                isOperationsReadOnlyPipelineTab)
+                                                        }
                                                     />
                                                 ) : (
                                                     <BankAnalysisTable
                                                         showOnlyTotals
-                                                        readOnly
+                                                        readOnly={
+                                                            pipelineStageReadOnly ||
+                                                            isOperationsReadOnlyPipelineTab
+                                                        }
                                                     />
                                                 )
                                             }
@@ -1162,12 +1171,12 @@ const ApplicationDetails = () => {
                                     </div>
                                     <div className="flex flex-row mt-6 gap-4 w-full items-stretch">
                                         <ChecksAndDecision
+                                            canSendApprovalMailToIso={isSuperAdmin}
                                             hideUnderwritingDecision={roleKey === "OPERATIONS"}
-                                            canSendApprovalMailToIso={superAdminDecisionMakingOverride}
                                             previewMode={
+                                                !superAdminPipelineEditOverride &&
                                                 (isStagePreview ||
-                                                    isOperationsTabBehindCurrentDeal) &&
-                                                !superAdminDecisionMakingOverride
+                                                    isOperationsTabBehindCurrentDeal)
                                             }
                                         />
                                         <div className="w-[50%]"><CommentSection readOnly={commentsReadOnly} /></div>
@@ -1204,20 +1213,35 @@ const ApplicationDetails = () => {
             </div>
 
             {isSuperAdmin && activityLogApplicationId ? (
-                <Sheet open={auditLogOpen} onOpenChange={setAuditLogOpen}>
-                    <SheetContent
-                        side="right"
-                        aria-label="Activity log"
-                        overlayClassName="bg-black/15"
-                        className="z-[9999] flex h-full w-full max-w-full flex-col gap-0 overflow-hidden border-l p-0 sm:w-[50vw] sm:max-w-[50vw]"
-                    >
-                        <ApplicationSheetActivityLog
-                            applicationId={activityLogApplicationId}
-                            className="min-h-0 flex-1"
-                            headerClassName="shrink-0 pr-14 pt-10"
-                        />
-                    </SheetContent>
-                </Sheet>
+                <>
+                    <Dialog open={mailLogOpen} onOpenChange={setMailLogOpen}>
+                        <DialogContent
+                            aria-label="Mail log"
+                            className="flex max-h-[90vh] w-[min(96vw,72rem)] max-w-[72rem] flex-col gap-0 overflow-hidden p-0 sm:rounded-xl"
+                        >
+                            <ApplicationSheetMailLog
+                                applicationId={activityLogApplicationId}
+                                active={mailLogOpen}
+                                className="max-h-[90vh] min-h-0 flex-1"
+                                headerClassName="shrink-0 px-6 pb-3 pt-6 pr-12"
+                            />
+                        </DialogContent>
+                    </Dialog>
+                    <Sheet open={auditLogOpen} onOpenChange={setAuditLogOpen}>
+                        <SheetContent
+                            side="right"
+                            aria-label="Activity log"
+                            overlayClassName="bg-black/15"
+                            className="z-[9999] flex h-full w-full max-w-full flex-col gap-0 overflow-hidden border-l p-0 sm:w-[50vw] sm:max-w-[50vw]"
+                        >
+                            <ApplicationSheetActivityLog
+                                applicationId={activityLogApplicationId}
+                                className="min-h-0 flex-1"
+                                headerClassName="shrink-0 pr-14 pt-10"
+                            />
+                        </SheetContent>
+                    </Sheet>
+                </>
             ) : null}
         </div>
     );

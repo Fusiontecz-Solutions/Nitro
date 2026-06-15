@@ -2,11 +2,11 @@ import type { OperationsApplicationsListStatus } from "@/constants/operationsDas
 
 export type PipelineTab = { id: string; label: string };
 
-/** Full pipeline for Super Admin — includes Eligibility Analysis, Bank Analysis, Final + Funding Call, and Disbursement. */
+/** Full pipeline for Super Admin — includes Bank Analysis after Documents and Final + Funding Call between Contract and Disbursement. */
 export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
-  // { id: "bank-analysis", label: "BANK ANALYSIS" },
+  { id: "bank-analysis", label: "BANK ANALYSIS" },
   { id: "decision-making", label: "DECISION MAKING" },
   { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
   { id: "contract", label: "CONTRACT" },
@@ -68,9 +68,13 @@ export function getOperationsTabsForDashboardEntry(
         { id: "contract", label: "CONTRACT" },
       ];
     case "Contract_Pending":
+    case "Contract_Generated":
+    case "Contract_Sent":
+    case "Contract_Cancelled":
     case "Contract_Out":
     case "Contracted":
     case "Contract_Signed":
+    case "Signed_Contracts":
     case "Signed_Contracts": {
       const end = TAB_INDEX.contract;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
@@ -83,8 +87,10 @@ export function getOperationsTabsForDashboardEntry(
       const end = TAB_INDEX.fundingCall;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
     }
+    case "Finals_And_Funding_Call":
     case "Funded":
     case "Disbursment":
+    case "Declined":
       return [...full];
     default:
       return [...full];
@@ -106,18 +112,26 @@ export function getOperationsPipelineStageTabId(
     case "Final Underwriter":
       return "decision-making";
     case "Contract_Pending":
+    case "Contract_Generated":
+    case "Contract_Sent":
+    case "Contract_Cancelled":
     case "Contract_Out":
     case "Contracted":
     case "Contract_Signed":
+    case "Signed_Contracts":
     case "Signed_Contracts":
       return "contract";
     case "Final":
       return "final";
     case "Funding Call":
       return "funding-call";
+    case "Finals_And_Funding_Call":
+      return "funding-call";
     case "Funded":
     case "Disbursment":
       return "disbursement";
+    case "Declined":
+      return "overview";
     default:
       return "disbursement";
   }

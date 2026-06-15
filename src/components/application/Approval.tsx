@@ -73,12 +73,6 @@ const toValidNumber = (value: unknown): number | null => {
     return Number.isFinite(num) ? num : null;
 };
 
-/** Like toValidNumber but ignores zero/negative placeholders from stale rows. */
-const toPositiveNumber = (value: unknown): number | null => {
-    const num = toValidNumber(value);
-    return num != null && num > 0 ? num : null;
-};
-
 // Custom Slider Component
 interface SliderProps {
     value: number;
@@ -221,7 +215,7 @@ type ApprovalProps = {
     showSendToClient?: boolean;
     applicationData?: any;
     termsOffers?: TermsOffer[];
-    /** Preloaded offer decision (e.g. public approval link — agents cannot call /offer-decisions). */
+    /** Preloaded offer decision (e.g. public approval page) — skips client fetch. */
     offerDecision?: Record<string, unknown> | null;
 };
 
@@ -239,8 +233,8 @@ const Approval = ({
 
     const { data: applicationDataRedux } = useSelector((state: RootState) => state.applicationDetail);
     const { data: termsOffersRedux, loading: termsOffersLoadingRedux } = useSelector((state: RootState) => state.termsOffers);
-    const [offerDecisionFetched, setOfferDecisionFetched] = useState<any>(null);
-    const offerDecisionData = offerDecisionProp ?? offerDecisionFetched;
+    const [offerDecisionData, setOfferDecisionData] = useState<any>(null);
+    const resolvedOfferDecision = offerDecisionProp ?? offerDecisionData;
 
     const applicationData = applicationDataProp ?? applicationDataRedux;
     const termsOffers = termsOffersProp ?? termsOffersRedux;
@@ -346,20 +340,43 @@ const Approval = ({
         }
     };
 
-    const effectiveQueue = String(
+    /**
+     * A deal is considered "approved" for this button once it has reached the
+     * approval transition or anything past it. ISO approvals advance straight to
+     * the Contract Pending stage, so we treat the whole contract/funding workflow
+     * as approved to keep the button disabled after a reload.
+     */
+    const POST_APPROVAL_TOKENS = new Set<string>([
+        "approved",
+        "completed",
+        "contractpending",
+        "contractgenerated",
+        "contractsent",
+        "contractout",
+        "contractsout",
+        "contractcancelled",
+        "contractsigned",
+        "signedcontracts",
+        "fundingcall",
+        "disbursment",
+        "disbursement",
+        "funded",
+        "final",
+    ]);
+    const normalizeStageToken = (value: unknown) =>
+        String(value ?? "")
+            .trim()
+            .toLowerCase()
+            .replace(/[\s_-]+/g, "");
+    const effectiveQueueToken = normalizeStageToken(
         approvalStatusOverride?.currentQueue ?? (applicationData as any)?.currentQueue ?? "",
-    )
-        .trim()
-        .toLowerCase();
-    const effectiveState = String(
+    );
+    const effectiveStateToken = normalizeStageToken(
         approvalStatusOverride?.currentState ?? (applicationData as any)?.currentState ?? "",
-    )
-        .trim()
-        .toLowerCase();
+    );
     const currentlyApproved =
-        effectiveQueue === "approved" ||
-        effectiveState === "approved" ||
-        effectiveState === "completed";
+        POST_APPROVAL_TOKENS.has(effectiveQueueToken) ||
+        POST_APPROVAL_TOKENS.has(effectiveStateToken);
     const isApproved = currentlyApproved || locallyApproved;
 
     // Fetch underwriter terms offers for this application (skip when preloaded or in read-only mode)
@@ -375,11 +392,12 @@ const Approval = ({
 
     // Fetch persisted offer decision by application id (DB source of truth)
     useEffect(() => {
-        if (offerDecisionProp != null) return;
-
+        if (offerDecisionProp != null) {
+            return;
+        }
         const loadOfferDecision = async () => {
             if (!offerDecisionApplicationId) {
-                setOfferDecisionFetched(null);
+                setOfferDecisionData(null);
                 return;
             }
             try {
@@ -387,9 +405,9 @@ const Approval = ({
                     params: { application: offerDecisionApplicationId },
                 });
                 const apiData = (res.data && res.data.data) || null;
-                setOfferDecisionFetched(apiData);
+                setOfferDecisionData(apiData);
             } catch {
-                setOfferDecisionFetched(null);
+                setOfferDecisionData(null);
             }
         };
         void loadOfferDecision();
@@ -398,18 +416,18 @@ const Approval = ({
     const latestTermsOffer: TermsOffer | undefined = termsOffers?.[0];
 
     const resolvedOfferAmount =
-        toPositiveNumber(offerDecisionData?.offer) ??
-        toPositiveNumber(latestTermsOffer?.approvedAmount) ??
-        toPositiveNumber(applicationData?.loanAmount) ??
+        toValidNumber(resolvedOfferDecision?.offer) ??
+        toValidNumber(latestTermsOffer?.approvedAmount) ??
+        toValidNumber(applicationData?.loanAmount) ??
         100000;
     const resolvedTerm =
-        toPositiveNumber(offerDecisionData?.term) ??
-        toPositiveNumber(latestTermsOffer?.termLength) ??
+        toValidNumber(resolvedOfferDecision?.term) ??
+        toValidNumber(latestTermsOffer?.termLength) ??
         8;
     const resolvedUpsell =
-        toPositiveNumber(applicationData?.commissionPercentage) ??
-        toPositiveNumber(offerDecisionData?.fees) ??
-        toPositiveNumber(latestTermsOffer?.commissionPercent) ??
+        toValidNumber(applicationData?.commissionPercentage) ??
+        toValidNumber(resolvedOfferDecision?.fees) ??
+        toValidNumber(latestTermsOffer?.commissionPercent) ??
         12;
     const {
         control,
@@ -433,15 +451,15 @@ const Approval = ({
             upsell: resolvedUpsell,
             originationFeePercent: 10,
         });
-    }, [offerDecisionData?._id, latestTermsOffer?._id, resolvedOfferAmount, resolvedTerm, resolvedUpsell, reset]);
+    }, [resolvedOfferDecision?._id, latestTermsOffer?._id, resolvedOfferAmount, resolvedTerm, resolvedUpsell, reset]);
 
     const advanceAmount = useWatch({ control, name: "advanceAmount", defaultValue: resolvedOfferAmount });
     const term = useWatch({ control, name: "term", defaultValue: resolvedTerm });
     const upsell = useWatch({ control, name: "upsell", defaultValue: resolvedUpsell });
     const originationFeePercent = useWatch({ control, name: "originationFeePercent", defaultValue: 10 });
     const buyRateNum =
-        toValidNumber(offerDecisionData?.buyRate) ??
-        toValidNumber(offerDecisionData?.factorRate) ??
+        toValidNumber(resolvedOfferDecision?.buyRate) ??
+        toValidNumber(resolvedOfferDecision?.factorRate) ??
         toValidNumber(latestTermsOffer?.buyRate) ??
         toValidNumber(latestTermsOffer?.factorRate) ??
         1.499;
@@ -458,12 +476,12 @@ const Approval = ({
         const borrowerName = client?.owner ? `${client.owner.firstName || ""} ${client.owner.lastName || ""}`.trim() : null;
         const businessName = client?.business?.name ?? null;
 
-        const dbOfferNum = toPositiveNumber(offerDecisionData?.offer);
-        const termsApprovedAmountNum = toPositiveNumber(latestTermsOffer?.approvedAmount);
-        const formAdvanceNum = toPositiveNumber(advanceAmount);
-        const applicationLoanAmountNum = toPositiveNumber(applicationData?.loanAmount);
+        const dbOfferNum = toValidNumber(resolvedOfferDecision?.offer);
+        const termsApprovedAmountNum = toValidNumber(latestTermsOffer?.approvedAmount);
+        const formAdvanceNum = toValidNumber(advanceAmount);
+        const applicationLoanAmountNum = toValidNumber(applicationData?.loanAmount);
 
-        const normalizedFrequency = String(offerDecisionData?.frequency ?? latestTermsOffer?.frequency ?? "").trim();
+        const normalizedFrequency = String(resolvedOfferDecision?.frequency ?? latestTermsOffer?.frequency ?? "").trim();
         const frequency = normalizedFrequency === "Weekly" || normalizedFrequency === "Monthly" || normalizedFrequency === "Daily"
             ? normalizedFrequency
             : "Daily";
@@ -476,7 +494,7 @@ const Approval = ({
             // Factor Rate is fixed per OfferDecisionToggle logic
             factorRate: "1.499",
             // Tenure should reflect the active term value
-            tenure: `${offerDecisionData?.term ?? term}`,
+            tenure: `${resolvedOfferDecision?.term ?? term}`,
             // Keep frequency in sync with offer logic (Daily default)
             frequency,
         };
@@ -789,7 +807,7 @@ const Approval = ({
                                         const originationSummary = formatCurrency(originationDollar);
                                         // const applicationFee = "—";
                                         // const professionalFee = t ? "- $0" : "—";
-                                        const position = offerDecisionData?.position ?? t?.position ?? "—";
+                                        const position = resolvedOfferDecision?.position ?? t?.position ?? "—";
                                         const rows = [
                                             { label: "Purchase Amount", value: formatCurrency(advance), highlight: true },
                                             { label: "Payback Amount", value: payback },

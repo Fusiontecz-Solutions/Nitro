@@ -297,6 +297,24 @@ body {
   background-color: rgba(255, 255, 255, 0.32);
 }
 
+/* Hide scrollbars while keeping overflow scroll (mouse wheel, touch, arrow controls). */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.scrollbar-hide::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* Decision Logic: third-party <widget-ui> defaults to a narrow box — fill the host layout */
 .dl-widget-page .dl-widget-host {
   display: flex;

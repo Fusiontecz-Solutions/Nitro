@@ -9,7 +9,7 @@ import Chat from "@mui/icons-material/Chat";
 import Description from "@mui/icons-material/Description";
 import Email from "@mui/icons-material/Email";
 
-import TtyIcon from '@mui/icons-material/Tty';
+import HighlightOff from "@mui/icons-material/HighlightOff";
 import FactCheck from "@mui/icons-material/FactCheck";
 import Article from "@mui/icons-material/Article";
 import CheckCircle from "@mui/icons-material/CheckCircle";
@@ -30,6 +30,9 @@ import {
   useSidebar,
   SidebarFooter,
   SidebarGroupContent,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
@@ -49,6 +52,8 @@ import {
   resolveEffectiveRole,
 } from "@/lib/sessionRole";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
+import { operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
+import { cn } from "@/lib/utils";
 import LinearScaleIcon from '@mui/icons-material/LinearScale';
 import { clearCrmCacheOnLogout } from "@/lib/crmCache";
 import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
@@ -57,12 +62,31 @@ import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import PersonIcon from '@mui/icons-material/Person';
 type SidebarNavIcon = ComponentType<SvgIconProps>;
 
+type PipelineAccent =
+  | "contract-pending"
+  | "contract-generated"
+  | "contract-signed"
+  | "finals-funding"
+  | "disbursement"
+  | "funded"
+  | "rejected";
+
+type SidebarNavChildItem = {
+  label: string;
+  operationsStatus: string;
+  pipelineAccent: PipelineAccent;
+};
+
 type SidebarNavItem = {
   label: string;
   url: string;
   icon: SidebarNavIcon;
   /** When set, links to `/applications``fromDashboard=operations` and this `operationsStatus`. */
   operationsStatus?: string;
+  /** Nested contract workflow links shown under a parent row. */
+  children?: SidebarNavChildItem[];
+  /** Accent + count badge for top-level deal-pipeline rows. */
+  pipelineAccent?: PipelineAccent;
 };
 
 type SidebarNavSection = {
@@ -114,22 +138,84 @@ function NavIcon({ icon: Icon }: { icon: SidebarNavIcon }) {
   return <Icon sx={navIconSx} />;
 }
 
-/** Agents: dashboard + applications + clients (scoped to their deals on the API). */
+function getPipelineCountBadgeClass(): string {
+  return "bg-muted text-muted-foreground";
+}
+
+function resolvePipelineCount(
+  operationsStatus: string | undefined,
+  summaryCounts: {
+    contractPending: number;
+    contractGenerated: number;
+    signedContracts: number;
+    disbursment: number;
+    funded: number;
+  },
+  caseStageCounts: Record<string, number>,
+  rejectedCount: number,
+): number | null {
+  switch (operationsStatus) {
+    case "Contract_Pending":
+      return summaryCounts.contractPending;
+    case "Contract_Generated":
+      return summaryCounts.contractGenerated;
+    case "Contract_Signed":
+      return summaryCounts.signedContracts;
+    case "Finals_And_Funding_Call":
+      return (
+        (caseStageCounts.Final ?? 0) + (caseStageCounts["Funding Call"] ?? 0)
+      );
+    case "Disbursment":
+      return summaryCounts.disbursment;
+    case "Funded":
+      return summaryCounts.funded;
+    case "Declined":
+      return rejectedCount;
+    default:
+      return null;
+  }
+}
+
+function isOperationsPipelineItemActive(
+  pathname: string,
+  searchParams: URLSearchParams,
+  operationsStatus: string | undefined,
+): boolean {
+  if (!operationsStatus) return false;
+  return (
+    pathname === "/applications" &&
+    searchParams.get("fromDashboard") === "operations" &&
+    searchParams.get("operationsStatus") === operationsStatus
+  );
+}
+
 const agentSections: SidebarNavSection[] = [
   {
     title: "",
     items: [
       { label: "Dashboard", url: "/", icon: Dashboard },
-      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
+      { label: "Notifications", url: "/notifications", icon: Notifications },
       { label: "Clients", url: "/clients", icon: People },
+      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
+    ],
+  },
+  {
+    title: "INSIGHTS",
+    items: [
+      { label: "Reports", url: "/reports", icon: Description },
+      { label: "Commissions", url: "/commission-portal", icon: BarChart },
+    ],
+  },
+  {
+    title: "COMMUNICATIONS",
+    items: [
+      { label: "Team Chat", url: "/team-chat", icon: Chat },
+      { label: "Gmail", url: "/gmail", icon: Email },
     ],
   },
   {
     title: "ACCOUNT",
-    items: [
-      { label: "Notifications", url: "/notifications", icon: Notifications },
-      { label: "Settings", url: "/user-setting", icon: Settings },
-    ],
+    items: [{ label: "Settings", url: "/user-setting", icon: Settings }],
   },
 ];
 
@@ -284,7 +370,6 @@ const superAdminSections: SidebarNavSection[] = [
   {
     title: "DEAL PIPELINE",
     items: [
-      { label: "Agent", url: "/applications", operationsStatus: "Agent", icon: PersonIcon },
       { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon },
       {
         label: "Final Underwriter",
@@ -297,21 +382,34 @@ const superAdminSections: SidebarNavSection[] = [
         url: "/applications",
         operationsStatus: "Contracted",
         icon: Article,
+        children: [
+          {
+            label: operationsDashboardStatusTitle("Contract_Pending"),
+            operationsStatus: "Contract_Pending",
+            pipelineAccent: "contract-pending",
+          },
+          {
+            label: operationsDashboardStatusTitle("Contract_Generated"),
+            operationsStatus: "Contract_Generated",
+            pipelineAccent: "contract-generated",
+          },
+          {
+            label: operationsDashboardStatusTitle("Contract_Signed"),
+            operationsStatus: "Contract_Signed",
+            pipelineAccent: "contract-signed",
+          },
+        ],
       },
-      { label: "Final", url: "/applications", operationsStatus: "Final", icon: CheckCircle },
-      {
-        label: "Funding call",
-        url: "/applications",
-        operationsStatus: "Funding Call",
-        icon: TtyIcon,
-      },
+      { label: "Finals and Funding Call", url: "/applications", operationsStatus: "Finals_And_Funding_Call", icon: CheckCircle, pipelineAccent: "finals-funding" },
       {
         label: "Disbursement",
         url: "/applications",
         operationsStatus: "Disbursment",
         icon: AccountBalance,
+        pipelineAccent: "disbursement",
       },
-      { label: "Funded", url: "/applications", operationsStatus: "Funded", icon: Paid },
+      { label: "Funded", url: "/applications", operationsStatus: "Funded", icon: Paid, pipelineAccent: "funded" },
+      { label: "Rejected", url: "/applications", operationsStatus: "Declined", icon: HighlightOff, pipelineAccent: "rejected" },
     ],
   },
   {
@@ -381,6 +479,15 @@ const Sidebar = () => {
   const { data: notifications } = useSelector(
     (state: RootState) => state.notifications,
   );
+  const operationsSummaryCounts = useSelector(
+    (state: RootState) => state.operationsDashboard.summaryCounts,
+  );
+  const operationsCaseStageCounts = useSelector(
+    (state: RootState) => state.operationsDashboard.caseStageCounts,
+  );
+  const rejectedApplicationCount = useSelector(
+    (state: RootState) => state.applicationStats.data?.rejected?.count ?? 0,
+  );
   const userRole = resolveEffectiveRole(data?.user);
   const normalizedRole = normalizeRoleKey(userRole);
   const dispatch: AppDispatch = useDispatch();
@@ -435,8 +542,8 @@ const Sidebar = () => {
     "mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground group-data-[collapsible=icon]:hidden";
 
   const navButtonClass = isDark
-    ? "w-full h-9 rounded-lg px-2 text-foreground/90 [&_svg]:text-foreground/90 hover:bg-sidebar-accent data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
-    : "w-full h-9 rounded-lg px-2 text-muted-foreground [&_svg]:text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground hover:[&_svg]:text-sidebar-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0";
+    ? "w-full h-9 rounded-lg px-2 text-[15px] text-foreground/90 [&_svg]:text-foreground/90 hover:bg-sidebar-accent data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+    : "w-full h-9 rounded-lg px-2 text-[15px] text-muted-foreground [&_svg]:text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground hover:[&_svg]:text-sidebar-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0";
 
   const logoutButtonClass = isDark
     ? "w-full h-9 cursor-pointer rounded-lg px-2 text-foreground hover:bg-sidebar-accent [&_svg]:text-foreground"
@@ -480,28 +587,46 @@ const Sidebar = () => {
                 <SidebarMenu className="flex flex-col items-stretch gap-0.5 group-data-[collapsible=icon]:items-center">
                   {section.items.map((item) => {
                     const pipelineStatus = item.operationsStatus;
+                    const childItems = item.children ?? [];
+                    const hasChildren = childItems.length > 0;
                     const to =
                       pipelineStatus != null && pipelineStatus !== ""
                         ? buildOperationsPipelineApplicationsUrl(pipelineStatus)
                         : item.url;
-                    const isPipeline =
-                      pipelineStatus != null && pipelineStatus !== "";
                     const isOperationsPipelineView =
                       pathname === "/applications" &&
                       searchParams.get("fromDashboard") === "operations" &&
                       Boolean(searchParams.get("operationsStatus"));
-                    const isActive = isPipeline
-                      ? pathname === "/applications" &&
-                      searchParams.get("fromDashboard") === "operations" &&
-                      searchParams.get("operationsStatus") === pipelineStatus
-                      : !item.url || item.url === ""
-                        ? false
-                        : item.url === "/applications"
-                          ? pathname === "/applications" && !isOperationsPipelineView
-                          : item.url === "/"
-                            ? pathname === "/"
-                            : pathname === item.url ||
-                            pathname.startsWith(`${item.url}/`);
+                    const isChildActive = hasChildren
+                      ? childItems.some((child) =>
+                          isOperationsPipelineItemActive(
+                            pathname,
+                            searchParams,
+                            child.operationsStatus,
+                          ),
+                        )
+                      : false;
+                    const isActive = hasChildren
+                      ? isChildActive ||
+                        isOperationsPipelineItemActive(
+                          pathname,
+                          searchParams,
+                          pipelineStatus,
+                        )
+                      : pipelineStatus != null && pipelineStatus !== ""
+                        ? isOperationsPipelineItemActive(
+                            pathname,
+                            searchParams,
+                            pipelineStatus,
+                          )
+                        : !item.url || item.url === ""
+                          ? false
+                          : item.url === "/applications"
+                            ? pathname === "/applications" && !isOperationsPipelineView
+                            : item.url === "/"
+                              ? pathname === "/"
+                              : pathname === item.url ||
+                                pathname.startsWith(`${item.url}/`);
                     const isNotificationsLink = item.url === "/notifications";
                     const showUnreadBadge =
                       isNotificationsLink && unreadNotificationCount > 0;
@@ -510,16 +635,118 @@ const Sidebar = () => {
                         ? "9+"
                         : String(unreadNotificationCount);
 
+                    if (hasChildren) {
+                      return (
+                        <SidebarMenuItem
+                          key={item.label}
+                          className="w-full group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:justify-center"
+                        >
+                          <SidebarMenuButton
+                            asChild
+                            isActive={isActive}
+                            className={navButtonClass}
+                          >
+                            <Link
+                              to={to}
+                              className="flex w-full min-w-0 items-center gap-2 group-data-[collapsible=icon]:w-auto group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0"
+                            >
+                              <span className="relative shrink-0">
+                                <NavIcon icon={item.icon} />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate">
+                                <span className="mr-1 text-muted-foreground" aria-hidden>
+                                  •
+                                </span>
+                                {item.label}
+                              </span>
+                            </Link>
+                          </SidebarMenuButton>
+                          <SidebarMenuSub className="mx-1.5 border-l px-2">
+                            {childItems.map((child) => {
+                              const childTo = buildOperationsPipelineApplicationsUrl(
+                                child.operationsStatus,
+                              );
+                              const childActive = isOperationsPipelineItemActive(
+                                pathname,
+                                searchParams,
+                                child.operationsStatus,
+                              );
+                              const childCount = resolvePipelineCount(
+                                child.operationsStatus,
+                                operationsSummaryCounts,
+                                operationsCaseStageCounts,
+                                rejectedApplicationCount,
+                              );
+                              const showChildCount =
+                                childCount != null && childCount > 0;
+                              const childCountLabel =
+                                childCount != null && childCount > 9
+                                  ? "9+"
+                                  : String(childCount ?? "");
+
+                              return (
+                                <SidebarMenuSubItem key={child.label}>
+                                  <SidebarMenuSubButton
+                                    asChild
+                                    isActive={childActive}
+                                    size="md"
+                                    className="!h-auto min-h-8 items-center overflow-visible py-1.5 text-sm leading-snug [&>span:last-child]:truncate-none"
+                                  >
+                                    <Link
+                                      to={childTo}
+                                      className="flex w-full items-center justify-between gap-2"
+                                    >
+                                      <span className="min-w-0 flex-1 whitespace-nowrap text-sm">
+                                        {child.label}
+                                      </span>
+                                      {showChildCount ? (
+                                        <span
+                                          className={cn(
+                                            "shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none tabular-nums",
+                                            getPipelineCountBadgeClass(),
+                                          )}
+                                          aria-label={`${childCount} applications in ${child.label}`}
+                                        >
+                                          {childCountLabel}
+                                        </span>
+                                      ) : null}
+                                    </Link>
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              );
+                            })}
+                          </SidebarMenuSub>
+                        </SidebarMenuItem>
+                      );
+                    }
+
+                    const pipelineAccent = item.pipelineAccent;
+                    const pipelineCount = resolvePipelineCount(
+                      pipelineStatus,
+                      operationsSummaryCounts,
+                      operationsCaseStageCounts,
+                      rejectedApplicationCount,
+                    );
+                    const showPipelineCount =
+                      pipelineCount != null && pipelineCount > 0;
+                    const pipelineCountLabel =
+                      pipelineCount != null && pipelineCount > 9
+                        ? "9+"
+                        : String(pipelineCount ?? "");
+
                     return (
                       <SidebarMenuItem key={item.label} className="w-full group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:justify-center">
                         <SidebarMenuButton
                           asChild
                           isActive={isActive}
-                          className={
+                          className={cn(
                             isNotificationsLink
                               ? `${navButtonClass} overflow-visible [&>span:last-child]:truncate-none data-[active=true]:text-white data-[active=true]:[&_svg]:text-white`
-                              : navButtonClass
-                          }
+                              : navButtonClass,
+                            pipelineAccent
+                              ? "!h-auto min-h-9 items-center overflow-visible py-1.5 leading-snug [&>span:last-child]:truncate-none"
+                              : undefined,
+                          )}
                         >
                           <Link
                             to={to}
@@ -547,6 +774,23 @@ const Sidebar = () => {
                                     aria-label={`${unreadNotificationCount} unread notifications`}
                                   >
                                     {badgeLabel}
+                                  </span>
+                                ) : null}
+                              </span>
+                            ) : pipelineAccent ? (
+                              <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                                <span className="min-w-0 flex-1 whitespace-nowrap text-sm">
+                                  {item.label}
+                                </span>
+                                {showPipelineCount ? (
+                                  <span
+                                    className={cn(
+                                      "shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none tabular-nums",
+                                      getPipelineCountBadgeClass(),
+                                    )}
+                                    aria-label={`${pipelineCount} applications in ${item.label}`}
+                                  >
+                                    {pipelineCountLabel}
                                   </span>
                                 ) : null}
                               </span>

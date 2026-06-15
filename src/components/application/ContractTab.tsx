@@ -24,12 +24,6 @@ import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import { mergeAndSendBoldSignTemplates } from "@/redux/actions/boldSignActions";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
-import {
-    Dialog,
-    DialogContent,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -53,7 +47,6 @@ import ACHModal, { type ACHEntry } from "./ACHModal";
 import GuarantorModal, { type GuarantorEntry } from "./GuarantorModal";
 import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
-import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
 import { FileText, Info, Landmark, Loader2, RefreshCw, Send } from "lucide-react";
@@ -274,7 +267,7 @@ export default function ContractTab({
         (state: RootState) => state.offerDecision,
     );
     const { data: loginData } = useSelector((state: RootState) => state.login);
-    const { data: bankDetailsList, loading: bankDetailsLoading } = useSelector(
+    const { data: bankDetailsList } = useSelector(
         (state: RootState) => state.bankDetails,
     );
     const achListState = useSelector((state: RootState) => state.achList);
@@ -303,7 +296,6 @@ export default function ContractTab({
     // const [guarantor, setGuarantor] = useState(false);
     // const [owner, setOwner] = useState(false);
     const [businessInfoModalOpen, setBusinessInfoModalOpen] = useState(false);
-    const [bankDetailsEditorOpen, setBankDetailsEditorOpen] = useState(false);
     const [addendumModalOpen, setAddendumModalOpen] = useState(false);
     const [epoModalOpen, setEPOModalOpen] = useState(false);
     const [achModalOpen, setACHModalOpen] = useState(false);
@@ -1218,17 +1210,6 @@ export default function ContractTab({
             return;
         }
 
-        if (bankDetailsLoading) {
-            toast.info("Bank details are still loading. Try again in a moment.");
-            return;
-        }
-        if (!hasCompleteBankDetailsForContract) {
-            toast.error(
-                "Add a bank account number and routing number before generating a contract.",
-            );
-            return;
-        }
-
         if (!globalTemplateUrl || !applicationUuid) {
             toast.error(
                 "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
@@ -1926,20 +1907,6 @@ export default function ContractTab({
     /** Saved grid for anyone when values are persisted (incl. Operations read-only) — avoids disabled-input fade. */
     const showSavedContractGrid = contractValuesSaved;
 
-    const hasCompleteBankDetailsForContract = (() => {
-        const rows = Array.isArray(bankDetailsList) ? bankDetailsList : [];
-        return rows.some((b) => {
-            const acct = String((b as { accountNumber?: string })?.accountNumber ?? "").trim();
-            const route = String((b as { routingNumber?: string | null })?.routingNumber ?? "").trim();
-            return Boolean(acct && route);
-        });
-    })();
-
-    const generateContractBlockedByBank =
-        !isReadOnly &&
-        !hasGeneratedContract &&
-        (bankDetailsLoading || !hasCompleteBankDetailsForContract);
-
     const renderContractSendTableRow = (row: ContractSendTableRow) => {
         const rowStatusLabel = formatContractTableStatusLabel(
             row.contractStatus,
@@ -2090,11 +2057,6 @@ export default function ContractTab({
         );
     };
 
-    const showBankDetailsHint =
-        Boolean(applicationUuid) &&
-        !bankDetailsLoading &&
-        !hasCompleteBankDetailsForContract;
-
     const calculationSummaryFields = [
         { label: "Amount Financed", value: amountFinancedInput },
         { label: "Recipient Funds", value: recipientFundsInput },
@@ -2171,29 +2133,6 @@ export default function ContractTab({
 
     return (
         <div className="space-y-6">
-            {showBankDetailsHint && (
-                <div
-                    role="status"
-                    className={`flex gap-3 rounded-lg border px-4 py-3 text-sm leading-relaxed ${isDark
-                        ? "border-amber-900/60 bg-amber-950/40 text-amber-100/95"
-                        : "border-amber-200/90 bg-gradient-to-r from-amber-50 to-orange-50/80 text-amber-950"
-                        }`}
-                >
-                    <Landmark
-                        className={`mt-0.5 h-4 w-4 shrink-0 ${isDark ? "text-amber-400" : "text-amber-700"}`}
-                        aria-hidden
-                    />
-                    <p className={`min-w-0 ${isDark ? "text-amber-100/90" : "text-amber-950/90"}`}>
-                        <span className="font-semibold">Bank details required for contracts.</span>{" "}
-                        Go to the Applications list, open the preview with the{" "}
-                        <span className="font-medium">eye</span> icon, then open the{" "}
-                        <span className="font-medium">Bank Details</span> tab and enter the{" "}
-                        <span className="font-medium">account number</span> and{" "}
-                        <span className="font-medium">routing number</span> for this application.
-                    </p>
-                </div>
-            )}
-
             {/* Contract Filter Section - Light blue-grey background */}
             <div
                 className={`rounded-lg border p-6 ${isDark ? "bg-[#1F2021] border-[#374151]" : "bg-[#E8F0F8] border-[#D1D5DB]"}`}
@@ -2203,34 +2142,10 @@ export default function ContractTab({
 
                     </div>
                     <div className="flex items-center gap-3">
-                        {!isReadOnly && applicationUuid && (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => setBankDetailsEditorOpen(true)}
-                                className={`h-10 cursor-pointer px-6 py-2 font-medium rounded-md disabled:opacity-70 disabled:cursor-not-allowed ${isDark
-                                    ? "border-[#5AACEA] text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                    : "border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
-                                    }`}
-                            >
-                                <Landmark className="mr-2 h-4 w-4 shrink-0" aria-hidden />
-                                Add Bank Details
-                            </Button>
-                        )}
                         <Button
                             type="button"
                             onClick={handleGenerateContract}
-                            disabled={
-                                creatingEnvelope ||
-                                generateContractBlockedByBank
-                            }
-                            title={
-                                generateContractBlockedByBank && !creatingEnvelope
-                                    ? bankDetailsLoading
-                                        ? "Loading bank details…"
-                                        : "Add bank account number and routing number first (use Add Bank Details)."
-                                    : undefined
-                            }
+                            disabled={creatingEnvelope}
                             className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer  px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
 
 
@@ -2896,34 +2811,6 @@ export default function ContractTab({
                     </Button>
                 </div>
             )}
-
-            <Dialog
-                open={bankDetailsEditorOpen}
-                onOpenChange={setBankDetailsEditorOpen}
-            >
-                <DialogContent
-                    className={`max-h-[90vh] max-w-lg overflow-y-auto sm:max-w-2xl ${isDark ? "border-[#374151]" : ""
-                        }`}
-                >
-                    <DialogHeader>
-                        <DialogTitle>Bank Details</DialogTitle>
-                    </DialogHeader>
-                    {applicationUuid ? (
-                        <ApplicationSheetBankDetail
-                            applicationId={String(applicationUuid)}
-                            onClose={() => {
-                                setBankDetailsEditorOpen(false);
-                                dispatch(getBankDetails({ application: String(applicationUuid) }));
-                                void dispatch(getByApplicationIdContract(String(applicationUuid)));
-                                const contractId = Number(selectedContractId);
-                                if (Number.isFinite(contractId) && contractId > 0) {
-                                    void dispatch(getAllACH({ contractId }));
-                                }
-                            }}
-                        />
-                    ) : null}
-                </DialogContent>
-            </Dialog>
 
             {/* Document Viewer for generated contract */}
 

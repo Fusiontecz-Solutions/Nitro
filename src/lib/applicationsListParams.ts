@@ -3,6 +3,7 @@ import {
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
 } from "@/constants/operationsDashboardApplications";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
+import type { SortingState } from "@tanstack/react-table";
 
 /**
  * Pipeline dropdown values that must use `operationsStatus` (not a single `currentQueue`
@@ -167,6 +168,28 @@ export function buildApplicationsListParams(options: {
     }
   }
   return params;
+}
+
+const TABLE_COLUMN_TO_API_SORT: Record<string, string> = {
+  dealId: "dealId",
+  businessName: "businessName",
+  createdAt: "createdAt",
+  lastModifiedAt: "lastModifiedAt",
+  status: "status",
+};
+
+/** Map TanStack table sorting state to GET /applications `sortBy` / `sortOrder`. */
+export function applicationsListSortFromTable(
+  sorting: SortingState,
+): Pick<GetApplicationsParams, "sortBy" | "sortOrder"> {
+  const active = sorting[0];
+  if (!active?.id) return {};
+  const sortBy = TABLE_COLUMN_TO_API_SORT[active.id];
+  if (!sortBy) return {};
+  return {
+    sortBy,
+    sortOrder: active.desc ? "desc" : "asc",
+  };
 }
 
 /** First-page request for the current URL (route loader + cache key). */

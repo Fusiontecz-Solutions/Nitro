@@ -142,9 +142,30 @@ const ChecksAndDecision = ({
         })
         : false;
 
+    // Once the approval mail has been sent for this application it must NEVER revert
+    // to "Send Approval Mail to ISO". The activity-log slice is shared and can be
+    // overwritten (or briefly empty) by other fetches, so we also treat any
+    // application that has already advanced past approval as "mail already sent",
+    // and we keep a sticky flag so a transient empty log list can't flip it back.
+    const applicationAlreadyApproved =
+        isApprovedStatus || isApprovedQueue || isCompletedStatus || isContractedQueue;
+
+    const [approvalMailSentSticky, setApprovalMailSentSticky] = useState(false);
+
+    // Reset the sticky flag whenever we switch to a different application.
+    useEffect(() => {
+        setApprovalMailSentSticky(false);
+    }, [applicationUuid]);
+
+    useEffect(() => {
+        if (hasSentApprovalMailOnce || applicationAlreadyApproved) {
+            setApprovalMailSentSticky(true);
+        }
+    }, [hasSentApprovalMailOnce, applicationAlreadyApproved]);
+
     const shouldResendApprovalMail =
         showIsoApprovalMailFlow &&
-        hasSentApprovalMailOnce;
+        (hasSentApprovalMailOnce || applicationAlreadyApproved || approvalMailSentSticky);
 
     const isoApprovalMailButtonLabel = shouldResendApprovalMail
         ? "Resend Approval Mail to ISO"
@@ -375,6 +396,11 @@ const ChecksAndDecision = ({
                 open={isApprovalModalOpen}
                 onOpenChange={setIsApprovalModalOpen}
                 isFinalUnderwriter={showIsoApprovalMailFlow}
+                showComplianceChecks={
+                    canSendApprovalMailToIso && !isFinalUnderwriter
+                        ? true
+                        : undefined
+                }
                 onProceedToContract={onProceedToContract}
                 resendApprovalEmail={shouldResendApprovalMail}
                 onOfferUpdated={() => {
