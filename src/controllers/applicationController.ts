@@ -5336,6 +5336,22 @@ class ApplicationController {
                 {
                     client: true,
                     iso: true,
+                    termsOffers: {
+                        orderBy: { updatedAt: 'desc' },
+                        take: 1,
+                        select: {
+                            approvedAmount: true,
+                            factorRate: true,
+                            paybackAmount: true,
+                        },
+                    },
+                    OfferDecision: {
+                        select: {
+                            offer: true,
+                            rate: true,
+                            totalRemit: true,
+                        },
+                    },
                 }
             );
 
@@ -5386,6 +5402,31 @@ class ApplicationController {
                 clientBusinessName ||
                 'there';
             const companyName = clientBusinessName;
+            const merchantName =
+                `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() || undefined;
+            const merchantEmail =
+                String(client?.ownerEmail || client?.businessEmail || '').trim() || undefined;
+            const merchantPhone =
+                String(client?.ownerMobileNumber || client?.businessNumber || '').trim() || undefined;
+
+            const toOfferNumber = (value: unknown): number | undefined => {
+                if (value == null) return undefined;
+                const n = Number(value);
+                return Number.isFinite(n) ? n : undefined;
+            };
+            const latestTermsOffer = Array.isArray((application as any).termsOffers)
+                ? (application as any).termsOffers[0]
+                : null;
+            const offerDecision = (application as any).OfferDecision;
+            const approvedAmount =
+                toOfferNumber(latestTermsOffer?.approvedAmount) ?? toOfferNumber(offerDecision?.offer);
+            const factorRate =
+                toOfferNumber(latestTermsOffer?.factorRate) ?? toOfferNumber(offerDecision?.rate);
+            let repaymentAmount =
+                toOfferNumber(latestTermsOffer?.paybackAmount) ?? toOfferNumber(offerDecision?.totalRemit);
+            if (repaymentAmount == null && approvedAmount != null && factorRate != null) {
+                repaymentAmount = approvedAmount * factorRate;
+            }
 
             if (!isoEmailRaw) {
                 return res.status(400).json({
@@ -5439,6 +5480,13 @@ class ApplicationController {
                     companyName,
                     viewApplicationUrl,
                     calculateApprovalUrl,
+                    applicationNumber: numericAppId,
+                    merchantName,
+                    merchantEmail,
+                    merchantPhone,
+                    approvedAmount,
+                    factorRate,
+                    repaymentAmount,
                 })
                 : buildApplicationApprovalEmailHtml({
                     clientName: isoRecipientName,
@@ -5484,6 +5532,7 @@ class ApplicationController {
                         resend: !!resend,
                         template: resend ? 'offer-updated' : 'approval',
                         status: 'sent',
+                        hasHtmlPdf: true,
                     },
                 });
             } catch (logError) {
@@ -5499,6 +5548,13 @@ class ApplicationController {
                             companyName,
                             viewApplicationUrl,
                             calculateApprovalUrl,
+                            applicationNumber: numericAppId,
+                            merchantName,
+                            merchantEmail,
+                            merchantPhone,
+                            approvedAmount,
+                            factorRate,
+                            repaymentAmount,
                             trackingId: approvalTrackingId,
                         })
                         : await sendApplicationApprovalEmail({

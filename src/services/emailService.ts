@@ -8,6 +8,7 @@ import {
     buildBrandHeaderStyles,
     buildBrandLogoAttachments,
 } from '../constants/brand';
+import { buildHtmlPdfMailAttachment } from './emailHtmlPdfAttachment.service';
 import {
   resolveCrmFrontendBaseUrl,
   resolveDecisionLogicInvitationBaseUrl,
@@ -295,11 +296,15 @@ export async function sendApplicationApprovalEmail({
     });
 
     try {
+        const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'application-approved');
         const response = await sendMail({
             to: toTrimmed,
             subject,
             html,
-            attachments: buildBrandLogoAttachments(),
+            attachments: [
+                ...buildBrandLogoAttachments(),
+                ...(pdfAttachment ? [pdfAttachment] : []),
+            ],
             trackingId,
             categories: ['application-approval'],
         });
@@ -494,6 +499,84 @@ export async function sendOperationsDisbursementReadyEmail({
     }
 }
 
+function formatOfferEmailCurrency(value?: number | null): string | undefined {
+    if (value == null || !Number.isFinite(value)) return undefined;
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(value);
+}
+
+function formatOfferEmailFactorRate(value?: number | null): string | undefined {
+    if (value == null || !Number.isFinite(value)) return undefined;
+    return value.toLocaleString('en-US', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 4,
+    });
+}
+
+/** Application summary block for ISO-branded approval / offer-updated emails. */
+function buildIsoOfferEmailApplicationDetailsHtml({
+    applicationNumber,
+    companyName,
+    merchantName,
+    merchantEmail,
+    merchantPhone,
+    approvedAmount,
+    factorRate,
+    repaymentAmount,
+}: {
+    applicationNumber?: number | string;
+    companyName: string;
+    merchantName?: string;
+    merchantEmail?: string;
+    merchantPhone?: string;
+    approvedAmount?: number;
+    factorRate?: number;
+    repaymentAmount?: number;
+}): string {
+    const rows: { label: string; value: string }[] = [];
+    const safeAppRef =
+        applicationNumber != null && String(applicationNumber).trim() !== ''
+            ? `#${String(applicationNumber).trim()}`
+            : '';
+    if (safeAppRef) rows.push({ label: 'Application ID', value: safeAppRef });
+    rows.push({ label: 'Business Name', value: companyName || '—' });
+    if (merchantName) rows.push({ label: 'Merchant / Owner', value: merchantName });
+    if (merchantEmail) {
+        rows.push({
+            label: 'Owner Email',
+            value: `<a href="mailto:${merchantEmail}" style="color: #0b71a9; text-decoration: none;">${merchantEmail}</a>`,
+        });
+    }
+    if (merchantPhone) rows.push({ label: 'Owner Phone', value: merchantPhone });
+
+    const formattedApprovedAmount = formatOfferEmailCurrency(approvedAmount);
+    const formattedFactorRate = formatOfferEmailFactorRate(factorRate);
+    const formattedRepaymentAmount = formatOfferEmailCurrency(repaymentAmount);
+    if (formattedApprovedAmount) rows.push({ label: 'Approved Amount', value: formattedApprovedAmount });
+    if (formattedFactorRate) rows.push({ label: 'Factor Rate', value: formattedFactorRate });
+    if (formattedRepaymentAmount) rows.push({ label: 'Repayment Amount', value: formattedRepaymentAmount });
+
+    const detailRows = rows
+        .map(
+            (row) => `
+                                            <tr>
+                                                <td style="padding: 8px 12px; font-size: 12px; color: #888888; border-bottom: 1px solid #eeeeee; width: 38%;">${row.label}</td>
+                                                <td style="padding: 8px 12px; font-size: 13px; color: #111111; font-weight: bold; border-bottom: 1px solid #eeeeee;">${row.value}</td>
+                                            </tr>`,
+        )
+        .join('');
+
+    return `
+                                        <h4 style="margin: 28px 0 10px 0; font-size: 15px; color: #111111; text-decoration: underline; letter-spacing: 0.5px;">APPLICATION DETAILS</h4>
+                                        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #fafafa; border: 1px solid #e8e8e8; border-radius: 4px;">
+                                            ${detailRows}
+                                        </table>`;
+}
+
 /** Client email when offer values are updated after approval comments. */
 export interface ApplicationOfferUpdatedEmailParams {
     to: string;
@@ -501,6 +584,13 @@ export interface ApplicationOfferUpdatedEmailParams {
     companyName: string;
     viewApplicationUrl?: string;
     calculateApprovalUrl?: string;
+    applicationNumber?: number | string;
+    merchantName?: string;
+    merchantEmail?: string;
+    merchantPhone?: string;
+    approvedAmount?: number;
+    factorRate?: number;
+    repaymentAmount?: number;
     /** Optional logo image link shown at the top (overrides OFFER_UPDATED_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
     /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
@@ -512,15 +602,32 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
+    applicationNumber,
+    merchantName,
+    merchantEmail,
+    merchantPhone,
+    approvedAmount,
+    factorRate,
+    repaymentAmount,
     bannerLogoUrl,
 }: Omit<ApplicationOfferUpdatedEmailParams, 'to'>): string => {
     const safeClientName = clientName || 'Valued Client';
     const safeCompanyName = companyName || 'your company';
     const primaryActionUrl = calculateApprovalUrl || viewApplicationUrl || '#';
+    const applicationDetailsBlock = buildIsoOfferEmailApplicationDetailsHtml({
+        applicationNumber,
+        companyName: safeCompanyName,
+        merchantName,
+        merchantEmail,
+        merchantPhone,
+        approvedAmount,
+        factorRate,
+        repaymentAmount,
+    });
     const emailHeader = buildIsoBrandedEmailHeaderHtml(
         bannerLogoUrl || OFFER_UPDATED_BANNER_LOGO_URL,
         'OFFER UPDATED',
-        'Your offer values have been updated based on the latest approval mail comment.',
+        '',
     );
 
     return `
@@ -587,6 +694,8 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
                                             </tr>
                                         </table>
 
+                                        ${applicationDetailsBlock}
+
                                         <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you have questions, reply to the latest approval mail comment thread, leave a comment from the link above, or contact your representative.</p>
                                     </td>
                                 </tr>
@@ -608,6 +717,13 @@ export async function sendApplicationOfferUpdatedEmail({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
+    applicationNumber,
+    merchantName,
+    merchantEmail,
+    merchantPhone,
+    approvedAmount,
+    factorRate,
+    repaymentAmount,
     bannerLogoUrl,
     trackingId,
 }: ApplicationOfferUpdatedEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
@@ -624,15 +740,26 @@ export async function sendApplicationOfferUpdatedEmail({
         companyName,
         viewApplicationUrl,
         calculateApprovalUrl,
+        applicationNumber,
+        merchantName,
+        merchantEmail,
+        merchantPhone,
+        approvedAmount,
+        factorRate,
+        repaymentAmount,
         bannerLogoUrl,
     });
 
     try {
+        const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'offer-updated');
         const response = await sendMail({
             to: toTrimmed,
             subject,
             html,
-            attachments: buildBrandLogoAttachments(),
+            attachments: [
+                ...buildBrandLogoAttachments(),
+                ...(pdfAttachment ? [pdfAttachment] : []),
+            ],
             trackingId,
             categories: ['offer-updated'],
         });
