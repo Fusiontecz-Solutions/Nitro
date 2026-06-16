@@ -29,7 +29,7 @@ const TWO_LINE_STAGE_KEYS = new Set<ApplicationProgressStageKey>([
   "CONTRACT_SIGNED",
 ]);
 
-/** Compact labels so 10 steps fit without crushing layout. Full text stays in `title`. */
+/** Compact labels so all steps fit without crushing layout. Full text stays in `title`. */
 const COMPACT_STAGE_LABELS: Partial<Record<ApplicationProgressStageKey, string>> = {
   FINAL_UNDERWRITER: "Final Underwriter",
   FUNDING_CALL: "Funding Call",
@@ -111,7 +111,7 @@ const ApplicationProgressBar = ({
       </div>
 
       <HorizontalScrollFade scrollKey={String(currentIndex)}>
-        <div className="relative min-w-[52rem] px-1 pb-1">
+        <div className="relative min-w-[47rem] px-1 pb-1">
           <div
             className="absolute left-1 right-1 top-[15px] h-[3px] rounded-full"
             style={{ backgroundColor: trackColor }}
