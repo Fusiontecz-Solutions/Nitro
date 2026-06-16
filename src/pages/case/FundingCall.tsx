@@ -3,7 +3,11 @@ import MyNotes from '@/components/application/MyNotes';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import { createFundingCall, getFundingCalls } from '@/redux/actions/fundingCallActions';
-import { resetCreateFundingCall } from '@/redux/slices/fundingCallSlice';
+import {
+  resetCreateFundingCall,
+  setFundingCallDraft,
+  clearFundingCallDraft,
+} from '@/redux/slices/fundingCallSlice';
 import { notifyOperationsForDisbursement } from '@/redux/actions/notificationActions';
 import { resetNotifyOperationsDisbursement } from '@/redux/slices/notificationSlice';
 import { toast } from 'react-toastify';
@@ -116,18 +120,40 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
         ? new Date(latest.followUpDate).toLocaleDateString('en-US')
         : '',
     }));
+    if (applicationId) {
+      dispatch(
+        setFundingCallDraft({
+          applicationId,
+          callStatus: latest.callStatus || null,
+        }),
+      );
+    }
     setCanNotifyOps(true);
     if (isFundingCallStatusCallDone(latest.callStatus)) {
       setOpsNotified(true);
     }
-  }, [existingCalls]);
+  }, [existingCalls, applicationId, dispatch]);
 
   const handleSelect = (status: string) => {
     if (isBusy) return;
     setForm((prev) => ({ ...prev, callStatus: status }));
     setErrors({ callStatus: false });
+    if (applicationId) {
+      dispatch(
+        setFundingCallDraft({
+          applicationId,
+          callStatus: status || null,
+        }),
+      );
+    }
     setIsDropdownOpen(false);
   };
+
+  useEffect(() => {
+    return () => {
+      dispatch(clearFundingCallDraft());
+    };
+  }, [dispatch, applicationId]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;

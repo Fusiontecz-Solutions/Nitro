@@ -414,7 +414,7 @@ const UploadedDocuments = ({
                                             isDark ? 'text-foreground' : 'text-muted-foreground',
                                         )}
                                     >
-                                        No documents uploaded
+                                        No data available
                                     </TableCell>
                                 </TableRow>
                             ) : (

@@ -293,7 +293,7 @@ const ApplicationDetails = () => {
         let list: TabOption[];
         if (useOperationsPipelineTabs) {
             list = isSuperAdmin
-                ? [...SUPER_ADMIN_PIPELINE_TABS]
+                ? SUPER_ADMIN_PIPELINE_TABS.filter((t) => t.id !== "bank-analysis")
                 : getOperationsTabsForDashboardEntry(effectiveOperationsStatus);
         } else {
             list = getTabs();
@@ -315,12 +315,29 @@ const ApplicationDetails = () => {
         (state: RootState) => state.fundingCalls,
     );
 
+    const fundingCallDraft = useSelector(
+        (state: RootState) => state.fundingCallDraft,
+    );
+
     const latestFundingCallStatus = useMemo(() => {
         const rows = fundingCallsForApp;
         if (!Array.isArray(rows) || rows.length === 0) return null;
         const latest = rows[0] as { callStatus?: string };
         return latest?.callStatus ?? null;
     }, [fundingCallsForApp]);
+
+    const effectiveFundingCallStatusForDisbursement = useMemo(() => {
+        if (
+            fundingCallDraft?.applicationId &&
+            resolvedApplicationId != null &&
+            String(fundingCallDraft.applicationId) ===
+                String(resolvedApplicationId) &&
+            fundingCallDraft.callStatus
+        ) {
+            return fundingCallDraft.callStatus;
+        }
+        return latestFundingCallStatus;
+    }, [fundingCallDraft, resolvedApplicationId, latestFundingCallStatus]);
 
     useEffect(() => {
         if (!useOperationsPipelineTabs || !resolvedApplicationId) return;
@@ -334,9 +351,14 @@ const ApplicationDetails = () => {
             canOpenDisbursementTab(queue, {
                 explicitStatus,
                 currentState,
-                latestFundingCallStatus,
+                latestFundingCallStatus: effectiveFundingCallStatusForDisbursement,
             }),
-        [queue, explicitStatus, currentState, latestFundingCallStatus],
+        [
+            queue,
+            explicitStatus,
+            currentState,
+            effectiveFundingCallStatusForDisbursement,
+        ],
     );
 
     const tabsForOperationsUi = useMemo(() => {
@@ -1136,17 +1158,25 @@ const ApplicationDetails = () => {
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                     )}
                                     <div className="flex flex-row mt-6 gap-4 w-full">
-                                        <RequiredDocument
-                                            isDecisionMaking={true}
-                                            isBankAnalysis={false}
-                                            readOnly={pipelineStageReadOnly}
-                                            disableFundingUpload={
-                                                disableDecisionMakingFundingUpload
-                                            }
-                                            hideFundingDocuments={
-                                                roleKey === "OPERATIONS"
-                                            }
-                                        />
+                                        {isSuperAdmin ? (
+                                            <div className="flex-1 w-full">
+                                                <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
+                                            </div>
+                                        ) : (
+                                            <div className="flex-1 w-full">
+                                                <RequiredDocument
+                                                    isDecisionMaking={true}
+                                                    isBankAnalysis={false}
+                                                    readOnly={pipelineStageReadOnly}
+                                                    disableFundingUpload={
+                                                        disableDecisionMakingFundingUpload
+                                                    }
+                                                    hideFundingDocuments={
+                                                        roleKey === "OPERATIONS"
+                                                    }
+                                                />
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="mt-6">
                                         <DecisionMakeFinalValues

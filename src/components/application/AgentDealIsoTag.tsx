@@ -18,8 +18,21 @@ import { toast } from "react-toastify";
 import { Check, Loader2, Mail, Pencil, PhoneCall, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
+import { normalizeQueueBadgeLabel } from "@/lib/contractOutQueueBadge";
 
 const EMPTY_FIELD = "—";
+
+/**
+ * Once an application reaches the Contract workflow (Contract Pending and
+ * beyond) the linked ISO has approved the deal, so we surface an
+ * "Approved by ISO" badge. Cancelled contracts are excluded.
+ */
+function isIsoApprovedQueueLabel(label: unknown): boolean {
+    const n = normalizeQueueBadgeLabel(String(label ?? ""));
+    if (!n || n === "-") return false;
+    if (n === "contract cancelled") return false;
+    return n === "contracted" || n.startsWith("contract ") || n.startsWith("contracts ");
+}
 
 function formatIsoPhoneDisplay(phone: string): string {
     const trimmed = phone.trim();
@@ -105,6 +118,16 @@ export default function AgentDealIsoTag({
         }
         const isoIdRaw = row.isoId;
         return isoIdRaw != null && String(isoIdRaw).trim() !== "" ? String(isoIdRaw).trim() : "";
+    }, [showDynamicData, applicationData]);
+
+    const isoApproved = useMemo(() => {
+        if (!showDynamicData || !applicationData) return false;
+        const row = applicationData as unknown as Record<string, unknown>;
+        return (
+            isIsoApprovedQueueLabel(row.currentQueue ?? row.queue) ||
+            isIsoApprovedQueueLabel(row.currentState ?? row.state) ||
+            isIsoApprovedQueueLabel(row.statsCurrentState)
+        );
     }, [showDynamicData, applicationData]);
 
     const appRow = applicationData as unknown as Record<string, unknown> | null;
@@ -297,7 +320,7 @@ export default function AgentDealIsoTag({
             : "ISO Partner";
 
     const headerBar = cn(
-        "flex items-center gap-2 border-b font-roboto font-[600] uppercase tracking-wide",
+        "flex items-center justify-between gap-2 border-b font-roboto font-[600] uppercase tracking-wide",
         isCompact
             ? "px-4 py-2.5 text-xs sm:px-4"
             : "px-4 py-3 text-base sm:px-5",
@@ -550,6 +573,19 @@ export default function AgentDealIsoTag({
                 <h2 id="deal-iso-section-title" className="leading-tight">
                     {sectionTitle}
                 </h2>
+                {isoApproved ? (
+                    <span
+                        className={cn(
+                            "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold normal-case tracking-normal",
+                            isDark
+                                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                                : "border-emerald-200 bg-emerald-50 text-emerald-700",
+                        )}
+                    >
+                        <Check className="h-3.5 w-3.5" strokeWidth={2.5} aria-hidden />
+                        Approved by ISO
+                    </span>
+                ) : null}
             </div>
 
             {fetchLoading ? (
@@ -571,59 +607,11 @@ export default function AgentDealIsoTag({
                     {isCompact ? (
                         compactLinkedIsoOneLiner
                     ) : splitLayout ? (
-                        <>
-                            {alwaysEditable && !editingEmail ? (
-                                <div
-                                    className={cn(
-                                        "w-full border-b pb-4",
-                                        isDark ? "border-zinc-800" : "border-slate-100",
-                                    )}
-                                >
-                                    {isoSelectControl}
-                                </div>
-                            ) : null}
-
-                            <div className="flex min-w-0 items-start gap-3">
-                                <div
-                                    className={cn(
-                                        "flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-sm font-bold tracking-wider shadow-inner",
-                                        isDark
-                                            ? "border border-blue-500/10 bg-gradient-to-br from-blue-500/20 to-blue-600/5 text-blue-300"
-                                            : "border border-blue-200/50 bg-gradient-to-br from-blue-100 to-blue-50 text-blue-700",
-                                    )}
-                                >
-                                    {isoInitials(displayName)}
-                                </div>
-
-                                <div className="min-w-0 flex-1 space-y-2">
-                                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                                        <span
-                                            className={cn(
-                                                "text-base font-semibold tracking-tight break-words",
-                                                isDark ? "text-zinc-100" : "text-slate-800",
-                                            )}
-                                        >
-                                            {linkedIso.name || displayName}
-                                        </span>
-                                        <span
-                                            className={cn(
-                                                "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                                                isDark
-                                                    ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
-                                                    : "border border-emerald-200 bg-emerald-50 text-emerald-700",
-                                            )}
-                                        >
-                                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                                            Linked
-                                        </span>
-                                    </div>
-                                </div>
-                            </div>
-
+                        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row lg:items-stretch lg:gap-5">
                             {!editingEmail ? (
                                 <div
                                     className={cn(
-                                        "flex flex-1 flex-col gap-3 rounded-lg border px-3 py-3",
+                                        "flex min-w-0 flex-1 flex-col gap-3 rounded-lg border px-3 py-3",
                                         isDark
                                             ? "border-zinc-800 bg-zinc-900/30"
                                             : "border-slate-100 bg-slate-50/80",
@@ -652,7 +640,7 @@ export default function AgentDealIsoTag({
                             ) : (
                                 <div
                                     className={cn(
-                                        "flex flex-1 flex-col gap-3 rounded-lg border px-3 py-3",
+                                        "flex min-w-0 flex-1 flex-col gap-3 rounded-lg border px-3 py-3",
                                         isDark
                                             ? "border-zinc-800 bg-zinc-900/30"
                                             : "border-slate-100 bg-slate-50/80",
@@ -669,7 +657,47 @@ export default function AgentDealIsoTag({
                                 </div>
                             )}
 
-                        </>
+                            <div className="flex min-w-0 flex-col gap-3 lg:w-[46%] lg:shrink-0 lg:items-stretch">
+                                {alwaysEditable && !editingEmail ? isoSelectControl : null}
+
+                                <div className="flex min-w-0 items-start gap-3">
+                                    <div
+                                        className={cn(
+                                            "flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-sm font-bold tracking-wider shadow-inner",
+                                            isDark
+                                                ? "border border-blue-500/10 bg-gradient-to-br from-blue-500/20 to-blue-600/5 text-blue-300"
+                                                : "border border-blue-200/50 bg-gradient-to-br from-blue-100 to-blue-50 text-blue-700",
+                                        )}
+                                    >
+                                        {isoInitials(displayName)}
+                                    </div>
+
+                                    <div className="min-w-0 flex-1 space-y-2">
+                                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                            <span
+                                                className={cn(
+                                                    "text-base font-semibold tracking-tight break-words",
+                                                    isDark ? "text-zinc-100" : "text-slate-800",
+                                                )}
+                                            >
+                                                {linkedIso.name || displayName}
+                                            </span>
+                                            <span
+                                                className={cn(
+                                                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                                    isDark
+                                                        ? "border border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                                                        : "border border-emerald-200 bg-emerald-50 text-emerald-700",
+                                                )}
+                                            >
+                                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                                                Linked
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     ) : (
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                             <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -841,26 +869,29 @@ export default function AgentDealIsoTag({
                         !isCompact && !splitLayout && "gap-3.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4",
                     )}
                 >
-                    {splitLayout && alwaysEditable ? (
-                        <div
-                            className={cn(
-                                "w-full border-b pb-4",
-                                isDark ? "border-zinc-800" : "border-slate-100",
-                            )}
-                        >
-                            {isoSelectControl}
-                        </div>
-                    ) : null}
-                    <p className={cn("min-w-0 text-sm font-medium leading-relaxed", metaMuted)}>
-                        {alwaysEditable
-                            ? "Connect a sales partner to track commissions and contact details on this deal."
-                            : "No ISO linked."}
-                    </p>
-                    {alwaysEditable && !splitLayout ? (
-                        <div className={cn("w-full shrink-0", !isCompact && "sm:w-auto sm:min-w-[11rem]")}>
-                            {isoSelectControl}
-                        </div>
-                    ) : null}
+                    <div
+                        className={cn(
+                            splitLayout && alwaysEditable
+                                ? "flex min-h-0 flex-1 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:gap-5"
+                                : "contents",
+                        )}
+                    >
+                        <p className={cn("min-w-0 text-sm font-medium leading-relaxed", metaMuted)}>
+                            {alwaysEditable
+                                ? "Connect a sales partner to track commissions and contact details on this deal."
+                                : "No ISO linked."}
+                        </p>
+                        {alwaysEditable ? (
+                            <div
+                                className={cn(
+                                    "w-full shrink-0",
+                                    splitLayout ? "lg:w-[46%] lg:max-w-none" : !isCompact && "sm:w-auto sm:min-w-[11rem]",
+                                )}
+                            >
+                                {isoSelectControl}
+                            </div>
+                        ) : null}
+                    </div>
                 </div>
             )}
         </section>

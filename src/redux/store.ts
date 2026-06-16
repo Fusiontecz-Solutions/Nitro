@@ -95,7 +95,11 @@ import { commissionRequestSlice } from './slices/commissionRequestSlice';
 import dedupeReducer from './slices/dedupeSlice';
 import activityLogReducer from './slices/activityLogSlice';
 import { finalAnswersSlice } from './slices/finalAnswerSlice';
-import { createFundingCallSlice, fundingCallsSlice } from './slices/fundingCallSlice';
+import {
+    createFundingCallSlice,
+    fundingCallsSlice,
+    fundingCallDraftSlice,
+} from './slices/fundingCallSlice';
 // import automatedBankStatementSlice from './slices/automatedBankStatementSlice'
 import { offerDecisionSlice } from './slices/offerDecisionSlice';
 import { collectionPaymentsSlice } from './slices/collectionPaymentSlice';
@@ -243,6 +247,7 @@ export const store = configureStore({
         // Funding call
         createFundingCall: createFundingCallSlice.reducer,
         fundingCalls: fundingCallsSlice.reducer,
+        fundingCallDraft: fundingCallDraftSlice.reducer,
         // Offer decision
         offerDecision: offerDecisionSlice.reducer,
         // Contract modules

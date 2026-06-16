@@ -217,7 +217,8 @@ export function isFundingCallStatusRejected(
 
 /**
  * Whether the Disbursement tab may be opened for Operations / Super Admin.
- * Unlocks when funding call is Call Done, or the deal is already in Disbursement / Funded.
+ * Unlocks when there is a latest Funding Call selection that is NOT "Rejected",
+ * or when the deal is already in Disbursement / Funded.
  */
 export function canOpenDisbursementTab(
   currentQueue: string | null | undefined,
@@ -227,12 +228,19 @@ export function canOpenDisbursementTab(
     latestFundingCallStatus?: string | null;
   },
 ): boolean {
-  if (isFundingCallStatusCallDone(options?.latestFundingCallStatus)) {
+  const inferred = inferOperationsListStatusFromApplication(currentQueue, options);
+  if (inferred === "Disbursment" || inferred === "Funded") {
     return true;
   }
 
-  const inferred = inferOperationsListStatusFromApplication(currentQueue, options);
-  if (inferred === "Disbursment" || inferred === "Funded") {
+  // If Operations explicitly rejected the deal in Funding Call, do not allow moving to Disbursement.
+  if (isFundingCallStatusRejected(options?.latestFundingCallStatus)) {
+    return false;
+  }
+
+  // If a Funding Call outcome exists and is not "Rejected", allow Disbursement.
+  const latest = options?.latestFundingCallStatus;
+  if (latest != null && String(latest).trim() !== "") {
     return true;
   }
 
