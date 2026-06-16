@@ -161,6 +161,7 @@ export const buildApplicationApprovalEmailHtml = ({
 }: Omit<ApplicationApprovalEmailParams, 'to'>): string => {
     const safeClientName = clientName || 'Valued Client';
     const safeCompanyName = companyName || 'your company';
+    const primaryActionUrl = calculateApprovalUrl || viewApplicationUrl || '#';
     const emailHeader = buildIsoBrandedEmailHeaderHtml(
         bannerLogoUrl || APPROVAL_BANNER_LOGO_URL,
         'APPLICATION APPROVED',
@@ -220,13 +221,13 @@ export const buildApplicationApprovalEmailHtml = ({
                                         </p>
 
                                         <p style="font-size: 14px; color: #666666; line-height: 1.5;">
-                                            Please click on the button below to calculate your approvals. You do not need a Woodmere Financial CRM login to use our calculator! Everyone on your team will have immediate access via this email.
+                                            Use the button below to calculate your approvals, review offer details, and leave comments — no Woodmere Financial CRM login required. Everyone on your team can access everything from this secure link.
                                         </p>
 
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
                                             <tr>
                                                 <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Calculate your Approval</a>
+                                                    <a href="${primaryActionUrl}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Calculate your Approval</a>
                                                 </td>
                                             </tr>
                                         </table>
@@ -252,24 +253,7 @@ export const buildApplicationApprovalEmailHtml = ({
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #111111; margin-top: 30px; font-weight: bold;">To view your application in Woodmere Financial CRM, click on the button below.</p>
-                                        <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
-                                            <tr>
-                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
-                                                </td>
-                                            </tr>
-                                        </table>
-
-                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you need more information or have any questions/comments, contact your representative directly or leave a comment in the portal by clicking on the button below.</p>
-                                        
-                                        <table border="0" cellpadding="0" cellspacing="0">
-                                            <tr>
-                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">Write Comment</a>
-                                                </td>
-                                            </tr>
-                                        </table>
+                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you need more information or have questions, contact your representative directly or leave a comment from the same approval link above.</p>
                                     </td>
                                 </tr>
                             </table>
@@ -532,6 +516,7 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
 }: Omit<ApplicationOfferUpdatedEmailParams, 'to'>): string => {
     const safeClientName = clientName || 'Valued Client';
     const safeCompanyName = companyName || 'your company';
+    const primaryActionUrl = calculateApprovalUrl || viewApplicationUrl || '#';
     const emailHeader = buildIsoBrandedEmailHeaderHtml(
         bannerLogoUrl || OFFER_UPDATED_BANNER_LOGO_URL,
         'OFFER UPDATED',
@@ -591,27 +576,18 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
                                         </p>
 
                                         <p style="font-size: 14px; color: #666666; line-height: 1.5;">
-                                            Please review the updated offer details and recalculate approval values if needed.
+                                            Use the button below to review the updated offer, recalculate approval values if needed, and view your full application details — no Woodmere Financial CRM login required.
                                         </p>
 
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
                                             <tr>
                                                 <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Review Updated Offer</a>
+                                                    <a href="${primaryActionUrl}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Review Updated Offer</a>
                                                 </td>
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #111111; margin-top: 24px; font-weight: bold;">To view your application in Woodmere Financial CRM, click the button below.</p>
-                                        <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
-                                            <tr>
-                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
-                                                </td>
-                                            </tr>
-                                        </table>
-
-                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you have questions, please reply to the latest approval mail comment thread or contact your representative.</p>
+                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you have questions, reply to the latest approval mail comment thread, leave a comment from the link above, or contact your representative.</p>
                                     </td>
                                 </tr>
                             </table>
