@@ -40,6 +40,8 @@ import { getApplicationByApplicationId, getApplicationById } from "@/redux/actio
 
 import { toast } from "react-toastify";
 
+import { isSentBackDocumentationRequest } from "@/lib/documentRequestMatch";
+
 import { normalizeRoleKey } from "@/lib/sessionRole";
 
 import { X } from "lucide-react";
@@ -164,6 +166,10 @@ const RequestMissingDocumentsModal = ({
 
     const { loading: sendRequestLoading } = useSelector((state: RootState) => state.sendDocumentRequest);
 
+    const { data: documentRequests, loading: documentRequestsLoading } = useSelector(
+        (state: RootState) => state.documentRequests,
+    );
+
     const roleKey = normalizeRoleKey(
 
         (loginData as { user?: { role?: string } } | null)?.user?.role ||
@@ -177,6 +183,35 @@ const RequestMissingDocumentsModal = ({
     const isFinalUnderwriter = roleKey === "FINAL_UNDERWRITER";
 
     const isRequestVariant = variant === "request";
+
+    const documentRequestLookupId = useMemo(() => {
+        const numeric = (applicationData as { applicationId?: number } | null)?.applicationId;
+        if (numeric != null) return String(numeric);
+        const mongo =
+            (applicationData as { _id?: string; id?: string } | null)?._id ??
+            (applicationData as { id?: string } | null)?.id;
+        return mongo ? String(mongo) : null;
+    }, [applicationData]);
+
+    const activeRequestDocIds = useMemo(
+        () =>
+            new Set(
+                (documentRequests || [])
+                    .map((doc) => {
+                        if (isSentBackDocumentationRequest(doc.name)) {
+                            return "sent-back-for-documentation";
+                        }
+                        return String(doc.name || "").trim().toLowerCase();
+                    })
+                    .filter(Boolean),
+            ),
+        [documentRequests],
+    );
+
+    const availableDocumentOptions = useMemo(
+        () => DOCUMENT_REQUEST_OPTIONS.filter((doc) => !activeRequestDocIds.has(doc.id.toLowerCase())),
+        [activeRequestDocIds],
+    );
 
 
 
@@ -242,7 +277,35 @@ const RequestMissingDocumentsModal = ({
 
         setCcDraft("");
 
+        setSelectedDocuments([]);
+
+        setRequestAdditional(false);
+
     }, [open]);
+
+
+
+    useEffect(() => {
+
+        if (!open || !documentRequestLookupId) return;
+
+        void dispatch(getDocumentRequestsByApplication(documentRequestLookupId));
+
+    }, [open, documentRequestLookupId, dispatch]);
+
+
+
+    useEffect(() => {
+
+        if (!open) return;
+
+        setSelectedDocuments((prev) =>
+
+            prev.filter((id) => !activeRequestDocIds.has(id.toLowerCase())),
+
+        );
+
+    }, [open, activeRequestDocIds]);
 
 
 
@@ -1104,7 +1167,29 @@ const RequestMissingDocumentsModal = ({
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
 
-                            {DOCUMENT_REQUEST_OPTIONS.map((doc) => (
+                            {documentRequestsLoading ? (
+
+                                <p className={`col-span-full text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+
+                                    Loading existing document requests…
+
+                                </p>
+
+                            ) : availableDocumentOptions.length === 0 ? (
+
+                                <p className={`col-span-full text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+
+                                    All listed document types are already requested for this application.
+
+                                    Remove a request from the contract documents list to request it again, or use
+
+                                    Request Additional Documents below.
+
+                                </p>
+
+                            ) : (
+
+                                availableDocumentOptions.map((doc) => (
 
                                 <div key={doc.id} className={`flex items-center space-x-2 border-1 rounded-xs px-2 py-2 ${isDark ? 'border-gray-700' : 'border-black'}`}>
 
@@ -1132,7 +1217,9 @@ const RequestMissingDocumentsModal = ({
 
                                 </div>
 
-                            ))}
+                                ))
+
+                            )}
 
                         </div>
 
@@ -1141,6 +1228,16 @@ const RequestMissingDocumentsModal = ({
                         <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
 
                             {selectedDocuments.length} document(s) selected.
+
+                            {activeRequestDocIds.size > 0 ? (
+
+                                <span className="block mt-1">
+
+                                    {activeRequestDocIds.size} document type(s) already requested are hidden from this list.
+
+                                </span>
+
+                            ) : null}
 
                         </p>
 

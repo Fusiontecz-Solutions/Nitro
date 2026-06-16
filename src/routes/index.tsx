@@ -61,6 +61,7 @@ import { CasesDashboard } from '../pages/case/CasesDashboard';
 import UserSetting from '../pages/Userssettings/UserSetting';
 import PublicApprovalPage from '../pages/public/PublicApprovalPage';
 import PublicApplicationStatusPage from '../pages/public/PublicApplicationStatusPage';
+import PublicDocumentUploadPage from '../pages/public/PublicDocumentUploadPage';
 import DecisionLogicPage from '../pages/public/DecisionLogicPage';
 import DecisionLogicSuccessPage from '../pages/public/DecisionLogicSuccessPage';
 import DealPipeline from '../pages/Dealpipeline/DealPipeline';
@@ -290,6 +291,7 @@ const Routes: RouteObject[] = [
             { path: 'user-setting', element: <UserSetting /> },
             // Public shareable links (no CRM login)
             { path: 'public/application/status/:token', element: <PublicApplicationStatusPage /> },
+            { path: 'public/application/documents/:token', element: <PublicDocumentUploadPage /> },
             { path: 'public/application/approval/:token', element: <PublicApprovalPage /> },
             { path: 'syndicator-portfolio', element: <SyndicatorPortfolio /> },
             { path: 'syndicator-funding', element: <SyndicatorFunding /> },

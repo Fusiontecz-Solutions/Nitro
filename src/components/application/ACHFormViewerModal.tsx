@@ -8,7 +8,10 @@ import {
     Info,
     Landmark,
     Loader2,
+    Mail,
     Pencil,
+    User,
+    X,
 } from "lucide-react";
 import { toast } from "react-toastify";
 import {
@@ -17,12 +20,16 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import type { AppDispatch } from "@/redux/store";
-import { getByApplicationIdContract } from "@/redux/actions/contractActions";
+import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
-import { mergeWithDefaultCcEmails } from "./docusignCcList";
+import {
+    loadBoldSignCcEmailList,
+    saveBoldSignCcEmailList,
+} from "./docusignCcList";
 import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
@@ -33,8 +40,14 @@ import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     formatDocumentSendStatusLabel,
     getDocumentSendStatusCapsuleClasses,
+    isAchEnvelopeDraftLikeStatus,
+    isAchEnvelopePastCcSendStep,
+    isAchEnvelopeSigningFinished,
+    parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
+    resolveAchEnvelopeDisplayStatus,
+    resolveAchPdfEnvelopeId,
     type DocumentTemplateEnvelopeMeta,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
@@ -46,7 +59,14 @@ import {
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./contractdata/Contract";
-import type { DocuSignTemplateRolePayload } from "./contractdata/templateRecipients";
+import {
+    buildDocuSignRolesFromEditorRows,
+    mergeContractPrefillWithSignerOverrides,
+    parseContractSignerOverridesFromPrefill,
+    validateDocuSignSignerRoles,
+    type ContractSignerOverrideRow,
+    type DocuSignTemplateRolePayload,
+} from "./contractdata/templateRecipients";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
@@ -252,6 +272,7 @@ export interface ACHFormViewerModalProps {
         envelopeId: string,
         ccForSync: string[],
         justCreated: boolean,
+        rolesOverride?: DocuSignTemplateRolePayload[],
     ) => Promise<{ url: string | null; error: string | null }>;
     getSignerEmail: () => string;
     getSignerName: () => string;
@@ -289,8 +310,24 @@ export default function ACHFormViewerModal({
     const [statusRefreshing, setStatusRefreshing] = useState(false);
     const [lastStatusSyncAt, setLastStatusSyncAt] = useState<Date | null>(null);
     const [prefillEditOpen, setPrefillEditOpen] = useState(false);
+    const [ccEmails, setCcEmails] = useState<string[]>([]);
+    const [ccEmailDraft, setCcEmailDraft] = useState("");
+    const [achSigner, setAchSigner] = useState<ContractSignerOverrideRow>({
+        role: "Receiver",
+        name: "",
+        email: "",
+    });
+    const [showAchSignerEditor, setShowAchSignerEditor] = useState(false);
+    const [signerDraft, setSignerDraft] = useState<ContractSignerOverrideRow>({
+        role: "Receiver",
+        name: "",
+        email: "",
+    });
+    const [savingSigner, setSavingSigner] = useState(false);
     const templateBlobUrlRef = useRef<string | null>(null);
     const docuSignBlobUrlRef = useRef<string | null>(null);
+    const achCcEmailDeliveredRef = useRef(false);
+    const lastAchStatusSyncAtRef = useRef(0);
 
     const documentTemplateEnvelopeByMappingId = useMemo(
         () =>
@@ -306,17 +343,39 @@ export default function ACHFormViewerModal({
         return documentTemplateEnvelopeByMappingId[achMapping.id] ?? null;
     }, [achMapping, documentTemplateEnvelopeByMappingId]);
 
+    const achSendHistory = useMemo(
+        () =>
+            parseDocumentSendHistory(
+                (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+            ).filter((h) => h.documentKind === "ach"),
+        [resolvedContract],
+    );
+
     const achEnvelopeId = String(linkedAchEnvelope?.envelopeId ?? "").trim();
     const achStatus = String(linkedAchEnvelope?.status ?? "").trim();
-    const achStatusLabel = formatDocumentSendStatusLabel(achStatus || "draft");
-    const canPreviewDocuSignPdf = Boolean(
-        achEnvelopeId &&
-            (canPreviewFilledOrSignedEnvelope(achStatus) ||
-                String(achStatus).toLowerCase() === "draft"),
+    const achDisplayStatus = useMemo(
+        () => resolveAchEnvelopeDisplayStatus(linkedAchEnvelope, achSendHistory),
+        [linkedAchEnvelope, achSendHistory],
     );
+    const achStatusLabel = formatDocumentSendStatusLabel(achDisplayStatus);
     const isSignedAch =
-        ["signed", "completed"].includes(String(achStatus).toLowerCase()) ||
-        String(achStatus).toUpperCase() === "COMPLETED";
+        isAchEnvelopeSigningFinished(achDisplayStatus) ||
+        isAchEnvelopeSigningFinished(achStatus);
+    const achPdfEnvelopeId = useMemo(
+        () =>
+            resolveAchPdfEnvelopeId(linkedAchEnvelope, achSendHistory, {
+                preferSigned: isSignedAch,
+            }),
+        [linkedAchEnvelope, achSendHistory, isSignedAch],
+    );
+    const canPreviewDocuSignPdf = Boolean(
+        achPdfEnvelopeId &&
+            (canPreviewFilledOrSignedEnvelope(achStatus) ||
+                canPreviewFilledOrSignedEnvelope(achDisplayStatus) ||
+                isAchEnvelopeDraftLikeStatus(achStatus) ||
+                isSignedAch),
+    );
 
     const documentTemplatePrefillByMappingId = useMemo(
         () =>
@@ -361,26 +420,113 @@ export default function ACHFormViewerModal({
         }
     }, [applicationId, contractId, dispatch, onContractDocumentsChanged]);
 
+    const resolveCcForSend = useCallback((): string[] => {
+        const draft = ccEmailDraft.trim();
+        let userCc = [...ccEmails];
+        if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
+            const dup = userCc.some((e) => e.toLowerCase() === draft.toLowerCase());
+            if (!dup) {
+                userCc = [...userCc, draft];
+            }
+        }
+        return [...new Set(userCc.map((e) => e.trim()).filter(Boolean))];
+    }, [ccEmailDraft, ccEmails]);
+
+    const buildAchSignerRoles = useCallback((): DocuSignTemplateRolePayload[] => {
+        const role = String(achSigner.role || "Receiver").trim() || "Receiver";
+        const email = String(achSigner.email || "").trim();
+        const name = String(achSigner.name || "").trim();
+        if (!email) return [];
+        return buildDocuSignRolesFromEditorRows([{ role, name, email }]);
+    }, [achSigner]);
+
+    useEffect(() => {
+        if (!isOpen) {
+            setShowAchSignerEditor(false);
+            return;
+        }
+        setCcEmails(loadBoldSignCcEmailList());
+        setCcEmailDraft("");
+
+        const overrides = parseContractSignerOverridesFromPrefill(
+            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                ?.contractPrefillOverrides,
+        );
+        const primary = overrides?.[0];
+        if (primary?.email?.trim()) {
+            setAchSigner({
+                role: primary.role?.trim() || "Receiver",
+                name: primary.name?.trim() || "",
+                email: primary.email.trim(),
+            });
+        } else {
+            setAchSigner({
+                role: "Receiver",
+                name: getSignerName().trim(),
+                email: getSignerEmail().trim(),
+            });
+        }
+    }, [isOpen, resolvedContract, getSignerName, getSignerEmail]);
+
     const syncAchEnvelopeStatus = useCallback(
-        async (silent = false) => {
+        async (silent = false, options?: { force?: boolean }) => {
             if (!achEnvelopeId || !achMapping?.id) return;
+            if (isAchEnvelopeSigningFinished(achStatus)) return;
+
+            const now = Date.now();
+            if (!options?.force && now - lastAchStatusSyncAtRef.current < ACH_STATUS_POLL_MS) {
+                return;
+            }
+            lastAchStatusSyncAtRef.current = now;
+
             if (!silent) setStatusRefreshing(true);
             try {
+                const shouldPassCc =
+                    !achCcEmailDeliveredRef.current &&
+                    !isAchEnvelopePastCcSendStep(achStatus) &&
+                    !isAchEnvelopePastCcSendStep(achDisplayStatus);
+                const ccForSync = shouldPassCc ? resolveCcForSend() : [];
                 const syncRes = await axiosPost("/docusign/sync-envelope-status", {
                     envelopeId: achEnvelopeId,
                     ...(applicationId ? { applicationId: String(applicationId) } : {}),
-                    ccEmails: mergeWithDefaultCcEmails([]),
+                    ...(ccForSync.length ? { ccEmails: ccForSync } : {}),
                 });
+                const ccResult = (
+                    syncRes.data as
+                        | {
+                              ccPrefilledEmail?: {
+                                  emailed?: string[];
+                                  skippedReason?: string;
+                              };
+                          }
+                        | undefined
+                )?.ccPrefilledEmail;
+                if (
+                    ccResult?.emailed?.length ||
+                    ccResult?.skippedReason === "already_emailed" ||
+                    ccResult?.skippedReason === "already_sent_in_crm"
+                ) {
+                    achCcEmailDeliveredRef.current = true;
+                }
                 const syncedStatus = String(
                     (syncRes.data as { internalStatus?: string } | undefined)?.internalStatus ??
                         "",
                 ).trim();
                 if (syncedStatus) {
+                    if (isAchEnvelopePastCcSendStep(syncedStatus)) {
+                        achCcEmailDeliveredRef.current = true;
+                    }
                     await persistAchEnvelopeOnContract(
                         achMapping.id,
                         achEnvelopeId,
                         syncedStatus,
                     );
+                    if (
+                        isAchEnvelopeSigningFinished(syncedStatus) ||
+                        isAchEnvelopePastCcSendStep(syncedStatus)
+                    ) {
+                        setPdfPaneTab("docusign");
+                    }
                 } else {
                     await refreshContractRow();
                 }
@@ -396,7 +542,7 @@ export default function ACHFormViewerModal({
                 if (!silent) setStatusRefreshing(false);
             }
         },
-        [achEnvelopeId, achMapping?.id, applicationId, persistAchEnvelopeOnContract, refreshContractRow],
+        [achEnvelopeId, achMapping?.id, achStatus, achDisplayStatus, applicationId, persistAchEnvelopeOnContract, refreshContractRow, resolveCcForSend],
     );
 
     const loadTemplatePdf = useCallback(async () => {
@@ -426,7 +572,7 @@ export default function ACHFormViewerModal({
     }, [achMapping]);
 
     const loadDocuSignPdf = useCallback(async () => {
-        if (!achEnvelopeId) {
+        if (!achPdfEnvelopeId) {
             setDocuSignPdfUrl(null);
             setDocuSignPdfHint("Send the ACH form via DocuSign to preview the filled envelope.");
             return;
@@ -434,10 +580,13 @@ export default function ACHFormViewerModal({
         setDocuSignPdfLoading(true);
         setDocuSignPdfHint(null);
         try {
-            const res = await axiosGet(`/docusign/download/${encodeURIComponent(achEnvelopeId)}`, {
-                responseType: "blob",
-                timeout: 120000,
-            });
+            const res = await axiosGet(
+                `/docusign/download/${encodeURIComponent(achPdfEnvelopeId)}`,
+                {
+                    responseType: "blob",
+                    timeout: 120000,
+                },
+            );
             const blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
             if (!blob.size) {
                 setDocuSignPdfHint("DocuSign returned an empty PDF. Try again shortly.");
@@ -460,7 +609,17 @@ export default function ACHFormViewerModal({
         } finally {
             setDocuSignPdfLoading(false);
         }
-    }, [achEnvelopeId]);
+    }, [achPdfEnvelopeId]);
+
+    const refreshAchSigningPreview = useCallback(
+        async (silent = false) => {
+            if (!isAchEnvelopeSigningFinished(achStatus)) {
+                await syncAchEnvelopeStatus(silent, { force: true });
+            }
+            await loadDocuSignPdf();
+        },
+        [achStatus, syncAchEnvelopeStatus, loadDocuSignPdf],
+    );
 
     useEffect(() => {
         if (!isOpen) return;
@@ -474,26 +633,37 @@ export default function ACHFormViewerModal({
 
     useEffect(() => {
         if (!isOpen) return;
-        if (achEnvelopeId && canPreviewDocuSignPdf) {
+        if (achPdfEnvelopeId && canPreviewDocuSignPdf) {
             setPdfPaneTab("docusign");
-        } else {
+        } else if (!achPdfEnvelopeId) {
             setPdfPaneTab("template");
         }
-    }, [isOpen, achEnvelopeId, canPreviewDocuSignPdf]);
+    }, [isOpen, achPdfEnvelopeId, canPreviewDocuSignPdf, isSignedAch]);
 
     useEffect(() => {
         if (!isOpen || pdfPaneTab !== "docusign") return;
         void loadDocuSignPdf();
-    }, [isOpen, pdfPaneTab, loadDocuSignPdf, achEnvelopeId, achStatus]);
+    }, [isOpen, pdfPaneTab, loadDocuSignPdf, achPdfEnvelopeId, achDisplayStatus, achStatus]);
+
+    useEffect(() => {
+        if (!isOpen) {
+            achCcEmailDeliveredRef.current = false;
+            lastAchStatusSyncAtRef.current = 0;
+            return;
+        }
+        if (isAchEnvelopePastCcSendStep(achStatus) || isAchEnvelopePastCcSendStep(achDisplayStatus)) {
+            achCcEmailDeliveredRef.current = true;
+        }
+    }, [isOpen, achStatus, achDisplayStatus]);
 
     useEffect(() => {
         if (!isOpen || !achEnvelopeId) return;
-        const terminal = ["completed", "signed", "declined", "revoked", "expired"].includes(
-            String(achStatus).toLowerCase(),
+        if (isAchEnvelopeSigningFinished(achStatus)) return;
+        void syncAchEnvelopeStatus(true, { force: true });
+        const id = window.setInterval(
+            () => void syncAchEnvelopeStatus(true),
+            ACH_STATUS_POLL_MS,
         );
-        if (terminal) return;
-        void syncAchEnvelopeStatus(true);
-        const id = window.setInterval(() => void syncAchEnvelopeStatus(true), ACH_STATUS_POLL_MS);
         return () => window.clearInterval(id);
     }, [isOpen, achEnvelopeId, achStatus, syncAchEnvelopeStatus]);
 
@@ -513,6 +683,104 @@ export default function ACHFormViewerModal({
     const canVoidAch = canVoidAchEnvelope(achStatus, achEnvelopeId);
     const canResendAch = canResendAchEnvelope(achStatus, achEnvelopeId);
     const canReviewAndSendAch = canReviewAndSendAchEnvelope(achStatus, achEnvelopeId);
+    const achEnvelopeView = getAchEnvelopeView(achStatus, achEnvelopeId);
+    const canEditRecipients = !readOnly && !achEnvelopeView.isOutForSignature;
+
+    const addAchCcFromDraft = () => {
+        const raw = ccEmailDraft.trim();
+        if (!raw) {
+            toast.info("Enter an email address to add.");
+            return;
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
+            toast.error("Enter a valid email address.");
+            return;
+        }
+        if (ccEmails.some((e) => e.toLowerCase() === raw.toLowerCase())) {
+            toast.info("That address is already in the CC list.");
+            return;
+        }
+        const next = [...ccEmails, raw];
+        setCcEmails(next);
+        saveBoldSignCcEmailList(next);
+        setCcEmailDraft("");
+    };
+
+    const openAchSignerEditor = () => {
+        if (showAchSignerEditor) {
+            setShowAchSignerEditor(false);
+            return;
+        }
+        setSignerDraft({ ...achSigner });
+        setShowAchSignerEditor(true);
+    };
+
+    const saveAchSigner = async () => {
+        const role = String(signerDraft.role || "Receiver").trim() || "Receiver";
+        const email = String(signerDraft.email || "").trim();
+        const name = String(signerDraft.name || "").trim();
+        if (!email) {
+            toast.error("Signer email is required.");
+            return;
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            toast.error("Enter a valid signer email address.");
+            return;
+        }
+        const row: ContractSignerOverrideRow = { role, name, email };
+        const roles = buildDocuSignRolesFromEditorRows([row]);
+        const validation = validateDocuSignSignerRoles(roles);
+        if (!validation.valid) {
+            toast.error(validation.message || "Invalid signer details.");
+            return;
+        }
+
+        setSavingSigner(true);
+        try {
+            setAchSigner(row);
+            if (contractId != null) {
+                const prefillBase =
+                    (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides ?? null;
+                const contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
+                    prefillBase,
+                    [row],
+                );
+                const updated = await dispatch(
+                    updateContract({
+                        id: contractId,
+                        data: {
+                            contractPrefillOverrides,
+                            clientEmail: email,
+                            ...(name ? { clientName: name } : {}),
+                        },
+                    }),
+                ).unwrap();
+                const payload = (updated as { data?: unknown })?.data ?? updated;
+                if (payload && typeof payload === "object") {
+                    setResolvedContract((prev) =>
+                        prev && typeof prev === "object"
+                            ? { ...prev, ...(payload as Record<string, unknown>), contractPrefillOverrides }
+                            : (payload as Record<string, unknown>),
+                    );
+                }
+                await refreshContractRow();
+            }
+            setShowAchSignerEditor(false);
+            toast.success(
+                achEnvelopeView.hasEnvelope && !achEnvelopeView.isOutForSignature
+                    ? "Signer saved. Click Review & send again to open DocuSign with the updated signer."
+                    : "Signer saved. It will be used when you review and send the ACH form.",
+            );
+        } catch (err: unknown) {
+            const msg =
+                (err as { response?: { data?: { message?: string } } })?.response?.data
+                    ?.message || "Failed to save signer.";
+            toast.error(String(msg));
+        } finally {
+            setSavingSigner(false);
+        }
+    };
 
     const handleVoidAch = async () => {
         if (readOnly || !achEnvelopeId || !achMapping?.id) return;
@@ -579,11 +847,34 @@ export default function ACHFormViewerModal({
             }
             flushSync(() => setIsSendingAch(true));
 
-            const userCc = mergeWithDefaultCcEmails([]);
+            const userCc = [...ccEmails];
+            const draft = ccEmailDraft.trim();
+            if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
+                const dup = userCc.some((e) => e.toLowerCase() === draft.toLowerCase());
+                if (!dup) userCc.push(draft);
+            }
+            const dedupedCc = [...new Set(userCc.map((e) => e.trim()).filter(Boolean))];
+            saveBoldSignCcEmailList(dedupedCc);
+            setCcEmails(dedupedCc);
+            setCcEmailDraft("");
+            const toSend = dedupedCc;
+
+            const signerRoles = buildAchSignerRoles();
+            const signerValidation = validateDocuSignSignerRoles(signerRoles);
+            if (!signerValidation.valid) {
+                const msg =
+                    signerValidation.message ||
+                    "Add a signer name and email before sending the ACH form.";
+                if (docuSignTab) writeDocuSignErrorTab(docuSignTab.document, msg);
+                toast.error(msg);
+                return;
+            }
+
             const prepared = await onPrepareDocuSignDraft({
-                ccEmails: userCc,
+                ccEmails: toSend,
                 achDocumentRef: achTemplateId,
                 standaloneAchOnly: true,
+                roles: signerRoles,
             });
             const envelopeId = String(prepared?.envelopeId ?? "").trim();
             const preparedSenderUrl = String(prepared?.sendUrl ?? "").trim() || null;
@@ -596,8 +887,9 @@ export default function ACHFormViewerModal({
 
             const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
                 envelopeId,
-                userCc,
+                dedupedCc,
                 Boolean(preparedSenderUrl),
+                signerRoles,
             );
             const senderUrl = senderViewResult.url || preparedSenderUrl;
             if (!senderUrl) {
@@ -609,7 +901,11 @@ export default function ACHFormViewerModal({
                 return;
             }
 
-            await persistAchEnvelopeOnContract(achMapping.id, envelopeId, "draft");
+            await persistAchEnvelopeOnContract(
+                achMapping.id,
+                envelopeId,
+                canResendAch ? "" : "draft",
+            );
             await refreshContractRow();
             setPdfPaneTab("docusign");
 
@@ -665,10 +961,14 @@ export default function ACHFormViewerModal({
         SIGNED: 2,
         COMPLETED: 3,
     };
-    const normalizedStatus = String(achStatus).trim().toUpperCase();
+    const normalizedStatus = String(achDisplayStatus).trim().toUpperCase();
     const terminalStatuses = ["DECLINED", "REVOKED", "EXPIRED"];
     const isTerminal = terminalStatuses.includes(normalizedStatus);
-    const activeIndex = isTerminal ? -1 : statusRank[normalizedStatus] ?? -1;
+    const showDraftOnly =
+        isAchEnvelopeDraftLikeStatus(achDisplayStatus) &&
+        !isAchEnvelopePastCcSendStep(achDisplayStatus);
+    const activeIndex =
+        showDraftOnly || isTerminal ? -1 : statusRank[normalizedStatus] ?? -1;
 
     return (
         <>
@@ -706,7 +1006,7 @@ export default function ACHFormViewerModal({
                                     </div>
                                     <span
                                         className={getDocumentSendStatusCapsuleClasses(
-                                            achStatus || "draft",
+                                            achDisplayStatus,
                                         )}
                                     >
                                         {achStatusLabel}
@@ -745,6 +1045,220 @@ export default function ACHFormViewerModal({
                             </div>
 
                             <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                <div className="space-y-3">
+                                    <div>
+                                        <div className="flex items-center justify-between gap-2">
+                                            <h3 className="text-sm font-bold tracking-tight text-slate-800 dark:text-slate-100">
+                                                ACH Signer
+                                            </h3>
+                                            {!achSigner.email ? (
+                                                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">
+                                                    Required before send
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        {canEditRecipients ? (
+                                            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                One person signs this form. Use the pencil to edit.
+                                            </p>
+                                        ) : null}
+                                    </div>
+
+                                    <div
+                                        className={cn(
+                                            "flex items-center gap-3 rounded-xl border p-3 transition-colors",
+                                            showAchSignerEditor
+                                                ? "border-[#276D9C]/40 bg-[#276D9C]/5 ring-1 ring-[#276D9C]/20"
+                                                : "border-[#276D9C]/10 bg-[#276D9C]/5 hover:border-[#276D9C]/25 dark:border-slate-600 dark:bg-[#276D9C]/10",
+                                            canEditRecipients && "cursor-pointer",
+                                        )}
+                                        onClick={
+                                            canEditRecipients
+                                                ? () => openAchSignerEditor()
+                                                : undefined
+                                        }
+                                        onKeyDown={
+                                            canEditRecipients
+                                                ? (e) => {
+                                                      if (e.key === "Enter" || e.key === " ") {
+                                                          e.preventDefault();
+                                                          openAchSignerEditor();
+                                                      }
+                                                  }
+                                                : undefined
+                                        }
+                                        role={canEditRecipients ? "button" : undefined}
+                                        tabIndex={canEditRecipients ? 0 : undefined}
+                                    >
+                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-white text-emerald-600 shadow-sm dark:border-emerald-500/30 dark:bg-slate-900">
+                                            <User className="h-4 w-4" />
+                                        </div>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                                {achSigner.role || "Receiver"}
+                                            </p>
+                                            <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                {achSigner.name.trim() || "Add signer name"}
+                                            </p>
+                                            <p className="truncate text-xs text-slate-600 dark:text-slate-400">
+                                                {achSigner.email || "Add signer email"}
+                                            </p>
+                                        </div>
+                                        {canEditRecipients ? (
+                                            <button
+                                                type="button"
+                                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:border-[#276D9C]/40 hover:bg-[#276D9C]/5 hover:text-[#276D9C] dark:border-slate-600 dark:bg-slate-900"
+                                                title={showAchSignerEditor ? "Close editor" : "Edit signer"}
+                                                aria-label={showAchSignerEditor ? "Close signer editor" : "Edit signer"}
+                                                onClick={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    openAchSignerEditor();
+                                                }}
+                                            >
+                                                <Pencil className="h-3.5 w-3.5" />
+                                            </button>
+                                        ) : null}
+                                    </div>
+
+                                    {showAchSignerEditor && canEditRecipients ? (
+                                        <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-600 dark:bg-slate-900/60">
+                                            <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                                                Role, name, and email for the DocuSign envelope.
+                                            </p>
+                                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                                <Input
+                                                    placeholder="Role"
+                                                    className="h-9 bg-white text-xs dark:bg-slate-950"
+                                                    value={signerDraft.role}
+                                                    onChange={(e) =>
+                                                        setSignerDraft((prev) => ({
+                                                            ...prev,
+                                                            role: e.target.value,
+                                                        }))
+                                                    }
+                                                />
+                                                <Input
+                                                    placeholder="Name"
+                                                    className="h-9 bg-white text-xs dark:bg-slate-950"
+                                                    value={signerDraft.name}
+                                                    onChange={(e) =>
+                                                        setSignerDraft((prev) => ({
+                                                            ...prev,
+                                                            name: e.target.value,
+                                                        }))
+                                                    }
+                                                />
+                                                <Input
+                                                    placeholder="Email"
+                                                    type="email"
+                                                    autoComplete="email"
+                                                    className="h-9 bg-white text-xs dark:bg-slate-950"
+                                                    value={signerDraft.email}
+                                                    onChange={(e) =>
+                                                        setSignerDraft((prev) => ({
+                                                            ...prev,
+                                                            email: e.target.value,
+                                                        }))
+                                                    }
+                                                />
+                                            </div>
+                                            <div className="flex justify-end gap-2">
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-8 text-xs text-slate-500"
+                                                    disabled={savingSigner}
+                                                    onClick={() => setShowAchSignerEditor(false)}
+                                                >
+                                                    Cancel
+                                                </Button>
+                                                <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    className="h-8 bg-[#3B8BD1] px-4 text-xs text-white hover:bg-[#2d6fad]"
+                                                    disabled={
+                                                        savingSigner ||
+                                                        !String(signerDraft.role || "").trim()
+                                                    }
+                                                    onClick={() => void saveAchSigner()}
+                                                >
+                                                    {savingSigner ? "Saving..." : "Save"}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    ) : null}
+
+                                    <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-slate-700">
+                                        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#276D9C] dark:text-[#5a9fd4]">
+                                            <Mail className="h-3 w-3" aria-hidden />
+                                            CC (copy only — not a signer)
+                                        </span>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {ccEmails.length === 0 ? (
+                                                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                                    No CC recipients — add one below if needed.
+                                                </span>
+                                            ) : null}
+                                            {ccEmails.map((email) => (
+                                                <span
+                                                    key={email}
+                                                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/8 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[#276D9C]/30 dark:bg-[#276D9C]/15 dark:text-slate-100"
+                                                >
+                                                    <Mail className="h-3 w-3 shrink-0 text-[#276D9C] opacity-80" aria-hidden />
+                                                    <span className="max-w-[220px] truncate" title={email}>
+                                                        {email}
+                                                    </span>
+                                                    {canEditRecipients ? (
+                                                        <button
+                                                            type="button"
+                                                            className="shrink-0 rounded p-0.5 text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400"
+                                                            aria-label={`Remove ${email}`}
+                                                            onClick={() => {
+                                                                const next = ccEmails.filter((e) => e !== email);
+                                                                setCcEmails(next);
+                                                                saveBoldSignCcEmailList(next);
+                                                            }}
+                                                        >
+                                                            <X className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    ) : null}
+                                                </span>
+                                            ))}
+                                        </div>
+                                        {canEditRecipients ? (
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Input
+                                                    type="email"
+                                                    autoComplete="email"
+                                                    placeholder="name@company.com"
+                                                    value={ccEmailDraft}
+                                                    onChange={(e) => setCcEmailDraft(e.target.value)}
+                                                    className="h-8 max-w-xs bg-white text-xs dark:bg-slate-950"
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === "Enter") {
+                                                            e.preventDefault();
+                                                            addAchCcFromDraft();
+                                                        }
+                                                    }}
+                                                />
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="h-8 border-[#276D9C]/30 text-xs text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                    onClick={addAchCcFromDraft}
+                                                >
+                                                    Add CC
+                                                </Button>
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                                 <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                                     <div className="flex items-start gap-2">
                                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#276D9C]/10 text-[#276D9C]">
@@ -765,8 +1279,8 @@ export default function ACHFormViewerModal({
                                         variant="outline"
                                         size="sm"
                                         className="h-8 text-xs"
-                                        disabled={statusRefreshing || !achEnvelopeId}
-                                        onClick={() => void syncAchEnvelopeStatus(false)}
+                                        disabled={statusRefreshing || !achPdfEnvelopeId}
+                                        onClick={() => void refreshAchSigningPreview(false)}
                                     >
                                         {statusRefreshing ? (
                                             <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -777,7 +1291,9 @@ export default function ACHFormViewerModal({
 
                                 <div className="space-y-3">
                                     <span className="inline-flex items-center rounded-full bg-[#276D9C]/12 px-3 py-1 text-xs font-semibold text-[#276D9C]">
-                                        {formatSigningStatusLabel(normalizedStatus || "DRAFT")}
+                                        {formatSigningStatusLabel(
+                                            showDraftOnly ? "DRAFT" : normalizedStatus,
+                                        )}
                                     </span>
                                     {lastStatusSyncAt ? (
                                         <p className="text-[10px] text-slate-400">
@@ -844,12 +1360,9 @@ export default function ACHFormViewerModal({
                                             </div>
                                         ) : null}
                                     </div>
-                                    <p className="text-[11px] text-slate-500">
-                                        Signer: {getSignerName() || "—"}
-                                        {getSignerEmail() ? ` · ${getSignerEmail()}` : ""}
-                                    </p>
                                 </div>
                             </div>
+
                         </div>
 
                         <div className="relative flex min-h-0 w-full min-w-0 flex-col gap-2 bg-slate-700 p-3 lg:w-[58%] lg:max-w-[58%]">
@@ -875,7 +1388,7 @@ export default function ACHFormViewerModal({
                                     type="button"
                                     role="tab"
                                     aria-selected={pdfPaneTab === "docusign"}
-                                    disabled={!achEnvelopeId}
+                                    disabled={!achPdfEnvelopeId}
                                     className={cn(
                                         "flex-1 rounded-md px-3 py-1.5 text-center text-[11px] font-semibold transition-colors disabled:opacity-40",
                                         pdfPaneTab === "docusign"
@@ -989,6 +1502,7 @@ export default function ACHFormViewerModal({
                     if (pdfPaneTab === "template") void loadTemplatePdf();
                 }}
             />
+
         </>
     );
 }

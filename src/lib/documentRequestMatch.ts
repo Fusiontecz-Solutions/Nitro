@@ -4,10 +4,32 @@ export const DOCUMENT_REQUEST_LABELS: Record<string, string> = Object.fromEntrie
     DOCUMENT_REQUEST_OPTIONS.map((opt) => [opt.id, opt.label]),
 );
 
+export const SENT_BACK_DOCUMENTATION_REQUEST_ID = "sent-back-for-documentation";
+
+export const SENT_BACK_DOCUMENTATION_LABEL = "Sent Back for Documentation";
+
 function normalizeSlug(value: string): string {
     return String(value || "")
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "");
+}
+
+export function isSentBackDocumentationRequest(name: string): boolean {
+    const normalized = String(name || "").trim().toLowerCase();
+    const slug = normalizeSlug(normalized);
+    return (
+        normalized === SENT_BACK_DOCUMENTATION_REQUEST_ID ||
+        slug === "sentbackfordocumentation" ||
+        normalized === SENT_BACK_DOCUMENTATION_LABEL.toLowerCase()
+    );
+}
+
+export function isUploadableDocumentRequest(doc: {
+    name: string;
+    uploadable?: boolean;
+}): boolean {
+    if (doc.uploadable === false) return false;
+    return !isSentBackDocumentationRequest(doc.name);
 }
 
 type ApplicationFileLike = {

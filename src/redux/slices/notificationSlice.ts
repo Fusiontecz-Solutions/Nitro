@@ -5,9 +5,11 @@ import {
     markNotificationAsRead,
     markAllNotificationsAsRead,
     getDocumentRequestsByApplication,
+    removeDocumentRequest,
     notifyOperationsForDisbursement,
     type NotifyOperationsDisbursementResponse,
 } from '../actions/notificationActions';
+import { isSentBackDocumentationRequest } from '@/lib/documentRequestMatch';
 
 // Notification Type
 export interface Notification {
@@ -329,6 +331,8 @@ interface DocumentRequest {
     name: string;
     label?: string;
     status: 'Complete' | 'Pending';
+    uploadable?: boolean;
+    message?: string;
     createdAt: string;
     requestedBy?: {
         _id: string;
@@ -369,6 +373,25 @@ export const documentRequestsSlice = createSlice({
                 state.data = action.payload.data || [];
             })
             .addCase(getDocumentRequestsByApplication.rejected, (state, action) => {
+                state.loading = false;
+                state.error = action.payload as string;
+            })
+            .addCase(removeDocumentRequest.pending, (state) => {
+                state.loading = true;
+                state.error = null;
+            })
+            .addCase(removeDocumentRequest.fulfilled, (state, action) => {
+                state.loading = false;
+                state.error = null;
+                const docId = String(action.payload?.documentId || '');
+                state.data = state.data.filter((doc) => {
+                    if (isSentBackDocumentationRequest(docId)) {
+                        return !isSentBackDocumentationRequest(doc.name);
+                    }
+                    return doc.name.toLowerCase() !== docId.toLowerCase();
+                });
+            })
+            .addCase(removeDocumentRequest.rejected, (state, action) => {
                 state.loading = false;
                 state.error = action.payload as string;
             });

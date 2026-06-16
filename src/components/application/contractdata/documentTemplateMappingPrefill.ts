@@ -103,6 +103,130 @@ export function upsertDocumentSendHistory(
     return [...existing, entry];
 }
 
+const ACH_DRAFT_LIKE_STATUSES = new Set(["", "draft", "created"]);
+
+export function isAchEnvelopeDraftLikeStatus(status?: string | null): boolean {
+    return ACH_DRAFT_LIKE_STATUSES.has(String(status ?? "").trim().toLowerCase());
+}
+
+export function isAchEnvelopeSigningFinished(status?: string | null): boolean {
+    const s = String(status ?? "").trim().toLowerCase();
+    return ["completed", "signed", "declined", "revoked", "expired", "voided"].includes(s);
+}
+
+/** True when CC PDF was already sent (or envelope is past the first-send step). */
+export function isAchEnvelopePastCcSendStep(status?: string | null): boolean {
+    const s = String(status ?? "").trim().toLowerCase();
+    return ["sent", "delivered", "viewed", "signed", "completed"].includes(s);
+}
+
+/**
+ * ACH UI status: "Draft" only before the first send. On resend, while the new envelope
+ * is still unsent in DocuSign, show the last known status from send history.
+ */
+export function resolveAchEnvelopeDisplayStatus(
+    meta: DocumentTemplateEnvelopeMeta | null | undefined,
+    sendHistory: DocumentSendHistoryEntry[] = [],
+): string {
+    const envelopeId = String(meta?.envelopeId ?? "").trim();
+    const raw = String(meta?.status ?? "").trim();
+    const achHistory = sendHistory.filter((h) => h.documentKind === "ach");
+    const latestNonDraft = (rows: DocumentSendHistoryEntry[]) =>
+        [...rows]
+            .filter((h) => h.status && !isAchEnvelopeDraftLikeStatus(h.status))
+            .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+
+    if (!envelopeId) {
+        const latest = latestNonDraft(achHistory);
+        if (latest.length > 0) return String(latest[0].status).trim();
+        return "draft";
+    }
+
+    if (!isAchEnvelopeDraftLikeStatus(raw)) return raw;
+
+    const selfHistory = latestNonDraft(achHistory.filter((h) => h.envelopeId === envelopeId));
+    if (selfHistory.length > 0) return String(selfHistory[0].status).trim();
+
+    const priorOther = latestNonDraft(achHistory.filter((h) => h.envelopeId !== envelopeId));
+    if (priorOther.length > 0) return String(priorOther[0].status).trim();
+
+    return raw || "draft";
+}
+
+/** DocuSign envelope id to load in the PDF pane (may differ from current when resend is in progress). */
+export function resolveAchPdfEnvelopeId(
+    meta: DocumentTemplateEnvelopeMeta | null | undefined,
+    sendHistory: DocumentSendHistoryEntry[] = [],
+    options?: { preferSigned?: boolean },
+): string {
+    const envelopeId = String(meta?.envelopeId ?? "").trim();
+    const raw = String(meta?.status ?? "").trim();
+    const achHistory = sendHistory.filter((h) => h.documentKind === "ach");
+    const latestRows = (
+        rows: DocumentSendHistoryEntry[],
+        predicate: (h: DocumentSendHistoryEntry) => boolean,
+    ) =>
+        [...rows]
+            .filter((h) => h.envelopeId && predicate(h))
+            .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+
+    if (options?.preferSigned) {
+        if (isAchEnvelopeSigningFinished(raw) && envelopeId) return envelopeId;
+        const signedRows = latestRows(achHistory, (h) =>
+            isAchEnvelopeSigningFinished(h.status),
+        );
+        if (signedRows.length > 0) return String(signedRows[0].envelopeId).trim();
+    }
+
+    const latestNonDraft = (rows: DocumentSendHistoryEntry[]) =>
+        latestRows(rows, (h) => Boolean(h.status && !isAchEnvelopeDraftLikeStatus(h.status)));
+
+    if (!envelopeId) {
+        const latest = latestNonDraft(achHistory);
+        return latest.length > 0 ? String(latest[0].envelopeId).trim() : "";
+    }
+
+    if (!isAchEnvelopeDraftLikeStatus(raw)) return envelopeId;
+
+    const selfHistory = latestNonDraft(achHistory.filter((h) => h.envelopeId === envelopeId));
+    if (selfHistory.length > 0) return envelopeId;
+
+    const priorOther = latestNonDraft(achHistory.filter((h) => h.envelopeId !== envelopeId));
+    if (priorOther.length > 0) return String(priorOther[0].envelopeId).trim();
+
+    return envelopeId;
+}
+
+/** True when the ACH form has never been sent (initial draft only). */
+export function isInitialAchDraft(
+    meta: DocumentTemplateEnvelopeMeta | null | undefined,
+    sendHistory: DocumentSendHistoryEntry[] = [],
+): boolean {
+    const raw = String(meta?.status ?? "").trim();
+    const hasAnySentAch = sendHistory.some(
+        (h) => h.documentKind === "ach" && h.status && !isAchEnvelopeDraftLikeStatus(h.status),
+    );
+    if (hasAnySentAch) return false;
+    const envelopeId = String(meta?.envelopeId ?? "").trim();
+    if (!envelopeId) return true;
+    return isAchEnvelopeDraftLikeStatus(raw);
+}
+
+export function resolveAchHistoryEntryDisplayStatus(
+    entry: DocumentSendHistoryEntry,
+    allHistory: DocumentSendHistoryEntry[],
+): string {
+    if (entry.documentKind !== "ach") return String(entry.status ?? "").trim();
+    return resolveAchEnvelopeDisplayStatus(
+        {
+            envelopeId: entry.envelopeId,
+            status: entry.status,
+            updatedAt: entry.updatedAt,
+        },
+        allHistory,
+    );
+}
+
 export function formatDocumentSendStatusLabel(status?: string | null): string {
     const s = String(status ?? "").trim().toLowerCase();
     if (!s) return "Generated";

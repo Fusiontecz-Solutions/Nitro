@@ -192,3 +192,24 @@ export const getDocumentRequestsByApplication = createAsyncThunk(
     }
 );
 
+// Remove a specific document request for an application
+export const removeDocumentRequest = createAsyncThunk(
+    'notification/removeDocumentRequest',
+    async (
+        data: { applicationId: string | number; documentId: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosDelete(
+                `/notifications/document-requests/${data.applicationId}/${encodeURIComponent(data.documentId)}`,
+            );
+            return { ...response.data, documentId: data.documentId, applicationId: data.applicationId };
+        } catch (error: any) {
+            console.error('Remove document request error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to remove document request',
+            );
+        }
+    },
+);
+
