@@ -218,9 +218,17 @@ export function isFundingCallStatusCallDone(
   return normalizeFundingCallStatus(value) === "calldone";
 }
 
+/** Latest funding call status is "Rejected" (case / spacing insensitive). */
+export function isFundingCallStatusRejected(
+  value: string | null | undefined,
+): boolean {
+  return normalizeFundingCallStatus(value) === "rejected";
+}
+
 /**
  * Whether the Disbursement tab may be opened for Operations / Super Admin.
- * Unlocks when funding call is Call Done, or the deal is already in Disbursement / Funded.
+ * Locked only when the latest funding call status is Rejected; any other saved
+ * call status unlocks it, as does a deal already in Disbursement / Funded.
  */
 export function canOpenDisbursementTab(
   currentQueue: string | null | undefined,
@@ -230,7 +238,13 @@ export function canOpenDisbursementTab(
     latestFundingCallStatus?: string | null;
   },
 ): boolean {
-  if (isFundingCallStatusCallDone(options?.latestFundingCallStatus)) {
+  const callStatus = options?.latestFundingCallStatus;
+
+  if (isFundingCallStatusRejected(callStatus)) {
+    return false;
+  }
+
+  if (callStatus && String(callStatus).trim()) {
     return true;
   }
 

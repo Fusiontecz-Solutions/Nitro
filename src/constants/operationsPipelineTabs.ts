@@ -2,11 +2,10 @@ import type { OperationsApplicationsListStatus } from "@/constants/operationsDas
 
 export type PipelineTab = { id: string; label: string };
 
-/** Full pipeline for Super Admin — includes Bank Analysis after Documents and Final + Funding Call between Contract and Disbursement. */
+/** Full pipeline for Super Admin — Decision Making (not a separate Bank Analysis tab) plus Final + Funding Call between Contract and Disbursement. */
 export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
-  { id: "bank-analysis", label: "BANK ANALYSIS" },
   { id: "decision-making", label: "DECISION MAKING" },
   { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
   { id: "contract", label: "CONTRACT" },
@@ -99,7 +98,7 @@ export function getOperationsTabsForDashboardEntry(
 
 /**
  * Pipeline tab that best matches where the deal currently sits (for edit vs preview).
- * Uses the longest strip ({@link SUPER_ADMIN_PIPELINE_TABS}) so bank-analysis lines up with decision-making.
+ * Uses the longest strip ({@link SUPER_ADMIN_PIPELINE_TABS}) so stage indices align with the Super Admin pipeline.
  */
 export function getOperationsPipelineStageTabId(
   status: OperationsApplicationsListStatus,

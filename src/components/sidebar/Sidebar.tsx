@@ -54,7 +54,6 @@ import {
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
 import { operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
 import { cn } from "@/lib/utils";
-import LinearScaleIcon from '@mui/icons-material/LinearScale';
 import { clearCrmCacheOnLogout } from "@/lib/crmCache";
 import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
 // import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt';
@@ -238,16 +237,62 @@ const finalUnderwriterSections: SidebarNavSection[] = [
   },
 ];
 
+const dealPipelineSection: SidebarNavSection = {
+  title: "DEAL PIPELINE",
+  items: [
+    { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
+    { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon },
+    {
+      label: "Final Underwriter",
+      url: "/applications",
+      operationsStatus: "Final Underwriter",
+      icon: FactCheck,
+    },
+    {
+      label: "Contract",
+      url: "/applications",
+      operationsStatus: "Contracted",
+      icon: Article,
+      children: [
+        {
+          label: operationsDashboardStatusTitle("Contract_Pending"),
+          operationsStatus: "Contract_Pending",
+          pipelineAccent: "contract-pending",
+        },
+        {
+          label: operationsDashboardStatusTitle("Contract_Generated"),
+          operationsStatus: "Contract_Generated",
+          pipelineAccent: "contract-generated",
+        },
+        {
+          label: operationsDashboardStatusTitle("Contract_Signed"),
+          operationsStatus: "Contract_Signed",
+          pipelineAccent: "contract-signed",
+        },
+      ],
+    },
+    { label: "Finals and Funding Call", url: "/applications", operationsStatus: "Finals_And_Funding_Call", icon: CheckCircle, pipelineAccent: "finals-funding" },
+    {
+      label: "Disbursement",
+      url: "/applications",
+      operationsStatus: "Disbursment",
+      icon: AccountBalance,
+      pipelineAccent: "disbursement",
+    },
+    { label: "Funded", url: "/applications", operationsStatus: "Funded", icon: Paid, pipelineAccent: "funded" },
+    { label: "Rejected", url: "/applications", operationsStatus: "Declined", icon: HighlightOff, pipelineAccent: "rejected" },
+  ],
+};
+
 const operationsSections: SidebarNavSection[] = [
   {
     title: "",
     items: [
       { label: "Overview", url: "/", icon: Dashboard },
       { label: "Notifications", url: "/notifications", icon: Notifications },
-      { label: "Deals Pipeline", url: "/deal-pipeline", icon: LinearScaleIcon },
-      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
     ],
   },
+  dealPipelineSection,
   {
     title: "OPERATIONS",
     items: [
@@ -362,56 +407,10 @@ const superAdminSections: SidebarNavSection[] = [
     items: [
       { label: "Dashboard", url: "/", icon: Dashboard },
       { label: "Notifications", url: "/notifications", icon: Notifications },
-      { label: "Deals Pipeline", url: "/deal-pipeline", icon: LinearScaleIcon },
       { label: "Clients", url: "/clients", icon: People },
-      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
     ],
   },
-  {
-    title: "DEAL PIPELINE",
-    items: [
-      { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon },
-      {
-        label: "Final Underwriter",
-        url: "/applications",
-        operationsStatus: "Final Underwriter",
-        icon: FactCheck,
-      },
-      {
-        label: "Contract",
-        url: "/applications",
-        operationsStatus: "Contracted",
-        icon: Article,
-        children: [
-          {
-            label: operationsDashboardStatusTitle("Contract_Pending"),
-            operationsStatus: "Contract_Pending",
-            pipelineAccent: "contract-pending",
-          },
-          {
-            label: operationsDashboardStatusTitle("Contract_Generated"),
-            operationsStatus: "Contract_Generated",
-            pipelineAccent: "contract-generated",
-          },
-          {
-            label: operationsDashboardStatusTitle("Contract_Signed"),
-            operationsStatus: "Contract_Signed",
-            pipelineAccent: "contract-signed",
-          },
-        ],
-      },
-      { label: "Finals and Funding Call", url: "/applications", operationsStatus: "Finals_And_Funding_Call", icon: CheckCircle, pipelineAccent: "finals-funding" },
-      {
-        label: "Disbursement",
-        url: "/applications",
-        operationsStatus: "Disbursment",
-        icon: AccountBalance,
-        pipelineAccent: "disbursement",
-      },
-      { label: "Funded", url: "/applications", operationsStatus: "Funded", icon: Paid, pipelineAccent: "funded" },
-      { label: "Rejected", url: "/applications", operationsStatus: "Declined", icon: HighlightOff, pipelineAccent: "rejected" },
-    ],
-  },
+  dealPipelineSection,
   {
     title: "MANAGEMENT",
     items: [

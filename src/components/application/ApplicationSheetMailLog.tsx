@@ -124,10 +124,6 @@ function extractAttachmentNames(
     if (typeof value === 'string' && value.trim()) names.push(value.trim());
   };
 
-  push(meta.documentName);
-  push(log.templateName);
-  if (meta.hasLetterPdf === true) names.push('Letter PDF');
-
   if (Array.isArray(meta.attachments)) {
     for (const item of meta.attachments) {
       if (typeof item === 'string') push(item);
@@ -139,10 +135,43 @@ function extractAttachmentNames(
       }
     }
   }
+  if (names.length) return [...new Set(names)];
+
+  push(meta.documentName);
+  if (meta.hasLetterPdf === true) {
+    const template = (log.templateName ?? meta.templateName ?? '').toString().trim();
+    if (template) {
+      return [template.toLowerCase().endsWith('.pdf') ? template : `${template}.pdf`];
+    }
+    return ['Letter PDF'];
+  }
 
   if (content?.documentName) push(content.documentName);
-
   return [...new Set(names)];
+}
+
+function resolveMailLogHeading(row: MailLogRow): string {
+  const meta = row.activityLog?.metadata ?? {};
+  const templateKey =
+    typeof meta.template === 'string' ? meta.template.trim().toLowerCase() : '';
+  const isIsoApprovalEmail =
+    row.activityLog?.actionType === 'APPROVED' ||
+    templateKey === 'approval' ||
+    templateKey === 'offer-updated';
+
+  if (isIsoApprovalEmail) {
+    if (templateKey === 'offer-updated' || meta.resend === true) {
+      return 'Update offer template';
+    }
+    if (templateKey === 'approval') {
+      return 'Application approved template';
+    }
+    if (row.templateName?.trim()) {
+      return row.templateName.trim();
+    }
+  }
+
+  return row.subject?.trim() || row.templateName?.trim() || '—';
 }
 
 function statusBadgeClass(status: string) {
@@ -378,12 +407,7 @@ export default function ApplicationSheetMailLog({
       status: log.delivery
         ? resolveStatusFromDeliveryTimeline(log.delivery as DeliveryMeta)
         : log.status,
-      attachments:
-        log.attachments?.length
-          ? log.attachments
-          : log.templateName
-            ? [log.templateName]
-            : [],
+      attachments: log.attachments?.length ? log.attachments : [],
       source: 'payment' as const,
       paymentLog: log,
     }));
@@ -501,7 +525,7 @@ export default function ApplicationSheetMailLog({
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="pl-4">When</TableHead>
                   <TableHead>Recipient</TableHead>
-                  <TableHead className="min-w-[140px]">Subject</TableHead>
+                  <TableHead className="min-w-[140px]">Heading</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead className="min-w-[120px]">Attachments</TableHead>
                   <TableHead>Status</TableHead>
@@ -518,7 +542,7 @@ export default function ApplicationSheetMailLog({
                       {row.recipient}
                     </TableCell>
                     <TableCell className="max-w-[200px] whitespace-normal break-words text-xs">
-                      {row.subject}
+                      {resolveMailLogHeading(row)}
                     </TableCell>
                     <TableCell className="text-xs">
                       {channelLabel(row.channel)}

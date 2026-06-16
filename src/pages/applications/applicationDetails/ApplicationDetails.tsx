@@ -81,6 +81,7 @@ const ApplicationDetails = () => {
     const [agentSentToUnderwriter, setAgentSentToUnderwriter] = useState(false);
     const [auditLogOpen, setAuditLogOpen] = useState(false);
     const [mailLogOpen, setMailLogOpen] = useState(false);
+    const [liveFundingCallStatus, setLiveFundingCallStatus] = useState<string | null>(null);
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
 
@@ -121,6 +122,11 @@ const ApplicationDetails = () => {
         (applicationData as any)?._id ??
         applicationId ??
         null;
+    /** UUID or numeric applicationId — backend accepts either for PATCH `/applications/:id/queue`. */
+    const queueUpdateApplicationRef =
+        activityLogApplicationId ||
+        (resolvedApplicationId != null ? String(resolvedApplicationId) : "") ||
+        (applicationId ? String(applicationId) : "");
 
     useEffect(() => {
         setUser(data?.user)
@@ -318,6 +324,13 @@ const ApplicationDetails = () => {
         return latest?.callStatus ?? null;
     }, [fundingCallsForApp]);
 
+    const effectiveFundingCallStatus =
+        liveFundingCallStatus ?? latestFundingCallStatus;
+
+    useEffect(() => {
+        setLiveFundingCallStatus(null);
+    }, [resolvedApplicationId]);
+
     useEffect(() => {
         if (!useOperationsPipelineTabs || !resolvedApplicationId) return;
         void dispatch(
@@ -330,10 +343,14 @@ const ApplicationDetails = () => {
             canOpenDisbursementTab(queue, {
                 explicitStatus,
                 currentState,
-                latestFundingCallStatus,
+                latestFundingCallStatus: effectiveFundingCallStatus,
             }),
-        [queue, explicitStatus, currentState, latestFundingCallStatus],
+        [queue, explicitStatus, currentState, effectiveFundingCallStatus],
     );
+
+    const handleFundingCallStatusChange = useCallback((status: string) => {
+        setLiveFundingCallStatus(status.trim() ? status : null);
+    }, []);
 
     const tabsForOperationsUi = useMemo(() => {
         if (!useOperationsPipelineTabs) return tabs;
@@ -559,7 +576,9 @@ const ApplicationDetails = () => {
         !isViewOnlyBrowse &&
         !isStagePreview &&
         isPreUnderwriterStage &&
-        !agentSentToUnderwriter;
+        !agentSentToUnderwriter &&
+        Boolean(queueUpdateApplicationRef) &&
+        !applicationDetailLoading;
 
     const changeTabScrollTop = useCallback(
         (tabId: string) => {
@@ -683,13 +702,16 @@ const ApplicationDetails = () => {
     }, [applicationId, applicationsListRows, dispatch, location.state]);
 
     const handleSendToUnderwriter = async () => {
-        if (!applicationUuid) return;
+        if (!queueUpdateApplicationRef) {
+            toast.error("Application ID is missing. Please refresh the page and try again.");
+            return;
+        }
         setSendingToUnderwriter(true);
         const toastId = toast.loading("Sending application to Underwriter...");
         try {
             await dispatch(
                 updateApplicationQueue({
-                    id: applicationUuid,
+                    id: queueUpdateApplicationRef,
                     data: { currentQueue: "Underwriter" },
                 }),
             ).unwrap();
@@ -703,11 +725,15 @@ const ApplicationDetails = () => {
             refetchApplicationDetail();
         } catch (error) {
             console.error("Failed to send application to Underwriter:", error);
+            const apiMessage =
+                typeof error === "string" && error.trim()
+                    ? error.trim()
+                    : "Failed to send application to Underwriter. Please try again.";
             toast.update(toastId, {
-                render: "Failed to send application to Underwriter. Please try again.",
+                render: apiMessage,
                 type: "error",
                 isLoading: false,
-                autoClose: 4000,
+                autoClose: 6000,
             });
         } finally {
             setSendingToUnderwriter(false);
@@ -1067,6 +1093,7 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="funding-call" className="mt-6">
                                     <FundingCall
                                         applicationId={resolvedApplicationId}
+                                        onCallStatusChange={handleFundingCallStatusChange}
                                         onSaved={() => {
                                             refetchApplicationDetail();
                                             if (resolvedApplicationId != null) {
@@ -1122,6 +1149,11 @@ const ApplicationDetails = () => {
                                     {!hideBusinessProfileOnDecisionMakingTab && (
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                     )}
+                                    {isSuperAdmin ? (
+                                        <div className="mt-6">
+                                            <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
+                                        </div>
+                                    ) : null}
                                     <div className="mt-6">
                                         <DecisionMakeFinalValues
                                             applicationId={applicationId}

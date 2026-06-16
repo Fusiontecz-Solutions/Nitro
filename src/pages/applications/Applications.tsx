@@ -566,41 +566,45 @@ const Applications = () => {
 
     const q = application.currentQueue || application.queue;
     if (q == null || String(q).trim() === "") {
-      const pipelineLabel = formatDealPipelineCurrentStateLabel(application);
-      return pipelineLabel === "—" ? "-" : pipelineLabel;
+      return "-";
     }
     const raw = String(q).trim();
-    if (raw.toLowerCase() !== "new") {
-      const pipelineLabel = formatDealPipelineCurrentStateLabel(application);
-      return pipelineLabel === "—" ? raw : pipelineLabel;
+
+    if (raw.toLowerCase() === "new") {
+      const creator = application.createdBy as
+        | { id?: string; _id?: string; role?: string }
+        | string
+        | undefined;
+      const referring = application.referringAgent as
+        | { id?: string; _id?: string }
+        | string
+        | undefined;
+
+      const creatorRole =
+        typeof creator === "object" && creator?.role != null
+          ? String(creator.role).toUpperCase().replace(/-/g, "_")
+          : "";
+      if (creatorRole === "AGENT") return "Agent";
+
+      const creatorId =
+        typeof creator === "object" && creator
+          ? String(creator.id ?? creator._id ?? "")
+          : "";
+      const referringId =
+        typeof referring === "object" && referring
+          ? String(referring.id ?? referring._id ?? "")
+          : "";
+      if (creatorId && referringId && creatorId === referringId) return "Agent";
+
+      return raw;
     }
 
-    const creator = application.createdBy as
-      | { id?: string; _id?: string; role?: string }
-      | string
-      | undefined;
-    const referring = application.referringAgent as
-      | { id?: string; _id?: string }
-      | string
-      | undefined;
-
-    const creatorRole =
-      typeof creator === "object" && creator?.role != null
-        ? String(creator.role).toUpperCase().replace(/-/g, "_")
-        : "";
-    if (creatorRole === "AGENT") return "Agent";
-
-    const creatorId =
-      typeof creator === "object" && creator
-        ? String(creator.id ?? creator._id ?? "")
-        : "";
-    const referringId =
-      typeof referring === "object" && referring
-        ? String(referring.id ?? referring._id ?? "")
-        : "";
-    if (creatorId && referringId && creatorId === referringId) return "Agent";
-
-    return raw;
+    /** Use `currentQueue` only — do not fall back to `currentState` (Pending / In Progress). */
+    const pipelineLabel = formatDealPipelineCurrentStateLabel({
+      currentQueue: raw,
+      queue: raw,
+    });
+    return pipelineLabel === "—" ? raw : pipelineLabel;
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {

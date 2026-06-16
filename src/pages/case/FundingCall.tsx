@@ -11,6 +11,8 @@ type FundingCallProps = {
   applicationId?: string;
   /** Refetch application detail after save (e.g. when backend moves currentQueue to Funding Call). */
   onSaved?: () => void;
+  /** Notify parent when call status changes (saved or in-form selection). */
+  onCallStatusChange?: (status: string) => void;
 };
 
 interface CallFormState {
@@ -20,7 +22,7 @@ interface CallFormState {
   followUpDate: string;
 }
 
-export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
+export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: FundingCallProps) => {
   const dispatch = useDispatch<AppDispatch>();
   const { loading: saving, success, error } = useSelector(
     (state: RootState) => state.createFundingCall,
@@ -79,49 +81,26 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
 
   // When existing calls load, populate form from latest entry
   useEffect(() => {
-    if (!existingCalls || existingCalls.length === 0) return;
+    if (!existingCalls || existingCalls.length === 0) {
+      onCallStatusChange?.('');
+      return;
+    }
     const latest = existingCalls[0];
+    const callStatus = latest.callStatus || '';
     setForm((prev) => ({
       ...prev,
-      callStatus: latest.callStatus || '',
+      callStatus,
       applicationStatus: latest.applicationStatus || '',
       remarks: latest.remarks || '',
       followUpDate: latest.followUpDate
         ? new Date(latest.followUpDate).toLocaleDateString('en-US')
         : '',
     }));
-  }, [existingCalls]);
+    onCallStatusChange?.(callStatus);
+  }, [existingCalls, onCallStatusChange]);
 
-  const handleSelect = (status: string) => {
-    if (isBusy) return;
-    setForm((prev) => ({ ...prev, callStatus: status }));
-    setErrors({ callStatus: false });
-    setIsDropdownOpen(false);
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
-  };
-
-  // React to Redux createFundingCall result
-  useEffect(() => {
-    if (success) {
-      setShowSuccess(true);
-      toast.success('Funding call saved successfully.');
-      onSaved?.();
-      dispatch(resetCreateFundingCall());
-    }
-  }, [success, dispatch, onSaved]);
-
-  useEffect(() => {
-    if (error) {
-      toast.error(error);
-    }
-  }, [error]);
-
-  const handleSave = () => {
-    if (!form.callStatus) {
+  const submitFundingCall = (data: CallFormState) => {
+    if (!data.callStatus) {
       setErrors({ callStatus: true });
       return;
     }
@@ -134,12 +113,55 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
     dispatch(
       createFundingCall({
         application: applicationId,
-        callStatus: form.callStatus,
-        applicationStatus: form.applicationStatus || null,
-        remarks: form.remarks || null,
-        followUpDate: form.followUpDate || null,
+        callStatus: data.callStatus,
+        applicationStatus: data.applicationStatus || null,
+        remarks: data.remarks || null,
+        followUpDate: data.followUpDate || null,
       }),
     );
+  };
+
+  const handleSelect = (status: string) => {
+    if (isBusy) return;
+    const snapshot: CallFormState = { ...form, callStatus: status };
+    setForm(snapshot);
+    setErrors({ callStatus: false });
+    setIsDropdownOpen(false);
+    onCallStatusChange?.(status);
+
+    if (status === 'Rejected') {
+      submitFundingCall(snapshot);
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  // React to Redux createFundingCall result
+  useEffect(() => {
+    if (success) {
+      setShowSuccess(true);
+      const declined = form.callStatus === 'Rejected';
+      toast.success(
+        declined
+          ? 'Application declined successfully.'
+          : 'Funding call saved successfully.',
+      );
+      onSaved?.();
+      dispatch(resetCreateFundingCall());
+    }
+  }, [success, dispatch, onSaved, form.callStatus]);
+
+  useEffect(() => {
+    if (error) {
+      toast.error(error);
+    }
+  }, [error]);
+
+  const handleSave = () => {
+    submitFundingCall(form);
   };
 
   return (
@@ -190,7 +212,10 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
             'dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
           )}
         >
-          <span>✓</span> Application status updated successfully.
+          <span>✓</span>{' '}
+          {form.callStatus === 'Rejected'
+            ? 'Application declined successfully.'
+            : 'Application status updated successfully.'}
         </div>
       )}
 

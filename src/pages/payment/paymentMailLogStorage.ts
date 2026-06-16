@@ -117,6 +117,20 @@ export function normalizePaymentMailLogRow(row: unknown): PaymentMailLogEntry | 
   };
 }
 
+export function mergePaymentMailLogs(entries: PaymentMailLogEntry[]): void {
+  const prev = safeParse(localStorage.getItem(STORAGE_KEY));
+  const merged = new Map(prev.map((row) => [row.id, row]));
+  for (const row of entries) merged.set(row.id, row);
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify(
+      [...merged.values()].sort(
+        (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()
+      )
+    )
+  );
+}
+
 export function getPaymentMailLogs(): PaymentMailLogEntry[] {
   return safeParse(localStorage.getItem(STORAGE_KEY)).sort(
     (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()

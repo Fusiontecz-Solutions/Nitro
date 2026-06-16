@@ -148,9 +148,16 @@ export default function ApplicationDetailsSheet({
     roleUpper
   )
   const isOperationsRole = roleUpper === "OPERATIONS"
+  const isSuperAdminRole = roleUpper === "SUPER_ADMIN"
   const agentSheetTabIds = new Set(["details", "files", "comments", "remarks"])
   const visibleTabs = (canSeeDedupe ? TABS : TABS.filter((t) => t.id !== "dedupe"))
-    .filter((t) => !(isOperationsRole && t.id === "Bank Analysis"))
+    .filter(
+      (t) =>
+        !(
+          (isOperationsRole || isSuperAdminRole) &&
+          t.id === "Bank Analysis"
+        ),
+    )
     .filter((t) => !isAgentRole || agentSheetTabIds.has(t.id))
 
   // Derive clientId from application
@@ -176,10 +183,13 @@ export default function ApplicationDetailsSheet({
     if (activeTab === "dedupe" && !canSeeDedupe) {
       setActiveTab("details")
     }
-    if (activeTab === "Bank Analysis" && isOperationsRole) {
+    if (
+      activeTab === "Bank Analysis" &&
+      (isOperationsRole || isSuperAdminRole)
+    ) {
       setActiveTab("details")
     }
-  }, [open, activeTab, canSeeDedupe, isOperationsRole])
+  }, [open, activeTab, canSeeDedupe, isOperationsRole, isSuperAdminRole])
 
   if (!application) return null
 
