@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import MyNotes from '@/components/application/MyNotes';
+import RejectApplicationModal from '@/components/application/RejectApplicationModal';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import { createFundingCall, getFundingCalls } from '@/redux/actions/fundingCallActions';
@@ -47,6 +48,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   // Calendar state
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const calendarRef = useRef<HTMLDivElement | null>(null);
 
   const options = ["Call Done", "Not Reachable", "Call Back Later", "Rejected", "Interested"];
@@ -123,15 +125,39 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
 
   const handleSelect = (status: string) => {
     if (isBusy) return;
+    setIsDropdownOpen(false);
+
+    if (status === 'Rejected') {
+      setRejectModalOpen(true);
+      return;
+    }
+
     const snapshot: CallFormState = { ...form, callStatus: status };
     setForm(snapshot);
     setErrors({ callStatus: false });
-    setIsDropdownOpen(false);
     onCallStatusChange?.(status);
+  };
 
-    if (status === 'Rejected') {
-      submitFundingCall(snapshot);
+  const handleAfterReject = async (reason: string) => {
+    if (!applicationId) {
+      toast.error('Application ID is missing for this funding call.');
+      throw new Error('Application ID is missing');
     }
+
+    const snapshot: CallFormState = { ...form, callStatus: 'Rejected' };
+    setForm(snapshot);
+    setErrors({ callStatus: false });
+    onCallStatusChange?.('Rejected');
+
+    await dispatch(
+      createFundingCall({
+        application: applicationId,
+        callStatus: 'Rejected',
+        applicationStatus: form.applicationStatus || null,
+        remarks: reason,
+        followUpDate: form.followUpDate || null,
+      }),
+    ).unwrap();
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -144,11 +170,9 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     if (success) {
       setShowSuccess(true);
       const declined = form.callStatus === 'Rejected';
-      toast.success(
-        declined
-          ? 'Application declined successfully.'
-          : 'Funding call saved successfully.',
-      );
+      if (!declined) {
+        toast.success('Funding call saved successfully.');
+      }
       onSaved?.();
       dispatch(resetCreateFundingCall());
     }
@@ -161,6 +185,10 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   }, [error]);
 
   const handleSave = () => {
+    if (form.callStatus === 'Rejected') {
+      setRejectModalOpen(true);
+      return;
+    }
     submitFundingCall(form);
   };
 
@@ -456,6 +484,13 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
           className="pointer-events-auto absolute inset-0 z-[999] rounded-[18px] bg-transparent"
         />
       )}
+
+      <RejectApplicationModal
+        open={rejectModalOpen}
+        onOpenChange={setRejectModalOpen}
+        onAfterReject={handleAfterReject}
+        confirmLoading={saving}
+      />
     </div>
   );
 };

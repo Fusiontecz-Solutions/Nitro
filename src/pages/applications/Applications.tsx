@@ -1,14 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  Filter,
-  ChevronDown,
   Search,
   Plus,
   BadgeCheck,
@@ -96,7 +88,6 @@ import {
   buildApplicationsListParams,
   applicationsListSortFromTable,
   APPLICATIONS_LIST_DEFAULT_SORT,
-  pipelineStatusFilterToApiFields,
 } from "@/lib/applicationsListParams";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
@@ -114,6 +105,7 @@ import {
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
 import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
 import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
+import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
 import {
   normalizeRoleKey,
   resolveEffectiveRole,
@@ -155,25 +147,6 @@ function formatUnderwriterClaimLabel(
   }
   return "—";
 }
-
-/**
- * Deal Pipeline sidebar — aligns with Super Admin deal pipeline queues.
- * Values are backend `currentQueue` unless noted (Disbursement → Disbursment in DB).
- * Contract Signed maps to `operationsStatus=Contract_Signed` via {@link pipelineStatusFilterToApiFields}.
- */
-const APPLICATIONS_QUEUE_FILTER_OPTIONS = [
-  { label: "Agent", value: "Agent" },
-  { label: "Underwriter", value: "Underwriter" },
-  { label: "Final Underwriter", value: "Final Underwriter" },
-  { label: "Contract Generated", value: "Contract Generated" },
-  { label: "Contract Sent", value: "Contract Sent" },
-  { label: "Contract Cancelled", value: "Contract Cancelled" },
-  { label: "Contract Signed", value: "Contract_Signed" },
-  { label: "Final", value: "Final" },
-  { label: "Funding call", value: "Funding Call" },
-  { label: "Disbursement", value: "Disbursment" },
-  { label: "Funded", value: "Funded" },
-] as const;
 
 const APPLICATIONS_VIEW_MODE_STORAGE_KEY = "applicationsListViewMode";
 
@@ -814,7 +787,7 @@ const Applications = () => {
         id: "seeProgress",
         header: () => (
           <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
-            See Progress
+            Progress
           </span>
         ),
         cell: ({ row }) => {
@@ -1663,13 +1636,8 @@ const Applications = () => {
     }
   }, [bulkUploadProgress]);
 
-  const pipelineFilterButtonLabel = useMemo(() => {
-    if (statusFilter === "all") return "All";
-    const fromOptions = APPLICATIONS_QUEUE_FILTER_OPTIONS.find(
-      (o) => o.value === statusFilter,
-    );
-    return fromOptions?.label ?? statusFilter;
-  }, [statusFilter]);
+  const showStatusFilterDropdown =
+    !isOperationsDashboardView && !showUwDealPoolUi;
 
   const showOperationsFilterBack =
     Boolean(dashboardStateFilter) &&
@@ -2107,7 +2075,7 @@ const Applications = () => {
         </section>
       )}
 
-      <div className="mt-4 flex flex-col lg:flex-row items-stretch lg:items-center gap-3 justify-between">
+      <div className="relative z-10 mt-4 flex flex-col lg:flex-row items-stretch lg:items-center gap-3 justify-between">
         <div className="flex items-center gap-3 w-full lg:max-w-[680px]">
           {showOperationsFilterBack && (
             <Button
@@ -2161,40 +2129,14 @@ const Applications = () => {
               </Button>
             </div>
           ) : null}
-          {!isOperationsDashboardView && !showUwDealPoolUi ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  className="h-10 gap-2 text-muted-foreground bg-card"
-                >
-                  <Filter className="size-4" />
-                  <span>{pipelineFilterButtonLabel}</span>
-                  <ChevronDown className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem
-                  onClick={() => {
-                    setStatusFilter("all");
-                    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                  }}
-                >
-                  All
-                </DropdownMenuItem>
-                {APPLICATIONS_QUEUE_FILTER_OPTIONS.map((opt) => (
-                  <DropdownMenuItem
-                    key={opt.value}
-                    onClick={() => {
-                      setStatusFilter(opt.value);
-                      setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                    }}
-                  >
-                    {opt.label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+          {showStatusFilterDropdown ? (
+            <ApplicationStatusFilterDropdown
+              value={statusFilter}
+              onChange={(next) => {
+                setStatusFilter(next);
+                setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+              }}
+            />
           ) : null}
           <ApplicationTypeFilterDropdown
             value={typeFilter}

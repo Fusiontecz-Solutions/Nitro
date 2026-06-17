@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
@@ -6,18 +6,22 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { Application } from "@/types/applicationTypes"
 import type { Client } from "@/types/clientTypes"
-import ApplicationSheetComments from "./ApplicationSheetComments"
 import ApplicationSheetDudep from "./ApplicationSheetDudep"
-import ApplicationSheetFiles from "./ApplicationSheetFiles"
-import ApplicationSheetNotes from "./ApplicationSheetNotes"
 import ApplicationSheetActivityLog from "./ApplicationSheetActivityLog"
-import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail"
-import ApplicationSheetBankAnalysis from "./ApplicationSheetBankAnalysis"
-
+import ApplicationSheetMailLog from "./ApplicationSheetMailLog"
+import ContractTab from "./ContractTab"
+import { Final } from "@/pages/case/Final"
+import { FundingCall } from "@/pages/case/FundingCall"
+import { Disbursement } from "@/pages/case/Disbursment"
+import ApplicationSummary from "./ApplicationSummary"
+import UploadedDocuments from "./UploadedDocuments"
+import BankAnalysisTable from "./BankAnalysisTable"
+import PositionTableCalculator from "./PositionTableCalculator"
+import { getPositions } from "@/redux/actions/positionActions"
+import { canRoleEditDecisionMakingTab } from "@/lib/decisionMakingAccess"
+import { resolveEffectiveRole } from "@/lib/sessionRole"
 
 import { formatCurrency, formatDate as formatDateUtil } from "@/lib/utils"
-import { getWorkflowCurrentStateLabel } from "@/lib/applicationWorkflowState"
-import { formatActionRequired } from "@/lib/formatActionRequired"
 import { useTheme } from "@/context/ThemeContext"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -28,6 +32,7 @@ import {
   AlertCircle
 } from "lucide-react"
 import { getClientByClientId } from "@/redux/actions/clientActions"
+import { getApplicationByApplicationId } from "@/redux/actions/applicationActions"
 
 type ApplicationDetailsSheetProps = {
   application: Application | null
@@ -52,74 +57,62 @@ function formatMaybeDate(value: unknown): string {
   return formatDateUtil(value, "-")
 }
 
-/**
- * Derive a user-facing status label for the drawer summary.
- * This mirrors the "Current State" badge logic used in the applications list
- * so that both places stay consistent.
- */
-function deriveStatus(app: any | null | undefined): string {
-  if (!app) return "Pending"
-
-  const currentStateRaw = app.currentState ?? app.state
-  const currentStateStr = String(currentStateRaw ?? "").trim()
-
-  // Match the "Final Underwriter-Approved" special case from the list view.
-  const hasApprovedInCurrentState = /\bapproved\b/i.test(currentStateStr)
-  if (hasApprovedInCurrentState) {
-    return "Final Underwriter-Approved"
+function toISODateOrEmpty(input: unknown): string {
+  if (typeof input === "string") {
+    if (input.length >= 10) return input.slice(0, 10)
+    return input
   }
-
-  const queue = app.currentQueue || app.queue
-  if (queue == null || String(queue).trim() === "") {
-    // Fallback to workflow-based label when queue is missing,
-    // to keep behavior reasonable for legacy data.
-    return getWorkflowCurrentStateLabel(app)
-  }
-
-  const rawQueue = String(queue).trim()
-  if (rawQueue.toLowerCase() !== "new") {
-    return rawQueue
-  }
-
-  // For "New" queue, reuse the same Agent/New distinction as the list view.
-  const creator = app.createdBy as
-    | { id?: string; _id?: string; role?: string }
-    | string
-    | undefined
-  const referring = app.referringAgent as
-    | { id?: string; _id?: string }
-    | string
-    | undefined
-
-  const creatorRole =
-    typeof creator === "object" && creator?.role != null
-      ? String(creator.role).toUpperCase().replace(/-/g, "_")
-      : ""
-  if (creatorRole === "AGENT") return "Agent"
-
-  const creatorId =
-    typeof creator === "object" && creator
-      ? String(creator.id ?? creator._id ?? "")
-      : ""
-  const referringId =
-    typeof referring === "object" && referring
-      ? String(referring.id ?? referring._id ?? "")
-      : ""
-  if (creatorId && referringId && creatorId === referringId) return "Agent"
-
-  return rawQueue
+  if (!input) return ""
+  const d = new Date(input as string | number | Date)
+  if (Number.isNaN(d.getTime())) return ""
+  return d.toISOString().slice(0, 10)
 }
+
+function mapPositionsForCalculator(positions: Array<Record<string, unknown>>) {
+  return positions.map((p) => {
+    const fundingDateIso = toISODateOrEmpty(p.fundingDate)
+    const closeDateIso = toISODateOrEmpty(p.closeDate)
+
+    return {
+      _id: p._id,
+      lender: p.funder ?? "",
+      frequency: p.frequency ?? "",
+      installment: p.ach != null ? String(p.ach) : "",
+      status: p.status ?? (p.activeStatus ? "ACTIVE" : "SELECT"),
+      startingDate: fundingDateIso,
+      amountFunded: p.fundedAmount != null ? String(p.fundedAmount) : "",
+      loanAmount: p.loanAmount != null ? String(p.loanAmount) : "",
+      totalRepayments: p.paybackAmount != null ? String(p.paybackAmount) : "",
+      paymentTerm: p.paymentTerm != null ? String(p.paymentTerm) : "",
+      mcaEstBalance: p.mcaEstBalance != null ? String(p.mcaEstBalance) : "",
+      mcaPercentPaid: p.mcaPercentPaid != null ? String(p.mcaPercentPaid) : "",
+      pmtsLeft: p.pmtsLeft != null ? String(p.pmtsLeft) : "",
+      estEndDate: closeDateIso,
+      mcaRemit:
+        p.mcaRemit != null || p.percentOfGross != null
+          ? String(p.mcaRemit ?? p.percentOfGross ?? "")
+          : "",
+      monthlyMcaPmts: p.monthlyMcaPmts != null ? String(p.monthlyMcaPmts) : "",
+      carryForward: p.carryForward != null ? String(p.carryForward) : "",
+      allocatedBankAnalysisId:
+        Number.isInteger(p.allocatedBankAnalysisId) &&
+        Number(p.allocatedBankAnalysisId) > 0
+          ? Number(p.allocatedBankAnalysisId)
+          : undefined,
+      isLocked: true,
+    }
+  })
+}
+
 const TABS = [
   { id: "details", label: "Application Details", icon: <FileText className="w-4 h-4" /> },
-  { id: "files", label: "Files", icon: <Briefcase className="w-4 h-4" /> },
-
-  { id: "dedupe", label: "Dedupe", icon: <AlertCircle className="w-4 h-4" /> },
-  { id: "bankDetails", label: "Bank Details", icon: <AlertCircle className="w-4 h-4" /> },
-  { id: "Bank Analysis", label: "Bank Analysis", icon: <AlertCircle className="w-4 h-4" /> },
-  { id: "comments", label: "Comments", icon: <AlertCircle className="w-4 h-4" /> },
+  { id: "contract", label: "Contracts", icon: <FileText className="w-4 h-4" /> },
+  { id: "final", label: "Final", icon: <Briefcase className="w-4 h-4" /> },
+  { id: "funding", label: "Funding", icon: <Briefcase className="w-4 h-4" /> },
+  { id: "disbursement", label: "Disbursement", icon: <Briefcase className="w-4 h-4" /> },
+  { id: "mailLog", label: "Mail Log", icon: <AlertCircle className="w-4 h-4" /> },
   { id: "activityLog", label: "Activity Log", icon: <Building2 className="w-4 h-4" /> },
-  { id: "remarks", label: "Note", icon: <FileText className="w-4 h-4" /> },
-
+  { id: "dedupe", label: "Dedupe", icon: <AlertCircle className="w-4 h-4" /> },
 ]
 
 export default function ApplicationDetailsSheet({
@@ -130,10 +123,17 @@ export default function ApplicationDetailsSheet({
 
 
   const [activeTab, setActiveTab] = useState("details")
+  const [bankNetCreditAvg, setBankNetCreditAvg] = useState<number | null>(null)
   const dispatch = useDispatch<AppDispatch>()
   const { resolvedTheme } = useTheme()
   const { data: clientData, loading: clientLoading, currentClientId } = useSelector(
     (state: RootState) => state.clientDetail
+  )
+  const positionsState = useSelector((state: RootState) => state.positions)
+  const loginUser = useSelector((state: RootState) => state.login?.data?.user)
+  const canEditDecisionMaking = useMemo(
+    () => canRoleEditDecisionMakingTab(resolveEffectiveRole(loginUser)),
+    [loginUser],
   )
 
   const userRole = useSelector(
@@ -143,22 +143,11 @@ export default function ApplicationDetailsSheet({
       ""
   )
   const roleUpper = String(userRole || "").replace(/-/g, "_").toUpperCase()
-  const isAgentRole = roleUpper === "AGENT"
   const canSeeDedupe = ["UNDERWRITER", "FINAL_UNDERWRITER", "ADMIN", "SUPER_ADMIN"].includes(
     roleUpper
   )
   const isOperationsRole = roleUpper === "OPERATIONS"
-  const isSuperAdminRole = roleUpper === "SUPER_ADMIN"
-  const agentSheetTabIds = new Set(["details", "files", "comments", "remarks"])
-  const visibleTabs = (canSeeDedupe ? TABS : TABS.filter((t) => t.id !== "dedupe"))
-    .filter(
-      (t) =>
-        !(
-          (isOperationsRole || isSuperAdminRole) &&
-          t.id === "Bank Analysis"
-        ),
-    )
-    .filter((t) => !isAgentRole || agentSheetTabIds.has(t.id))
+  const visibleTabs = canSeeDedupe ? TABS : TABS.filter((t) => t.id !== "dedupe")
 
   // Derive clientId from application
   const clientIdFromApplication = (() => {
@@ -178,41 +167,77 @@ export default function ApplicationDetailsSheet({
     dispatch(getClientByClientId(clientIdFromApplication))
   }, [open, clientIdFromApplication, currentClientId, clientData, dispatch])
 
+  const dealApplicationId = application
+    ? String(application.applicationId ?? application._id)
+    : null
+
+  useEffect(() => {
+    if (!open || !dealApplicationId) return
+    dispatch(getApplicationByApplicationId(dealApplicationId))
+    dispatch(getPositions({ application: dealApplicationId }))
+  }, [open, dealApplicationId, dispatch])
+
+  const scopedPositions = useMemo(() => {
+    if (!dealApplicationId) return []
+    const currentScopeId = positionsState.currentApplicationId
+      ? String(positionsState.currentApplicationId)
+      : ""
+    const allowedIds = [dealApplicationId].filter(Boolean).map((id) => String(id))
+    if (currentScopeId && !allowedIds.includes(currentScopeId)) return []
+    return Array.isArray(positionsState.data) ? positionsState.data : []
+  }, [dealApplicationId, positionsState.currentApplicationId, positionsState.data])
+
+  const calculatorPositions = useMemo(
+    () => mapPositionsForCalculator(scopedPositions as unknown as Array<Record<string, unknown>>),
+    [scopedPositions],
+  )
+
+  const bankAnalysisPositions = useMemo(
+    () =>
+      scopedPositions.map((p) => {
+        const row = p as unknown as Record<string, unknown>
+        return {
+          amountFunded: row.fundedAmount != null ? String(row.fundedAmount) : "",
+          startingDate:
+            typeof row.fundingDate === "string"
+              ? row.fundingDate.slice(0, 10)
+              : row.fundingDate
+                ? new Date(row.fundingDate as string | number | Date).toISOString().slice(0, 10)
+                : "",
+          allocatedBankAnalysisId:
+            Number.isInteger(row.allocatedBankAnalysisId) &&
+            Number(row.allocatedBankAnalysisId) > 0
+              ? Number(row.allocatedBankAnalysisId)
+              : undefined,
+        }
+      }),
+    [scopedPositions],
+  )
+
   useEffect(() => {
     if (!open) return
     if (activeTab === "dedupe" && !canSeeDedupe) {
       setActiveTab("details")
     }
-    if (
-      activeTab === "Bank Analysis" &&
-      (isOperationsRole || isSuperAdminRole)
-    ) {
-      setActiveTab("details")
-    }
-  }, [open, activeTab, canSeeDedupe, isOperationsRole, isSuperAdminRole])
+  }, [open, activeTab, canSeeDedupe])
 
   if (!application) return null
 
   const clientName = getClientNameFromApplication(application.client)
   const appId = String(application.applicationId ?? application._id)
   const applicationId = String(application._id)
+  const currentQueue =
+    (application as any)?.currentQueue || (application as any)?.queue || null
 
 
   const business: Client["business"] | null = clientData?.business ?? null
   const owner: Client["owner"] | null = clientData?.owner ?? null
   const isDark = resolvedTheme === "dark"
-  const isSummaryLoading = clientLoading && !owner && !business
   const isCoreDetailsLoading =
     Boolean(clientIdFromApplication) &&
     (clientLoading || currentClientId !== clientIdFromApplication) &&
     !owner &&
     !business
-  const loanAmount =
-    application?.loanAmount != null && !Number.isNaN(Number(application.loanAmount))
-      ? Number(application.loanAmount)
-      : null
-  const status = deriveStatus(application as any)
-  const actionRequired = formatActionRequired((application as any)?.note)
   const summaryGradient = isDark
     ? "linear-gradient(90deg, #6F7887 0%, #6F7887 40%, #AAAEB5 100%)"
     : "linear-gradient(135deg, #3B8BD1 0%, #2566A9 50%, #0E416E 100%)"
@@ -265,8 +290,8 @@ export default function ApplicationDetailsSheet({
                     <CardContent className="px-8 py-6" style={{ background: summaryGradient }}>
                       <div className="space-y-4">
                         <Skeleton className="h-8 w-[260px] bg-white/30" />
-                        <div className={`grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 rounded-lg p-4 shadow-md dark:shadow-lg ${isDark ? "bg-white/20" : "bg-white/30"}`}>
-                          {Array.from({ length: 5 }).map((_, index) => (
+                        <div className={`grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 rounded-lg p-4 shadow-md dark:shadow-lg ${isDark ? "bg-white/20" : "bg-white/30"}`}>
+                          {Array.from({ length: 6 }).map((_, index) => (
                             <div key={index} className="space-y-2">
                               <Skeleton className="h-4 w-[140px] bg-white/30" />
                               <Skeleton className="h-5 w-[100px] bg-white/30" />
@@ -293,88 +318,15 @@ export default function ApplicationDetailsSheet({
                 </div>
               ) : (
                 <TabsContent value="details" className="m-0 space-y-8">
-                  {/* Application Summary Section */}
-                  <section className="space-y-4">
-                    <Card className={`border-0 rounded-lg shadow-xl overflow-hidden py-0 ${isDark ? "" : "dark:border dark:border-border"}`}>
-                      <CardContent className="px-8 py-6" style={{ background: summaryGradient }}>
-                        <div className="flex flex-wrap items-center gap-3 mb-5">
-                          <h3 className="text-white text-2xl font-[700] font-roboto">APPLICATION SUMMARY</h3>
-                        </div>
-                        <div className={`grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 rounded-lg p-4 justify-center items-center shadow-md dark:shadow-lg ${isDark ? "bg-white/20" : "bg-white/30"}`}>
-                          <div className="text-white">
-                            {isSummaryLoading ? (
-                              <div className="space-y-2 pr-12">
-                                <Skeleton className="h-4 w-[150px] bg-white/30" />
-                                <Skeleton className="h-4 w-[100px] bg-white/30" />
-                              </div>
-                            ) : (
-                              <>
-                                <p className="text-sm font-medium opacity-90 mb-1">Borrower Name</p>
-                                <p className="text-base font-semibold capitalize">
-                                  {owner
-                                    ? `${owner.firstName || ""} ${owner.lastName || ""}`.trim() || clientName
-                                    : clientName || "-"}
-                                </p>
-                              </>
-                            )}
-                          </div>
-                          <div className="text-white">
-                            {isSummaryLoading ? (
-                              <div className="space-y-2 pr-12">
-                                <Skeleton className="h-4 w-[150px] bg-white/30" />
-                                <Skeleton className="h-4 w-[100px] bg-white/30" />
-                              </div>
-                            ) : (
-                              <>
-                                <p className="text-sm font-medium opacity-90 mb-1">Business Name</p>
-                                <p className="text-base font-semibold capitalize">{business?.name || clientName || "-"}</p>
-                              </>
-                            )}
-                          </div>
-                          <div className="text-white">
-                            {isSummaryLoading ? (
-                              <div className="space-y-2 pr-12">
-                                <Skeleton className="h-4 w-[150px] bg-white/30" />
-                                <Skeleton className="h-4 w-[100px] bg-white/30" />
-                              </div>
-                            ) : (
-                              <>
-                                <p className="text-sm font-medium opacity-90 mb-1">Loan Amount</p>
-                                <p className="text-base font-semibold">{loanAmount != null ? formatCurrency(loanAmount) : "-"}</p>
-                              </>
-                            )}
-                          </div>
-                          <div className="text-white">
-                            {isSummaryLoading ? (
-                              <div className="space-y-2 pr-12">
-                                <Skeleton className="h-4 w-[150px] bg-white/30" />
-                                <Skeleton className="h-4 w-[100px] bg-white/30" />
-                              </div>
-                            ) : (
-                              <>
-                                <p className="text-sm font-medium opacity-90 mb-1">Status</p>
-                                <p className="text-base font-semibold capitalize">{status}</p>
-                              </>
-                            )}
-                          </div>
-                          <div className="text-white text-center">
-                            {isSummaryLoading ? (
-                              <div className="space-y-2">
-                                <Skeleton className="h-4 w-[150px] bg-white/30" />
-                                <Skeleton className="h-4 w-[100px] bg-white/30" />
-                              </div>
-                            ) : (
-                              <>
-                                <p className="text-sm font-medium opacity-90 mb-1">Action Required</p>
-                                <p className="text-base text-white/70 font-[300] font-roboto whitespace-pre-wrap break-words">
-                                  {actionRequired}
-                                </p>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
+                  <ApplicationSummary applicationId={appId} />
+
+                  <Separator />
+
+                  <section>
+                    <UploadedDocuments
+                      applicationId={appId}
+                      readOnly={isOperationsRole}
+                    />
                   </section>
 
                   <Separator />
@@ -462,43 +414,97 @@ export default function ApplicationDetailsSheet({
                     />
                   </section>
 
+                  <Separator />
+
+                  <section className="space-y-6">
+                    <div
+                      className="hidden"
+                      aria-hidden="true"
+                      style={{ position: "absolute", left: -9999, top: 0 }}
+                    >
+                      <BankAnalysisTable
+                        showOnlyTotals
+                        onNetCreditAverageChange={(avg) => setBankNetCreditAvg(avg)}
+                        applicationId={appId}
+                        positions={bankAnalysisPositions as any}
+                      />
+                    </div>
+                    <BankAnalysisTable
+                      showOnlyTotals={!canEditDecisionMaking}
+                      readOnly={!canEditDecisionMaking}
+                      disableCreate={!canEditDecisionMaking}
+                      applicationId={appId}
+                      positions={bankAnalysisPositions as any}
+                    />
+                  </section>
+
+                  <Separator />
+
+                  <section>
+                    <PositionTableCalculator
+                      applicationId={appId}
+                      positions={calculatorPositions as any}
+                      avgBankNetCredit={bankNetCreditAvg ?? undefined}
+                      readOnly={!canEditDecisionMaking}
+                      disableDelete={!canEditDecisionMaking}
+                      disableCreate={!canEditDecisionMaking}
+                    />
+                  </section>
+
                 </TabsContent>
               )}
 
-              {/* Files Tab */}
-              {activeTab === "files" && (
-                <TabsContent value="files" className="m-0">
-                  {/* For files we want to fetch by business applicationId (Deal ID) */}
-                  <ApplicationSheetFiles
-                    applicationId={String(application.applicationId ?? "")}
-                    readOnly={isOperationsRole}
+              {/* Contracts Tab */}
+              {activeTab === "contract" && (
+                <TabsContent value="contract" className="m-0">
+                  <ContractTab readOnly={isOperationsRole} />
+                </TabsContent>
+              )}
+
+              {/* Final Tab */}
+              {activeTab === "final" && (
+                <TabsContent value="final" className="m-0">
+                  <Final
+                    applicationId={appId}
+                    onBack={() => onOpenChange(false)}
                   />
                 </TabsContent>
               )}
 
-              {/* Notes / Remarks Tab */}
-              {activeTab === "remarks" && (
-                <TabsContent value="remarks" className="m-0">
-                  <ApplicationSheetNotes applicationId={applicationId} />
+              {/* Funding Tab */}
+              {activeTab === "funding" && (
+                <TabsContent value="funding" className="m-0">
+                  <FundingCall applicationId={appId} />
                 </TabsContent>
               )}
 
-              {/* Dedupe Tab */}
-              {canSeeDedupe && activeTab === "dedupe" && (
-                <TabsContent value="dedupe" className="m-0">
-                  <ApplicationSheetDudep
+              {/* Disbursement Tab */}
+              {activeTab === "disbursement" && (
+                <TabsContent value="disbursement" className="m-0">
+                  <Disbursement
+                    applicationId={appId}
+                    summaryApplicationId={appId}
+                    applicationRecordId={applicationId}
+                    currentQueue={currentQueue}
+                    onBack={() => onOpenChange(false)}
+                  />
+                </TabsContent>
+              )}
+
+              {/* Mail Log Tab */}
+              {activeTab === "mailLog" && (
+                <TabsContent
+                  value="mailLog"
+                  className="m-0 flex min-h-0 flex-1 flex-col overflow-hidden"
+                >
+                  <ApplicationSheetMailLog
                     applicationId={applicationId}
-                    onNavigateAway={() => onOpenChange(false)}
+                    active={activeTab === "mailLog"}
+                    className="min-h-0 flex-1"
                   />
                 </TabsContent>
               )}
 
-              {/* Comments Tab */}
-              {activeTab === "comments" && (
-                <TabsContent value="comments" className="m-0">
-                  <ApplicationSheetComments applicationId={applicationId} />
-                </TabsContent>
-              )}
               {/* Activity Log Tab */}
               {activeTab === "activityLog" && (
                 <TabsContent
@@ -512,16 +518,13 @@ export default function ApplicationDetailsSheet({
                 </TabsContent>
               )}
 
-              {/* Bank Details Tab */}
-              {activeTab === "bankDetails" && (
-                <TabsContent value="bankDetails" className="m-0">
-                  <ApplicationSheetBankDetail applicationId={applicationId} />
-                </TabsContent>
-              )}
-              {/* Bank Analysis Tab */}
-              {activeTab === "Bank Analysis" && (
-                <TabsContent value="Bank Analysis" className="m-0">
-                  <ApplicationSheetBankAnalysis applicationId={appId} />
+              {/* Dedupe Tab */}
+              {canSeeDedupe && activeTab === "dedupe" && (
+                <TabsContent value="dedupe" className="m-0">
+                  <ApplicationSheetDudep
+                    applicationId={applicationId}
+                    onNavigateAway={() => onOpenChange(false)}
+                  />
                 </TabsContent>
               )}
 

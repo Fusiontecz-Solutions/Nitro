@@ -44,7 +44,7 @@ export function ApplicationTypeFilterDropdown({
           <ChevronDown className="size-4 shrink-0" aria-hidden />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
+      <DropdownMenuContent align="start" className="z-50">
         <DropdownMenuItem onClick={() => onChange("all")}>All types</DropdownMenuItem>
         {APPLICATION_TYPE_FILTER_OPTIONS.map((opt) => (
           <DropdownMenuItem key={opt.value} onClick={() => onChange(opt.value)}>

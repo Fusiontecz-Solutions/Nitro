@@ -416,7 +416,6 @@ const ChecksAndDecision = ({
 
             {/* Request Missing Documents Modal */}
             <RequestMissingDocumentsModal
-                variant="send-back"
                 open={isRequestDocumentsModalOpen}
                 onOpenChange={setIsRequestDocumentsModalOpen}
             />

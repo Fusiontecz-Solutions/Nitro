@@ -13,6 +13,7 @@ import HighlightOff from "@mui/icons-material/HighlightOff";
 import FactCheck from "@mui/icons-material/FactCheck";
 import Article from "@mui/icons-material/Article";
 import CheckCircle from "@mui/icons-material/CheckCircle";
+import Phone from "@mui/icons-material/Phone";
 import Payments from "@mui/icons-material/Payments";
 import Paid from "@mui/icons-material/Paid";
 import AccountBalance from "@mui/icons-material/AccountBalance";
@@ -53,6 +54,10 @@ import {
 } from "@/lib/sessionRole";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
 import { operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
+import {
+  getPipelineCountBadgeClass,
+  resolveApplicationsPipelineCount,
+} from "@/lib/applicationsPipelineFilter";
 import { cn } from "@/lib/utils";
 import { clearCrmCacheOnLogout } from "@/lib/crmCache";
 import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
@@ -65,7 +70,8 @@ type PipelineAccent =
   | "contract-pending"
   | "contract-generated"
   | "contract-signed"
-  | "finals-funding"
+  | "final"
+  | "funding-call"
   | "disbursement"
   | "funded"
   | "rejected";
@@ -135,44 +141,6 @@ function SyndicatorsSidebarIcon(props: SvgIconProps) {
 
 function NavIcon({ icon: Icon }: { icon: SidebarNavIcon }) {
   return <Icon sx={navIconSx} />;
-}
-
-function getPipelineCountBadgeClass(): string {
-  return "bg-muted text-muted-foreground";
-}
-
-function resolvePipelineCount(
-  operationsStatus: string | undefined,
-  summaryCounts: {
-    contractPending: number;
-    contractGenerated: number;
-    signedContracts: number;
-    disbursment: number;
-    funded: number;
-  },
-  caseStageCounts: Record<string, number>,
-  rejectedCount: number,
-): number | null {
-  switch (operationsStatus) {
-    case "Contract_Pending":
-      return summaryCounts.contractPending;
-    case "Contract_Generated":
-      return summaryCounts.contractGenerated;
-    case "Contract_Signed":
-      return summaryCounts.signedContracts;
-    case "Finals_And_Funding_Call":
-      return (
-        (caseStageCounts.Final ?? 0) + (caseStageCounts["Funding Call"] ?? 0)
-      );
-    case "Disbursment":
-      return summaryCounts.disbursment;
-    case "Funded":
-      return summaryCounts.funded;
-    case "Declined":
-      return rejectedCount;
-    default:
-      return null;
-  }
 }
 
 function isOperationsPipelineItemActive(
@@ -271,7 +239,20 @@ const dealPipelineSection: SidebarNavSection = {
         },
       ],
     },
-    { label: "Finals and Funding Call", url: "/applications", operationsStatus: "Finals_And_Funding_Call", icon: CheckCircle, pipelineAccent: "finals-funding" },
+    {
+      label: "Final",
+      url: "/applications",
+      operationsStatus: "Final",
+      icon: CheckCircle,
+      pipelineAccent: "final",
+    },
+    {
+      label: "Funding Call",
+      url: "/applications",
+      operationsStatus: "Funding Call",
+      icon: Phone,
+      pipelineAccent: "funding-call",
+    },
     {
       label: "Disbursement",
       url: "/applications",
@@ -670,7 +651,7 @@ const Sidebar = () => {
                                 searchParams,
                                 child.operationsStatus,
                               );
-                              const childCount = resolvePipelineCount(
+                              const childCount = resolveApplicationsPipelineCount(
                                 child.operationsStatus,
                                 operationsSummaryCounts,
                                 operationsCaseStageCounts,
@@ -678,10 +659,7 @@ const Sidebar = () => {
                               );
                               const showChildCount =
                                 childCount != null && childCount > 0;
-                              const childCountLabel =
-                                childCount != null && childCount > 9
-                                  ? "9+"
-                                  : String(childCount ?? "");
+                              const childCountLabel = String(childCount ?? "");
 
                               return (
                                 <SidebarMenuSubItem key={child.label}>
@@ -719,8 +697,9 @@ const Sidebar = () => {
                       );
                     }
 
-                    const pipelineAccent = item.pipelineAccent;
-                    const pipelineCount = resolvePipelineCount(
+                    const isPipelineItem =
+                      pipelineStatus != null && pipelineStatus !== "";
+                    const pipelineCount = resolveApplicationsPipelineCount(
                       pipelineStatus,
                       operationsSummaryCounts,
                       operationsCaseStageCounts,
@@ -728,10 +707,7 @@ const Sidebar = () => {
                     );
                     const showPipelineCount =
                       pipelineCount != null && pipelineCount > 0;
-                    const pipelineCountLabel =
-                      pipelineCount != null && pipelineCount > 9
-                        ? "9+"
-                        : String(pipelineCount ?? "");
+                    const pipelineCountLabel = String(pipelineCount ?? "");
 
                     return (
                       <SidebarMenuItem key={item.label} className="w-full group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:justify-center">
@@ -742,7 +718,7 @@ const Sidebar = () => {
                             isNotificationsLink
                               ? `${navButtonClass} overflow-visible [&>span:last-child]:truncate-none data-[active=true]:text-white data-[active=true]:[&_svg]:text-white`
                               : navButtonClass,
-                            pipelineAccent
+                            isPipelineItem
                               ? "!h-auto min-h-9 items-center overflow-visible py-1.5 leading-snug [&>span:last-child]:truncate-none"
                               : undefined,
                           )}
@@ -776,7 +752,7 @@ const Sidebar = () => {
                                   </span>
                                 ) : null}
                               </span>
-                            ) : pipelineAccent ? (
+                            ) : isPipelineItem ? (
                               <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
                                 <span className="min-w-0 flex-1 whitespace-nowrap text-sm">
                                   {item.label}

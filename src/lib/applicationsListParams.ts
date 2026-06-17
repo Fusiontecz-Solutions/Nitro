@@ -5,24 +5,25 @@ import {
 import type { GetApplicationsParams } from "@/types/applicationTypes";
 import type { SortingState } from "@tanstack/react-table";
 
-/**
- * Pipeline dropdown values that must use `operationsStatus` (not a single `currentQueue`
- * equality), so lists match mixed queue/state rows for the signed-contract stage.
- */
-const PIPELINE_STATUS_USES_OPERATIONS_STATUS = new Set([
-  "Signed_Contracts",
-  "Contract_Signed",
-]);
+/** Legacy pipeline dropdown labels → `operationsStatus` API keys. */
+const PIPELINE_STATUS_LEGACY_TO_OPERATIONS: Record<string, string> = {
+  "Contract Generated": "Contract_Generated",
+  "Contract Sent": "Contract_Sent",
+  "Contract Cancelled": "Contract_Cancelled",
+  "Funding call": "Funding Call",
+  Disbursement: "Disbursment",
+  Contract_Signed: "Contract_Signed",
+  Signed_Contracts: "Signed_Contracts",
+};
 
 /** Maps `/applications` pipeline filter selection to GET /applications query fields. */
 export function pipelineStatusFilterToApiFields(
   statusFilter: string,
 ): Pick<GetApplicationsParams, "currentQueue" | "operationsStatus"> {
   if (statusFilter === "all") return {};
-  if (PIPELINE_STATUS_USES_OPERATIONS_STATUS.has(statusFilter)) {
-    return { operationsStatus: statusFilter };
-  }
-  return { currentQueue: statusFilter };
+  const operationsStatus =
+    PIPELINE_STATUS_LEGACY_TO_OPERATIONS[statusFilter] ?? statusFilter;
+  return { operationsStatus };
 }
 
 export const DEFAULT_APPLICATIONS_PAGE_SIZE = 10;

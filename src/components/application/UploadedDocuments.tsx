@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { RequestedDocumentsPanel } from "./RequestedDocumentsPanel"
 import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions"
 import { useParams } from "react-router"
 import { Card, CardContent } from "../ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table"
 import { Button } from "../ui/button"
-import { Trash2, Eye } from "lucide-react"
+import { Trash2, Eye, Pin } from "lucide-react"
 import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import type { ApplicationFiles } from "@/types/applicationTypes"
@@ -14,6 +14,10 @@ import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
 import { formatDateTimeUS, cn } from "@/lib/utils"
+import { isPinnedDocumentSlug } from "@/constants/documentRequestTypes"
+
+const fileDocumentSlug = (file: ApplicationFiles): string =>
+    String((file as any).documentType || (file as any).requestedDocumentSlug || "").trim()
 
 type UploadedDocumentsProps = {
     applicationId?: string
@@ -165,6 +169,16 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
         setPdfFileName("")
     }
 
+    // Pin the two key ISO-captured docs (voided check / driver's license) to the
+    // top of the table so reviewers see them first.
+    const orderedFiles = useMemo(() => {
+        return [...uploadedFiles].sort((a, b) => {
+            const aPinned = isPinnedDocumentSlug(fileDocumentSlug(a)) ? 0 : 1
+            const bPinned = isPinnedDocumentSlug(fileDocumentSlug(b)) ? 0 : 1
+            return aPinned - bPinned
+        })
+    }, [uploadedFiles])
+
     return (
         <Card
             className={`rounded-lg box-border p-0 border py-0 gap-0 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.14),0_4px_14px_-4px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_40px_-8px_rgba(0,0,0,0.55)] ${isDark ? "border-[#374151] bg-[#141517]" : "border-slate-200/90 bg-card"
@@ -300,17 +314,52 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                     </TableCell>
                                 </TableRow>
                             ) : (
-                                uploadedFiles.map((file, rowIdx) => (
+                                orderedFiles.map((file, rowIdx) => {
+                                    const slug = fileDocumentSlug(file);
+                                    const pinned = isPinnedDocumentSlug(slug);
+                                    return (
                                     <TableRow
                                         key={file._id}
                                         className={cn(
                                             'border-b transition-colors hover:bg-accent',
                                             isDark ? 'border-[#374151]' : 'border-[#ECEFF5]',
-                                            rowIdx % 2 ? 'bg-muted/50' : '',
+                                            pinned
+                                                ? 'bg-[#EAF1FA]/60 hover:!bg-[#EAF1FA]/80 dark:bg-[#1f2937]/50 dark:hover:!bg-[#1f2937]/70'
+                                                : rowIdx % 2 ? 'bg-muted/50' : '',
                                         )}
                                     >
-                                        <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
-                                            {file.originalName}
+                                        <TableCell
+                                            className={cn(
+                                                'text-[0.85rem] py-2 px-6 font-poppins text-foreground',
+                                                pinned && 'border-l-2 border-l-[#2563EB] dark:border-l-[#5AACEA]',
+                                            )}
+                                        >
+                                            <div className="flex flex-col gap-1">
+                                                <span className="flex items-center gap-1.5">
+                                                    {pinned && (
+                                                        <Pin className="h-3.5 w-3.5 shrink-0 fill-[#2563EB] text-[#2563EB] dark:fill-[#5AACEA] dark:text-[#5AACEA]" />
+                                                    )}
+                                                    {file.originalName}
+                                                </span>
+                                                {(() => {
+                                                    if (!slug) return null;
+                                                    const label = slug
+                                                        .replace(/[_-]+/g, ' ')
+                                                        .replace(/\b\w/g, (c) => c.toUpperCase());
+                                                    return (
+                                                        <span
+                                                            className={cn(
+                                                                'inline-flex w-fit items-center rounded-md px-2 py-0.5 text-[10px] font-semibold',
+                                                                pinned
+                                                                    ? 'bg-[#2563EB] text-white dark:bg-[#5AACEA] dark:text-[#0b1220]'
+                                                                    : 'bg-[#EAF1FA] text-[#276D9C] dark:bg-[#1f2937] dark:text-[#5AACEA]',
+                                                            )}
+                                                        >
+                                                            {label}
+                                                        </span>
+                                                    );
+                                                })()}
+                                            </div>
                                         </TableCell>
                                         <TableCell className={cn('text-[0.85rem] py-2 px-6 font-poppins text-foreground')}>
                                             {formatFileSize(file.size || 0)}
@@ -345,7 +394,8 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                             </div>
                                         </TableCell>
                                     </TableRow>
-                                ))
+                                    );
+                                })
                             )}
                         </TableBody>
                     </Table>

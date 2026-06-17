@@ -1043,20 +1043,20 @@ const BankAnalysisTable = ({
           key={bank.id}
           className="w-full overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm dark:border-slate-700 dark:bg-[#141517]"
         >
-          {/* Header Section */}
-          <div className="flex flex-col justify-between gap-3 bg-[#D9E9F6] px-5 py-3 dark:bg-[#2A2B2F] md:flex-row md:items-center">
-            <h2 className="text-lg font-bold uppercase tracking-wide text-[#334155] dark:text-slate-100">
+          {/* Header Section — single horizontal toolbar */}
+          <div className="flex items-center gap-3 overflow-x-auto bg-[#D9E9F6] px-5 py-3 dark:bg-[#2A2B2F] [scrollbar-width:thin]">
+            <h2 className="shrink-0 text-lg font-bold uppercase tracking-wide text-[#334155] dark:text-slate-100">
               Bank Analysis {bankIndex + 1}
             </h2>
 
-            <div className="flex flex-wrap items-center gap-4">
+            <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
               {!isReadOnly && bank.rows.length > 0 && (
                 <>
                   {bank.rows.every((r) => r.isLocked) ? (
                     <Button
                       type="button"
                       variant="outline"
-                      className="flex h-9 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
                       disabled={
                         isInitialLoading ||
                         bulkSavingBankId === bank.id ||
@@ -1071,7 +1071,7 @@ const BankAnalysisTable = ({
                   ) : (
                     <Button
                       type="button"
-                      className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
                       disabled={
                         isInitialLoading ||
                         bulkSavingBankId === bank.id ||
@@ -1088,115 +1088,128 @@ const BankAnalysisTable = ({
                       {bulkSavingBankId === bank.id ? "Saving…" : "Save rows"}
                     </Button>
                   )}
+                  <span
+                    className="mx-1 hidden h-6 w-px shrink-0 bg-slate-300/80 dark:bg-slate-600/80 sm:block"
+                    aria-hidden
+                  />
                 </>
               )}
-              <div className="flex items-center gap-2">
-                <span className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-[#556987] dark:text-slate-300">
-                  Account Number
-                </span>
-                <Input
-                  className={`h-9 w-64 rounded-md border border-[#E2E8F0] text-xs dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-400 ${
-                    bank.accountHeaderLocked || isReadOnly
-                      ? "bg-slate-50 dark:bg-slate-800/70"
-                      : "bg-white dark:bg-slate-900"
-                  }`}
-                  placeholder={isInitialLoading ? "Loading..." : "Enter account number"}
-                  readOnly={!!bank.accountHeaderLocked || isReadOnly}
-                  value={bank.accountNumber}
-                  onChange={(e) =>
-                    handleAccountChange(bank.id, e.target.value)
-                  }
-                />
-                {!isReadOnly && bank.accountHeaderLocked ? (
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800"
-                      aria-live="polite"
-                    >
-                      <Check className="h-3.5 w-3.5 shrink-0" />
-                      Saved
-                    </span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="flex h-9 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                      onClick={() =>
+
+              <span className="shrink-0 whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-[#556987] dark:text-slate-300">
+                Account Number
+              </span>
+              <Input
+                className={`h-9 w-36 shrink-0 rounded-md border border-[#E2E8F0] text-xs dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-400 ${
+                  bank.accountHeaderLocked || isReadOnly
+                    ? "bg-slate-50 dark:bg-slate-800/70"
+                    : "bg-white dark:bg-slate-900"
+                }`}
+                placeholder={isInitialLoading ? "Loading..." : "Enter account number"}
+                readOnly={!!bank.accountHeaderLocked || isReadOnly}
+                value={bank.accountNumber}
+                onChange={(e) =>
+                  handleAccountChange(bank.id, e.target.value)
+                }
+              />
+              {!isReadOnly && bank.accountHeaderLocked ? (
+                <>
+                  <span
+                    className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-300"
+                    aria-live="polite"
+                  >
+                    <Check className="h-3.5 w-3.5 shrink-0" />
+                    Saved
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 cursor-pointer border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                    aria-label="Edit account number"
+                    onClick={() =>
+                      setBanks((prev) =>
+                        prev.map((b) =>
+                          b.id === bank.id
+                            ? { ...b, accountHeaderLocked: false }
+                            : b,
+                        ),
+                      )
+                    }
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </>
+              ) : !isReadOnly ? (
+                <Button
+                  type="button"
+                  className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                  disabled={isInitialLoading || savingHeaderBankId === bank.id}
+                  onClick={async () => {
+                    setSavingHeaderBankId(bank.id);
+                    try {
+                      const result = await saveAccountHeaderOnly(bank);
+                      if (result === "saved") {
+                        toast.success("Account number saved.");
                         setBanks((prev) =>
                           prev.map((b) =>
                             b.id === bank.id
-                              ? { ...b, accountHeaderLocked: false }
+                              ? { ...b, accountHeaderLocked: true }
                               : b,
                           ),
-                        )
+                        );
+                      } else if (result === "failed") {
+                        toast.error("Failed to save account number.");
                       }
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    
-                    </Button>
-                  </div>
-                ) : !isReadOnly ? (
-                  <Button
-                    type="button"
-                    className="bg-[#2B70A1] hover:bg-[#235d85] text-white rounded-lg h-9 px-3 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
-                    disabled={isInitialLoading || savingHeaderBankId === bank.id}
-                    onClick={async () => {
-                      setSavingHeaderBankId(bank.id);
-                      try {
-                        const result = await saveAccountHeaderOnly(bank);
-                        if (result === "saved") {
-                          toast.success("Account number saved.");
-                          setBanks((prev) =>
-                            prev.map((b) =>
-                              b.id === bank.id
-                                ? { ...b, accountHeaderLocked: true }
-                                : b,
-                            ),
-                          );
-                        } else if (result === "failed") {
-                          toast.error("Failed to save account number.");
-                        }
-                      } finally {
-                        if (!saveBankInFlightRef.current.has(bank.id)) {
-                          setSavingHeaderBankId(null);
-                        }
+                    } finally {
+                      if (!saveBankInFlightRef.current.has(bank.id)) {
+                        setSavingHeaderBankId(null);
                       }
-                    }}
-                  >
-                    {savingHeaderBankId === bank.id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Check className="h-3.5 w-3.5" />
-                    )}
-                    {savingHeaderBankId === bank.id ? "Saving..." : "Save"}
-                  </Button>
-                ) : null}
-              </div>
-              {!isReadOnly && !isCreateDisabled && bankIndex === 0 && (
-                <Button
-                  className="bg-[#2B70A1] hover:bg-[#235d85] text-white rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-2 cursor-pointer"
-                  type="button"
-                  disabled={isInitialLoading}
-                  onClick={handleAddBank}
+                    }
+                  }}
                 >
-                  <Plus className="h-4 w-4" />
-                  Add Bank
+                  {savingHeaderBankId === bank.id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Check className="h-3.5 w-3.5" />
+                  )}
+                  {savingHeaderBankId === bank.id ? "Saving…" : "Save"}
                 </Button>
-              )}
-              {!isReadOnly && !isDeleteDisabled && (
-              <Button
-                variant="outline"
-                type="button"
-                className="flex h-8 cursor-pointer items-center gap-1 border-red-200 px-3 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/20"
-                disabled={isInitialLoading || deletingBankId === bank.id}
-                onClick={() => handleDeleteBank(bank.id)}
-              >
-                {deletingBankId === bank.id ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3 w-3" />
-                )}
-                {deletingBankId === bank.id ? "Deleting..." : "Delete"}
-              </Button>
+              ) : null}
+
+              {!isReadOnly && (
+                <>
+                  <span
+                    className="mx-1 hidden h-6 w-px shrink-0 bg-slate-300/80 dark:bg-slate-600/80 sm:block"
+                    aria-hidden
+                  />
+                  {!isCreateDisabled && bankIndex === 0 && (
+                    <Button
+                      type="button"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                      disabled={isInitialLoading}
+                      onClick={handleAddBank}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add Bank
+                    </Button>
+                  )}
+                  {!isDeleteDisabled && (
+                    <Button
+                      variant="outline"
+                      type="button"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 border-red-200 px-3 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/20"
+                      disabled={isInitialLoading || deletingBankId === bank.id}
+                      onClick={() => handleDeleteBank(bank.id)}
+                    >
+                      {deletingBankId === bank.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      {deletingBankId === bank.id ? "Deleting…" : "Delete"}
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           </div>

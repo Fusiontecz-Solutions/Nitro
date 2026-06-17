@@ -3,7 +3,7 @@ import { useForm, Controller, useWatch } from "react-hook-form";
 import { yupResolver } from "@hookform/resolvers/yup";
 import * as yup from "yup";
 import { useDispatch, useSelector } from "react-redux";
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2, Calculator as CalculatorIcon, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "react-toastify";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import { getApplicationById } from "@/redux/actions/applicationActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import type { TermsOffer } from "@/types/termsOfferTypes";
+import IsoApproveReviewDialog from "./IsoApproveReviewDialog";
 
 // Yup validation schema
 const approvalSchema = yup.object({
@@ -254,6 +255,9 @@ const Approval = ({
      */
     const [isApproving, setIsApproving] = useState(false);
     const [locallyApproved, setLocallyApproved] = useState(false);
+    // Calculator sliders + buy rate summary collapsed until user clicks Calculator.
+    const [showCalculator, setShowCalculator] = useState(false);
+    const [reviewOpen, setReviewOpen] = useState(false);
     const [approvalStatusOverride, setApprovalStatusOverride] = useState<{
         currentQueue?: string;
         currentState?: string;
@@ -549,90 +553,95 @@ const Approval = ({
 
     return (
         <div className={compactSpacing ? "space-y-4" : "space-y-6"}>
-            {/* Main Content Grid */}
-            <div className={compactSpacing ? "grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5" : "grid grid-cols-1 gap-6 lg:grid-cols-3"}>
-                {/* Left Column - Calculator Section */}
-                <div className="lg:col-span-2">
-                    {/* Blue Gradient Card */}
-                    <Card className={`border-0 shadow-lg overflow-hidden py-0 ${compactSpacing ? "mb-4" : "mb-6"}`}>
-                        <CardContent
-                            className={compactSpacing ? "p-4 pt-4" : "p-6"}
-                            style={{ background: gradient }}
-                        >
-                            <h2 className={`text-white font-bold ${compactSpacing ? "mb-2 text-xl" : "mb-4 text-2xl"}`}>
-                                CALCULATE YOUR OWN APPROVAL
-                            </h2>
-                            <p className={`text-white/90 text-sm ${compactSpacing ? "mb-3" : "mb-4"}`}>Applicant Summary</p>
+            {/* Calculator toggle + Approve (opens review dialog) */}
+            <div className="flex items-center justify-between gap-3">
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowCalculator((v) => !v)}
+                    className="gap-1.5"
+                    aria-expanded={showCalculator}
+                >
+                    <CalculatorIcon className="w-4 h-4" />
+                    Calculator
+                    {showCalculator ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </Button>
+                {applicationId ? (
+                    <Button
+                        type="button"
+                        onClick={() => setReviewOpen(true)}
+                        disabled={isApproving || isApproved}
+                        className={`shrink-0 cursor-pointer font-semibold px-5 py-2 rounded-md text-white shadow-sm transition-colors disabled:cursor-not-allowed ${
+                            isApproved
+                                ? "bg-[#16A34A] hover:bg-[#16A34A] disabled:opacity-100"
+                                : "bg-[#22C55E] hover:bg-[#16A34A] disabled:opacity-60"
+                        }`}
+                        aria-label={isApproved ? "Application approved" : "Review and approve application"}
+                    >
+                        {isApproving ? (
+                            <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Approving…</span>
+                        ) : isApproved ? (
+                            <span className="inline-flex items-center gap-2"><CheckCircle2 className="w-4 h-4" /> Approved</span>
+                        ) : (
+                            "Approve"
+                        )}
+                    </Button>
+                ) : null}
+            </div>
 
-                            {/* Applicant Summary Table */}
-                            <div className={`bg-white/30 backdrop-blur-sm rounded-lg ${compactSpacing ? "p-3" : "p-4"}`}>
-                                <div className={`grid grid-cols-6 text-white ${compactSpacing ? "gap-3" : "gap-4"}`}>
-                                    <div>
-                                        <p className="text-xs font-medium opacity-80 mb-1">Borrower Name</p>
-                                        <p className="text-sm font-semibold">{applicantSummary.borrowerName}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs font-medium opacity-80 mb-1">Business Name</p>
-                                        <p className="text-sm font-semibold">{applicantSummary.businessName}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs font-medium opacity-80 mb-1">Loan Amount</p>
-                                        <p className="text-sm font-semibold">{applicantSummary.loanAmount}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs font-medium opacity-80 mb-1">Factor Rate</p>
-                                        <p className="text-sm font-semibold">{applicantSummary.factorRate}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs font-medium opacity-80 mb-1">Terms</p>
-                                        <p className="text-sm font-semibold">{applicantSummary.tenure}</p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs font-medium opacity-80 mb-1">Frequency</p>
-                                        <p className="text-sm font-semibold">{applicantSummary.frequency}</p>
-                                    </div>
-                                </div>
+            {/* Applicant Summary — always visible below Calculator button */}
+            <Card className="border-0 shadow-lg overflow-hidden py-0">
+                <CardContent
+                    className={compactSpacing ? "p-4 pt-4" : "p-6"}
+                    style={{ background: gradient }}
+                >
+                    <h2 className={`text-white font-bold ${compactSpacing ? "mb-2 text-xl" : "mb-4 text-2xl"}`}>
+                        CALCULATE YOUR OWN APPROVAL
+                    </h2>
+                    <p className={`text-white/90 text-sm ${compactSpacing ? "mb-3" : "mb-4"}`}>Applicant Summary</p>
+
+                    <div className={`bg-white/30 backdrop-blur-sm rounded-lg ${compactSpacing ? "p-3" : "p-4"}`}>
+                        <div className={`grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 text-white ${compactSpacing ? "gap-3" : "gap-4"}`}>
+                            <div>
+                                <p className="text-xs font-medium opacity-80 mb-1">Borrower Name</p>
+                                <p className="text-sm font-semibold">{applicantSummary.borrowerName}</p>
                             </div>
-                        </CardContent>
-                    </Card>
+                            <div>
+                                <p className="text-xs font-medium opacity-80 mb-1">Business Name</p>
+                                <p className="text-sm font-semibold">{applicantSummary.businessName}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs font-medium opacity-80 mb-1">Loan Amount</p>
+                                <p className="text-sm font-semibold">{applicantSummary.loanAmount}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs font-medium opacity-80 mb-1">Factor Rate</p>
+                                <p className="text-sm font-semibold">{applicantSummary.factorRate}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs font-medium opacity-80 mb-1">Terms</p>
+                                <p className="text-sm font-semibold">{applicantSummary.tenure}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs font-medium opacity-80 mb-1">Frequency</p>
+                                <p className="text-sm font-semibold">{applicantSummary.frequency}</p>
+                            </div>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
 
+            {/* Calculator fields + Buy Rate Summary — toggled by Calculator button */}
+            {showCalculator && (
+            <div className={compactSpacing ? "grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5" : "grid grid-cols-1 gap-6 lg:grid-cols-3"}>
+                <div className="lg:col-span-2">
                     {/* Sliders Section */}
                     <div>
-                        <div className="flex justify-between items-start gap-4">
-                            <p className="text-sm text-foreground mb-4 flex-1">
-                                If customer takes less than the max approval, they are able to take additional
-                                funding when needed.
-                            </p>
-
-                            {applicationId ? (
-                                <Button
-                                    type="button"
-                                    onClick={handleApproveApplication}
-                                    disabled={isApproving || isApproved}
-                                    className={`shrink-0 self-start mb-4 cursor-pointer font-semibold px-5 py-2 rounded-md text-white shadow-sm transition-colors disabled:cursor-not-allowed ${
-                                        isApproved
-                                            ? "bg-[#16A34A] hover:bg-[#16A34A] disabled:opacity-100"
-                                            : "bg-[#22C55E] hover:bg-[#16A34A] disabled:opacity-60"
-                                    }`}
-                                    aria-label={isApproved ? "Application approved" : "Click To Approve Application"}
-                                >
-                                    {isApproving ? (
-                                        <span className="inline-flex items-center gap-2">
-                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                            Approving…
-                                        </span>
-                                    ) : isApproved ? (
-                                        <span className="inline-flex items-center gap-2">
-                                            <CheckCircle2 className="w-4 h-4" />
-                                            Approved
-                                        </span>
-                                    ) : (
-                                        "Approve"
-                                    )}
-                                </Button>
-                            ) : null}
-
-                        </div>
+                        <p className="text-sm text-foreground mb-4">
+                            If customer takes less than the max approval, they are able to take additional
+                            funding when needed.
+                        </p>
                         <div className={compactSpacing ? "grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-6" : "grid grid-cols-1 gap-8 md:grid-cols-2"}>
                             <div className={compactSpacing ? "space-y-5" : "space-y-6"}>
                                 <div className="space-y-3">
@@ -936,6 +945,26 @@ const Approval = ({
                     </Card>
                 </div>
             </div>
+            )}
+
+            <IsoApproveReviewDialog
+                open={reviewOpen}
+                onOpenChange={setReviewOpen}
+                applicationData={applicationData}
+                summary={{
+                    borrowerName: applicantSummary.borrowerName,
+                    businessName: applicantSummary.businessName,
+                    loanAmount: applicantSummary.loanAmount,
+                    factorRate: applicantSummary.factorRate,
+                    term: applicantSummary.tenure,
+                    frequency: applicantSummary.frequency,
+                    purchaseAmount: formatCurrency(calculatorPurchaseAmount),
+                    payback: formatCurrency(calculatorPaybackAmount),
+                    payment: formatCurrency(calculatorPaymentAmount),
+                }}
+                onApprove={handleApproveApplication}
+                approving={isApproving}
+            />
         </div>
     );
 };

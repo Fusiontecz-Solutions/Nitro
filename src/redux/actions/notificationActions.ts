@@ -10,6 +10,9 @@ export interface SendDocumentRequestPayload {
     isoEmail?: string;
     additionalToEmails?: string[];
     ccEmails?: string[];
+    /** Branded HTML from frontend template (backend injects upload portal URL). */
+    emailHtml?: string;
+    emailSubject?: string;
 }
 
 export interface SendDocumentRequestResponse {

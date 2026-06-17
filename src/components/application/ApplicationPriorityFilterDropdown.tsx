@@ -44,7 +44,7 @@ export function ApplicationPriorityFilterDropdown({
           <ChevronDown className="size-4 shrink-0" aria-hidden />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
+      <DropdownMenuContent align="start" className="z-50">
         <DropdownMenuItem onClick={() => onChange("all")}>
           All priorities
         </DropdownMenuItem>

@@ -1,4 +1,3 @@
-import { useState, useRef } from "react";
 import { useForm, Controller } from "react-hook-form";
 import {
     Dialog,
@@ -8,74 +7,112 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { FileText, X } from "lucide-react";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import { useTheme } from "@/context/ThemeContext";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { rejectApplication, getApplicationByApplicationId, getApplicationById } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
+import { Mail, Phone, AlertTriangle } from "lucide-react";
+import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
+import {
+    APPLICATION_REJECTION_EMAIL_SUBJECT,
+    renderApplicationRejectionEmailHtml,
+} from "@/pages/templates";
 
 interface RejectApplicationModalProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
+    /** Custom submit that skips rejectApplication API (legacy). Prefer onAfterReject. */
+    onConfirm?: (reason: string) => Promise<void>;
+    /** Runs after rejectApplication succeeds (e.g. record funding call outcome). */
+    onAfterReject?: (reason: string) => Promise<void>;
+    confirmLoading?: boolean;
 }
 
 interface RejectFormValues {
     reason: string;
 }
 
-const RejectApplicationModal = ({ open, onOpenChange }: RejectApplicationModalProps) => {
+const REJECTION_REASON_OPTIONS = [
+    "Bad balances",
+    "Negative days",
+    "Bouncing",
+    "Returns",
+    "Od fees",
+    "Low rev",
+    "Low rev construction",
+    "Low rev trucking",
+    "No active position",
+    "Not enough MCA history",
+    "Behind reverse",
+    "Leverage",
+    "Recovery in file",
+    "Recent default",
+    "Active settlement",
+    "Behind recent deals",
+    "Low recent funding",
+    "Behind scam company",
+] as const;
+
+const RejectApplicationModal = ({
+    open,
+    onOpenChange,
+    onConfirm,
+    onAfterReject,
+    confirmLoading,
+}: RejectApplicationModalProps) => {
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
     const dispatch = useDispatch<AppDispatch>();
-    const [files, setFiles] = useState<File[]>([]);
-    const fileInputRef = useRef<HTMLInputElement>(null);
-    const maxChars = 500;
 
     // Get application data from Redux
     const { data: applicationData } = useSelector((state: RootState) => state.applicationDetail);
     const { loading: rejectLoading } = useSelector((state: RootState) => state.rejectApplication);
+    const isSubmitting = onConfirm
+        ? Boolean(confirmLoading)
+        : rejectLoading || Boolean(confirmLoading);
 
-    const { control, handleSubmit, formState: { errors }, watch, reset } = useForm<RejectFormValues>({
+    // Linked ISO — the rejection email template is delivered to this recipient.
+    const iso = (applicationData as any)?.iso as
+        | { name?: string; email?: string; phone?: string }
+        | null
+        | undefined;
+    const isoName = String(iso?.name ?? '').trim();
+    const isoEmail = String(iso?.email ?? '').trim();
+    const isoPhone = String(iso?.phone ?? '').trim();
+    const hasIsoEmail = isoEmail.length > 0;
+
+    const { control, handleSubmit, formState: { errors }, reset } = useForm<RejectFormValues>({
         defaultValues: {
             reason: "",
         },
     });
 
-    const reasonText = watch("reason") || "";
-
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files) {
-            const selectedFiles = Array.from(e.target.files);
-            setFiles((prev) => [...prev, ...selectedFiles]);
-        }
-    };
-
-    const handleRemoveFile = (index: number) => {
-        setFiles((prev) => prev.filter((_, i) => i !== index));
-    };
-
-    const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-        e.preventDefault();
-        if (e.dataTransfer.files) {
-            const droppedFiles = Array.from(e.dataTransfer.files);
-            setFiles((prev) => [...prev, ...droppedFiles]);
-        }
-    };
-
-    const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-        e.preventDefault();
-    };
-
     const handleCancel = () => {
         onOpenChange(false);
         reset();
-        setFiles([]);
     };
 
     const onSubmit = async (data: RejectFormValues) => {
+        if (onConfirm) {
+            try {
+                await onConfirm(data.reason);
+                onOpenChange(false);
+                reset();
+            } catch (error: any) {
+                toast.error(error || 'Failed to decline application');
+            }
+            return;
+        }
+
         if (!applicationData) {
             toast.error('Application data not found');
             return;
@@ -90,16 +127,34 @@ const RejectApplicationModal = ({ open, onOpenChange }: RejectApplicationModalPr
         }
 
         try {
+            const emailHtml = hasIsoEmail
+                ? renderApplicationRejectionEmailHtml({
+                      client_name: isoName || isoEmail,
+                      primary_reason: data.reason,
+                  })
+                : undefined;
+
             await dispatch(rejectApplication({
                 id: applicationId,
                 reason: data.reason,
+                ...(emailHtml
+                    ? { emailHtml, emailSubject: APPLICATION_REJECTION_EMAIL_SUBJECT }
+                    : {}),
             })).unwrap();
 
-            toast.success('Application rejected successfully');
+            if (onAfterReject) {
+                await onAfterReject(data.reason);
+            }
+
+            if (hasIsoEmail) {
+                toast.success(`Application rejection template sent to ISO (${isoEmail})`);
+            } else {
+                toast.success('Application rejected successfully');
+                toast.warn('No ISO email on file — rejection template was not emailed.');
+            }
             onOpenChange(false);
             reset();
-            setFiles([]);
-            
+
             // Refetch application detail to update the UI
             if ((applicationData as any)?.applicationId) {
                 await dispatch(getApplicationByApplicationId(String((applicationData as any).applicationId)));
@@ -119,7 +174,7 @@ const RejectApplicationModal = ({ open, onOpenChange }: RejectApplicationModalPr
                         Reject Application
                     </DialogTitle>
                     <DialogDescription className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Please provide a detailed reason for rejecting this application.
+                        Select a reason for rejecting this application. The rejection email template will be sent to the linked ISO.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -165,6 +220,44 @@ const RejectApplicationModal = ({ open, onOpenChange }: RejectApplicationModalPr
                         </div>
                     </div>
 
+                    {/* ISO Recipient — where the rejection email template is delivered */}
+                    {hasIsoEmail ? (
+                            <div className={`rounded-lg border p-4 ${isDark ? 'border-gray-700 bg-[#1f2937]/40' : 'border-blue-100 bg-blue-50'}`}>
+                                <div className="flex items-start gap-3">
+                                    <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${isDark ? 'bg-blue-500/15 text-blue-300' : 'bg-blue-100 text-blue-600'}`}>
+                                        <Mail className="h-4 w-4" strokeWidth={2} aria-hidden />
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                        <p className={`text-xs font-semibold uppercase tracking-wide ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
+                                            Rejection email will be sent to ISO
+                                        </p>
+                                        <p className={`mt-1 text-sm font-semibold ${isDark ? 'text-gray-100' : 'text-black'}`}>
+                                            {isoName || 'Linked ISO'}
+                                        </p>
+                                        <div className="mt-1 flex flex-col gap-1">
+                                            <span className={`flex items-center gap-1.5 text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                                                <Mail className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
+                                                <span className="truncate">{isoEmail}</span>
+                                            </span>
+                                            {isoPhone ? (
+                                                <span className={`flex items-center gap-1.5 text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+                                                    <Phone className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
+                                                    <span className="truncate">{formatUSPhoneNumber(isoPhone) || isoPhone}</span>
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className={`flex items-start gap-3 rounded-lg border p-4 ${isDark ? 'border-amber-500/30 bg-amber-500/10' : 'border-amber-200 bg-amber-50'}`}>
+                                <AlertTriangle className={`h-4 w-4 shrink-0 ${isDark ? 'text-amber-400' : 'text-amber-600'}`} strokeWidth={2} aria-hidden />
+                                <p className={`text-sm ${isDark ? 'text-amber-200' : 'text-amber-800'}`}>
+                                    No ISO email is linked to this application, so the rejection template cannot be emailed. The application will still be rejected.
+                                </p>
+                            </div>
+                    )}
+
                     {/* Reason for Rejection */}
                     <div className="space-y-2">
                         <Label className={`text-sm font-semibold ${isDark ? 'text-gray-200' : 'text-black'}`}>
@@ -173,94 +266,32 @@ const RejectApplicationModal = ({ open, onOpenChange }: RejectApplicationModalPr
                         <Controller
                             control={control}
                             name="reason"
-                            rules={{
-                                required: "Reason for rejection is required",
-                                maxLength: {
-                                    value: maxChars,
-                                    message: `Reason must not exceed ${maxChars} characters`,
-                                },
-                            }}
+                            rules={{ required: "Reason for rejection is required" }}
                             render={({ field }) => (
                                 <>
-                                    <Textarea
-                                        {...field}
-                                        placeholder="Please provide a detailed explanation for why this application is being rejected..."
-                                        className={`min-h-[120px] resize-none px-3 py-2 rounded-sm outline-none ${isDark ? 'bg-muted border-gray-700 text-gray-200' : 'bg-white'}`}
-                                        maxLength={maxChars}
-                                    />
-                                    <div className="flex justify-between items-center">
-                                        {errors.reason && (
-                                            <p className="text-xs text-red-500">{errors.reason.message}</p>
-                                        )}
-                                        <p className={`text-xs ml-auto ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                                            {reasonText.length}/{maxChars} characters
-                                        </p>
-                                    </div>
+                                    <Select
+                                        onValueChange={field.onChange}
+                                        value={field.value || undefined}
+                                    >
+                                        <SelectTrigger
+                                            className={`h-10 w-full rounded-sm px-3 py-0 text-sm outline-none ${isDark ? 'bg-muted border-gray-700 text-gray-200' : 'bg-white border-gray-200'}`}
+                                        >
+                                            <SelectValue placeholder="Select a rejection reason" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {REJECTION_REASON_OPTIONS.map((option) => (
+                                                <SelectItem key={option} value={option}>
+                                                    {option}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    {errors.reason && (
+                                        <p className="text-xs text-red-500">{errors.reason.message}</p>
+                                    )}
                                 </>
                             )}
                         />
-                    </div>
-
-                    {/* Attach Supporting Documents */}
-                    <div className="space-y-2">
-                        <Label className={`text-sm font-semibold ${isDark ? 'text-gray-200' : 'text-black'}`}>
-                            Attach Supporting Documents (Optional)
-                        </Label>
-                        <div
-                            className={`border-2 border-dashed rounded-lg p-6 cursor-pointer transition-colors ${isDark ? '' : 'hover:bg-red-50/50 border-[#DC331D]'}`}
-                            onDrop={handleDrop}
-                            onDragOver={handleDragOver}
-                            onClick={() => fileInputRef.current?.click()}
-                        >
-                            {files.length > 0 ? (
-                                <div className="space-y-2">
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {files.map((file, index) => (
-                                            <div
-                                                key={index}
-                                                className={`inline-flex items-center gap-2 px-3 py-2 rounded-md border text-sm shadow-sm ${isDark ? 'bg-muted border-gray-700' : 'bg-white border-gray-300'}`}
-                                                onClick={(e) => e.stopPropagation()}
-                                            >
-                                                <FileText className={`h-4 w-4 shrink-0 ${isDark ? 'text-gray-400' : 'text-gray-500'}`} />
-                                                <span className={`max-w-[200px] truncate ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>{file.name}</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        handleRemoveFile(index);
-                                                    }}
-                                                    className={`ml-1 transition-colors shrink-0 ${isDark ? 'text-gray-500 hover:text-red-500' : 'text-gray-400 hover:text-red-600'}`}
-                                                >
-                                                    <X className="h-4 w-4" />
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <div className={`pt-2 border-t mt-2 ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
-                                        <p className={`text-xs text-center ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                                            Click to add more files
-                                        </p>
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="text-center">
-                                    <p className={`text-sm mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                                        Click to upload supporting documents
-                                    </p>
-                                    <p className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                                        PDF, DOC, DOCX, JPG, PNG, <span className={isDark ? 'text-gray-500' : 'text-gray-400'}>(Max 10MB)</span>
-                                    </p>
-                                </div>
-                            )}
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                multiple
-                                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                                onChange={handleFileChange}
-                                className="hidden"
-                            />
-                        </div>
                     </div>
                 </div>
 
@@ -277,10 +308,10 @@ const RejectApplicationModal = ({ open, onOpenChange }: RejectApplicationModalPr
                     <Button
                         type="button"
                         onClick={handleSubmit(onSubmit)}
-                        disabled={rejectLoading}
+                        disabled={isSubmitting}
                         className="bg-red-600 hover:bg-red-700 flex-1 rounded-sm py-4 text-white px-6 disabled:opacity-50"
                     >
-                        {rejectLoading ? 'Submitting...' : 'Submit Request'}
+                        {isSubmitting ? 'Declining...' : 'Decline Application'}
                     </Button>
                 </div>
             </DialogContent>

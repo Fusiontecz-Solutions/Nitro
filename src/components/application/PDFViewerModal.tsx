@@ -7112,7 +7112,6 @@ const PDFViewerModal = ({
                 contractSignerOverrides={contractSignerOverrides}
             />
             <RequestMissingDocumentsModal
-                variant="request"
                 open={requestDocumentsModalOpen}
                 onOpenChange={setRequestDocumentsModalOpen}
                 onSuccess={() => {

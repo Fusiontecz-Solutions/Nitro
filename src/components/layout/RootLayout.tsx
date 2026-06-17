@@ -26,6 +26,7 @@ import {
     isApplicationStatsWarmRoute,
     isOpsDashboardWarmRoute,
     isPaymentsRoute,
+    shouldPrefetchOpsDashboardSummary,
 } from "@/lib/shellPrefetchRoutes";
 import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
 import { axiosGet } from "@/redux/axios";
@@ -147,11 +148,11 @@ const RootLayout = () => {
         statsRefreshing,
     ]);
 
-    // Operations dashboard APIs only on routes that render that dashboard.
+    // Deal-pipeline sidebar badges need summary counts on any authenticated page.
     useEffect(() => {
         if (isPublicRoute) return;
         if (!localStorage.getItem("token")) return;
-        if (!isOpsDashboardWarmRoute(pathname, normalizedRole)) return;
+        if (!shouldPrefetchOpsDashboardSummary(normalizedRole)) return;
         if (
             opsDashboard.hasLoadedSummaryOnce &&
             isShellPrefetchFresh(opsDashboard.lastSummaryFetchedAt)
@@ -160,6 +161,19 @@ const RootLayout = () => {
         } else {
             void dispatch(fetchOperationsDashboardSummary());
         }
+    }, [
+        dispatch,
+        isPublicRoute,
+        normalizedRole,
+        opsDashboard.hasLoadedSummaryOnce,
+        opsDashboard.lastSummaryFetchedAt,
+    ]);
+
+    // Recent cases list only on routes that render the operations dashboard.
+    useEffect(() => {
+        if (isPublicRoute) return;
+        if (!localStorage.getItem("token")) return;
+        if (!isOpsDashboardWarmRoute(pathname, normalizedRole)) return;
         if (
             opsDashboard.hasLoadedRecentOnce &&
             isShellPrefetchFresh(opsDashboard.lastRecentFetchedAt)
@@ -173,8 +187,6 @@ const RootLayout = () => {
         isPublicRoute,
         pathname,
         normalizedRole,
-        opsDashboard.hasLoadedSummaryOnce,
-        opsDashboard.lastSummaryFetchedAt,
         opsDashboard.hasLoadedRecentOnce,
         opsDashboard.lastRecentFetchedAt,
     ]);
