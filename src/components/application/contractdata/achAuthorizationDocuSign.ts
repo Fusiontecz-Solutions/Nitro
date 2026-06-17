@@ -32,6 +32,7 @@ export function mapInternalEnvelopeStatusToAchCapsule(
 
 export function parseAchAuthorizationDocuSignFromPrefill(
     raw: unknown,
+    options?: { excludeEnvelopeId?: string | null },
 ): AchAuthorizationDocuSignMeta | null {
     if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
     const blob = (raw as Record<string, unknown>)[ACH_AUTHORIZATION_DOCUSIGN_KEY];
@@ -39,6 +40,8 @@ export function parseAchAuthorizationDocuSignFromPrefill(
     const o = blob as Record<string, unknown>;
     const envelopeId = String(o.envelopeId ?? "").trim();
     if (!envelopeId) return null;
+    const exclude = String(options?.excludeEnvelopeId ?? "").trim();
+    if (exclude && envelopeId === exclude) return null;
     const statusRaw = String(o.status ?? "DRAFT").trim().toUpperCase();
     const status: AchAuthorizationDocuSignCapsuleStatus =
         statusRaw === "SENT" ||

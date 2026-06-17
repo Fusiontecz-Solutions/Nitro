@@ -52,6 +52,7 @@ import {
     hasStateDisclosurePrefillFieldMap,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./documentTemplateMappingPrefill";
+import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./docusignAddendumTemplates";
 import type { TemplateMappingPrefillEditRow } from "./TemplateMappingPrefillEditDialog";
 import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
@@ -169,7 +170,8 @@ const FIELD_LABELS = {
     achAuthorizationAccountHolderBankZip: "Bank ZIP",
     achAuthorizationAccountHolderBankRoutingNumber: "Routing number",
     achAuthorizationAccountHolderBankAccountNumber: "Account number",
-    achAuthorizationAccountHolderBankTransactionFee: "Transaction fee",
+    achAuthorizationAccountHolderBankTransactionFee: "Transaction fee (estimated payment)",
+    achAuthorizationAccountHolderBankNumberOfTransactions: "NO. of transaction",
     achAuthorizationAccountHolderDate: "Date",
     achAuthorizationConcentAccountHolderName: "Business name",
     achAuthorizationConcentAccountHolderDate: "Date",
@@ -425,7 +427,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "ach_account_bank",
             title: "ACH — Account & bank",
-            description: "Account holder, bank branch, routing, account number, transaction fee, consent signature.",
+            description: "Account holder, bank branch, routing, account number, NO. of transaction (term), transaction fee (estimated payment), consent signature.",
             Icon: Wallet,
             groups: [
                 {
@@ -450,6 +452,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                         "achAuthorizationAccountHolderBankZip",
                         "achAuthorizationAccountHolderBankRoutingNumber",
                         "achAuthorizationAccountHolderBankAccountNumber",
+                        "achAuthorizationAccountHolderBankNumberOfTransactions",
                         "achAuthorizationAccountHolderBankTransactionFee",
                     ],
                 },
@@ -944,7 +947,11 @@ export function ContractPrefillEditForm({
         "Addendum";
     const linkedAddendumHasFieldMap = Boolean(
         linkedAddendumMapping &&
-            hasAddendumPrefillFieldMap(linkedAddendumTemplateGuid, linkedAddendumTemplateName),
+            (String(linkedAddendumMapping.documentType || "").toLowerCase() === "ach" ||
+                hasAddendumPrefillFieldMap(
+                    linkedAddendumTemplateGuid,
+                    linkedAddendumTemplateName,
+                )),
     );
 
     const linkedDisclosureTemplateName =
@@ -1007,8 +1014,13 @@ export function ContractPrefillEditForm({
     const addendumEditorRows = useMemo(() => {
         if (!linkedAddendumMapping?.id || !linkedAddendumHasFieldMap) return [];
         const saved = documentTemplatePrefillByMappingId[linkedAddendumMapping.id] ?? {};
+        const isAchMapping =
+            String(linkedAddendumMapping.documentType || "").toLowerCase() === "ach";
         return getDocumentTemplatePrefillFieldRowsForEditor({
-            templateId: linkedAddendumTemplateGuid || null,
+            templateId: isAchMapping
+                ? linkedAddendumTemplateGuid ||
+                  DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION
+                : linkedAddendumTemplateGuid || null,
             templateName: linkedAddendumMapping.template?.name ?? null,
             templateState: linkedAddendumMapping.template?.state ?? null,
             templateFrequency: linkedAddendumMapping.template?.frequency ?? null,

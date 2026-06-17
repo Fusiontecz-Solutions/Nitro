@@ -23,6 +23,8 @@ export interface KatanAchAuthorizationAddendumPrefillFields {
     achAuthorizationAccountHolderBankRoutingNumber?: string;
     achAuthorizationAccountHolderBankAccountNumber?: string;
     achAuthorizationAccountHolderBankTransactionFee?: string;
+    /** Term of offer — number of payments / transactions. */
+    achAuthorizationAccountHolderBankNumberOfTransactions?: string;
     achAuthorizationConcentAccountHolderName?: string;
 }
 
@@ -51,9 +53,12 @@ const FIELD_DEFS: Array<{ id: keyof KatanAchAuthorizationAddendumPrefillFields; 
     { id: "achAuthorizationAccountHolderBankZip", label: "Zip (bank)" },
     { id: "achAuthorizationAccountHolderBankRoutingNumber", label: "Bank Routing Number (9 digits)" },
     { id: "achAuthorizationAccountHolderBankAccountNumber", label: "Bank Account Number" },
-    { id: "achAuthorizationAccountHolderBankTransactionFee", label: "Fee Amount" },
+    { id: "achAuthorizationAccountHolderBankNumberOfTransactions", label: "NO. of transaction" },
+    { id: "achAuthorizationAccountHolderBankTransactionFee", label: "Transaction fee" },
     { id: "achAuthorizationConcentAccountHolderName", label: "Name/Title of Account Holder" },
 ];
+
+export const KATAN_ACH_AUTHORIZATION_PREFILL_FIELD_IDS = FIELD_DEFS.map((f) => f.id);
 
 export function buildKatanAchAuthorizationAddendumPrefillFields(
     values: KatanAchAuthorizationAddendumPrefillFields = {},

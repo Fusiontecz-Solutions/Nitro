@@ -2,6 +2,8 @@ import type { BuildContractPrefillFieldsArgs, ContractPrefillField } from "./Con
 import {
     getContractPrefillEditDefaultsFromApplication,
     resolveBalanceTransferMerchantContext,
+    resolveNumberOfPaymentsPrefillValue,
+    resolveRemittancePrefillValue,
 } from "./Contract";
 import {
     buildBalanceTransferSheetContractPrefillFields,
@@ -369,12 +371,32 @@ function dotKatanAch(): KatanAchAuthorizationAddendumPrefillFields {
         achAuthorizationAccountHolderBankRoutingNumber: d,
         achAuthorizationAccountHolderBankAccountNumber: d,
         achAuthorizationAccountHolderBankTransactionFee: d,
+        achAuthorizationAccountHolderBankNumberOfTransactions: d,
         achAuthorizationConcentAccountHolderName: d,
     };
 }
 
-function buildKatanAchComputed(contract: Record<string, unknown> | null): ContractPrefillField[] {
+function buildKatanAchComputed(
+    contract: Record<string, unknown> | null,
+    application: Record<string, unknown> | null,
+): ContractPrefillField[] {
     const c = contract ?? {};
+    const app = application ?? {};
+    const offerDecision =
+        (app.offerDecision as Record<string, unknown> | undefined) ??
+        (app.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const sources = {
+        application,
+        contract,
+        offerDecision,
+    };
+    const transactionFee =
+        str(c.achAuthorizationAccountHolderBankTransactionFee) ||
+        resolveRemittancePrefillValue(sources);
+    const numberOfTransactions =
+        str(c.achAuthorizationAccountHolderBankNumberOfTransactions) ||
+        resolveNumberOfPaymentsPrefillValue(sources);
     return buildKatanAchAuthorizationAddendumPrefillFields({
         authorizationClientName: str(c.authorizationClientName),
         authorizationClientBankName: str(c.authorizationClientBankName),
@@ -396,7 +418,8 @@ function buildKatanAchComputed(contract: Record<string, unknown> | null): Contra
         achAuthorizationAccountHolderBankZip: str(c.achAuthorizationAccountHolderBankZip),
         achAuthorizationAccountHolderBankRoutingNumber: str(c.achAuthorizationAccountHolderBankRoutingNumber),
         achAuthorizationAccountHolderBankAccountNumber: str(c.achAuthorizationAccountHolderBankAccountNumber),
-        achAuthorizationAccountHolderBankTransactionFee: str(c.achAuthorizationAccountHolderBankTransactionFee),
+        achAuthorizationAccountHolderBankTransactionFee: transactionFee,
+        achAuthorizationAccountHolderBankNumberOfTransactions: numberOfTransactions,
         achAuthorizationConcentAccountHolderName: str(c.achAuthorizationConcentAccountHolderName),
     });
 }
@@ -490,6 +513,9 @@ function resolveAddendumKindFromLayoutKey(layoutKey?: string | null): AddendumKi
     return null;
 }
 
+/** Legacy DocuSign template GUID for Katan ACH Authorization PDF. */
+const LEGACY_KATAN_ACH_TEMPLATE_ID = "15a61a5b-af2f-41cb-aaad-68bded7ffa3e";
+
 function resolveAddendumKind(normName: string, templateId?: string | null): AddendumKind | null {
     if (isKnownKatanAddendumLayoutKey(templateId)) {
         const fromKey = resolveAddendumKindFromLayoutKey(templateId);
@@ -499,11 +525,16 @@ function resolveAddendumKind(normName: string, templateId?: string | null): Adde
     if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
     if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "barclays_flex";
     if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION) return "katan_ach_authorization";
+    if (tid === LEGACY_KATAN_ACH_TEMPLATE_ID) return "katan_ach_authorization";
 
     if (matches(normName, "balance", "transfer") && normName.includes("sheet")) return "balance_transfer_sheet";
     if (normName.includes("buyout") && normName.includes("blank")) return "barclays_buyout_blank";
     if (normName.includes("flex")) return "barclays_flex";
     if (normName.includes("ach") && normName.includes("authorization")) return "katan_ach_authorization";
+    if (normName.includes("katan") && normName.includes("llc") && normName.includes("ach")) {
+        return "katan_ach_authorization";
+    }
+    if (normName.includes("katan") && normName.includes("ach")) return "katan_ach_authorization";
     if (normName.includes("discover") && normName.includes("epo")) return "discover_epo";
     if (normName.includes("discover") && (normName.includes("refi") || normName.includes("balance_transfer")))
         return "discover_refi_balance";
@@ -516,6 +547,48 @@ export function isAchAuthorizationPrefillTemplate(
 ): boolean {
     const kind = resolveAddendumKind(normalizeKey(templateName ?? ""), templateId);
     return kind === "katan_ach_authorization";
+}
+
+function isAchFormPrefillEditorContext(options: {
+    templateId?: string | null;
+    templateName?: string | null;
+    documentType?: string | null;
+    prefillDocumentKind?: "ach_form" | "addendum" | null;
+}): boolean {
+    if (options.prefillDocumentKind === "ach_form") return true;
+    if (String(options.documentType ?? "").trim().toLowerCase() === "ach") return true;
+    return isAchAuthorizationPrefillTemplate(options.templateId, options.templateName);
+}
+
+/** ACH form editor rows — only fields that map to the 2-page Katan ACH PDF (never disclosure fields). */
+export function getKatanAchAuthorizationPrefillFieldRowsForEditor(options: {
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+    agreementDate?: string;
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    savedOverridesForMapping?: Record<string, string> | null;
+    bankDetail?: Record<string, unknown> | null;
+}): ContractPrefillField[] {
+    const effectiveContract = buildEffectiveContractForTemplatePrefill({
+        contract: options.contract ?? null,
+        application: options.application ?? null,
+        agreementDate: options.agreementDate,
+        mainPrefillOverrides: options.mainPrefillOverrides,
+        bankDetail: options.bankDetail ?? null,
+    });
+    const sctx = buildStateDisclosurePrefillContextFromContract({
+        contract: effectiveContract,
+        application: options.application ?? null,
+        agreementDate: options.agreementDate,
+    });
+    const all = addendumAllDefs("katan_ach_authorization");
+    const computed = addendumComputed(
+        "katan_ach_authorization",
+        effectiveContract,
+        sctx,
+        options.application ?? null,
+    );
+    return mergeFieldRows(all, computed, options.savedOverridesForMapping);
 }
 
 /** Whether the addendum prefill editor has registered fields for this DocuSign template. */
@@ -594,7 +667,7 @@ function addendumComputed(
         case "barclays_flex":
             return buildBarclaysFlexComputed(contract, sctx);
         case "katan_ach_authorization":
-            return buildKatanAchComputed(contract);
+            return buildKatanAchComputed(contract, application);
         case "discover_epo":
             return buildDiscoverEpoComputed(contract, sctx);
         case "discover_refi_balance":
@@ -640,7 +713,13 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     savedOverridesForMapping?: Record<string, string> | null;
     bankDetail?: Record<string, unknown> | null;
+    documentType?: string | null;
+    prefillDocumentKind?: "ach_form" | "addendum" | null;
 }): ContractPrefillField[] {
+    if (isAchFormPrefillEditorContext(options)) {
+        return getKatanAchAuthorizationPrefillFieldRowsForEditor(options);
+    }
+
     const effectiveContract = buildEffectiveContractForTemplatePrefill({
         contract: options.contract ?? null,
         application: options.application ?? null,

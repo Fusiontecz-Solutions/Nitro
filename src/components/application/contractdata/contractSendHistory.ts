@@ -1,3 +1,5 @@
+import { parseAchAuthorizationDocuSignFromPrefill } from "./achAuthorizationDocuSign";
+
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
 
@@ -142,6 +144,15 @@ export function buildContractSendTableRows(
 ): ContractSendTableRow[] {
     if (!contract) return [];
 
+    const mainContractEnvelopeId = String(
+        pickContractEnvelopeDocument(contract)?.envelopeId ?? "",
+    ).trim();
+    const achEnvelopeId = String(
+        parseAchAuthorizationDocuSignFromPrefill(contract.contractPrefillOverrides, {
+            excludeEnvelopeId: mainContractEnvelopeId || null,
+        })?.envelopeId ?? "",
+    ).trim();
+
     const history = parseContractSendHistoryFromPrefill(contract.contractPrefillOverrides);
     const doc = pickContractEnvelopeDocument(contract);
     const currentEid = String(doc?.envelopeId ?? "").trim();
@@ -150,7 +161,11 @@ export function buildContractSendTableRows(
 
     const rows: ContractSendTableRow[] = [];
 
-    if (hasContractRecord) {
+    if (
+        hasContractRecord &&
+        currentEid &&
+        currentEid !== achEnvelopeId
+    ) {
         rows.push({
             key: `current-${currentEid || contractId}`,
             label: "Contract",
@@ -160,10 +175,21 @@ export function buildContractSendTableRows(
             sentAt: doc?.sentAt ?? doc?.updatedAt ?? null,
             isCurrent: true,
         });
+    } else if (hasContractRecord && !currentEid) {
+        rows.push({
+            key: `current-${contractId}`,
+            label: "Contract",
+            envelopeId: null,
+            contractStatus: (contract as { status?: unknown }).status,
+            documentStatus: doc?.status,
+            sentAt: doc?.sentAt ?? doc?.updatedAt ?? null,
+            isCurrent: true,
+        });
     }
 
     const historyNewestFirst = [...history].reverse();
     historyNewestFirst.forEach((entry, index) => {
+        if (entry.envelopeId === achEnvelopeId || entry.envelopeId === currentEid) return;
         const sendNumber = history.length - index;
         rows.push({
             key: `history-${entry.envelopeId}`,

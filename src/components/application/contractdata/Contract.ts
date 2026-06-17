@@ -1,4 +1,5 @@
 import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
+import { parseTerm } from "@/lib/offerRepaymentCalculations";
 
 export interface ContractPrefillField {
     id: string;
@@ -92,6 +93,8 @@ export interface BuildContractPrefillFieldsArgs {
     achAuthorizationAccountHolderBankRoutingNumber?: string;
     achAuthorizationAccountHolderBankAccountNumber?: string;
     achAuthorizationAccountHolderBankTransactionFee?: string;
+    /** Term of offer — number of payments shown on ACH form. */
+    achAuthorizationAccountHolderBankNumberOfTransactions?: string;
     achAuthorizationAccountHolderDate?: string;
 
     /**
@@ -255,6 +258,9 @@ const FIELD_IDS = {
     achAuthorizationAccountHolderBankRoutingNumber: ["ach_authorization_account_holder_bank_routing_number"],
     achAuthorizationAccountHolderBankAccountNumber: ["ach_authorization_account_holder_bank_account_number"],
     achAuthorizationAccountHolderBankTransactionFee: ["ach_authorization_account_holder_bank_transaction_fee"],
+    achAuthorizationAccountHolderBankNumberOfTransactions: [
+        "ach_authorization_account_holder_bank_number_of_transactions",
+    ],
     achAuthorizationAccountHolderDate: ["ach_authorization_account_holder_date"],
 
     achAuthorizationConcentAccountHolderName: ["ach_authorization_concent_account_holder_name"],
@@ -497,6 +503,7 @@ export const buildContractPrefillFields = ({
     achAuthorizationAccountHolderBankRoutingNumber = "",
     achAuthorizationAccountHolderBankAccountNumber = "",
     achAuthorizationAccountHolderBankTransactionFee = "",
+    achAuthorizationAccountHolderBankNumberOfTransactions = "",
     achAuthorizationAccountHolderDate = "",
 
     achAuthorizationConcentAccountHolderName = "",
@@ -661,6 +668,11 @@ export const buildContractPrefillFields = ({
             FIELD_IDS.achAuthorizationAccountHolderBankTransactionFee,
             "ACH Transaction Fee",
             achAuthorizationAccountHolderBankTransactionFee,
+        ),
+        ...mapIds(
+            FIELD_IDS.achAuthorizationAccountHolderBankNumberOfTransactions,
+            "ACH NO. of transaction",
+            achAuthorizationAccountHolderBankNumberOfTransactions,
         ),
         ...mapIds(FIELD_IDS.achAuthorizationAccountHolderDate, "ACH Date", achAuthorizationAccountHolderDate),
         ...mapIds(
@@ -1294,6 +1306,64 @@ export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSourc
     }
 
     return saved && !isPaymentFrequencyLabel(saved) ? saved : "";
+}
+
+function paymentCountFromOfferTerm(raw: unknown): number | undefined {
+    const termStr = str(raw);
+    if (!termStr) return undefined;
+    const parsed = parseTerm(termStr);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
+    const numeric = coerceToFiniteNumber(raw);
+    if (numeric !== undefined && numeric > 0) return Math.trunc(numeric);
+    return undefined;
+}
+
+/**
+ * ACH form "NO. of transaction" = term of offer (payments count from offer / terms offer).
+ */
+export function resolveNumberOfPaymentsPrefillValue(sources: NetToMerchantPrefillSources): string {
+    const app = sources.application;
+    const contract = sources.contract;
+    const contractOffer = (contract as Record<string, unknown> | null | undefined)?.offer as
+        | Record<string, unknown>
+        | undefined;
+    const odRoot =
+        sources.offerDecision ??
+        contractOffer ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+
+    const saved = str(
+        (contract as Record<string, unknown> | null | undefined)
+            ?.achAuthorizationAccountHolderBankNumberOfTransactions,
+    );
+    if (saved) return saved;
+
+    const numPayments =
+        coerceToFiniteNumber(odRoot?.numberOfPayments) ??
+        coerceToFiniteNumber(odEff?.numberOfPayments) ??
+        paymentCountFromOfferTerm(odRoot?.term) ??
+        paymentCountFromOfferTerm(odEff?.term) ??
+        coerceToFiniteNumber(terms0?.numberOfPayments) ??
+        paymentCountFromOfferTerm(terms0?.term) ??
+        coerceToFiniteNumber(terms0?.termLength) ??
+        coerceToFiniteNumber((contract as Record<string, unknown> | null)?.numberOfPayments) ??
+        coerceToFiniteNumber(contractOffer?.numberOfPayments) ??
+        paymentCountFromOfferTerm(contractOffer?.term);
+
+    if (numPayments !== undefined && numPayments > 0) {
+        return String(Math.trunc(numPayments));
+    }
+    return "";
 }
 
 /** Human-readable payment frequency for contract / DocuSign prefill. */
@@ -2877,6 +2947,24 @@ export function getContractPrefillEditDefaultsFromApplication(
     if (!str(mergedBeforeFees.achAuthorizationAccountHolderName) && merchantBusinessName) {
         mergedBeforeFees.achAuthorizationAccountHolderName = merchantBusinessName;
         mergedBeforeFees.achAuthorizationConcentAccountHolderName = merchantBusinessName;
+    }
+    if (!str(mergedBeforeFees.achAuthorizationAccountHolderBankTransactionFee)) {
+        const fee = resolveRemittancePrefillValue({
+            application: anyApp as Record<string, unknown> | undefined,
+            contract: rec?.contract ?? null,
+            offerDecision: options?.offerDecision ?? null,
+        });
+        if (fee) mergedBeforeFees.achAuthorizationAccountHolderBankTransactionFee = fee;
+    }
+    if (!str(mergedBeforeFees.achAuthorizationAccountHolderBankNumberOfTransactions)) {
+        const numPayments = resolveNumberOfPaymentsPrefillValue({
+            application: anyApp as Record<string, unknown> | undefined,
+            contract: rec?.contract ?? null,
+            offerDecision: options?.offerDecision ?? null,
+        });
+        if (numPayments) {
+            mergedBeforeFees.achAuthorizationAccountHolderBankNumberOfTransactions = numPayments;
+        }
     }
 
     return applyAppendixUnderwritingFeesAmount(mergedBeforeFees, {

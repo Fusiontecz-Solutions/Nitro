@@ -49,7 +49,7 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Ban, FileText, Info, Landmark, Loader2, RefreshCw, Send } from "lucide-react";
+import { Ban, FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
@@ -66,7 +66,6 @@ import {
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
 import {
     buildContractSendTableRows,
-    canResendMainContract,
     canVoidMainContract,
     isContractFullySigned,
     isContractVoidedOrTerminal,
@@ -329,7 +328,6 @@ export default function ContractTab({
     const [creatingEnvelope, setCreatingEnvelope] = useState(false);
     const [viewingSignedContract, setViewingSignedContract] = useState(false);
     const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
-    const [resendingContract, setResendingContract] = useState(false);
     const [voidingContract, setVoidingContract] = useState(false);
     const [signedPdfPreviewOpen, setSignedPdfPreviewOpen] = useState(false);
     const [signedPdfPreviewUrl, setSignedPdfPreviewUrl] = useState<string | null>(null);
@@ -486,13 +484,27 @@ export default function ContractTab({
         return Number.isFinite(Number(selectedContractId)) && Number(selectedContractId) > 0;
     }, [fetchedContract, selectedContractId]);
 
+    const contractEnvelopeDocument = useMemo(
+        () =>
+            pickContractEnvelopeDocument(
+                fetchedContract as Record<string, unknown> | null | undefined,
+            ),
+        [fetchedContract],
+    );
+
+    const mainContractEnvelopeId = useMemo(
+        () => String(contractEnvelopeDocument?.envelopeId ?? "").trim() || null,
+        [contractEnvelopeDocument],
+    );
+
     const achAuthorizationDocuSign = useMemo(
         () =>
             parseAchAuthorizationDocuSignFromPrefill(
                 (fetchedContract as { contractPrefillOverrides?: unknown } | null)
                     ?.contractPrefillOverrides,
+                { excludeEnvelopeId: mainContractEnvelopeId },
             ),
-        [fetchedContract],
+        [fetchedContract, mainContractEnvelopeId],
     );
 
     const achCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus =
@@ -504,14 +516,6 @@ export default function ContractTab({
         if (achCapsuleStatus === "VOIDED") return "Voided";
         return formatAchAuthorizationCapsuleLabel(achCapsuleStatus);
     }, [achAuthorizationDocuSign?.envelopeId, achCapsuleStatus]);
-
-    const contractEnvelopeDocument = useMemo(
-        () =>
-            pickContractEnvelopeDocument(
-                fetchedContract as Record<string, unknown> | null | undefined,
-            ),
-        [fetchedContract],
-    );
 
     const contractEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
 
@@ -532,9 +536,6 @@ export default function ContractTab({
 
     const canVoidContract =
         !isReadOnly && hasGeneratedContract && canVoidMainContract(contractRecordForActions);
-
-    const canResendSignedContract =
-        !isReadOnly && hasGeneratedContract && canResendMainContract(contractRecordForActions);
 
     const contractSendTableRows = useMemo(
         () =>
@@ -984,19 +985,6 @@ export default function ContractTab({
         } finally {
             setViewingSignedContract(false);
             setViewingSignedEnvelopeId(null);
-        }
-    };
-
-    const handleResendContract = async () => {
-        if (!canResendSignedContract) return;
-        setResendingContract(true);
-        try {
-            const opened = await tryOpenExistingDraftViewer();
-            if (!opened) {
-                toast.info("No contract is available to resend.");
-            }
-        } finally {
-            setResendingContract(false);
         }
     };
 
@@ -1994,8 +1982,6 @@ export default function ContractTab({
         const rowEnvelopeId = String(row.envelopeId ?? "").trim();
         const rowCanVoid =
             !isReadOnly && row.isCurrent && canVoidMainContract(contractRecordForActions);
-        const rowCanResend =
-            !isReadOnly && row.isCurrent && canResendMainContract(contractRecordForActions);
         const rowIsVoided = isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
         const isViewingRow =
             viewingSignedContract &&
@@ -2115,29 +2101,6 @@ export default function ContractTab({
                                             />
                                         ) : (
                                             <Ban className="h-3.5 w-3.5" aria-hidden />
-                                        )}
-                                    </Button>
-                                ) : null}
-                                {rowCanResend ? (
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        onClick={() => void handleResendContract()}
-                                        disabled={resendingContract}
-                                        className={`h-7 w-7 shrink-0 ${isDark
-                                            ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                            : "text-[#276D9C] hover:bg-[#276D9C]/10"
-                                            }`}
-                                        title="Resend contract"
-                                    >
-                                        {resendingContract ? (
-                                            <Loader2
-                                                className="h-3.5 w-3.5 animate-spin"
-                                                aria-hidden
-                                            />
-                                        ) : (
-                                            <Send className="h-3.5 w-3.5" aria-hidden />
                                         )}
                                     </Button>
                                 ) : null}
@@ -2278,30 +2241,6 @@ export default function ContractTab({
                                     <span className="inline-flex items-center gap-2">
                                         <Ban className="h-4 w-4 shrink-0" aria-hidden />
                                         Void Contract
-                                    </span>
-                                )}
-                            </Button>
-                        ) : null}
-                        {canResendSignedContract ? (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => void handleResendContract()}
-                                disabled={resendingContract || creatingEnvelope}
-                                className={`h-10 cursor-pointer px-6 py-2 font-medium rounded-md disabled:opacity-70 disabled:cursor-not-allowed ${isDark
-                                    ? "border-[#5AACEA] text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                    : "border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
-                                    }`}
-                            >
-                                {resendingContract ? (
-                                    <span className="inline-flex items-center gap-2">
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                        Opening…
-                                    </span>
-                                ) : (
-                                    <span className="inline-flex items-center gap-2">
-                                        <Send className="h-4 w-4 shrink-0" aria-hidden />
-                                        Resend Contract
                                     </span>
                                 )}
                             </Button>

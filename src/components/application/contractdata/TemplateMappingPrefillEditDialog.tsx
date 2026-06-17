@@ -21,6 +21,7 @@ import {
     hasAddendumPrefillFieldMap,
     isAchAuthorizationPrefillTemplate,
 } from "./documentTemplateMappingPrefill";
+import { KATAN_ACH_AUTHORIZATION_PREFILL_FIELD_IDS } from "./KATAN_ACH_AUTHORIZATION_ADDENDUM";
 import { cn } from "@/lib/utils";
 
 function achFormPrefillTitleName(templateName: string): string {
@@ -117,6 +118,12 @@ export function TemplateMappingPrefillEditDialog({
     const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
 
+    const templateGuid = String(row?.template?.templateId ?? row?.templateId ?? "").trim();
+    const isAchFormPrefill =
+        prefillDocumentKind === "ach_form" ||
+        (prefillDocumentKind !== "addendum" &&
+            isAchAuthorizationPrefillTemplate(templateGuid, row?.template?.name ?? null));
+
     const editorRows = useMemo(() => {
         if (!row) return [];
         const saved = documentTemplatePrefillByMappingId[row.id] ?? {};
@@ -125,6 +132,8 @@ export function TemplateMappingPrefillEditDialog({
             templateName: row.template?.name ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
+            documentType: row.documentType ?? null,
+            prefillDocumentKind: isAchFormPrefill ? "ach_form" : prefillDocumentKind ?? null,
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
             agreementDate,
@@ -140,6 +149,8 @@ export function TemplateMappingPrefillEditDialog({
         agreementDate,
         mainPrefillOverrides,
         bankDetail,
+        isAchFormPrefill,
+        prefillDocumentKind,
     ]);
 
     useEffect(() => {
@@ -163,12 +174,9 @@ export function TemplateMappingPrefillEditDialog({
         ? row.template.name
         : row?.template?.templateId || "DocuSign template";
 
-    const templateGuid = String(row?.template?.templateId ?? row?.templateId ?? "").trim();
-    const supportsPrefill = hasAddendumPrefillFieldMap(templateGuid, row?.template?.name ?? null);
-    const isAchFormPrefill =
-        prefillDocumentKind === "ach_form" ||
-        (prefillDocumentKind !== "addendum" &&
-            isAchAuthorizationPrefillTemplate(templateGuid, row?.template?.name ?? null));
+    const supportsPrefill =
+        isAchFormPrefill ||
+        hasAddendumPrefillFieldMap(templateGuid, row?.template?.name ?? null);
     const supplementalPrefillTitle = isAchFormPrefill
         ? `Edit ACH form prefill — ${achFormPrefillTitleName(titleName)}`
         : `Edit addendum prefill — ${titleName}`;
@@ -210,6 +218,15 @@ export function TemplateMappingPrefillEditDialog({
 
             const main = { ...(mainPrefillOverrides ?? {}) } as Record<string, unknown>;
             delete main[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+
+            if (isAchFormPrefill) {
+                for (const id of KATAN_ACH_AUTHORIZATION_PREFILL_FIELD_IDS) {
+                    if (fieldValues[id] !== undefined) {
+                        main[id] = fieldValues[id];
+                    }
+                }
+            }
+
             const contractPrefillOverrides = {
                 ...main,
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
@@ -261,6 +278,7 @@ export function TemplateMappingPrefillEditDialog({
         onOpenChange,
         addendumOnly,
         supplementalPrefillSavedToast,
+        isAchFormPrefill,
     ]);
 
     return (

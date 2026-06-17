@@ -4,7 +4,6 @@ import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import {
-    Eye,
     FileText,
     Landmark,
     Loader2,
@@ -40,6 +39,7 @@ import {
     normalizeContractPrefillOverrides,
 } from "./contractdata/Contract";
 import { PLATFORM_LAYOUT_KEYS, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
+import { pickContractEnvelopeDocument } from "./contractdata/contractSendHistory";
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
     TemplateMappingPrefillEditDialog,
@@ -205,13 +205,19 @@ export default function ACHViewerModal({
         [resolvedContract],
     );
 
+    const mainContractEnvelopeId = useMemo(
+        () => String(pickContractEnvelopeDocument(resolvedContract)?.envelopeId ?? "").trim() || null,
+        [resolvedContract],
+    );
+
     const achAuthorizationDocuSign = useMemo(
         () =>
             parseAchAuthorizationDocuSignFromPrefill(
                 (resolvedContract as { contractPrefillOverrides?: unknown } | null)
                     ?.contractPrefillOverrides,
+                { excludeEnvelopeId: mainContractEnvelopeId },
             ),
-        [resolvedContract],
+        [resolvedContract, mainContractEnvelopeId],
     );
 
     const achCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus =
@@ -219,9 +225,11 @@ export default function ACHViewerModal({
 
     const linkedEnvelopeId = useMemo(() => {
         const fromDb = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
-        if (fromDb) return fromDb;
-        return String(sessionEnvelopeId ?? "").trim() || null;
-    }, [achAuthorizationDocuSign?.envelopeId, sessionEnvelopeId]);
+        if (fromDb && fromDb !== mainContractEnvelopeId) return fromDb;
+        const session = String(sessionEnvelopeId ?? "").trim();
+        if (session && session !== mainContractEnvelopeId) return session;
+        return null;
+    }, [achAuthorizationDocuSign?.envelopeId, sessionEnvelopeId, mainContractEnvelopeId]);
 
     const hasFilledPdf = Boolean(linkedEnvelopeId);
     const isSigned = achCapsuleStatus === "SIGNED";
@@ -430,6 +438,12 @@ export default function ACHViewerModal({
                     force: options?.force ?? !silent,
                     silent,
                 });
+                const achStatus = (
+                    result.data as { achAuthorizationStatus?: AchAuthorizationDocuSignCapsuleStatus }
+                )?.achAuthorizationStatus;
+                if (achStatus) {
+                    mergeAchEnvelopeIntoLocalContract(eid, achStatus);
+                }
                 if (result.rateLimited && !silent) {
                     syncError =
                         "DocuSign rate limit reached. Wait a moment and try Update status again.";
@@ -459,7 +473,7 @@ export default function ACHViewerModal({
                 if (!silent) setStatusRefreshing(false);
             }
         },
-        [applicationId, contractId, linkedEnvelopeId, reloadContractLocal, loadFilledPdf],
+        [applicationId, contractId, linkedEnvelopeId, reloadContractLocal, loadFilledPdf, mergeAchEnvelopeIntoLocalContract],
     );
 
     const handleManualStatusUpdate = useCallback(async () => {
@@ -487,6 +501,12 @@ export default function ACHViewerModal({
                     contractId,
                     force: true,
                 });
+                const achStatus = (
+                    result.data as { achAuthorizationStatus?: AchAuthorizationDocuSignCapsuleStatus }
+                )?.achAuthorizationStatus;
+                if (achStatus) {
+                    mergeAchEnvelopeIntoLocalContract(eid, achStatus);
+                }
                 if (result.rateLimited) {
                     syncError =
                         "DocuSign rate limit reached. Wait a few seconds and try again.";
@@ -516,6 +536,7 @@ export default function ACHViewerModal({
         applicationId,
         linkedEnvelopeId,
         loadFilledPdf,
+        mergeAchEnvelopeIntoLocalContract,
         reloadContractLocal,
         sessionEnvelopeId,
     ]);
@@ -722,22 +743,35 @@ export default function ACHViewerModal({
         };
     }, [templatePdfUrl, filledPdfUrl, revokeBlob]);
 
+    const prefillEditRow: TemplateMappingPrefillEditRow | null = useMemo(() => {
+        if (contractId == null) return null;
+        if (linkedAchMapping) {
+            return {
+                id: linkedAchMapping.id,
+                contractId: linkedAchMapping.contractId,
+                templateId: String(
+                    linkedAchMapping.template?.templateId ?? linkedAchMapping.templateId ?? "",
+                ),
+                documentType: String(linkedAchMapping.documentType || "ach"),
+                template: linkedAchMapping.template ?? null,
+            };
+        }
+        return {
+            id: "ach-form-standalone",
+            contractId,
+            templateId: DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION,
+            documentType: "ach",
+            template: {
+                templateId: DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION,
+                name: "Katan ACH Authorization",
+            },
+        };
+    }, [contractId, linkedAchMapping]);
+
     if (!isOpen) return null;
 
     const activePdfUrl = pdfTab === "filled" ? filledPdfUrl : templatePdfUrl;
     const activePdfLoading = pdfTab === "filled" ? filledPdfLoading : templatePdfLoading;
-
-    const prefillEditRow: TemplateMappingPrefillEditRow | null = linkedAchMapping
-        ? {
-              id: linkedAchMapping.id,
-              contractId: linkedAchMapping.contractId,
-              templateId: String(
-                  linkedAchMapping.template?.templateId ?? linkedAchMapping.templateId ?? "",
-              ),
-              documentType: String(linkedAchMapping.documentType || "ach"),
-              template: linkedAchMapping.template ?? null,
-          }
-        : null;
 
     return (
         <>
@@ -794,18 +828,10 @@ export default function ACHViewerModal({
                                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800 dark:text-slate-100">
                                         {mappingLoading ? "Loading…" : templateLabel}
                                     </span>
-                                    <button
-                                        type="button"
-                                        title="View ACH template"
-                                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-white hover:text-[#276D9C] dark:hover:bg-slate-800"
-                                        onClick={() => setPdfTab("template")}
-                                    >
-                                        <Eye className="h-4 w-4" aria-hidden />
-                                    </button>
-                                    {!readOnly && linkedAchMapping ? (
+                                    {!readOnly && prefillEditRow ? (
                                         <button
                                             type="button"
-                                            title="Edit prefill fields"
+                                            title="Edit ACH form fields"
                                             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-white hover:text-[#276D9C] dark:hover:bg-slate-800"
                                             onClick={() => setAchPrefillEditOpen(true)}
                                         >
