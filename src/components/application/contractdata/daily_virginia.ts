@@ -1,5 +1,22 @@
 import type { ContractPrefillField } from "./Contract";
 
+/** Virginia disclosure address: street + city on line 1, state + ZIP on line 2. */
+export function formatVirginiaDisclosureRecipientAddress(parts: {
+    street?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+}): string {
+    const street = String(parts.street ?? "").trim();
+    const city = String(parts.city ?? "").trim();
+    const state = String(parts.state ?? "").trim();
+    const zip = String(parts.zip ?? "").trim();
+    const line1 = [street, city].filter(Boolean).join(", ");
+    const line2 = [state, zip].filter(Boolean).join(", ");
+    if (line1 && line2) return `${line1},\n${line2}`;
+    return [line1, line2].filter(Boolean).join("\n");
+}
+
 const FIELD_IDS = {
     totalAmountSalesBasedFinancing: ["total_amount_sales_based_financing"],
     feesDeducted: ["fees_deducted"],
@@ -7,20 +24,15 @@ const FIELD_IDS = {
     financeCharge: ["finance_charge"],
     totalRepaymentAmount: ["total_repayment_amount"],
     estimatedNumberOfPayement: ["estimated_number_of_payement"],
-    disclosureDate: ["disclosure_date"],
+    disclosureDate: ["disclosure_date", "agreement_date"],
     disclosureName: ["disclosure_name"],
     recipientAddress: ["recipient_address"],
-    prepaymentDiscount: ["prepayment_discount"],
-    dateOfAmountReceived: ["date_of_amount_received"],
     signatureDate: ["signature_date"],
     recipientName2: ["recipient_name2"],
     disclosureDate2: ["disclosure_date2"],
     recipientAddress1: ["recipient_address1"],
     fordailypayments: ["fordailypayments"],
-    exceededPayment: ["exceeded_payment"],
     weeklyPayments: ["weekly_payments"],
-    paymentExceededPercent: ["payment_exceeded_percent"],
-    signatureDate2: ["signature_date2"],
 } as const;
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
@@ -40,17 +52,12 @@ export interface DailyVirginiaContractPrefillFields {
     disclosureDate?: string;
     disclosureName?: string;
     recipientAddress?: string;
-    prepaymentDiscount?: string;
-    dateOfAmountReceived?: string;
     signatureDate?: string;
     recipientName2?: string;
     disclosureDate2?: string;
     recipientAddress1?: string;
     fordailypayments?: string;
-    exceededPayment?: string;
     weeklyPayments?: string;
-    paymentExceededPercent?: string;
-    signatureDate2?: string;
 }
 
 export function buildDailyVirginiaContractPrefillFields({
@@ -63,17 +70,12 @@ export function buildDailyVirginiaContractPrefillFields({
     disclosureDate = "",
     disclosureName = "",
     recipientAddress = "",
-    prepaymentDiscount = "",
-    dateOfAmountReceived = "",
     signatureDate = "",
     recipientName2 = "",
     disclosureDate2 = "",
     recipientAddress1 = "",
     fordailypayments = "",
-    exceededPayment = "",
     weeklyPayments = "",
-    paymentExceededPercent = "",
-    signatureDate2 = "",
 }: DailyVirginiaContractPrefillFields = {}): ContractPrefillField[] {
     return [
         ...mapIds(
@@ -93,16 +95,11 @@ export function buildDailyVirginiaContractPrefillFields({
         ...mapIds(FIELD_IDS.disclosureDate, "Disclosure Date", disclosureDate),
         ...mapIds(FIELD_IDS.disclosureName, "Disclosure Name", disclosureName),
         ...mapIds(FIELD_IDS.recipientAddress, "Recipient Address", recipientAddress),
-        ...mapIds(FIELD_IDS.prepaymentDiscount, "Prepayment Discount", prepaymentDiscount),
-        ...mapIds(FIELD_IDS.dateOfAmountReceived, "Date Of Amount Received", dateOfAmountReceived),
         ...mapIds(FIELD_IDS.signatureDate, "Signature Date", signatureDate),
         ...mapIds(FIELD_IDS.recipientName2, "Recipient Name 2", recipientName2),
         ...mapIds(FIELD_IDS.disclosureDate2, "Disclosure Date 2", disclosureDate2),
         ...mapIds(FIELD_IDS.recipientAddress1, "Recipient Address 1", recipientAddress1),
         ...mapIds(FIELD_IDS.fordailypayments, "For Daily Payments", fordailypayments),
-        ...mapIds(FIELD_IDS.exceededPayment, "Exceeded Payment", exceededPayment),
         ...mapIds(FIELD_IDS.weeklyPayments, "Weekly Payments", weeklyPayments),
-        ...mapIds(FIELD_IDS.paymentExceededPercent, "Payment Exceeded Percent", paymentExceededPercent),
-        ...mapIds(FIELD_IDS.signatureDate2, "Signature Date 2", signatureDate2),
     ];
 }

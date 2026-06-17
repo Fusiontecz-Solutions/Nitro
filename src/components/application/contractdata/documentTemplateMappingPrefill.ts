@@ -34,12 +34,22 @@ import {
 } from "./docusignAddendumTemplates";
 import {
     buildStateDisclosurePrefillContextFromContract,
+    getStateDisclosureEditorFieldDefinitions,
     getStateDisclosurePrefillFieldsByName,
     getStateDisclosurePrefillFieldsByStateFrequency,
+    hasStateDisclosurePrefillRegistry,
+    resolveStateDisclosureRegistryKey,
     type StateDisclosureContext,
 } from "./stateDisclosurePrefill";
+import {
+    buildDisclosureEditorFieldsFromContext,
+    collapsePdfFieldsToDisclosureEditorValues,
+    expandDisclosureEditorValuesToPdfFields,
+} from "./disclosureEditorFields";
+import { isUtahDisclosureState } from "./daily_utah";
 
 import { ACH_AUTHORIZATION_DOCUSIGN_KEY } from "./achAuthorizationDocuSign";
+import { isPlatformLayoutKey, PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
 import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
 
 /** Stored on `Contract.contractPrefillOverrides` alongside main prefill keys. */
@@ -75,6 +85,7 @@ function disclosureDummyContext(): StateDisclosureContext {
     const d = (): string => DUMMY;
     return {
         fundingProvided: d(),
+        amountBusinessFund: d(),
         fundingDisbursed: d(),
         feesDeducted: d(),
         totalRepayment: d(),
@@ -84,15 +95,39 @@ function disclosureDummyContext(): StateDisclosureContext {
         estimatedAnnualPercentageRate: d(),
         averageMonthlyIncome: d(),
         paymentExceededPercent: d(),
+        percentOfBusinessIncome: d(),
         estimatedTerm: d(),
         estimatedNumberOfPayments: d(),
         prepayment: d(),
         recipientName: d(),
+        funderName: PLATFORM_DISCLOSURE_FUNDER_NAME,
         recipientAddress: d(),
         signatureDate: d(),
         prepaymentReceivedByDate: d(),
         prepaymentDiscountAmount: d(),
+        paymentFrequency: d(),
     };
+}
+
+function resolveDisclosureStateAndFrequency(options: {
+    templateState?: string | null;
+    templateFrequency?: string | null;
+    fallbackState?: string | null;
+    fallbackFrequency?: string | null;
+    contract?: Record<string, unknown> | null;
+}): { state: string | null; frequency: string | null } {
+    const contract = options.contract ?? {};
+    const state =
+        String(options.templateState ?? options.fallbackState ?? contract.state ?? "").trim() ||
+        null;
+    const frequency =
+        String(
+            options.templateFrequency ??
+                options.fallbackFrequency ??
+                (contract as Record<string, unknown>).disclosureFrequency ??
+                "",
+        ).trim() || null;
+    return { state, frequency };
 }
 
 /** Same merge order as Deal Review / main contract prefill edit (app → contract row → saved overrides). */
@@ -115,6 +150,21 @@ function buildEffectiveContractForTemplatePrefill(options: {
     };
 }
 
+function applyPlatformDisclosureFunderName(fields: ContractPrefillField[]): ContractPrefillField[] {
+    return fields.map((field) =>
+        field.id === "funder_name"
+            ? { ...field, value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase() }
+            : field,
+    );
+}
+
+function parsePrefillMoneyForMerge(value: unknown): number | undefined {
+    const raw = String(value ?? "").trim();
+    if (!raw) return undefined;
+    const n = Number.parseFloat(raw.replace(/[$,%\s]/g, ""));
+    return Number.isFinite(n) ? n : undefined;
+}
+
 function mergeFieldRows(
     allDefs: ContractPrefillField[],
     computed: ContractPrefillField[],
@@ -124,13 +174,25 @@ function mergeFieldRows(
     const saved = savedForRow ?? {};
     return allDefs.map((def) => {
         const fromSaved = saved[def.id];
-        if (fromSaved !== undefined && String(fromSaved).trim() !== "") {
-            return { id: def.id, label: def.label, value: String(fromSaved).trim() };
+        const fromSavedTrim =
+            fromSaved !== undefined ? String(fromSaved).trim() : "";
+        const computedVal = String(computedById.get(def.id)?.value ?? "").trim();
+        if (fromSavedTrim !== "") {
+            const savedNum = parsePrefillMoneyForMerge(fromSavedTrim);
+            const computedNum = parsePrefillMoneyForMerge(computedVal);
+            if (
+                savedNum === 0 &&
+                computedNum !== undefined &&
+                computedNum > 0
+            ) {
+                return { id: def.id, label: def.label, value: computedVal };
+            }
+            return { id: def.id, label: def.label, value: fromSavedTrim };
         }
         return {
             id: def.id,
             label: def.label,
-            value: computedById.get(def.id)?.value ?? "",
+            value: computedVal,
         };
     });
 }
@@ -140,6 +202,9 @@ function stateDisclosureAllDefs(
     state: string | null | undefined,
     frequency: string | null | undefined,
 ): ContractPrefillField[] {
+    const fromEditor = getStateDisclosureEditorFieldDefinitions(name, state, frequency);
+    if (fromEditor.length > 0) return fromEditor;
+
     const dummy = disclosureDummyContext();
     const byName = getStateDisclosurePrefillFieldsByName(name, dummy);
     if (byName.length > 0) return byName;
@@ -156,6 +221,9 @@ function stateDisclosureComputed(
     frequency: string | null | undefined,
     context: StateDisclosureContext,
 ): ContractPrefillField[] {
+    const key = resolveStateDisclosureRegistryKey(name, state, frequency);
+    if (key) return buildDisclosureEditorFieldsFromContext(context);
+
     const byName = getStateDisclosurePrefillFieldsByName(name, context);
     if (byName.length > 0) return byName;
     return getStateDisclosurePrefillFieldsByStateFrequency({
@@ -250,11 +318,22 @@ function dotBarclaysBuyout(): BarclaysBuyoutBlankAddendumContractPrefillFields {
     };
 }
 
-function buildBarclaysFlexComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
+function buildBarclaysFlexComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+    application?: Record<string, unknown> | null,
+): ContractPrefillField[] {
     const c = contract ?? {};
+    const legal = str(c.legalName) || str(c.clientLegalName) || sctx.recipientName;
+    const owner2 =
+        str(c.owner2_guarantor_name) ||
+        str(c.guaranty_owner2_name) ||
+        str(c.merchant2_name) ||
+        "";
     return buildBarclaysFlexAddendumContractPrefillFields({
-        clientLegalName: str(c.legalName) || str(c.clientLegalName) || sctx.recipientName,
-        clientName: str(c.clientName) || str(c.customerName) || sctx.recipientName,
+        clientLegalName: legal,
+        clientName: str(c.clientName) || str(c.customerName) || sctx.recipientName || legal,
+        businessName2: owner2,
     });
 }
 
@@ -262,6 +341,7 @@ function dotBarclaysFlex(): BarclaysFlexAddendumContractPrefillFields {
     return {
         clientLegalName: DUMMY,
         clientName: DUMMY,
+        businessName2: DUMMY,
     };
 }
 
@@ -444,6 +524,43 @@ export function hasAddendumPrefillFieldMap(templateId?: string | null, templateN
     return resolveAddendumKind(norm, templateId) != null;
 }
 
+export function hasStateDisclosurePrefillFieldMap(
+    templateName?: string | null,
+    templateState?: string | null,
+    templateFrequency?: string | null,
+    fallbackState?: string | null,
+    fallbackFrequency?: string | null,
+): boolean {
+    const { state, frequency } = resolveDisclosureStateAndFrequency({
+        templateState,
+        templateFrequency,
+        fallbackState,
+        fallbackFrequency,
+    });
+    return hasStateDisclosurePrefillRegistry(templateName, state, frequency);
+}
+
+/** Whether the template-mapping editor has registered fields (addendum or state disclosure). */
+export function hasDocumentTemplatePrefillFieldMap(
+    templateId?: string | null,
+    templateName?: string | null,
+    templateState?: string | null,
+    templateFrequency?: string | null,
+    fallbackState?: string | null,
+    fallbackFrequency?: string | null,
+): boolean {
+    return (
+        hasAddendumPrefillFieldMap(templateId, templateName) ||
+        hasStateDisclosurePrefillFieldMap(
+            templateName,
+            templateState,
+            templateFrequency,
+            fallbackState,
+            fallbackFrequency,
+        )
+    );
+}
+
 function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
     switch (kind) {
         case "balance_transfer_sheet":
@@ -512,6 +629,10 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     templateName?: string | null;
     templateState?: string | null;
     templateFrequency?: string | null;
+    /** Contract / UI state when the template row has no `state` column set. */
+    fallbackState?: string | null;
+    /** Offer payment frequency when the template row has no `frequency` column set. */
+    fallbackFrequency?: string | null;
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
     agreementDate?: string;
@@ -535,13 +656,23 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     });
 
     const name = options.templateName;
-    const state = options.templateState;
-    const frequency = options.templateFrequency;
+    const { state, frequency } = resolveDisclosureStateAndFrequency({
+        templateState: options.templateState,
+        templateFrequency: options.templateFrequency,
+        fallbackState: options.fallbackState,
+        fallbackFrequency: options.fallbackFrequency,
+        contract: effectiveContract,
+    });
 
     const stAll = stateDisclosureAllDefs(name, state, frequency);
     if (stAll.length > 0) {
         const computed = stateDisclosureComputed(name, state, frequency, sctx);
-        return mergeFieldRows(stAll, computed, options.savedOverridesForMapping);
+        const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
+            options.savedOverridesForMapping,
+        );
+        return applyPlatformDisclosureFunderName(
+            mergeFieldRows(stAll, computed, savedCollapsed),
+        );
     }
 
     const norm = normalizeKey(name ?? "");
@@ -560,13 +691,209 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     return [];
 }
 
+/** Ensures disclosure merchant + funder names are on the send payload when a CRM disclosure PDF is merged. */
+export function mergeStateDisclosurePrefillFallback(args: {
+    payload: Array<{ id: string; value: string }>;
+    supplementalRefs: string[];
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+    agreementDate?: string;
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    bankDetail?: Record<string, unknown> | null;
+}): Array<{ id: string; value: string }> {
+    const supplementalIds = (args.supplementalRefs || [])
+        .map((x) => String(x).trim())
+        .filter(Boolean);
+    const hasCrmDisclosurePdf = supplementalIds.some((ref) => !isPlatformLayoutKey(ref));
+    if (!hasCrmDisclosurePdf) return args.payload;
+
+    const effectiveContract = buildEffectiveContractForTemplatePrefill({
+        contract: args.contract ?? null,
+        application: args.application ?? null,
+        agreementDate: args.agreementDate,
+        mainPrefillOverrides: args.mainPrefillOverrides,
+        bankDetail: args.bankDetail ?? null,
+    });
+
+    const { state, frequency } = resolveDisclosureStateAndFrequency({
+        fallbackState: str(effectiveContract.state),
+        fallbackFrequency: str(
+            (effectiveContract as Record<string, unknown>).disclosureFrequency ??
+                (effectiveContract.offer as Record<string, unknown> | null | undefined)?.frequency,
+        ),
+        contract: effectiveContract,
+    });
+    if (!state || !frequency || !hasStateDisclosurePrefillRegistry(state, frequency)) {
+        return args.payload;
+    }
+
+    const sctx = buildStateDisclosurePrefillContextFromContract({
+        contract: effectiveContract,
+        application: args.application ?? null,
+        agreementDate: args.agreementDate,
+    });
+    const fields = getStateDisclosurePrefillFieldsByStateFrequency({
+        state,
+        frequency,
+        context: sctx,
+    });
+    if (!fields.length) return args.payload;
+
+    const byId = new Map(args.payload.map((f) => [f.id, { ...f }]));
+    for (const field of fields) {
+        const v = String(field.value ?? "").trim();
+        if (!v) continue;
+        const existing = byId.get(field.id);
+        const existingNum = parsePrefillMoneyForMerge(existing?.value);
+        // Never clobber calculator-applied amounts (e.g. total_dollar_cost) with contract-derived 0.00.
+        if (existingNum !== undefined && existingNum > 0) continue;
+        // Utah broker fee tab: keep explicit values including $0.00 (not origination fees).
+        if (
+            field.id === "appendix_underwriting_fees" &&
+            existing !== undefined &&
+            String(existing.value ?? "").trim() !== ""
+        ) {
+            continue;
+        }
+        byId.set(field.id, { id: field.id, value: v });
+    }
+    byId.set("funder_name", {
+        id: "funder_name",
+        value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+    });
+    const merchant = String(
+        byId.get("client_name")?.value ||
+            byId.get("client_legal_name")?.value ||
+            sctx.recipientName ||
+            "",
+    ).trim();
+    if (merchant) {
+        byId.set("client_name", { id: "client_name", value: merchant });
+    }
+    return Array.from(byId.values());
+}
+
+type DisclosureMappingRow = {
+    id: string;
+    documentType?: string | null;
+    template?: {
+        id?: string;
+        templateId?: string;
+        layoutKey?: string | null;
+        name?: string | null;
+        state?: string | null;
+        frequency?: string | null;
+    } | null;
+};
+
+/** Expand one linked disclosure mapping row → PDF tab ids (e.g. `total_dollar_cost`). */
+export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
+    mappingRow: DisclosureMappingRow | null | undefined;
+    savedOverridesForMapping?: Record<string, string> | null;
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+    agreementDate?: string;
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    bankDetail?: Record<string, unknown> | null;
+}): Array<{ id: string; value: string }> {
+    const row = args.mappingRow;
+    if (!row || String(row.documentType || "").toLowerCase() !== "disclosure") {
+        return [];
+    }
+
+    const templateId = String(row.template?.id ?? "").trim();
+    const tid = String(row.template?.templateId ?? "").trim();
+    const layoutKey = String(row.template?.layoutKey ?? "").trim();
+
+    const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
+        templateId: templateId || tid || layoutKey,
+        templateName: row.template?.name ?? null,
+        templateState: row.template?.state ?? null,
+        templateFrequency: row.template?.frequency ?? null,
+        contract: args.contract ?? null,
+        application: args.application ?? null,
+        agreementDate: args.agreementDate,
+        mainPrefillOverrides: args.mainPrefillOverrides,
+        savedOverridesForMapping: args.savedOverridesForMapping ?? null,
+        bankDetail: args.bankDetail ?? null,
+    });
+
+    const editorValues: Record<string, string> = {};
+    for (const field of computedRows) {
+        const v =
+            field.id === "funder_name"
+                ? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase()
+                : String(field.value ?? "").trim();
+        if (!v) continue;
+        editorValues[field.id] = v;
+    }
+
+    const expanded = expandDisclosureEditorValuesToPdfFields(editorValues);
+
+    const templateState = String(row.template?.state ?? "").trim();
+    if (isUtahDisclosureState(templateState)) {
+        const raw = args.savedOverridesForMapping ?? {};
+        const brokerFee = String(
+            raw.disclosure_broker_fee ?? expanded.appendix_underwriting_fees ?? "",
+        ).trim();
+        if (brokerFee) {
+            expanded.appendix_underwriting_fees = brokerFee;
+        }
+        const utahPdfKeys = [
+            "purchase_amount",
+            "net_to_merchant",
+            "purchase_price",
+            "finance_charge",
+            "remittance",
+            "monthly_income",
+            "frequency",
+        ] as const;
+        for (const key of utahPdfKeys) {
+            const fromRaw = String(raw[key] ?? "").trim();
+            if (fromRaw) expanded[key] = fromRaw;
+        }
+    }
+
+    return Object.entries(expanded)
+        .map(([id, value]) => ({ id, value: String(value ?? "").trim() }))
+        .filter((f) => f.id && f.value);
+}
+
+/** Merge expanded disclosure PDF fields into a DocuSign prefill payload (by field id). */
+export function mergeExpandedDisclosurePrefillIntoPayload(
+    payload: Array<{ id: string; value: string }>,
+    disclosureFields: Array<{ id: string; value: string }>,
+): Array<{ id: string; value: string }> {
+    if (!disclosureFields.length) return payload;
+    const byId = new Map(payload.map((f) => [f.id, { ...f }]));
+    for (const field of disclosureFields) {
+        const v = String(field.value ?? "").trim();
+        if (!v) continue;
+        const existing = byId.get(field.id);
+        const existingNum = parsePrefillMoneyForMerge(existing?.value);
+        const incomingNum = parsePrefillMoneyForMerge(v);
+        if (
+            existingNum !== undefined &&
+            existingNum > 0 &&
+            incomingNum !== undefined &&
+            incomingNum === 0
+        ) {
+            continue;
+        }
+        byId.set(field.id, { id: field.id, value: v });
+    }
+    return Array.from(byId.values());
+}
+
 export function applyDocumentTemplateMappingPrefillOverrides(args: {
     prefillFieldsPayload: Array<{ id: string; value: string }>;
     mergedTemplateIds: string[];
     mergedLayoutKeys?: string[];
     templateMappingRows: Array<{
         id: string;
+        documentType?: string | null;
         template?: {
+            id?: string;
             templateId?: string;
             layoutKey?: string | null;
             name?: string | null;
@@ -594,11 +921,15 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     for (const row of args.templateMappingRows) {
         const layoutKey = String(row.template?.layoutKey ?? "").trim();
         const tid = String(row.template?.templateId ?? "").trim();
-        const ref = layoutKey || tid;
-        if (!ref || !mergedSet.has(ref)) continue;
+        const templateId = String(row.template?.id ?? "").trim();
+        const included =
+            (layoutKey && mergedSet.has(layoutKey)) ||
+            (tid && mergedSet.has(tid)) ||
+            (templateId && mergedSet.has(templateId));
+        if (!included) continue;
         const perMap = blob[row.id];
         const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
-            templateId: ref,
+            templateId: templateId || tid || layoutKey,
             templateName: row.template?.name ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
@@ -609,11 +940,49 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             savedOverridesForMapping: perMap ?? null,
             bankDetail: args.bankDetail ?? null,
         });
+        const isDisclosureRow =
+            String(row.documentType || "").toLowerCase() === "disclosure";
+        const editorValues: Record<string, string> = {};
         for (const field of computedRows) {
-            const v = String(field.value ?? "").trim();
+            const v =
+                field.id === "funder_name"
+                    ? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase()
+                    : String(field.value ?? "").trim();
             if (!v) continue;
-            byId.set(field.id, { id: field.id, value: v });
+            editorValues[field.id] = v;
+        }
+        const fieldsToMerge = isDisclosureRow
+            ? expandDisclosureEditorValuesToPdfFields(editorValues)
+            : editorValues;
+        for (const [id, value] of Object.entries(fieldsToMerge)) {
+            const v = String(value ?? "").trim();
+            if (!v) continue;
+            byId.set(id, { id, value: v });
         }
     }
+
+    const disclosureMerged = args.templateMappingRows.some((row) => {
+        const templateId = String(row.template?.id ?? "").trim();
+        return (
+            String(row.documentType || "").toLowerCase() === "disclosure" &&
+            Boolean(templateId && mergedSet.has(templateId))
+        );
+    });
+    if (disclosureMerged) {
+        byId.set("funder_name", {
+            id: "funder_name",
+            value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        });
+        const merchant = String(
+            byId.get("client_name")?.value ||
+                byId.get("client_legal_name")?.value ||
+                byId.get("business_legal_name")?.value ||
+                "",
+        ).trim();
+        if (merchant) {
+            byId.set("client_name", { id: "client_name", value: merchant });
+        }
+    }
+
     return Array.from(byId.values());
 }

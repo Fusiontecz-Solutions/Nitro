@@ -4,6 +4,7 @@ import {
     AlertCircle,
     BadgeCheck,
     Building2,
+    Calculator,
     CheckCircle2,
     Clock,
     Download,
@@ -101,6 +102,14 @@ import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
+import {
+    canResendMainContract,
+    canSendMainContract,
+    canVoidMainContract,
+    isContractFullySigned,
+    isContractVoidedOrTerminal,
+    pickContractEnvelopeDocument,
+} from "./contractdata/contractSendHistory";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import {
     isDefaultContractCcEmail,
@@ -109,12 +118,20 @@ import {
     saveBoldSignCcEmailList,
 } from "./boldsignCcList";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
+import { DisclosureCalculationModal } from "./contractdata/DisclosureCalculationModal";
+import {
+    buildDisclosureCalculatorInputsFromSources,
+    extractMonthlyRevenuesFromBankAnalyses,
+} from "./contractdata/disclosureAprCalculator";
+import { mapDisclosureMetricsToEditorFieldOverrides } from "./contractdata/disclosureEditorFields";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import { RequestedDocumentsPanel } from "./RequestedDocumentsPanel";
 import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions";
 import { ExhibitACompaniesSummarySection } from "./contractdata/ExhibitACompaniesSummarySection";
 import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    buildExpandedDisclosurePrefillFieldsForMapping,
+    mergeExpandedDisclosurePrefillIntoPayload,
     parseDocumentTemplatePrefillByMappingId,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./contractdata/documentTemplateMappingPrefill";
@@ -294,6 +311,8 @@ interface PDFViewerModalProps {
     onPrepareDocuSignDraft?: (payload: {
         ccEmails: string[];
         supplementalLayoutKey?: string | null;
+        /** CRM BoldSignTemplate row ids (e.g. state disclosure) merged after addendum. */
+        supplementalDocumentRefs?: string[];
         /** When false, send supplemental document only (standalone ACH). */
         includeMainContract?: boolean;
         funderName?: string | null;
@@ -337,6 +356,70 @@ function isNonAchAddendumMappingRow(row: ContractDocumentTemplateMappingRow): bo
     return !isAchAuthorizationLayoutKey(contractMappingLayoutKey(row));
 }
 
+function isDisclosureMappingRow(row: ContractDocumentTemplateMappingRow): boolean {
+    return String(row.documentType || "").toLowerCase() === "disclosure";
+}
+
+function normalizeStateForTemplateLookup(state: string): string {
+    return String(state ?? "").trim().toLowerCase();
+}
+
+function normalizeFrequencyForTemplateLookup(frequency: string): string {
+    const f = String(frequency ?? "").trim().toLowerCase();
+    if (f.startsWith("week")) return "weekly";
+    if (f.startsWith("day")) return "daily";
+    if (f.startsWith("month")) return "monthly";
+    return f || "daily";
+}
+
+function formatDropdownLabel(raw: unknown): string {
+    const input = String(raw ?? "").trim();
+    if (!input) return "";
+    const noExt = input.replace(/\.pdf$/i, "");
+    const normalized = noExt
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (!normalized) return "";
+    return normalized
+        .split(" ")
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(" ");
+}
+
+function formatDisclosureTemplateLabel(row: ContractDocumentTemplateMappingRow | null): string {
+    if (!row) return "State disclosure";
+    const name = String(row.template?.name ?? "").trim();
+    if (name) return formatDropdownLabel(name.replace(/_/g, " "));
+    const state = String(row.template?.state ?? "").trim();
+    if (state) {
+        return state
+            .split(/[\s_]+/)
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" ");
+    }
+    return "State disclosure";
+}
+
+function mappingTemplateRowId(
+    row: Pick<ContractDocumentTemplateMappingRow, "template" | "templateId"> | null | undefined,
+): string {
+    return String(row?.template?.id ?? row?.templateId ?? "").trim();
+}
+
+function mappingMatchesTemplateRef(
+    row: ContractDocumentTemplateMappingRow,
+    templateRef: string,
+): boolean {
+    const ref = String(templateRef || "").trim();
+    if (!ref) return false;
+    const layoutKey = String(row.template?.layoutKey ?? "").trim();
+    const templateId = String(row.template?.templateId ?? "").trim();
+    const rowId = mappingTemplateRowId(row);
+    return ref === layoutKey || ref === templateId || ref === rowId;
+}
+
 type ContractDocumentTemplateMappingRow = {
     id: string;
     contractId: number;
@@ -349,8 +432,10 @@ type ContractDocumentTemplateMappingRow = {
         name?: string;
         type?: string;
         state?: string | null;
+        frequency?: string | null;
         templateId?: string;
         layoutKey?: string | null;
+        pdfUrl?: string | null;
     } | null;
 };
 
@@ -363,6 +448,17 @@ function pickUsStateForSelect(value: unknown): string {
     const exact = US_STATES.find((s) => s === v);
     if (exact) return exact;
     return US_STATES.find((s) => s.toLowerCase() === v.toLowerCase()) ?? "";
+}
+
+function disclosureMappingMatchesState(
+    row: ContractDocumentTemplateMappingRow | null | undefined,
+    state: string,
+): boolean {
+    if (!row) return false;
+    const picked = normalizeStateForTemplateLookup(pickUsStateForSelect(state));
+    if (!picked) return false;
+    const templateState = normalizeStateForTemplateLookup(row.template?.state ?? "");
+    return Boolean(templateState) && templateState === picked;
 }
 
 function pickFunderForSelect(value: unknown, options: readonly string[]): string {
@@ -497,13 +593,6 @@ function isContractStatusAtLeastSent(raw: unknown): boolean {
     return ["SENT", "VIEWED", "SIGNED", "COMPLETED", "DECLINED", "REVOKED", "EXPIRED"].includes(k);
 }
 
-function pickContractEnvelopeDocument(contract: Record<string, unknown> | null | undefined) {
-    const app = contract && (contract as any).application;
-    const doc = app && typeof app === "object" ? (app as any).document : null;
-    if (doc && typeof doc === "object") return doc as Record<string, unknown>;
-    return null;
-}
-
 const DOCUSIGN_DOC_DRAFT_STATUSES = new Set(["draft", "created"]);
 
 const DOCUSIGN_DOC_SENT_STATUSES = new Set([
@@ -519,12 +608,25 @@ const DOCUSIGN_DOC_SENT_STATUSES = new Set([
 
 /**
  * True only when signers were emailed / contract left draft — not when a DocuSign draft exists.
+ * Voided / terminal envelopes are not treated as in-flight (allows send again).
  */
 function isContractAlreadySent(
     contract: Record<string, unknown> | null | undefined,
     sessionSentAt: Date | null,
     sentStepUnlocked = false,
 ): boolean {
+    if (isContractVoidedOrTerminal(
+        contract?.status,
+        pickContractEnvelopeDocument(contract)?.status,
+    )) {
+        return false;
+    }
+    if (isContractFullySigned(
+        contract?.status,
+        pickContractEnvelopeDocument(contract)?.status,
+    )) {
+        return true;
+    }
     if (sentStepUnlocked || sessionSentAt) return true;
     if (isContractStatusAtLeastSent(contract?.status)) return true;
     const doc = pickContractEnvelopeDocument(contract);
@@ -539,25 +641,6 @@ function isContractAlreadySent(
     return false;
 }
 
-/** Resend only after envelope is completed/signed or voided/revoked/declined/expired. */
-function canResendMainContract(
-    contract: Record<string, unknown> | null | undefined,
-    sessionSentAt: Date | null,
-): boolean {
-    const status = String(contract?.status ?? "").trim().toUpperCase();
-    const doc = pickContractEnvelopeDocument(contract);
-    const docStatus = String(doc?.status ?? "").trim().toLowerCase();
-    if (status === "COMPLETED" || docStatus === "completed") return true;
-    if (
-        ["REVOKED", "DECLINED", "EXPIRED", "VOIDED"].includes(status) ||
-        ["revoked", "voided", "declined", "expired"].includes(docStatus)
-    ) {
-        return true;
-    }
-    if (isContractAlreadySent(contract, sessionSentAt)) return false;
-    return true;
-}
-
 function envelopeDocStatusIsTerminal(doc: Record<string, unknown> | null | undefined): boolean {
     const s = String(doc?.status ?? "").trim().toLowerCase();
     return ["revoked", "voided", "declined", "expired", "completed"].includes(s);
@@ -567,14 +650,7 @@ function canCancelDocuSignContract(
     contract: Record<string, unknown> | null | undefined,
     sessionSentAt: Date | null,
 ): boolean {
-    const status = String(contract?.status ?? "").trim().toUpperCase();
-    if (["REVOKED", "DECLINED", "EXPIRED", "COMPLETED"].includes(status)) return false;
-    if (["SENT", "VIEWED", "SIGNED"].includes(status)) return true;
-    if (!isContractAlreadySent(contract, sessionSentAt)) return false;
-    const doc = pickContractEnvelopeDocument(contract);
-    if (envelopeDocStatusIsTerminal(doc)) return false;
-    if (["REVOKED", "DECLINED", "EXPIRED"].includes(status)) return false;
-    return true;
+    return canVoidMainContract(contract, sessionSentAt);
 }
 
 function canReviewAndSendToDocuSign(
@@ -582,8 +658,7 @@ function canReviewAndSendToDocuSign(
     sessionSentAt: Date | null,
     sentStepUnlocked = false,
 ): boolean {
-    if (canCancelDocuSignContract(contract, sessionSentAt)) return false;
-    if (!canResendMainContract(contract, sessionSentAt)) return false;
+    if (!canSendMainContract(contract, sessionSentAt)) return false;
     if (isContractAlreadySent(contract, sessionSentAt, sentStepUnlocked)) return false;
     return true;
 }
@@ -937,6 +1012,11 @@ const PDFViewerModal = ({
         [templateMappings],
     );
 
+    const disclosureTemplateMappings = useMemo(
+        () => templateMappings.filter(isDisclosureMappingRow),
+        [templateMappings],
+    );
+
     /** Canonical linked addendum (highest `order`); merge uses at most one non-ACH DocuSign template. */
     const linkedAddendumMapping = useMemo(() => {
         if (!addendumTemplateMappings.length) return null;
@@ -945,10 +1025,29 @@ const PDFViewerModal = ({
         )[0];
     }, [addendumTemplateMappings]);
 
+    /** State disclosure merged at the bottom of the contract package. */
+    const linkedDisclosureMapping = useMemo(() => {
+        if (!disclosureTemplateMappings.length) return null;
+        return [...disclosureTemplateMappings].sort(
+            (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
+        )[0];
+    }, [disclosureTemplateMappings]);
+
+    const linkedDisclosureMatchesSelectedState = useMemo(
+        () => disclosureMappingMatchesState(linkedDisclosureMapping, selectedState),
+        [linkedDisclosureMapping, selectedState],
+    );
+
     const [documentTemplatePrefillByMappingId, setDocumentTemplatePrefillByMappingId] = useState<
         Record<string, Record<string, string>>
     >({});
     const [loadingTemplateMappings, setLoadingTemplateMappings] = useState(false);
+    const [linkingDisclosureTemplate, setLinkingDisclosureTemplate] = useState(false);
+    const [disclosureCalcModalOpen, setDisclosureCalcModalOpen] = useState(false);
+    const [disclosureCalcBankAnalyses, setDisclosureCalcBankAnalyses] = useState<unknown>(null);
+    const [loadingDisclosureCalcBankAnalysis, setLoadingDisclosureCalcBankAnalysis] =
+        useState(false);
+    const [savingDisclosureCalculation, setSavingDisclosureCalculation] = useState(false);
     const [previewingTemplateId, setPreviewingTemplateId] = useState<string | null>(null);
     const templatePreviewBlobUrlRef = useRef<string | null>(null);
     const inlinePreviewBlobUrlRef = useRef<string | null>(null);
@@ -1082,6 +1181,37 @@ const PDFViewerModal = ({
     const offerDecisionState = useSelector((state: RootState) => state.offerDecision);
     const offerDecisionData = offerDecisionState?.data ?? null;
     const offerDecisionLoading = Boolean(offerDecisionState?.loading);
+
+    const contractDisclosureFrequency = useMemo(() => {
+        const offer =
+            offerDecisionData != null && typeof offerDecisionData === "object"
+                ? (offerDecisionData as Record<string, unknown>)
+                : null;
+        const contractOffer =
+            resolvedContract != null && typeof resolvedContract === "object"
+                ? ((resolvedContract as Record<string, unknown>).offer as Record<string, unknown> | null)
+                : null;
+        const raw = String(
+            offer?.frequency ?? contractOffer?.frequency ?? "",
+        ).trim();
+        return normalizeFrequencyForTemplateLookup(raw);
+    }, [offerDecisionData, resolvedContract]);
+
+    const disclosureCalculatorSeedInputs = useMemo(
+        () =>
+            buildDisclosureCalculatorInputsFromSources({
+                state: selectedState,
+                application: applicationData as Record<string, unknown> | null,
+                contract: resolvedContract,
+                offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
+            }),
+        [selectedState, applicationData, resolvedContract, offerDecisionData],
+    );
+
+    const disclosureCalcBankMonthlyRevenues = useMemo(
+        () => extractMonthlyRevenuesFromBankAnalyses(disclosureCalcBankAnalyses),
+        [disclosureCalcBankAnalyses],
+    );
     const achListState = useSelector((state: RootState) => state.achList);
     const epoListState = useSelector((state: RootState) => state.epoList);
     const addendumListState = useSelector((state: RootState) => state.addendumList);
@@ -1241,20 +1371,6 @@ const PDFViewerModal = ({
         }
         return map;
     }, [uploadedDocs]);
-    const formatDropdownLabel = (raw: unknown): string => {
-        const input = String(raw ?? "").trim();
-        if (!input) return "";
-        const noExt = input.replace(/\.pdf$/i, "");
-        const normalized = noExt
-            .replace(/[_-]+/g, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-        if (!normalized) return "";
-        return normalized
-            .split(" ")
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(" ");
-    };
     const addendumTemplateOptions = CONTRACT_ADDENDUM_DOCUMENT_OPTIONS;
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
@@ -1508,7 +1624,16 @@ const PDFViewerModal = ({
         const applyContractMeta = (contract: unknown) => {
             const c = contract as { state?: unknown; funderName?: unknown; contractPrefillOverrides?: unknown } | null;
             setResolvedContract(c && typeof c === "object" ? (c as Record<string, unknown>) : null);
-            setSelectedState(pickUsStateForSelect(c?.state));
+            let stateForSelect = pickUsStateForSelect(c?.state);
+            if (!stateForSelect && applicationData) {
+                const ad = applicationData as Record<string, unknown>;
+                const bi0 = Array.isArray(ad.businessInfo)
+                    ? (ad.businessInfo[0] as Record<string, unknown>)
+                    : undefined;
+                const client = ad.client as Record<string, unknown> | undefined;
+                stateForSelect = pickUsStateForSelect(client?.state ?? bi0?.state);
+            }
+            setSelectedState(stateForSelect);
             const rawFunder = String(c?.funderName ?? "").trim();
             setSelectedFunder(
                 pickFunderForSelect(rawFunder, DEFAULT_FUNDER_OPTIONS) || rawFunder,
@@ -1603,7 +1728,7 @@ const PDFViewerModal = ({
         return () => {
             cancelled = true;
         };
-    }, [isOpen, contractId, applicationIdForLookup, dispatch]);
+    }, [isOpen, contractId, applicationIdForLookup, applicationData, dispatch]);
 
     const effectiveContractId = useMemo(() => {
         if (resolvedContractId != null && Number.isFinite(resolvedContractId)) {
@@ -1639,17 +1764,21 @@ const PDFViewerModal = ({
 
     const contractIsFullySigned = useMemo(() => {
         const doc = pickContractEnvelopeDocument(resolvedContract);
-        const cs = String(resolvedContract?.status ?? "").trim().toUpperCase();
-        const ds = String(doc?.status ?? "").trim().toLowerCase();
-        return cs === "COMPLETED" || cs === "SIGNED" || ds === "completed";
+        return isContractFullySigned(resolvedContract?.status, doc?.status);
     }, [resolvedContract]);
 
     const canResendSignedContract = useMemo(
+        () => Boolean(onPrepareDocuSignDraft) && canResendMainContract(resolvedContract),
+        [onPrepareDocuSignDraft, resolvedContract],
+    );
+
+    const contractNeedsNewEnvelope = useMemo(
         () =>
-            Boolean(onPrepareDocuSignDraft) &&
-            canResendMainContract(resolvedContract, sentAt) &&
-            contractIsFullySigned,
-        [onPrepareDocuSignDraft, resolvedContract, sentAt, contractIsFullySigned],
+            isContractVoidedOrTerminal(
+                resolvedContract?.status,
+                pickContractEnvelopeDocument(resolvedContract)?.status,
+            ),
+        [resolvedContract],
     );
 
     const showResendContractButton =
@@ -1794,12 +1923,15 @@ const PDFViewerModal = ({
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
+    const linkedDisclosureMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
+    const disclosureAutoLinkKeyRef = useRef("");
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
     ccEmailsRef.current = mergeContractCcEmailList(ccEmails);
     selectedAddendumOptionRef.current = selectedAddendumOption;
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
     linkedAddendumMappingRef.current = linkedAddendumMapping;
+    linkedDisclosureMappingRef.current = linkedDisclosureMapping;
     docuSignPdfCacheSuffixRef.current = docuSignPdfCacheSuffix;
 
     const buildDocuSignPdfCacheKey = (envelopeId: string) =>
@@ -1939,6 +2071,12 @@ const PDFViewerModal = ({
                 "",
         ).trim();
         return isPlatformLayoutKey(fromMapping) ? fromMapping : null;
+    }, []);
+
+    const resolveDisclosureTemplateRefForDocuSignMerge = useCallback((): string | null => {
+        const row = linkedDisclosureMappingRef.current;
+        const rowId = String(row?.template?.id ?? "").trim();
+        return rowId || null;
     }, []);
 
     const primarySignerEmailRef = useRef("");
@@ -2154,6 +2292,16 @@ const PDFViewerModal = ({
                     }),
                 ).unwrap();
                 const payload = (result as { data?: unknown })?.data ?? result;
+                if (patch.state !== undefined) {
+                    const canonicalState = pickUsStateForSelect(
+                        (payload as { state?: string | null })?.state,
+                    );
+                    setSelectedState(
+                        canonicalState ||
+                            pickUsStateForSelect(patch.state) ||
+                            String(patch.state ?? "").trim(),
+                    );
+                }
                 const canonicalFunder = String(
                     (payload as { funderName?: string })?.funderName ?? "",
                 ).trim();
@@ -2181,17 +2329,43 @@ const PDFViewerModal = ({
     );
 
     useEffect(() => {
-        if (!isOpen || !applicationData) return;
+        if (!disclosureCalcModalOpen || !applicationIdForLookup) return;
+        let cancelled = false;
+        const loadBankAnalysis = async () => {
+            setLoadingDisclosureCalcBankAnalysis(true);
+            try {
+                const res = await axiosGet(
+                    `/bank-analysis?${new URLSearchParams({
+                        application: String(applicationIdForLookup),
+                    }).toString()}`,
+                );
+                if (cancelled) return;
+                const data = (res as { data?: { data?: unknown } })?.data?.data ?? res?.data;
+                setDisclosureCalcBankAnalyses(data);
+            } catch {
+                if (!cancelled) setDisclosureCalcBankAnalyses(null);
+            } finally {
+                if (!cancelled) setLoadingDisclosureCalcBankAnalysis(false);
+            }
+        };
+        void loadBankAnalysis();
+        return () => {
+            cancelled = true;
+        };
+    }, [disclosureCalcModalOpen, applicationIdForLookup]);
+
+    useEffect(() => {
+        if (!isOpen || !applicationData || contractPrefillLoaded) return;
         const ad = applicationData as Record<string, unknown>;
         const bi0 = Array.isArray(ad.businessInfo)
             ? (ad.businessInfo[0] as Record<string, unknown>)
             : undefined;
         const client = ad.client as Record<string, unknown> | undefined;
-        const st = String(client?.state ?? bi0?.state ?? "").trim();
+        const st = pickUsStateForSelect(client?.state ?? bi0?.state);
         const fd = String(bi0?.funderName ?? ad.funderName ?? "").trim();
-        setSelectedState(st);
-        setSelectedFunder(fd);
-    }, [isOpen, applicationData]);
+        if (st) setSelectedState(st);
+        if (fd) setSelectedFunder(fd);
+    }, [isOpen, applicationData, contractPrefillLoaded]);
 
     // Seed CC list when the dialog opens (saved addresses only — no hardcoded defaults)
     useEffect(() => {
@@ -2232,7 +2406,7 @@ const PDFViewerModal = ({
                 setDocuSignOpenUrl(null);
             });
 
-            if (options?.forceNewEnvelope) {
+            if (options?.forceNewEnvelope || contractNeedsNewEnvelope) {
                 setSessionEnvelopeId(null);
                 linkedEnvelopeIdRef.current = null;
                 sentStepUnlockedRef.current = false;
@@ -2344,12 +2518,7 @@ const PDFViewerModal = ({
                         signerEmail: r.signerEmail,
                     })),
                 });
-                const prefillFieldsForDraft = dealReviewFields
-                    .map((f) => ({
-                        id: f.id,
-                        value: String(f.value ?? "").trim(),
-                    }))
-                    .filter((f) => f.id && f.value);
+                const prefillFieldsForDraft = buildDocuSignPrefillFieldsPayload();
 
                 /** Always rebuild the draft so Sender View reflects current CRM prefill/signers. */
                 if (sessionEnv) {
@@ -2358,9 +2527,11 @@ const PDFViewerModal = ({
 
                 let envelopeId: string | null = null;
 
+                const disclosureRef = resolveDisclosureTemplateRefForDocuSignMerge();
                 const prepared = await onPrepareDocuSignDraft({
                     ccEmails: toSend,
                     supplementalLayoutKey: addendumLayoutKey,
+                    supplementalDocumentRefs: disclosureRef ? [disclosureRef] : [],
                     funderName: selectedFunder.trim() || null,
                     signerRoles: signerRolesForSend,
                     prefillFields: prefillFieldsForDraft,
@@ -2449,10 +2620,11 @@ const PDFViewerModal = ({
 
     const handleReviewInDocuSignClick = (options?: { forceNewEnvelope?: boolean }) => {
         if (!fileUrl || isSending || docuSignSendInFlightRef.current) return;
-        const forceNewEnvelope = options?.forceNewEnvelope === true;
+        const forceNewEnvelope =
+            options?.forceNewEnvelope === true || contractNeedsNewEnvelope;
         if (forceNewEnvelope) {
-            if (!canResendSignedContract) {
-                toast.error("This contract cannot be resent yet.");
+            if (!canResendSignedContract && !canSendMainContract(resolvedContract, sentAt)) {
+                toast.error("This contract cannot be sent yet.");
                 return;
             }
         } else if (!canReviewAndSendDocuSign) {
@@ -2475,7 +2647,10 @@ const PDFViewerModal = ({
                 { autoClose: 8000 },
             );
         }
-        void finishDocuSignReviewSend(docuSignTab, options);
+        void finishDocuSignReviewSend(docuSignTab, {
+            forceNewEnvelope:
+                options?.forceNewEnvelope === true || contractNeedsNewEnvelope,
+        });
     };
 
     /**
@@ -2708,13 +2883,14 @@ const PDFViewerModal = ({
         }
     };
 
-    const fetchTemplateMappings = useCallback(async () => {
+    const fetchTemplateMappings = useCallback(async (options?: { silent?: boolean }) => {
         if (effectiveContractId == null) {
             setTemplateMappings([]);
             return;
         }
+        const silent = options?.silent === true;
         try {
-            setLoadingTemplateMappings(true);
+            if (!silent) setLoadingTemplateMappings(true);
             const res = await axiosGet(`/contract/${effectiveContractId}/document-template-mappings`);
             const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
             setTemplateMappings(Array.isArray(rows) ? rows : []);
@@ -2722,7 +2898,7 @@ const PDFViewerModal = ({
             setTemplateMappings([]);
             setDocumentUploadMessage(error?.message || "Failed to load template mappings.");
         } finally {
-            setLoadingTemplateMappings(false);
+            if (!silent) setLoadingTemplateMappings(false);
         }
     }, [effectiveContractId]);
 
@@ -3027,6 +3203,35 @@ const PDFViewerModal = ({
         prefilledBoldSignPdfUrlRef.current = null;
     }, []);
 
+    const buildDocuSignPrefillFieldsPayload = useCallback((): Array<{ id: string; value: string }> => {
+        const base = dealReviewFields
+            .map((f) => ({
+                id: f.id,
+                value: String(f.value ?? "").trim(),
+            }))
+            .filter((f) => f.id && f.value);
+
+        const mappingId = linkedDisclosureMapping?.id;
+        const savedOverrides =
+            mappingId != null ? documentTemplatePrefillByMappingId[mappingId] ?? null : null;
+
+        const disclosureFields = buildExpandedDisclosurePrefillFieldsForMapping({
+            mappingRow: linkedDisclosureMapping,
+            savedOverridesForMapping: savedOverrides,
+            contract: resolvedContract as Record<string, unknown> | null,
+            application: applicationData as unknown as Record<string, unknown> | null,
+            agreementDate: formatDate(new Date()),
+        });
+
+        return mergeExpandedDisclosurePrefillIntoPayload(base, disclosureFields);
+    }, [
+        dealReviewFields,
+        linkedDisclosureMapping,
+        documentTemplatePrefillByMappingId,
+        resolvedContract,
+        applicationData,
+    ]);
+
     const syncPrefillToDraftEnvelope = useCallback(async () => {
         const envelopeId = resolveDraftEnvelopeIdForSync(
             resolvedContract,
@@ -3034,12 +3239,7 @@ const PDFViewerModal = ({
             sessionEnvelopeId,
         );
         if (!envelopeId) return;
-        const fields = dealReviewFields
-            .map((f) => ({
-                id: f.id,
-                value: String(f.value ?? "").trim(),
-            }))
-            .filter((f) => f.id && f.value);
+        const fields = buildDocuSignPrefillFieldsPayload();
         if (!fields.length) return;
         try {
             await axiosPatch("/docusign/prefill-fields", {
@@ -3052,13 +3252,112 @@ const PDFViewerModal = ({
             console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
         }
     }, [
-        dealReviewFields,
+        buildDocuSignPrefillFieldsPayload,
         resolvedContract,
         sentAt,
         sessionEnvelopeId,
         invalidateDocuSignPdfCache,
         loadPrefilledPdfFromDocuSign,
     ]);
+
+    const applyDisclosureCalculation = useCallback(
+        async (args: {
+            inputs: import("./contractdata/disclosureAprCalculator").DisclosureCalculatorInputs;
+            metrics: import("./contractdata/disclosureAprCalculator").DisclosureCalculatorResult;
+        }) => {
+            const mappingId = linkedDisclosureMapping?.id;
+            const cid = effectiveContractId;
+            if (!mappingId || cid == null || !Number.isFinite(cid)) {
+                toast.error("Link a state disclosure before applying calculated values.");
+                return;
+            }
+
+            const fieldOverrides = mapDisclosureMetricsToEditorFieldOverrides(args.metrics, {
+                merchantName:
+                    args.inputs.merchantName ||
+                    getApplicationPrimaryRecipientName(applicationData) ||
+                    String(
+                        resolvedContract?.legalName ??
+                            resolvedContract?.clientName ??
+                            "",
+                    ).trim() ||
+                    undefined,
+                signatureDate: args.inputs.disbursementDate,
+                state: args.inputs.state,
+                inputs: args.inputs,
+            });
+
+            const priorBlob = { ...documentTemplatePrefillByMappingId };
+            priorBlob[mappingId] = fieldOverrides;
+
+            const existingOverrides =
+                resolvedContract != null &&
+                typeof resolvedContract.contractPrefillOverrides === "object" &&
+                resolvedContract.contractPrefillOverrides != null &&
+                !Array.isArray(resolvedContract.contractPrefillOverrides)
+                    ? {
+                          ...(resolvedContract.contractPrefillOverrides as Record<string, unknown>),
+                      }
+                    : {};
+
+            const contractPrefillOverrides: Record<string, unknown> = {
+                ...existingOverrides,
+                [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: priorBlob,
+                estimatedAnnualPercentageRate: String(args.metrics.estimatedAnnualPercentageRate),
+            };
+
+            setSavingDisclosureCalculation(true);
+            try {
+                const result = await dispatch(
+                    updateContract({
+                        id: cid,
+                        data: { contractPrefillOverrides },
+                    }),
+                ).unwrap();
+                const payload = (result as { data?: unknown })?.data ?? result;
+                const fullSaved =
+                    (payload as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides ?? contractPrefillOverrides;
+                setDocumentTemplatePrefillByMappingId(
+                    parseDocumentTemplatePrefillByMappingId(fullSaved),
+                );
+                setResolvedContract((prev) =>
+                    prev ? { ...prev, contractPrefillOverrides: fullSaved ?? null } : prev,
+                );
+                draftPreparedPrefillFingerprintRef.current = docuSignPrefillDraftFingerprint({
+                    contractPrefillOverrides:
+                        stripDocumentTemplateBlobFromPrefillOverrides(fullSaved) ?? null,
+                    documentTemplatePrefillByMappingId:
+                        parseDocumentTemplatePrefillByMappingId(fullSaved),
+                });
+                queueMicrotask(() => {
+                    void syncPrefillToDraftEnvelope();
+                });
+                toast.success("Disclosure calculation applied.");
+                setDisclosureCalcModalOpen(false);
+            } catch (err: unknown) {
+                const msg =
+                    typeof err === "string"
+                        ? err
+                        : String(
+                              (err as { message?: string })?.message ||
+                                  "Failed to save disclosure calculation.",
+                          );
+                toast.error(msg);
+            } finally {
+                setSavingDisclosureCalculation(false);
+            }
+        },
+        [
+            linkedDisclosureMapping?.id,
+            effectiveContractId,
+            documentTemplatePrefillByMappingId,
+            resolvedContract,
+            applicationData,
+            dispatch,
+            syncPrefillToDraftEnvelope,
+        ],
+    );
 
     const handleCancelContract = useCallback(async () => {
         const envelopeId = String(linkedEnvelopeId || "").trim();
@@ -3185,6 +3484,18 @@ const PDFViewerModal = ({
                 );
                 const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
                 const addendumRows = rows.filter(isNonAchAddendumMappingRow);
+                if (!ref) {
+                    if (addendumRows.length === 0) {
+                        setSelectedAddendumOption("");
+                        return;
+                    }
+                } else if (
+                    addendumRows.length === 1 &&
+                    mappingMatchesTemplateRef(addendumRows[0], ref)
+                ) {
+                    setSelectedAddendumOption(`lk:${ref}`);
+                    return;
+                }
                 await Promise.all(
                     addendumRows.map((row) =>
                         axiosDelete(
@@ -3201,7 +3512,7 @@ const PDFViewerModal = ({
                 } else {
                     setSelectedAddendumOption("");
                 }
-                await fetchTemplateMappings();
+                await fetchTemplateMappings({ silent: true });
             } catch (error: any) {
                 setDocumentUploadMessage(
                     error?.message || "Failed to update addendum template.",
@@ -3211,19 +3522,161 @@ const PDFViewerModal = ({
         [effectiveContractId, fetchTemplateMappings],
     );
 
+    const lookupDisclosureTemplateRef = useCallback(
+        async (state: string, frequency: string): Promise<string | null> => {
+            const params = new URLSearchParams({
+                type: "disclosure",
+                state: normalizeStateForTemplateLookup(state),
+                frequency: normalizeFrequencyForTemplateLookup(frequency),
+            });
+            const res = await axiosGet(`/contract/templates?${params.toString()}`);
+            const rows = (res?.data?.data ?? []) as Array<{
+                id?: string;
+                pdfUrl?: string | null;
+            }>;
+            const match = Array.isArray(rows)
+                ? rows.find((row) => String(row?.pdfUrl ?? "").trim())
+                : undefined;
+            return match?.id ? String(match.id) : null;
+        },
+        [],
+    );
+
+    /** One state disclosure per send — replace any existing disclosure mapping. */
+    const setDisclosureTemplateMapping = useCallback(
+        async (templateRef: string | null) => {
+            if (effectiveContractId == null) return;
+            const ref = String(templateRef || "").trim();
+            try {
+                const res = await axiosGet(
+                    `/contract/${effectiveContractId}/document-template-mappings`,
+                );
+                const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
+                const disclosureRows = rows.filter(isDisclosureMappingRow);
+                if (!ref) {
+                    if (disclosureRows.length === 0) return;
+                } else if (
+                    disclosureRows.length === 1 &&
+                    mappingMatchesTemplateRef(disclosureRows[0], ref)
+                ) {
+                    return;
+                }
+                await Promise.all(
+                    disclosureRows.map((row) =>
+                        axiosDelete(
+                            `/contract/${effectiveContractId}/document-template-mappings/${row.id}`,
+                        ),
+                    ),
+                );
+                if (ref) {
+                    await axiosPost(`/contract/${effectiveContractId}/document-template-mappings`, {
+                        documentType: "disclosure",
+                        templateRef: ref,
+                    });
+                }
+                await fetchTemplateMappings({ silent: true });
+            } catch (error: any) {
+                setDocumentUploadMessage(
+                    error?.message || "Failed to update state disclosure template.",
+                );
+            }
+        },
+        [effectiveContractId, fetchTemplateMappings],
+    );
+
+    const syncDisclosureTemplateForState = useCallback(
+        async (state: string, options?: { silent?: boolean }) => {
+            const picked = pickUsStateForSelect(state);
+            if (!picked) {
+                if (linkedDisclosureMappingRef.current) {
+                    await setDisclosureTemplateMapping(null);
+                }
+                return;
+            }
+            if (effectiveContractId == null) return;
+            try {
+                setLinkingDisclosureTemplate(true);
+                const templateRef = await lookupDisclosureTemplateRef(
+                    picked,
+                    contractDisclosureFrequency,
+                );
+                const current = linkedDisclosureMappingRef.current;
+                const currentTemplateId = current ? mappingTemplateRowId(current) : "";
+                if (!templateRef && !current) return;
+                if (templateRef && currentTemplateId === templateRef) return;
+                if (!templateRef) {
+                    await setDisclosureTemplateMapping(null);
+                    if (!options?.silent) {
+                        toast.info(`No disclosure PDF configured for ${picked}.`);
+                    }
+                    return;
+                }
+                await setDisclosureTemplateMapping(templateRef);
+            } catch (error: any) {
+                setDocumentUploadMessage(
+                    error?.message || "Failed to link state disclosure template.",
+                );
+            } finally {
+                setLinkingDisclosureTemplate(false);
+            }
+        },
+        [
+            contractDisclosureFrequency,
+            effectiveContractId,
+            lookupDisclosureTemplateRef,
+            setDisclosureTemplateMapping,
+        ],
+    );
+
+    /** Link disclosure once when reopening a contract that already has a saved state. */
+    useEffect(() => {
+        if (!isOpen) {
+            disclosureAutoLinkKeyRef.current = "";
+            return;
+        }
+        if (effectiveContractId == null || loadingTemplateMappings) return;
+        const picked = pickUsStateForSelect(selectedState);
+        if (!picked) return;
+        if (
+            linkedDisclosureMapping &&
+            disclosureMappingMatchesState(linkedDisclosureMapping, picked)
+        ) {
+            return;
+        }
+        const key = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}`;
+        if (disclosureAutoLinkKeyRef.current === key) return;
+        disclosureAutoLinkKeyRef.current = key;
+        void syncDisclosureTemplateForState(picked, { silent: true });
+    }, [
+        isOpen,
+        effectiveContractId,
+        loadingTemplateMappings,
+        selectedState,
+        contractDisclosureFrequency,
+        linkedDisclosureMapping,
+        syncDisclosureTemplateForState,
+    ]);
+
     const handlePreviewBoldSignTemplate = useCallback(
         async (row: ContractDocumentTemplateMappingRow) => {
             const templateRef = String(
-                row?.template?.layoutKey || row?.template?.templateId || row?.templateId || "",
+                row?.template?.layoutKey ||
+                    row?.template?.templateId ||
+                    row?.template?.id ||
+                    row?.templateId ||
+                    "",
             ).trim();
-            if (!templateRef || !isPlatformLayoutKey(templateRef)) {
-                setDocumentUploadMessage("This mapping has no platform layout key.");
+            const platformKey = isPlatformLayoutKey(templateRef) ? templateRef : null;
+            const crmRowId = String(row?.template?.id ?? "").trim();
+            const downloadRef = platformKey || crmRowId || templateRef;
+            if (!downloadRef) {
+                setDocumentUploadMessage("This mapping has no downloadable template.");
                 return;
             }
             try {
                 setPreviewingTemplateId(String(row.id));
                 const response = await axiosGet(
-                    `/docusign/template/${encodeURIComponent(templateRef)}/download`,
+                    `/docusign/template/${encodeURIComponent(downloadRef)}/download`,
                     { responseType: "blob" },
                 );
                 const blob =
@@ -3237,14 +3690,15 @@ const PDFViewerModal = ({
                 templatePreviewBlobUrlRef.current = url;
                 setActivePreview(null);
                 setUploadedPreviewUrl(url);
-                if (String(row.documentType || "").toLowerCase() === "addendum") {
-                    setSelectedAddendumOption(`lk:${templateRef}`);
+                if (String(row.documentType || "").toLowerCase() === "addendum" && platformKey) {
+                    setSelectedAddendumOption(`lk:${platformKey}`);
                 }
-                setDocumentUploadMessage(
-                    `Showing template: ${formatDropdownLabel(
-                        row?.template?.name || supplementalOptionLabel(templateRef) || "Template",
-                    )}`,
-                );
+                const label =
+                    row?.template?.name ||
+                    (platformKey ? supplementalOptionLabel(platformKey) : null) ||
+                    formatDisclosureTemplateLabel(row) ||
+                    "Template";
+                setDocumentUploadMessage(`Showing template: ${formatDropdownLabel(label)}`);
             } catch (error: any) {
                 const apiMsg =
                     error?.response?.data?.message ||
@@ -3279,9 +3733,11 @@ const PDFViewerModal = ({
     }, [isOpen, revokeInlinePreviewBlob]);
 
     // Legacy contracts may have multiple addendum rows — keep one linked to the dropdown.
+    const addendumExtrasCleanupKeyRef = useRef("");
     useEffect(() => {
         if (!isOpen || effectiveContractId == null || loadingTemplateMappings) return;
         if (addendumTemplateMappings.length <= 1) {
+            addendumExtrasCleanupKeyRef.current = "";
             const row = linkedAddendumMapping;
             if (!row) {
                 if (selectedAddendumOption.startsWith("lk:") || selectedAddendumOption.startsWith("bs:")) {
@@ -3305,6 +3761,9 @@ const PDFViewerModal = ({
         ).trim();
         const extras = addendumTemplateMappings.filter((row) => row.id !== primary?.id);
         const extraAch = achTemplateMappings.length > 1 ? achTemplateMappings.slice(1) : [];
+        const cleanupKey = `${effectiveContractId}:${extras.map((r) => r.id).join(",")}:${extraAch.map((r) => r.id).join(",")}`;
+        if (addendumExtrasCleanupKeyRef.current === cleanupKey) return;
+        addendumExtrasCleanupKeyRef.current = cleanupKey;
         void (async () => {
             try {
                 await Promise.all(
@@ -3317,9 +3776,9 @@ const PDFViewerModal = ({
                 if (primaryRef) {
                     setSelectedAddendumOption(`lk:${primaryRef}`);
                 }
-                await fetchTemplateMappings();
+                await fetchTemplateMappings({ silent: true });
             } catch {
-                /* ignore cleanup errors */
+                addendumExtrasCleanupKeyRef.current = "";
             }
         })();
     }, [
@@ -4848,9 +5307,20 @@ const PDFViewerModal = ({
                                                         disabled={savingContractMeta}
                                                         onValueChange={(v: string) => {
                                                             setSelectedState(v);
-                                                            if (effectiveContractId != null) {
-                                                                void persistContractStateAndFunder({ state: v });
+                                                            const picked = pickUsStateForSelect(v);
+                                                            if (
+                                                                effectiveContractId != null &&
+                                                                picked
+                                                            ) {
+                                                                disclosureAutoLinkKeyRef.current = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}`;
+                                                            } else {
+                                                                disclosureAutoLinkKeyRef.current = "";
                                                             }
+                                                            if (effectiveContractId == null) return;
+                                                            void persistContractStateAndFunder({
+                                                                state: v,
+                                                            });
+                                                            void syncDisclosureTemplateForState(v);
                                                         }}
                                                     >
                                                         <SelectTrigger
@@ -4898,6 +5368,147 @@ const PDFViewerModal = ({
                                                         </SelectContent>
                                                     </Select>
                                                 </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                            <div className="mb-3 flex items-start justify-between gap-2">
+                                                <div className="flex min-w-0 items-start gap-2.5">
+                                                    <div
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        aria-hidden
+                                                    >
+                                                        <ScrollText className="h-4 w-4" />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                            State disclosure
+                                                        </h4>
+                                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                            Linked from the selected state and merged at the bottom of the contract.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                {linkingDisclosureTemplate ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#276D9C]">
+                                                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                                                        Loading
+                                                    </span>
+                                                ) : linkedDisclosureMapping &&
+                                                  linkedDisclosureMatchesSelectedState ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-emerald-200/80 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-800/50">
+                                                        <CheckCircle2 className="h-3 w-3" aria-hidden />
+                                                        Linked
+                                                    </span>
+                                                ) : null}
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                {linkingDisclosureTemplate ? (
+                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[#276D9C]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
+                                                        <Loader2
+                                                            className="h-8 w-8 animate-spin text-[#276D9C]"
+                                                            aria-hidden
+                                                        />
+                                                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                                                            {selectedState
+                                                                ? `Loading disclosure for ${selectedState}…`
+                                                                : "Loading disclosure…"}
+                                                        </p>
+                                                    </div>
+                                                ) : linkedDisclosureMapping &&
+                                                  linkedDisclosureMatchesSelectedState ? (
+                                                    <>
+                                                    <div
+                                                        key={linkedDisclosureMapping.id}
+                                                        className="flex items-center justify-between gap-2 rounded-lg border border-teal-200/90 bg-gradient-to-r from-teal-50/80 to-white px-2.5 py-2.5 shadow-sm transition-colors dark:border-slate-600 dark:from-teal-950/25 dark:to-slate-900/80"
+                                                    >
+                                                        <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
+                                                            <div
+                                                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-600 text-white shadow-sm"
+                                                                aria-hidden
+                                                            >
+                                                                <ScrollText className="h-4 w-4" />
+                                                            </div>
+                                                            <div className="min-w-0">
+                                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                                    <span className="inline-flex rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 dark:bg-teal-900/50 dark:text-teal-200">
+                                                                        Disclosure
+                                                                    </span>
+                                                                </div>
+                                                                <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                                                                    {formatDropdownLabel(
+                                                                        formatDisclosureTemplateLabel(
+                                                                            linkedDisclosureMapping,
+                                                                        ),
+                                                                    )}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex shrink-0 items-center gap-0.5">
+                                                            <Button
+                                                                type="button"
+                                                                size="icon"
+                                                                variant="ghost"
+                                                                className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                title="View disclosure PDF"
+                                                                disabled={
+                                                                    previewingTemplateId ===
+                                                                    String(linkedDisclosureMapping.id)
+                                                                }
+                                                                onClick={() =>
+                                                                    void handlePreviewBoldSignTemplate(
+                                                                        linkedDisclosureMapping,
+                                                                    )
+                                                                }
+                                                            >
+                                                                {previewingTemplateId ===
+                                                                String(linkedDisclosureMapping.id) ? (
+                                                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                ) : (
+                                                                    <Eye className="h-3.5 w-3.5" />
+                                                                )}
+                                                            </Button>
+                                                            <Button
+                                                                type="button"
+                                                                size="icon"
+                                                                variant="ghost"
+                                                                className="h-8 w-8 cursor-pointer text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/40"
+                                                                title="Remove disclosure"
+                                                                onClick={() =>
+                                                                    void setDisclosureTemplateMapping(null)
+                                                                }
+                                                            >
+                                                                <Trash2 className="h-3.5 w-3.5" />
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        className="h-9 w-full border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                        onClick={() => setDisclosureCalcModalOpen(true)}
+                                                    >
+                                                        <Calculator className="mr-2 h-4 w-4" />
+                                                        Calculate disclosure
+                                                    </Button>
+                                                    </>
+                                                ) : (
+                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
+                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+                                                            <ScrollText className="h-5 w-5" aria-hidden />
+                                                        </div>
+                                                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                                                            {selectedState
+                                                                ? `No disclosure linked for ${selectedState}.`
+                                                                : "Select a state to link a disclosure."}
+                                                        </p>
+                                                        <p className="max-w-[260px] text-[10px] text-slate-500">
+                                                            Upload the state PDF to Cloudinary and add a
+                                                            BoldSignTemplate row with type disclosure.
+                                                        </p>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
 
@@ -7024,7 +7635,11 @@ const PDFViewerModal = ({
                                         Boolean(contractSignersValidationError)
                                     }
                                 >
-                                    {isSending ? "Preparing DocuSign…" : "Review & send in DocuSign"}
+                                    {isSending
+                                        ? "Preparing DocuSign…"
+                                        : contractNeedsNewEnvelope
+                                          ? "Send contract in DocuSign"
+                                          : "Review & send in DocuSign"}
                                 </Button>
                             ) : null}
                             </div>
@@ -7108,6 +7723,9 @@ const PDFViewerModal = ({
                     [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
                 }}
                 linkedAddendumMapping={linkedAddendumMapping}
+                linkedDisclosureMapping={linkedDisclosureMapping}
+                contractDisclosureState={selectedState}
+                contractDisclosureFrequency={contractDisclosureFrequency}
                 resolvedContract={resolvedContract}
                 contractSignerOverrides={contractSignerOverrides}
             />
@@ -7124,6 +7742,25 @@ const PDFViewerModal = ({
                         );
                     }
                 }}
+            />
+            <DisclosureCalculationModal
+                open={disclosureCalcModalOpen}
+                onOpenChange={(nextOpen) => {
+                    setDisclosureCalcModalOpen(nextOpen);
+                    if (!nextOpen) setDisclosureCalcBankAnalyses(null);
+                }}
+                seedInputs={disclosureCalculatorSeedInputs}
+                bankMonthlyRevenues={disclosureCalcBankMonthlyRevenues}
+                loadingBankAnalysis={loadingDisclosureCalcBankAnalysis}
+                disclosureLabel={
+                    linkedDisclosureMapping
+                        ? formatDropdownLabel(
+                              formatDisclosureTemplateLabel(linkedDisclosureMapping),
+                          )
+                        : undefined
+                }
+                saving={savingDisclosureCalculation}
+                onApply={applyDisclosureCalculation}
             />
         </>
     );

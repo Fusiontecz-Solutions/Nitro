@@ -6,10 +6,6 @@ const FIELD_IDS = {
     totalOfPayments: ["total_of_payments"],
     totalDollarCostOfFrinancing: ["total_dollar_cost_of_frinancing"],
     estimatedPayment: ["estimated_payment"],
-    exceededPayment: ["exceeded_payment"],
-    agreementDuration: ["agreement_duration"],
-    paymentFallen: ["payment_fallen"],
-    consistentWithBusiness: ["consistent_with_business"],
     signatureDate: ["signature_date"],
 } as const;
 
@@ -26,10 +22,6 @@ export interface DailyKansasContractPrefillFields {
     totalOfPayments?: string;
     totalDollarCostOfFrinancing?: string;
     estimatedPayment?: string;
-    exceededPayment?: string;
-    agreementDuration?: string;
-    paymentFallen?: string;
-    consistentWithBusiness?: string;
     signatureDate?: string;
 }
 
@@ -43,10 +35,6 @@ export function buildDailyKansasContractPrefillFields({
     totalOfPayments = "",
     totalDollarCostOfFrinancing = "",
     estimatedPayment = "",
-    exceededPayment = "",
-    agreementDuration = "",
-    paymentFallen = "",
-    consistentWithBusiness = "",
     signatureDate = "",
 }: DailyKansasContractPrefillFields = {}): ContractPrefillField[] {
     return [
@@ -67,10 +55,6 @@ export function buildDailyKansasContractPrefillFields({
             totalDollarCostOfFrinancing,
         ),
         ...mapIds(FIELD_IDS.estimatedPayment, "Estimated Payment", estimatedPayment),
-        ...mapIds(FIELD_IDS.exceededPayment, "Exceeded Payment", exceededPayment),
-        ...mapIds(FIELD_IDS.agreementDuration, "Agreement Duration", agreementDuration),
-        ...mapIds(FIELD_IDS.paymentFallen, "Payment Fallen", paymentFallen),
-        ...mapIds(FIELD_IDS.consistentWithBusiness, "Consistent With Business", consistentWithBusiness),
         ...mapIds(FIELD_IDS.signatureDate, "Signature Date", signatureDate),
     ];
 }
