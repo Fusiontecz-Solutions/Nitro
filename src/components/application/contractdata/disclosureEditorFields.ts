@@ -271,6 +271,7 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
             | "frequency"
             | "brokerFeePaidByFunder"
             | "brokerFeePaidByMerchant"
+            | "state"
         >;
     },
 ): Record<string, string> {

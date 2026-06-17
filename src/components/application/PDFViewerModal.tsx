@@ -103,7 +103,6 @@ import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
 import {
-    canResendMainContract,
     canSendMainContract,
     canVoidMainContract,
     isContractFullySigned,
@@ -1768,8 +1767,8 @@ const PDFViewerModal = ({
     }, [resolvedContract]);
 
     const canResendSignedContract = useMemo(
-        () => Boolean(onPrepareDocuSignDraft) && canResendMainContract(resolvedContract),
-        [onPrepareDocuSignDraft, resolvedContract],
+        () => Boolean(onPrepareDocuSignDraft) && contractIsFullySigned,
+        [onPrepareDocuSignDraft, contractIsFullySigned],
     );
 
     const contractNeedsNewEnvelope = useMemo(
