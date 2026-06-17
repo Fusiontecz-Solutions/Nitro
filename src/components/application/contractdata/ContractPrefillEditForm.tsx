@@ -49,6 +49,7 @@ import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasAddendumPrefillFieldMap,
+    hasStateDisclosurePrefillFieldMap,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./documentTemplateMappingPrefill";
 import type { TemplateMappingPrefillEditRow } from "./TemplateMappingPrefillEditDialog";
@@ -542,6 +543,9 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
 /** Extra nav section in the prefill modal for the linked DocuSign addendum template (not main-contract addendum fields). */
 export const LINKED_DOCUSIGN_ADDENDUM_SECTION_ID = "linked_docusign_addendum";
 
+/** State disclosure template merged with the contract (Florida, Georgia, etc.). */
+export const LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID = "linked_docusign_disclosure";
+
 /** Editable contract signer rows when two owners / signers are active. */
 export const CONTRACT_SIGNERS_PREFILL_SECTION_ID = "contract_signers";
 
@@ -863,6 +867,12 @@ export type ContractPrefillEditFormProps = {
     onPersistedPrefillFullChange?: (full: Record<string, unknown> | null) => void;
     /** Linked addendum mapping row from Info — enables a final modal tab for template-specific DocuSign fields. */
     linkedAddendumMapping?: TemplateMappingPrefillEditRow | null;
+    /** Linked state disclosure mapping row — enables disclosure prefill fields for the selected state. */
+    linkedDisclosureMapping?: TemplateMappingPrefillEditRow | null;
+    /** Contract / Info panel state when the disclosure template row has no `state` column. */
+    contractDisclosureState?: string | null;
+    /** Offer payment frequency (daily / weekly) for disclosure field resolution. */
+    contractDisclosureFrequency?: string | null;
     resolvedContract?: Record<string, unknown> | null;
     /** Live CRM signer rows from Summary (may be unsaved); used for owner-2 field visibility and hydration. */
     contractSignerOverrides?: ContractSignerOverrideRow[] | null;
@@ -888,12 +898,16 @@ export function ContractPrefillEditForm({
     prefillOverridesReady = true,
     onPersistedPrefillFullChange,
     linkedAddendumMapping = null,
+    linkedDisclosureMapping = null,
+    contractDisclosureState = null,
+    contractDisclosureFrequency = null,
     resolvedContract = null,
     contractSignerOverrides = null,
 }: ContractPrefillEditFormProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
     const [addendumFieldValues, setAddendumFieldValues] = useState<Record<string, string>>({});
+    const [disclosureFieldValues, setDisclosureFieldValues] = useState<Record<string, string>>({});
     const [signerEditorRows, setSignerEditorRows] = useState<ContractSignerOverrideRow[]>([]);
     const [saving, setSaving] = useState(false);
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -932,6 +946,63 @@ export function ContractPrefillEditForm({
         linkedAddendumMapping &&
             hasAddendumPrefillFieldMap(linkedAddendumTemplateGuid, linkedAddendumTemplateName),
     );
+
+    const linkedDisclosureTemplateName =
+        linkedDisclosureMapping?.template?.name?.trim() ||
+        linkedDisclosureMapping?.template?.templateId ||
+        linkedDisclosureMapping?.templateId ||
+        "State disclosure";
+    const linkedDisclosureState =
+        String(
+            linkedDisclosureMapping?.template?.state ?? contractDisclosureState ?? "",
+        ).trim() || null;
+    const linkedDisclosureFrequency =
+        String(
+            linkedDisclosureMapping?.template?.frequency ?? contractDisclosureFrequency ?? "",
+        ).trim() || null;
+    const linkedDisclosureHasFieldMap = Boolean(
+        linkedDisclosureMapping &&
+            hasStateDisclosurePrefillFieldMap(
+                linkedDisclosureTemplateName,
+                linkedDisclosureMapping.template?.state ?? null,
+                linkedDisclosureMapping.template?.frequency ?? null,
+                contractDisclosureState,
+                contractDisclosureFrequency,
+            ),
+    );
+
+    const disclosureEditorRows = useMemo(() => {
+        if (!linkedDisclosureMapping?.id || !linkedDisclosureHasFieldMap) return [];
+        const saved = documentTemplatePrefillByMappingId[linkedDisclosureMapping.id] ?? {};
+        return getDocumentTemplatePrefillFieldRowsForEditor({
+            templateId:
+                linkedDisclosureMapping.template?.templateId ??
+                linkedDisclosureMapping.templateId ??
+                null,
+            templateName: linkedDisclosureMapping.template?.name ?? null,
+            templateState: linkedDisclosureMapping.template?.state ?? null,
+            templateFrequency: linkedDisclosureMapping.template?.frequency ?? null,
+            fallbackState: contractDisclosureState,
+            fallbackFrequency: contractDisclosureFrequency,
+            contract: resolvedContract,
+            application: applicationData as Record<string, unknown> | null,
+            agreementDate: agreementDateForDefaults,
+            mainPrefillOverrides: mainPrefillOverridesForAddendum,
+            savedOverridesForMapping: saved,
+            bankDetail: contractRecords?.bankDetail ?? null,
+        });
+    }, [
+        linkedDisclosureMapping,
+        linkedDisclosureHasFieldMap,
+        documentTemplatePrefillByMappingId,
+        contractDisclosureState,
+        contractDisclosureFrequency,
+        resolvedContract,
+        applicationData,
+        agreementDateForDefaults,
+        mainPrefillOverridesForAddendum,
+        contractRecords?.bankDetail,
+    ]);
 
     const addendumEditorRows = useMemo(() => {
         if (!linkedAddendumMapping?.id || !linkedAddendumHasFieldMap) return [];
@@ -1041,11 +1112,32 @@ export function ContractPrefillEditForm({
                 groups: [],
             });
         }
+        if (linkedDisclosureMapping) {
+            const stateLabel = linkedDisclosureState
+                ? linkedDisclosureState.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+                : "selected state";
+            const freqLabel = linkedDisclosureFrequency
+                ? ` (${linkedDisclosureFrequency})`
+                : "";
+            sections.push({
+                id: LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID,
+                title: `State disclosure — ${stateLabel}${freqLabel}`,
+                description: linkedDisclosureHasFieldMap
+                    ? `Commercial financing disclosure fields for ${stateLabel}. Values are computed from the deal and can be overridden before send.`
+                    : "This state disclosure template is not registered for field editing yet.",
+                Icon: Receipt,
+                groups: [],
+            });
+        }
         return sections;
     }, [
         linkedAddendumMapping,
         linkedAddendumTemplateName,
         linkedAddendumHasFieldMap,
+        linkedDisclosureMapping,
+        linkedDisclosureState,
+        linkedDisclosureFrequency,
+        linkedDisclosureHasFieldMap,
         showSecondPartyFields,
         owner2KeySet,
         guarantor2KeySet,
@@ -1061,6 +1153,23 @@ export function ContractPrefillEditForm({
         seededAddendumMappingIdRef.current = linkedAddendumMapping.id;
         setAddendumFieldValues(Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""])));
     }, [open, linkedAddendumMapping?.id, addendumEditorRows]);
+
+    const seededDisclosureMappingIdRef = useRef<string | null>(null);
+    const disclosureSavedFingerprint = JSON.stringify(
+        documentTemplatePrefillByMappingId[linkedDisclosureMapping?.id ?? ""] ?? {},
+    );
+    const disclosureSeedKey = `${linkedDisclosureMapping?.id ?? ""}:${linkedDisclosureState ?? ""}:${linkedDisclosureFrequency ?? ""}:${disclosureSavedFingerprint}`;
+    useEffect(() => {
+        if (!open || !linkedDisclosureMapping?.id) {
+            seededDisclosureMappingIdRef.current = null;
+            return;
+        }
+        if (seededDisclosureMappingIdRef.current === disclosureSeedKey) return;
+        seededDisclosureMappingIdRef.current = disclosureSeedKey;
+        setDisclosureFieldValues(
+            Object.fromEntries(disclosureEditorRows.map((r) => [r.id, r.value ?? ""])),
+        );
+    }, [open, linkedDisclosureMapping?.id, disclosureSeedKey, disclosureEditorRows]);
 
     const seededSignerEditorRef = useRef(false);
     useEffect(() => {
@@ -1178,6 +1287,7 @@ export function ContractPrefillEditForm({
     const nextSection =
         activeIdx >= 0 && activeIdx < prefillSections.length - 1 ? prefillSections[activeIdx + 1] : null;
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
+    const isLinkedDisclosureSection = activeSectionId === LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID;
     const isContractSignersSection = activeSectionId === CONTRACT_SIGNERS_PREFILL_SECTION_ID;
 
     const handleSave = async () => {
@@ -1217,7 +1327,14 @@ export function ContractPrefillEditForm({
                 additionalContractPrefillJson && typeof additionalContractPrefillJson === "object"
                     ? { ...additionalContractPrefillJson }
                     : ({} as Record<string, unknown>);
-            if (linkedAddendumMapping?.id && linkedAddendumHasFieldMap && addendumEditorRows.length > 0) {
+            const shouldPersistTemplateBlob =
+                (linkedAddendumMapping?.id &&
+                    linkedAddendumHasFieldMap &&
+                    addendumEditorRows.length > 0) ||
+                (linkedDisclosureMapping?.id &&
+                    linkedDisclosureHasFieldMap &&
+                    disclosureEditorRows.length > 0);
+            if (shouldPersistTemplateBlob) {
                 const priorBlob =
                     extras[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY] != null &&
                     typeof extras[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY] === "object" &&
@@ -1229,7 +1346,20 @@ export function ContractPrefillEditForm({
                               >),
                           }
                         : { ...documentTemplatePrefillByMappingId };
-                priorBlob[linkedAddendumMapping.id] = { ...addendumFieldValues };
+                if (
+                    linkedAddendumMapping?.id &&
+                    linkedAddendumHasFieldMap &&
+                    addendumEditorRows.length > 0
+                ) {
+                    priorBlob[linkedAddendumMapping.id] = { ...addendumFieldValues };
+                }
+                if (
+                    linkedDisclosureMapping?.id &&
+                    linkedDisclosureHasFieldMap &&
+                    disclosureEditorRows.length > 0
+                ) {
+                    priorBlob[linkedDisclosureMapping.id] = { ...disclosureFieldValues };
+                }
                 extras[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY] = priorBlob;
             }
             let contractPrefillOverrides: Record<string, unknown> = {
@@ -1590,6 +1720,44 @@ export function ContractPrefillEditForm({
                                                             value={addendumFieldValues[r.id] ?? ""}
                                                             onChange={(e) =>
                                                                 setAddendumFieldValues((prev) => ({
+                                                                    ...prev,
+                                                                    [r.id]: e.target.value,
+                                                                }))
+                                                            }
+                                                            disabled={readOnly}
+                                                            className="h-9 text-sm"
+                                                        />
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : isLinkedDisclosureSection ? (
+                                    <div className="space-y-4">
+                                        {!linkedDisclosureHasFieldMap ? (
+                                            <p className="text-muted-foreground text-sm">
+                                                No registered field map for this state disclosure. Link a
+                                                disclosure template for the selected state on Info Required.
+                                            </p>
+                                        ) : disclosureEditorRows.length === 0 ? (
+                                            <p className="text-muted-foreground text-sm">
+                                                Loading disclosure field definitions…
+                                            </p>
+                                        ) : (
+                                            <div className="grid gap-3 sm:grid-cols-2">
+                                                {disclosureEditorRows.map((r) => (
+                                                    <div key={r.id} className="space-y-1.5">
+                                                        <Label
+                                                            htmlFor={`disclosure-prefill-${r.id}`}
+                                                            className="text-xs font-medium"
+                                                        >
+                                                            {r.label}
+                                                        </Label>
+                                                        <Input
+                                                            id={`disclosure-prefill-${r.id}`}
+                                                            value={disclosureFieldValues[r.id] ?? ""}
+                                                            onChange={(e) =>
+                                                                setDisclosureFieldValues((prev) => ({
                                                                     ...prev,
                                                                     [r.id]: e.target.value,
                                                                 }))

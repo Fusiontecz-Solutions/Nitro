@@ -41,20 +41,79 @@ export function isContractFullySigned(
     return false;
 }
 
+/** Voided / declined / expired — eligible for a fresh send, not void or in-flight resend. */
+export function isContractVoidedOrTerminal(
+    contractStatus: unknown,
+    documentStatus?: unknown,
+): boolean {
+    const cs = String(contractStatus ?? "").trim().toUpperCase();
+    const ds = String(documentStatus ?? "").trim().toLowerCase();
+    if (["REVOKED", "DECLINED", "EXPIRED", "VOIDED"].includes(cs)) return true;
+    if (["revoked", "voided", "declined", "expired"].includes(ds)) return true;
+    return false;
+}
+
+/**
+ * Sent or viewed but not fully signed — void before sending again.
+ * Optional sessionSentAt covers the modal session before webhook refresh.
+ */
+export function isContractOutForSignature(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    if (!contract) return false;
+    const doc = pickContractEnvelopeDocument(contract);
+    const contractStatus = (contract as { status?: unknown }).status;
+    const documentStatus = doc?.status;
+    if (isContractFullySigned(contractStatus, documentStatus)) return false;
+    if (isContractVoidedOrTerminal(contractStatus, documentStatus)) return false;
+
+    if (sessionSentAt) return true;
+
+    const cs = String(contractStatus ?? "").trim().toUpperCase();
+    if (["SENT", "VIEWED"].includes(cs)) return true;
+
+    if (!doc) return false;
+    if (doc.sentAt) return true;
+    const ds = String(documentStatus ?? "").trim().toLowerCase();
+    if (["sent", "viewed", "delivered"].includes(ds)) return true;
+    return false;
+}
+
+export function canVoidMainContract(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    const doc = pickContractEnvelopeDocument(contract);
+    const envelopeId = String(doc?.envelopeId ?? "").trim();
+    if (!envelopeId) return false;
+    return isContractOutForSignature(contract, sessionSentAt);
+}
+
+/** Draft, voided, or never sent — open Review & send (not while out for signature or signed). */
+export function canSendMainContract(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    if (!contract) return false;
+    const doc = pickContractEnvelopeDocument(contract);
+    const contractStatus = (contract as { status?: unknown }).status;
+    const documentStatus = doc?.status;
+    if (isContractFullySigned(contractStatus, documentStatus)) return false;
+    if (isContractOutForSignature(contract, sessionSentAt)) return false;
+    return true;
+}
+
+/** Resend only after the contract is fully signed. */
 export function canResendMainContract(
     contract: Record<string, unknown> | null | undefined,
 ): boolean {
-    const status = String(contract?.status ?? "").trim().toUpperCase();
+    if (!contract) return false;
     const doc = pickContractEnvelopeDocument(contract);
-    const docStatus = String(doc?.status ?? "").trim().toLowerCase();
-    if (status === "COMPLETED" || docStatus === "completed") return true;
-    if (
-        ["REVOKED", "DECLINED", "EXPIRED", "VOIDED"].includes(status) ||
-        ["revoked", "voided", "declined", "expired"].includes(docStatus)
-    ) {
-        return true;
-    }
-    return false;
+    return isContractFullySigned(
+        (contract as { status?: unknown }).status,
+        doc?.status,
+    );
 }
 
 export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendHistoryEntry[] {

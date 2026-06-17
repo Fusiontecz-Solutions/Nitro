@@ -21,7 +21,7 @@ import {
     updateContract,
 } from "@/redux/actions/contractActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
-import { mergeAndSendBoldSignTemplates } from "@/redux/actions/boldSignActions";
+import { mergeAndSendBoldSignTemplates, voidBoldSignDocument } from "@/redux/actions/boldSignActions";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,7 +49,7 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { FileText, Info, Landmark, Loader2, RefreshCw, Send } from "lucide-react";
+import { Ban, FileText, Info, Landmark, Loader2, RefreshCw, Send } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
@@ -67,7 +67,9 @@ import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeS
 import {
     buildContractSendTableRows,
     canResendMainContract,
+    canVoidMainContract,
     isContractFullySigned,
+    isContractVoidedOrTerminal,
     pickContractEnvelopeDocument,
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
@@ -86,6 +88,7 @@ import {
 import {
     applyDocumentTemplateMappingPrefillOverrides,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    mergeStateDisclosurePrefillFallback,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
     buildDocuSignEnvelopeEmailSubject,
@@ -156,6 +159,16 @@ function formatContractTableStatusLabel(
     if (ds === "sent" || cs === "SENT") return "Sent";
     if (ds === "draft" || ds === "created" || cs === "DRAFT") return "Draft";
     if (cs === "GENERATED") return "Generated";
+    if (
+        ds === "revoked" ||
+        ds === "voided" ||
+        cs === "REVOKED" ||
+        cs === "VOIDED"
+    ) {
+        return "Voided";
+    }
+    if (ds === "declined" || cs === "DECLINED") return "Declined";
+    if (ds === "expired" || cs === "EXPIRED") return "Expired";
     return cs
         ? cs
               .replace(/_/g, " ")
@@ -172,6 +185,7 @@ function contractStatusToCapsuleStatus(
     if (label === "Signed") return "SIGNED";
     if (label === "Viewed") return "VIEWED";
     if (label === "Sent") return "SENT";
+    if (label === "Voided" || label === "Declined" || label === "Expired") return "VOIDED";
     return "DRAFT";
 }
 
@@ -316,6 +330,7 @@ export default function ContractTab({
     const [viewingSignedContract, setViewingSignedContract] = useState(false);
     const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
     const [resendingContract, setResendingContract] = useState(false);
+    const [voidingContract, setVoidingContract] = useState(false);
     const [signedPdfPreviewOpen, setSignedPdfPreviewOpen] = useState(false);
     const [signedPdfPreviewUrl, setSignedPdfPreviewUrl] = useState<string | null>(null);
     const [signedPdfPreviewName, setSignedPdfPreviewName] = useState("Signed contract.pdf");
@@ -510,15 +525,16 @@ export default function ContractTab({
         contractEnvelopeDocument?.status,
     );
 
+    const contractRecordForActions =
+        fetchedContract && typeof fetchedContract === "object"
+            ? (fetchedContract as Record<string, unknown>)
+            : null;
+
+    const canVoidContract =
+        !isReadOnly && hasGeneratedContract && canVoidMainContract(contractRecordForActions);
+
     const canResendSignedContract =
-        !isReadOnly &&
-        hasGeneratedContract &&
-        canResendMainContract(
-            fetchedContract && typeof fetchedContract === "object"
-                ? (fetchedContract as Record<string, unknown>)
-                : null,
-        ) &&
-        contractFullySigned;
+        !isReadOnly && hasGeneratedContract && canResendMainContract(contractRecordForActions);
 
     const contractSendTableRows = useMemo(
         () =>
@@ -984,6 +1000,39 @@ export default function ContractTab({
         }
     };
 
+    const handleVoidContract = async () => {
+        const envelopeId = contractEnvelopeId;
+        if (!envelopeId || !canVoidContract || voidingContract) return;
+        const confirmed = window.confirm(
+            "Void this contract in DocuSign? Signers will no longer be able to sign. You can send a new contract afterward.",
+        );
+        if (!confirmed) return;
+
+        setVoidingContract(true);
+        try {
+            await dispatch(
+                voidBoldSignDocument({
+                    documentId: envelopeId,
+                    reason: "Voided by user from CRM",
+                }),
+            ).unwrap();
+            await refreshSigningStatusesOnContractTab(false, { force: true });
+            toast.success(
+                "Contract voided in DocuSign. Open View Contract when you are ready to send again.",
+            );
+        } catch (err: unknown) {
+            const msg =
+                typeof err === "string"
+                    ? err
+                    : String(
+                          (err as { message?: string })?.message || "Failed to void contract.",
+                      );
+            toast.error(msg);
+        } finally {
+            setVoidingContract(false);
+        }
+    };
+
     const reloadFetchedContract = useCallback(async () => {
         if (!applicationUuid) return null;
         const res = await dispatch(getByApplicationIdContract(String(applicationUuid))).unwrap();
@@ -1369,6 +1418,7 @@ export default function ContractTab({
         sendPayload: {
             ccEmails: string[];
             supplementalLayoutKey?: string | null;
+            supplementalDocumentRefs?: string[];
             /** When false, send supplemental layout only (e.g. standalone ACH authorization). */
             includeMainContract?: boolean;
             /** Current funder from contract modal (may not be persisted yet). */
@@ -1406,6 +1456,16 @@ export default function ContractTab({
 
         const effectiveCcEmails = mergeContractCcEmailList(sendPayload.ccEmails);
         const supplementalLayoutKey = String(sendPayload.supplementalLayoutKey ?? "").trim();
+        const supplementalLayoutKeys = [
+            ...new Set(
+                [
+                    supplementalLayoutKey,
+                    ...(sendPayload.supplementalDocumentRefs ?? []),
+                ]
+                    .map((k) => String(k).trim())
+                    .filter(Boolean),
+            ),
+        ];
 
         const applicationSignerEmail = getPrimaryRecipientEmail().trim();
         const applicationSignerName = getPrimaryRecipientName();
@@ -1530,10 +1590,6 @@ export default function ContractTab({
                 ? `Please review and sign your agreement with ${DOCUSIGN_EMAIL_LENDER_NAME}.`
                 : `Please review and sign the ACH authorization for ${docuSignClientName}.`;
 
-            const supplementalLayoutKeys = supplementalLayoutKey
-                ? [supplementalLayoutKey]
-                : [];
-
             const firstOwnerFromDb = ownerRows[0] as {
                 firstName?: string;
                 lastName?: string;
@@ -1585,6 +1641,7 @@ export default function ContractTab({
                 ).trim(),
             });
 
+            let mainPrefillForTemplates: Partial<BuildContractPrefillFieldsArgs> | null = null;
             try {
                 const contractNumericId = Number((latestContract as { id?: unknown })?.id);
                 if (Number.isFinite(contractNumericId) && supplementalLayoutKeys.length > 0) {
@@ -1593,7 +1650,9 @@ export default function ContractTab({
                     );
                     const mapRows = (mapRes?.data?.data ?? []) as Array<{
                         id: string;
+                        documentType?: string | null;
                         template?: {
+                            id?: string;
                             templateId?: string;
                             name?: string | null;
                             state?: string | null;
@@ -1603,7 +1662,7 @@ export default function ContractTab({
                     const rawOverrides = (latestContract as { contractPrefillOverrides?: unknown })
                         ?.contractPrefillOverrides;
                     const mainOverrides = normalizeContractPrefillOverrides(rawOverrides);
-                    const mainPrefillForTemplates = mainOverrides
+                    mainPrefillForTemplates = mainOverrides
                         ? (() => {
                               const o = { ...mainOverrides } as Record<string, unknown>;
                               delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
@@ -1625,6 +1684,15 @@ export default function ContractTab({
             } catch (mapErr) {
                 console.warn("[ContractTab] document template mapping prefill skipped:", mapErr);
             }
+
+            prefillFieldsPayload = mergeStateDisclosurePrefillFallback({
+                payload: prefillFieldsPayload,
+                supplementalRefs: supplementalLayoutKeys,
+                contract: latestContract as Record<string, unknown>,
+                application: applicationData as unknown as Record<string, unknown>,
+                agreementDate: formatDate(new Date()),
+                mainPrefillOverrides: mainPrefillForTemplates,
+            });
 
             const mergeRequest = {
                 supplementalLayoutKeys,
@@ -1834,6 +1902,7 @@ export default function ContractTab({
     const prepareDocuSignDraft = async (payload: {
         ccEmails: string[];
         supplementalLayoutKey?: string | null;
+        supplementalDocumentRefs?: string[];
         includeMainContract?: boolean;
         funderName?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
@@ -1923,6 +1992,11 @@ export default function ContractTab({
         );
         const rowSentAtDisplay = formatTableSentAt(row.sentAt);
         const rowEnvelopeId = String(row.envelopeId ?? "").trim();
+        const rowCanVoid =
+            !isReadOnly && row.isCurrent && canVoidMainContract(contractRecordForActions);
+        const rowCanResend =
+            !isReadOnly && row.isCurrent && canResendMainContract(contractRecordForActions);
+        const rowIsVoided = isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
         const isViewingRow =
             viewingSignedContract &&
             (viewingSignedEnvelopeId
@@ -1998,7 +2072,7 @@ export default function ContractTab({
                                         )}
                                     </Button>
                                 ) : null}
-                                {row.isCurrent && !rowFullySigned ? (
+                                {row.isCurrent && !rowFullySigned && !rowIsVoided ? (
                                     <Button
                                         type="button"
                                         variant="ghost"
@@ -2021,7 +2095,30 @@ export default function ContractTab({
                                         />
                                     </Button>
                                 ) : null}
-                                {row.isCurrent && rowFullySigned && canResendSignedContract ? (
+                                {rowCanVoid ? (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={() => void handleVoidContract()}
+                                        disabled={voidingContract}
+                                        className={`h-7 w-7 shrink-0 ${isDark
+                                            ? "text-red-400 hover:bg-red-500/10"
+                                            : "text-red-600 hover:bg-red-50"
+                                            }`}
+                                        title="Void contract"
+                                    >
+                                        {voidingContract ? (
+                                            <Loader2
+                                                className="h-3.5 w-3.5 animate-spin"
+                                                aria-hidden
+                                            />
+                                        ) : (
+                                            <Ban className="h-3.5 w-3.5" aria-hidden />
+                                        )}
+                                    </Button>
+                                ) : null}
+                                {rowCanResend ? (
                                     <Button
                                         type="button"
                                         variant="ghost"
@@ -2161,6 +2258,30 @@ export default function ContractTab({
                                 "Generate Contract"
                             )}
                         </Button>
+                        {canVoidContract ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleVoidContract()}
+                                disabled={voidingContract || creatingEnvelope}
+                                className={`h-10 cursor-pointer px-6 py-2 font-medium rounded-md disabled:opacity-70 disabled:cursor-not-allowed ${isDark
+                                    ? "border-red-400 text-red-300 hover:bg-red-500/10"
+                                    : "border-red-300 text-red-700 hover:bg-red-50"
+                                    }`}
+                            >
+                                {voidingContract ? (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Voiding…
+                                    </span>
+                                ) : (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Ban className="h-4 w-4 shrink-0" aria-hidden />
+                                        Void Contract
+                                    </span>
+                                )}
+                            </Button>
+                        ) : null}
                         {canResendSignedContract ? (
                             <Button
                                 type="button"
