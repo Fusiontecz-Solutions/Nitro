@@ -179,7 +179,7 @@ export function inferOperationsListStatusFromApplication(
     return "Contract_Cancelled";
   }
   if (q === "contractout" || q === "contractsout") {
-    return "Contract_Out";
+    return "Contract_Sent";
   }
   if (q === "contractsigned" || q === "signedcontracts") {
     return "Contract_Signed";

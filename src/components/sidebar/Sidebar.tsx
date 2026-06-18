@@ -68,7 +68,7 @@ type SidebarNavIcon = ComponentType<SvgIconProps>;
 
 type PipelineAccent =
   | "contract-pending"
-  | "contract-generated"
+  | "contract-sent"
   | "contract-signed"
   | "final"
   | "funding-call"
@@ -228,9 +228,9 @@ const dealPipelineSection: SidebarNavSection = {
           pipelineAccent: "contract-pending",
         },
         {
-          label: operationsDashboardStatusTitle("Contract_Generated"),
-          operationsStatus: "Contract_Generated",
-          pipelineAccent: "contract-generated",
+          label: operationsDashboardStatusTitle("Contract_Sent"),
+          operationsStatus: "Contract_Sent",
+          pipelineAccent: "contract-sent",
         },
         {
           label: operationsDashboardStatusTitle("Contract_Signed"),

@@ -51,8 +51,8 @@ export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[
           filterValue: "Contract_Pending",
         },
         {
-          label: operationsDashboardStatusTitle("Contract_Generated"),
-          filterValue: "Contract_Generated",
+          label: operationsDashboardStatusTitle("Contract_Sent"),
+          filterValue: "Contract_Sent",
         },
         {
           label: operationsDashboardStatusTitle("Contract_Signed"),
@@ -103,8 +103,8 @@ export const APPLICATIONS_STATUS_FILTER_OPTIONS: ApplicationsPipelineFilterChild
       filterValue: "Contract_Pending",
     },
     {
-      label: operationsDashboardStatusTitle("Contract_Generated"),
-      filterValue: "Contract_Generated",
+      label: operationsDashboardStatusTitle("Contract_Sent"),
+      filterValue: "Contract_Sent",
     },
     {
       label: operationsDashboardStatusTitle("Contract_Signed"),
@@ -142,7 +142,7 @@ export function isApplicationsPipelineFilterActive(
   if (filterValue === "Contracted") {
     return (
       statusFilter === "Contract_Pending" ||
-      statusFilter === "Contract_Generated" ||
+      statusFilter === "Contract_Sent" ||
       statusFilter === "Contract_Signed"
     );
   }
@@ -174,8 +174,8 @@ export function resolveApplicationsPipelineCount(
       return caseStageCounts["Final Underwriter"] ?? 0;
     case "Contract_Pending":
       return summaryCounts.contractPending;
-    case "Contract_Generated":
-      return summaryCounts.contractGenerated || summaryCounts.contractsOut;
+    case "Contract_Sent":
+      return summaryCounts.contractsOut;
     case "Contract_Signed":
       return summaryCounts.signedContracts;
     case "Final":

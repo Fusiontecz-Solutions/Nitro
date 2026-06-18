@@ -12,9 +12,14 @@ const DOCUMENT_REQUEST_EMAIL_LOGO_SRC =
 const DOCUMENT_REQUEST_EMAIL_ICON_SRC =
   "https://res.cloudinary.com/dehrku8og/image/upload/v1781717948/Document_Icon_a9g7lp.png";
 
-/** Bottom-right watermark — must be an img tag; CSS background-image is ignored by Outlook. */
+/**
+ * Center faded background watermark layout image.
+ * Cloudinary `o_7` reduces opacity to 7% and `f_png` rasterizes the SVG so the
+ * opacity is baked into the served asset (CSS opacity can't target a
+ * background-image in email clients).
+ */
 const DOCUMENT_REQUEST_EMAIL_WATERMARK_SRC =
-  "https://res.cloudinary.com/dfy6ahsqz/image/upload/v1780324705/white_logo_d8bsb1.svg";
+  "https://res.cloudinary.com/dfy6ahsqz/image/upload/o_7,f_png/v1780324705/white_logo_d8bsb1.png";
 
 /** Use two columns when the list has this many items or more. */
 const TWO_COLUMN_MIN_ITEMS = 4;
@@ -172,7 +177,7 @@ export function renderDocumentRequestEmailHtml(
                   </td>
                 </tr>
                 <tr>
-                  <td class="content-pad" style="padding:10px 45px 30px 45px;">
+                  <td class="content-pad" style="padding:10px 45px 30px 45px;background-color:#ffffff;background-image:url('${watermarkSrc}');background-repeat:no-repeat;background-position:right center;background-size:contain;">
                     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                       <tr>
                         <td style="padding:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:1.3;color:#333333;">
@@ -249,8 +254,8 @@ export function renderDocumentRequestEmailHtml(
                         </td>
                       </tr>
                       <tr>
-                        <td align="right" style="padding:0 0 8px 0;line-height:0;font-size:0;">
-                          <img src="${watermarkSrc}" width="150" height="auto" alt="" border="0" style="display:block;width:150px;max-width:150px;height:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;margin-left:auto;" />
+                        <td align="right" style="padding:0 0 10px 0;line-height:0;font-size:0;text-align:right;">
+                          <img src="${logoSrc}" alt="Katan Capital" width="150" border="0" style="display:block;width:150px;max-width:150px;height:auto;margin-left:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />
                         </td>
                       </tr>
                     </table>

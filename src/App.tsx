@@ -14,9 +14,11 @@ import { QUERY_STALE_TIME_MS } from '@/lib/queryDefaults';
 import { registerApplicationsListQueryInvalidator } from '@/lib/applicationsListQuerySync';
 import CrmCacheBootstrap from '@/components/cache/CrmCacheBootstrap';
 
+/** Module-level router so route-table edits apply on full reload (HMR cannot refresh useMemo([])). */
+const router = createBrowserRouter(Routes);
+
 // Inner component that can access theme context
 function AppContent() {
-  const router = useMemo(() => createBrowserRouter(Routes), []);
   const { resolvedTheme } = useTheme();
 
   return (

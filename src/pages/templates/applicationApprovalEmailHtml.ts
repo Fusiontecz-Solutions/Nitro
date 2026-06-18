@@ -8,18 +8,22 @@ import {
 
 /** Hosted logo for outbound email (Gmail/Outlook-safe absolute URL). */
 const APPLICATION_APPROVAL_EMAIL_LOGO_SRC =
-  "https://res.cloudinary.com/dwqrrr11n/image/upload/v1781189417/62276ff9534732040de8e636d9e861dd182a7ecd_aoct74.png";
+  "https://res.cloudinary.com/dfy6ahsqz/image/upload/v1780324705/white_logo_d8bsb1.svg";
 
-/** Bottom-right watermark for the email content body. */
+/**
+ * Center faded background watermark layout image.
+ * Cloudinary `o_7` reduces opacity to 7% and `f_png` rasterizes the SVG so the
+ * opacity is baked into the served asset (CSS opacity can't target a
+ * background-image in email clients).
+ */
 const APPLICATION_APPROVAL_EMAIL_WATERMARK_SRC =
-  "https://res.cloudinary.com/dwqrrr11n/image/upload/v1781200688/white_logo_1_6_fw2uye.png";
+  "https://res.cloudinary.com/dfy6ahsqz/image/upload/o_7,f_png/v1780324705/white_logo_d8bsb1.png";
 
 const EMAIL_WIDTH = 600;
-const CONTENT_WIDTH = 510;
 
 /**
  * Bulletproof CTA — VML roundrect for Outlook + inline anchor for Gmail/Apple Mail.
- * Avoids border-radius / margin issues that strip button styling in inbox clients.
+ * Updated to match the bright blue, clean corner look from the reference image.
  */
 function buildStyledCtaButton(
   href: string,
@@ -32,13 +36,13 @@ function buildStyledCtaButton(
   <tr>
     <td align="left" style="padding:0;">
       <!--[if mso]>
-      <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${href}" style="height:38px;v-text-anchor:middle;width:260px;" arcsize="10%" strokecolor="#cca43b" strokeweight="2px" fillcolor="#132238">
+      <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${href}" style="height:40px;v-text-anchor:middle;width:200px;" arcsize="10%" stroked="f" fillcolor="#0ea5e9">
         <w:anchorlock/>
-        <center style="color:#cca43b;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;">${safeLabel}</center>
+        <center style="color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;">${safeLabel}</center>
       </v:roundrect>
       <![endif]-->
       <!--[if !mso]><!-->
-      <a href="${href}" target="_blank" style="background-color:#132238;border:2px solid #cca43b;border-radius:4px;color:#cca43b;display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:16px;padding:10px 22px;text-align:center;text-decoration:none;-webkit-text-size-adjust:none;mso-hide:all;">${safeLabel}</a>
+      <a href="${href}" target="_blank" style="background-color:#0ea5e9;border-radius:4px;color:#ffffff;display:inline-block;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:40px;padding:0 24px;text-align:center;text-decoration:none;-webkit-text-size-adjust:none;mso-hide:all;">${safeLabel}</a>
       <!--<![endif]-->
     </td>
   </tr>
@@ -50,8 +54,8 @@ function renderStipList(items: readonly string[]): string {
     .map(
       (item) => `
     <tr>
-      <td valign="top" style="padding:0 0 4px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:18px;color:#666666;">
-        <span style="font-family:Arial,Helvetica,sans-serif;font-size:9px;line-height:18px;color:#999999;">&#9632;</span>
+      <td valign="top" style="padding:2px 0 4px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:18px;color:#666666;">
+        <span style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:18px;color:#666666;">&bull;</span>
         <span style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:18px;color:#666666;">&nbsp;${escapeHtml(item)}</span>
       </td>
     </tr>`,
@@ -63,7 +67,7 @@ function renderStipColumn(title: string, itemsHtml: string): string {
   return `
 <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;table-layout:fixed;">
   <tr>
-    <td style="padding:0 0 6px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;line-height:16px;color:#444444;">
+    <td style="padding:0 0 6px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:18px;color:#333333;">
       ${title}
     </td>
   </tr>
@@ -79,8 +83,7 @@ function renderStipColumn(title: string, itemsHtml: string): string {
 
 /**
  * Gmail / Outlook-safe HTML for the ISO application-approval email.
- * Uses fixed-width tables, hosted PNG assets, VML buttons, and no SVG or CSS
- * background images (those break in Outlook and many mobile clients).
+ * Rebuilt according to the attached layout styling.
  */
 export function renderApplicationApprovalEmailHtml(
   values: TemplateValues,
@@ -91,6 +94,7 @@ export function renderApplicationApprovalEmailHtml(
   const brandName = escapeHtml(fields.companyNameBrand);
   const crmName = escapeHtml(fields.crmName);
   const calculateHref = escapeHtml(fields.calculateApprovalUrl);
+
   const logoSrc = escapeHtml(APPLICATION_APPROVAL_EMAIL_LOGO_SRC);
   const watermarkSrc = escapeHtml(APPLICATION_APPROVAL_EMAIL_WATERMARK_SRC);
   const clientProvidedStips = renderStipList(CLIENT_PROVIDED_STIPS);
@@ -126,102 +130,91 @@ export function renderApplicationApprovalEmailHtml(
     }
   </style>
 </head>
-<body style="margin:0;padding:0;width:100%;background-color:#f4f7f9;font-family:Arial,Helvetica,sans-serif;-webkit-font-smoothing:antialiased;">
-  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;background-color:#f4f7f9;">
+<body style="margin:0;padding:0;width:100%;background-color:#f3f4f6;font-family:Arial,Helvetica,sans-serif;-webkit-font-smoothing:antialiased;">
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;background-color:#f3f4f6;">
     <tr>
       <td align="center" style="padding:12px 10px;">
-        <table role="presentation" class="email-container" border="0" cellpadding="0" cellspacing="0" width="${EMAIL_WIDTH}" style="width:${EMAIL_WIDTH}px;max-width:${EMAIL_WIDTH}px;border-collapse:collapse;background-color:#ffffff;border:1px solid #dddddd;">
+        <table role="presentation" class="email-container" border="0" cellpadding="0" cellspacing="0" width="${EMAIL_WIDTH}" style="width:${EMAIL_WIDTH}px;max-width:${EMAIL_WIDTH}px;border-collapse:collapse;background-color:#ffffff;border:1px solid #e5e7eb;">
 
-          <!-- Header accent (table-based — SVG is stripped by Outlook) -->
+          <!-- Header accent top strip (Vibrant Purple Background) -->
           <tr>
-            <td style="padding:0;line-height:0;font-size:0;background-color:#ffffff;">
-              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="${EMAIL_WIDTH}" style="width:${EMAIL_WIDTH}px;border-collapse:collapse;">
+            <td bgcolor="#a855f7" style="padding:0;line-height:0;font-size:0;background-color:#a855f7;height:45px;vertical-align:bottom;">
+              <!-- Centered White Tab Card Layout for Logo Wrapper -->
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto;border-collapse:collapse;">
                 <tr>
-                  <td width="140" height="4" bgcolor="#cca43b" style="width:140px;height:4px;line-height:4px;font-size:4px;background-color:#cca43b;">&nbsp;</td>
-                  <td width="460" height="4" bgcolor="#132238" style="width:460px;height:4px;line-height:4px;font-size:4px;background-color:#132238;">&nbsp;</td>
+                  <td bgcolor="#ffffff" style="background-color:#ffffff;padding:8px 24px 0 24px;border-top-left-radius:8px;border-top-right-radius:8px;line-height:0;font-size:0;">
+                    <img src="${logoSrc}" alt="${brandName}" width="130" height="auto" border="0" style="display:block;width:130px;max-width:130px;height:auto;" />
+                  </td>
                 </tr>
               </table>
             </td>
           </tr>
 
-          <!-- Logo -->
+          <!-- Main structural layout container containing center watermark background asset -->
           <tr>
-            <td align="center" style="padding:20px 24px 6px 24px;background-color:#ffffff;">
-              <img src="${logoSrc}" alt="${brandName}" width="120" height="auto" border="0" style="display:block;width:120px;max-width:120px;height:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;margin:0 auto;" />
-            </td>
-          </tr>
-
-          <!-- Title -->
-          <tr>
-            <td align="center" class="content-pad" style="padding:8px 45px 2px 45px;background-color:#ffffff;">
-              <p style="margin:0;font-family:Georgia,'Times New Roman',Times,serif;font-size:28px;font-weight:bold;line-height:1.15;color:#3a4756;letter-spacing:1px;">
-                APPLICATION <span style="color:#cca43b;">APPROVED</span>
-              </p>
-              <p style="margin:8px 0 0 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.4;color:#777777;font-weight:normal;">
-                Congratulations! Your application has been successfully processed.
-              </p>
-            </td>
-          </tr>
-
-          <!-- Divider -->
-          <tr>
-            <td align="center" class="content-pad" style="padding:12px 45px 14px 45px;background-color:#ffffff;">
-              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="${CONTENT_WIDTH}" style="width:${CONTENT_WIDTH}px;max-width:100%;border-collapse:collapse;">
+            <td class="content-pad" style="padding:40px 45px 30px 45px;background-color:#ffffff;background-image:url('${watermarkSrc}');background-repeat:no-repeat;background-position:right center;background-size:contain;">
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+                
+                <!-- Main Title Heading -->
                 <tr>
-                  <td width="225" style="width:225px;border-top:1px solid #e0d0a6;font-size:0;line-height:0;">&nbsp;</td>
-                  <td width="60" align="center" style="width:60px;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1;color:#cca43b;">&#9671;</td>
-                  <td width="225" style="width:225px;border-top:1px solid #e0d0a6;font-size:0;line-height:0;">&nbsp;</td>
+                  <td align="center" style="padding:0 0 4px 0;">
+                    <h1 style="margin:0;font-family:Georgia,'Times New Roman',Times,serif;font-size:32px;font-weight:bold;line-height:1.2;color:#0ea5e9;letter-spacing:0.5px;text-transform:uppercase;">
+                      Application Approved
+                    </h1>
+                  </td>
                 </tr>
-              </table>
-            </td>
-          </tr>
 
-          <!-- Body -->
-          <tr>
-            <td class="content-pad" style="padding:0 45px 16px 45px;background-color:#ffffff;">
-              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="${CONTENT_WIDTH}" style="width:${CONTENT_WIDTH}px;max-width:100%;border-collapse:collapse;">
-
+                <!-- Subtitle Context Block -->
                 <tr>
-                  <td style="padding:0 0 10px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;line-height:1.3;color:#333333;">
+                  <td align="center" style="padding:0 0 35px 0;">
+                    <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.4;color:#4b5563;">
+                      Congratulations! Your application has been successfully processed.
+                    </p>
+                  </td>
+                </tr>
+
+                <!-- Body Context Elements -->
+                <tr>
+                  <td style="padding:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;line-height:1.4;color:#1f2937;">
                     Hi ${clientName}
                   </td>
                 </tr>
 
                 <tr>
-                  <td style="padding:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#666666;">
-                    We are pleased to inform you that your application for
-                    <strong style="color:#333333;font-weight:bold;">&apos;${companyName}&apos;</strong>
-                    has been pre-approved by <strong style="color:#333333;font-weight:bold;">${brandName}!</strong>
+                  <td style="padding:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#6b7280;">
+                    We are pleased to inform you that your application for <strong style="color:#1f2937;font-weight:bold;">&apos;${companyName}&apos;</strong> has been pre-approved by <strong style="color:#1f2937;font-weight:bold;">${brandName}!</strong>
                   </td>
                 </tr>
 
                 <tr>
-                  <td style="padding:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#666666;">
+                  <td style="padding:0 0 20px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#6b7280;">
                     Please click on the button below to calculate your approvals. You do not need a ${crmName} login to use our calculator! Everyone on your team will have immediate access via this email.
                   </td>
                 </tr>
 
+                <!-- Primary Action Item Button -->
                 <tr>
-                  <td style="padding:0 0 20px 0;">
+                  <td style="padding:0 0 30px 0;">
                     ${buildStyledCtaButton(calculateHref, "Calculate your Approval", 0)}
                   </td>
                 </tr>
 
+                <!-- Required Stips Section Header Label -->
                 <tr>
-                  <td style="padding:0 0 10px 0;font-family:Georgia,'Times New Roman',Times,serif;font-size:15px;font-weight:bold;line-height:1.3;color:#132238;letter-spacing:0.5px;">
+                  <td style="padding:0 0 16px 0;font-family:Georgia,'Times New Roman',Times,serif;font-size:16px;font-weight:bold;line-height:1.3;color:#374151;letter-spacing:0.5px;text-transform:uppercase;">
                     REQUIRED STIPS FOR FUNDING
                   </td>
                 </tr>
 
-                <!-- Two-column stips (fixed pixel widths — % columns collapse in Outlook) -->
+                <!-- Grid Data Split Rows Context -->
                 <tr>
-                  <td style="padding:0 0 18px 0;">
-                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="${CONTENT_WIDTH}" style="width:${CONTENT_WIDTH}px;max-width:100%;border-collapse:collapse;table-layout:fixed;">
+                  <td style="padding:0 0 35px 0;">
+                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;table-layout:fixed;">
                       <tr>
-                        <td class="stack-column" width="255" valign="top" style="width:255px;vertical-align:top;padding:0 12px 0 0;">
+                        <td class="stack-column" width="245" valign="top" style="width:245px;vertical-align:top;padding:0 20px 0 0;">
                           ${renderStipColumn("Provide with signed contracts:", clientProvidedStips)}
                         </td>
-                        <td class="stack-column" width="255" valign="top" style="width:255px;vertical-align:top;padding:0;">
+                        <td class="stack-column" width="245" valign="top" style="width:245px;vertical-align:top;padding:0;">
                           ${renderStipColumn(`${brandName} Company will take care of:`, companyHandledStips)}
                         </td>
                       </tr>
@@ -229,16 +222,19 @@ export function renderApplicationApprovalEmailHtml(
                   </td>
                 </tr>
 
+                <!-- Sign-off: team name (left) + colored logo (right) -->
                 <tr>
-                  <td style="padding:0 0 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#666666;">
-                    If you need more information or have any questions, contact your representative directly.
-                  </td>
-                </tr>
-
-                <!-- Watermark as &lt;img&gt; (CSS background-image is ignored by Outlook) -->
-                <tr>
-                  <td align="right" style="padding:8px 0 0 0;line-height:0;font-size:0;">
-                    <img src="${watermarkSrc}" width="150" height="auto" alt="" border="0" style="display:block;width:150px;max-width:150px;height:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;margin-left:auto;" />
+                  <td style="padding:10px 0 5px 0;">
+                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="width:100%;border-collapse:collapse;">
+                      <tr>
+                        <td valign="bottom" style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;color:#333333;vertical-align:bottom;">
+                          ${brandName} Team
+                        </td>
+                        <td align="right" valign="bottom" style="text-align:right;vertical-align:bottom;line-height:0;font-size:0;">
+                          <img src="${logoSrc}" alt="${brandName}" width="150" style="display:block;width:150px;height:auto;max-width:150px;margin-left:auto;" />
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
 
@@ -246,15 +242,15 @@ export function renderApplicationApprovalEmailHtml(
             </td>
           </tr>
 
-          <!-- Footer accent -->
+          <!-- Footer accent stripe ribbon (full-width bars — Gmail/Outlook-safe) -->
           <tr>
-            <td style="padding:0;line-height:0;font-size:0;background-color:#ffffff;">
-              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="${EMAIL_WIDTH}" style="width:${EMAIL_WIDTH}px;border-collapse:collapse;">
+            <td style="padding:0;line-height:0;font-size:0;">
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="width:100%;border-collapse:collapse;margin:0;">
                 <tr>
-                  <td width="${EMAIL_WIDTH}" height="5" bgcolor="#cca43b" style="width:${EMAIL_WIDTH}px;height:5px;line-height:5px;font-size:5px;background-color:#cca43b;">&nbsp;</td>
+                  <td height="12" bgcolor="#a855f7" style="height:12px;line-height:12px;font-size:12px;background-color:#a855f7;padding:0;">&nbsp;</td>
                 </tr>
                 <tr>
-                  <td width="${EMAIL_WIDTH}" height="6" bgcolor="#132238" style="width:${EMAIL_WIDTH}px;height:6px;line-height:6px;font-size:6px;background-color:#132238;">&nbsp;</td>
+                  <td height="12" bgcolor="#0ea5e9" style="height:12px;line-height:12px;font-size:12px;background-color:#0ea5e9;padding:0;">&nbsp;</td>
                 </tr>
               </table>
             </td>

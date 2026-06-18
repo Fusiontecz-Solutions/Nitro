@@ -65,7 +65,7 @@ const CaseManagement = () => {
             case 'Approved':
                 return { queue: 'Approved', state: 'Submitted' };
             case 'Contracted':
-                return { queue: 'Contract Out', state: 'Contract Out' };
+                return { queue: 'Contract Sent', state: 'CONTRACT_SENT' };
             case 'Funded':
                 return { queue: 'Approved', state: 'Completed' };
             case 'Declined':
@@ -101,7 +101,7 @@ const CaseManagement = () => {
         }
         if (queue === 'Declined') return 'Declined';
         if (queue === 'On Hold') return 'In Progress';
-        if (queue === 'Contracted' || queue === 'Contract Out' || queue === 'Contracts Out')
+        if (queue === 'Contracted' || queue === 'Contract Sent' || queue === 'Contract Out' || queue === 'Contracts Out')
             return 'Contracted';
         if (queue === 'Underwriting' || queue === 'Review' || queue === 'Final Review') return 'In Progress';
         if (queue === 'New') return 'Pending';

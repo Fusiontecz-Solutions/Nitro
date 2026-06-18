@@ -37,6 +37,15 @@ import ComplianceChecksQuestionnaire, {
     type ComplianceChecksProgress,
 } from "./ComplianceChecksQuestionnaire";
 import AgentDealIsoTag from "./AgentDealIsoTag";
+import {
+    APPLICATION_APPROVAL_EMAIL_SUBJECT,
+    APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+    APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+    APPLICATION_APPROVAL_URL_PLACEHOLDER,
+    OFFER_UPDATED_EMAIL_SUBJECT,
+    renderApplicationApprovalEmailHtml,
+    renderOfferUpdatedEmailHtml,
+} from "@/pages/templates";
 
 const ORIGINATION_FEE_FIXED = "10";
 
@@ -1215,10 +1224,35 @@ const ApprovedApplicationModal = ({
                                 );
                                 try {
                                     try {
+                                        const approvalEmailHtml = resendApprovalEmail
+                                            ? renderOfferUpdatedEmailHtml({
+                                                  client_name:
+                                                      APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+                                                  company_name:
+                                                      APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+                                                  calculate_approval_url:
+                                                      APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                                                  view_application_url:
+                                                      APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                                              })
+                                            : renderApplicationApprovalEmailHtml({
+                                                  client_name:
+                                                      APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+                                                  company_name:
+                                                      APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+                                                  calculate_approval_url:
+                                                      APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                                                  view_application_url:
+                                                      APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                                              });
                                         await dispatch(
                                             sendApprovalEmail({
                                                 applicationId: applicationUuid,
                                                 resend: !!resendApprovalEmail,
+                                                emailHtml: approvalEmailHtml,
+                                                emailSubject: resendApprovalEmail
+                                                    ? OFFER_UPDATED_EMAIL_SUBJECT
+                                                    : APPLICATION_APPROVAL_EMAIL_SUBJECT,
                                             })
                                         ).unwrap();
                                         toast.update(toastId, {

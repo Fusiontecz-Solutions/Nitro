@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useSelector } from "react-redux";
 import { useDispatch } from "react-redux";
@@ -36,10 +36,22 @@ import {
 import { sendPaymentMail } from "@/redux/actions/paymentMailActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
+import { getBankDetails } from "@/redux/actions/bankDetailActions";
+import { clearBankDetails } from "@/redux/slices/bankDetailSlice";
 import { resolveOfferDecisionFundedAmount } from "@/lib/offerDecisionFees";
 import { cn, formatCurrency } from "@/lib/utils";
 import { FileText, Mail, RotateCcw, Send } from "lucide-react";
 import type { TermsOffer } from "@/types/termsOfferTypes";
+import type { BankDetail } from "@/types/bankDetailTypes";
+import {
+  getBuiltinReactTemplateDefinition,
+  isBuiltinFeTemplate,
+  mergeBuiltinFeTemplates,
+  renderBuiltinReactTemplateHtml,
+} from "@/pages/templates";
+import { LetterHtmlPreviewFrame } from "@/pages/templates/LetterHtmlPreviewFrame";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import type { Address } from "@/types/clientTypes";
 
 type ApplicationFundingExtras = Application & {
   termsOffers?: Array<{ approvedAmount?: unknown }>;
@@ -49,6 +61,8 @@ type ApplicationFundingExtras = Application & {
 type LetterFundingSources = {
   offerDecision?: Record<string, unknown> | null;
   termsOffers?: TermsOffer[];
+  /** Merchant bank account number resolved from the application's bank details. */
+  merchantAccountNumber?: string;
 };
 
 /** Ordered unique placeholder keys from template body (without `{{` `}}`). */
@@ -96,6 +110,56 @@ function mergeFieldStr(v: unknown): string {
   return String(v).trim();
 }
 
+/** True when a value looks like an email (not an account/phone number). */
+function isLikelyEmail(value: string): boolean {
+  const v = value.trim();
+  if (!v || !v.includes("@")) return false;
+  const local = v.split("@")[0]?.replace(/\./g, "") ?? "";
+  if (/^\d+$/.test(local)) return false;
+  return true;
+}
+
+/** Account numbers and digit-only strings must not populate Merchant Email. */
+function isInvalidMerchantEmail(value: string, accountNumber = ""): boolean {
+  const v = value.trim();
+  if (!v) return false;
+  const acct = accountNumber.trim();
+  if (acct && v === acct) return true;
+  if (/^\d+$/.test(v)) return true;
+  return false;
+}
+
+function resolveMerchantEmail(
+  application: Application | null | undefined,
+  accountNumberToExclude = ""
+): string {
+  const client = application?.client;
+  if (typeof client !== "object" || !client) return "";
+  const exclude = accountNumberToExclude.trim();
+  for (const raw of [client.owner?.email, client.business?.email]) {
+    const email = mergeFieldStr(raw);
+    if (!isLikelyEmail(email)) continue;
+    if (exclude && email === exclude) continue;
+    return email;
+  }
+  return "";
+}
+
+/** Keep typed email; never keep account numbers in the merchant email field. */
+function coalesceRecipientEmail(
+  current: string,
+  candidate: string,
+  accountNumber = ""
+): string {
+  const trimmed = current.trim();
+  if (trimmed && !isInvalidMerchantEmail(trimmed, accountNumber)) {
+    return trimmed;
+  }
+  const next = candidate.trim();
+  if (isLikelyEmail(next) && next !== accountNumber.trim()) return next;
+  return "";
+}
+
 /** UI label for a merge token key (snake_case → Title Case). */
 function mergeFieldLabel(key: string): string {
   return key
@@ -106,6 +170,29 @@ function mergeFieldLabel(key: string): string {
         word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
     )
     .join(" ");
+}
+
+function mergeFieldLabelForTemplate(
+  key: string,
+  template: ApiTemplateItem | null
+): string {
+  if (template && isBuiltinFeTemplate(template.id)) {
+    const def = getBuiltinReactTemplateDefinition(template.id);
+    const variable = def?.variables.find((v) => v.key === key);
+    if (variable?.label) return variable.label;
+  }
+  return mergeFieldLabel(key);
+}
+
+function formatAddressLine2(addr: Address | undefined): string {
+  if (!addr) return "";
+  return [addr.city, addr.state, addr.zipCode].filter(Boolean).join(", ");
+}
+
+function addDaysUsShortDate(days: number, from = new Date()): string {
+  const d = new Date(from);
+  d.setDate(d.getDate() + days);
+  return formatUsShortDate(d.toISOString());
 }
 
 function escapeHtmlForMerge(text: string): string {
@@ -230,6 +317,32 @@ function termsOfferBelongsToApplication(
   return true;
 }
 
+function bankDetailBelongsToApplication(
+  bankDetail: BankDetail,
+  applicationUuid: string
+): boolean {
+  if (!applicationUuid) return false;
+  const app = bankDetail.application;
+  if (typeof app === "string") return app === applicationUuid;
+  if (app && typeof app === "object") {
+    return app._id != null && String(app._id) === applicationUuid;
+  }
+  return false;
+}
+
+/** First non-empty bank account number from the application's saved bank details. */
+function resolveMerchantAccountNumber(
+  bankDetails: BankDetail[],
+  applicationUuid: string
+): string {
+  for (const detail of bankDetails) {
+    if (!bankDetailBelongsToApplication(detail, applicationUuid)) continue;
+    const acct = mergeFieldStr(detail.accountNumber);
+    if (acct) return acct;
+  }
+  return "";
+}
+
 function resolveFundedAmountFromOfferDecision(
   offerDecision: Record<string, unknown> | null | undefined
 ): number | null {
@@ -287,7 +400,7 @@ function resolveFundedAmount(
 
 /** Default wire destination shown in payoff letter merge fields (edit per send if needed). */
 const DEFAULT_PAYOFF_WIRE_DETAILS = {
-  beneficiary_name: "WOODMERE FINANCIAL LLC",
+  beneficiary_name: "KATAN CAPITAL LLC",
   bank_name: "OPTIMUM BANK",
   bank_address_line1: "652 N Broad St, Suite 201",
   bank_city_state_zip: "Middletown, DE 19709",
@@ -298,7 +411,8 @@ const DEFAULT_PAYOFF_WIRE_DETAILS = {
 function buildDefaultValues(
   application: Application | null | undefined,
   dealLabel: string,
-  funding: LetterFundingSources = {}
+  funding: LetterFundingSources = {},
+  senderName = ""
 ): Record<string, string> {
   const client = application?.client;
   const owner = typeof client === "object" ? client?.owner : undefined;
@@ -307,10 +421,27 @@ function buildDefaultValues(
     .filter(Boolean)
     .join(" ")
     .trim();
-  const email = owner?.email ?? business?.email ?? "";
+  const dealReference =
+    dealLabel ||
+    (application?.applicationId != null
+      ? String(application.applicationId)
+      : "");
+  // Letters show "Account Ending in <last 4>", so prefer the merchant's real
+  // bank account number and only fall back to the deal reference when missing.
+  const merchantAccountRef =
+    mergeFieldStr(funding.merchantAccountNumber) || dealReference;
+  const email = resolveMerchantEmail(application, merchantAccountRef);
   const loan = resolveFundedAmount(application, funding);
-  const totalRepay = Math.round(loan * 1.42);
-  const paid = Math.round(loan * 0.071);
+  const collectionPayback = Number(application?.collectionPaybackAmount);
+  const collectionRepaid = Number(application?.collectionSumOfRepaid);
+  const totalRepay =
+    Number.isFinite(collectionPayback) && collectionPayback > 0
+      ? collectionPayback
+      : Math.round(loan * 1.42);
+  const paid =
+    Number.isFinite(collectionRepaid) && collectionRepaid >= 0
+      ? collectionRepaid
+      : Math.round(loan * 0.071);
   const balanceDue = Number(application?.collectionBalanceDue);
   const payoff =
     Number.isFinite(balanceDue) && balanceDue >= 0
@@ -326,6 +457,14 @@ function buildDefaultValues(
   const agreementDate =
     formatUsShortDate(application?.createdAt) || letterDate;
   const legalEntityName = (business?.name ?? merchantName).trim();
+  const mailingAddress = business?.address ?? owner?.address;
+  const recipientAddress1 = mailingAddress?.address1?.trim() ?? "";
+  const recipientAddress2 = formatAddressLine2(mailingAddress);
+  const salutationName =
+    owner?.firstName?.trim() ||
+    merchantName.split(/\s+/).filter(Boolean)[0] ||
+    merchantName;
+  const goodThroughDate = addDaysUsShortDate(7, d);
 
   return {
     merchant_name: merchantName,
@@ -353,12 +492,28 @@ function buildDefaultValues(
     outstanding_balance: payoff ? formatCurrency(payoff) : "",
     __recipient_email: email,
     customer_id: dealLabel,
-    ...DEFAULT_PAYOFF_WIRE_DETAILS,
+    beneficiary_name: DEFAULT_PAYOFF_WIRE_DETAILS.beneficiary_name,
+    bank_name: DEFAULT_PAYOFF_WIRE_DETAILS.bank_name,
+    bank_address_line1: DEFAULT_PAYOFF_WIRE_DETAILS.bank_address_line1,
+    bank_city_state_zip: DEFAULT_PAYOFF_WIRE_DETAILS.bank_city_state_zip,
+    routing_number: DEFAULT_PAYOFF_WIRE_DETAILS.routing_number,
+    wire_account_number: DEFAULT_PAYOFF_WIRE_DETAILS.account_number,
     client_name: merchantName,
     letter_date: letterDate,
     merchant_legal_name: legalEntityName,
     agreement_date: agreementDate,
     zero_balance_statement: "$0.00 (zero dollars)",
+    recipient_name: legalEntityName || merchantName,
+    recipient_address_line1: recipientAddress1,
+    recipient_address_line2: recipientAddress2,
+    account_number: merchantAccountRef,
+    salutation_name: salutationName,
+    good_through_date: goodThroughDate,
+    payment_company_name: DEFAULT_PAYOFF_WIRE_DETAILS.beneficiary_name,
+    payment_address_line1: DEFAULT_PAYOFF_WIRE_DETAILS.bank_address_line1,
+    payment_address_line2: DEFAULT_PAYOFF_WIRE_DETAILS.bank_city_state_zip,
+    sender_name: senderName,
+    account_status: "Zero Balance",
   };
 }
 
@@ -376,12 +531,21 @@ export default function Letters() {
   const application = useSelector(
     (s: RootState) => s.applicationDetail.data
   ) as Application | null | undefined;
+  const loginUser = useSelector((s: RootState) => s.login.data?.user);
+  const senderDisplayName = useMemo(
+    () =>
+      [loginUser?.firstName, loginUser?.lastName].filter(Boolean).join(" ").trim(),
+    [loginUser?.firstName, loginUser?.lastName]
+  );
   const offerDecisionRaw = useSelector(
     (s: RootState) => s.offerDecision.data
   ) as Record<string, unknown> | null | undefined;
   const termsOffersRaw = useSelector(
     (s: RootState) => s.termsOffers.data
   ) as TermsOffer[];
+  const bankDetailsRaw = useSelector(
+    (s: RootState) => s.bankDetails.data
+  ) as BankDetail[];
   const applicationUuid = application?._id ?? "";
 
   const fundingSources = useMemo((): LetterFundingSources => {
@@ -394,13 +558,21 @@ export default function Letters() {
     const termsOffers = termsOffersRaw.filter((row) =>
       termsOfferBelongsToApplication(row, applicationUuid)
     );
-    return { offerDecision, termsOffers };
-  }, [offerDecisionRaw, termsOffersRaw, applicationUuid]);
+    const merchantAccountNumber = resolveMerchantAccountNumber(
+      bankDetailsRaw,
+      applicationUuid
+    );
+    return { offerDecision, termsOffers, merchantAccountNumber };
+  }, [offerDecisionRaw, termsOffersRaw, bankDetailsRaw, applicationUuid]);
 
   useEffect(() => {
-    if (!applicationUuid) return;
+    if (!applicationUuid) {
+      dispatch(clearBankDetails());
+      return;
+    }
     void dispatch(getOfferDecisionByApplication(applicationUuid));
     void dispatch(getTermsOffers({ application: applicationUuid, limit: 5 }));
+    void dispatch(getBankDetails({ application: applicationUuid }));
   }, [dispatch, applicationUuid]);
 
   const dealLabel = useMemo(
@@ -412,12 +584,28 @@ export default function Letters() {
   );
 
   const defaults = useMemo(
-    () => buildDefaultValues(application, dealLabel, fundingSources),
-    [application, dealLabel, fundingSources]
+    () =>
+      buildDefaultValues(
+        application,
+        dealLabel,
+        fundingSources,
+        senderDisplayName
+      ),
+    [application, dealLabel, fundingSources, senderDisplayName]
   );
 
-  const [templates, setTemplates] = useState<ApiTemplateItem[]>(
-    () => readPaymentTemplatesCache() ?? []
+  const merchantEmailDefault = useMemo(
+    () =>
+      coalesceRecipientEmail(
+        "",
+        defaults.__recipient_email ?? "",
+        fundingSources.merchantAccountNumber ?? ""
+      ),
+    [defaults.__recipient_email, fundingSources.merchantAccountNumber]
+  );
+
+  const [templates, setTemplates] = useState<ApiTemplateItem[]>(() =>
+    mergeBuiltinFeTemplates(readPaymentTemplatesCache() ?? [])
   );
 
   useEffect(() => {
@@ -428,7 +616,7 @@ export default function Letters() {
           force: true,
         });
         if (!mounted) return;
-        setTemplates(apiTemplates);
+        setTemplates(mergeBuiltinFeTemplates(apiTemplates));
       } catch {
         // Keep session cache if the request fails
       }
@@ -467,28 +655,40 @@ export default function Letters() {
   );
 
   useEffect(() => {
-    setRecipientEmail(defaults.__recipient_email ?? "");
-  }, [defaults.__recipient_email]);
-
-  useEffect(() => {
     const list = templateSource.filter((t) => t.category === templateType);
     const nextId =
       list.find((t) => t.id === templateId)?.id ?? list[0]?.id ?? "";
     if (nextId !== templateId) setTemplateId(nextId);
   }, [templateSource, templateType, templateId]);
 
+  const activeTemplateIdRef = useRef("");
+
+  // Reset merge fields only when the user picks a different template.
   useEffect(() => {
+    const templateId = selectedTemplate?.id ?? "";
     if (!selectedTemplate) {
+      activeTemplateIdRef.current = "";
       setFieldValues({});
       setSubject("");
+      setRecipientEmail("");
       return;
     }
+    if (activeTemplateIdRef.current === templateId) return;
+    activeTemplateIdRef.current = templateId;
+
     const keys = templateMergeKeys(selectedTemplate);
     const next: Record<string, string> = {};
     for (const k of keys) {
       next[k] = defaults[k] ?? "";
     }
     setFieldValues(next);
+    setRecipientEmail(
+      coalesceRecipientEmail(
+        "",
+        merchantEmailDefault,
+        fundingSources.merchantAccountNumber ?? ""
+      )
+    );
     if (selectedTemplate.category === "email") {
       setSubject(`${selectedTemplate.name} - ${defaults.business_name || dealLabel}`);
     } else if (selectedTemplate.category === "letter") {
@@ -500,7 +700,41 @@ export default function Letters() {
     } else {
       setSubject(`${selectedTemplate.name} - ${dealLabel}`);
     }
-  }, [selectedTemplate, defaults, dealLabel]);
+  }, [selectedTemplate, defaults, dealLabel, merchantEmailDefault, fundingSources.merchantAccountNumber]);
+
+  // When async application data arrives, fill empty fields without overwriting edits.
+  useEffect(() => {
+    if (!selectedTemplate) return;
+    const keys = templateMergeKeys(selectedTemplate);
+    setFieldValues((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const k of keys) {
+        const defaultVal = mergeFieldStr(defaults[k]);
+        if (!mergeFieldStr(prev[k]) && defaultVal) {
+          next[k] = defaultVal;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [selectedTemplate, defaults]);
+
+  // Merchant email is separate from letter merge fields — only accept real emails.
+  useEffect(() => {
+    if (!selectedTemplate) return;
+    setRecipientEmail((prev) =>
+      coalesceRecipientEmail(
+        prev,
+        merchantEmailDefault,
+        fundingSources.merchantAccountNumber ?? ""
+      )
+    );
+  }, [
+    selectedTemplate?.id,
+    merchantEmailDefault,
+    fundingSources.merchantAccountNumber,
+  ]);
 
   const placeholderKeys = useMemo(
     () =>
@@ -512,6 +746,9 @@ export default function Letters() {
 
   const mergedBody = useMemo(() => {
     if (!selectedTemplate) return "";
+    if (isBuiltinFeTemplate(selectedTemplate.id)) {
+      return renderBuiltinReactTemplateHtml(selectedTemplate.id, fieldValues);
+    }
     const escapeVals = templateBodyIsHtml(selectedTemplate.body);
     return mergeTemplate(
       selectedTemplate.body,
@@ -521,8 +758,16 @@ export default function Letters() {
     );
   }, [selectedTemplate, fieldValues, placeholderKeys]);
 
+  const previewHtml = useDebouncedValue(mergedBody, 300);
+
   const previewIsHtml = Boolean(
-    selectedTemplate && templateBodyIsHtml(selectedTemplate.body)
+    selectedTemplate &&
+      (isBuiltinFeTemplate(selectedTemplate.id) ||
+        templateBodyIsHtml(selectedTemplate.body))
+  );
+
+  const previewUsesFullDocument = Boolean(
+    selectedTemplate && isBuiltinFeTemplate(selectedTemplate.id)
   );
 
   const autofillFromDefaults = () => {
@@ -533,7 +778,13 @@ export default function Letters() {
       next[key] = defaults[key] ?? "";
     }
     setFieldValues(next);
-    setRecipientEmail(defaults.__recipient_email ?? "");
+    setRecipientEmail(
+      coalesceRecipientEmail(
+        "",
+        merchantEmailDefault,
+        fundingSources.merchantAccountNumber ?? ""
+      )
+    );
   };
 
   const clearAllInputs = () => {
@@ -556,7 +807,9 @@ export default function Letters() {
     );
     if (unresolved.length) {
       toast.error(
-        `Fill all fields: ${unresolved.map((k) => mergeFieldLabel(k)).join(", ")}`
+        `Fill all fields: ${unresolved
+          .map((k) => mergeFieldLabelForTemplate(k, selectedTemplate))
+          .join(", ")}`
       );
       return;
     }
@@ -586,11 +839,15 @@ export default function Letters() {
             })
           : `${selectedTemplate.name} - Deal #${dealLabel}`);
 
+      const outboundBody = isBuiltinFeTemplate(selectedTemplate.id)
+        ? renderBuiltinReactTemplateHtml(selectedTemplate.id, fieldValues)
+        : mergedBody;
+
       const sendResult = await dispatch(
         sendPaymentMail({
           to: recipient,
           subject: resolvedSubject,
-          body: mergedBody,
+          body: outboundBody,
           applicationId: application?._id ?? null,
           dealKey: dealLabel,
           templateName: selectedTemplate.name,
@@ -704,6 +961,8 @@ export default function Letters() {
                   <div className="space-y-2">
                     <Label className="text-sm text-foreground/90">Merchant Email</Label>
                     <Input
+                      type="email"
+                      autoComplete="email"
                       placeholder="email@example.com"
                       value={recipientEmail}
                       onChange={(e) => setRecipientEmail(e.target.value)}
@@ -740,7 +999,7 @@ export default function Letters() {
                     {placeholderKeys.map((key) => (
                       <div key={key} className="space-y-1.5">
                         <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          {mergeFieldLabel(key)}
+                          {mergeFieldLabelForTemplate(key, selectedTemplate)}
                         </Label>
                         <Input
                           value={fieldValues[key] || ""}
@@ -825,19 +1084,31 @@ export default function Letters() {
                     </div>
                     <div
                       className={cn(
-                        "max-h-[min(54vh,480px)] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 pr-1 text-[13px] text-slate-900",
-                        previewIsHtml
-                          ? "font-sans leading-normal [&_table]:w-full [&_td]:align-top"
-                          : "whitespace-pre-wrap font-serif leading-7"
+                        "rounded-md border border-slate-200 bg-white",
+                        previewUsesFullDocument
+                          ? "overflow-hidden"
+                          : "max-h-[min(54vh,480px)] overflow-y-auto p-3 pr-1 text-[13px] text-slate-900",
+                        !previewUsesFullDocument &&
+                          previewIsHtml &&
+                          "font-sans leading-normal [&_table]:w-full [&_td]:align-top",
+                        !previewUsesFullDocument &&
+                          !previewIsHtml &&
+                          "whitespace-pre-wrap font-serif leading-7"
                       )}
                     >
-                      {previewIsHtml ? (
+                      {previewUsesFullDocument ? (
+                        <LetterHtmlPreviewFrame
+                          html={previewHtml}
+                          title="Letter preview"
+                          className="block h-[min(54vh,480px)] bg-[#f3f4f6]"
+                        />
+                      ) : previewIsHtml ? (
                         <div
                           className="email-html-preview"
-                          dangerouslySetInnerHTML={{ __html: mergedBody }}
+                          dangerouslySetInnerHTML={{ __html: previewHtml }}
                         />
                       ) : (
-                        mergedBody
+                        previewHtml
                       )}
                     </div>
                   </div>

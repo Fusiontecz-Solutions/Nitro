@@ -110,8 +110,9 @@ export default function TemplatePlayground() {
           Template playground
         </h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Edit merge fields and preview built-in letter templates (React view and
-          static HTML used for email where applicable).
+          Preview all built-in email and letter templates — approval, offer
+          updated, rejection, document request, payoff letter, and zero balance
+          letter.
         </p>
       </div>
 
@@ -138,6 +139,9 @@ export default function TemplatePlayground() {
                   {rows.map((r) => (
                     <SelectItem key={r.id} value={r.id}>
                       {r.name}
+                      <span className="text-muted-foreground ml-1 text-xs">
+                        ({r.def.category})
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>

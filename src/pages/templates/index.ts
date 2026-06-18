@@ -26,13 +26,24 @@ export {
   APPLICATION_REJECTION_EMAIL_VARIABLES,
 } from "./ApplicationRejectionEmail";
 export { renderApplicationRejectionEmailHtml } from "./applicationRejectionEmailHtml";
+export {
+  default as OfferUpdatedEmail,
+  OFFER_UPDATED_EMAIL_VARIABLES,
+} from "./OfferUpdatedEmail";
+export { renderOfferUpdatedEmailHtml } from "./offerUpdatedEmailHtml";
 export { renderDocumentRequestEmailHtml } from "./documentRequestEmailHtml";
-// export { renderOfferUpdatedEmailHtml } from "./offerUpdatedEmailHtml";
-// export {
-//   APPLICATION_APPROVAL_EMAIL_SUBJECT,
-//   OFFER_UPDATED_EMAIL_SUBJECT,
-//   resolveApplicationApprovalEmailFields,
-// } from "./applicationApprovalEmailShared";
+export {
+  default as DocumentRequestEmail,
+  DOCUMENT_REQUEST_EMAIL_VARIABLES,
+} from "./DocumentRequestEmail";
+export {
+  APPLICATION_APPROVAL_EMAIL_SUBJECT,
+  OFFER_UPDATED_EMAIL_SUBJECT,
+  APPLICATION_APPROVAL_URL_PLACEHOLDER,
+  APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+  APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+  resolveApplicationApprovalEmailFields,
+} from "./applicationApprovalEmailShared";
 export {
   APPLICATION_REJECTION_EMAIL_SUBJECT,
   resolveApplicationRejectionEmailFields,

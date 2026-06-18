@@ -7,12 +7,14 @@ import type {
   TemplateValues,
 } from "./types";
 
-// import PayOffLetter, {
-//   PAY_OFF_LETTER_VARIABLES,
-// } from "./PayOffLetter";
+import PayOffLetter, {
+  PAY_OFF_LETTER_VARIABLES,
+} from "./PayOffLetter";
+import { renderPayOffLetterEmailHtml } from "./payOffLetterEmailHtml";
 import ZeroBalanceLetter, {
   ZERO_BALANCE_LETTER_VARIABLES,
 } from "./ZeroBalanceLetter";
+import { renderZeroBalanceLetterEmailHtml } from "./zeroBalanceLetterEmailHtml";
 import ApplicationApprovalEmail, {
   APPLICATION_APPROVAL_EMAIL_VARIABLES,
 } from "./ApplicationApprovalEmail";
@@ -21,6 +23,14 @@ import ApplicationRejectionEmail, {
   APPLICATION_REJECTION_EMAIL_VARIABLES,
 } from "./ApplicationRejectionEmail";
 import { renderApplicationRejectionEmailHtml } from "./applicationRejectionEmailHtml";
+import DocumentRequestEmail, {
+  DOCUMENT_REQUEST_EMAIL_VARIABLES,
+} from "./DocumentRequestEmail";
+import { renderDocumentRequestEmailHtml } from "./documentRequestEmailHtml";
+import OfferUpdatedEmail, {
+  OFFER_UPDATED_EMAIL_VARIABLES,
+} from "./OfferUpdatedEmail";
+import { renderOfferUpdatedEmailHtml } from "./offerUpdatedEmailHtml";
 
 export const BUILTIN_FE_TEMPLATE_ID_PREFIX = "builtin-fe:";
 
@@ -32,13 +42,13 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
   //   variables: PAYOFF_WIRE_INSTRUCTIONS_VARIABLES,
   //   Component: PayoffWireInstructions,
   // },
-  // {
-  //   id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}payoff-letter`,
-  //   name: "Payoff letter",
-  //   category: "letter",
-  //   variables: PAY_OFF_LETTER_VARIABLES,
-  //   Component: PayOffLetter,
-  // },
+  {
+    id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}payoff-letter`,
+    name: "Payoff letter",
+    category: "letter",
+    variables: PAY_OFF_LETTER_VARIABLES,
+    Component: PayOffLetter,
+  },
   {
     id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}zero-balance-letter`,
     name: "Zero balance letter",
@@ -56,6 +66,15 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
     Component: ApplicationApprovalEmail,
   },
   {
+    id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}offer-updated-email`,
+    name: "Offer updated email",
+    category: "email",
+    description:
+      "ISO resend when offer values change after approval (updated-offer messaging).",
+    variables: OFFER_UPDATED_EMAIL_VARIABLES,
+    Component: OfferUpdatedEmail,
+  },
+  {
     id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}application-rejection-email`,
     name: "Application rejection email",
     category: "email",
@@ -63,6 +82,15 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
       "ISO decline notification with the primary and other reasons for decline.",
     variables: APPLICATION_REJECTION_EMAIL_VARIABLES,
     Component: ApplicationRejectionEmail,
+  },
+  {
+    id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}document-request-email`,
+    name: "Document request email",
+    category: "email",
+    description:
+      "ISO missing-documents request with upload portal link and document checklist.",
+    variables: DOCUMENT_REQUEST_EMAIL_VARIABLES,
+    Component: DocumentRequestEmail,
   },
 ];
 
@@ -87,17 +115,23 @@ export function renderBuiltinReactTemplateHtml(
   values: Record<string, string>,
 ): string {
   /** Gmail / clients ignore app CSS and Vite asset URLs — use inline HTML for these letters. */
-  // if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}zero-balance-letter`) {
-  //   return renderZeroBalanceLetterEmailHtml(values as TemplateValues);
-  // }
-  // if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}payoff-letter`) {
-  //   return renderPayOffLetterEmailHtml(values as TemplateValues);
-  // }
+  if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}zero-balance-letter`) {
+    return renderZeroBalanceLetterEmailHtml(values as TemplateValues);
+  }
+  if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}payoff-letter`) {
+    return renderPayOffLetterEmailHtml(values as TemplateValues);
+  }
   if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}application-approval-email`) {
     return renderApplicationApprovalEmailHtml(values as TemplateValues);
   }
+  if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}offer-updated-email`) {
+    return renderOfferUpdatedEmailHtml(values as TemplateValues);
+  }
   if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}application-rejection-email`) {
     return renderApplicationRejectionEmailHtml(values as TemplateValues);
+  }
+  if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}document-request-email`) {
+    return renderDocumentRequestEmailHtml(values as TemplateValues);
   }
   const def = byId.get(id);
   if (!def) return "";

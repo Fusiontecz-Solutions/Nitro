@@ -41,6 +41,7 @@ const AGENT_ALLOWED_EXACT = new Set([
   "/create-applications",
   "/notifications",
   "/user-setting",
+  "/template/playground",
 ]);
 
 const AGENT_ALLOWED_PREFIXES = [

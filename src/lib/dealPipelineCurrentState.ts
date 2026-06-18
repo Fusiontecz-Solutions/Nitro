@@ -10,7 +10,7 @@ function compactKey(value: string): string {
 
 /**
  * Deal pipeline CURRENT STATE column — never show generic "Contracted";
- * use Contract Out vs Contract Signed from queue/state (matches Cases list).
+ * use Contract Sent vs Contract Signed from queue/state (matches Cases list).
  */
 export function formatDealPipelineCurrentStateLabel(app: {
   currentQueue?: string | null;
@@ -54,8 +54,17 @@ export function formatDealPipelineCurrentStateLabel(app: {
     return "Contract Signed";
   }
 
+  if (
+    queueCompact === "contractsent" ||
+    stateCompact === "contractsent" ||
+    state === "Contract_Sent" ||
+    state === "CONTRACT_SENT"
+  ) {
+    return "Contract Sent";
+  }
+
   if (isContractOutQueueBadgeLabel(queue) || isContractOutQueueBadgeLabel(state)) {
-    return "Contract Out";
+    return "Contract Sent";
   }
 
   if (
@@ -65,12 +74,12 @@ export function formatDealPipelineCurrentStateLabel(app: {
     state === "CONTRACTS_OUT" ||
     state === "Contracts_Out"
   ) {
-    return "Contract Out";
+    return "Contract Sent";
   }
 
   const raw = state || queue;
   if (!raw) return "—";
-  if (compactKey(raw) === "contracted") return "Contract Out";
+  if (compactKey(raw) === "contracted") return "Contract Sent";
 
   return raw;
 }

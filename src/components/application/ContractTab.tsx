@@ -1196,7 +1196,7 @@ export default function ContractTab({
         }
     };
 
-    /** Contract record created — not yet in DocuSign. Contract Out only after send. */
+    /** Contract record created — not yet in DocuSign. Contract Sent only after send. */
     const persistContractPendingStage = async () => {
         if (!applicationUuid) return;
         try {
@@ -1232,7 +1232,7 @@ export default function ContractTab({
             ).unwrap();
         } catch (err) {
             console.error(
-                "Failed to set application currentQueue/currentState to Contract Out:",
+                "Failed to set application currentQueue/currentState to Contract Generated:",
                 err,
             );
         }
