@@ -84,6 +84,7 @@ import {
     formatDocumentSendStatusLabel,
     isAchEnvelopeDraftLikeStatus,
     isDocumentSendEntryViewable,
+    mergeStateDisclosurePrefillFallback,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
     resolveAchHistoryEntryDisplayStatus,
@@ -1324,6 +1325,8 @@ export default function ContractTab({
             addendumDocumentRef?: string | null;
             /** @deprecated use addendumDocumentRef */
             addendumBoldSignTemplateId?: string | null;
+            /** CRM document-template row id for state disclosure PDF. */
+            disclosureDocumentRef?: string | null;
             /** CRM document-template row id for optional ACH PDF. */
             achDocumentRef?: string | null;
             /** When true, envelope contains only the ACH form (no main contract PDF). */
@@ -1345,6 +1348,7 @@ export default function ContractTab({
         const addendumDocumentRef = String(
             sendPayload.addendumDocumentRef ?? sendPayload.addendumBoldSignTemplateId ?? "",
         ).trim();
+        const disclosureDocumentRef = String(sendPayload.disclosureDocumentRef ?? "").trim();
         const achDocumentRef = String(sendPayload.achDocumentRef ?? "").trim();
         const standaloneAchOnly = sendPayload.standaloneAchOnly === true;
 
@@ -1502,9 +1506,7 @@ export default function ContractTab({
 
             const supplementalDocumentRefs = standaloneAchOnly
                 ? []
-                : addendumDocumentRef
-                  ? [addendumDocumentRef]
-                  : [];
+                : [addendumDocumentRef, disclosureDocumentRef].filter(Boolean);
             const mergedTemplateIdsForPrefill = standaloneAchOnly
                 ? [achDocumentRef]
                 : supplementalDocumentRefs;
@@ -1530,6 +1532,16 @@ export default function ContractTab({
 
             try {
                 const contractNumericId = Number((latestContract as { id?: unknown })?.id);
+                const rawOverrides = (latestContract as { contractPrefillOverrides?: unknown })
+                    ?.contractPrefillOverrides;
+                const mainOverrides = normalizeContractPrefillOverrides(rawOverrides);
+                const mainPrefillForTemplates = mainOverrides
+                    ? (() => {
+                          const o = { ...mainOverrides } as Record<string, unknown>;
+                          delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+                          return o as Partial<BuildContractPrefillFieldsArgs>;
+                      })()
+                    : null;
                 if (Number.isFinite(contractNumericId) && mergedTemplateIdsForPrefill.length > 0) {
                     const mapRes = await axiosGet(
                         `/contract/${contractNumericId}/document-template-mappings`,
@@ -1543,16 +1555,6 @@ export default function ContractTab({
                             frequency?: string | null;
                         } | null;
                     }>;
-                    const rawOverrides = (latestContract as { contractPrefillOverrides?: unknown })
-                        ?.contractPrefillOverrides;
-                    const mainOverrides = normalizeContractPrefillOverrides(rawOverrides);
-                    const mainPrefillForTemplates = mainOverrides
-                        ? (() => {
-                              const o = { ...mainOverrides } as Record<string, unknown>;
-                              delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
-                              return o as Partial<BuildContractPrefillFieldsArgs>;
-                          })()
-                        : null;
                     prefillFieldsPayload = applyDocumentTemplateMappingPrefillOverrides({
                         prefillFieldsPayload,
                         mergedTemplateIds: mergedTemplateIdsForPrefill,
@@ -1564,6 +1566,15 @@ export default function ContractTab({
                         mainPrefillOverrides: mainPrefillForTemplates,
                     });
                 }
+
+                prefillFieldsPayload = mergeStateDisclosurePrefillFallback({
+                    payload: prefillFieldsPayload,
+                    supplementalRefs: supplementalDocumentRefs,
+                    contract: latestContract as Record<string, unknown>,
+                    application: applicationData as unknown as Record<string, unknown>,
+                    agreementDate: formatDate(new Date()),
+                    mainPrefillOverrides: mainPrefillForTemplates,
+                });
             } catch (mapErr) {
                 console.warn("[ContractTab] document template mapping prefill skipped:", mapErr);
             }
@@ -1720,6 +1731,7 @@ export default function ContractTab({
         ccEmails: string[];
         addendumDocumentRef?: string | null;
         addendumBoldSignTemplateId?: string | null;
+        disclosureDocumentRef?: string | null;
         achDocumentRef?: string | null;
         standaloneAchOnly?: boolean;
         roles?: DocuSignTemplateRolePayload[];

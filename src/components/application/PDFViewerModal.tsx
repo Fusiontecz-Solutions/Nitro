@@ -4,6 +4,7 @@ import {
     AlertCircle,
     BadgeCheck,
     Building2,
+    Calculator,
     CheckCircle2,
     Clock,
     Download,
@@ -134,16 +135,26 @@ import {
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
 import { ExhibitACompaniesSummarySection } from "./contractdata/ExhibitACompaniesSummarySection";
 import { TemplateMappingPrefillEditDialog } from "./contractdata/TemplateMappingPrefillEditDialog";
+import { DisclosureCalculationModal } from "./contractdata/DisclosureCalculationModal";
 import {
+    buildDisclosureCalculatorInputsFromSources,
+    extractMonthlyRevenuesFromBankAnalyses,
+} from "./contractdata/disclosureAprCalculator";
+import { mapDisclosureMetricsToEditorFieldOverrides } from "./contractdata/disclosureEditorFields";
+import {
+    applyDocumentTemplateMappingPrefillOverrides,
+    buildExpandedDisclosurePrefillFieldsForMapping,
     DOCUMENT_SEND_HISTORY_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    mergeExpandedDisclosurePrefillIntoPayload,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
     parseDocumentTemplatePrefillByMappingId,
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
+import { isPlatformLayoutKey, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
 import {
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
 } from "./contractdata/docusignTemplateConfig";
@@ -171,7 +182,7 @@ import {
     getBoldSignTemplateMappingRef,
     loadBoldSignTemplatePdfBlob,
 } from "./contractdata/boldSignTemplateDocument";
-import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
+import { axiosDelete, axiosGet, axiosPatch, axiosPost } from "@/redux/axios";
 
 /** Fingerprint of saved prefill used to invalidate a reused DocuSign draft after edits. */
 function docuSignPrefillDraftFingerprint(input: {
@@ -242,6 +253,8 @@ interface PDFViewerModalProps {
         ccEmails: string[];
         addendumDocumentRef?: string | null;
         addendumBoldSignTemplateId?: string | null;
+        /** CRM BoldSignTemplate row id (state disclosure) merged after addendum. */
+        disclosureDocumentRef?: string | null;
         achDocumentRef?: string | null;
         standaloneAchOnly?: boolean;
         roles?: DocuSignTemplateRolePayload[];
@@ -279,6 +292,75 @@ type ContractDocumentTemplateMappingRow = {
 };
 
 type InfoPanelId = "addendum" | "ach" | "epo" | "owner" | "guarantor";
+
+function isDisclosureMappingRow(row: ContractDocumentTemplateMappingRow): boolean {
+    return String(row.documentType || "").toLowerCase() === "disclosure";
+}
+
+function normalizeStateForTemplateLookup(state: string): string {
+    return String(state ?? "").trim().toLowerCase();
+}
+
+function normalizeFrequencyForTemplateLookup(frequency: string): string {
+    const f = String(frequency ?? "").trim().toLowerCase();
+    if (f.startsWith("week")) return "weekly";
+    if (f.startsWith("day")) return "daily";
+    if (f.startsWith("month")) return "monthly";
+    return f || "daily";
+}
+
+function formatDisclosureTemplateLabel(row: ContractDocumentTemplateMappingRow | null): string {
+    if (!row) return "State disclosure";
+    const name = String(row.template?.name ?? "").trim();
+    if (name) {
+        const noExt = name.replace(/\.pdf$/i, "");
+        return noExt
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .split(" ")
+            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(" ");
+    }
+    const state = String(row.template?.state ?? "").trim();
+    if (state) {
+        return state
+            .split(/[\s_]+/)
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" ");
+    }
+    return "State disclosure";
+}
+
+function mappingTemplateRowId(
+    row: Pick<ContractDocumentTemplateMappingRow, "template" | "templateId"> | null | undefined,
+): string {
+    return String(row?.template?.id ?? row?.templateId ?? "").trim();
+}
+
+function mappingMatchesTemplateRef(
+    row: ContractDocumentTemplateMappingRow,
+    templateRef: string,
+): boolean {
+    const ref = String(templateRef || "").trim();
+    if (!ref) return false;
+    const layoutKey = String(row.template?.layoutKey ?? "").trim();
+    const templateId = String(row.template?.templateId ?? "").trim();
+    const rowId = mappingTemplateRowId(row);
+    return ref === layoutKey || ref === templateId || ref === rowId;
+}
+
+function disclosureMappingMatchesState(
+    row: ContractDocumentTemplateMappingRow | null | undefined,
+    state: string,
+): boolean {
+    if (!row) return false;
+    const picked = normalizeStateForTemplateLookup(pickUsStateForSelect(state));
+    if (!picked) return false;
+    const templateState = normalizeStateForTemplateLookup(row.template?.state ?? "");
+    return Boolean(templateState) && templateState === picked;
+}
 
 function toUsDateDisplay(value: string): string {
     const raw = String(value || "").trim();
@@ -843,6 +925,24 @@ const PDFViewerModal = ({
         )[0];
     }, [addendumTemplateMappings]);
 
+    const disclosureTemplateMappings = useMemo(
+        () => templateMappings.filter(isDisclosureMappingRow),
+        [templateMappings],
+    );
+
+    /** State disclosure merged at the bottom of the contract package. */
+    const linkedDisclosureMapping = useMemo(() => {
+        if (!disclosureTemplateMappings.length) return null;
+        return [...disclosureTemplateMappings].sort(
+            (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
+        )[0];
+    }, [disclosureTemplateMappings]);
+
+    const linkedDisclosureMatchesSelectedState = useMemo(
+        () => disclosureMappingMatchesState(linkedDisclosureMapping, selectedState),
+        [linkedDisclosureMapping, selectedState],
+    );
+
     const documentTemplateEnvelopeByMappingId = useMemo(
         () =>
             parseDocumentTemplateEnvelopeByMappingId(
@@ -857,6 +957,12 @@ const PDFViewerModal = ({
     const [templateMappingPrefillEditRow, setTemplateMappingPrefillEditRow] =
         useState<ContractDocumentTemplateMappingRow | null>(null);
     const [loadingTemplateMappings, setLoadingTemplateMappings] = useState(false);
+    const [linkingDisclosureTemplate, setLinkingDisclosureTemplate] = useState(false);
+    const [disclosureCalcModalOpen, setDisclosureCalcModalOpen] = useState(false);
+    const [disclosureCalcBankAnalyses, setDisclosureCalcBankAnalyses] = useState<unknown>(null);
+    const [loadingDisclosureCalcBankAnalysis, setLoadingDisclosureCalcBankAnalysis] =
+        useState(false);
+    const [savingDisclosureCalculation, setSavingDisclosureCalculation] = useState(false);
     const [previewingTemplateId, setPreviewingTemplateId] = useState<string | null>(null);
     const templatePreviewBlobUrlRef = useRef<string | null>(null);
     /** `bs:<boldSignTemplateGuid>` | `up:<uploadedFileId>` | `` */
@@ -983,6 +1089,38 @@ const PDFViewerModal = ({
     const offerDecisionState = useSelector((state: RootState) => state.offerDecision);
     const offerDecisionData = offerDecisionState?.data ?? null;
     const offerDecisionLoading = Boolean(offerDecisionState?.loading);
+
+    const contractDisclosureFrequency = useMemo(() => {
+        const offer =
+            offerDecisionData != null && typeof offerDecisionData === "object"
+                ? (offerDecisionData as Record<string, unknown>)
+                : null;
+        const contractOffer =
+            resolvedContract != null && typeof resolvedContract === "object"
+                ? ((resolvedContract as Record<string, unknown>).offer as Record<string, unknown> | null)
+                : null;
+        const raw = String(
+            offer?.frequency ?? contractOffer?.frequency ?? "",
+        ).trim();
+        return normalizeFrequencyForTemplateLookup(raw);
+    }, [offerDecisionData, resolvedContract]);
+
+    const disclosureCalculatorSeedInputs = useMemo(
+        () =>
+            buildDisclosureCalculatorInputsFromSources({
+                state: selectedState,
+                application: applicationData as Record<string, unknown> | null,
+                contract: resolvedContract,
+                offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
+            }),
+        [selectedState, applicationData, resolvedContract, offerDecisionData],
+    );
+
+    const disclosureCalcBankMonthlyRevenues = useMemo(
+        () => extractMonthlyRevenuesFromBankAnalyses(disclosureCalcBankAnalyses),
+        [disclosureCalcBankAnalyses],
+    );
+
     const achListState = useSelector((state: RootState) => state.achList);
     const bankDetailsList = useSelector((state: RootState) => state.bankDetails.data);
     const epoListState = useSelector((state: RootState) => state.epoList);
@@ -1708,6 +1846,8 @@ const PDFViewerModal = ({
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
+    const linkedDisclosureMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
+    const disclosureAutoLinkKeyRef = useRef("");
     const templateRecipientsFetchedForIdRef = useRef<string | null>(null);
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
@@ -1715,6 +1855,7 @@ const PDFViewerModal = ({
     selectedAddendumOptionRef.current = selectedAddendumOption;
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
     linkedAddendumMappingRef.current = linkedAddendumMapping;
+    linkedDisclosureMappingRef.current = linkedDisclosureMapping;
     docuSignPdfCacheSuffixRef.current = docuSignPdfCacheSuffix;
 
     const buildDocuSignPdfCacheKey = (envelopeId: string) =>
@@ -1844,6 +1985,12 @@ const PDFViewerModal = ({
         if (opt.startsWith("up:")) return null;
         if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
         return getBoldSignTemplateMappingRef(linkedAddendumMappingRef.current?.template) || null;
+    }, []);
+
+    const resolveDisclosureTemplateRefForDocuSignMerge = useCallback((): string | null => {
+        const row = linkedDisclosureMappingRef.current;
+        const rowId = String(row?.template?.id ?? "").trim();
+        return rowId || null;
     }, []);
 
     const primarySignerEmailRef = useRef("");
@@ -2113,6 +2260,32 @@ const PDFViewerModal = ({
     );
 
     useEffect(() => {
+        if (!disclosureCalcModalOpen || !applicationIdForLookup) return;
+        let cancelled = false;
+        const loadBankAnalysis = async () => {
+            setLoadingDisclosureCalcBankAnalysis(true);
+            try {
+                const res = await axiosGet(
+                    `/bank-analysis?${new URLSearchParams({
+                        application: String(applicationIdForLookup),
+                    }).toString()}`,
+                );
+                if (cancelled) return;
+                const data = (res as { data?: { data?: unknown } })?.data?.data ?? res?.data;
+                setDisclosureCalcBankAnalyses(data);
+            } catch {
+                if (!cancelled) setDisclosureCalcBankAnalyses(null);
+            } finally {
+                if (!cancelled) setLoadingDisclosureCalcBankAnalysis(false);
+            }
+        };
+        void loadBankAnalysis();
+        return () => {
+            cancelled = true;
+        };
+    }, [disclosureCalcModalOpen, applicationIdForLookup]);
+
+    useEffect(() => {
         if (!isOpen || !applicationData) return;
         const ad = applicationData as Record<string, unknown>;
         const bi0 = Array.isArray(ad.businessInfo)
@@ -2338,9 +2511,11 @@ const PDFViewerModal = ({
                             "Creating a new DocuSign draft with your updated signers (including Owner 2 when applicable).",
                         );
                     }
+                    const disclosureDocumentRef = resolveDisclosureTemplateRefForDocuSignMerge();
                     const prepared = await onPrepareDocuSignDraft({
                         ccEmails: toSend,
                         addendumDocumentRef: addendumTemplateId,
+                        disclosureDocumentRef,
                         roles: signerRolesForSend,
                     });
                     envelopeId = String(
@@ -3169,6 +3344,210 @@ const PDFViewerModal = ({
         prefilledBoldSignPdfUrlRef.current = null;
     }, []);
 
+    const buildDocuSignPrefillFieldsPayload = useCallback((): Array<{ id: string; value: string }> => {
+        const base = dealReviewFields
+            .map((f) => ({
+                id: f.id,
+                value: String(f.value ?? "").trim(),
+            }))
+            .filter((f) => f.id && f.value);
+
+        const addendumRef = resolveAddendumTemplateIdForDocuSignMerge();
+        const disclosureRef = resolveDisclosureTemplateRefForDocuSignMerge();
+        const addendumLayoutKey =
+            addendumRef && isPlatformLayoutKey(addendumRef) ? addendumRef : null;
+        const mergedLayoutKeys = addendumLayoutKey ? [addendumLayoutKey] : [];
+        const mergedTemplateIds = [
+            ...(addendumRef && !addendumLayoutKey ? [addendumRef] : []),
+            ...(disclosureRef ? [disclosureRef] : []),
+        ];
+
+        const effectiveOverrides = mergeContractPrefillOverrideLayers(
+            contractPrefillOverrides,
+            contractPrefillLoaded ? contractPrefillFromDb : null,
+        );
+        const mainPrefillForTemplates =
+            Object.keys(effectiveOverrides).length > 0 ? effectiveOverrides : null;
+        const contractPrefillOverridesRaw = {
+            ...(resolvedContract != null &&
+            typeof resolvedContract.contractPrefillOverrides === "object" &&
+            resolvedContract.contractPrefillOverrides != null &&
+            !Array.isArray(resolvedContract.contractPrefillOverrides)
+                ? (resolvedContract.contractPrefillOverrides as Record<string, unknown>)
+                : {}),
+            ...(mainPrefillForTemplates ?? {}),
+            [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
+        };
+
+        let payload = applyDocumentTemplateMappingPrefillOverrides({
+            prefillFieldsPayload: base,
+            mergedTemplateIds,
+            mergedLayoutKeys,
+            templateMappingRows: templateMappings,
+            contractPrefillOverridesRaw,
+            contract: resolvedContract as Record<string, unknown> | null,
+            application: applicationData as unknown as Record<string, unknown> | null,
+            agreementDate: formatDate(new Date()),
+            mainPrefillOverrides: mainPrefillForTemplates,
+            bankDetail: contractPrefillRecords.bankDetail ?? null,
+        });
+
+        const mappingId = linkedDisclosureMapping?.id;
+        const savedOverrides =
+            mappingId != null ? documentTemplatePrefillByMappingId[mappingId] ?? null : null;
+
+        const disclosureFields = buildExpandedDisclosurePrefillFieldsForMapping({
+            mappingRow: linkedDisclosureMapping,
+            savedOverridesForMapping: savedOverrides,
+            contract: resolvedContract as Record<string, unknown> | null,
+            application: applicationData as unknown as Record<string, unknown> | null,
+            agreementDate: formatDate(new Date()),
+            mainPrefillOverrides: mainPrefillForTemplates,
+            bankDetail: contractPrefillRecords.bankDetail ?? null,
+        });
+
+        return mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
+    }, [
+        dealReviewFields,
+        resolveAddendumTemplateIdForDocuSignMerge,
+        resolveDisclosureTemplateRefForDocuSignMerge,
+        contractPrefillOverrides,
+        contractPrefillLoaded,
+        contractPrefillFromDb,
+        resolvedContract,
+        documentTemplatePrefillByMappingId,
+        templateMappings,
+        applicationData,
+        contractPrefillRecords.bankDetail,
+        linkedDisclosureMapping,
+    ]);
+
+    const syncPrefillToDraftEnvelope = useCallback(async () => {
+        const envelopeId = String(
+            sessionEnvelopeId || linkedEnvelopeId || "",
+        ).trim();
+        if (!envelopeId) return;
+        const fields = buildDocuSignPrefillFieldsPayload();
+        if (!fields.length) return;
+        try {
+            await axiosPatch("/docusign/prefill-fields", {
+                documentId: envelopeId,
+                fields,
+            });
+            invalidateDocuSignPdfCache();
+            void loadPrefilledPdfFromDocuSign(envelopeId, { manageLoading: false });
+        } catch (err) {
+            console.warn("[DocuSign] prefill sync to draft envelope failed:", err);
+        }
+    }, [
+        buildDocuSignPrefillFieldsPayload,
+        sessionEnvelopeId,
+        linkedEnvelopeId,
+        invalidateDocuSignPdfCache,
+        loadPrefilledPdfFromDocuSign,
+    ]);
+
+    const applyDisclosureCalculation = useCallback(
+        async (args: {
+            inputs: import("./contractdata/disclosureAprCalculator").DisclosureCalculatorInputs;
+            metrics: import("./contractdata/disclosureAprCalculator").DisclosureCalculatorResult;
+        }) => {
+            const mappingId = linkedDisclosureMapping?.id;
+            const cid = effectiveContractId;
+            if (!mappingId || cid == null || !Number.isFinite(cid)) {
+                toast.error("Link a state disclosure before applying calculated values.");
+                return;
+            }
+
+            const fieldOverrides = mapDisclosureMetricsToEditorFieldOverrides(args.metrics, {
+                merchantName:
+                    args.inputs.merchantName ||
+                    getApplicationPrimaryRecipientName(applicationData) ||
+                    String(
+                        resolvedContract?.legalName ??
+                            resolvedContract?.clientName ??
+                            "",
+                    ).trim() ||
+                    undefined,
+                signatureDate: args.inputs.disbursementDate,
+                state: args.inputs.state,
+                inputs: args.inputs,
+            });
+
+            const priorBlob = { ...documentTemplatePrefillByMappingId };
+            priorBlob[mappingId] = fieldOverrides;
+
+            const existingOverrides =
+                resolvedContract != null &&
+                typeof resolvedContract.contractPrefillOverrides === "object" &&
+                resolvedContract.contractPrefillOverrides != null &&
+                !Array.isArray(resolvedContract.contractPrefillOverrides)
+                    ? {
+                          ...(resolvedContract.contractPrefillOverrides as Record<string, unknown>),
+                      }
+                    : {};
+
+            const nextContractPrefillOverrides: Record<string, unknown> = {
+                ...existingOverrides,
+                [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: priorBlob,
+                estimatedAnnualPercentageRate: String(args.metrics.estimatedAnnualPercentageRate),
+            };
+
+            setSavingDisclosureCalculation(true);
+            try {
+                const result = await dispatch(
+                    updateContract({
+                        id: cid,
+                        data: { contractPrefillOverrides: nextContractPrefillOverrides },
+                    }),
+                ).unwrap();
+                const payload = (result as { data?: unknown })?.data ?? result;
+                const fullSaved =
+                    (payload as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides ?? nextContractPrefillOverrides;
+                setDocumentTemplatePrefillByMappingId(
+                    parseDocumentTemplatePrefillByMappingId(fullSaved),
+                );
+                setResolvedContract((prev) =>
+                    prev ? { ...prev, contractPrefillOverrides: fullSaved ?? null } : prev,
+                );
+                draftPreparedPrefillFingerprintRef.current = docuSignPrefillDraftFingerprint({
+                    contractPrefillOverrides:
+                        stripDocumentTemplateBlobFromPrefillOverrides(
+                            normalizeContractPrefillOverrides(fullSaved) ?? null,
+                        ) ?? null,
+                    documentTemplatePrefillByMappingId:
+                        parseDocumentTemplatePrefillByMappingId(fullSaved),
+                });
+                queueMicrotask(() => {
+                    void syncPrefillToDraftEnvelope();
+                });
+                toast.success("Disclosure calculation applied.");
+                setDisclosureCalcModalOpen(false);
+            } catch (err: unknown) {
+                const msg =
+                    typeof err === "string"
+                        ? err
+                        : String(
+                              (err as { message?: string })?.message ||
+                                  "Failed to save disclosure calculation.",
+                          );
+                toast.error(msg);
+            } finally {
+                setSavingDisclosureCalculation(false);
+            }
+        },
+        [
+            linkedDisclosureMapping?.id,
+            effectiveContractId,
+            documentTemplatePrefillByMappingId,
+            resolvedContract,
+            applicationData,
+            dispatch,
+            syncPrefillToDraftEnvelope,
+        ],
+    );
+
     const forceReloadDocuSignPdfPreview = useCallback(() => {
         invalidateDocuSignPdfCache();
         if (pdfRightPaneTab !== "docusign") {
@@ -3233,6 +3612,141 @@ const PDFViewerModal = ({
         },
         [effectiveContractId, fetchTemplateMappings],
     );
+
+    const lookupDisclosureTemplateRef = useCallback(
+        async (state: string, frequency: string): Promise<string | null> => {
+            const params = new URLSearchParams({
+                type: "disclosure",
+                state: normalizeStateForTemplateLookup(state),
+                frequency: normalizeFrequencyForTemplateLookup(frequency),
+            });
+            const res = await axiosGet(`/contract/templates?${params.toString()}`);
+            const rows = (res?.data?.data ?? []) as Array<{
+                id?: string;
+                pdfUrl?: string | null;
+            }>;
+            const match = Array.isArray(rows)
+                ? rows.find((row) => String(row?.pdfUrl ?? "").trim())
+                : undefined;
+            return match?.id ? String(match.id) : null;
+        },
+        [],
+    );
+
+    /** One state disclosure per send — replace any existing disclosure mapping. */
+    const setDisclosureTemplateMapping = useCallback(
+        async (templateRef: string | null) => {
+            if (effectiveContractId == null) return;
+            const ref = String(templateRef || "").trim();
+            try {
+                const res = await axiosGet(
+                    `/contract/${effectiveContractId}/document-template-mappings`,
+                );
+                const rows = (res?.data?.data ?? []) as ContractDocumentTemplateMappingRow[];
+                const disclosureRows = rows.filter(isDisclosureMappingRow);
+                if (!ref) {
+                    if (disclosureRows.length === 0) return;
+                } else if (
+                    disclosureRows.length === 1 &&
+                    mappingMatchesTemplateRef(disclosureRows[0], ref)
+                ) {
+                    return;
+                }
+                await Promise.all(
+                    disclosureRows.map((row) =>
+                        axiosDelete(
+                            `/contract/${effectiveContractId}/document-template-mappings/${row.id}`,
+                        ),
+                    ),
+                );
+                if (ref) {
+                    await axiosPost(`/contract/${effectiveContractId}/document-template-mappings`, {
+                        documentType: "disclosure",
+                        templateRef: ref,
+                    });
+                }
+                await fetchTemplateMappings();
+            } catch (error: any) {
+                setDocumentUploadMessage(
+                    error?.message || "Failed to update state disclosure template.",
+                );
+            }
+        },
+        [effectiveContractId, fetchTemplateMappings],
+    );
+
+    const syncDisclosureTemplateForState = useCallback(
+        async (state: string, options?: { silent?: boolean }) => {
+            const picked = pickUsStateForSelect(state);
+            if (!picked) {
+                if (linkedDisclosureMappingRef.current) {
+                    await setDisclosureTemplateMapping(null);
+                }
+                return;
+            }
+            if (effectiveContractId == null) return;
+            try {
+                setLinkingDisclosureTemplate(true);
+                const templateRef = await lookupDisclosureTemplateRef(
+                    picked,
+                    contractDisclosureFrequency,
+                );
+                const current = linkedDisclosureMappingRef.current;
+                const currentTemplateId = current ? mappingTemplateRowId(current) : "";
+                if (!templateRef && !current) return;
+                if (templateRef && currentTemplateId === templateRef) return;
+                if (!templateRef) {
+                    await setDisclosureTemplateMapping(null);
+                    if (!options?.silent) {
+                        toast.info(`No disclosure PDF configured for ${picked}.`);
+                    }
+                    return;
+                }
+                await setDisclosureTemplateMapping(templateRef);
+            } catch (error: any) {
+                setDocumentUploadMessage(
+                    error?.message || "Failed to link state disclosure template.",
+                );
+            } finally {
+                setLinkingDisclosureTemplate(false);
+            }
+        },
+        [
+            contractDisclosureFrequency,
+            effectiveContractId,
+            lookupDisclosureTemplateRef,
+            setDisclosureTemplateMapping,
+        ],
+    );
+
+    /** Link disclosure once when reopening a contract that already has a saved state. */
+    useEffect(() => {
+        if (!isOpen) {
+            disclosureAutoLinkKeyRef.current = "";
+            return;
+        }
+        if (effectiveContractId == null || loadingTemplateMappings) return;
+        const picked = pickUsStateForSelect(selectedState);
+        if (!picked) return;
+        if (
+            linkedDisclosureMapping &&
+            disclosureMappingMatchesState(linkedDisclosureMapping, picked)
+        ) {
+            return;
+        }
+        const key = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}`;
+        if (disclosureAutoLinkKeyRef.current === key) return;
+        disclosureAutoLinkKeyRef.current = key;
+        void syncDisclosureTemplateForState(picked, { silent: true });
+    }, [
+        isOpen,
+        effectiveContractId,
+        loadingTemplateMappings,
+        selectedState,
+        contractDisclosureFrequency,
+        linkedDisclosureMapping,
+        syncDisclosureTemplateForState,
+    ]);
 
     const persistContractEnvelopeHistory = useCallback(
         async (envelopeId: string, status = "draft") => {
@@ -3305,7 +3819,13 @@ const PDFViewerModal = ({
                 }
                 setDocumentUploadMessage(
                     `Showing template: ${formatDropdownLabel(
-                        row?.template?.name || row?.templateId || "Template",
+                        row?.template?.name ||
+                            (mappingRef && isPlatformLayoutKey(mappingRef)
+                                ? supplementalOptionLabel(mappingRef)
+                                : null) ||
+                            formatDisclosureTemplateLabel(row) ||
+                            row?.templateId ||
+                            "Template",
                     )}`,
                 );
             } catch (error: any) {
@@ -4996,8 +5516,20 @@ const PDFViewerModal = ({
                                                         disabled={savingContractMeta}
                                                         onValueChange={(v: string) => {
                                                             setSelectedState(v);
+                                                            const picked = pickUsStateForSelect(v);
+                                                            if (
+                                                                effectiveContractId != null &&
+                                                                picked
+                                                            ) {
+                                                                disclosureAutoLinkKeyRef.current = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}`;
+                                                            } else {
+                                                                disclosureAutoLinkKeyRef.current = "";
+                                                            }
                                                             if (effectiveContractId != null) {
                                                                 void persistContractStateAndFunder({ state: v });
+                                                            }
+                                                            if (effectiveContractId != null) {
+                                                                void syncDisclosureTemplateForState(v);
                                                             }
                                                         }}
                                                     />
@@ -5032,6 +5564,147 @@ const PDFViewerModal = ({
                                                         </SelectContent>
                                                     </Select>
                                                 </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                            <div className="mb-3 flex items-start justify-between gap-2">
+                                                <div className="flex min-w-0 items-start gap-2.5">
+                                                    <div
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        aria-hidden
+                                                    >
+                                                        <ScrollText className="h-4 w-4" />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                            State disclosure
+                                                        </h4>
+                                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                            Linked from the selected state and merged at the bottom of the contract.
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                {linkingDisclosureTemplate ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#276D9C]">
+                                                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                                                        Loading
+                                                    </span>
+                                                ) : linkedDisclosureMapping &&
+                                                  linkedDisclosureMatchesSelectedState ? (
+                                                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-emerald-200/80 dark:bg-emerald-900/40 dark:text-emerald-200 dark:ring-emerald-800/50">
+                                                        <CheckCircle2 className="h-3 w-3" aria-hidden />
+                                                        Linked
+                                                    </span>
+                                                ) : null}
+                                            </div>
+
+                                            <div className="space-y-2">
+                                                {linkingDisclosureTemplate ? (
+                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[#276D9C]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
+                                                        <Loader2
+                                                            className="h-8 w-8 animate-spin text-[#276D9C]"
+                                                            aria-hidden
+                                                        />
+                                                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                                                            {selectedState
+                                                                ? `Loading disclosure for ${selectedState}…`
+                                                                : "Loading disclosure…"}
+                                                        </p>
+                                                    </div>
+                                                ) : linkedDisclosureMapping &&
+                                                  linkedDisclosureMatchesSelectedState ? (
+                                                    <>
+                                                        <div
+                                                            key={linkedDisclosureMapping.id}
+                                                            className="flex items-center justify-between gap-2 rounded-lg border border-teal-200/90 bg-gradient-to-r from-teal-50/80 to-white px-2.5 py-2.5 shadow-sm transition-colors dark:border-slate-600 dark:from-teal-950/25 dark:to-slate-900/80"
+                                                        >
+                                                            <div className="flex min-w-0 flex-1 items-center gap-2.5 pr-2">
+                                                                <div
+                                                                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-600 text-white shadow-sm"
+                                                                    aria-hidden
+                                                                >
+                                                                    <ScrollText className="h-4 w-4" />
+                                                                </div>
+                                                                <div className="min-w-0">
+                                                                    <div className="flex flex-wrap items-center gap-1.5">
+                                                                        <span className="inline-flex rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 dark:bg-teal-900/50 dark:text-teal-200">
+                                                                            Disclosure
+                                                                        </span>
+                                                                    </div>
+                                                                    <p className="mt-1 truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                                                                        {formatDropdownLabel(
+                                                                            formatDisclosureTemplateLabel(
+                                                                                linkedDisclosureMapping,
+                                                                            ),
+                                                                        )}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex shrink-0 items-center gap-0.5">
+                                                                <Button
+                                                                    type="button"
+                                                                    size="icon"
+                                                                    variant="ghost"
+                                                                    className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                    title="View disclosure PDF"
+                                                                    disabled={
+                                                                        previewingTemplateId ===
+                                                                        String(linkedDisclosureMapping.id)
+                                                                    }
+                                                                    onClick={() =>
+                                                                        void handlePreviewBoldSignTemplate(
+                                                                            linkedDisclosureMapping,
+                                                                        )
+                                                                    }
+                                                                >
+                                                                    {previewingTemplateId ===
+                                                                    String(linkedDisclosureMapping.id) ? (
+                                                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                    ) : (
+                                                                        <Eye className="h-3.5 w-3.5" />
+                                                                    )}
+                                                                </Button>
+                                                                <Button
+                                                                    type="button"
+                                                                    size="icon"
+                                                                    variant="ghost"
+                                                                    className="h-8 w-8 cursor-pointer text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/40"
+                                                                    title="Remove disclosure"
+                                                                    onClick={() =>
+                                                                        void setDisclosureTemplateMapping(null)
+                                                                    }
+                                                                >
+                                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            className="h-9 w-full border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                            onClick={() => setDisclosureCalcModalOpen(true)}
+                                                        >
+                                                            <Calculator className="mr-2 h-4 w-4" />
+                                                            Calculate disclosure
+                                                        </Button>
+                                                    </>
+                                                ) : (
+                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
+                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+                                                            <ScrollText className="h-5 w-5" aria-hidden />
+                                                        </div>
+                                                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                                                            {selectedState
+                                                                ? `No disclosure linked for ${selectedState}.`
+                                                                : "Select a state to link a disclosure."}
+                                                        </p>
+                                                        <p className="max-w-[260px] text-[10px] text-slate-500">
+                                                            Upload the state PDF to Cloudinary and add a
+                                                            BoldSignTemplate row with type disclosure.
+                                                        </p>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
 
@@ -7312,6 +7985,25 @@ const PDFViewerModal = ({
                     }}
                 />
             ) : null}
+            <DisclosureCalculationModal
+                open={disclosureCalcModalOpen}
+                onOpenChange={(nextOpen) => {
+                    setDisclosureCalcModalOpen(nextOpen);
+                    if (!nextOpen) setDisclosureCalcBankAnalyses(null);
+                }}
+                seedInputs={disclosureCalculatorSeedInputs}
+                bankMonthlyRevenues={disclosureCalcBankMonthlyRevenues}
+                loadingBankAnalysis={loadingDisclosureCalcBankAnalysis}
+                disclosureLabel={
+                    linkedDisclosureMapping
+                        ? formatDropdownLabel(
+                              formatDisclosureTemplateLabel(linkedDisclosureMapping),
+                          )
+                        : undefined
+                }
+                saving={savingDisclosureCalculation}
+                onApply={applyDisclosureCalculation}
+            />
         </>
     );
 };
