@@ -287,6 +287,17 @@ class ContractService {
   private async resolveBoldSignTemplateRowId(templateRef: string): Promise<string> {
     const ref = String(templateRef || '').trim();
     if (!ref) throw new Error('templateRef is required');
+    const { isDocumentLayoutKey, ensurePlatformBoldSignTemplateRow } = await import(
+      './docusign/platform-document-registry'
+    );
+    if (isDocumentLayoutKey(ref)) {
+      return ensurePlatformBoldSignTemplateRow(ref);
+    }
+    const byLayoutKey = await (prisma as any).boldSignTemplate.findFirst({
+      where: { layoutKey: ref },
+      select: { id: true },
+    });
+    if (byLayoutKey?.id) return byLayoutKey.id;
     const byId = await (prisma as any).boldSignTemplate.findUnique({
       where: { id: ref },
       select: { id: true },

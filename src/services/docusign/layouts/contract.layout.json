@@ -77,6 +77,7 @@
     "client_name",
     "client_phone",
     "doing_business_as",
+    "entity_type",
     "exhibit_a_value_1",
     "exhibit_a_value_10",
     "exhibit_a_value_2",
@@ -621,6 +622,18 @@
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "doing_business_as"
+    },
+    {
+      "id": "p166",
+      "type": "text",
+      "variable": "entity_type",
+      "documentId": "1",
+      "pageNumber": "1",
+      "x": "88",
+      "y": "199",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "entity_type"
     },
     {
       "id": "p39",
