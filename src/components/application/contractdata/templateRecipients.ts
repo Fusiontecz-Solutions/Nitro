@@ -130,6 +130,11 @@ type SuggestedSignerParty = {
     guarantorEmail?: string;
 };
 
+/** DocuSign envelope role — CRM display labels (Client, Owner, etc.) map to this on send. */
+export function resolveDocuSignSignerRole(_crmRole?: string): string {
+    return DOCUSIGN_DEFAULT_SIGNER_ROLE;
+}
+
 /** Suggested CRM signer rows (client + owners/guarantors with emails). */
 export function buildSuggestedContractSignerRows(input: {
     clientName?: string;
@@ -142,7 +147,7 @@ export function buildSuggestedContractSignerRows(input: {
     const clientName = String(input.clientName || "").trim();
     if (clientEmail) {
         rows.push({
-            role: DOCUSIGN_PRIMARY_SIGNER_ROLE,
+            role: resolveDocuSignSignerRole(),
             name: clientName || clientEmail.split("@")[0],
             email: clientEmail,
         });
@@ -171,7 +176,7 @@ export function buildSuggestedContractSignerRows(input: {
             continue;
         }
         rows.push({
-            role: ownerIndex === 2 ? "Owner 2" : DOCUSIGN_DEFAULT_SIGNER_ROLE,
+            role: resolveDocuSignSignerRole(),
             name: displayName,
             email,
         });
@@ -186,7 +191,7 @@ export function buildSuggestedContractSignerRows(input: {
             `${String(g.guarantorFirstName || "").trim()} ${String(g.guarantorLastName || "").trim()}`.trim() ||
             email.split("@")[0];
         rows.push({
-            role: guarantorIndex === 1 ? "Guarantor" : `Guarantor ${guarantorIndex}`,
+            role: resolveDocuSignSignerRole(),
             name,
             email,
         });
@@ -232,8 +237,12 @@ export function parseContractSignerOverridesFromPrefill(
             const role = String(r.role ?? "").trim();
             const email = String(r.email ?? "").trim();
             const name = String(r.name ?? "").trim();
-            if (!role || !email) return null;
-            return { role, name, email };
+            if (!email) return null;
+            return {
+                role: resolveDocuSignSignerRole(role),
+                name,
+                email,
+            };
         })
         .filter((r): r is ContractSignerOverrideRow => r != null);
     return parsed.length ? parsed : null;
@@ -245,11 +254,11 @@ export function contractSignerRowsFromRolePayload(
 ): ContractSignerOverrideRow[] {
     return roles
         .map((r) => ({
-            role: String(r.signerRole || "").trim(),
+            role: resolveDocuSignSignerRole(r.signerRole),
             name: String(r.signerName || "").trim(),
             email: String(r.signerEmail || "").trim(),
         }))
-        .filter((r) => r.role && r.email);
+        .filter((r) => r.email);
 }
 
 export function mergeContractPrefillWithSignerOverrides(
@@ -280,13 +289,13 @@ export function buildDocuSignRolesFromEditorRows(
     rows: ContractSignerOverrideRow[],
 ): DocuSignTemplateRolePayload[] {
     return rows
-        .filter((r) => String(r.role || "").trim() && String(r.email || "").trim())
+        .filter((r) => String(r.email || "").trim())
         .map((r, idx) => ({
             roleIndex: idx + 1,
             signerName: String(r.name || "").trim() || String(r.email).trim().split("@")[0],
             signerOrder: idx + 1,
             signerEmail: String(r.email).trim(),
-            signerRole: String(r.role).trim(),
+            signerRole: resolveDocuSignSignerRole(r.role),
             ...DOCUSIGN_SIGNER_ROLE_COMMON,
         }));
 }
@@ -309,12 +318,8 @@ export function getContractSignerValidationMessage(
     signerOverrideRows?: ContractSignerOverrideRow[] | null,
 ): string | null {
     if (signerOverrideRows?.length) {
-        const withRole = signerOverrideRows.filter((r) => String(r.role || "").trim());
-        if (!withRole.length) {
-            return "Enter a recipient in Contract Signers before reviewing in DocuSign.";
-        }
-        if (withRole.some((r) => !String(r.email || "").trim())) {
-            return "Every signer role needs an email address. Edit recipients in Contract Signers to continue.";
+        if (signerOverrideRows.some((r) => !String(r.email || "").trim())) {
+            return "Every signer needs an email address. Edit recipients in Contract Signers to continue.";
         }
     }
 
@@ -372,7 +377,7 @@ export function getTemplateRoleNameFromRow(row: Record<string, unknown>): string
 
 /**
  * When a DocuSign template lists multiple signer roles, keep only the primary role
- * (e.g. "Receiver") so the envelope is not sent to duplicate signer slots.
+ * (e.g. "Signer") so the envelope is not sent to duplicate signer slots.
  */
 export function filterTemplateRolesToPrimarySigner(
     templateRoles: Array<Record<string, unknown>>,

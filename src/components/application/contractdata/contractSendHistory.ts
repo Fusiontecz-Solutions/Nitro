@@ -1,4 +1,9 @@
-import { parseAchAuthorizationDocuSignFromPrefill } from "./achAuthorizationDocuSign";
+import {
+    formatAchAuthorizationCapsuleLabel,
+    parseAchAuthorizationDocuSignFromPrefill,
+    parseAchSendHistoryFromPrefill,
+    type AchAuthorizationDocuSignCapsuleStatus,
+} from "./achAuthorizationDocuSign";
 
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
@@ -11,7 +16,10 @@ export type ContractSendHistoryEntry = {
     archivedAt: string;
 };
 
+export type ContractSendTableRowKind = "contract" | "ach";
+
 export type ContractSendTableRow = {
+    rowType: ContractSendTableRowKind;
     key: string;
     label: string;
     envelopeId: string | null;
@@ -19,6 +27,8 @@ export type ContractSendTableRow = {
     documentStatus: unknown;
     sentAt: unknown;
     isCurrent: boolean;
+    /** Present when `rowType === "ach"`. */
+    achStatus?: AchAuthorizationDocuSignCapsuleStatus;
 };
 
 export function pickContractEnvelopeDocument(
@@ -41,6 +51,33 @@ export function isContractFullySigned(
     if (cs === "COMPLETED" || cs === "SIGNED") return true;
     if (ds === "completed") return true;
     return false;
+}
+
+/** True when the main contract envelope is fully signed or voided (no manual refresh needed). */
+export function isContractSigningFinished(
+    contract: Record<string, unknown> | null | undefined,
+): boolean {
+    if (!contract) return false;
+    const doc = pickContractEnvelopeDocument(contract);
+    const contractStatus = (contract as { status?: unknown }).status;
+    const documentStatus = doc?.status;
+    if (isContractFullySigned(contractStatus, documentStatus)) return true;
+    return isContractVoidedOrTerminal(contractStatus, documentStatus);
+}
+
+export function isAchSigningFinished(
+    status: AchAuthorizationDocuSignCapsuleStatus | null | undefined,
+): boolean {
+    return status === "SIGNED" || status === "VOIDED";
+}
+
+export function formatAchTableStatusLabel(
+    meta: { envelopeId?: string | null; status?: AchAuthorizationDocuSignCapsuleStatus } | null,
+): string {
+    if (!meta?.envelopeId) return "Pending";
+    if (meta.status === "DRAFT") return "Draft";
+    if (meta.status === "VOIDED") return "Voided";
+    return formatAchAuthorizationCapsuleLabel(meta.status ?? "DRAFT");
 }
 
 /** Voided / declined / expired — eligible for a fresh send, not void or in-flight resend. */
@@ -139,62 +176,89 @@ export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendH
     return out;
 }
 
+/** Contracts Generated table — only envelopes that left DocuSign draft. */
+function isContractRowVisibleInSendTable(
+    contractStatus: unknown,
+    documentStatus?: unknown,
+    envelopeId?: string | null,
+): boolean {
+    if (!String(envelopeId ?? "").trim()) return false;
+    const ds = String(documentStatus ?? "").trim().toLowerCase();
+    const cs = String(contractStatus ?? "").trim().toUpperCase();
+    if (ds === "draft" || ds === "created" || cs === "DRAFT") return false;
+    if (!ds && (cs === "DRAFT" || cs === "GENERATED" || !cs)) return false;
+    return true;
+}
+
+function isAchRowVisibleInSendTable(
+    status: AchAuthorizationDocuSignCapsuleStatus | undefined,
+    envelopeId?: string | null,
+): boolean {
+    if (!String(envelopeId ?? "").trim()) return false;
+    return Boolean(status && status !== "DRAFT");
+}
+
 export function buildContractSendTableRows(
     contract: Record<string, unknown> | null | undefined,
 ): ContractSendTableRow[] {
     if (!contract) return [];
 
-    const mainContractEnvelopeId = String(
-        pickContractEnvelopeDocument(contract)?.envelopeId ?? "",
-    ).trim();
-    const achEnvelopeId = String(
-        parseAchAuthorizationDocuSignFromPrefill(contract.contractPrefillOverrides, {
-            excludeEnvelopeId: mainContractEnvelopeId || null,
-        })?.envelopeId ?? "",
-    ).trim();
-
-    const history = parseContractSendHistoryFromPrefill(contract.contractPrefillOverrides);
-    const doc = pickContractEnvelopeDocument(contract);
-    const currentEid = String(doc?.envelopeId ?? "").trim();
     const contractId = Number((contract as { id?: unknown }).id);
     const hasContractRecord = Number.isFinite(contractId) && contractId > 0;
+    if (!hasContractRecord) return [];
 
+    const prefill = contract.contractPrefillOverrides;
+    const doc = pickContractEnvelopeDocument(contract);
+    const mainEnvelopeId = String(doc?.envelopeId ?? "").trim() || null;
+
+    const achCurrent = parseAchAuthorizationDocuSignFromPrefill(prefill);
+    const achEnvelopeId = String(achCurrent?.envelopeId ?? "").trim() || null;
+
+    const contractHistory = parseContractSendHistoryFromPrefill(prefill);
+    const achHistory = parseAchSendHistoryFromPrefill(prefill);
+
+    const seenEnvelopeIds = new Set<string>();
     const rows: ContractSendTableRow[] = [];
 
-    if (
-        hasContractRecord &&
-        currentEid &&
-        currentEid !== achEnvelopeId
-    ) {
-        rows.push({
-            key: `current-${currentEid || contractId}`,
-            label: "Contract",
-            envelopeId: currentEid || null,
-            contractStatus: (contract as { status?: unknown }).status,
-            documentStatus: doc?.status,
-            sentAt: doc?.sentAt ?? doc?.updatedAt ?? null,
-            isCurrent: true,
-        });
-    } else if (hasContractRecord && !currentEid) {
-        rows.push({
-            key: `current-${contractId}`,
-            label: "Contract",
-            envelopeId: null,
-            contractStatus: (contract as { status?: unknown }).status,
-            documentStatus: doc?.status,
-            sentAt: doc?.sentAt ?? doc?.updatedAt ?? null,
-            isCurrent: true,
-        });
+    const mainEnvelopeIsAchOnly = Boolean(
+        mainEnvelopeId && achEnvelopeId && mainEnvelopeId === achEnvelopeId,
+    );
+
+    if (mainEnvelopeId && !mainEnvelopeIsAchOnly) {
+        if (
+            isContractRowVisibleInSendTable(
+                (contract as { status?: unknown }).status,
+                doc?.status,
+                mainEnvelopeId,
+            )
+        ) {
+            seenEnvelopeIds.add(mainEnvelopeId);
+            rows.push({
+                rowType: "contract",
+                key: `current-contract-${mainEnvelopeId}`,
+                label: "Contract",
+                envelopeId: mainEnvelopeId,
+                contractStatus: (contract as { status?: unknown }).status,
+                documentStatus: doc?.status,
+                sentAt: doc?.sentAt ?? doc?.updatedAt ?? null,
+                isCurrent: true,
+            });
+        }
     }
 
-    const historyNewestFirst = [...history].reverse();
-    historyNewestFirst.forEach((entry, index) => {
-        if (entry.envelopeId === achEnvelopeId || entry.envelopeId === currentEid) return;
-        const sendNumber = history.length - index;
+    const contractHistoryNewestFirst = [...contractHistory].reverse();
+    contractHistoryNewestFirst.forEach((entry, index) => {
+        if (seenEnvelopeIds.has(entry.envelopeId)) return;
+        if (!isContractRowVisibleInSendTable(entry.status, entry.status, entry.envelopeId)) {
+            return;
+        }
+        seenEnvelopeIds.add(entry.envelopeId);
+        const sendNumber = contractHistory.length - index;
         rows.push({
-            key: `history-${entry.envelopeId}`,
+            rowType: "contract",
+            key: `history-contract-${entry.envelopeId}`,
             label:
-                history.length > 1
+                contractHistory.length > 1
                     ? `Contract (send ${sendNumber})`
                     : "Contract (prior send)",
             envelopeId: entry.envelopeId,
@@ -202,6 +266,45 @@ export function buildContractSendTableRows(
             documentStatus: entry.status,
             sentAt: entry.sentAt ?? entry.archivedAt ?? null,
             isCurrent: false,
+        });
+    });
+
+    if (achEnvelopeId && !seenEnvelopeIds.has(achEnvelopeId)) {
+        if (isAchRowVisibleInSendTable(achCurrent?.status, achEnvelopeId)) {
+            seenEnvelopeIds.add(achEnvelopeId);
+            rows.push({
+                rowType: "ach",
+                key: `current-ach-${achEnvelopeId}`,
+                label: "ACH Authorization",
+                envelopeId: achEnvelopeId,
+                contractStatus: achCurrent?.status,
+                documentStatus: achCurrent?.status,
+                sentAt: achCurrent?.sentAt ?? achCurrent?.updatedAt ?? null,
+                isCurrent: true,
+                achStatus: achCurrent?.status ?? "DRAFT",
+            });
+        }
+    }
+
+    const achHistoryNewestFirst = [...achHistory].reverse();
+    achHistoryNewestFirst.forEach((entry, index) => {
+        if (seenEnvelopeIds.has(entry.envelopeId)) return;
+        if (!isAchRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
+        seenEnvelopeIds.add(entry.envelopeId);
+        const sendNumber = achHistory.length - index;
+        rows.push({
+            rowType: "ach",
+            key: `history-ach-${entry.envelopeId}`,
+            label:
+                achHistory.length > 1
+                    ? `ACH Authorization (send ${sendNumber})`
+                    : "ACH Authorization (prior send)",
+            envelopeId: entry.envelopeId,
+            contractStatus: entry.status,
+            documentStatus: entry.status,
+            sentAt: entry.sentAt ?? entry.archivedAt ?? null,
+            isCurrent: false,
+            achStatus: entry.status,
         });
     });
 

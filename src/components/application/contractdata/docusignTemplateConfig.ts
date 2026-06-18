@@ -1,3 +1,5 @@
+import { formatUSD } from "@/utils/formatCurrency";
+
 /** Primary signer role when the template defines multiple roles but only one should receive the envelope. */
 export const DOCUSIGN_PRIMARY_SIGNER_ROLE = String(
     (typeof import.meta !== "undefined" &&
@@ -26,15 +28,36 @@ export const DEFAULT_DOCUSIGN_TEMPLATE_ID = String(
         "",
 ).trim();
 
-/** Fixed lender name in DocuSign signer email subject (maps to envelope `emailSubject`). */
-export const DOCUSIGN_EMAIL_LENDER_NAME = String(
+/** Lender prefix for contract / ACH envelope email subjects and PDF names. */
+export const CONTRACT_ENVELOPE_LENDER_NAME = String(
     (typeof import.meta !== "undefined" &&
         import.meta.env?.VITE_DOCUSIGN_EMAIL_LENDER_NAME) ||
-        "KATAN CAPITAL LLC",
+        "KATAN CAPITAL",
 ).trim();
 
-/** DocuSign envelope email subject: fixed lender + per-deal client name. */
-export function buildDocuSignEnvelopeEmailSubject(clientName: string): string {
-    const client = String(clientName || "").trim() || "Client";
-    return `Complete with Docusign: ${DOCUSIGN_EMAIL_LENDER_NAME} - ${client}`;
+/** @deprecated Use CONTRACT_ENVELOPE_LENDER_NAME */
+export const DOCUSIGN_EMAIL_LENDER_NAME = CONTRACT_ENVELOPE_LENDER_NAME;
+
+/** Contract envelope email subject: KATAN CAPITAL : BusinessName - $Offer Amount */
+export function buildContractEnvelopeEmailSubject(
+    businessName: string,
+    offerAmount?: number | string | null,
+): string {
+    const business = String(businessName || "").trim() || "Business";
+    const amount = formatUSD(offerAmount, { fallback: "$0.00" });
+    return `${CONTRACT_ENVELOPE_LENDER_NAME} : ${business} - ${amount}`;
+}
+
+/** ACH-only envelope email subject and PDF name: ACH FORM: BusinessName */
+export function buildAchFormEnvelopeEmailSubject(businessName: string): string {
+    const business = String(businessName || "").trim() || "Business";
+    return `ACH FORM: ${business}`;
+}
+
+/** @deprecated Use buildContractEnvelopeEmailSubject */
+export function buildDocuSignEnvelopeEmailSubject(
+    businessName: string,
+    offerAmount?: number | string | null,
+): string {
+    return buildContractEnvelopeEmailSubject(businessName, offerAmount);
 }

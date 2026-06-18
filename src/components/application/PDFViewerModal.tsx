@@ -106,9 +106,13 @@ import {
     canSendMainContract,
     canVoidMainContract,
     isContractFullySigned,
+    isContractSigningFinished,
     isContractVoidedOrTerminal,
     pickContractEnvelopeDocument,
 } from "./contractdata/contractSendHistory";
+import { DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS } from "./contractdata/docusignPolling";
+import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import { watchDocuSignSenderReturn } from "./contractdata/watchDocuSignSenderReturn";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import {
     isDefaultContractCcEmail,
@@ -117,6 +121,10 @@ import {
     saveBoldSignCcEmailList,
 } from "./boldsignCcList";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
+import {
+    TemplateMappingPrefillEditDialog,
+    type TemplateMappingPrefillEditRow,
+} from "./contractdata/TemplateMappingPrefillEditDialog";
 import { DisclosureCalculationModal } from "./contractdata/DisclosureCalculationModal";
 import {
     buildDisclosureCalculatorInputsFromSources,
@@ -129,7 +137,9 @@ import { getDocumentRequestsByApplication } from "@/redux/actions/notificationAc
 import { ExhibitACompaniesSummarySection } from "./contractdata/ExhibitACompaniesSummarySection";
 import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    applyDocumentTemplateMappingPrefillOverrides,
     buildExpandedDisclosurePrefillFieldsForMapping,
+    hasAddendumPrefillFieldMap,
     mergeExpandedDisclosurePrefillIntoPayload,
     parseDocumentTemplatePrefillByMappingId,
     stripDocumentTemplateBlobFromPrefillOverrides,
@@ -155,6 +165,7 @@ import {
     getContractSignerValidationMessage,
     mergeContractPrefillWithSignerOverrides,
     parseContractSignerOverridesFromPrefill,
+    resolveDocuSignSignerRole,
     suggestedRowsToSummaryTemplateRoles,
     type ContractSignerOverrideRow,
     type DocuSignTemplateRolePayload,
@@ -695,16 +706,6 @@ function getDocuSignPdfCacheSuffix(
     return "draft";
 }
 
-function isContractSigningFinished(
-    contract: Record<string, unknown> | null | undefined,
-): boolean {
-    const status = String(contract?.status ?? "").trim().toUpperCase();
-    return (
-        status === "COMPLETED" ||
-        ["DECLINED", "REVOKED", "EXPIRED"].includes(status)
-    );
-}
-
 type PdfRightPaneTab = "template" | "docusign";
 
 function sentStepStorageKey(contractId: number | null, applicationUuid: string | null): string | null {
@@ -892,6 +893,7 @@ const PDFViewerModal = ({
     const [sentCcEmails, setSentCcEmails] = useState<string[]>([]);
     /** True only while user clicks Refresh on the Sent-step signing status card. */
     const [signingStatusRefreshing, setSigningStatusRefreshing] = useState(false);
+    const [docuSignSyncError, setDocuSignSyncError] = useState<string | null>(null);
     /** When the UI last loaded signing status from CRM (and optional DocuSign sync). */
     const [lastSigningStatusSyncAt, setLastSigningStatusSyncAt] = useState<Date | null>(null);
     /** After user explicitly opens Documents during this modal session, stop auto-switching Documents → Sent. */
@@ -914,6 +916,7 @@ const PDFViewerModal = ({
     const [selectedFunder, setSelectedFunder] = useState<string>("");
     const [savingContractMeta, setSavingContractMeta] = useState(false);
     const [contractPrefillEditOpen, setContractPrefillEditOpen] = useState(false);
+    const [addendumPrefillEditOpen, setAddendumPrefillEditOpen] = useState(false);
     const [prefilledBoldSignPdfUrl, setPrefilledBoldSignPdfUrl] = useState<string | null>(null);
     const [prefilledBoldSignPdfLoading, setPrefilledBoldSignPdfLoading] = useState(false);
     const [prefilledBoldSignPdfHint, setPrefilledBoldSignPdfHint] = useState<string | null>(null);
@@ -1297,7 +1300,7 @@ const PDFViewerModal = ({
         if (!signerEmail) return [];
         return [
             {
-                roleName: "Client",
+                roleName: DOCUSIGN_DEFAULT_SIGNER_ROLE,
                 signerEmail: signerEmail,
                 signerName: "",
                 roleIndex: 1,
@@ -1495,11 +1498,6 @@ const PDFViewerModal = ({
             activeStep === "sent" &&
             isContractAlreadySent(resolvedContract, sentAt, sentStepUnlocked),
         [activeStep, resolvedContract, sentAt, sentStepUnlocked],
-    );
-
-    const signingFinishedForPoll = useMemo(
-        () => isContractSigningFinished(resolvedContract),
-        [resolvedContract],
     );
 
     /** Application client/businessInfo + contract ACH/addendum/EPO/owners/guarantors + optional preview overrides. */
@@ -1869,7 +1867,7 @@ const PDFViewerModal = ({
                     );
                     return {
                         id: String(idx + 1),
-                        role: role || `Role-${idx + 1}`,
+                        role: resolveDocuSignSignerRole(role),
                         name: getTemplateRoleNameFromRow(row),
                         email,
                     };
@@ -1888,7 +1886,7 @@ const PDFViewerModal = ({
             setRecipientEditorRows([
                 {
                     id: "1",
-                    role: "Client",
+                    role: DOCUSIGN_DEFAULT_SIGNER_ROLE,
                     name: getApplicationPrimaryRecipientName(applicationData),
                     email: primaryClientRecipientEmail,
                 },
@@ -1919,6 +1917,9 @@ const PDFViewerModal = ({
     }, [prefillDraftFingerprint, invalidateDocuSignDraftSession]);
 
     const sessionEnvelopeIdRef = useRef<string | null>(null);
+    const startDocuSignSenderReturnWatchRef = useRef<(() => void) | null>(null);
+    const docusignSenderReturnWatchCleanupRef = useRef<(() => void) | null>(null);
+    const resolvedContractRef = useRef(resolvedContract);
     const ccEmailsRef = useRef<string[]>([]);
     const selectedAddendumOptionRef = useRef("");
     const linkedAddendumMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
@@ -1929,6 +1930,7 @@ const PDFViewerModal = ({
     ccEmailsRef.current = mergeContractCcEmailList(ccEmails);
     selectedAddendumOptionRef.current = selectedAddendumOption;
     sessionEnvelopeIdRef.current = sessionEnvelopeId;
+    resolvedContractRef.current = resolvedContract;
     linkedAddendumMappingRef.current = linkedAddendumMapping;
     linkedDisclosureMappingRef.current = linkedDisclosureMapping;
     docuSignPdfCacheSuffixRef.current = docuSignPdfCacheSuffix;
@@ -2059,10 +2061,6 @@ const PDFViewerModal = ({
         const opt = String(selectedAddendumOptionRef.current || "").trim();
         if (opt.startsWith("up:")) return null;
         if (opt.startsWith("lk:")) return opt.slice(3).trim() || null;
-        if (opt.startsWith("bs:")) {
-            const legacy = opt.slice(3).trim();
-            return isPlatformLayoutKey(legacy) ? legacy : null;
-        }
         const fromMapping = String(
             linkedAddendumMappingRef.current?.template?.layoutKey ??
                 linkedAddendumMappingRef.current?.template?.templateId ??
@@ -2582,6 +2580,7 @@ const PDFViewerModal = ({
                 pendingCcForSentRef.current = toSend;
 
                 const opened = navigateDocuSignTab(docuSignTab, senderUrl);
+                startDocuSignSenderReturnWatchRef.current?.();
                 if (!opened) {
                     setDocuSignOpenUrl(senderUrl);
                     toast.info(
@@ -2594,8 +2593,8 @@ const PDFViewerModal = ({
                 setDocuSignOpenUrl(null);
                 toast.success(
                     toSend.length
-                        ? "DocuSign opened in a new tab. Click Send to email the signer. CC addresses will receive a prefilled contract copy by email once DocuSign marks the envelope sent."
-                        : "DocuSign opened in a new tab. Click Send there to email signers. This modal will move to step 4 (Sent) and refresh when DocuSign confirms the send.",
+                        ? "DocuSign opened in a new tab. Click Send to email the signer. Status updates when you return to this tab."
+                        : "DocuSign opened in a new tab. Click Send there to email signers. Status updates when you return to this tab.",
                     { autoClose: 12000 },
                 );
             } else if (onSendToDocusign) {
@@ -2901,6 +2900,33 @@ const PDFViewerModal = ({
         }
     }, [effectiveContractId]);
 
+    const linkedAddendumPrefillEditRow = useMemo((): TemplateMappingPrefillEditRow | null => {
+        if (!linkedAddendumMapping) return null;
+        return {
+            id: String(linkedAddendumMapping.id),
+            contractId: Number(linkedAddendumMapping.contractId),
+            templateId: String(
+                linkedAddendumMapping.template?.templateId ??
+                    linkedAddendumMapping.templateId ??
+                    "",
+            ),
+            documentType: String(linkedAddendumMapping.documentType ?? "addendum"),
+            template: linkedAddendumMapping.template ?? null,
+        };
+    }, [linkedAddendumMapping]);
+
+    const linkedAddendumSupportsPrefillEdit = useMemo(
+        () =>
+            hasAddendumPrefillFieldMap(
+                linkedAddendumMapping?.template?.templateId ??
+                    linkedAddendumMapping?.templateId ??
+                    null,
+                linkedAddendumMapping?.template?.name ?? null,
+                linkedAddendumMapping?.template?.layoutKey ?? null,
+            ),
+        [linkedAddendumMapping],
+    );
+
     const lastDocuSignSyncAtRef = useRef(0);
     const contractWasSentRef = useRef(false);
     const prevContractStatusRef = useRef("");
@@ -2909,12 +2935,8 @@ const PDFViewerModal = ({
     loadPrefilledPdfRef.current = loadPrefilledPdfFromDocuSign;
     const setPdfRightPaneTabRef = useRef(setPdfRightPaneTab);
     setPdfRightPaneTabRef.current = setPdfRightPaneTab;
-    const DOCUSIGN_SYNC_MIN_INTERVAL_MS = 15_000;
-    const DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS = 12_000;
-    /** How often the modal polls while a draft exists (awaiting Send in DocuSign). */
-    const DOCUSIGN_AWAITING_SEND_POLL_MS = 12_000;
-    /** How often the modal polls on step 4 while signers are still pending. */
-    const SIGNING_STATUS_CRM_POLL_MS = 15_000;
+    const DOCUSIGN_SYNC_MIN_INTERVAL_MS = DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS;
+    const DOCUSIGN_SYNC_SENT_STEP_INTERVAL_MS = DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS;
     const contractModalWasOpenRef = useRef(false);
     const activeStepRef = useRef(activeStep);
     activeStepRef.current = activeStep;
@@ -2986,10 +3008,7 @@ const PDFViewerModal = ({
                 const alreadySent = isContractAlreadySent(c, sentAtRef.current);
                 const onSentStep = activeStepRef.current === "sent";
                 const wantsSync = options?.syncDocuSign === true;
-                const contractStatus = String(c.status ?? "").trim().toUpperCase();
-                const signingFinished =
-                    contractStatus === "COMPLETED" ||
-                    ["DECLINED", "REVOKED", "EXPIRED"].includes(contractStatus);
+                const signingFinished = isContractSigningFinished(c);
                 const maySyncDocuSign =
                     wantsSync &&
                     Boolean(envelopeForSync || appId) &&
@@ -3012,16 +3031,36 @@ const PDFViewerModal = ({
                             const ccForSync = pendingCcForSentRef.current.length
                                 ? pendingCcForSentRef.current
                                 : ccEmailsRef.current;
-                            const syncRes = await axiosPost("/docusign/sync-envelope-status", {
-                                ...(appId ? { applicationId: appId } : {}),
-                                ...(envelopeForSync ? { envelopeId: envelopeForSync } : {}),
-                                ...(ccForSync.length ? { ccEmails: ccForSync } : {}),
-                            });
-                            const emailed = (
-                                syncRes as {
-                                    data?: { ccPrefilledEmail?: { emailed?: string[] } };
+                            const syncRes = await syncDocuSignEnvelopeStatus(
+                                envelopeForSync || "",
+                                {
+                                    applicationId: appId ?? undefined,
+                                    contractId: Number.isFinite(Number(c.id))
+                                        ? Number(c.id)
+                                        : contractId,
+                                    force: options?.forceDocuSignSync === true,
+                                    silent: Boolean(silent),
+                                    envelopeLabel: "contract",
+                                    ccEmails: ccForSync.length ? ccForSync : undefined,
+                                },
+                            );
+                            if (syncRes.rateLimited) {
+                                if (!silent) {
+                                    setDocuSignSyncError(
+                                        "DocuSign polling limit reached for contract. Wait a few minutes or rely on webhook updates.",
+                                    );
                                 }
-                            )?.data?.ccPrefilledEmail?.emailed;
+                            } else {
+                                setDocuSignSyncError(null);
+                            }
+                            const syncData = syncRes.data as {
+                                ccPrefilledEmail?: {
+                                    emailed?: string[];
+                                    skippedReason?: string;
+                                };
+                                docusignStatus?: string;
+                            } | null;
+                            const emailed = syncData?.ccPrefilledEmail?.emailed;
                             if (emailed?.length && !silent) {
                                 toast.success(
                                     `CC copy emailed to: ${emailed.join(", ")}`,
@@ -3029,26 +3068,9 @@ const PDFViewerModal = ({
                             } else if (
                                 ccForSync.length &&
                                 !silent &&
-                                String(
-                                    (
-                                        syncRes as {
-                                            data?: {
-                                                docusignStatus?: string;
-                                                ccPrefilledEmail?: {
-                                                    skippedReason?: string;
-                                                };
-                                            };
-                                        }
-                                    )?.data?.docusignStatus ?? "",
-                                ).toLowerCase() === "sent"
+                                String(syncData?.docusignStatus ?? "").toLowerCase() === "sent"
                             ) {
-                                const reason = (
-                                    syncRes as {
-                                        data?: {
-                                            ccPrefilledEmail?: { skippedReason?: string };
-                                        };
-                                    }
-                                )?.data?.ccPrefilledEmail?.skippedReason;
+                                const reason = syncData?.ccPrefilledEmail?.skippedReason;
                                 if (reason === "smtp_not_configured") {
                                     toast.warning(
                                         "Contract sent in DocuSign, but CC email was not sent. Configure SENDGRID_API_KEY or SMTP on the server.",
@@ -3058,6 +3080,11 @@ const PDFViewerModal = ({
                             }
                             c = (await fetchContractRow()) ?? c;
                         } catch (syncErr) {
+                            const msg =
+                                syncErr instanceof Error
+                                    ? syncErr.message
+                                    : "Could not refresh contract status from DocuSign.";
+                            setDocuSignSyncError(msg);
                             if (!silent) {
                                 console.warn("[DocuSign] sync-envelope-status failed:", syncErr);
                             }
@@ -3128,6 +3155,26 @@ const PDFViewerModal = ({
         [applicationIdForLookup, contractId, dispatch],
     );
 
+    const startDocuSignSenderReturnWatch = useCallback(() => {
+        docusignSenderReturnWatchCleanupRef.current?.();
+        docusignSenderReturnWatchCleanupRef.current = watchDocuSignSenderReturn({
+            onReturn: () =>
+                refreshContractSigningState(true, {
+                    syncDocuSign: true,
+                    forceDocuSignSync: true,
+                }),
+            shouldStop: () =>
+                isContractSigningFinished(resolvedContractRef.current) ||
+                isContractAlreadySent(
+                    resolvedContractRef.current,
+                    sentAtRef.current,
+                    sentStepUnlockedRef.current,
+                ),
+        });
+    }, [refreshContractSigningState]);
+
+    startDocuSignSenderReturnWatchRef.current = startDocuSignSenderReturnWatch;
+
     /** Once per modal open — not on every contract row refresh (avoids sync-envelope-status storms). */
     useEffect(() => {
         if (!isOpen) {
@@ -3135,6 +3182,8 @@ const PDFViewerModal = ({
             contractWasSentRef.current = false;
             prevContractStatusRef.current = "";
             pendingCcForSentRef.current = [];
+            docusignSenderReturnWatchCleanupRef.current?.();
+            docusignSenderReturnWatchCleanupRef.current = null;
             if (!sentStepUnlockedRef.current) {
                 setSentAt(null);
             }
@@ -3165,38 +3214,6 @@ const PDFViewerModal = ({
         void refreshContractSigningState(true, { syncDocuSign: true, forceDocuSignSync: true });
     }, [isOpen, refreshContractSigningState, resolvedContract, sentAt, sentStepPersistKey]);
 
-    const envelopeIdForSigningPoll = useMemo(
-        () =>
-            String(
-                linkedEnvelopeId ||
-                    sessionEnvelopeId ||
-                    pickContractEnvelopeDocument(resolvedContract)?.envelopeId ||
-                    "",
-            ).trim(),
-        [linkedEnvelopeId, sessionEnvelopeId, resolvedContract],
-    );
-
-    /**
-     * Single poll while modal is open: detect Send in DocuSign + signing updates.
-     * (Previously two 20s intervals overlapped on step 4.)
-     */
-    useEffect(() => {
-        if (!isOpen || signingFinishedForPoll || !envelopeIdForSigningPoll) return;
-
-        const pollMs =
-            activeStep === "sent" ? SIGNING_STATUS_CRM_POLL_MS : DOCUSIGN_AWAITING_SEND_POLL_MS;
-        const pollId = window.setInterval(() => {
-            void refreshContractSigningState(true, { syncDocuSign: true });
-        }, pollMs);
-        return () => window.clearInterval(pollId);
-    }, [
-        isOpen,
-        activeStep,
-        signingFinishedForPoll,
-        envelopeIdForSigningPoll,
-        refreshContractSigningState,
-    ]);
-
     const invalidateDocuSignPdfCache = useCallback(() => {
         prefilledPdfCachedForEnvelopeRef.current = null;
         prefilledBoldSignPdfUrlRef.current = null;
@@ -3210,6 +3227,41 @@ const PDFViewerModal = ({
             }))
             .filter((f) => f.id && f.value);
 
+        const addendumLayoutKey = resolveAddendumLayoutKeyForDocuSignMerge();
+        const disclosureRef = resolveDisclosureTemplateRefForDocuSignMerge();
+        const mergedLayoutKeys = addendumLayoutKey ? [addendumLayoutKey] : [];
+        const mergedTemplateIds = disclosureRef ? [disclosureRef] : [];
+
+        const effectiveOverrides = mergeContractPrefillOverrideLayers(
+            contractPrefillOverrides,
+            contractPrefillLoaded ? contractPrefillFromDb : null,
+        );
+        const mainPrefillForTemplates =
+            Object.keys(effectiveOverrides).length > 0 ? effectiveOverrides : null;
+        const contractPrefillOverridesRaw = {
+            ...(resolvedContract != null &&
+            typeof resolvedContract.contractPrefillOverrides === "object" &&
+            resolvedContract.contractPrefillOverrides != null &&
+            !Array.isArray(resolvedContract.contractPrefillOverrides)
+                ? (resolvedContract.contractPrefillOverrides as Record<string, unknown>)
+                : {}),
+            ...(mainPrefillForTemplates ?? {}),
+            [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
+        };
+
+        let payload = applyDocumentTemplateMappingPrefillOverrides({
+            prefillFieldsPayload: base,
+            mergedTemplateIds,
+            mergedLayoutKeys,
+            templateMappingRows: templateMappings,
+            contractPrefillOverridesRaw,
+            contract: resolvedContract as Record<string, unknown> | null,
+            application: applicationData as unknown as Record<string, unknown> | null,
+            agreementDate: formatDate(new Date()),
+            mainPrefillOverrides: mainPrefillForTemplates,
+            bankDetail: contractPrefillRecords.bankDetail ?? null,
+        });
+
         const mappingId = linkedDisclosureMapping?.id;
         const savedOverrides =
             mappingId != null ? documentTemplatePrefillByMappingId[mappingId] ?? null : null;
@@ -3222,13 +3274,20 @@ const PDFViewerModal = ({
             agreementDate: formatDate(new Date()),
         });
 
-        return mergeExpandedDisclosurePrefillIntoPayload(base, disclosureFields);
+        return mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
     }, [
         dealReviewFields,
-        linkedDisclosureMapping,
-        documentTemplatePrefillByMappingId,
+        resolveAddendumLayoutKeyForDocuSignMerge,
+        resolveDisclosureTemplateRefForDocuSignMerge,
+        contractPrefillOverrides,
+        contractPrefillLoaded,
+        contractPrefillFromDb,
         resolvedContract,
+        documentTemplatePrefillByMappingId,
+        templateMappings,
         applicationData,
+        contractPrefillRecords.bankDetail,
+        linkedDisclosureMapping,
     ]);
 
     const syncPrefillToDraftEnvelope = useCallback(async () => {
@@ -3258,6 +3317,34 @@ const PDFViewerModal = ({
         invalidateDocuSignPdfCache,
         loadPrefilledPdfFromDocuSign,
     ]);
+
+    const reloadContractPrefillAfterAddendumSave = useCallback(async () => {
+        const appId = applicationIdForLookup;
+        if (!appId) return;
+        try {
+            const res = await dispatch(getByApplicationIdContract(appId)).unwrap();
+            const contract = (res as { data?: unknown })?.data ?? res;
+            const c =
+                contract && typeof contract === "object"
+                    ? (contract as Record<string, unknown>)
+                    : null;
+            if (!c) return;
+            setResolvedContract(c);
+            const main = stripDocumentTemplateBlobFromPrefillOverrides(c.contractPrefillOverrides);
+            const mappingBlob = parseDocumentTemplatePrefillByMappingId(c.contractPrefillOverrides);
+            setContractPrefillFromDb(main);
+            setDocumentTemplatePrefillByMappingId(mappingBlob);
+            draftPreparedPrefillFingerprintRef.current = docuSignPrefillDraftFingerprint({
+                contractPrefillOverrides: main,
+                documentTemplatePrefillByMappingId: mappingBlob,
+            });
+            queueMicrotask(() => {
+                void syncPrefillToDraftEnvelope();
+            });
+        } catch {
+            /* ignore */
+        }
+    }, [applicationIdForLookup, dispatch, syncPrefillToDraftEnvelope]);
 
     const applyDisclosureCalculation = useCallback(
         async (args: {
@@ -3459,18 +3546,6 @@ const PDFViewerModal = ({
             getDocumentRequestsByApplication(businessApplicationId ?? applicationIdForLookup),
         );
     }, [isOpen, applicationIdForLookup, businessApplicationId, dispatch]);
-
-    useEffect(() => {
-        if (!isOpen) return;
-        const onFocus = () => {
-            void refreshContractSigningState(true, {
-                syncDocuSign: true,
-                forceDocuSignSync: true,
-            });
-        };
-        window.addEventListener("focus", onFocus);
-        return () => window.removeEventListener("focus", onFocus);
-    }, [isOpen, refreshContractSigningState]);
 
     /** Only one addendum DocuSign template is merged per send — replace any existing addendum mapping. */
     const setAddendumTemplateMapping = useCallback(
@@ -3739,7 +3814,7 @@ const PDFViewerModal = ({
             addendumExtrasCleanupKeyRef.current = "";
             const row = linkedAddendumMapping;
             if (!row) {
-                if (selectedAddendumOption.startsWith("lk:") || selectedAddendumOption.startsWith("bs:")) {
+                if (selectedAddendumOption.startsWith("lk:")) {
                     setSelectedAddendumOption("");
                 }
                 return;
@@ -5205,7 +5280,7 @@ const PDFViewerModal = ({
                                             })}
                                         </div> */}
 
-                                        {/* Addendum template picker */}
+                                        {/* Addendum document picker */}
                                         <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
                                                 <div className="flex min-w-0 items-start gap-2.5">
@@ -5217,10 +5292,10 @@ const PDFViewerModal = ({
                                                     </div>
                                                     <div className="min-w-0">
                                                         <label className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
-                                                            Addendum Template
+                                                            Addendum Document
                                                         </label>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                            One addendum per send. Picking a new template replaces the previous selection.
+                                                            One addendum per send. Field placement comes from code layouts; PDF from Cloudinary (DB).
                                                         </p>
                                                     </div>
                                                 </div>
@@ -5237,7 +5312,7 @@ const PDFViewerModal = ({
                                                 onChange={(e) => {
                                                     const value = e.target.value;
                                                     setUploadedPreviewUrl(null);
-                                                    if (value.startsWith("lk:") || value.startsWith("bs:")) {
+                                                    if (value.startsWith("lk:")) {
                                                         const templateRef = value.slice(3).trim();
                                                         void setAddendumTemplateMapping(
                                                             templateRef || null,
@@ -5599,6 +5674,20 @@ const PDFViewerModal = ({
                                                                             <Eye className="h-3.5 w-3.5" />
                                                                         )}
                                                                     </Button>
+                                                                    {linkedAddendumSupportsPrefillEdit ? (
+                                                                        <Button
+                                                                            type="button"
+                                                                            size="icon"
+                                                                            variant="ghost"
+                                                                            className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-amber-50 hover:text-amber-800 dark:hover:bg-amber-950/40"
+                                                                            title="Edit addendum prefill"
+                                                                            onClick={() =>
+                                                                                setAddendumPrefillEditOpen(true)
+                                                                            }
+                                                                        >
+                                                                            <Pencil className="h-3.5 w-3.5" />
+                                                                        </Button>
+                                                                    ) : null}
                                                                     <Button
                                                                         type="button"
                                                                         size="icon"
@@ -6602,7 +6691,7 @@ const PDFViewerModal = ({
                                                             </h4>
                                                             <p className="mt-1 text-[11px] leading-snug text-slate-500">
                                                                 Updates apply to this send only. The DocuSign template is not
-                                                                modified — the receiver signs; your team reviews in Sender View.
+                                                                modified — all recipients use the Signer role.
                                                             </p>
                                                         </div>
                                                         <Button
@@ -6637,18 +6726,11 @@ const PDFViewerModal = ({
                                                                 </span>
                                                                 <div className="grid grid-cols-3 gap-2 flex-1">
                                                                     <Input
-                                                                        placeholder="Role (e.g. Owner)"
-                                                                        className="h-9 text-xs"
-                                                                        value={entry.role}
-                                                                        onChange={(e) =>
-                                                                            setRecipientEditorRows((prev) =>
-                                                                                prev.map((x) =>
-                                                                                    x.id === entry.id
-                                                                                        ? { ...x, role: e.target.value }
-                                                                                        : x,
-                                                                                ),
-                                                                            )
-                                                                        }
+                                                                        placeholder="Signer"
+                                                                        className="h-9 text-xs bg-slate-50"
+                                                                        value={DOCUSIGN_DEFAULT_SIGNER_ROLE}
+                                                                        readOnly
+                                                                        disabled
                                                                     />
                                                                     <Input
                                                                         placeholder="Signer Name"
@@ -6711,13 +6793,13 @@ const PDFViewerModal = ({
                                                             className="h-8 text-xs bg-[#3B8BD1] hover:bg-[#2d6fad] text-white px-6"
                                                             disabled={
                                                                 savingContractRecipients ||
-                                                                recipientEditorRows.every((r) => !r.role.trim())
+                                                                recipientEditorRows.every((r) => !r.email.trim())
                                                             }
                                                             onClick={async () => {
                                                                 const rows = recipientEditorRows
-                                                                    .filter((r) => r.role.trim())
+                                                                    .filter((r) => r.email.trim())
                                                                     .map((r) => ({
-                                                                        role: r.role.trim(),
+                                                                        role: resolveDocuSignSignerRole(),
                                                                         name: r.name.trim(),
                                                                         email: r.email.trim(),
                                                                     }));
@@ -6725,12 +6807,12 @@ const PDFViewerModal = ({
                                                                     buildDocuSignRolesFromEditorRows(rows);
                                                                 if (!roles.length) {
                                                                     toast.error(
-                                                                        "Enter a role name and email for at least one signer.",
+                                                                        "Enter an email for at least one signer.",
                                                                     );
                                                                     return;
                                                                 }
                                                                 const missingEmail = rows.some(
-                                                                    (r) => r.role && !r.email,
+                                                                    (r) => !r.email,
                                                                 );
                                                                 if (missingEmail) {
                                                                     toast.error(
@@ -7100,7 +7182,7 @@ const PDFViewerModal = ({
                                                             {String(resolvedContract?.status ?? "").toUpperCase() ===
                                                             "COMPLETED"
                                                                 ? "All signers completed. The PDF on the right includes signatures."
-                                                                : "The DocuSign envelope was sent. Status and PDF refresh automatically."}
+                                                                : "The DocuSign envelope was sent. Use Refresh to check signing status from DocuSign."}
                                                         </p>
                                                     </div>
                                                 </div>
@@ -7267,6 +7349,11 @@ const PDFViewerModal = ({
                                                             {isTerminal ? (
                                                                 <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
                                                                     Signing flow ended with status: {formatContractSigningStatusLabel(status)}.
+                                                                </div>
+                                                            ) : null}
+                                                            {docuSignSyncError ? (
+                                                                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+                                                                    {docuSignSyncError}
                                                                 </div>
                                                             ) : null}
                                                         </div>
@@ -7606,6 +7693,7 @@ const PDFViewerModal = ({
                                         if (!url) return;
                                         if (navigateDocuSignTab(null, url)) {
                                             setDocuSignOpenUrl(null);
+                                            startDocuSignSenderReturnWatchRef.current?.();
                                             toast.success(
                                                 "DocuSign opened in a new tab. Click Send there when you are ready.",
                                                 { autoClose: 10000 },
@@ -7727,6 +7815,24 @@ const PDFViewerModal = ({
                 contractDisclosureFrequency={contractDisclosureFrequency}
                 resolvedContract={resolvedContract}
                 contractSignerOverrides={contractSignerOverrides}
+            />
+            <TemplateMappingPrefillEditDialog
+                open={addendumPrefillEditOpen}
+                onOpenChange={setAddendumPrefillEditOpen}
+                row={linkedAddendumPrefillEditRow}
+                contractId={effectiveContractId}
+                applicationUuid={applicationIdForLookup}
+                applicationData={applicationData}
+                resolvedContract={resolvedContract}
+                agreementDate={formatDate(new Date())}
+                documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
+                mainPrefillOverrides={contractPrefillLoaded ? contractPrefillFromDb : null}
+                bankDetail={contractPrefillRecords.bankDetail ?? null}
+                addendumOnly
+                prefillDocumentKind="addendum"
+                onSaved={() => {
+                    void reloadContractPrefillAfterAddendumSave();
+                }}
             />
             <RequestMissingDocumentsModal
                 open={requestDocumentsModalOpen}

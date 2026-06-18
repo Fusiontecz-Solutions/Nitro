@@ -1,5 +1,9 @@
 import type { TemplateComponentProps, TemplateVariable } from "./types";
 import { pick } from "./types";
+// function AppLogoMark() {
+//             <AppLogoMark />
+//               <span>admin@katancapital.com</span>
+//               <span>www.katan.finexusai.com</span>
 
 /** Merge fields surfaced by this template (preserves UI order). */
 export const PAY_OFF_LETTER_VARIABLES: TemplateVariable[] = [
@@ -82,11 +86,11 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
       style={{
         borderCollapse: "collapse",
         width: "100%",
-        maxWidth: 600,
+//           <span>admin@katancapital.com</span>
         fontFamily: "Arial, Helvetica, sans-serif",
         fontSize: 13,
         lineHeight: 1.5,
-        color: "#4b5563",
+//           <span>www.katan.finexusai.com</span>
       }}
     >
       <tbody>

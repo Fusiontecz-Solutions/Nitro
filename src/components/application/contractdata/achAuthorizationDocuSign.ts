@@ -1,6 +1,25 @@
 /** Stored on `Contract.contractPrefillOverrides` — separate from main contract envelope. */
 export const ACH_AUTHORIZATION_DOCUSIGN_KEY = "achAuthorizationDocuSign";
 
+/** ACH-only signer overrides (not merged with contract signers). */
+export const ACH_SIGNER_OVERRIDES_KEY = "achSignerOverrides";
+
+/** Prior standalone ACH DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
+export const ACH_SEND_HISTORY_KEY = "achSendHistory";
+
+export type AchSignerOverrideRow = {
+    role: string;
+    name: string;
+    email: string;
+};
+
+export type AchSendHistoryEntry = {
+    envelopeId: string;
+    status: AchAuthorizationDocuSignCapsuleStatus;
+    sentAt?: string | null;
+    archivedAt: string;
+};
+
 export type AchAuthorizationDocuSignCapsuleStatus =
     | "DRAFT"
     | "SENT"
@@ -146,4 +165,80 @@ export function canResendAchAuthorization(
     if (!envelopeId) return false;
     const status = meta?.status ?? "DRAFT";
     return status === "VOIDED" || status === "SIGNED";
+}
+
+export function parseAchSignerOverridesFromPrefill(
+    raw: unknown,
+): AchSignerOverrideRow[] | null {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const list = (raw as Record<string, unknown>)[ACH_SIGNER_OVERRIDES_KEY];
+    if (!Array.isArray(list)) return null;
+    const out: AchSignerOverrideRow[] = [];
+    for (const item of list) {
+        if (item == null || typeof item !== "object" || Array.isArray(item)) continue;
+        const o = item as Record<string, unknown>;
+        const role = String(o.role ?? "").trim();
+        const email = String(o.email ?? "").trim();
+        if (!role || !email) continue;
+        out.push({
+            role,
+            name: String(o.name ?? "").trim(),
+            email,
+        });
+    }
+    return out.length ? out : null;
+}
+
+export function mergeAchSignerOverridesIntoPrefill(
+    baseRaw: unknown,
+    signerRows: AchSignerOverrideRow[],
+): Record<string, unknown> {
+    const base =
+        baseRaw && typeof baseRaw === "object" && !Array.isArray(baseRaw)
+            ? { ...(baseRaw as Record<string, unknown>) }
+            : {};
+    const rows = signerRows
+        .map((r) => ({
+            role: String(r.role ?? "").trim(),
+            name: String(r.name ?? "").trim(),
+            email: String(r.email ?? "").trim(),
+        }))
+        .filter((r) => r.role && r.email);
+    if (!rows.length) {
+        const next = { ...base };
+        delete next[ACH_SIGNER_OVERRIDES_KEY];
+        return next;
+    }
+    return {
+        ...base,
+        [ACH_SIGNER_OVERRIDES_KEY]: rows,
+    };
+}
+
+export function parseAchSendHistoryFromPrefill(raw: unknown): AchSendHistoryEntry[] {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const list = (raw as Record<string, unknown>)[ACH_SEND_HISTORY_KEY];
+    if (!Array.isArray(list)) return [];
+    const out: AchSendHistoryEntry[] = [];
+    for (const item of list) {
+        if (item == null || typeof item !== "object" || Array.isArray(item)) continue;
+        const o = item as Record<string, unknown>;
+        const envelopeId = String(o.envelopeId ?? "").trim();
+        if (!envelopeId) continue;
+        const statusRaw = String(o.status ?? "DRAFT").trim().toUpperCase();
+        const status: AchAuthorizationDocuSignCapsuleStatus =
+            statusRaw === "SENT" ||
+            statusRaw === "VIEWED" ||
+            statusRaw === "SIGNED" ||
+            statusRaw === "VOIDED"
+                ? statusRaw
+                : "DRAFT";
+        out.push({
+            envelopeId,
+            status,
+            sentAt: o.sentAt != null ? String(o.sentAt) : null,
+            archivedAt: String(o.archivedAt ?? ""),
+        });
+    }
+    return out;
 }

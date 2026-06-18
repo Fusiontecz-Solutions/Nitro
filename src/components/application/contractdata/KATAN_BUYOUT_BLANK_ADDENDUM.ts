@@ -22,8 +22,8 @@ const mapIds = (ids: readonly string[], label: string, value: string): ContractP
     return ids.map((id) => ({ id, label, value: trimmed }));
 };
 
-/** BoldSign prefill source values for the Barclays Buyout Blank Addendum template. */
-export interface BarclaysBuyoutBlankAddendumContractPrefillFields {
+/** Prefill source values for the Katan buyout blank addendum. */
+export interface KatanBuyoutBlankAddendumContractPrefillFields {
     addendumEnteredDate?: string;
     addendumAgreementDate?: string;
     clientName?: string;
@@ -39,7 +39,7 @@ export interface BarclaysBuyoutBlankAddendumContractPrefillFields {
     ownerName?: string;
 }
 
-export function buildBarclaysBuyoutBlankAddendumContractPrefillFields({
+export function buildKatanBuyoutBlankAddendumContractPrefillFields({
     addendumEnteredDate = "",
     addendumAgreementDate = "",
     clientName = "",
@@ -53,7 +53,7 @@ export function buildBarclaysBuyoutBlankAddendumContractPrefillFields({
     checkingAccount = "",
     transferAmount = "",
     ownerName = "",
-}: BarclaysBuyoutBlankAddendumContractPrefillFields = {}): ContractPrefillField[] {
+}: KatanBuyoutBlankAddendumContractPrefillFields = {}): ContractPrefillField[] {
     return [
         ...mapIds(FIELD_IDS.addendumEnteredDate, "Addendum Entered Date", addendumEnteredDate),
         ...mapIds(FIELD_IDS.addendumAgreementDate, "Addendum Agreement Date", addendumAgreementDate),

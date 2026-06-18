@@ -70,6 +70,7 @@ export type TemplateMappingPrefillEditRow = {
         state?: string | null;
         frequency?: string | null;
         templateId?: string;
+        layoutKey?: string | null;
     } | null;
 };
 
@@ -118,7 +119,9 @@ export function TemplateMappingPrefillEditDialog({
     const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
     const [saving, setSaving] = useState(false);
 
-    const templateGuid = String(row?.template?.templateId ?? row?.templateId ?? "").trim();
+    const templateGuid = String(
+        row?.template?.layoutKey ?? row?.template?.templateId ?? row?.templateId ?? "",
+    ).trim();
     const isAchFormPrefill =
         prefillDocumentKind === "ach_form" ||
         (prefillDocumentKind !== "addendum" &&
@@ -128,7 +131,8 @@ export function TemplateMappingPrefillEditDialog({
         if (!row) return [];
         const saved = documentTemplatePrefillByMappingId[row.id] ?? {};
         return getDocumentTemplatePrefillFieldRowsForEditor({
-            templateId: row.template?.templateId ?? row.templateId ?? null,
+            templateId: row.template?.layoutKey ?? row.template?.templateId ?? row.templateId ?? null,
+            templateLayoutKey: row.template?.layoutKey ?? null,
             templateName: row.template?.name ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
@@ -155,7 +159,9 @@ export function TemplateMappingPrefillEditDialog({
 
     useEffect(() => {
         if (!open || !row) return;
-        setTemplateRef(String(row.template?.templateId ?? "").trim());
+        setTemplateRef(
+            String(row.template?.layoutKey ?? row.template?.templateId ?? "").trim(),
+        );
     }, [open, row]);
 
     const seededMappingIdRef = useRef<string | null>(null);
@@ -172,11 +178,15 @@ export function TemplateMappingPrefillEditDialog({
 
     const titleName = row?.template?.name?.trim()
         ? row.template.name
-        : row?.template?.templateId || "DocuSign template";
+        : row?.template?.layoutKey || row?.template?.templateId || "document";
 
     const supportsPrefill =
         isAchFormPrefill ||
-        hasAddendumPrefillFieldMap(templateGuid, row?.template?.name ?? null);
+        hasAddendumPrefillFieldMap(
+            templateGuid,
+            row?.template?.name ?? null,
+            row?.template?.layoutKey ?? templateGuid,
+        );
     const supplementalPrefillTitle = isAchFormPrefill
         ? `Edit ACH form prefill — ${achFormPrefillTitleName(titleName)}`
         : `Edit addendum prefill — ${titleName}`;
@@ -184,8 +194,8 @@ export function TemplateMappingPrefillEditDialog({
         ? "ACH form prefill values saved."
         : "Addendum prefill values saved.";
     const supplementalPrefillMissingMapMessage = isAchFormPrefill
-        ? "No registered field map for this ACH form template. Contact support to register its DocuSign Data Labels."
-        : "No registered field map for this addendum template. Contact support to register its DocuSign Data Labels.";
+        ? "No registered field map for this ACH form document."
+        : "No registered field map for this addendum document.";
 
     const handleSave = useCallback(async () => {
         const cid = contractId != null && Number.isFinite(Number(contractId)) ? Number(contractId) : null;
@@ -194,17 +204,23 @@ export function TemplateMappingPrefillEditDialog({
             return;
         }
         const nextTemplateRef = addendumOnly
-            ? String(row.template?.templateId ?? row.templateId ?? "").trim()
+            ? String(
+                  row.template?.layoutKey ??
+                      row.template?.templateId ??
+                      row.templateId ??
+                      "",
+              ).trim()
             : String(templateRef ?? "").trim();
         if (!nextTemplateRef) {
-            toast.error("DocuSign template ID is required.");
+            toast.error("Document reference is required.");
             return;
         }
         setSaving(true);
         try {
             if (
                 !addendumOnly &&
-                nextTemplateRef !== String(row.template?.templateId ?? "").trim()
+                nextTemplateRef !==
+                    String(row.template?.layoutKey ?? row.template?.templateId ?? "").trim()
             ) {
                 await axiosPut(`/contract/${cid}/document-template-mappings/${row.id}`, {
                     templateRef: nextTemplateRef,
@@ -294,22 +310,22 @@ export function TemplateMappingPrefillEditDialog({
             >
                 <DialogHeader className="shrink-0 border-b px-6 py-4">
                     <DialogTitle className="text-base">
-                        {addendumOnly ? supplementalPrefillTitle : `Edit template mapping — ${titleName}`}
+                        {addendumOnly ? supplementalPrefillTitle : `Edit document mapping — ${titleName}`}
                     </DialogTitle>
                 </DialogHeader>
                 <div className="max-h-[min(65vh,520px)] overflow-y-auto px-6 py-4">
                     <div className="space-y-4">
                         {!addendumOnly ? (
                         <div className="space-y-1.5">
-                            <Label htmlFor="tmpl-mapping-bsid" className="text-xs font-medium">
-                                DocuSign template ID (GUID)
+                            <Label htmlFor="tmpl-mapping-ref" className="text-xs font-medium">
+                                Document reference (layout key or CRM row id)
                             </Label>
                             <Input
-                                id="tmpl-mapping-bsid"
+                                id="tmpl-mapping-ref"
                                 value={templateRef}
                                 onChange={(e) => setTemplateRef(e.target.value)}
                                 className="font-mono text-xs"
-                                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                                placeholder="flex_addendum or disclosure row id"
                             />
                         </div>
                         ) : null}
