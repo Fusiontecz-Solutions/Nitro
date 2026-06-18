@@ -44,7 +44,7 @@
 // );
 
 // /** Same wordmark block as `ZeroBalanceLetter` (matches `payOffLetterEmailHtml` / design). */
-// function BarclaysLogoMark() {
+// function AppLogoMark() {
 //   return (
 //     <div className="relative h-28 w-[min(100%,24rem)] shrink-0 sm:h-32 sm:w-[28rem] md:h-36 md:w-[32rem]">
 //       <img
@@ -89,7 +89,7 @@
 //       <div className="relative z-[1] px-8 pb-0 pt-8">
 //         <div className="flex flex-wrap items-start justify-between gap-8 pb-3">
 //           <div className="flex min-w-0 flex-1 items-start">
-//             <BarclaysLogoMark />
+//             <AppLogoMark />
 //           </div>
 
 //           <div className="min-w-0 shrink-0 space-y-1 text-sm text-muted-foreground">
@@ -107,11 +107,11 @@
 //             </div>
 //             <div className="flex items-center gap-2">
 //               <Mail size={14} className="shrink-0 text-blue-600 dark:text-sky-400" />
-//               <span>jorden@barclaysadvance.com</span>
+//               <span>admin@katancapital.com</span>
 //             </div>
 //             <div className="flex items-center gap-2">
 //               <Globe size={14} className="shrink-0 text-blue-600 dark:text-sky-400" />
-//               <span>www.barclaysadvance.com</span>
+//               <span>www.katan.finexusai.com</span>
 //             </div>
 //           </div>
 //         </div>
@@ -243,11 +243,11 @@
 //         </div>
 //         <div className="flex items-center gap-2">
 //           <Mail size={14} className="shrink-0" />
-//           <span>jorden@barclaysadvance.com</span>
+//           <span>admin@katancapital.com</span>
 //         </div>
 //         <div className="flex items-center gap-2">
 //           <Globe size={14} className="shrink-0" />
-//           <span>www.barclaysadvance.com</span>
+//           <span>www.katan.finexusai.com</span>
 //         </div>
 //       </div>
 //     </div>

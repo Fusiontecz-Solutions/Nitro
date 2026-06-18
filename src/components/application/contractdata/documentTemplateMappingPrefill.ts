@@ -10,13 +10,13 @@ import {
     type BalanceTransferSheetContractPrefillFields,
 } from "./BALANCE_TRANSFER_SHEET_ADDENDUM";
 import {
-    buildBarclaysBuyoutBlankAddendumContractPrefillFields,
-    type BarclaysBuyoutBlankAddendumContractPrefillFields,
-} from "./Barclays_buyout_blank_ADDENDUM";
+    buildKatanBuyoutBlankAddendumContractPrefillFields,
+    type KatanBuyoutBlankAddendumContractPrefillFields,
+} from "./KATAN_BUYOUT_BLANK_ADDENDUM";
 import {
-    buildBarclaysFlexAddendumContractPrefillFields,
-    type BarclaysFlexAddendumContractPrefillFields,
-} from "./BARCLAYS_FLEX_ADDENDUM";
+    buildKatanFlexAddendumContractPrefillFields,
+    type KatanFlexAddendumContractPrefillFields,
+} from "./KATAN_FLEX_ADDENDUM";
 import {
     buildDiscoverAdvanceEpoAddendumContractPrefillFields,
     type DiscoverAdvanceEpoAddendumContractPrefillFields,
@@ -280,12 +280,12 @@ function buildBalanceTransferComputed(
     });
 }
 
-function buildBarclaysBuyoutComputed(
+function buildKatanBuyoutComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
 ): ContractPrefillField[] {
     const c = contract ?? {};
-    return buildBarclaysBuyoutBlankAddendumContractPrefillFields({
+    return buildKatanBuyoutBlankAddendumContractPrefillFields({
         addendumEnteredDate: sctx.signatureDate,
         addendumAgreementDate: sctx.signatureDate,
         clientName: sctx.recipientName,
@@ -302,7 +302,7 @@ function buildBarclaysBuyoutComputed(
     });
 }
 
-function dotBarclaysBuyout(): BarclaysBuyoutBlankAddendumContractPrefillFields {
+function dotKatanBuyout(): KatanBuyoutBlankAddendumContractPrefillFields {
     return {
         addendumEnteredDate: DUMMY,
         addendumAgreementDate: DUMMY,
@@ -320,30 +320,43 @@ function dotBarclaysBuyout(): BarclaysBuyoutBlankAddendumContractPrefillFields {
     };
 }
 
-function buildBarclaysFlexComputed(
+function buildKatanFlexComputed(
     contract: Record<string, unknown> | null,
     sctx: StateDisclosureContext,
     application?: Record<string, unknown> | null,
 ): ContractPrefillField[] {
     const c = contract ?? {};
+    const app = application ?? null;
+    const offerDecision =
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        (c.offer as Record<string, unknown> | undefined) ??
+        null;
     const legal = str(c.legalName) || str(c.clientLegalName) || sctx.recipientName;
-    const owner2 =
-        str(c.owner2_guarantor_name) ||
-        str(c.guaranty_owner2_name) ||
-        str(c.merchant2_name) ||
+    const agreementDate =
+        str(c.agreement_date) ||
+        sctx.signatureDate ||
+        str(c.agreementDate) ||
         "";
-    return buildBarclaysFlexAddendumContractPrefillFields({
-        clientLegalName: legal,
-        clientName: str(c.clientName) || str(c.customerName) || sctx.recipientName || legal,
-        businessName2: owner2,
+    const addendumDate = str(c.addendum_date) || agreementDate;
+    const dailyPayment =
+        str(c.daily_payment) ||
+        str(c.remittance) ||
+        resolveRemittancePrefillValue({ application: app ?? undefined, contract, offerDecision });
+    return buildKatanFlexAddendumContractPrefillFields({
+        addendumDate,
+        agreementDate,
+        merchantName: legal,
+        dailyPayment,
     });
 }
 
-function dotBarclaysFlex(): BarclaysFlexAddendumContractPrefillFields {
+function dotKatanFlex(): KatanFlexAddendumContractPrefillFields {
     return {
-        clientLegalName: DUMMY,
-        clientName: DUMMY,
-        businessName2: DUMMY,
+        addendumDate: DUMMY,
+        agreementDate: DUMMY,
+        merchantName: DUMMY,
+        dailyPayment: DUMMY,
     };
 }
 
@@ -496,8 +509,8 @@ function matches(norm: string, ...needles: string[]): boolean {
 
 type AddendumKind =
     | "balance_transfer_sheet"
-    | "barclays_buyout_blank"
-    | "barclays_flex"
+    | "katan_buyout_blank"
+    | "katan_flex"
     | "katan_ach_authorization"
     | "discover_epo"
     | "discover_refi_balance";
@@ -505,7 +518,7 @@ type AddendumKind =
 function resolveAddendumKindFromLayoutKey(layoutKey?: string | null): AddendumKind | null {
     const key = normalizeDocusignTemplateId(layoutKey);
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
-    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "barclays_flex";
+    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "katan_flex";
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION) return "katan_ach_authorization";
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE) {
         return "katan_ach_authorization";
@@ -515,6 +528,8 @@ function resolveAddendumKindFromLayoutKey(layoutKey?: string | null): AddendumKi
 
 /** Legacy DocuSign template GUID for Katan ACH Authorization PDF. */
 const LEGACY_KATAN_ACH_TEMPLATE_ID = "15a61a5b-af2f-41cb-aaad-68bded7ffa3e";
+/** Legacy DocuSign template GUID for Katan Capital Flex Addendum PDF. */
+const LEGACY_KATAN_FLEX_ADDENDUM_TEMPLATE_ID = "c2a0e972-2cb1-48fe-b4fe-a4088e1056de";
 
 function resolveAddendumKind(normName: string, templateId?: string | null): AddendumKind | null {
     if (isKnownKatanAddendumLayoutKey(templateId)) {
@@ -523,13 +538,14 @@ function resolveAddendumKind(normName: string, templateId?: string | null): Adde
     }
     const tid = normalizeDocusignTemplateId(templateId);
     if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
-    if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "barclays_flex";
+    if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "katan_flex";
+    if (tid === LEGACY_KATAN_FLEX_ADDENDUM_TEMPLATE_ID) return "katan_flex";
     if (tid === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION) return "katan_ach_authorization";
     if (tid === LEGACY_KATAN_ACH_TEMPLATE_ID) return "katan_ach_authorization";
 
     if (matches(normName, "balance", "transfer") && normName.includes("sheet")) return "balance_transfer_sheet";
-    if (normName.includes("buyout") && normName.includes("blank")) return "barclays_buyout_blank";
-    if (normName.includes("flex")) return "barclays_flex";
+    if (normName.includes("buyout") && normName.includes("blank")) return "katan_buyout_blank";
+    if (normName.includes("flex")) return "katan_flex";
     if (normName.includes("ach") && normName.includes("authorization")) return "katan_ach_authorization";
     if (normName.includes("katan") && normName.includes("llc") && normName.includes("ach")) {
         return "katan_ach_authorization";
@@ -591,10 +607,81 @@ export function getKatanAchAuthorizationPrefillFieldRowsForEditor(options: {
     return mergeFieldRows(all, computed, options.savedOverridesForMapping);
 }
 
-/** Whether the addendum prefill editor has registered fields for this DocuSign template. */
-export function hasAddendumPrefillFieldMap(templateId?: string | null, templateName?: string | null): boolean {
-    const norm = normalizeKey(templateName ?? "");
-    return resolveAddendumKind(norm, templateId) != null;
+function resolveTemplateRefsForAddendumKind(options: {
+    templateId?: string | null;
+    templateName?: string | null;
+    templateLayoutKey?: string | null;
+}): AddendumKind | null {
+    const norm = normalizeKey(options.templateName ?? "");
+    const refs = [
+        options.templateLayoutKey,
+        options.templateId,
+    ]
+        .map((r) => String(r ?? "").trim())
+        .filter(Boolean);
+    for (const ref of refs) {
+        const kind = resolveAddendumKind(norm, ref);
+        if (kind) return kind;
+    }
+    if (norm.includes("flex")) return "katan_flex";
+    return resolveAddendumKind(norm, options.templateId);
+}
+
+function tryAddendumPrefillFieldRowsForEditor(options: {
+    templateId?: string | null;
+    templateName?: string | null;
+    templateLayoutKey?: string | null;
+    documentType?: string | null;
+    prefillDocumentKind?: "ach_form" | "addendum" | null;
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+    agreementDate?: string;
+    mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
+    savedOverridesForMapping?: Record<string, string> | null;
+    bankDetail?: Record<string, unknown> | null;
+}): ContractPrefillField[] | null {
+    const docType = String(options.documentType ?? "").toLowerCase();
+    const isAddendumDoc =
+        options.prefillDocumentKind === "addendum" || docType === "addendum";
+    const addendum = resolveTemplateRefsForAddendumKind(options);
+    if (!addendum && !isAddendumDoc) return null;
+    if (!addendum) return [];
+
+    const effectiveContract = buildEffectiveContractForTemplatePrefill({
+        contract: options.contract ?? null,
+        application: options.application ?? null,
+        agreementDate: options.agreementDate,
+        mainPrefillOverrides: options.mainPrefillOverrides,
+        bankDetail: options.bankDetail ?? null,
+    });
+    const sctx = buildStateDisclosurePrefillContextFromContract({
+        contract: effectiveContract,
+        application: options.application ?? null,
+        agreementDate: options.agreementDate,
+    });
+    const all = addendumAllDefs(addendum);
+    const computed = addendumComputed(
+        addendum,
+        effectiveContract,
+        sctx,
+        options.application ?? null,
+    );
+    return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+}
+
+/** Whether the addendum prefill editor has registered fields for this document layout. */
+export function hasAddendumPrefillFieldMap(
+    templateId?: string | null,
+    templateName?: string | null,
+    templateLayoutKey?: string | null,
+): boolean {
+    return (
+        resolveTemplateRefsForAddendumKind({
+            templateId: templateLayoutKey ?? templateId,
+            templateName,
+            templateLayoutKey,
+        }) != null
+    );
 }
 
 export function hasStateDisclosurePrefillFieldMap(
@@ -638,10 +725,10 @@ function addendumAllDefs(kind: AddendumKind): ContractPrefillField[] {
     switch (kind) {
         case "balance_transfer_sheet":
             return buildBalanceTransferSheetContractPrefillFields(dotBalanceTransfer());
-        case "barclays_buyout_blank":
-            return buildBarclaysBuyoutBlankAddendumContractPrefillFields(dotBarclaysBuyout());
-        case "barclays_flex":
-            return buildBarclaysFlexAddendumContractPrefillFields(dotBarclaysFlex());
+        case "katan_buyout_blank":
+            return buildKatanBuyoutBlankAddendumContractPrefillFields(dotKatanBuyout());
+        case "katan_flex":
+            return buildKatanFlexAddendumContractPrefillFields(dotKatanFlex());
         case "katan_ach_authorization":
             return buildKatanAchAuthorizationAddendumPrefillFields(dotKatanAch());
         case "discover_epo":
@@ -662,10 +749,10 @@ function addendumComputed(
     switch (kind) {
         case "balance_transfer_sheet":
             return buildBalanceTransferComputed(contract, sctx, application);
-        case "barclays_buyout_blank":
-            return buildBarclaysBuyoutComputed(contract, sctx);
-        case "barclays_flex":
-            return buildBarclaysFlexComputed(contract, sctx);
+        case "katan_buyout_blank":
+            return buildKatanBuyoutComputed(contract, sctx);
+        case "katan_flex":
+            return buildKatanFlexComputed(contract, sctx, application);
         case "katan_ach_authorization":
             return buildKatanAchComputed(contract, application);
         case "discover_epo":
@@ -700,6 +787,7 @@ export function parseDocumentTemplatePrefillByMappingId(raw: unknown): Record<st
 export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     templateId?: string | null;
     templateName?: string | null;
+    templateLayoutKey?: string | null;
     templateState?: string | null;
     templateFrequency?: string | null;
     /** Contract / UI state when the template row has no `state` column set. */
@@ -720,6 +808,9 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
         return getKatanAchAuthorizationPrefillFieldRowsForEditor(options);
     }
 
+    const addendumRows = tryAddendumPrefillFieldRowsForEditor(options);
+    if (addendumRows != null) return addendumRows;
+
     const effectiveContract = buildEffectiveContractForTemplatePrefill({
         contract: options.contract ?? null,
         application: options.application ?? null,
@@ -735,6 +826,8 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     });
 
     const name = options.templateName;
+    const docType = String(options.documentType ?? "").toLowerCase();
+    const isDisclosureDoc = docType === "disclosure";
     const { state, frequency } = resolveDisclosureStateAndFrequency({
         templateState: options.templateState,
         templateFrequency: options.templateFrequency,
@@ -743,28 +836,28 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
         contract: effectiveContract,
     });
 
-    const stAll = stateDisclosureAllDefs(name, state, frequency);
-    if (stAll.length > 0) {
+    if (isDisclosureDoc) {
+        const stAll = stateDisclosureAllDefs(name, state, frequency);
+        if (stAll.length > 0) {
+            const computed = stateDisclosureComputed(name, state, frequency, sctx);
+            const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
+                options.savedOverridesForMapping,
+            );
+            return applyPlatformDisclosureFunderName(
+                mergeFieldRows(stAll, computed, savedCollapsed),
+            );
+        }
+    }
+
+    const fromEditor = getStateDisclosureEditorFieldDefinitions(name, state, frequency);
+    if (fromEditor.length > 0) {
         const computed = stateDisclosureComputed(name, state, frequency, sctx);
         const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
             options.savedOverridesForMapping,
         );
         return applyPlatformDisclosureFunderName(
-            mergeFieldRows(stAll, computed, savedCollapsed),
+            mergeFieldRows(fromEditor, computed, savedCollapsed),
         );
-    }
-
-    const norm = normalizeKey(name ?? "");
-    const addendum = resolveAddendumKind(norm, options.templateId);
-    if (addendum) {
-        const all = addendumAllDefs(addendum);
-        const computed = addendumComputed(
-            addendum,
-            effectiveContract,
-            sctx,
-            options.application ?? null,
-        );
-        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
     }
 
     return [];

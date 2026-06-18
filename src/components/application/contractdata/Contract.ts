@@ -797,9 +797,10 @@ export function applyLiveBankDetailsToPrefillMerge<T extends Record<string, unkn
 ): T {
     const out = { ...merged };
     for (const key of LIVE_BANK_PREFILL_KEYS) {
-        const persisted = str(out[key]);
         const fallback = str(defaults[key as keyof BuildContractPrefillFieldsArgs]);
-        if ((!persisted || persisted.startsWith("enc:v1:")) && fallback) {
+        if (!fallback || fallback.startsWith("enc:v1:")) continue;
+        const persisted = str(out[key]);
+        if (!persisted || persisted.startsWith("enc:v1:") || persisted !== fallback) {
             (out as Record<string, unknown>)[key] = fallback;
         }
     }
@@ -1276,12 +1277,6 @@ export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSourc
               ? (termsRaw as Record<string, unknown>)
               : null;
 
-    const saved = str(contract?.remittance);
-    if (saved && !isPaymentFrequencyLabel(saved)) {
-        const asNum = truncateDecimalPrefill(saved);
-        if (asNum) return asNum;
-    }
-
     const periodic =
         coerceToFiniteNumber(odRoot?.repayPerPeriod) ??
         coerceToFiniteNumber(odEff?.repayPerPeriod) ??
@@ -1291,6 +1286,12 @@ export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSourc
 
     if (periodic !== undefined) {
         return truncateDecimalPrefill(periodic);
+    }
+
+    const saved = str(contract?.remittance);
+    if (saved && !isPaymentFrequencyLabel(saved)) {
+        const asNum = truncateDecimalPrefill(saved);
+        if (asNum) return asNum;
     }
 
     const totalRemit =
@@ -1342,12 +1343,6 @@ export function resolveNumberOfPaymentsPrefillValue(sources: NetToMerchantPrefil
               ? (termsRaw as Record<string, unknown>)
               : null;
 
-    const saved = str(
-        (contract as Record<string, unknown> | null | undefined)
-            ?.achAuthorizationAccountHolderBankNumberOfTransactions,
-    );
-    if (saved) return saved;
-
     const numPayments =
         coerceToFiniteNumber(odRoot?.numberOfPayments) ??
         coerceToFiniteNumber(odEff?.numberOfPayments) ??
@@ -1363,6 +1358,12 @@ export function resolveNumberOfPaymentsPrefillValue(sources: NetToMerchantPrefil
     if (numPayments !== undefined && numPayments > 0) {
         return String(Math.trunc(numPayments));
     }
+
+    const saved = str(
+        (contract as Record<string, unknown> | null | undefined)
+            ?.achAuthorizationAccountHolderBankNumberOfTransactions,
+    );
+    if (saved) return saved;
     return "";
 }
 
@@ -1386,10 +1387,10 @@ export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources)
               : null;
 
     const raw =
-        str(contract?.frequency) ||
         str(odRoot?.frequency) ||
         str(odEff?.frequency) ||
         str(terms0?.frequency) ||
+        str(contract?.frequency) ||
         str(app?.frequency);
     if (!raw) return "";
 
@@ -1490,7 +1491,7 @@ const ACH_BANK_TAIL_LABELS: Record<string, string> = {
 };
 
 const AUTHORIZATION_CLIENT_TAIL_LABELS: Record<string, string> = {
-    application: "Merchant name",
+    application: "Client name",
     bank_name: "Bank name",
     bank_routing: "Routing number",
     bank_account: "Account number",
@@ -1531,7 +1532,7 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
         return AUTHORIZATION_CLIENT_TAIL_LABELS[tail] ?? humanizeDealReviewToken(tail);
     }
     if (category === "Authorization" && norm === "authorization_application") {
-        return "Merchant name";
+        return "Client name";
     }
     if (category === "Authorization" && norm === "authorized_business_phone") {
         return "Business phone";
@@ -1838,7 +1839,7 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     remittance: PLATFORM_LABEL.remittance,
     frequency: PLATFORM_LABEL.frequency,
     paymentterms: PLATFORM_LABEL.frequency,
-    authorization_application: "Merchant name",
+    authorization_application: "Client name",
     authorization_client_bank_name: "Bank name",
     authorization_client_bank_routing: "Routing number",
     authorization_client_bank_account: "Account number",
@@ -2235,10 +2236,15 @@ export function resolveMerchantBusinessNameForPrefill(
     );
 }
 
-/** Appendix / guaranty / main contract `client_name` tabs — owner name, not business legal name. */
+/** Appendix / guaranty / main contract / ACH authorization signatory tabs — owner name, not business legal name. */
 function resolvePersonalClientNamePrefill(
     row: Record<string, unknown>,
-    field: "clientName" | "appendixClientName" | "guarantyClientName",
+    field:
+        | "clientName"
+        | "appendixClientName"
+        | "guarantyClientName"
+        | "authorizationClientName"
+        | "authorizationClientNamePrint",
 ): string {
     const customer = str(row.customerName);
     const legal = str(row.legalName);
@@ -2465,13 +2471,16 @@ function guarantorsToPrefillPartial(rows: Record<string, unknown>[] | null | und
     return out;
 }
 
-/** ACH authorization `authorization_application` tab — merchant legal name, not CRM application id. */
-function resolveAuthorizationApplicationMerchantName(row: Record<string, unknown>): string {
-    const merchant =
-        str(row.legalName) || str(row.clientName) || str(row.customerName);
+/** ACH authorization `authorization_application` tab — client name, not CRM application id or business legal name. */
+function resolveAuthorizationApplicationPrefill(row: Record<string, unknown>): string {
+    const clientName =
+        str(row.customerName) || str(row.clientName) || str(row.legalName);
     const raw = str(row.authorizationApplication);
-    if (!raw) return merchant;
-    if (/^\d+$/.test(raw.replace(/\s/g, ""))) return merchant || raw;
+    if (!raw) return clientName;
+    if (/^\d+$/.test(raw.replace(/\s/g, ""))) return clientName || raw;
+    const legal = str(row.legalName);
+    const customer = str(row.customerName);
+    if (customer && legal && raw === legal) return customer;
     return raw;
 }
 
@@ -2555,15 +2564,12 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         })(),
         appendixClientName: resolvePersonalClientNamePrefill(row, "appendixClientName"),
         guarantyClientName: resolvePersonalClientNamePrefill(row, "guarantyClientName"),
-        authorizationApplication: resolveAuthorizationApplicationMerchantName(row),
+        authorizationApplication: resolveAuthorizationApplicationPrefill(row),
         authorizationClientBankName: authBankName,
         authorizationClientBankRouting: str(row.authorizationClientBankRouting),
         authorizationClientBankAccount: str(row.authorizationClientBankAccount),
-        authorizationClientName: resolveAuthorizationBusinessNamePrefill(
-            row,
-            "authorizationClientName",
-        ),
-        authorizationClientNamePrint: resolveAuthorizationBusinessNamePrefill(
+        authorizationClientName: resolvePersonalClientNamePrefill(row, "authorizationClientName"),
+        authorizationClientNamePrint: resolvePersonalClientNamePrefill(
             row,
             "authorizationClientNamePrint",
         ),
@@ -2608,8 +2614,63 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         achAuthorizationReferenceRelationship3: str(row.achAuthorizationReferenceRelationship3),
         exhibitOwnerName: str(row.exhibitOwnerName),
     });
-    const overrides = normalizeContractPrefillOverrides(row.contractPrefillOverrides);
-    return overrides ? { ...base, ...overrides } : base;
+    return base;
+}
+
+/** Saved manual prefill edits on the contract row (applied after live application/offer merge). */
+function contractPrefillOverridesFromRow(
+    row: Record<string, unknown> | null | undefined,
+): Partial<BuildContractPrefillFieldsArgs> {
+    if (!row) return {};
+    return normalizeContractPrefillOverrides(row.contractPrefillOverrides) ?? {};
+}
+
+/** Offer / banking fields recomputed from the current OfferDecision (not stale contract scalars). */
+function getLiveOfferPrefillArgs(
+    anyApp: unknown,
+    options?: { offerDecision?: Record<string, unknown> | null },
+): Partial<BuildContractPrefillFieldsArgs> {
+    const app = (anyApp ?? null) as Record<string, unknown> | null;
+    const odRoot =
+        options?.offerDecision ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+
+    const sources: NetToMerchantPrefillSources = {
+        application: app ?? undefined,
+        contract: null,
+        offerDecision: odRoot,
+    };
+
+    const feesRaw = odEff?.fees ?? odRoot?.fees ?? terms0?.fees;
+    const remittance = resolveRemittancePrefillValue(sources);
+
+    return {
+        purchaseAmount: firstTruncateDecimal(odEff?.offer, odRoot?.offer, terms0?.approvedAmount),
+        purchasePrice: firstTruncateDecimal(
+            odEff?.totalRemit,
+            odRoot?.totalRemit,
+            terms0?.totalRemit,
+        ),
+        frequency: resolveOfferFrequencyLabel(sources),
+        remittance,
+        netToMerchant: formatNetToMerchantPrefillValue(computeNetToMerchantDollars(sources)),
+        appendixUnderwritingFees: feesRaw
+            ? formatOfferDecisionFeesDollarsForPrefill(feesRaw)
+            : "",
+        achAuthorizationAccountHolderBankTransactionFee: remittance,
+        achAuthorizationAccountHolderBankNumberOfTransactions:
+            resolveNumberOfPaymentsPrefillValue(sources),
+    };
 }
 
 export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildContractPrefillFieldsArgs> {
@@ -2620,23 +2681,42 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
     const customerName = getApplicationPrimaryRecipientName(anyApp);
     const legalName = String(r.businessName || bi?.clientBusinessName || customerName || "");
     const street = [r.businessAddress1, r.businessAddress2].filter(Boolean).join(", ").trim();
+    const businessAddress = String(street || bi?.businessAddress || "");
+    const businessCity = String(r.businessCity || bi?.city || "");
+    const businessState = String(r.businessState || bi?.state || "");
+    const businessZip = String(r.businessZip || bi?.zip || "");
+    const taxEin = String(r.ein || bi?.federalTaxIdEin || "");
+    const phone = String(r.businessPhone || r.ownerPhone || "");
     return {
         customerName,
         legalName,
         clientName: customerName || legalName,
         appendixClientName: customerName || legalName,
+        exhibitOwnerName: customerName || legalName,
         doingBusinessAs: String(r.dba || bi?.dba || ""),
         securityDoingBusinessAs: String(r.dba || bi?.dba || ""),
         achAuthorizationAccountHolderDba: String(r.dba || bi?.dba || ""),
-        businessAddress: String(street || bi?.businessAddress || ""),
-        businessAddressCity: String(r.businessCity || bi?.city || ""),
-        businessAddressState: String(r.businessState || bi?.state || ""),
-        businessAddressZip: String(r.businessZip || bi?.zip || ""),
+        businessAddress,
+        businessAddressCity: businessCity,
+        businessAddressState: businessState,
+        businessAddressZip: businessZip,
+        businessAddressContract: businessAddress,
+        businessAddressContractCity: businessCity,
+        businessAddressContractState: businessState,
+        businessAddressContractZip: businessZip,
         state: String(
             r.incorporationState || bi?.stateOfIncorporation || "",
         ),
         entityType: String(r.entityType || bi?.entityType || ""),
-        federalTaxIdEin: String(r.ein || bi?.federalTaxIdEin || ""),
+        federalTaxIdEin: taxEin,
+        authorizationClientTaxId: taxEin,
+        securityTaxEin: taxEin,
+        securityBusinessName: legalName,
+        securityBusinessAddress: businessAddress,
+        securityBusinessAddressCity: businessCity,
+        securityBusinessAddressState: businessState,
+        securityBusinessAddressZip: businessZip,
+        securityGuarantor: customerName || legalName,
         clientEmail: String(
             r.businessEmail ||
             r.ownerEmail ||
@@ -2644,16 +2724,17 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
             getApplicationPrimaryRecipientEmail(anyApp) ||
             "",
         ),
-        clientPhone: String(r.businessPhone || r.ownerPhone || ""),
+        clientPhone: phone,
+        authorizedBusinessPhone: phone,
         guarantyClientName: customerName || legalName,
         guarantySs: String(r.ownerSsn || ""),
         guarantySsDriverLicense: String(r.ownerDriverLicense || ""),
         guarantyOwner1Name: ownerFullName(r.ownerFirst, r.ownerLast),
         guarantyOwner1Ss: String(r.ownerSsn || ""),
         guarantyOwner1DriverLicense: String(r.ownerDriverLicense || ""),
-        authorizationApplication: legalName || customerName,
-        authorizationClientName: legalName || "",
-        authorizationClientNamePrint: legalName || "",
+        authorizationApplication: customerName || legalName,
+        authorizationClientName: customerName || "",
+        authorizationClientNamePrint: customerName || "",
         achAuthorizationAccountHolderName: legalName || "",
         achAuthorizationConcentAccountHolderName: legalName || "",
     };
@@ -2882,10 +2963,14 @@ export function getContractPrefillEditDefaultsFromApplication(
         ...guarantorsToPrefillPartial(rec?.guarantors ?? null),
         ...bankDetailRowToPrefillPartial(rec?.bankDetail ?? null),
     };
+    const contractOverrides = contractPrefillOverridesFromRow(rec?.contract ?? null);
+    const liveOfferArgs = getLiveOfferPrefillArgs(anyApp, {
+        offerDecision: options?.offerDecision ?? null,
+    });
     const ownerFallback = ownerFullName(rec?.owners?.[0]?.firstName, rec?.owners?.[0]?.lastName);
     const customerName =
-        str(contractPartial.customerName) ||
         str(clientArgs.customerName) ||
+        str(contractPartial.customerName) ||
         ownerFallback ||
         "Signer";
     const agreementDate =
@@ -2893,78 +2978,49 @@ export function getContractPrefillEditDefaultsFromApplication(
         prefillIsoDate(contractPartial.agreementDate) ||
         str(contractPartial.agreementDate);
 
+    const resolverRow = {
+        ...recordPartial,
+        ...clientArgs,
+        ...liveOfferArgs,
+        customerName,
+    };
 
-    const netComputed = formatNetToMerchantPrefillValue(
-        computeNetToMerchantDollars({
-            application: anyApp as Record<string, unknown> | undefined,
-            contract: rec?.contract ?? null,
-            offerDecision: options?.offerDecision ?? null,
-        }),
-    );
-    const frequencyComputed = resolveOfferFrequencyLabel({
-        application: anyApp as Record<string, unknown> | undefined,
-        contract: rec?.contract ?? null,
-        offerDecision: options?.offerDecision ?? null,
-    });
-    const remittanceComputed = resolveRemittancePrefillValue({
-        application: anyApp as Record<string, unknown> | undefined,
-        contract: rec?.contract ?? null,
-        offerDecision: options?.offerDecision ?? null,
-    });
-
-    const mergedBeforeFees = applySplitAddressStreetFields({
-        /** Application-derived defaults first; persisted rows overlay only non-empty values. */
-        ...mergeNonemptyPrefillPartial(clientArgs, recordPartial),
+    const mergedBase = applySplitAddressStreetFields({
+        /** Contract ACH/addendum rows, then live application + offer, then saved manual overrides. */
+        ...mergeNonemptyPrefillPartial(
+            mergeNonemptyPrefillPartial(
+                mergeNonemptyPrefillPartial(recordPartial, clientArgs),
+                liveOfferArgs,
+            ),
+            contractOverrides,
+        ),
         customerName,
         agreementDate,
-        clientName: resolvePersonalClientNamePrefill(
-            { ...clientArgs, ...recordPartial, customerName },
-            "clientName",
+        clientName: resolvePersonalClientNamePrefill(resolverRow, "clientName"),
+        appendixClientName: resolvePersonalClientNamePrefill(resolverRow, "appendixClientName"),
+        guarantyClientName: resolvePersonalClientNamePrefill(resolverRow, "guarantyClientName"),
+        authorizationApplication: resolveAuthorizationApplicationPrefill(resolverRow),
+        authorizationClientName: resolvePersonalClientNamePrefill(
+            resolverRow,
+            "authorizationClientName",
         ),
-        appendixClientName: resolvePersonalClientNamePrefill(
-            { ...clientArgs, ...recordPartial, customerName },
-            "appendixClientName",
+        authorizationClientNamePrint: resolvePersonalClientNamePrefill(
+            resolverRow,
+            "authorizationClientNamePrint",
         ),
-        guarantyClientName: resolvePersonalClientNamePrefill(
-            { ...clientArgs, ...recordPartial, customerName },
-            "guarantyClientName",
-        ),
-        ...(str(recordPartial.frequency) || !frequencyComputed
-            ? {}
-            : { frequency: frequencyComputed }),
-        ...(str(recordPartial.netToMerchant) || !netComputed
-            ? {}
-            : { netToMerchant: netComputed }),
-        ...(str(recordPartial.remittance) || !remittanceComputed
-            ? {}
-            : { remittance: remittanceComputed }),
     });
+    const mergedBeforeFees = applyLiveBankDetailsToPrefillMerge(recordPartial, mergedBase);
     stripImpliedPurchasePercentFromOffer(mergedBeforeFees, options?.offerDecision ?? null);
-    if (!str(mergedBeforeFees.authorizationClientName) && merchantBusinessName) {
-        mergedBeforeFees.authorizationClientName = merchantBusinessName;
-        mergedBeforeFees.authorizationClientNamePrint = merchantBusinessName;
+    if (!str(mergedBeforeFees.authorizationClientName) && customerName) {
+        mergedBeforeFees.authorizationClientName = customerName;
+        mergedBeforeFees.authorizationClientNamePrint = customerName;
+    }
+    if (!str(mergedBeforeFees.authorizationApplication) && customerName) {
+        mergedBeforeFees.authorizationApplication = customerName;
     }
     if (!str(mergedBeforeFees.achAuthorizationAccountHolderName) && merchantBusinessName) {
         mergedBeforeFees.achAuthorizationAccountHolderName = merchantBusinessName;
         mergedBeforeFees.achAuthorizationConcentAccountHolderName = merchantBusinessName;
-    }
-    if (!str(mergedBeforeFees.achAuthorizationAccountHolderBankTransactionFee)) {
-        const fee = resolveRemittancePrefillValue({
-            application: anyApp as Record<string, unknown> | undefined,
-            contract: rec?.contract ?? null,
-            offerDecision: options?.offerDecision ?? null,
-        });
-        if (fee) mergedBeforeFees.achAuthorizationAccountHolderBankTransactionFee = fee;
-    }
-    if (!str(mergedBeforeFees.achAuthorizationAccountHolderBankNumberOfTransactions)) {
-        const numPayments = resolveNumberOfPaymentsPrefillValue({
-            application: anyApp as Record<string, unknown> | undefined,
-            contract: rec?.contract ?? null,
-            offerDecision: options?.offerDecision ?? null,
-        });
-        if (numPayments) {
-            mergedBeforeFees.achAuthorizationAccountHolderBankNumberOfTransactions = numPayments;
-        }
     }
 
     return applyAppendixUnderwritingFeesAmount(mergedBeforeFees, {

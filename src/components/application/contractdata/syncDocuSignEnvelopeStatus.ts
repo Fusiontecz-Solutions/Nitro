@@ -1,12 +1,23 @@
 import { axiosPost } from "@/redux/axios";
-
-const MIN_SYNC_INTERVAL_MS = 25_000;
+import {
+    DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS,
+    formatDocuSignSyncErrorMessage,
+    isDocuSignPollingLimitError,
+} from "./docusignPolling";
 
 const lastSyncedAtByEnvelope = new Map<string, number>();
 const inFlightByEnvelope = new Map<string, Promise<unknown>>();
 
 function isRateLimitedError(err: unknown): boolean {
     const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 429 || status === 400) {
+        const msg = String(
+            (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+                (err as Error)?.message ??
+                "",
+        );
+        if (isDocuSignPollingLimitError(msg)) return true;
+    }
     return status === 429;
 }
 
@@ -17,6 +28,9 @@ export type SyncDocuSignEnvelopeStatusOptions = {
     force?: boolean;
     /** When true, 429 and throttle skips do not throw. */
     silent?: boolean;
+    /** Used in user-facing error text. */
+    envelopeLabel?: string;
+    ccEmails?: string[];
 };
 
 export type SyncDocuSignEnvelopeStatusResult = {
@@ -26,8 +40,7 @@ export type SyncDocuSignEnvelopeStatusResult = {
 };
 
 /**
- * Throttled DocuSign envelope status sync — avoids 429s from overlapping polls
- * (Contract tab + ACH modal + focus handlers).
+ * Throttled DocuSign envelope status sync — one in-flight request per envelope id.
  */
 export async function syncDocuSignEnvelopeStatus(
     envelopeId: string,
@@ -36,14 +49,16 @@ export async function syncDocuSignEnvelopeStatus(
     const eid = String(envelopeId ?? "").trim();
     if (!eid) return { skipped: true };
 
+    const label = options?.envelopeLabel ?? "envelope";
+
     const now = Date.now();
     const last = lastSyncedAtByEnvelope.get(eid) ?? 0;
-    if (!options?.force && now - last < MIN_SYNC_INTERVAL_MS) {
+    if (!options?.force && now - last < DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS) {
         return { skipped: true };
     }
 
     const inFlight = inFlightByEnvelope.get(eid);
-    if (inFlight) {
+    if (inFlight && !options?.force) {
         try {
             const data = await inFlight;
             return { data };
@@ -63,6 +78,7 @@ export async function syncDocuSignEnvelopeStatus(
             ? { contractId: contractIdNum }
             : {}),
         ...(options?.force ? { force: true } : {}),
+        ...(options?.ccEmails?.length ? { ccEmails: options.ccEmails } : {}),
     })
         .then((res) => {
             lastSyncedAtByEnvelope.set(eid, Date.now());
@@ -76,15 +92,19 @@ export async function syncDocuSignEnvelopeStatus(
 
     try {
         const data = await request;
+        const rateLimited = Boolean(
+            (data as { rateLimited?: boolean } | null | undefined)?.rateLimited,
+        );
+        if (rateLimited && options?.silent) {
+            return { rateLimited: true, data };
+        }
         return { data };
     } catch (err) {
         if (isRateLimitedError(err)) {
             lastSyncedAtByEnvelope.set(eid, Date.now());
             if (options?.silent) return { rateLimited: true };
-            throw new Error(
-                "DocuSign rate limit reached. Wait a moment and click Update status again.",
-            );
+            throw new Error(formatDocuSignSyncErrorMessage(err, label));
         }
-        throw err;
+        throw new Error(formatDocuSignSyncErrorMessage(err, label));
     }
 }

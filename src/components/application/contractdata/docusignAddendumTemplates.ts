@@ -4,7 +4,7 @@ import {
     type PlatformLayoutKey,
 } from "./platformDocumentConfig";
 
-/** @deprecated Use PLATFORM_LAYOUT_KEYS — kept for mapping prefill compatibility. */
+/** @deprecated Use PLATFORM_LAYOUT_KEYS — layout keys for code-driven addendum prefill. */
 export const DOCUSIGN_ADDENDUM_LAYOUT_KEYS = {
     BALANCE_TRANSFER_SHEET: PLATFORM_LAYOUT_KEYS.balanceTransfer,
     FLEX_ADDENDUM: PLATFORM_LAYOUT_KEYS.flexAddendum,
@@ -29,7 +29,7 @@ export function isKnownKatanAddendumLayoutKey(layoutKey: unknown): layoutKey is 
     return LAYOUT_KEY_SET.has(normalizeDocusignLayoutKey(layoutKey));
 }
 
-/** Accept legacy DocuSign template UUIDs or platform layout keys. */
+/** Accept platform layout keys (legacy DocuSign GUIDs still resolve for existing mappings). */
 export function isKnownKatanAddendumTemplateId(ref: unknown): boolean {
     return isPlatformLayoutKey(ref) || isKnownKatanAddendumLayoutKey(ref);
 }

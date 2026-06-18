@@ -47,7 +47,7 @@ export interface DisclosureCalculatorResult {
 
 const WEEKS_PER_MONTH = 4.3;
 const BUSINESS_DAYS_PER_WEEK = 5;
-/** APR term adjustment used by the legacy Woodmere disclosure calculator (12 wk / 60 day daily deals). */
+/** APR term adjustment for daily deals (12 wk / 60 day). */
 const APR_TERM_DAYS_PER_WEEK = 49 / 12;
 
 function parseMoney(value: unknown): number {
@@ -65,7 +65,7 @@ function averagePositive(values: number[]): number {
 }
 
 function resolveDisclosurePaymentSchedule(input: DisclosureCalculatorInputs): {
-    /** Weeks in term (Woodmere: "Number of payments in weeks" for daily). */
+    /** Weeks in term ("Number of payments in weeks" for daily). */
     numberOfWeeks: number;
     /** Actual count of remittances over the term. */
     actualPaymentCount: number;
@@ -96,7 +96,7 @@ function resolveDisclosurePaymentSchedule(input: DisclosureCalculatorInputs): {
 }
 
 /**
- * Percent of merchant's daily income purchased (Woodmere "Payment Terms").
+ * Percent of merchant's daily income purchased (payment terms).
  * Daily: payment ÷ (avg monthly revenue ÷ payment-days-per-month).
  */
 export function computePercentOfMerchantDailyIncomePurchased(args: {
@@ -136,7 +136,7 @@ export function computePercentOfMerchantDailyIncomePurchased(args: {
 }
 
 /**
- * Woodmere-style APR: finance charge over purchase price, annualized with adjusted term days.
+ * Disclosure APR: finance charge over purchase price, annualized with adjusted term days.
  * Matches the reference example (≈446.38% for $20k / 1.499 / 60 daily payments).
  */
 export function computeDisclosureApr(args: {

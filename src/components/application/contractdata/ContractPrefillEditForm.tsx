@@ -70,9 +70,10 @@ import {
     buildDocuSignRolesFromEditorRows,
     mergeContractPrefillWithSignerOverrides,
     resolveContractSignerOverrideRows,
+    resolveDocuSignSignerRole,
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
-import { getPlatformSignerRoleRows, PLATFORM_PRIMARY_SIGNER_ROLE } from "./platformDocumentConfig";
+import { getPlatformSignerRoleRows } from "./platformDocumentConfig";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -148,12 +149,12 @@ const FIELD_LABELS = {
     guarantyGuarantor2DriverLicense: "Driver license",
     appendixUnderwritingFees: "Underwriting fees (% or $; sent as $ on contract)",
     appendixClientName: "Client name",
-    authorizationApplication: "Merchant name",
+    authorizationApplication: "Client name",
     authorizationClientBankName: "Bank name",
     authorizationClientBankRouting: "Routing number",
     authorizationClientBankAccount: "Account number",
-    authorizationClientName: "Business name",
-    authorizationClientNamePrint: "Business name (print)",
+    authorizationClientName: "Signer name",
+    authorizationClientNamePrint: "Printed name",
     authorizationClientTaxId: "Tax ID / EIN",
     authorizationClientDate: "Date",
     authorizedBusinessPhone: "Business phone",
@@ -237,7 +238,7 @@ function contractPrefillSectionKeys(section: ContractPrefillSection): ContractPr
 }
 
 /**
- * Document-aligned sections for the Barclays RPA stack (RPA → Security → Guaranty → Appendix → ACH → Addendum).
+ * Document-aligned sections for the Katan RPA stack (RPA → Security → Guaranty → Appendix → ACH → Addendum).
  * Order follows the contract PDF flow so users can verify fields section by section.
  */
 const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
@@ -406,10 +407,10 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "ach_direct_deposit",
             title: "ACH credit / direct deposit authorization",
-            description: "Merchant name on the authorization, then bank, signatory, tax ID, and date.",
+            description: "Client name on the authorization, then bank, signatory, tax ID, and date.",
             Icon: Landmark,
             groups: [
-                { heading: "Merchant", keys: ["authorizationApplication"] },
+                { heading: "Client", keys: ["authorizationApplication"] },
                 {
                     keys: [
                         "authorizationClientBankName",
@@ -555,7 +556,7 @@ export const CONTRACT_SIGNERS_PREFILL_SECTION_ID = "contract_signers";
 function defaultSignerEditorRows(ownerCount: number): ContractSignerOverrideRow[] {
     if (ownerCount < 2) return [];
     return getPlatformSignerRoleRows(ownerCount).map((slot) => ({
-        role: String(slot.roleName || "").trim() || PLATFORM_PRIMARY_SIGNER_ROLE,
+        role: resolveDocuSignSignerRole(),
         name: String(slot.signerName || "").trim(),
         email: String(slot.signerEmail || "").trim(),
     }));
@@ -951,6 +952,7 @@ export function ContractPrefillEditForm({
                 hasAddendumPrefillFieldMap(
                     linkedAddendumTemplateGuid,
                     linkedAddendumTemplateName,
+                    linkedAddendumMapping.template?.layoutKey ?? null,
                 )),
     );
 
@@ -986,11 +988,13 @@ export function ContractPrefillEditForm({
                 linkedDisclosureMapping.template?.templateId ??
                 linkedDisclosureMapping.templateId ??
                 null,
+            templateLayoutKey: linkedDisclosureMapping.template?.layoutKey ?? null,
             templateName: linkedDisclosureMapping.template?.name ?? null,
             templateState: linkedDisclosureMapping.template?.state ?? null,
             templateFrequency: linkedDisclosureMapping.template?.frequency ?? null,
             fallbackState: contractDisclosureState,
             fallbackFrequency: contractDisclosureFrequency,
+            documentType: "disclosure",
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
             agreementDate: agreementDateForDefaults,
@@ -1021,9 +1025,12 @@ export function ContractPrefillEditForm({
                 ? linkedAddendumTemplateGuid ||
                   DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION
                 : linkedAddendumTemplateGuid || null,
+            templateLayoutKey: linkedAddendumMapping.template?.layoutKey ?? null,
             templateName: linkedAddendumMapping.template?.name ?? null,
             templateState: linkedAddendumMapping.template?.state ?? null,
             templateFrequency: linkedAddendumMapping.template?.frequency ?? null,
+            documentType: isAchMapping ? "ach" : "addendum",
+            prefillDocumentKind: isAchMapping ? "ach_form" : "addendum",
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
             agreementDate: agreementDateForDefaults,
@@ -1380,11 +1387,11 @@ export function ContractPrefillEditForm({
             };
             const signerRowsToPersist = signerEditorRows
                 .map((row) => ({
-                    role: String(row.role || "").trim(),
+                    role: resolveDocuSignSignerRole(row.role),
                     name: String(row.name || "").trim(),
                     email: String(row.email || "").trim(),
                 }))
-                .filter((row) => row.role && row.email);
+                .filter((row) => row.email);
             if (signerRowsToPersist.length) {
                 contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
                     contractPrefillOverrides,
@@ -1634,18 +1641,10 @@ export function ContractPrefillEditForm({
                                                         </Label>
                                                         <Input
                                                             id={`prefill-signer-role-${index}`}
-                                                            value={row.role}
-                                                            onChange={(e) =>
-                                                                setSignerEditorRows((prev) =>
-                                                                    prev.map((r, i) =>
-                                                                        i === index
-                                                                            ? { ...r, role: e.target.value }
-                                                                            : r,
-                                                                    ),
-                                                                )
-                                                            }
-                                                            disabled={readOnly}
-                                                            className="h-9 text-sm"
+                                                            value={resolveDocuSignSignerRole()}
+                                                            readOnly
+                                                            disabled
+                                                            className="h-9 text-sm bg-slate-50"
                                                         />
                                                     </div>
                                                     <div className="space-y-1.5">

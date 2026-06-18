@@ -32,6 +32,8 @@ export type DocuSignSigningStatusPanelProps = {
     crmUpdatedAt?: string | null;
     /** Show labeled Refresh control in the panel header (ACH sidebar layout). */
     refreshInHeader?: boolean;
+    /** DocuSign sync / rate-limit error for this envelope. */
+    syncError?: string | null;
 };
 
 export function DocuSignSigningStatusPanel({
@@ -49,6 +51,7 @@ export function DocuSignSigningStatusPanel({
     lastCheckedAt = null,
     crmUpdatedAt = null,
     refreshInHeader = false,
+    syncError = null,
 }: DocuSignSigningStatusPanelProps) {
     const refreshControl = onRefresh ? (
         <button
@@ -157,6 +160,11 @@ export function DocuSignSigningStatusPanel({
                     {isTerminal && terminalMessage ? (
                         <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
                             {terminalMessage}
+                        </div>
+                    ) : null}
+                    {syncError ? (
+                        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+                            {syncError}
                         </div>
                     ) : null}
                 </div>
