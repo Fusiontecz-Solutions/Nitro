@@ -10,6 +10,11 @@ import {
 } from '../constants/brand';
 import { buildHtmlPdfMailAttachment } from './emailHtmlPdfAttachment.service';
 import {
+    buildIsoApprovalEmailPackage,
+    resolveIsoApprovalEmailSubject,
+} from './applicationApprovalEmailRenderService';
+import { htmlContainsApprovalUrlPlaceholder } from '../templates/applicationApprovalEmailPlaceholders';
+import {
   resolveCrmFrontendBaseUrl,
   resolveDecisionLogicInvitationBaseUrl,
 } from '../utils/crmFrontendUrl';
@@ -147,6 +152,9 @@ export interface ApplicationApprovalEmailParams {
     companyName: string;
     viewApplicationUrl?: string;
     calculateApprovalUrl?: string;
+    /** Pre-rendered branded HTML (CRM frontend template). When omitted, the server renders the new template. */
+    html?: string;
+    subject?: string;
     /** Optional logo image link shown at the top (overrides APPROVAL_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
     /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
@@ -328,13 +336,26 @@ export async function sendApplicationRejectionEmail({
 }
 
 /** @returns send result; `sgMessageId` is stored for webhook fallback matching */
+function assertSendReadyApprovalHtml(html: string): string | null {
+    const trimmed = String(html || '').trim();
+    if (!trimmed || htmlContainsApprovalUrlPlaceholder(trimmed)) {
+        return null;
+    }
+    if (!/\/public\/application\/approval\//i.test(trimmed)) {
+        return null;
+    }
+    return trimmed;
+}
+
+/** @returns send result; `sgMessageId` is stored for webhook fallback matching */
 export async function sendApplicationApprovalEmail({
     to,
     clientName,
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
-    bannerLogoUrl,
+    html: customHtml,
+    subject: customSubject,
     trackingId,
 }: ApplicationApprovalEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
@@ -344,14 +365,26 @@ export async function sendApplicationApprovalEmail({
         return { sent: false };
     }
 
-    const subject = 'Your Application Has Been Approved';
-    const html = buildApplicationApprovalEmailHtml({
-        clientName,
-        companyName,
-        viewApplicationUrl,
-        calculateApprovalUrl,
-        bannerLogoUrl,
-    });
+    const subject = resolveIsoApprovalEmailSubject(false, customSubject);
+    let html = assertSendReadyApprovalHtml(String(customHtml || ''));
+
+    if (!html && calculateApprovalUrl) {
+        const built = buildIsoApprovalEmailPackage({
+            resend: false,
+            clientName,
+            companyName,
+            isoApprovalUrl: calculateApprovalUrl,
+            customSubject,
+        });
+        html = built?.html ?? null;
+    }
+
+    if (!html) {
+        console.error(
+            '[email] Application approval skipped: ISO public portal URL was not resolved (check FRONTEND_URL)',
+        );
+        return { sent: false };
+    }
 
     try {
         const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'application-approved');
@@ -359,10 +392,7 @@ export async function sendApplicationApprovalEmail({
             to: toTrimmed,
             subject,
             html,
-            attachments: [
-                ...buildBrandLogoAttachments(),
-                ...(pdfAttachment ? [pdfAttachment] : []),
-            ],
+            attachments: pdfAttachment ? [pdfAttachment] : undefined,
             trackingId,
             categories: ['application-approval'],
         });
@@ -642,6 +672,9 @@ export interface ApplicationOfferUpdatedEmailParams {
     companyName: string;
     viewApplicationUrl?: string;
     calculateApprovalUrl?: string;
+    /** Pre-rendered branded HTML (CRM frontend template). When omitted, the server renders the new template. */
+    html?: string;
+    subject?: string;
     applicationNumber?: number | string;
     merchantName?: string;
     merchantEmail?: string;
@@ -775,14 +808,8 @@ export async function sendApplicationOfferUpdatedEmail({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
-    applicationNumber,
-    merchantName,
-    merchantEmail,
-    merchantPhone,
-    approvedAmount,
-    factorRate,
-    repaymentAmount,
-    bannerLogoUrl,
+    html: customHtml,
+    subject: customSubject,
     trackingId,
 }: ApplicationOfferUpdatedEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
@@ -792,21 +819,26 @@ export async function sendApplicationOfferUpdatedEmail({
         return { sent: false };
     }
 
-    const subject = 'Your Offer Values Have Been Updated';
-    const html = buildApplicationOfferUpdatedEmailHtml({
-        clientName,
-        companyName,
-        viewApplicationUrl,
-        calculateApprovalUrl,
-        applicationNumber,
-        merchantName,
-        merchantEmail,
-        merchantPhone,
-        approvedAmount,
-        factorRate,
-        repaymentAmount,
-        bannerLogoUrl,
-    });
+    const subject = resolveIsoApprovalEmailSubject(true, customSubject);
+    let html = assertSendReadyApprovalHtml(String(customHtml || ''));
+
+    if (!html && calculateApprovalUrl) {
+        const built = buildIsoApprovalEmailPackage({
+            resend: true,
+            clientName,
+            companyName,
+            isoApprovalUrl: calculateApprovalUrl,
+            customSubject,
+        });
+        html = built?.html ?? null;
+    }
+
+    if (!html) {
+        console.error(
+            '[email] Offer update skipped: ISO public portal URL was not resolved (check FRONTEND_URL)',
+        );
+        return { sent: false };
+    }
 
     try {
         const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'offer-updated');
@@ -814,10 +846,7 @@ export async function sendApplicationOfferUpdatedEmail({
             to: toTrimmed,
             subject,
             html,
-            attachments: [
-                ...buildBrandLogoAttachments(),
-                ...(pdfAttachment ? [pdfAttachment] : []),
-            ],
+            attachments: pdfAttachment ? [pdfAttachment] : undefined,
             trackingId,
             categories: ['offer-updated'],
         });
@@ -1539,6 +1568,12 @@ export interface DocumentRequestEmailParams {
     requestAdditional?: boolean;
     note?: string;
     viewApplicationUrl?: string;
+    /** Pre-rendered branded HTML (placeholder already swapped). Overrides the default template. */
+    html?: string;
+    /** Subject override; falls back to the default "Document request — …" subject. */
+    subject?: string;
+    /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
+    trackingId?: string;
 }
 
 function formatDocumentRequestList(
@@ -1560,6 +1595,8 @@ function formatDocumentRequestList(
 export type DocumentRequestEmailResult = {
     sent: boolean;
     error?: string;
+    /** SendGrid message id stored for webhook fallback matching. */
+    sgMessageId?: string;
 };
 
 /** Email ISO when underwriting requests documents on a deal (SendGrid SMTP). */
@@ -1573,6 +1610,9 @@ export async function sendDocumentRequestEmail({
     requestAdditional,
     note,
     viewApplicationUrl,
+    html: customHtml,
+    subject: customSubject,
+    trackingId,
 }: DocumentRequestEmailParams): Promise<DocumentRequestEmailResult> {
     const recipients = [...new Set((to || []).map((e) => String(e || '').trim()).filter(Boolean))];
     if (!recipients.length) {
@@ -1588,7 +1628,8 @@ export async function sendDocumentRequestEmail({
 
     const safeIso = isoName?.trim() || 'there';
     const appLabel = applicationNumber != null ? String(applicationNumber) : 'N/A';
-    const subject = `Document request — Application #${appLabel} (${clientName})`;
+    const subject =
+        customSubject?.trim() || `Document request — Application #${appLabel} (${clientName})`;
     const uploadUrl = (viewApplicationUrl || '').trim() || undefined;
     const noteBlock = note?.trim()
         ? `<p style="margin:16px 0 0;"><strong>Note from underwriting:</strong><br/>${note
@@ -1598,7 +1639,7 @@ export async function sendDocumentRequestEmail({
               .replace(/>/g, '&gt;')
               .replace(/\n/g, '<br/>')}</p>`
         : '';
-    const html = `
+    const defaultHtml = `
 <!DOCTYPE html>
 <html>
 <body style="font-family:Arial,Helvetica,sans-serif;color:#111827;line-height:1.5;margin:0;padding:0;">
@@ -1621,21 +1662,27 @@ export async function sendDocumentRequestEmail({
 </body>
 </html>`;
 
+    // Prefer the branded HTML supplied by the client (upload-URL placeholder
+    // already swapped for the real link); fall back to the default template.
+    const html = customHtml?.trim() ? customHtml : defaultHtml;
+
     const ccList = [...new Set((cc || []).map((e) => String(e || '').trim()).filter(Boolean))];
 
     try {
-        await sendSendGridMail({
+        const response = await sendSendGridMail({
             to: recipients,
             cc: ccList.length ? ccList : undefined,
             subject,
             html,
             attachments: buildBrandLogoAttachments(),
+            trackingId,
+            categories: ['document-request'],
         });
         console.info('[email] Document request sent via SendGrid', {
             to: recipients,
             cc: ccList.length ? ccList : undefined,
         });
-        return { sent: true };
+        return { sent: true, sgMessageId: response?.messageId };
     } catch (error: unknown) {
         let message =
             error instanceof Error ? error.message : 'SendGrid failed to deliver the document request email';

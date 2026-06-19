@@ -60,4 +60,48 @@ export async function createPublicPortalToken(
   return null;
 }
 
+export type ResolvedPortalToken = {
+  applicationId: string;
+  expiresAt: Date | null;
+};
+
+/**
+ * Resolve a public portal secret to an application UUID.
+ * Falls back to treating the token as an application UUID when the token table is unavailable.
+ */
+export async function resolvePortalToken(token: string): Promise<ResolvedPortalToken | null> {
+  const secret = String(token || '').trim();
+  if (!secret) return null;
+
+  const isUuidLikeToken =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(secret);
+
+  if (await isPublicPortalTokenTableReady()) {
+    const tokenRecord = await prisma.publicApprovalToken.findUnique({
+      where: { tokenHash: sha256Hex(secret) },
+    });
+    if (tokenRecord) {
+      if (tokenRecord.expiresAt && tokenRecord.expiresAt < new Date()) {
+        return null;
+      }
+      return {
+        applicationId: tokenRecord.applicationId,
+        expiresAt: tokenRecord.expiresAt ?? null,
+      };
+    }
+  }
+
+  if (isUuidLikeToken) {
+    const app = await prisma.application.findUnique({
+      where: { id: secret },
+      select: { id: true },
+    });
+    if (app) {
+      return { applicationId: app.id, expiresAt: null };
+    }
+  }
+
+  return null;
+}
+
 export { sha256Hex };
