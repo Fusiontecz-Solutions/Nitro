@@ -1,5 +1,5 @@
 import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
-import { computePerPeriodPayment } from "@/lib/offerRepaymentCalculations";
+import { computePerPeriodPayment, parseTerm } from "@/lib/offerRepaymentCalculations";
 import { formatRateUS } from "@/lib/utils";
 
 export interface ContractPrefillField {
@@ -92,6 +92,8 @@ export interface BuildContractPrefillFieldsArgs {
     achAuthorizationAccountHolderBankRoutingNumber?: string;
     achAuthorizationAccountHolderBankAccountNumber?: string;
     achAuthorizationAccountHolderBankTransactionFee?: string;
+    /** Term of offer — number of payments / transactions for ACH form. */
+    achAuthorizationAccountHolderBankNumberOfTransactions?: string;
     achAuthorizationAccountHolderDate?: string;
 
     /**
@@ -254,6 +256,9 @@ const FIELD_IDS = {
     achAuthorizationAccountHolderBankRoutingNumber: ["ach_authorization_account_holder_bank_routing_number"],
     achAuthorizationAccountHolderBankAccountNumber: ["ach_authorization_account_holder_bank_account_number"],
     achAuthorizationAccountHolderBankTransactionFee: ["ach_authorization_account_holder_bank_transaction_fee"],
+    achAuthorizationAccountHolderBankNumberOfTransactions: [
+        "ach_authorization_account_holder_bank_number_of_transactions",
+    ],
     achAuthorizationAccountHolderDate: ["ach_authorization_account_holder_date"],
 
     achAuthorizationConcentAccountHolderName: ["ach_authorization_concent_account_holder_name"],
@@ -500,6 +505,7 @@ export const buildContractPrefillFields = ({
     achAuthorizationAccountHolderBankRoutingNumber = "",
     achAuthorizationAccountHolderBankAccountNumber = "",
     achAuthorizationAccountHolderBankTransactionFee = "",
+    achAuthorizationAccountHolderBankNumberOfTransactions = "",
     achAuthorizationAccountHolderDate = "",
 
     achAuthorizationConcentAccountHolderName = "",
@@ -656,6 +662,11 @@ export const buildContractPrefillFields = ({
             FIELD_IDS.achAuthorizationAccountHolderBankTransactionFee,
             "ACH Transaction Fee",
             achAuthorizationAccountHolderBankTransactionFee,
+        ),
+        ...mapIds(
+            FIELD_IDS.achAuthorizationAccountHolderBankNumberOfTransactions,
+            "ACH Number of Transactions",
+            achAuthorizationAccountHolderBankNumberOfTransactions,
         ),
         ...mapIds(FIELD_IDS.achAuthorizationAccountHolderDate, "ACH Date", achAuthorizationAccountHolderDate),
         ...mapIds(
@@ -1331,6 +1342,69 @@ export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSourc
         if (perPeriod > 0) return truncateDecimalPrefill(perPeriod);
     }
 
+    return "";
+}
+
+function resolveOfferTermsRecord(
+    app: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+    const termsRaw = app?.termsOffers;
+    if (Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object") {
+        return termsRaw[0] as Record<string, unknown>;
+    }
+    if (termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)) {
+        return termsRaw as Record<string, unknown>;
+    }
+    return null;
+}
+
+function paymentCountFromOfferTerm(raw: unknown): number | undefined {
+    const termStr = str(raw);
+    if (!termStr) return undefined;
+    const parsed = parseTerm(termStr);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
+    const numeric = coerceToFiniteNumber(raw);
+    if (numeric !== undefined && numeric > 0) return Math.trunc(numeric);
+    return undefined;
+}
+
+/** ACH form "NO. of transaction" = term of offer (payments count from offer / terms offer). */
+export function resolveNumberOfPaymentsPrefillValue(sources: NetToMerchantPrefillSources): string {
+    const app = sources.application;
+    const contract = sources.contract;
+    const contractOffer = (contract as Record<string, unknown> | null | undefined)?.offer as
+        | Record<string, unknown>
+        | undefined;
+    const odRoot =
+        sources.offerDecision ??
+        contractOffer ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const terms0 = resolveOfferTermsRecord(app);
+
+    const numPayments =
+        coerceToFiniteNumber(odRoot?.numberOfPayments) ??
+        coerceToFiniteNumber(odEff?.numberOfPayments) ??
+        paymentCountFromOfferTerm(odRoot?.term) ??
+        paymentCountFromOfferTerm(odEff?.term) ??
+        coerceToFiniteNumber(terms0?.numberOfPayments) ??
+        paymentCountFromOfferTerm(terms0?.term) ??
+        coerceToFiniteNumber(terms0?.termLength) ??
+        coerceToFiniteNumber((contract as Record<string, unknown> | null)?.numberOfPayments) ??
+        coerceToFiniteNumber(contractOffer?.numberOfPayments) ??
+        paymentCountFromOfferTerm(contractOffer?.term);
+
+    if (numPayments !== undefined && numPayments > 0) {
+        return String(Math.trunc(numPayments));
+    }
+
+    const saved = str(
+        (contract as Record<string, unknown> | null | undefined)
+            ?.achAuthorizationAccountHolderBankNumberOfTransactions,
+    );
+    if (saved) return saved;
     return "";
 }
 
@@ -2979,6 +3053,10 @@ export function buildContractPrefillFieldsFromApplication(
     if (remittanceStoredValueNeedsRecompute(storedRemittance, remittanceSources, freqForRemit)) {
         const remitComputed = resolveRemittancePrefillValue(remittanceSources);
         if (remitComputed) merged.remittance = remitComputed;
+    }
+    if (!str(merged.achAuthorizationAccountHolderBankNumberOfTransactions)) {
+        const numPayments = resolveNumberOfPaymentsPrefillValue(remittanceSources);
+        if (numPayments) merged.achAuthorizationAccountHolderBankNumberOfTransactions = numPayments;
     }
     const moneySources: NetToMerchantPrefillSources = {
         application: anyApp as Record<string, unknown> | undefined,

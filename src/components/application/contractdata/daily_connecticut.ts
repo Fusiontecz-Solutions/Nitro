@@ -6,7 +6,8 @@ const FIELD_IDS = {
     totalAmountCommercialFinancing: ["total_amount_commercial_financing"],
     financeCharge: ["finance_charge"],
     totalRepaymentAmount: ["total_repayment_amount"],
-    estimatedTimePeriodicPaymement: ["estimated_time_periodic_paymement"],
+    estimatedTimePeriodicPaymement: ["estimated_time_periodic_paymement", "disclosure_term_days"],
+    disclosureBrokerFee: ["disclosure_broker_fee"],
     disclosureDate: ["disclosure_date"],
     recipientName: ["recipient_name"],
     recipientAddress: ["recipient_address"],
@@ -19,10 +20,6 @@ const FIELD_IDS = {
     paymentExceedPercent: ["payment_exceed_percent"],
     signature1Date: ["signature1_date"],
     signature2Date: ["signature2_date"],
-    connecticutReviewField1: ["connecticut_review_field_1"],
-    connecticutReviewField2: ["connecticut_review_field_2"],
-    connecticutReviewField3: ["connecticut_review_field_3"],
-    connecticutReviewField4: ["connecticut_review_field_4"],
 } as const;
 
 const mapIds = (ids: readonly string[], label: string, value: string): ContractPrefillField[] => {
@@ -39,6 +36,7 @@ export interface DailyConnecticutContractPrefillFields {
     financeCharge?: string;
     totalRepaymentAmount?: string;
     estimatedTimePeriodicPaymement?: string;
+    disclosureBrokerFee?: string;
     disclosureDate?: string;
     recipientName?: string;
     recipientAddress?: string;
@@ -51,10 +49,6 @@ export interface DailyConnecticutContractPrefillFields {
     paymentExceedPercent?: string;
     signature1Date?: string;
     signature2Date?: string;
-    connecticutReviewField1?: string;
-    connecticutReviewField2?: string;
-    connecticutReviewField3?: string;
-    connecticutReviewField4?: string;
 }
 
 export function buildDailyConnecticutContractPrefillFields({
@@ -64,6 +58,7 @@ export function buildDailyConnecticutContractPrefillFields({
     financeCharge = "",
     totalRepaymentAmount = "",
     estimatedTimePeriodicPaymement = "",
+    disclosureBrokerFee = "",
     disclosureDate = "",
     recipientName = "",
     recipientAddress = "",
@@ -76,10 +71,6 @@ export function buildDailyConnecticutContractPrefillFields({
     paymentExceedPercent = "",
     signature1Date = "",
     signature2Date = "",
-    connecticutReviewField1 = "",
-    connecticutReviewField2 = "",
-    connecticutReviewField3 = "",
-    connecticutReviewField4 = "",
 }: DailyConnecticutContractPrefillFields = {}): ContractPrefillField[] {
     return [
         ...mapIds(FIELD_IDS.totalCommericalFinancing, "Total Commerical Financing", totalCommericalFinancing),
@@ -93,9 +84,10 @@ export function buildDailyConnecticutContractPrefillFields({
         ...mapIds(FIELD_IDS.totalRepaymentAmount, "Total Repayment Amount", totalRepaymentAmount),
         ...mapIds(
             FIELD_IDS.estimatedTimePeriodicPaymement,
-            "Estimated Time Periodic Paymement",
+            "Estimated term (days)",
             estimatedTimePeriodicPaymement,
         ),
+        ...mapIds(FIELD_IDS.disclosureBrokerFee, "Broker fee", disclosureBrokerFee),
         ...mapIds(FIELD_IDS.disclosureDate, "Disclosure Date", disclosureDate),
         ...mapIds(FIELD_IDS.recipientName, "Recipient Name", recipientName),
         ...mapIds(FIELD_IDS.recipientAddress, "Recipient Address", recipientAddress),
@@ -108,51 +100,5 @@ export function buildDailyConnecticutContractPrefillFields({
         ...mapIds(FIELD_IDS.paymentExceedPercent, "Payment Exceed Percent", paymentExceedPercent),
         ...mapIds(FIELD_IDS.signature1Date, "Signature1 Date", signature1Date),
         ...mapIds(FIELD_IDS.signature2Date, "Signature2 Date", signature2Date),
-        ...mapIds(
-            FIELD_IDS.connecticutReviewField1,
-            "Outstanding loan balance paid from disbursement (optional)",
-            connecticutReviewField1,
-        ),
-        ...mapIds(
-            FIELD_IDS.connecticutReviewField2,
-            "New financing for prepayment charges & unpaid interest (optional)",
-            connecticutReviewField2,
-        ),
-        ...mapIds(
-            FIELD_IDS.connecticutReviewField3,
-            "Prepayment charges payable to provider (optional)",
-            connecticutReviewField3,
-        ),
-        ...mapIds(
-            FIELD_IDS.connecticutReviewField4,
-            "Unpaid interest payable to provider (optional)",
-            connecticutReviewField4,
-        ),
-    ];
-}
-
-/** Editor slot definitions for optional Connecticut review fields (empty by default). */
-export function buildConnecticutOptionalReviewFieldDefinitions(): ContractPrefillField[] {
-    return [
-        {
-            id: "connecticut_review_field_1",
-            label: "Outstanding loan balance paid from disbursement (optional)",
-            value: "",
-        },
-        {
-            id: "connecticut_review_field_2",
-            label: "New financing for prepayment charges & unpaid interest (optional)",
-            value: "",
-        },
-        {
-            id: "connecticut_review_field_3",
-            label: "Prepayment charges payable to provider (optional)",
-            value: "",
-        },
-        {
-            id: "connecticut_review_field_4",
-            label: "Unpaid interest payable to provider (optional)",
-            value: "",
-        },
     ];
 }

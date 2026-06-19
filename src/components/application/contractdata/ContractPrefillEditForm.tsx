@@ -164,6 +164,7 @@ const FIELD_LABELS = {
     achAuthorizationAccountHolderBankRoutingNumber: "Routing number",
     achAuthorizationAccountHolderBankAccountNumber: "Account number",
     achAuthorizationAccountHolderBankTransactionFee: "Transaction fee",
+    achAuthorizationAccountHolderBankNumberOfTransactions: "NO. of transaction",
     achAuthorizationAccountHolderDate: "Date",
     achAuthorizationConcentAccountHolderName: "Name",
     achAuthorizationConcentAccountHolderDate: "Date",
@@ -443,6 +444,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                         "achAuthorizationAccountHolderBankZip",
                         "achAuthorizationAccountHolderBankRoutingNumber",
                         "achAuthorizationAccountHolderBankAccountNumber",
+                        "achAuthorizationAccountHolderBankNumberOfTransactions",
                         "achAuthorizationAccountHolderBankTransactionFee",
                     ],
                 },
@@ -617,6 +619,7 @@ const MONEY_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "appendixUnderwritingFees",
     "addendumDatedPrincipalOwnerAmount",
     "addendumDatedPrincipalOwnerAmount2",
+    "achAuthorizationAccountHolderBankNumberOfTransactions",
     "achAuthorizationAccountHolderBankTransactionFee",
 ];
 const SSN_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [

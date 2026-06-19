@@ -6,7 +6,7 @@ import {
     resolveOfferPayback,
     roundMoney,
 } from "@/lib/offerRepaymentCalculations";
-import { resolveAppendixUnderwritingFeesDollars, getApplicationPrimaryRecipientName } from "./Contract";
+import { resolveAppendixUnderwritingFeesDollars, getApplicationClientPrefillArgs, getApplicationPrimaryRecipientName } from "./Contract";
 
 export type DisclosureCalculatorFrequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly";
 
@@ -29,6 +29,7 @@ export interface DisclosureCalculatorInputs {
 }
 
 export interface DisclosureCalculatorResult {
+    purchasePrice: number;
     revenuePurchased: number;
     amountFinanced: number;
     recipientFunds: number;
@@ -202,6 +203,7 @@ export function calculateDisclosureMetrics(
     });
 
     return {
+        purchasePrice,
         revenuePurchased,
         amountFinanced,
         recipientFunds,
@@ -264,30 +266,81 @@ export function formatDisclosureUsDate(value: unknown): string {
     }).format(d);
 }
 
-export function extractMonthlyRevenuesFromBankAnalyses(
-    analyses: unknown,
-): number[] {
+export type BankAnalysisRevenueRowTarget = {
+    bankAnalysisId: string;
+    rowId?: string;
+    monthLabel: string;
+    monthDate?: string;
+    netCredit: number;
+    loanTransfer: number;
+    deposit: number;
+    other: number;
+    nsfNegDays: number;
+    lowBlcDays: number;
+    avgDailyBlc: number;
+};
+
+function resolveBankAnalysisId(analysis: unknown): string | null {
+    const a = analysis as { _id?: string; id?: string };
+    const id = a._id ?? a.id;
+    return id != null && String(id).trim() ? String(id) : null;
+}
+
+function resolveBankAnalysisRowId(row: unknown): string | undefined {
+    const r = row as { _id?: string; id?: string };
+    const id = r._id ?? r.id;
+    return id != null && String(id).trim() ? String(id) : undefined;
+}
+
+export function computeBankAnalysisRowNetCredit(row: unknown): number {
+    const totalCredit = parseMoney((row as { totalCredit?: unknown })?.totalCredit);
+    const loanTransfer = parseMoney((row as { loanTransfer?: unknown })?.loanTransfer);
+    const deposit = parseMoney((row as { deposit?: unknown })?.deposit);
+    const other = parseMoney((row as { other?: unknown })?.other);
+    const netFromRow = parseMoney((row as { netCredit?: unknown })?.netCredit);
+    if (netFromRow > 0) return netFromRow;
+    if (totalCredit > 0) return Math.max(0, totalCredit - (loanTransfer + deposit + other));
+    return 0;
+}
+
+/** Rows with positive net credit, in the same order as {@link extractMonthlyRevenuesFromBankAnalyses}. */
+export function listBankAnalysisRevenueRowTargets(analyses: unknown): BankAnalysisRevenueRowTarget[] {
     if (!Array.isArray(analyses)) return [];
-    const values: number[] = [];
+    const targets: BankAnalysisRevenueRowTarget[] = [];
     for (const analysis of analyses) {
+        const bankAnalysisId = resolveBankAnalysisId(analysis);
+        if (!bankAnalysisId) continue;
         const rows = (analysis as { rows?: unknown })?.rows;
         if (!Array.isArray(rows)) continue;
         for (const row of rows) {
-            const totalCredit = parseMoney((row as { totalCredit?: unknown })?.totalCredit);
-            const loanTransfer = parseMoney((row as { loanTransfer?: unknown })?.loanTransfer);
-            const deposit = parseMoney((row as { deposit?: unknown })?.deposit);
-            const other = parseMoney((row as { other?: unknown })?.other);
-            const netFromRow = parseMoney((row as { netCredit?: unknown })?.netCredit);
-            const net =
-                netFromRow > 0
-                    ? netFromRow
-                    : totalCredit > 0
-                      ? Math.max(0, totalCredit - (loanTransfer + deposit + other))
-                      : 0;
-            if (net > 0) values.push(net);
+            const netCredit = computeBankAnalysisRowNetCredit(row);
+            if (netCredit <= 0) continue;
+            const monthLabel = String((row as { monthLabel?: unknown })?.monthLabel ?? "").trim();
+            targets.push({
+                bankAnalysisId,
+                rowId: resolveBankAnalysisRowId(row),
+                monthLabel,
+                monthDate:
+                    (row as { monthDate?: string })?.monthDate != null
+                        ? String((row as { monthDate?: string }).monthDate)
+                        : undefined,
+                netCredit,
+                loanTransfer: parseMoney((row as { loanTransfer?: unknown })?.loanTransfer),
+                deposit: parseMoney((row as { deposit?: unknown })?.deposit),
+                other: parseMoney((row as { other?: unknown })?.other),
+                nsfNegDays: parseMoney((row as { nsfNegDays?: unknown })?.nsfNegDays),
+                lowBlcDays: parseMoney((row as { lowBlcDays?: unknown })?.lowBlcDays),
+                avgDailyBlc: parseMoney((row as { avgDailyBlc?: unknown })?.avgDailyBlc),
+            });
         }
     }
-    return values;
+    return targets;
+}
+
+export function extractMonthlyRevenuesFromBankAnalyses(
+    analyses: unknown,
+): number[] {
+    return listBankAnalysisRevenueRowTargets(analyses).map((target) => target.netCredit);
 }
 
 export function buildDisclosureCalculatorInputsFromSources(args: {
@@ -396,12 +449,14 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     const app = args.application ?? {};
     const client = (app.client as Record<string, unknown> | null) ?? null;
     const business = (client?.business as Record<string, unknown> | null) ?? null;
+    const appPrefill = getApplicationClientPrefillArgs(args.application);
     const merchantName =
         String(
             contract.legalName ??
-                contract.clientName ??
                 contract.clientLegalName ??
+                appPrefill.legalName ??
                 client?.businessName ??
+                (business as Record<string, unknown> | null)?.name ??
                 "",
         ).trim() ||
         getApplicationPrimaryRecipientName(args.application) ||
@@ -419,6 +474,16 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     const today = new Date();
     const defaultDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
+    let resolvedPaymentDays = Math.max(1, numberOfPaymentDays || 1);
+    if (
+        frequency === "Daily" &&
+        resolvedPaymentDays <= numberOfPayments &&
+        numberOfPayments > 0 &&
+        numberOfPayments < 40
+    ) {
+        resolvedPaymentDays = Math.max(resolvedPaymentDays, numberOfPayments * BUSINESS_DAYS_PER_WEEK);
+    }
+
     return {
         state: String(args.state ?? contract.state ?? "").trim(),
         frequency,
@@ -430,7 +495,7 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         brokerFeePaidByFunder: 0,
         isRefinance: false,
         numberOfPayments: Math.max(1, numberOfPayments || 1),
-        numberOfPaymentDays: Math.max(1, numberOfPaymentDays || numberOfPayments || 1),
+        numberOfPaymentDays: resolvedPaymentDays,
         disbursementDate: args.disbursementDate || defaultDate,
         firstPaymentDate: args.firstPaymentDate || args.disbursementDate || defaultDate,
         monthlyRevenues,
@@ -465,11 +530,16 @@ export function mapDisclosureMetricsToFieldOverrides(
         percent_of_business_income: formatDisclosurePercent(
             metrics.percentOfDailyIncomePurchased,
         ),
-        total_amount_business_fund: formatDisclosureUsd(metrics.amountFinanced),
+        total_amount_business_fund: formatDisclosureUsd(metrics.purchasePrice),
         total_amount_of_fund_disbursed: formatDisclosureUsd(metrics.recipientFunds),
         total_amount_tobe_paid_to_provider: formatDisclosureUsd(metrics.estimatedTotalPayment),
         total_dollar_cost: formatDisclosureUsd(metrics.financeCharge),
         estimated_payment_amount: formatDisclosureUsd(metrics.estimatedPayment),
+        estimated_monthly_cost: formatDisclosureUsd(metrics.estimatedMonthlyCost),
+        payment_total: formatDisclosureUsd(metrics.estimatedTotalPayment),
+        payement_exceeded_percent: formatDisclosurePercent(
+            metrics.percentOfDailyIncomePurchased,
+        ),
     };
 
     if (includeApr) {
