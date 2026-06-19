@@ -269,6 +269,64 @@ export const buildApplicationApprovalEmailHtml = ({
 `
 };
 
+export interface ApplicationRejectionEmailParams {
+    to: string;
+    subject?: string;
+    /** Fully-rendered, branded rejection email HTML (built by the caller). */
+    html: string;
+    trackingId?: string;
+}
+
+/**
+ * Sends the application rejection/decline template to the linked ISO.
+ * The HTML is rendered by the caller (the CRM frontend's rejection template),
+ * so this only handles delivery + tracking.
+ *
+ * @returns send result; `sgMessageId` is stored for webhook fallback matching
+ */
+export async function sendApplicationRejectionEmail({
+    to,
+    subject,
+    html,
+    trackingId,
+}: ApplicationRejectionEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
+    const toTrimmed = String(to || '').trim();
+    if (!toTrimmed) {
+        // eslint-disable-next-line no-console
+        console.warn('[email] Application rejection skipped: empty recipient');
+        return { sent: false };
+    }
+
+    const htmlBody = String(html || '').trim();
+    if (!htmlBody) {
+        // eslint-disable-next-line no-console
+        console.warn('[email] Application rejection skipped: empty html');
+        return { sent: false };
+    }
+
+    const safeSubject = String(subject || '').trim() || 'Application Update';
+
+    try {
+        const pdfAttachment = await buildHtmlPdfMailAttachment(htmlBody, 'application-rejected');
+        const response = await sendMail({
+            to: toTrimmed,
+            subject: safeSubject,
+            html: htmlBody,
+            attachments: [
+                ...buildBrandLogoAttachments(),
+                ...(pdfAttachment ? [pdfAttachment] : []),
+            ],
+            trackingId,
+            categories: ['application-rejection'],
+        });
+        return { sent: true, sgMessageId: response?.messageId };
+    } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error('Application rejection email send failed:', { to: toTrimmed, error });
+        return { sent: false };
+    }
+}
+
 /** @returns send result; `sgMessageId` is stored for webhook fallback matching */
 export async function sendApplicationApprovalEmail({
     to,

@@ -58,6 +58,7 @@ import {
     sendApplicationSentToUnderwritingClientEmail,
     sendApplicationUnderwritingCompletedClientEmail,
     sendUnderwriterNewApplicationEmail,
+    sendApplicationRejectionEmail,
 } from '../services/emailService';
 import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
@@ -3656,7 +3657,7 @@ class ApplicationController {
     async rejectApplication(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const { reason, additionalComments } = req.body;
+            const { reason, additionalComments, emailHtml, emailSubject } = req.body;
             const authUser = getAuthenticatedUser(req);
             const currentUserRole = authUser?.role;
             const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
@@ -3812,10 +3813,119 @@ class ApplicationController {
                 console.error('Failed to create activity log for rejection:', logError);
             }
 
+            // Best-effort: email the rejection template (rendered by the FE) to the
+            // linked ISO. Never fail the rejection if the email cannot be sent.
+            let rejectionEmailedTo: string | null = null;
+            try {
+                const rejectionHtml = typeof emailHtml === 'string' ? emailHtml.trim() : '';
+                if (rejectionHtml) {
+                    const appIsoId = (applicationRecord as any).isoId
+                        ? String((applicationRecord as any).isoId).trim()
+                        : '';
+
+                    let isoEmail = '';
+                    if (appIsoId) {
+                        const isoRow = await prisma.iso.findUnique({
+                            where: { id: appIsoId },
+                            select: { email: true },
+                        });
+                        isoEmail = String(isoRow?.email || '').trim();
+                    }
+
+                    if (!isoEmail) {
+                        console.warn(
+                            '[reject] No ISO email on file; rejection template not emailed. Application:',
+                            applicationRecord.id,
+                        );
+                    } else if (!isOutboundSmtpConfigured()) {
+                        console.warn(
+                            '[reject] SMTP not configured; rejection template not emailed. Set SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS.',
+                        );
+                    } else {
+                        const subject =
+                            (typeof emailSubject === 'string' && emailSubject.trim()) ||
+                            'Application Update';
+                        const rejectionTrackingId = randomUUID();
+
+                        // Create the mail-log row BEFORE sending so webhook events can
+                        // correlate delivery/open/click back to this OutboundCommunication.
+                        try {
+                            const authUserForLog = getAuthenticatedUser(req);
+                            const roleLabel = authUserForLog?.role
+                                ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
+                                : 'User';
+                            const actorName = (req as any).user?.name || '';
+
+                            await recordCommunicationAudit(req, {
+                                outboundCommunicationId: rejectionTrackingId,
+                                applicationId: applicationRecord.id,
+                                channel: 'EMAIL',
+                                recipientType: 'ISO',
+                                recipient: isoEmail,
+                                subject,
+                                body: rejectionHtml,
+                                templateName: 'Application rejected (ISO)',
+                                actionType: 'APPLICATION_REJECTED' as ApplicationActivityActionType,
+                                user: authUserForLog,
+                                currentStatus: `${applicationRecord.currentQueue} / ${applicationRecord.currentState}`,
+                                actionDescription:
+                                    `${roleLabel} ${actorName}`.trim() +
+                                    ' sent rejection email to the linked ISO.',
+                                metadata: {
+                                    emailSentTo: [isoEmail],
+                                    sentToLinkedIsoOnly: true,
+                                    template: 'rejection',
+                                    status: 'sent',
+                                },
+                            });
+                        } catch (logError) {
+                            console.error('Failed to create activity log for rejection email:', logError);
+                        }
+
+                        const result = await sendApplicationRejectionEmail({
+                            to: isoEmail,
+                            subject,
+                            html: rejectionHtml,
+                            trackingId: rejectionTrackingId,
+                        });
+
+                        if (result.sent) {
+                            rejectionEmailedTo = isoEmail;
+                        }
+
+                        if (result.sgMessageId) {
+                            try {
+                                const existing = await prisma.outboundCommunication.findUnique({
+                                    where: { id: rejectionTrackingId },
+                                    select: { metadata: true },
+                                });
+                                const mergedMeta = {
+                                    ...(existing?.metadata &&
+                                    typeof existing.metadata === 'object' &&
+                                    !Array.isArray(existing.metadata)
+                                        ? (existing.metadata as Record<string, unknown>)
+                                        : {}),
+                                    sgMessageId: result.sgMessageId,
+                                };
+                                await prisma.outboundCommunication.update({
+                                    where: { id: rejectionTrackingId },
+                                    data: { metadata: mergedMeta as object },
+                                });
+                            } catch (metaErr) {
+                                console.error('[rejectEmail] failed to store sgMessageId:', metaErr);
+                            }
+                        }
+                    }
+                }
+            } catch (emailError) {
+                console.error('Failed to send rejection email to ISO:', emailError);
+            }
+
             return res.status(200).json({
                 success: true,
                 message: 'Application rejected successfully',
                 data: application,
+                rejectionEmailedTo,
             });
         } catch (error) {
             console.error('Reject application error:', error);
