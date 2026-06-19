@@ -63,6 +63,7 @@ import {
 import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { notifyDocumentRequestRecipientsOnUpload } from '../services/documentRequestNotificationService';
+import { resolveUploadDocumentSlug } from '../utils/documentRequestMatch';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 import { generateNextDealId } from '../utils/generateNextDealId';
 import {
@@ -634,6 +635,8 @@ export const mapApplicationToApi = (app: any) => {
             mimeType: f.mimeType,
             size: f.size,
             uploadedAt: f.uploadedAt,
+            requestedDocumentSlug: f.requestedDocumentSlug ?? null,
+            documentType: f.requestedDocumentSlug ?? null,
         })) || [];
 
     /** Matches ISO portal `/iso/:id/application-payout-status` (IsoApplicationPayout). */
@@ -1114,19 +1117,29 @@ class ApplicationController {
 
             const newFiles: any[] = [];
             const failedUploads: string[] = [];
+            const uploadBodyFields = {
+                documentType: (req.body as { documentType?: unknown })?.documentType,
+                requestedDocumentSlug: (req.body as { requestedDocumentSlug?: unknown })
+                    ?.requestedDocumentSlug,
+            };
 
             for (let i = 0; i < uploadResults.length; i++) {
                 const result = uploadResults[i];
                 const fileName = filesToUpload[i]?.name || 'unknown';
 
                 if (result.success && result.data) {
+                    const storedOriginalName = result.fileName || fileName;
                     newFiles.push({
                         url: result.data.secure_url,
                         publicId: result.data.public_id,
-                        originalName: result.fileName || fileName,
+                        originalName: storedOriginalName,
                         mimeType: result.data.format,
                         size: result.data.bytes,
                         uploadedAt: new Date(),
+                        requestedDocumentSlug: resolveUploadDocumentSlug(
+                            storedOriginalName,
+                            uploadBodyFields,
+                        ),
                     });
                 } else {
                     console.error(`Failed to upload file ${fileName}:`, result.error || result.message);
@@ -1152,6 +1165,7 @@ class ApplicationController {
                         mimeType: f.mimeType,
                         size: f.size,
                         uploadedAt: f.uploadedAt,
+                        requestedDocumentSlug: f.requestedDocumentSlug ?? undefined,
                     })),
                 });
             } catch (dbError: any) {

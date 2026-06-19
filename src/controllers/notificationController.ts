@@ -122,6 +122,8 @@ const mapApplicationToApi = (app: any) => {
             mimeType: f.mimeType,
             size: f.size,
             uploadedAt: f.uploadedAt,
+            requestedDocumentSlug: f.requestedDocumentSlug ?? null,
+            documentType: f.requestedDocumentSlug ?? null,
         })) || [];
 
     return {

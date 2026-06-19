@@ -35,11 +35,42 @@ export const DOCUMENT_REQUEST_LABELS: Record<string, string> = {
   
   const DOCUMENT_REQUEST_UPLOAD_TAG_SEPARATOR = '__';
   
-  function extractDocumentRequestTagFromFilename(filename: string): string | null {
+  export function extractDocumentRequestTagFromFilename(filename: string): string | null {
     const raw = String(filename || '').trim();
     const sep = raw.indexOf(DOCUMENT_REQUEST_UPLOAD_TAG_SEPARATOR);
     if (sep <= 0) return null;
     return raw.slice(0, sep).trim() || null;
+  }
+
+  /** Canonical slug for stored uploads (keep in sync with FE documentRequestTypes.ts). */
+  export function normalizeDocumentSlug(raw?: string | null): string {
+    const slug = String(raw ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, '-');
+    const aliases: Record<string, string> = {
+      'driving-license': 'driver-license',
+      'drivers-license': 'driver-license',
+      'driver-licence': 'driver-license',
+      'driving-licence': 'driver-license',
+      'void-check': 'voided-check',
+      'voided-cheque': 'voided-check',
+    };
+    return aliases[slug] ?? slug;
+  }
+
+  /** Resolve the requested-document slug from multipart body fields and/or filename prefix. */
+  export function resolveUploadDocumentSlug(
+    originalName: string,
+    bodyFields?: { documentType?: unknown; requestedDocumentSlug?: unknown },
+  ): string | null {
+    const bodyRaw = String(
+      bodyFields?.documentType || bodyFields?.requestedDocumentSlug || '',
+    ).trim();
+    const fromFilename = extractDocumentRequestTagFromFilename(originalName);
+    const raw = fromFilename || bodyRaw;
+    if (!raw) return null;
+    return normalizeDocumentSlug(raw) || null;
   }
   
   type UploadedFileLike = {
