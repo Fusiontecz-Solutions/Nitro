@@ -588,9 +588,26 @@ export const updateApplicationDocumentChecklist = createAsyncThunk(
 // Reject/Decline application
 export const rejectApplication = createAsyncThunk(
     'application/reject',
-    async ({ id, reason }: { id: string | number; reason: string }, { rejectWithValue }) => {
+    async (
+        {
+            id,
+            reason,
+            emailHtml,
+            emailSubject,
+        }: {
+            id: string | number;
+            reason: string;
+            /** Rendered rejection template emailed to the linked ISO. */
+            emailHtml?: string;
+            emailSubject?: string;
+        },
+        { rejectWithValue },
+    ) => {
         try {
-            const response = await axiosPost(`/applications/${id}/reject`, { reason });
+            const response = await axiosPost(`/applications/${id}/reject`, {
+                reason,
+                ...(emailHtml ? { emailHtml, emailSubject } : {}),
+            });
             return response.data;
         } catch (error: any) {
             console.error('Reject application error:', error);

@@ -68,7 +68,7 @@ import DealPipeline from '../pages/Dealpipeline/DealPipeline';
 import DealbyId from '../pages/Dealpipeline/DealbyId';
 import NotificationDashboard from '../pages/NotificationDashboard/NotificationDashboard';
 import LetterGeneratorDealById from '../pages/letterGenerator/LetterGeneratorDealById';
-// import TemplatePlayground from '../pages/templates/TemplatePlayground';
+import TemplatePlayground from '../pages/templates/TemplatePlayground';
 import { applicationsPageLoader } from './applicationsLoader';
 import {
   normalizeRoleKey,
@@ -177,6 +177,10 @@ const Routes: RouteObject[] = [
     createRoute({
         path: '/decision-logic/success',
         element: <DecisionLogicSuccessPage />
+    }),
+    createRoute({
+        path: '/template-playground',
+        element: <TemplatePlayground />
     }),
     createRoute({
         path: '/login',
