@@ -45,7 +45,7 @@ import { clearVoiceMicSessionFlags } from "@/voice/microphoneWarmup";
 import { toast } from "react-toastify";
 import { APP_SHORT_ICON_SRC, APP_SHORT_ICON_DARK_SRC ,resolveAppLogoSrc } from "@/constants/appLogo";
 import { useTheme } from "@/context/ThemeContext";
-import { useMemo, type ComponentType } from "react";
+import { useMemo, useEffect, type ComponentType } from "react";
 import type { Notification } from "@/redux/slices/notificationSlice";
 import {
   normalizeRoleKey,
@@ -56,14 +56,19 @@ import { operationsDashboardStatusTitle } from "@/constants/operationsDashboardA
 import { cn } from "@/lib/utils";
 import { clearCrmCacheOnLogout } from "@/lib/crmCache";
 import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
+import { getApplicationStats } from "@/redux/actions/applicationActions";
+import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashboardActions";
 // import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt';
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import PersonIcon from '@mui/icons-material/Person';
 type SidebarNavIcon = ComponentType<SvgIconProps>;
 
 type PipelineAccent =
+  | "applications"
+  | "underwriter"
+  | "final-underwriter"
   | "contract-pending"
-  | "contract-generated"
+  | "contract-sent"
   | "contract-signed"
   | "finals-funding"
   | "disbursement"
@@ -144,8 +149,10 @@ function getPipelineCountBadgeClass(): string {
 function resolvePipelineCount(
   operationsStatus: string | undefined,
   summaryCounts: {
+    totalCases: number;
     contractPending: number;
-    contractGenerated: number;
+    contractSent: number;
+    contractsOut: number;
     signedContracts: number;
     disbursment: number;
     funded: number;
@@ -154,10 +161,18 @@ function resolvePipelineCount(
   rejectedCount: number,
 ): number | null {
   switch (operationsStatus) {
+    case "Underwriter":
+      return caseStageCounts.Underwriter ?? 0;
+    case "Final Underwriter":
+      return caseStageCounts["Final Underwriter"] ?? 0;
+    case "Contracted":
+      return caseStageCounts.Contracted ?? 0;
+    case "Agent":
+      return caseStageCounts.Agent ?? 0;
     case "Contract_Pending":
       return summaryCounts.contractPending;
-    case "Contract_Generated":
-      return summaryCounts.contractGenerated;
+    case "Contract_Sent":
+      return summaryCounts.contractSent || summaryCounts.contractsOut;
     case "Contract_Signed":
       return summaryCounts.signedContracts;
     case "Finals_And_Funding_Call":
@@ -248,18 +263,20 @@ const operationsSections: SidebarNavSection[] = [
   {
     title: "DEAL PIPELINE",
     items: [
-      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
+      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon, pipelineAccent: "applications" },
       {
         label: "Underwriter",
         url: "/applications",
         operationsStatus: "Underwriter",
         icon: ContentPasteSearchIcon,
+        pipelineAccent: "underwriter",
       },
       {
         label: "Final Underwriter",
         url: "/applications",
         operationsStatus: "Final Underwriter",
         icon: FactCheck,
+        pipelineAccent: "final-underwriter",
       },
       {
         label: "Contract",
@@ -273,9 +290,9 @@ const operationsSections: SidebarNavSection[] = [
             pipelineAccent: "contract-pending",
           },
           {
-            label: operationsDashboardStatusTitle("Contract_Generated"),
-            operationsStatus: "Contract_Generated",
-            pipelineAccent: "contract-generated",
+            label: operationsDashboardStatusTitle("Contract_Sent"),
+            operationsStatus: "Contract_Sent",
+            pipelineAccent: "contract-sent",
           },
           {
             label: operationsDashboardStatusTitle("Contract_Signed"),
@@ -434,13 +451,14 @@ const superAdminSections: SidebarNavSection[] = [
   {
     title: "DEAL PIPELINE",
     items: [
-      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
-      { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon },
+      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon, pipelineAccent: "applications" },
+      { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon, pipelineAccent: "underwriter" },
       {
         label: "Final Underwriter",
         url: "/applications",
         operationsStatus: "Final Underwriter",
         icon: FactCheck,
+        pipelineAccent: "final-underwriter",
       },
       {
         label: "Contract",
@@ -454,9 +472,9 @@ const superAdminSections: SidebarNavSection[] = [
             pipelineAccent: "contract-pending",
           },
           {
-            label: operationsDashboardStatusTitle("Contract_Generated"),
-            operationsStatus: "Contract_Generated",
-            pipelineAccent: "contract-generated",
+            label: operationsDashboardStatusTitle("Contract_Sent"),
+            operationsStatus: "Contract_Sent",
+            pipelineAccent: "contract-sent",
           },
           {
             label: operationsDashboardStatusTitle("Contract_Signed"),
@@ -550,8 +568,20 @@ const Sidebar = () => {
   const operationsCaseStageCounts = useSelector(
     (state: RootState) => state.operationsDashboard.caseStageCounts,
   );
+  const opsDashboardLoaded = useSelector(
+    (state: RootState) => state.operationsDashboard.hasLoadedSummaryOnce,
+  );
+  const opsDashboardSummaryInFlight = useSelector(
+    (state: RootState) => state.operationsDashboard.summaryInFlight,
+  );
   const rejectedApplicationCount = useSelector(
     (state: RootState) => state.applicationStats.data?.rejected?.count ?? 0,
+  );
+  const applicationStatsLoaded = useSelector(
+    (state: RootState) => state.applicationStats.data != null,
+  );
+  const applicationStatsLoading = useSelector(
+    (state: RootState) => state.applicationStats.loading,
   );
   const userRole = resolveEffectiveRole(data?.user);
   const normalizedRole = normalizeRoleKey(userRole);
@@ -566,6 +596,27 @@ const Sidebar = () => {
   const sidebarSections: SidebarNavSection[] = normalizedRole === "SUPER_ADMIN"
     ? superAdminSections
     : getRoleSections(userRole);
+
+  const showDealPipelineCounts =
+    normalizedRole === "OPERATIONS" || normalizedRole === "SUPER_ADMIN";
+
+  useEffect(() => {
+    if (!showDealPipelineCounts) return;
+    if (!localStorage.getItem("token")) return;
+    if (!opsDashboardLoaded && !opsDashboardSummaryInFlight) {
+      void dispatch(fetchOperationsDashboardSummary());
+    }
+    if (!applicationStatsLoaded && !applicationStatsLoading) {
+      void dispatch(getApplicationStats());
+    }
+  }, [
+    dispatch,
+    showDealPipelineCounts,
+    opsDashboardLoaded,
+    opsDashboardSummaryInFlight,
+    applicationStatsLoaded,
+    applicationStatsLoading,
+  ]);
 
   const navigate = useNavigate();
 
@@ -744,10 +795,7 @@ const Sidebar = () => {
                               );
                               const showChildCount =
                                 childCount != null && childCount > 0;
-                              const childCountLabel =
-                                childCount != null && childCount > 9
-                                  ? "9+"
-                                  : String(childCount ?? "");
+                              const childCountLabel = String(childCount ?? "");
 
                               return (
                                 <SidebarMenuSubItem key={child.label}>
@@ -786,18 +834,19 @@ const Sidebar = () => {
                     }
 
                     const pipelineAccent = item.pipelineAccent;
-                    const pipelineCount = resolvePipelineCount(
-                      pipelineStatus,
-                      operationsSummaryCounts,
-                      operationsCaseStageCounts,
-                      rejectedApplicationCount,
-                    );
+                    const pipelineCount = pipelineStatus
+                      ? resolvePipelineCount(
+                          pipelineStatus,
+                          operationsSummaryCounts,
+                          operationsCaseStageCounts,
+                          rejectedApplicationCount,
+                        )
+                      : pipelineAccent === "applications"
+                        ? operationsSummaryCounts.totalCases
+                        : null;
                     const showPipelineCount =
                       pipelineCount != null && pipelineCount > 0;
-                    const pipelineCountLabel =
-                      pipelineCount != null && pipelineCount > 9
-                        ? "9+"
-                        : String(pipelineCount ?? "");
+                    const pipelineCountLabel = String(pipelineCount ?? "");
 
                     return (
                       <SidebarMenuItem key={item.label} className="w-full group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:justify-center">

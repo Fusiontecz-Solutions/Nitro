@@ -14,7 +14,10 @@ export function isOpsDashboardWarmRoute(
   return (
     pathname === "/" ||
     pathname === "/cases-dashboard" ||
-    pathname === "/case-management"
+    pathname === "/case-management" ||
+    pathname === "/applications" ||
+    pathname.startsWith("/applications/") ||
+    pathname.startsWith("/application-details")
   );
 }
 

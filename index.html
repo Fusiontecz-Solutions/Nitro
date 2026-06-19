@@ -1,7 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" translate="no">
   <head>
     <meta charset="UTF-8" />
+    <!-- Browser auto-translation (Google/Edge) rewrites text nodes out from under
+         React's reconciler and triggers "Failed to execute 'removeChild' on 'Node'".
+         Opt the app out of translation to keep React's DOM ownership intact. -->
+    <meta name="google" content="notranslate" />
     <link rel="icon" type="image/svg+xml" href="/black_logo.svg" media="(prefers-color-scheme: light)" />
     <link rel="icon" type="image/svg+xml" href="/white_logo.svg" media="(prefers-color-scheme: dark)" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

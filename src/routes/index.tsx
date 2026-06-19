@@ -11,6 +11,7 @@ import DashboardPage from "../pages/dashboard/DashboardPage";
 import OperationsDashboard from "../pages/dashboard/OperationsDashboard";
 import ToShowApplication from "../pages/dashboard/ToShowApplication";
 import RootLayout from "../components/layout/RootLayout";
+import RouteErrorBoundary from "../components/RouteErrorBoundary";
 import LoginPage from "../pages/auth/LoginPage";
 import SignupPage from "../pages/auth/SignupPage";
 import ForgotPasswordPage from "../pages/auth/ForgotPasswordPage";
@@ -120,6 +121,9 @@ const createRoute = (config: RouteConfig): RouteObject => {
     return {
         path,
         element,
+        // Recover gracefully (and override React Router's raw default screen) when
+        // a route throws during render/commit — e.g. transient removeChild DOM crashes.
+        errorElement: <RouteErrorBoundary />,
         ...(children?.length ? { children: mapChildRoutes(children) } : {}),
     } as RouteObject;
 };

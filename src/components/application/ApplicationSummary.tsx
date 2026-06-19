@@ -141,12 +141,14 @@ const ApplicationSummary = ({
     }
     const actionRequired = showDynamicData ? formatActionRequired((applicationData as any)?.note) : "--";
 
-    // Different gradients for light and dark mode
+    // Woodmere brand: black / slate-gray gradients (logo palette)
     const gradient = isDark
-        ? "linear-gradient(135deg, #1F2837 0%, #243244 45%, #2E4258 100%)"
-        : "linear-gradient(135deg, #3B8BD1 0%, #2566A9 50%, #0E416E 100%)";
+        ? "linear-gradient(135deg, #374151 0%, #1F2937 45%, #000000 100%)"
+        : "linear-gradient(135deg, #6F7887 0%, #374151 50%, #111827 100%)";
 
-    const panelTint = isDark ? "bg-white/10 border border-white/15" : "bg-white/30";
+    const panelTint = isDark
+        ? "bg-white/8 border border-white/12"
+        : "bg-white/12 border border-white/20";
 
     const innerPanelClass = `grid gap-4 rounded-lg p-4 justify-center items-center shadow-md dark:shadow-lg ${panelTint} grid-cols-1 md:grid-cols-3 lg:grid-cols-6`;
 
@@ -155,12 +157,12 @@ const ApplicationSummary = ({
             <div className="text-white">
                 {isLoading ? (
                     <div className="space-y-2 pr-12">
-                        <Skeleton className="h-4 w-[150px] bg-white/30" />
-                        <Skeleton className="h-4 w-[100px] bg-white/30" />
+                        <Skeleton className="h-4 w-[150px] bg-gray-400/30" />
+                        <Skeleton className="h-4 w-[100px] bg-gray-400/30" />
                     </div>
                 ) : (
                     <>
-                        <p className="text-sm font-medium opacity-90 mb-1">Borrower Name</p>
+                        <p className="text-sm font-medium text-gray-300 mb-1">Borrower Name</p>
                         <p className="text-base font-semibold capitalize">{clientName ?? "-"}</p>
                     </>
                 )}
@@ -168,12 +170,12 @@ const ApplicationSummary = ({
             <div className="text-white">
                 {isLoading ? (
                     <div className="space-y-2 pr-12">
-                        <Skeleton className="h-4 w-[150px] bg-white/30" />
-                        <Skeleton className="h-4 w-[100px] bg-white/30" />
+                        <Skeleton className="h-4 w-[150px] bg-gray-400/30" />
+                        <Skeleton className="h-4 w-[100px] bg-gray-400/30" />
                     </div>
                 ) : (
                     <>
-                        <p className="text-sm font-medium opacity-90 mb-1">Business Name</p>
+                        <p className="text-sm font-medium text-gray-300 mb-1">Business Name</p>
                         <p className="text-base font-semibold capitalize">{businessName ?? "-"}</p>
                     </>
                 )}
@@ -181,12 +183,12 @@ const ApplicationSummary = ({
             <div className="text-white">
                 {isLoading ? (
                     <div className="space-y-2 pr-12">
-                        <Skeleton className="h-4 w-[150px] bg-white/30" />
-                        <Skeleton className="h-4 w-[100px] bg-white/30" />
+                        <Skeleton className="h-4 w-[150px] bg-gray-400/30" />
+                        <Skeleton className="h-4 w-[100px] bg-gray-400/30" />
                     </div>
                 ) : (
                     <>
-                        <p className="text-sm font-medium opacity-90 mb-1">Requested Amount</p>
+                        <p className="text-sm font-medium text-gray-300 mb-1">Requested Amount</p>
                         <p className="text-base font-semibold">
                             {loanAmount != null ? formatCurrency(loanAmount) : "-"}
                         </p>
@@ -196,12 +198,12 @@ const ApplicationSummary = ({
             <div className="text-white">
                 {isLoading || offerAmountLoading ? (
                     <div className="space-y-2 pr-12">
-                        <Skeleton className="h-4 w-[150px] bg-white/30" />
-                        <Skeleton className="h-4 w-[100px] bg-white/30" />
+                        <Skeleton className="h-4 w-[150px] bg-gray-400/30" />
+                        <Skeleton className="h-4 w-[100px] bg-gray-400/30" />
                     </div>
                 ) : (
                     <>
-                        <p className="text-sm font-medium opacity-90 mb-1">Offer Amount</p>
+                        <p className="text-sm font-medium text-gray-300 mb-1">Offer Amount</p>
                         <p className="text-base font-semibold">
                             {offerAmount != null ? formatCurrency(offerAmount) : "-"}
                         </p>
@@ -211,12 +213,12 @@ const ApplicationSummary = ({
             <div className="text-white">
                 {isLoading ? (
                     <div className="space-y-2 pr-12">
-                        <Skeleton className="h-4 w-[150px] bg-white/30" />
-                        <Skeleton className="h-4 w-[100px] bg-white/30" />
+                        <Skeleton className="h-4 w-[150px] bg-gray-400/30" />
+                        <Skeleton className="h-4 w-[100px] bg-gray-400/30" />
                     </div>
                 ) : (
                     <>
-                        <p className="text-sm font-medium opacity-90 mb-1">Status</p>
+                        <p className="text-sm font-medium text-gray-300 mb-1">Status</p>
                         <p className="text-base font-semibold capitalize">{status ?? "-"}</p>
                     </>
                 )}
@@ -224,12 +226,12 @@ const ApplicationSummary = ({
             <div className="text-white text-left">
                 {isLoading ? (
                     <div className="space-y-2 pr-12">
-                        <Skeleton className="h-4 w-[150px] bg-white/30" />
-                        <Skeleton className="h-4 w-[100px] bg-white/30" />
+                        <Skeleton className="h-4 w-[150px] bg-gray-400/30" />
+                        <Skeleton className="h-4 w-[100px] bg-gray-400/30" />
                     </div>
                 ) : (
                     <>
-                        <p className="text-sm font-medium opacity-90 mb-1">Action Required</p>
+                        <p className="text-sm font-medium text-gray-300 mb-1">Action Required</p>
                         <p className="text-base font-semibold font-roboto whitespace-pre-wrap break-words">
                             {actionRequired}
                         </p>
@@ -240,7 +242,7 @@ const ApplicationSummary = ({
     );
 
     return (
-        <Card className={`border-0 rounded-lg shadow-xl overflow-hidden mb-6 py-0 ${isDark ? 'ring-1 ring-slate-500/30' : 'dark:border dark:border-border'}`}>
+        <Card className={`border-0 rounded-lg shadow-xl overflow-hidden mb-6 py-0 ${isDark ? 'ring-1 ring-gray-600/30' : 'ring-1 ring-gray-300/40'}`}>
             <CardContent
                 className="px-8 py-6"
                 style={{ background: gradient }}
@@ -250,18 +252,18 @@ const ApplicationSummary = ({
                         <button
                             type="button"
                             onClick={onBack}
-                            className="flex items-center justify-center w-9 h-9 rounded-full text-white hover:bg-white/20 transition-colors"
+                            className="flex items-center justify-center w-9 h-9 rounded-full text-white hover:bg-gray-500/30 transition-colors"
                             aria-label="Go back"
                         >
                             <ChevronLeft className="w-5 h-5" />
                         </button>
                     )}
-                    <h2 className="text-white text-2xl font-[700] font-roboto uppercase tracking-wide">
+                    <h2 className="text-white text-2xl font-[700] font-roboto uppercase tracking-wider">
                         Application Summary
                     </h2>
                     {showReadOnlyPill ? (
                         <span
-                            className="ml-1 inline-flex items-center gap-1.5 rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-white shadow-sm backdrop-blur-sm"
+                            className="ml-1 inline-flex items-center gap-1.5 rounded-full border border-gray-400/35 bg-gray-500/20 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-100 shadow-sm backdrop-blur-sm"
                             title={
                                 stageAccess.reason ??
                                 "Read-only preview for your role"

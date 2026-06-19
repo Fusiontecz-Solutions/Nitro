@@ -41,7 +41,7 @@ export function resolveDocumentRequestEmailFields(
   const uploadUrl =
     String(values.upload_documents_url || "").trim() ||
     DOCUMENT_REQUEST_UPLOAD_URL_PLACEHOLDER;
-  const teamName = String(values.team_name || "").trim() || "Katan Capital Team";
+  const teamName = String(values.team_name || "").trim() || "Woodmere Financial";
 
   return {
     isoName,

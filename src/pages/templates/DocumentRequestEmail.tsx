@@ -1,5 +1,5 @@
 import type { TemplateVariable } from "./types";
-import { createHtmlTemplatePreview } from "./HtmlTemplatePreview";
+import { createHtmlTemplatePreview } from "@/pages/templates/HtmlTemplatePreview";
 import { renderDocumentRequestEmailHtml } from "./documentRequestEmailHtml";
 import { DOCUMENT_REQUEST_UPLOAD_URL_PLACEHOLDER } from "./documentRequestEmailShared";
 
@@ -17,7 +17,7 @@ export const DOCUMENT_REQUEST_EMAIL_VARIABLES: TemplateVariable[] = [
     defaultValue: "Voided check\nDriver's license\nBank statements",
   },
   {
-    key: "note",
+    key: "note", 
     label: "Note to ISO",
     placeholder: "Please upload the listed documents at your earliest convenience.",
     defaultValue: "Please upload the listed documents at your earliest convenience.",
@@ -31,8 +31,8 @@ export const DOCUMENT_REQUEST_EMAIL_VARIABLES: TemplateVariable[] = [
   {
     key: "team_name",
     label: "Team name (signature)",
-    placeholder: "Katan Capital Team",
-    defaultValue: "Katan Capital Team",
+    placeholder: "Woodmere Financial",
+    defaultValue: "Woodmere Financial",
   },
 ];
 

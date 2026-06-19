@@ -1,5 +1,4 @@
 import { useMemo } from 'react';
-import { createPortal } from 'react-dom';
 import { RouterProvider, createBrowserRouter } from 'react-router';
 import { Provider } from 'react-redux';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -19,22 +18,21 @@ function AppContent() {
   const router = useMemo(() => createBrowserRouter(Routes), []);
   const { resolvedTheme } = useTheme();
 
-  const toastContainer = (
-    <ToastContainer
-      position="top-right"
-      autoClose={4000}
-      draggable
-      theme={resolvedTheme === 'dark' ? 'dark' : 'light'}
-      style={{ zIndex: 10200 }}
-    />
-  );
-
   return (
     <>
       <RouterProvider router={router} />
-      {typeof document !== 'undefined'
-        ? createPortal(toastContainer, document.body)
-        : toastContainer}
+      {/* ToastContainer already portals itself into document.body. Wrapping it in
+          an extra createPortal made the toast a React-managed direct child of
+          <body>, which conflicts with third-party widgets that mutate <body>
+          (e.g. the DecisionLogic widget) and surfaces as removeChildFromContainer
+          ("removeChild ... not a child of this node"). Render it directly. */}
+      <ToastContainer
+        position="top-right"
+        autoClose={4000}
+        draggable
+        theme={resolvedTheme === 'dark' ? 'dark' : 'light'}
+        style={{ zIndex: 10200 }}
+      />
     </>
   );
 }

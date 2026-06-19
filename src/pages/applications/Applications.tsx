@@ -156,22 +156,13 @@ function formatUnderwriterClaimLabel(
 }
 
 /**
- * Deal Pipeline sidebar — aligns with Super Admin deal pipeline queues.
- * Values are backend `currentQueue` unless noted (Disbursement → Disbursment in DB).
- * Contract Signed maps to `operationsStatus=Contract_Signed` via {@link pipelineStatusFilterToApiFields}.
+ * Contract workflow stages for the applications pipeline filter.
+ * Values map to `operationsStatus` via {@link pipelineStatusFilterToApiFields}.
  */
 const APPLICATIONS_QUEUE_FILTER_OPTIONS = [
-  { label: "Agent", value: "Agent" },
-  { label: "Underwriter", value: "Underwriter" },
-  { label: "Final Underwriter", value: "Final Underwriter" },
-  { label: "Contract Generated", value: "Contract Generated" },
-  { label: "Contract Sent", value: "Contract Sent" },
-  { label: "Contract Cancelled", value: "Contract Cancelled" },
-  { label: "Contract Signed", value: "Contract_Signed" },
-  { label: "Final", value: "Final" },
-  { label: "Funding call", value: "Funding Call" },
-  { label: "Disbursement", value: "Disbursment" },
-  { label: "Funded", value: "Funded" },
+  { label: "Contract Pending", value: "Contract_Pending" },
+  { label: "Contract Sent", value: "Contract_Sent" },
+  { label: "Contract Generated", value: "Contract_Generated" },
 ] as const;
 
 const APPLICATIONS_VIEW_MODE_STORAGE_KEY = "applicationsListViewMode";

@@ -98,27 +98,29 @@ export default function TemplatePlayground() {
           </p>
         </div>
 
-        <nav style={styles.list}>
-          {TEMPLATE_REGISTRY.map((template) => {
-            const active = template.id === selectedId;
-            return (
-              <button
-                key={template.id}
-                type="button"
-                onClick={() => selectTemplate(template.id)}
-                style={{
-                  ...styles.listItem,
-                  ...(active ? styles.listItemActive : {}),
-                }}
-              >
-                <span style={styles.listItemName}>{template.name}</span>
-                <span style={styles.badge}>
+        <div style={styles.selectGroup}>
+          <label htmlFor="template-select" style={styles.selectLabel}>
+            Template
+          </label>
+          <div style={styles.selectWrap}>
+            <select
+              id="template-select"
+              value={selectedId}
+              onChange={(e) => selectTemplate(e.target.value)}
+              style={styles.select}
+            >
+              {TEMPLATE_REGISTRY.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name} ·{" "}
                   {TEMPLATE_CATEGORY_LABELS[template.category]}
-                </span>
-              </button>
-            );
-          })}
-        </nav>
+                </option>
+              ))}
+            </select>
+            <span style={styles.selectCaret} aria-hidden="true">
+              ▾
+            </span>
+          </div>
+        </div>
 
         {selectedTemplate ? (
           <div style={styles.fields}>
@@ -258,34 +260,40 @@ const styles: Record<string, React.CSSProperties> = {
   sidebarHeader: { display: "flex", flexDirection: "column", gap: 4 },
   title: { margin: 0, fontSize: 18, fontWeight: 700 },
   subtitle: { margin: 0, fontSize: 12, color: "#6b7280" },
-  list: { display: "flex", flexDirection: "column", gap: 6 },
-  listItem: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-    padding: "10px 12px",
-    border: "1px solid #e2e8f0",
-    borderRadius: 8,
-    background: "#ffffff",
-    cursor: "pointer",
-    textAlign: "left",
-    font: "inherit",
-  },
-  listItemActive: {
-    borderColor: "#22a1e3",
-    background: "#eaf6fd",
-  },
-  listItemName: { fontSize: 13, fontWeight: 600 },
-  badge: {
-    fontSize: 10,
+  selectGroup: { display: "flex", flexDirection: "column", gap: 6 },
+  selectLabel: {
+    fontSize: 11,
     fontWeight: 700,
     textTransform: "uppercase",
     letterSpacing: 0.5,
-    color: "#22a1e3",
-    background: "#e0f2fe",
-    borderRadius: 999,
-    padding: "2px 8px",
+    color: "#6b7280",
+  },
+  selectWrap: { position: "relative" },
+  select: {
+    width: "100%",
+    font: "inherit",
+    fontSize: 13,
+    fontWeight: 600,
+    color: "#1f2937",
+    padding: "10px 32px 10px 12px",
+    border: "1px solid #cbd5e1",
+    borderRadius: 8,
+    background: "#ffffff",
+    cursor: "pointer",
+    outline: "none",
+    appearance: "none",
+    WebkitAppearance: "none",
+    MozAppearance: "none",
+    boxSizing: "border-box",
+  },
+  selectCaret: {
+    position: "absolute",
+    right: 12,
+    top: "50%",
+    transform: "translateY(-50%)",
+    pointerEvents: "none",
+    fontSize: 11,
+    color: "#6b7280",
   },
   fields: {
     display: "flex",

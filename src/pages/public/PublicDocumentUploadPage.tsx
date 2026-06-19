@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
 import { axiosGet, axiosPost } from "@/redux/axios";
-import UploadedDocuments from "@/components/application/UploadedDocuments";
+import { RequestedDocumentsPanel } from "@/components/application/RequestedDocumentsPanel";
 import { getApplicationById } from "@/redux/actions/applicationActions";
+import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch";
 import { formatDate, formatDateTimeUS } from "@/lib/utils";
@@ -105,6 +106,14 @@ const PublicDocumentUploadPage = () => {
           const appIdForRedux = sessionBody.applicationId ?? body.data.application?.id;
           if (appIdForRedux) {
             void dispatch(getApplicationById(appIdForRedux)).unwrap().catch(() => {});
+          }
+
+          const docRequestLookup =
+            body.data.application?.applicationId ?? body.data.application?.id;
+          if (docRequestLookup != null) {
+            void dispatch(getDocumentRequestsByApplication(docRequestLookup))
+              .unwrap()
+              .catch(() => {});
           }
 
           if (!isMounted) return;
@@ -261,7 +270,11 @@ const PublicDocumentUploadPage = () => {
                 <span className="ml-2">Loading application…</span>
               </div>
             ) : (
-              <UploadedDocuments applicationId={app.id} requestOnlyMode />
+              <RequestedDocumentsPanel
+                applicationUuid={app.id}
+                applicationLookupId={app.applicationId ?? app.id}
+                businessApplicationId={app.applicationId ?? null}
+              />
             )}
           </>
         ) : null}

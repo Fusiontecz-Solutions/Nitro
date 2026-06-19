@@ -453,6 +453,14 @@ const CommentSection = ({
     /** Underwriter view shows Required Document Status beside Comments — narrow compose column. */
     const stackCommentActionsRow = Boolean(isUnderwriter && !publicMode);
 
+    const primaryActionButtonClass = publicMode
+        ? "px-4 py-2 gap-2 bg-[#111827] text-white hover:bg-[#374151] cursor-pointer rounded-sm text-sm font-roboto shadow-md"
+        : "px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer rounded-sm text-sm font-roboto shadow-md";
+
+    const primaryActionButtonSmClass = publicMode
+        ? "px-4 py-2 bg-[#111827] text-white hover:bg-[#374151] cursor-pointer rounded-sm text-sm font-roboto shadow-md"
+        : "px-4 py-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer rounded-sm text-sm font-roboto shadow-md";
+
     const renderCommentThread = (comment: Comment, depth: number) => {
         const isIsoComment = comment.type === "ISO Comment";
         const isExternal = comment.type === "External Comment" || isIsoComment;
@@ -676,7 +684,7 @@ const CommentSection = ({
                                         <Button
                                             type="button"
                                             size="sm"
-                                            className="px-4 py-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer rounded-sm text-sm font-roboto shadow-md"
+                                            className={primaryActionButtonSmClass}
                                             onClick={() => handleSubmitReply(comment)}
                                             disabled={createLoading || !replyDraft.trim()}
                                         >
@@ -811,7 +819,7 @@ const CommentSection = ({
                                 <div className="flex w-full justify-start">
                                     <Button
                                         type="submit"
-                                        className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer rounded-sm text-sm font-roboto shadow-md"
+                                        className={primaryActionButtonClass}
                                         disabled={(createLoading || updateLoading) || !applicationId}
                                     >
                                         {createLoading || updateLoading ? (
@@ -896,7 +904,7 @@ const CommentSection = ({
                                     <div className="shrink-0">
                                         <Button
                                             type="submit"
-                                            className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer rounded-sm text-sm font-roboto shadow-md"
+                                            className={primaryActionButtonClass}
                                             disabled={(createLoading || updateLoading) || !applicationId}
                                         >
                                             {createLoading || updateLoading ? (

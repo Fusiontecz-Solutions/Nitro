@@ -638,14 +638,32 @@ export const deleteApplication = createAsyncThunk(
 // Upload documents to an existing application
 export const uploadApplicationDocuments = createAsyncThunk(
     'application/uploadDocuments',
-    async ({ id, files }: { id: string; files: File[] }, { rejectWithValue }) => {
+    async (
+        {
+            id,
+            files,
+            requestedDocumentSlug,
+        }: { id: string; files: File[]; requestedDocumentSlug?: string },
+        { rejectWithValue },
+    ) => {
         try {
             const formData = new FormData();
 
-            // Append files
+            const slug = String(requestedDocumentSlug || '').trim();
+
+            // Append files. When a requested-document slug is provided, prefix the
+            // filename with `${slug}__` so the backend matcher
+            // (isDocumentRequestFulfilled) links the upload to that request and
+            // flips its checklist row to "Received".
             if (files && files.length > 0) {
                 files.forEach((file) => {
-                    formData.append('files', file);
+                    const upload = slug
+                        ? new File([file], `${slug}__${file.name}`, {
+                              type: file.type,
+                              lastModified: file.lastModified,
+                          })
+                        : file;
+                    formData.append('files', upload);
                 });
             }
 
@@ -683,9 +701,13 @@ export const sendApprovalEmail = createAsyncThunk(
         {
             applicationId,
             resend,
+            emailHtml,
+            emailSubject,
         }: {
             applicationId: string | number;
             resend?: boolean;
+            emailHtml?: string;
+            emailSubject?: string;
         },
         { rejectWithValue }
     ) => {
@@ -693,6 +715,7 @@ export const sendApprovalEmail = createAsyncThunk(
             const response = await axiosPost('/applications/send-approval-email', {
                 applicationId,
                 resend: !!resend,
+                ...(emailHtml ? { emailHtml, emailSubject } : {}),
             });
             return response.data;
         } catch (error: any) {
