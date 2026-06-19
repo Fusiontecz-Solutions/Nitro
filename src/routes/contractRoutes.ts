@@ -50,6 +50,7 @@ router.put('/guarantor/:id', contractController.updateContractGuarantor.bind(con
 router.delete('/guarantor/:id', contractController.deleteContractGuarantor.bind(contractController));
 
 router.post('/:id/documents/upload', contractController.uploadContractDocuments.bind(contractController));
+router.post('/:id/documents/extract-kyc', contractController.extractKycDocument.bind(contractController));
 router.get('/:id/documents', contractController.getUploadedContractDocuments.bind(contractController));
 router.get('/:id/documents/:fileId', contractController.getUploadedContractDocumentById.bind(contractController));
 router.put('/:id/documents/:fileId', contractController.updateUploadedContractDocument.bind(contractController));

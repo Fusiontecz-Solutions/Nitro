@@ -11,6 +11,13 @@ import {
 } from '../utils/fieldEncryption';
 import { resolveKatanFunderFromName } from '../utils/katanFunderDealId';
 import { syncApplicationDealIdForKatanFunder } from './syncApplicationDealIdForKatanFunder';
+import contractKycDocumentExtractService from './contractKycDocumentExtractService';
+import {
+  isKycDocumentType,
+  mergeContractPrefillPatch,
+  normalizeKycDocumentType,
+  type KycExtractionMapped,
+} from './contractKycPrefillMapper';
 
 async function resolvePaymentBankDetailForContract(
   prismaClient: typeof prisma | any,
@@ -359,6 +366,75 @@ class ContractService {
     return (prisma as any).contractDocumentTemplateMapping.delete({ where: { id } });
   }
 
+  /**
+   * Persist KYC extraction into contract prefill JSON, contract scalar columns, and ACH row.
+   * Voided-check scans must update bank fields everywhere they are read (not only JSON overrides).
+   */
+  private async persistKycExtractionToContract(
+    contractId: number,
+    mapped: KycExtractionMapped,
+  ): Promise<Record<string, unknown>> {
+    const contractRow = await (prisma as any).contract.findUnique({
+      where: { id: contractId },
+      select: { id: true, clientId: true, contractPrefillOverrides: true },
+    });
+    if (!contractRow) {
+      throw new Error('Contract not found');
+    }
+
+    const mergedContractPrefillOverrides = mergeContractPrefillPatch(
+      contractRow.contractPrefillOverrides,
+      mapped.contractPrefill,
+    );
+
+    const scalarUpdate: ContractExtraFields = {};
+    for (const key of CONTRACT_EXTRA_STRING_FIELDS) {
+      const val = mapped.contractPrefill[key];
+      if (firstNonEmptyString(val)) {
+        scalarUpdate[key] = String(val).trim();
+      }
+    }
+
+    await this.updateContract(contractId, {
+      contractPrefillOverrides: mergedContractPrefillOverrides,
+      ...scalarUpdate,
+    });
+
+    if (mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
+      const ach = mapped.panels.ach;
+      const achPayload = {
+        bankName: firstNonEmptyString(ach.bankName) || undefined,
+        accountHolderName: firstNonEmptyString(ach.fullNameOnAccount) || undefined,
+        accountNumber: firstNonEmptyString(ach.accountNumber) || undefined,
+        routingNumber: firstNonEmptyString(ach.routingNumber) || undefined,
+        dba: firstNonEmptyString(ach.dba) || undefined,
+        address: firstNonEmptyString(ach.address) || undefined,
+        city: firstNonEmptyString(ach.city) || undefined,
+        state: firstNonEmptyString(ach.state) || undefined,
+        zip: firstNonEmptyString(ach.zip) || undefined,
+      };
+      const hasAchData = Object.values(achPayload).some((v) => Boolean(v));
+      if (hasAchData) {
+        const existing = await (prisma as any).aCH.findFirst({
+          where: { contractId },
+          select: { id: true },
+          orderBy: { createdAt: 'asc' },
+        });
+        if (existing?.id) {
+          await this.updateACH(existing.id, achPayload);
+        } else if (contractRow.clientId) {
+          await this.createACH({
+            clientId: contractRow.clientId,
+            contractId,
+            ...achPayload,
+          });
+        }
+      }
+    }
+
+    return mergedContractPrefillOverrides;
+  }
+
   async uploadContractDocuments(
     contractId: number,
     filesByType: Record<string, any>,
@@ -385,6 +461,7 @@ class ContractService {
 
     const folder = `ih-crm/contracts/${contract.contractNumber || contract.id}`;
     const savedDocuments: any[] = [];
+    const kycExtractions: any[] = [];
 
     for (const { documentType, file } of normalizedEntries) {
       const normalizedType = normalizeUploadedDocumentType(documentType);
@@ -416,9 +493,83 @@ class ContractService {
         documentType: normalizedType,
         metadata: mapUploadedDocumentForResponse(metadata as Record<string, unknown>),
       });
+
+      if (isKycDocumentType(documentType)) {
+        try {
+          const kycType = normalizeKycDocumentType(documentType)!;
+          const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
+            file,
+            kycType,
+          );
+
+          const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
+            contractId,
+            mapped,
+          );
+
+          kycExtractions.push({
+            documentType: kycType,
+            keyData: mapped.keyData,
+            contractPrefill: mapped.contractPrefill,
+            panels: mapped.panels,
+            mergedContractPrefillOverrides,
+          });
+        } catch (extractErr: unknown) {
+          const msg =
+            extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
+          console.error(
+            `[uploadContractDocuments] KYC extraction failed for ${documentType}:`,
+            extractErr,
+          );
+          kycExtractions.push({
+            documentType: normalizeKycDocumentType(documentType),
+            error: msg,
+          });
+        }
+      }
     }
 
-    return savedDocuments;
+    return { documents: savedDocuments, kycExtractions };
+  }
+
+  async extractKycDocumentForContract(
+    contractId: number,
+    file: any,
+    documentTypeRaw: string,
+  ) {
+    const contract = await (prisma as any).contract.findUnique({
+      where: { id: contractId },
+      select: { id: true },
+    });
+    if (!contract) {
+      throw new Error('Contract not found');
+    }
+
+    const documentType = normalizeKycDocumentType(documentTypeRaw);
+    if (!documentType) {
+      throw new Error('documentType must be driverLicense or voidedCheck');
+    }
+
+    const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
+      file,
+      documentType,
+    );
+
+    const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
+      contractId,
+      mapped,
+    );
+
+    const updated = await this.getByIdContract(contractId);
+
+    return {
+      documentType,
+      keyData: mapped.keyData,
+      contractPrefill: mapped.contractPrefill,
+      panels: mapped.panels,
+      mergedContractPrefillOverrides,
+      contract: updated,
+    };
   }
 
   async getUploadedContractDocuments(contractId: number) {

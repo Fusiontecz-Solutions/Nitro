@@ -316,6 +316,74 @@ export class ClaudePdfExtractionService {
     const retry = PdfClaudeExtractionUtils.validateResult(parsed);
     return PdfClaudeExtractionUtils.mergeBusinessNameAliases(base, retry.key_data || {});
   }
+
+  /**
+   * Extract structured KYC fields from a driver's license or voided check / bank letter.
+   */
+  async extractKycDocument(
+    buffer: Buffer,
+    mimeType: string,
+    documentType: "driverLicense" | "voidedCheck",
+  ): Promise<{ key_data: Record<string, string> }> {
+    if (!buffer.length) {
+      throw new Error("extractKycDocument: empty file buffer");
+    }
+
+    const mime = (mimeType || "").toLowerCase();
+    const isPdf =
+      mime === "application/pdf" ||
+      mime === "application/x-pdf" ||
+      mime === "binary/octet-stream";
+    const isImage =
+      mime === "image/jpeg" ||
+      mime === "image/jpg" ||
+      mime === "image/png" ||
+      mime === "image/webp";
+
+    const { system, userPrompt } = PdfClaudeExtractionUtils.buildKycSystemAndPrompt(documentType);
+
+    let blocks: Anthropic.Messages.ContentBlockParam[];
+
+    if (isImage) {
+      const mediaType: "image/jpeg" | "image/png" | "image/webp" =
+        mime === "image/png"
+          ? "image/png"
+          : mime === "image/webp"
+            ? "image/webp"
+            : "image/jpeg";
+      blocks = [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: mediaType,
+            data: buffer.toString("base64"),
+          },
+        },
+        { type: "text", text: userPrompt },
+      ];
+    } else if (isPdf) {
+      blocks = [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ({
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: buffer.toString("base64"),
+          },
+        } as any),
+        { type: "text", text: userPrompt },
+      ];
+    } else {
+      throw new Error(`Unsupported file type for KYC extraction: ${mimeType || "unknown"}`);
+    }
+
+    const rawText = await this.callClaude(system, blocks);
+    const parsed = PdfClaudeExtractionUtils.parseJsonFromModel(rawText);
+    const validated = PdfClaudeExtractionUtils.validateKycResult(parsed, documentType);
+    return { key_data: validated.key_data };
+  }
 }
 
 /** Thrown when callers handle sparse PDFs themselves instead of using hybrid vision. */
@@ -548,6 +616,87 @@ export class PdfClaudeExtractionUtils {
       merged[k] = String(v).trim();
     }
     return PdfClaudeExtractionUtils.withCanonicalBusinessName({ ...base, key_data: merged });
+  }
+
+  static buildKycSystemAndPrompt(
+    documentType: "driverLicense" | "voidedCheck",
+  ): { system: string; userPrompt: string } {
+    if (documentType === "driverLicense") {
+      return {
+        system: [
+          "You extract data from US driver's licenses and state ID cards with absolute precision.",
+          "Reply with a single JSON object only — no markdown outside JSON.",
+          "Use keys: document_type (string), key_data (object string->string).",
+          "",
+          "key_data fields (use empty string if not visible; never invent):",
+          "- first_name, last_name, full_name (as printed on card)",
+          "- driver_license_number (exact spacing/digits as printed)",
+          "- date_of_birth (MM/DD/YYYY when visible)",
+          "- sex, height, eye_color, license_class",
+          "- address_line1, address_line2 (apt/suite if separate)",
+          "- city, state (2-letter), zip",
+          "- issue_date, expiration_date (MM/DD/YYYY when visible)",
+          "",
+          "Rules:",
+          "- Copy values exactly as printed on the document.",
+          "- Do not include field labels in values.",
+          "- For multi-line addresses, put street in address_line1 and unit in address_line2.",
+        ].join("\n"),
+        userPrompt:
+          "Read this driver's license image/document and return the JSON object with key_data populated.",
+      };
+    }
+
+    return {
+      system: [
+        "You extract banking data from voided checks, direct deposit forms, and bank verification letters.",
+        "Reply with a single JSON object only — no markdown outside JSON.",
+        "Use keys: document_type (string), key_data (object string->string).",
+        "",
+        "key_data fields (use empty string if not visible; never invent):",
+        "- account_holder_name / member_name (exact legal name on document)",
+        "- legal_business_name (if business entity shown)",
+        "- dba_name (doing business as, if shown separately or after 'DBA')",
+        "- account_holder_address_line1, account_holder_address_line2",
+        "- city, state (2-letter), zip",
+        "- bank_name (financial institution name)",
+        "- bank_address, bank_city, bank_state, bank_zip",
+        "- routing_number / aba_routing_number (9 digits, no spaces)",
+        "- account_number / checking_account_number (digits only, preserve leading zeros)",
+        "- account_type (Checking, Savings, etc.)",
+        "- check_number (if visible on sample check)",
+        "",
+        "Rules:",
+        "- Routing numbers are exactly 9 digits.",
+        "- Account numbers: digits only, full length as printed (often 10-17 digits).",
+        "- If member name contains 'DBA', also populate legal_business_name and dba_name separately.",
+        "- Copy bank and holder names exactly as printed.",
+      ].join("\n"),
+      userPrompt:
+        "Read this voided check / bank letter / direct deposit form and return the JSON object with key_data populated.",
+    };
+  }
+
+  static validateKycResult(
+    data: unknown,
+    documentType: "driverLicense" | "voidedCheck",
+  ): { document_type: string; key_data: Record<string, string> } {
+    if (!data || typeof data !== "object") {
+      throw new Error("Claude did not return a JSON object for KYC extraction");
+    }
+    const o = data as Record<string, unknown>;
+    const key_data: Record<string, string> = {};
+    const kd = o.key_data;
+    if (kd && typeof kd === "object") {
+      for (const [k, v] of Object.entries(kd as Record<string, unknown>)) {
+        key_data[String(k)] = v == null ? "" : String(v).trim();
+      }
+    }
+    return {
+      document_type:
+        o.document_type == null ? documentType : String(o.document_type),
+      key_data,
+    };
   }
 
   static normalizePages(p: unknown): Array<{ page_number: number; note: string }> {

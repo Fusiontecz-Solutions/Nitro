@@ -140,6 +140,12 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   signature2_date: ['disclosure_date', 'agreement_date', 'signature_date'],
   estimated_payment_amount: ['disclosure_estimated_payment', 'estimated_payment', 'remittance'],
   monthly_income: ['disclosure_avg_monthly_revenue', 'avarage_monthly_income', 'etimated_average_income'],
+  disclosure_avg_monthly_revenue: [
+    'disclosure_avg_monthly_revenue',
+    'avarage_monthly_income',
+    'monthly_income',
+    'etimated_average_income',
+  ],
   purchase_amount: ['disclosure_amount_financed', 'funding_provided'],
   purchase_price: ['disclosure_total_payment', 'total_repayment_amount', 'estimatedTotalPaymentAmount'],
   appendix_underwriting_fees: ['disclosure_broker_fee', 'underwriter_fee', 'underwriterfee', 'underwriter_fees'],
