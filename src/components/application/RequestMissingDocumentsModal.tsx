@@ -128,8 +128,6 @@ const RequestMissingDocumentsModal = ({
 
     onOpenChange,
 
-    variant = "send-back",
-
     onSuccess,
 
 }: RequestMissingDocumentsModalProps) => {
@@ -182,7 +180,7 @@ const RequestMissingDocumentsModal = ({
 
     const isFinalUnderwriter = roleKey === "FINAL_UNDERWRITER";
 
-    const isRequestVariant = variant === "request";
+    const isRequestVariant = true;
 
     const documentRequestLookupId = useMemo(() => {
         const numeric = (applicationData as { applicationId?: number } | null)?.applicationId;

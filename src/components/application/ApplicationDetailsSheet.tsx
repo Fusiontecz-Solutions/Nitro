@@ -6,13 +6,17 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import type { Application } from "@/types/applicationTypes"
 import type { Client } from "@/types/clientTypes"
-import ApplicationSheetComments from "./ApplicationSheetComments"
 import ApplicationSheetDudep from "./ApplicationSheetDudep"
-import ApplicationSheetFiles from "./ApplicationSheetFiles"
-import ApplicationSheetNotes from "./ApplicationSheetNotes"
 import ApplicationSheetActivityLog from "./ApplicationSheetActivityLog"
-import ApplicationSheetBankDetail from "./ApplicationSheetBankDetail"
-import ApplicationSheetBankAnalysis from "./ApplicationSheetBankAnalysis"
+import ApplicationSheetMailLog from "./ApplicationSheetMailLog"
+import ApplicationSheetFiles from "./ApplicationSheetFiles"
+import ApplicationSheetBankAndPositions from "./ApplicationSheetBankAndPositions"
+import ContractTab from "./ContractTab"
+import { Final } from "@/pages/case/Final"
+import { FundingCall } from "@/pages/case/FundingCall"
+import { Disbursement } from "@/pages/case/Disbursment"
+import { useApplicationDetailLoader } from "@/hooks/useApplicationDetailLoader"
+import { getFundingCalls } from "@/redux/actions/fundingCallActions"
 
 
 import { formatCurrency, formatDate as formatDateUtil } from "@/lib/utils"
@@ -22,7 +26,6 @@ import { useTheme } from "@/context/ThemeContext"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
-  Briefcase,
   Building2,
   FileText,
   AlertCircle
@@ -111,15 +114,13 @@ function deriveStatus(app: any | null | undefined): string {
 }
 const TABS = [
   { id: "details", label: "Application Details", icon: <FileText className="w-4 h-4" /> },
-  { id: "files", label: "Files", icon: <Briefcase className="w-4 h-4" /> },
-
-  { id: "dedupe", label: "Dedupe", icon: <AlertCircle className="w-4 h-4" /> },
-  { id: "bankDetails", label: "Bank Details", icon: <AlertCircle className="w-4 h-4" /> },
-  { id: "Bank Analysis", label: "Bank Analysis", icon: <AlertCircle className="w-4 h-4" /> },
-  { id: "comments", label: "Comments", icon: <AlertCircle className="w-4 h-4" /> },
+  { id: "contracts", label: "Contracts", icon: <FileText className="w-4 h-4" /> },
+  { id: "final", label: "Final", icon: <FileText className="w-4 h-4" /> },
+  { id: "funding", label: "Funding", icon: <FileText className="w-4 h-4" /> },
+  { id: "disbursement", label: "Disbursement", icon: <FileText className="w-4 h-4" /> },
+  { id: "mailLog", label: "Mail Log", icon: <FileText className="w-4 h-4" /> },
   { id: "activityLog", label: "Activity Log", icon: <Building2 className="w-4 h-4" /> },
-  { id: "remarks", label: "Note", icon: <FileText className="w-4 h-4" /> },
-
+  { id: "dedupe", label: "Dedupe", icon: <AlertCircle className="w-4 h-4" /> },
 ]
 
 export default function ApplicationDetailsSheet({
@@ -146,9 +147,13 @@ export default function ApplicationDetailsSheet({
   const canSeeDedupe = ["UNDERWRITER", "FINAL_UNDERWRITER", "ADMIN", "SUPER_ADMIN"].includes(
     roleUpper
   )
-  const isOperationsRole = roleUpper === "OPERATIONS"
-  const visibleTabs = (canSeeDedupe ? TABS : TABS.filter((t) => t.id !== "dedupe")).filter(
-    (t) => !(isOperationsRole && t.id === "Bank Analysis")
+  const visibleTabs = canSeeDedupe ? TABS : TABS.filter((t) => t.id !== "dedupe")
+
+  const isAgent = roleUpper === "AGENT"
+  // Agents view the details tab read-only; staff roles may upload docs and edit financials.
+  const documentsReadOnly = isAgent
+  const financialsReadOnly = !["UNDERWRITER", "FINAL_UNDERWRITER", "ADMIN", "SUPER_ADMIN"].includes(
+    roleUpper
   )
 
   // Derive clientId from application
@@ -174,10 +179,19 @@ export default function ApplicationDetailsSheet({
     if (activeTab === "dedupe" && !canSeeDedupe) {
       setActiveTab("details")
     }
-    if (activeTab === "Bank Analysis" && isOperationsRole) {
-      setActiveTab("details")
-    }
-  }, [open, activeTab, canSeeDedupe, isOperationsRole])
+  }, [open, activeTab, canSeeDedupe])
+
+  // Load the full application into Redux (state.applicationDetail) so the embedded
+  // Contracts / Final / Funding / Disbursement tabs have the data they expect.
+  const loaderAppId = application
+    ? String(
+        application.applicationId ??
+          application._id ??
+          (application as { id?: string }).id ??
+          "",
+      ).trim() || undefined
+    : undefined
+  useApplicationDetailLoader(open ? loaderAppId : undefined)
 
   if (!application) return null
 
@@ -369,6 +383,16 @@ export default function ApplicationDetailsSheet({
 
                   <Separator />
 
+                  {/* Uploaded Documents */}
+                  <section>
+                    <ApplicationSheetFiles
+                      applicationId={applicationId}
+                      readOnly={documentsReadOnly}
+                    />
+                  </section>
+
+                  <Separator />
+
                   <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     <DetailPanel
                       title="Business Profile"
@@ -452,43 +476,71 @@ export default function ApplicationDetailsSheet({
                     />
                   </section>
 
+                  <Separator />
+
+                  {/* Bank Analysis & Positions */}
+                  <section>
+                    <ApplicationSheetBankAndPositions
+                      applicationId={applicationId}
+                      readOnly={financialsReadOnly}
+                    />
+                  </section>
+
                 </TabsContent>
               )}
 
-              {/* Files Tab */}
-              {activeTab === "files" && (
-                <TabsContent value="files" className="m-0">
-                  {/* For files we want to fetch by business applicationId (Deal ID) */}
-                  <ApplicationSheetFiles
-                    applicationId={String(application.applicationId ?? "")}
-                    readOnly={isOperationsRole}
+              {/* Contracts Tab */}
+              {activeTab === "contracts" && (
+                <TabsContent value="contracts" className="m-0">
+                  <ContractTab readOnly={roleUpper === "AGENT"} />
+                </TabsContent>
+              )}
+
+              {/* Final Tab */}
+              {activeTab === "final" && (
+                <TabsContent value="final" className="m-0">
+                  <Final applicationId={appId} onBack={() => onOpenChange(false)} />
+                </TabsContent>
+              )}
+
+              {/* Funding Tab */}
+              {activeTab === "funding" && (
+                <TabsContent value="funding" className="m-0">
+                  <FundingCall
+                    applicationId={appId}
+                    onSaved={() => {
+                      if (appId) {
+                        void dispatch(getFundingCalls({ application: appId }))
+                      }
+                    }}
                   />
                 </TabsContent>
               )}
 
-              {/* Notes / Remarks Tab */}
-              {activeTab === "remarks" && (
-                <TabsContent value="remarks" className="m-0">
-                  <ApplicationSheetNotes applicationId={applicationId} />
-                </TabsContent>
-              )}
-
-              {/* Dedupe Tab */}
-              {canSeeDedupe && activeTab === "dedupe" && (
-                <TabsContent value="dedupe" className="m-0">
-                  <ApplicationSheetDudep
-                    applicationId={applicationId}
-                    onNavigateAway={() => onOpenChange(false)}
+              {/* Disbursement Tab */}
+              {activeTab === "disbursement" && (
+                <TabsContent value="disbursement" className="m-0">
+                  <Disbursement
+                    applicationId={appId}
+                    summaryApplicationId={appId}
+                    applicationRecordId={applicationId}
+                    currentQueue={
+                      (application as any)?.currentQueue ??
+                      (application as any)?.queue ??
+                      null
+                    }
+                    onBack={() => onOpenChange(false)}
                   />
                 </TabsContent>
               )}
 
-              {/* Comments Tab */}
-              {activeTab === "comments" && (
-                <TabsContent value="comments" className="m-0">
-                  <ApplicationSheetComments applicationId={applicationId} />
+              {/* Mail Log Tab */}
+              {activeTab === "mailLog" && (
+                <TabsContent value="mailLog" className="m-0">
+                  <ApplicationSheetMailLog applicationId={applicationId} />
                 </TabsContent>
               )}
+
               {/* Activity Log Tab */}
               {activeTab === "activityLog" && (
                 <TabsContent
@@ -502,16 +554,13 @@ export default function ApplicationDetailsSheet({
                 </TabsContent>
               )}
 
-              {/* Bank Details Tab */}
-              {activeTab === "bankDetails" && (
-                <TabsContent value="bankDetails" className="m-0">
-                  <ApplicationSheetBankDetail applicationId={applicationId} />
-                </TabsContent>
-              )}
-              {/* Bank Analysis Tab */}
-              {activeTab === "Bank Analysis" && (
-                <TabsContent value="Bank Analysis" className="m-0">
-                  <ApplicationSheetBankAnalysis applicationId={appId} />
+              {/* Dedupe Tab */}
+              {canSeeDedupe && activeTab === "dedupe" && (
+                <TabsContent value="dedupe" className="m-0">
+                  <ApplicationSheetDudep
+                    applicationId={applicationId}
+                    onNavigateAway={() => onOpenChange(false)}
+                  />
                 </TabsContent>
               )}
 

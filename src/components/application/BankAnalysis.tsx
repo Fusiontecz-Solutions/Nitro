@@ -109,11 +109,11 @@ interface ExpandedMonths {
 type BankAnalysisProps = {
     /** View-only: no statement upload, bank edits, positions, or terms-of-offer actions (e.g. OPERATIONS). */
     readOnly?: boolean;
-    /** When true with readOnly false, allow add-bank/month and new position rows (e.g. Super Admin on past pipeline tabs). */
+    /** When false, hide add-bank/month and Create Position even if not read-only. Defaults to true when editable. */
     enableCreate?: boolean;
 };
 
-const BankAnalysis = ({ readOnly = false, enableCreate = false }: BankAnalysisProps) => {
+const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisProps) => {
     // const { resolvedTheme } = useTheme();
     // const isDark = resolvedTheme === 'dark';
     const dispatch = useDispatch<AppDispatch>();
@@ -1435,5 +1435,4 @@ const BankAnalysis = ({ readOnly = false, enableCreate = false }: BankAnalysisPr
     );
 };
 
-export default BankAnalysis;
-
+export default BankAnalysis

@@ -1044,19 +1044,19 @@ const BankAnalysisTable = ({
           className="w-full overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm dark:border-slate-700 dark:bg-[#141517]"
         >
           {/* Header Section */}
-          <div className="flex flex-col justify-between gap-3 bg-[#D9E9F6] px-5 py-3 dark:bg-[#2A2B2F] md:flex-row md:items-center">
-            <h2 className="text-lg font-bold uppercase tracking-wide text-[#334155] dark:text-slate-100">
+          <div className="flex flex-row flex-nowrap items-center justify-between gap-3 overflow-x-auto bg-[#D9E9F6] px-5 py-3 dark:bg-[#2A2B2F]">
+            <h2 className="shrink-0 text-lg font-bold uppercase tracking-wide text-[#334155] dark:text-slate-100">
               Bank Analysis {bankIndex + 1}
             </h2>
 
-            <div className="flex flex-wrap items-center gap-4">
+            <div className="flex flex-nowrap items-center gap-2">
               {!isReadOnly && bank.rows.length > 0 && (
                 <>
                   {bank.rows.every((r) => r.isLocked) ? (
                     <Button
                       type="button"
                       variant="outline"
-                      className="flex h-9 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
                       disabled={
                         isInitialLoading ||
                         bulkSavingBankId === bank.id ||
@@ -1071,7 +1071,7 @@ const BankAnalysisTable = ({
                   ) : (
                     <Button
                       type="button"
-                      className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
                       disabled={
                         isInitialLoading ||
                         bulkSavingBankId === bank.id ||
@@ -1090,12 +1090,12 @@ const BankAnalysisTable = ({
                   )}
                 </>
               )}
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 flex-nowrap items-center gap-2">
                 <span className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-[#556987] dark:text-slate-300">
                   Account Number
                 </span>
                 <Input
-                  className={`h-9 w-64 rounded-md border border-[#E2E8F0] text-xs dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-400 ${
+                  className={`h-9 w-44 shrink-0 rounded-md border border-[#E2E8F0] text-xs dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-400 ${
                     bank.accountHeaderLocked || isReadOnly
                       ? "bg-slate-50 dark:bg-slate-800/70"
                       : "bg-white dark:bg-slate-900"
@@ -1173,7 +1173,7 @@ const BankAnalysisTable = ({
               </div>
               {!isReadOnly && !isCreateDisabled && bankIndex === 0 && (
                 <Button
-                  className="bg-[#2B70A1] hover:bg-[#235d85] text-white rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-2 cursor-pointer"
+                  className="bg-[#2B70A1] hover:bg-[#235d85] text-white rounded-lg px-4 py-2 text-sm font-semibold flex shrink-0 items-center gap-2 cursor-pointer whitespace-nowrap"
                   type="button"
                   disabled={isInitialLoading}
                   onClick={handleAddBank}
@@ -1186,7 +1186,7 @@ const BankAnalysisTable = ({
               <Button
                 variant="outline"
                 type="button"
-                className="flex h-8 cursor-pointer items-center gap-1 border-red-200 px-3 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/20"
+                className="flex h-8 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap border-red-200 px-3 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/20"
                 disabled={isInitialLoading || deletingBankId === bank.id}
                 onClick={() => handleDeleteBank(bank.id)}
               >
