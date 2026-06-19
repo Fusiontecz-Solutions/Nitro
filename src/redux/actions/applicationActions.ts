@@ -667,6 +667,10 @@ export const uploadApplicationDocuments = createAsyncThunk(
                 });
             }
 
+            if (slug) {
+                formData.append('requestedDocumentSlug', slug);
+            }
+
             const response = await axiosPostFormData(`/applications/${id}/files`, formData);
             return response.data;
         } catch (error: any) {

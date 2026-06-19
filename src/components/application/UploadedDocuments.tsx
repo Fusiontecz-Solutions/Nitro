@@ -14,11 +14,20 @@ import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
 import { formatDateTimeUS, cn } from "@/lib/utils"
-import { isPinnedDocumentSlug } from "@/constants/documentRequestTypes"
+import { isPinnedDocumentSlug, normalizeDocumentSlug } from "@/constants/documentRequestTypes"
 import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch"
 
+const extractSlugFromFilename = (name?: string | null): string => {
+    const raw = String(name ?? "").trim()
+    const sep = raw.indexOf("__")
+    if (sep <= 0) return ""
+    return raw.slice(0, sep).trim()
+}
+
 const fileDocumentSlug = (file: ApplicationFiles): string =>
-    String((file as any).documentType || (file as any).requestedDocumentSlug || "").trim()
+    normalizeDocumentSlug(
+        file.documentType || file.requestedDocumentSlug || extractSlugFromFilename(file.originalName),
+    )
 
 type UploadedDocumentsProps = {
     applicationId?: string
