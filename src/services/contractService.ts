@@ -11,6 +11,12 @@ import {
   mapContractRecordForApi,
   decryptSensitiveField,
 } from '../utils/fieldEncryption';
+import contractKycDocumentExtractService from './contractKycDocumentExtractService';
+import {
+  isKycDocumentType,
+  mergeContractPrefillPatch,
+  normalizeKycDocumentType,
+} from './contractKycPrefillMapper';
 
 async function resolvePaymentBankDetailForContract(
   prismaClient: typeof prisma | any,
@@ -396,6 +402,7 @@ class ContractService {
 
     const folder = `ih-crm/contracts/${contract.contractNumber || contract.id}`;
     const savedDocuments: any[] = [];
+    const kycExtractions: any[] = [];
 
     for (const { documentType, file } of normalizedEntries) {
       const normalizedType = normalizeUploadedDocumentType(documentType);
@@ -427,9 +434,99 @@ class ContractService {
         documentType: normalizedType,
         metadata: mapUploadedDocumentForResponse(metadata as Record<string, unknown>),
       });
+
+      if (isKycDocumentType(documentType)) {
+        try {
+          const kycType = normalizeKycDocumentType(documentType)!;
+          const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
+            file,
+            kycType,
+          );
+
+          const contractRow = await (prisma as any).contract.findUnique({
+            where: { id: contractId },
+            select: { contractPrefillOverrides: true },
+          });
+
+          const mergedContractPrefillOverrides = mergeContractPrefillPatch(
+            contractRow?.contractPrefillOverrides,
+            mapped.contractPrefill,
+          );
+
+          await this.updateContract(contractId, {
+            contractPrefillOverrides: mergedContractPrefillOverrides,
+          });
+
+          kycExtractions.push({
+            documentType: kycType,
+            keyData: mapped.keyData,
+            contractPrefill: mapped.contractPrefill,
+            panels: mapped.panels,
+            mergedContractPrefillOverrides,
+          });
+        } catch (extractErr: unknown) {
+          const msg =
+            extractErr instanceof Error ? extractErr.message : 'KYC extraction failed';
+          console.error(
+            `[uploadContractDocuments] KYC extraction failed for ${documentType}:`,
+            extractErr,
+          );
+          kycExtractions.push({
+            documentType: normalizeKycDocumentType(documentType),
+            error: msg,
+          });
+        }
+      }
     }
 
-    return savedDocuments;
+    return { documents: savedDocuments, kycExtractions };
+  }
+
+  async extractKycDocumentForContract(
+    contractId: number,
+    file: any,
+    documentTypeRaw: string,
+  ) {
+    const contract = await (prisma as any).contract.findUnique({
+      where: { id: contractId },
+      select: { id: true },
+    });
+    if (!contract) {
+      throw new Error('Contract not found');
+    }
+
+    const documentType = normalizeKycDocumentType(documentTypeRaw);
+    if (!documentType) {
+      throw new Error('documentType must be driverLicense or voidedCheck');
+    }
+
+    const mapped = await contractKycDocumentExtractService.extractFromUploadedFile(
+      file,
+      documentType,
+    );
+
+    const contractRow = await (prisma as any).contract.findUnique({
+      where: { id: contractId },
+      select: { contractPrefillOverrides: true },
+    });
+
+    const mergedContractPrefillOverrides = mergeContractPrefillPatch(
+      contractRow?.contractPrefillOverrides,
+      mapped.contractPrefill,
+    );
+
+    const updated = await this.updateContract(contractId, {
+      contractPrefillOverrides: mergedContractPrefillOverrides,
+    });
+
+    return {
+      documentType,
+      keyData: mapped.keyData,
+      contractPrefill: mapped.contractPrefill,
+      panels: mapped.panels,
+      mergedContractPrefillOverrides,
+      contract: updated,
+    };
   }
 
   async getUploadedContractDocuments(contractId: number) {
