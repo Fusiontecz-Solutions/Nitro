@@ -105,6 +105,14 @@ import {
     type ContractPrefillContractRecords,
     type ContractPrefillField,
 } from "./contractdata/Contract";
+import {
+    applyKycPanelsToAchEntries,
+    applyKycPanelsToGuarantorEntries,
+    applyKycPanelsToOwnerEntries,
+    mergeKycExtractionIntoPrefill,
+    parseKycExtractionsFromUploadResponse,
+    type KycExtractionResult,
+} from "./contractdata/kycDocumentPrefill";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
@@ -2648,6 +2656,79 @@ const PDFViewerModal = ({
     };
 
     /**
+     * Apply Claude KYC extraction (driver license / voided check) into contract prefill + info panels.
+     */
+    const applyKycExtractionToModalState = useCallback(
+        (extraction: KycExtractionResult) => {
+            if (!extraction || extraction.error) {
+                if (extraction?.error) {
+                    toast.warn(`Document scan: ${extraction.error}`);
+                }
+                return;
+            }
+
+            setContractPrefillFromDb((prev) =>
+                mergeKycExtractionIntoPrefill(prev, extraction),
+            );
+
+            if (extraction.mergedContractPrefillOverrides) {
+                setResolvedContract((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              contractPrefillOverrides: extraction.mergedContractPrefillOverrides,
+                          }
+                        : prev,
+                );
+            } else if (extraction.contractPrefill) {
+                setResolvedContract((prev) => {
+                    if (!prev) return prev;
+                    const existing =
+                        typeof prev.contractPrefillOverrides === "object" &&
+                        prev.contractPrefillOverrides != null &&
+                        !Array.isArray(prev.contractPrefillOverrides)
+                            ? { ...(prev.contractPrefillOverrides as Record<string, unknown>) }
+                            : {};
+                    return {
+                        ...prev,
+                        contractPrefillOverrides: {
+                            ...existing,
+                            ...extraction.contractPrefill,
+                        },
+                    };
+                });
+            }
+
+            if (extraction.panels?.owner) {
+                setOwnerEntries((entries) =>
+                    applyKycPanelsToOwnerEntries(entries, extraction.panels?.owner),
+                );
+            }
+            if (extraction.panels?.guarantor) {
+                setGuarantorEntries((entries) =>
+                    applyKycPanelsToGuarantorEntries(entries, extraction.panels?.guarantor),
+                );
+            }
+            if (extraction.panels?.ach) {
+                setAchEntries((entries) =>
+                    applyKycPanelsToAchEntries(entries, extraction.panels?.ach),
+                );
+            }
+
+            invalidateDocuSignDraftSession();
+
+            const label =
+                extraction.documentType === "driverLicense"
+                    ? "Driver's license"
+                    : extraction.documentType === "voidedCheck"
+                      ? "Voided check"
+                      : "Document";
+            toast.success(`${label} scanned — contract fields updated.`);
+        },
+        [invalidateDocuSignDraftSession],
+    );
+
+    /**
      * Auto-upload a single required document as soon as the user picks/drops it.
      * Mirrors Drive/Dropbox/DocuSign UX: selection triggers upload, progress
      * is shown inline, then the row flips to the uploaded preview/actions state.
@@ -2689,7 +2770,7 @@ const PDFViewerModal = ({
             setDocumentUploadMessage("");
 
             try {
-                await dispatch(
+                const uploadResult = await dispatch(
                     uploadContractDocuments({
                         contractId: effectiveContractId,
                         filesByType: { [key]: file },
@@ -2706,6 +2787,11 @@ const PDFViewerModal = ({
                         },
                     }),
                 ).unwrap();
+
+                const kycExtractions = parseKycExtractionsFromUploadResponse(uploadResult);
+                for (const extraction of kycExtractions) {
+                    applyKycExtractionToModalState(extraction);
+                }
 
                 setUploadProgressByKey((prev) => ({ ...prev, [key]: 100 }));
                 await dispatch(getUploadedContractDocuments(effectiveContractId));
@@ -2750,7 +2836,7 @@ const PDFViewerModal = ({
                 toast.error(msg);
             }
         },
-        [dispatch, effectiveContractId],
+        [dispatch, effectiveContractId, applyKycExtractionToModalState],
     );
 
     const autoUploadRequestedDocument = useCallback(
