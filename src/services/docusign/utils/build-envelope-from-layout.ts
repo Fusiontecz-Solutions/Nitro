@@ -53,6 +53,35 @@ export type BuildEnvelopeFromLayoutOptions = {
   lockDataTabs?: boolean;
 };
 
+export async function countPdfPagesFromBase64(documentBase64: string): Promise<number> {
+  const { PDFDocument } = await import('pdf-lib');
+  const pdfDoc = await PDFDocument.load(Buffer.from(documentBase64, 'base64'));
+  return pdfDoc.getPageCount();
+}
+
+export function maxPlacementPageNumber(layout: DocumentLayout): number {
+  let max = 1;
+  for (const placement of layout.placements) {
+    const page = parseInt(String(placement.pageNumber || '1'), 10);
+    if (Number.isFinite(page) && page > max) max = page;
+  }
+  return max;
+}
+
+export async function assertLayoutPlacementsFitPdfPages(
+  layout: DocumentLayout & { documentBase64?: string },
+): Promise<void> {
+  const base64 = layout.documentBase64;
+  if (!base64) return;
+  const pageCount = await countPdfPagesFromBase64(base64);
+  const required = maxPlacementPageNumber(layout);
+  if (required <= pageCount) return;
+  throw new Error(
+    `Document "${layout.name}" PDF has ${pageCount} page(s) but DocuSign tabs require page ${required}. ` +
+      `Re-upload a ${required}-page PDF or update tab coordinates in state-document-config.`,
+  );
+}
+
 export type LayoutPartyCounts = {
   ownerCount: number;
   guarantorCount: number;

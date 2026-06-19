@@ -15,6 +15,7 @@ import {
   prefillFieldsToValueMap,
   renderFlattenedLayoutPdf,
   shouldFlattenLayoutPdf,
+  assertLayoutPlacementsFitPdfPages,
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
@@ -334,6 +335,10 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
     flattenedLayouts.push(...layouts);
   }
   const prefillFlattenedInPdf = flattenedLayoutKeys.size > 0;
+
+  for (const layout of flattenedLayouts) {
+    await assertLayoutPlacementsFitPdfPages(layout);
+  }
 
   const envelope = buildEnvelopeFromLayouts({
     layouts: flattenedLayouts,
