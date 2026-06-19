@@ -1102,7 +1102,8 @@ class ContractController {
       return res.status(201).json({
         success: true,
         message: 'Contract documents uploaded successfully',
-        data,
+        data: data.documents ?? data,
+        kycExtractions: data.kycExtractions ?? [],
       });
     } catch (error: any) {
       console.error('Upload contract documents error:', error);
@@ -1111,6 +1112,54 @@ class ContractController {
         success: false,
         message: error?.message || 'Internal server error',
       });
+    }
+  }
+
+  async extractKycDocument(req: Request, res: Response) {
+    try {
+      const contractId = Number(req.params.id);
+      if (isNaN(contractId)) {
+        return res.status(400).json({ success: false, message: 'Invalid contract id parameter' });
+      }
+
+      const documentType = String(req.body?.documentType || '').trim();
+      const reqFiles = (req as any).files;
+      const file =
+        reqFiles?.file ??
+        reqFiles?.driverLicense ??
+        reqFiles?.voidedCheck ??
+        (reqFiles && Object.values(reqFiles)[0]);
+
+      if (!file) {
+        return res.status(400).json({
+          success: false,
+          message: 'No file uploaded. Send multipart field file, driverLicense, or voidedCheck.',
+        });
+      }
+
+      const data = await contractService.extractKycDocumentForContract(
+        contractId,
+        file,
+        documentType,
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: 'KYC document extracted and contract prefill updated',
+        data,
+      });
+    } catch (error: any) {
+      console.error('Extract KYC document error:', error);
+      const msg = error?.message || 'Internal server error';
+      const statusCode =
+        msg === 'Contract not found'
+          ? 404
+          : msg.includes('documentType must be')
+            ? 400
+            : msg.includes('ANTHROPIC_API_KEY') || msg.includes('required for Claude')
+              ? 503
+              : 500;
+      return res.status(statusCode).json({ success: false, message: msg });
     }
   }
 
