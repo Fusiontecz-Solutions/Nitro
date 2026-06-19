@@ -98,6 +98,14 @@ import {
     type ContractPrefillContractRecords,
     type ContractPrefillField,
 } from "./contractdata/Contract";
+import {
+    applyKycPanelsToAchEntries,
+    applyKycPanelsToGuarantorEntries,
+    applyKycPanelsToOwnerEntries,
+    mergeKycExtractionIntoPrefill,
+    parseKycExtractionsFromUploadResponse,
+    type KycExtractionResult,
+} from "./contractdata/kycDocumentPrefill";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -2652,6 +2660,91 @@ const PDFViewerModal = ({
     };
 
     /**
+     * Apply Claude KYC extraction (driver license / voided check) into contract prefill + info panels.
+     */
+    const applyKycExtractionToModalState = useCallback(
+        (extraction: KycExtractionResult) => {
+            if (!extraction || extraction.error) {
+                if (extraction?.error) {
+                    toast.warn(`Document scan: ${extraction.error}`);
+                }
+                return;
+            }
+
+            setContractPrefillFromDb((prev) =>
+                mergeKycExtractionIntoPrefill(prev, extraction),
+            );
+
+            if (extraction.mergedContractPrefillOverrides) {
+                setResolvedContract((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              contractPrefillOverrides: extraction.mergedContractPrefillOverrides,
+                          }
+                        : prev,
+                );
+            } else if (extraction.contractPrefill) {
+                setResolvedContract((prev) => {
+                    if (!prev) return prev;
+                    const existing =
+                        typeof prev.contractPrefillOverrides === "object" &&
+                        prev.contractPrefillOverrides != null &&
+                        !Array.isArray(prev.contractPrefillOverrides)
+                            ? { ...(prev.contractPrefillOverrides as Record<string, unknown>) }
+                            : {};
+                    return {
+                        ...prev,
+                        contractPrefillOverrides: {
+                            ...existing,
+                            ...extraction.contractPrefill,
+                        },
+                    };
+                });
+            }
+
+            if (extraction.panels?.owner) {
+                setOwnerEntries((entries) =>
+                    applyKycPanelsToOwnerEntries(entries, extraction.panels?.owner),
+                );
+            }
+            if (extraction.panels?.guarantor) {
+                setGuarantorEntries((entries) =>
+                    applyKycPanelsToGuarantorEntries(entries, extraction.panels?.guarantor),
+                );
+            }
+            if (extraction.panels?.ach) {
+                setAchEntries((entries) =>
+                    applyKycPanelsToAchEntries(entries, extraction.panels?.ach),
+                );
+            }
+
+            invalidateDocuSignDraftSession();
+
+            const hasFields =
+                extraction.contractPrefill &&
+                Object.keys(extraction.contractPrefill).some((k) =>
+                    String(extraction.contractPrefill?.[k] ?? "").trim(),
+                );
+            if (!hasFields) {
+                toast.warn(
+                    `${extraction.documentType === "voidedCheck" ? "Voided check" : "Document"} uploaded, but no readable fields were found.`,
+                );
+                return;
+            }
+
+            const label =
+                extraction.documentType === "driverLicense"
+                    ? "Driver's license"
+                    : extraction.documentType === "voidedCheck"
+                      ? "Voided check"
+                      : "Document";
+            toast.success(`${label} scanned — contract fields updated.`);
+        },
+        [invalidateDocuSignDraftSession],
+    );
+
+    /**
      * Auto-upload a single required document as soon as the user picks/drops it.
      * Mirrors Drive/Dropbox/DocuSign UX: selection triggers upload, progress
      * is shown inline, then the row flips to the uploaded preview/actions state.
@@ -2693,7 +2786,7 @@ const PDFViewerModal = ({
             setDocumentUploadMessage("");
 
             try {
-                await dispatch(
+                const uploadResult = await dispatch(
                     uploadContractDocuments({
                         contractId: effectiveContractId,
                         filesByType: { [key]: file },
@@ -2710,6 +2803,27 @@ const PDFViewerModal = ({
                         },
                     }),
                 ).unwrap();
+
+                const kycExtractions = parseKycExtractionsFromUploadResponse(uploadResult);
+                for (const extraction of kycExtractions) {
+                    applyKycExtractionToModalState(extraction);
+                }
+
+                const voidedCheckApplied = kycExtractions.some(
+                    (e) =>
+                        e.documentType === "voidedCheck" &&
+                        !e.error &&
+                        e.contractPrefill &&
+                        Object.keys(e.contractPrefill).length > 0,
+                );
+                if (voidedCheckApplied && effectiveContractId != null) {
+                    await dispatch(getAllACH({ contractId: effectiveContractId })).unwrap();
+                    const refreshed = await dispatch(getByIdContract(effectiveContractId)).unwrap();
+                    const contractData = (refreshed as { data?: unknown })?.data ?? refreshed;
+                    if (contractData) {
+                        setResolvedContract(contractData);
+                    }
+                }
 
                 setUploadProgressByKey((prev) => ({ ...prev, [key]: 100 }));
                 await dispatch(getUploadedContractDocuments(effectiveContractId));
@@ -2758,7 +2872,7 @@ const PDFViewerModal = ({
                 toast.error(msg);
             }
         },
-        [dispatch, effectiveContractId, businessApplicationId, applicationIdForLookup],
+        [dispatch, effectiveContractId, applyKycExtractionToModalState, businessApplicationId, applicationIdForLookup],
     );
 
     const revokeInlinePreviewBlob = useCallback(() => {

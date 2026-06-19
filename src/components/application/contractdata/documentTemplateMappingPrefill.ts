@@ -48,7 +48,16 @@ import {
     collapsePdfFieldsToDisclosureEditorValues,
     expandDisclosureEditorValuesToPdfFields,
 } from "./disclosureEditorFields";
+import {
+    buildCaliforniaDisclosurePage3Amounts,
+    isCaliforniaDisclosureState,
+} from "./california_disclosure";
 import { isUtahDisclosureState } from "./daily_utah";
+import {
+    isNewYorkDisclosureState,
+    resolveNewYorkPage1LineAmount,
+    resolveNewYorkPage3LineAmount,
+} from "./new_york_disclosure";
 
 import { ACH_AUTHORIZATION_DOCUSIGN_KEY } from "./achAuthorizationDocuSign";
 import { isPlatformLayoutKey, PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
@@ -958,6 +967,135 @@ type DisclosureMappingRow = {
     } | null;
 };
 
+/** Post-process expanded disclosure PDF fields for CA/NY page-3 math and term days. */
+function applyCaliforniaNewYorkDisclosureExpandedOverrides(args: {
+    templateState: string;
+    expanded: Record<string, string>;
+    raw: Record<string, string>;
+}): void {
+    const { expanded, raw } = args;
+    const templateState = String(args.templateState ?? "").trim();
+
+    if (isCaliforniaDisclosureState(templateState)) {
+        const recipientFunds = String(
+            raw.disclosure_recipient_funds ?? expanded.disclosure_recipient_funds ?? "",
+        ).trim();
+        const brokerFee = String(
+            raw.disclosure_broker_fee ?? expanded.disclosure_broker_fee ?? "0.00",
+        ).trim();
+        const fundingProvided = String(
+            raw.disclosure_amount_financed ??
+                expanded.funding_provided ??
+                expanded.disclosure_amount_financed ??
+                "",
+        ).trim();
+        const page3Line1 = resolveNewYorkPage3LineAmount(
+            raw.disclosure_page3_line_1 ?? expanded.disclosure_page3_line_1,
+        );
+        const page3Line2 = resolveNewYorkPage3LineAmount(
+            raw.disclosure_page3_line_2 ?? expanded.disclosure_page3_line_2,
+        );
+        const page3 = buildCaliforniaDisclosurePage3Amounts({
+            recipientFunds,
+            page3Line1,
+            page3Line2,
+            brokerFee,
+            fundingProvided,
+        });
+        if (recipientFunds) expanded.disclosure_recipient_funds = recipientFunds;
+        expanded.disclosure_broker_fee = brokerFee || "0.00";
+        expanded.disclosure_page3_line_1 = page3Line1;
+        expanded.disclosure_page3_line_2 = page3Line2;
+        expanded.disclosure_page3_subtotal = page3.page3Subtotal;
+        expanded.disclosure_page3_net = page3.page3Net;
+        const paymentTotal = String(
+            raw.disclosure_total_payment ?? expanded.disclosure_total_payment ?? "",
+        ).trim();
+        if (paymentTotal) expanded.payment_total = paymentTotal;
+        const monthlyCost = String(
+            raw.disclosure_monthly_cost ?? expanded.disclosure_monthly_cost ?? "",
+        ).trim();
+        if (monthlyCost) expanded.estimated_monthly_cost = monthlyCost;
+        const termDays = String(
+            raw.disclosure_term_days ?? expanded.disclosure_term_days ?? "",
+        ).trim();
+        if (termDays) {
+            expanded.disclosure_term_days = termDays;
+            expanded.estimated_term = termDays;
+        }
+        const estimatedPayment = String(
+            raw.disclosure_estimated_payment ?? expanded.estimated_payment ?? "",
+        ).trim();
+        if (estimatedPayment) expanded.estimated_payment = estimatedPayment;
+    }
+
+    if (isNewYorkDisclosureState(templateState)) {
+        expanded.disclosure_page1_line_1 = resolveNewYorkPage1LineAmount(
+            raw.disclosure_page1_line_1 ?? expanded.disclosure_page1_line_1,
+        );
+        const recipientFunds = String(
+            raw.disclosure_recipient_funds ?? expanded.disclosure_recipient_funds ?? "",
+        ).trim();
+        const brokerFee = String(
+            raw.disclosure_broker_fee ?? expanded.disclosure_broker_fee ?? "0.00",
+        ).trim();
+        const fundingProvided = String(
+            raw.disclosure_amount_financed ??
+                expanded.funding_provided ??
+                expanded.disclosure_amount_financed ??
+                "",
+        ).trim();
+        const page3Line1 = resolveNewYorkPage3LineAmount(
+            raw.disclosure_page3_line_1 ?? expanded.disclosure_page3_line_1,
+        );
+        const page3Line2 = resolveNewYorkPage3LineAmount(
+            raw.disclosure_page3_line_2 ?? expanded.disclosure_page3_line_2,
+        );
+        const page3 = buildCaliforniaDisclosurePage3Amounts({
+            recipientFunds,
+            page3Line1,
+            page3Line2,
+            brokerFee,
+            fundingProvided,
+        });
+        expanded.disclosure_page3_line_1 = page3Line1;
+        expanded.disclosure_page3_line_2 = page3Line2;
+        if (recipientFunds) expanded.disclosure_recipient_funds = recipientFunds;
+        expanded.disclosure_broker_fee = brokerFee || "0.00";
+        expanded.disclosure_page3_subtotal = page3.page3Subtotal;
+        expanded.disclosure_page3_net = page3.page3Net;
+        const termDays = String(
+            raw.disclosure_term_days ?? expanded.disclosure_term_days ?? "",
+        ).trim();
+        if (termDays) {
+            expanded.disclosure_term_days = termDays;
+            expanded.estimated_term = termDays;
+        }
+        const estimatedPayment = String(
+            raw.disclosure_estimated_payment ?? expanded.estimated_payment ?? "",
+        ).trim();
+        if (estimatedPayment) expanded.estimated_payment = estimatedPayment;
+        const avgMonthlyRevenue = String(
+            raw.disclosure_avg_monthly_revenue ??
+                expanded.disclosure_avg_monthly_revenue ??
+                expanded.avarage_monthly_income ??
+                "",
+        ).trim();
+        if (avgMonthlyRevenue) {
+            expanded.disclosure_avg_monthly_revenue = avgMonthlyRevenue;
+            expanded.avarage_monthly_income = avgMonthlyRevenue;
+        }
+        const monthlyCost = String(
+            raw.disclosure_monthly_cost ?? expanded.disclosure_monthly_cost ?? "",
+        ).trim();
+        if (monthlyCost) expanded.estimated_monthly_cost = monthlyCost;
+        const paymentTotal = String(
+            raw.disclosure_total_payment ?? expanded.disclosure_total_payment ?? "",
+        ).trim();
+        if (paymentTotal) expanded.payment_total = paymentTotal;
+    }
+}
+
 /** Expand one linked disclosure mapping row → PDF tab ids (e.g. `total_dollar_cost`). */
 export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
     mappingRow: DisclosureMappingRow | null | undefined;
@@ -1003,8 +1141,8 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
     const expanded = expandDisclosureEditorValuesToPdfFields(editorValues);
 
     const templateState = String(row.template?.state ?? "").trim();
+    const raw = args.savedOverridesForMapping ?? {};
     if (isUtahDisclosureState(templateState)) {
-        const raw = args.savedOverridesForMapping ?? {};
         const brokerFee = String(
             raw.disclosure_broker_fee ?? expanded.appendix_underwriting_fees ?? "",
         ).trim();
@@ -1025,6 +1163,12 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
             if (fromRaw) expanded[key] = fromRaw;
         }
     }
+
+    applyCaliforniaNewYorkDisclosureExpandedOverrides({
+        templateState,
+        expanded,
+        raw,
+    });
 
     return Object.entries(expanded)
         .map(([id, value]) => ({ id, value: String(value ?? "").trim() }))
@@ -1124,7 +1268,15 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             editorValues[field.id] = v;
         }
         const fieldsToMerge = isDisclosureRow
-            ? expandDisclosureEditorValuesToPdfFields(editorValues)
+            ? (() => {
+                  const expanded = expandDisclosureEditorValuesToPdfFields(editorValues);
+                  applyCaliforniaNewYorkDisclosureExpandedOverrides({
+                      templateState: String(row.template?.state ?? "").trim(),
+                      expanded,
+                      raw: (perMap ?? {}) as Record<string, string>,
+                  });
+                  return expanded;
+              })()
             : editorValues;
         for (const [id, value] of Object.entries(fieldsToMerge)) {
             const v = String(value ?? "").trim();

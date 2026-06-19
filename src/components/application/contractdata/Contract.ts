@@ -800,7 +800,9 @@ export function applyLiveBankDetailsToPrefillMerge<T extends Record<string, unkn
         const fallback = str(defaults[key as keyof BuildContractPrefillFieldsArgs]);
         if (!fallback || fallback.startsWith("enc:v1:")) continue;
         const persisted = str(out[key]);
-        if (!persisted || persisted.startsWith("enc:v1:") || persisted !== fallback) {
+        // Only backfill from application BankDetail when override is missing or still encrypted.
+        // Do not replace explicit saved/scanned plaintext (e.g. voided-check KYC extraction).
+        if (!persisted || persisted.startsWith("enc:v1:")) {
             (out as Record<string, unknown>)[key] = fallback;
         }
     }
