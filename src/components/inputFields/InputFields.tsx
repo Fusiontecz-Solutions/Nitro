@@ -1,7 +1,24 @@
+import { useRef } from "react"
+import { Calendar } from "lucide-react"
 import { Controller, type Control, type FieldValues, type Path } from "react-hook-form"
 import { Input } from "../ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from "@/utils/formatPhoneNumber"
+import { formatUSDateMmDdYy, handleUSDateInputChange, parseUSDateMmDdYyToIso } from "@/utils/formatUSDate"
+
+function openNativeDatePicker(input: HTMLInputElement | null) {
+    if (!input) return
+    if (typeof input.showPicker === "function") {
+        try {
+            input.showPicker()
+            return
+        } catch {
+            /* showPicker may throw outside a user gesture */
+        }
+    }
+    input.focus({ preventScroll: true })
+    input.click()
+}
 
 
 // Text Field Component
@@ -156,31 +173,93 @@ export const DateField = <T extends FieldValues>({
     name,
     label,
     required = false,
+    disabled = false,
     control,
     labelClassName,
-}: BaseFieldProps<T>) => (
-    <div className="space-y-1.5 flex flex-col">
-        <label className={`text-sm font-[400] font-roboto ${labelClassName || 'text-foreground'}`}>{label}{required && <span className="text-red-500">*</span>}</label>
-        <Controller
-            control={control}
-            name={name}
-            render={({ field, fieldState }) => (
-                <>
-                    <Input
-                        {...field}
-                        type="date"
-                        value={field.value ? (typeof field.value === 'string' && field.value.includes('T') ? field.value.split('T')[0] : field.value) : ''}
-                        aria-invalid={!!fieldState.error}
-                        className="w-full rounded-[5px] bg-background border border-[#E5E7EB]"
-                    />
-                    {fieldState.error && (
-                        <p className="text-[13px] text-red-500 mt-1">{fieldState.error.message}</p>
-                    )}
-                </>
-            )}
-        />
-    </div>
-)
+    usFormat = false,
+    placeholder,
+}: BaseFieldProps<T> & {
+    usFormat?: boolean
+    placeholder?: string
+    disabled?: boolean
+}) => {
+    const datePickerRef = useRef<HTMLInputElement>(null)
+
+    return (
+        <div className="space-y-1.5 flex flex-col">
+            <label className={`text-sm font-[400] font-roboto ${labelClassName || 'text-foreground'}`}>{label}{required && <span className="text-red-500">*</span>}</label>
+            <Controller
+                control={control}
+                name={name}
+                render={({ field, fieldState }) => {
+                    const displayValue = usFormat
+                        ? formatUSDateMmDdYy(field.value)
+                        : field.value
+                            ? (typeof field.value === 'string' && field.value.includes('T')
+                                ? field.value.split('T')[0]
+                                : field.value)
+                            : ''
+                    const isoValue = usFormat
+                        ? (parseUSDateMmDdYyToIso(displayValue) || '')
+                        : displayValue
+
+                    return (
+                        <>
+                            <div className="relative">
+                                <Input
+                                    {...field}
+                                    type={usFormat ? 'text' : 'date'}
+                                    value={displayValue}
+                                    onChange={
+                                        usFormat
+                                            ? (e) => handleUSDateInputChange(e, field.onChange)
+                                            : field.onChange
+                                    }
+                                    disabled={disabled}
+                                    inputMode={usFormat ? 'numeric' : undefined}
+                                    aria-invalid={!!fieldState.error}
+                                    placeholder={usFormat ? (placeholder || 'mm-dd-yyyy') : placeholder}
+                                    className={`w-full rounded-[5px] bg-background border border-[#E5E7EB] disabled:cursor-not-allowed disabled:opacity-100 ${usFormat ? 'pr-9' : ''}`}
+                                />
+                                {usFormat && (
+                                    <>
+                                        <input
+                                            ref={datePickerRef}
+                                            type="date"
+                                            tabIndex={-1}
+                                            aria-hidden
+                                            disabled={disabled}
+                                            className="sr-only"
+                                            value={isoValue}
+                                            onChange={(e) => {
+                                                const value = e.target.value
+                                                if (value && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                                                    field.onChange(formatUSDateMmDdYy(value))
+                                                }
+                                            }}
+                                        />
+                                        <button
+                                            type="button"
+                                            disabled={disabled}
+                                            onClick={() => openNativeDatePicker(datePickerRef.current)}
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 flex size-7 items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                            aria-label={`Open calendar for ${label}`}
+                                        >
+                                            <Calendar className="size-4 shrink-0" />
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                            {fieldState.error && (
+                                <p className="text-[13px] text-red-500 mt-1">{fieldState.error.message}</p>
+                            )}
+                        </>
+                    )
+                }}
+            />
+        </div>
+    )
+}
 
 // Phone Field Component
 export const PhoneField = <T extends FieldValues>({

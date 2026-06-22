@@ -43,6 +43,7 @@ export interface Client {
     clientId?: number;
     business: BusinessProfile;
     owner: OwnerDetail;
+    owners?: OwnerDetail[];
     status?: 'Active' | 'Inactive' | 'Pending' | 'Archived';
     createdBy?: string;
     assignedTo?: string;
@@ -54,7 +55,7 @@ export interface Client {
 // Create/Update Client Payload
 export interface CreateClientPayload {
     business: BusinessProfile;
-    owner: OwnerDetail;
+    owners: OwnerDetail[];
 }
 
 export interface UpdateClientPayload {

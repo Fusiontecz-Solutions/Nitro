@@ -640,7 +640,7 @@ export default function Clients() {
               zipCode: cleanValue(row["Business Zip Code"]),
             },
           },
-          owner: {
+          owners: [{
             firstName: cleanValue(row["Owner First Name"]),
             middleName: cleanValue(row["Owner Middle Name"]),
             lastName: cleanValue(row["Owner Last Name"]),
@@ -658,7 +658,7 @@ export default function Clients() {
               state: cleanValue(row["Owner State"]),
               zipCode: cleanValue(row["Owner Zip Code"]),
             },
-          },
+          }],
         };
 
         // Validate required fields
