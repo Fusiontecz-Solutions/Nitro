@@ -86,6 +86,14 @@ import {
   clearAchAuthorizationIfMatchesMainContract,
 } from './utils/ach-authorization-docusign';
 import {
+  isStandalonePackageEnvelope,
+  linkStandalonePackageEnvelopeToContract,
+  mapInternalEnvelopeStatusToPackageCapsule,
+  parseStandalonePackageDocuSignFromPrefill,
+  resolveStandaloneLinkKind,
+  updateStandalonePackageDocuSignStatus,
+} from './utils/standalone-package-docusign';
+import {
   archiveMainContractEnvelopeToHistory,
   updateArchivedContractSendHistoryStatus,
 } from './utils/contract-send-history';
@@ -2677,6 +2685,12 @@ export class DocusignService {
     }
 
     if (
+      await updateStandalonePackageDocuSignStatus(envelopeId, incomingResolved, achLookup)
+    ) {
+      return incomingResolved;
+    }
+
+    if (
       !existingDoc &&
       achHints?.contractId &&
       applicationId &&
@@ -2702,6 +2716,11 @@ export class DocusignService {
 
     if (await isStandaloneAchEnvelope(envelopeId, achLookup)) {
       await updateAchAuthorizationDocuSignStatus(envelopeId, incomingResolved, achLookup);
+      return incomingResolved;
+    }
+
+    if (await isStandalonePackageEnvelope(envelopeId, achLookup)) {
+      await updateStandalonePackageDocuSignStatus(envelopeId, incomingResolved, achLookup);
       return incomingResolved;
     }
 
@@ -3446,8 +3465,14 @@ export class DocusignService {
     options: {
       applicationId?: string;
       contractId?: number;
-      /** When false (standalone ACH), link envelope on contract prefill — not main Document row. */
+      /** When false, link envelope on contract prefill — not main Document row. */
       linkApplicationDocument?: boolean;
+      standaloneLinkKind?: 'ach' | 'package';
+      sendPackage?: {
+        includeMainContract?: boolean;
+        includeAddendum?: boolean;
+        includeDisclosure?: boolean;
+      };
       redirectUrl?: string;
       ccEmails?: string[];
       title?: string;
@@ -3468,12 +3493,24 @@ export class DocusignService {
       await this.linkEnvelopeToApplication(userId, appId, envelopeId);
     } else if (appId && !linkApplicationDocument) {
       const contractIdNum = Number(options.contractId);
-      await linkAchAuthorizationEnvelopeToContract(
-        appId,
-        envelopeId,
-        'draft',
-        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
-      );
+      const resolvedContractId =
+        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined;
+      if (options.standaloneLinkKind === 'ach') {
+        await linkAchAuthorizationEnvelopeToContract(
+          appId,
+          envelopeId,
+          'draft',
+          resolvedContractId,
+        );
+      } else {
+        await linkStandalonePackageEnvelopeToContract(
+          appId,
+          envelopeId,
+          'draft',
+          resolvedContractId,
+          options.sendPackage,
+        );
+      }
     }
 
     let prefillApplied = {
@@ -3725,16 +3762,27 @@ export class DocusignService {
       };
       autoSend?: boolean;
       contractId?: number;
+      sendPackage?: {
+        includeMainContract?: boolean;
+        includeAddendum?: boolean;
+        includeDisclosure?: boolean;
+      };
     },
   ) {
     const { client, accountId } = await this.getAuthContext(userId);
+
+    const supplementalRefs = options.supplementalRefs || [];
+    const standaloneLinkKind = resolveStandaloneLinkKind(
+      supplementalRefs,
+      options.includeMainContract,
+    );
 
     let built;
     try {
       const sendImmediately = options.autoSend === true;
       const envelopeSubject = String(options.title || '').trim();
       built = await buildPlatformLayoutEnvelopeDefinition({
-        supplementalRefs: options.supplementalRefs,
+        supplementalRefs,
         includeMainContract: options.includeMainContract,
         roles: options.roles,
         prefillFields: options.prefillFields,
@@ -3773,6 +3821,13 @@ export class DocusignService {
         applicationId: options.applicationId,
         contractId: options.contractId,
         linkApplicationDocument: options.includeMainContract !== false,
+        standaloneLinkKind:
+          options.includeMainContract !== false
+            ? undefined
+            : standaloneLinkKind === 'ach'
+              ? 'ach'
+              : 'package',
+        sendPackage: options.sendPackage,
         redirectUrl: options.redirectUrl,
         ccEmails: options.ccEmails,
         title: options.title,
@@ -3892,6 +3947,11 @@ export class DocusignService {
         reminderCount?: number;
       };
       contractId?: number;
+      sendPackage?: {
+        includeMainContract?: boolean;
+        includeAddendum?: boolean;
+        includeDisclosure?: boolean;
+      };
     },
   ) {
     if (!options?.roles?.length) {
@@ -3932,6 +3992,7 @@ export class DocusignService {
       autoSend: options.autoSend,
       reminderSettings: options.reminderSettings,
       contractId: options.contractId,
+      sendPackage: options.sendPackage,
     });
   }
 
@@ -4074,6 +4135,12 @@ export class DocusignService {
     if (isAchEnvelope) {
       await updateAchAuthorizationDocuSignStatus(envelopeId, 'revoked');
       return { success: true, achAuthorization: true };
+    }
+
+    const isPackageEnvelope = await isStandalonePackageEnvelope(envelopeId);
+    if (isPackageEnvelope) {
+      await updateStandalonePackageDocuSignStatus(envelopeId, 'revoked');
+      return { success: true, standalonePackage: true };
     }
 
     const existingDoc = await prisma.document.findFirst({
@@ -4504,11 +4571,15 @@ export class DocusignService {
     };
 
     const isAchEnvelope = await isStandaloneAchEnvelope(envelopeId, achHints);
+    const isPackageEnvelope =
+      !isAchEnvelope && (await isStandalonePackageEnvelope(envelopeId, achHints));
+    const isSupplementalEnvelope = isAchEnvelope || isPackageEnvelope;
 
     if (!forceRefresh) {
       const terminalPayload = await this.buildTerminalEnvelopeSyncPayload(
         envelopeId,
         applicationId,
+        isSupplementalEnvelope,
         isAchEnvelope,
         achHints,
       );
@@ -4582,7 +4653,7 @@ export class DocusignService {
       emailed: [],
     };
     if (
-      !isAchEnvelope &&
+      !isSupplementalEnvelope &&
       incomingResolved === 'sent' &&
       priorStatus !== 'sent' &&
       priorStatus !== 'completed'
@@ -4598,6 +4669,7 @@ export class DocusignService {
     }
 
     const achAuthorization = isAchEnvelope;
+    const standalonePackage = isPackageEnvelope;
 
     const payload = {
       envelopeId,
@@ -4605,11 +4677,15 @@ export class DocusignService {
       docusignStatus: dsStatus,
       internalStatus: status,
       achAuthorization,
+      standalonePackage,
       achAuthorizationStatus: achAuthorization
         ? mapInternalEnvelopeStatusToAchCapsule(status)
         : null,
+      standalonePackageStatus: standalonePackage
+        ? mapInternalEnvelopeStatusToPackageCapsule(status)
+        : null,
       contractStatus:
-        achAuthorization || !status
+        isSupplementalEnvelope || !status
           ? null
           : internalEnvelopeStatusToContractStatusDbValue(status),
       ccPrefilledEmail,
@@ -4625,13 +4701,14 @@ export class DocusignService {
   private async buildTerminalEnvelopeSyncPayload(
     envelopeId: string,
     applicationId: string,
+    isSupplementalEnvelope: boolean,
     isAchEnvelope: boolean,
     achHints: { applicationId?: string; contractId?: number },
   ): Promise<Record<string, unknown> | null> {
     const eid = String(envelopeId || '').trim();
     if (!eid) return null;
 
-    if (isAchEnvelope) {
+    if (isSupplementalEnvelope) {
       const where =
         achHints.contractId && achHints.contractId > 0
           ? { id: achHints.contractId }
@@ -4645,17 +4722,25 @@ export class DocusignService {
         take: 5,
       });
       for (const row of contracts) {
-        const ach = parseAchAuthorizationDocuSignFromPrefill(row.contractPrefillOverrides);
-        if (ach?.envelopeId !== eid) continue;
-        const capsule = String(ach.status || '').toUpperCase();
+        const ach = isAchEnvelope
+          ? parseAchAuthorizationDocuSignFromPrefill(row.contractPrefillOverrides)
+          : null;
+        const pkg = !isAchEnvelope
+          ? parseStandalonePackageDocuSignFromPrefill(row.contractPrefillOverrides)
+          : null;
+        const meta = ach ?? pkg;
+        if (meta?.envelopeId !== eid) continue;
+        const capsule = String(meta.status || '').toUpperCase();
         if (capsule === 'SIGNED' || capsule === 'VOIDED') {
           return {
             envelopeId: eid,
             applicationId: applicationId || achHints.applicationId || null,
             docusignStatus: capsule === 'SIGNED' ? 'completed' : 'voided',
             internalStatus: capsule === 'SIGNED' ? 'completed' : 'voided',
-            achAuthorization: true,
-            achAuthorizationStatus: ach.status,
+            achAuthorization: Boolean(ach),
+            standalonePackage: Boolean(pkg),
+            achAuthorizationStatus: ach?.status ?? null,
+            standalonePackageStatus: pkg?.status ?? null,
             contractStatus: null,
             ccPrefilledEmail: { emailed: [] },
           };

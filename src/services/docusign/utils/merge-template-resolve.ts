@@ -109,7 +109,7 @@ export function buildPdfCompositeTemplate(options: {
   ownerCount?: number;
   guarantorCount?: number;
 }): Record<string, unknown> {
-  const tabsByRole = buildRecipientTabsByRoleForLayout(
+  const tabsBySignerIndex = buildRecipientTabsByRoleForLayout(
     options.layout,
     options.envelopeDocumentId,
     options.values,
@@ -121,7 +121,7 @@ export function buildPdfCompositeTemplate(options: {
   );
 
   const signers = options.signers.map((s, idx) => {
-    const tabs = tabsByRole.get(s.roleName) || {
+    const tabs = tabsBySignerIndex.get(idx) || {
       textTabs: [],
       dateTabs: [],
       signHereTabs: [],
