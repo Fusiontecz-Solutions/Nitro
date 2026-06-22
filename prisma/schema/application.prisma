@@ -141,6 +141,7 @@ model Client {
   contractClients            ContractClient[]
   epos                       EPO[]
   fileMetadata               FileMetadata[]
+  owners                     ClientOwner[]
 
   @@index([status])
   @@index([createdById])
@@ -148,6 +149,32 @@ model Client {
   @@index([businessName])
   @@index([businessEmail])
   @@index([ownerEmail])
+}
+
+model ClientOwner {
+  id                  String    @id @default(uuid()) @db.Uuid
+  clientId            String    @db.Uuid
+  sortOrder           Int       @default(0)
+  firstName           String
+  middleName          String?
+  lastName            String
+  email               String?
+  mobileNumber        String?
+  dateOfBirth         DateTime?
+  ssn                 String?
+  ficoScore           Int?
+  ownershipStartDate  DateTime?
+  ownershipPercentage Float?
+  address1            String?
+  address2            String?
+  city                String?
+  state               String?
+  zipCode             String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  client              Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
 }
 
 model DocumentRequest {
