@@ -12,6 +12,8 @@ import {
     createClientAndApplicationFromPDFBuffer,
     InsufficientParsedPdfError,
     assertReadyToCreateNewClientFromPdf,
+    findExistingClientFromPdfExtract,
+    mergePdfExtractIntoExistingClient,
     type AuthenticatedUser,
 } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
@@ -4538,26 +4540,15 @@ class ApplicationController {
                     ? 'Bypass'
                     : 'New';
 
-            // Try to find existing client by SSN (full match or last 4 digits)
-            let clientRecord: any | null = null;
-            let existingClient = false;
+            // Try to find existing client (EIN, business+email, SSN, business+owner name)
+            const existingMatch = await findExistingClientFromPdfExtract(business, owner);
+            let clientRecord: any | null = existingMatch?.client ?? null;
+            let existingClient = Boolean(clientRecord);
 
-            if (ownerSsnNorm && ownerSsnNorm.length >= 4) {
-                const ssnLast4 = ownerSsnNorm.slice(-4);
-                const clientsWithSsn = await prisma.client.findMany({
-                    where: { ownerSsn: { not: null } },
-                    orderBy: { createdAt: 'desc' },
-                    take: 200,
-                });
-                clientRecord =
-                    clientsWithSsn.find((c) => {
-                        const cNorm = normalizeSsn(c.ownerSsn);
-                        return cNorm && (cNorm === ownerSsnNorm || cNorm.slice(-4) === ssnLast4);
-                    }) || null;
-
-                if (clientRecord) {
-                    existingClient = true;
-                }
+            if (existingMatch) {
+                console.log(
+                    `[autoCreateFromPDF] Reusing existing client (${existingMatch.matchedBy}): clientId=${clientRecord?.clientId}`,
+                );
             }
 
             // Parse requested loan amount from business_requested_amount (or fallback aliases)
@@ -4577,8 +4568,12 @@ class ApplicationController {
             let createdApplication: any;
 
             if (clientRecord) {
-                // Case 1: Client already exists → create application only
+                // Case 1: Client already exists → merge any missing fields, then create application only
                 createdClient = clientRecord;
+                await mergePdfExtractIntoExistingClient(createdClient.id, business, owner);
+                createdClient = await prisma.client.findUnique({
+                    where: { id: createdClient.id },
+                });
 
                 const nextDealIdExisting = await generateNextDealId();
 

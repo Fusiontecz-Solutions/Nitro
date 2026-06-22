@@ -1567,8 +1567,13 @@ export interface DocumentRequestEmailParams {
     requestedDocuments: string[];
     requestAdditional?: boolean;
     note?: string;
-    /** Optional CRM deep link for internal staff only. */
+    /** Upload link (public token URL preferred; CRM documents tab as fallback). */
     viewApplicationUrl?: string;
+    /** Pre-rendered branded HTML (upload-URL placeholder already swapped). */
+    html?: string;
+    subject?: string;
+    /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
+    trackingId?: string;
 }
 
 function formatDocumentRequestList(
@@ -1605,6 +1610,9 @@ export async function sendDocumentRequestEmail({
     requestAdditional,
     note,
     viewApplicationUrl,
+    html: customHtml,
+    subject: customSubject,
+    trackingId,
 }: DocumentRequestEmailParams): Promise<DocumentRequestEmailResult> {
     const recipients = [...new Set((to || []).map((e) => String(e || '').trim()).filter(Boolean))];
     if (!recipients.length) {
@@ -1620,8 +1628,10 @@ export async function sendDocumentRequestEmail({
 
     const safeIso = isoName?.trim() || 'there';
     const appLabel = applicationNumber != null ? String(applicationNumber) : 'N/A';
-    const subject = `Document request — Application #${appLabel} (${clientName})`;
+    const subject =
+        customSubject?.trim() || `Document request — Application #${appLabel} (${clientName})`;
     const uploadUrl = (viewApplicationUrl || '').trim() || undefined;
+    const isPublicTokenLink = Boolean(uploadUrl && /\/public\/application\/documents\//i.test(uploadUrl));
     const noteBlock = note?.trim()
         ? `<p style="margin:16px 0 0;"><strong>Note from underwriting:</strong><br/>${note
               .trim()
