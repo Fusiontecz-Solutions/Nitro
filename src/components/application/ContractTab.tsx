@@ -99,6 +99,12 @@ import {
     buildAchFormEnvelopeEmailSubject,
     CONTRACT_ENVELOPE_LENDER_NAME,
 } from "./contractdata/docusignTemplateConfig";
+import {
+    buildPackageEnvelopeEmailMessage,
+    buildPackageEnvelopeEmailSubject,
+    type ContractSendPackageSelection,
+} from "./contractdata/contractSendPackage";
+import { mergeStandalonePackageDocuSignIntoPrefill } from "./contractdata/standalonePackageDocuSign";
 import { getPlatformSignerRoleRows } from "./contractdata/platformDocumentConfig";
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
@@ -1494,6 +1500,8 @@ export default function ContractTab({
             signerRoles?: DocuSignTemplateRolePayload[];
             /** Deal Review values from the contract modal (latest UI state). */
             prefillFields?: Array<{ id: string; value: string }>;
+            /** Create Contract — which documents are in this envelope. */
+            sendPackage?: ContractSendPackageSelection;
         },
         options: { autoSend: boolean; suppressSuccessToast?: boolean },
     ): Promise<{
@@ -1533,6 +1541,31 @@ export default function ContractTab({
                     .filter(Boolean),
             ),
         ];
+        if (!includeMainContract && supplementalLayoutKeys.length === 0) {
+            failDocuSignEnvelope(
+                "Select at least one addendum or state disclosure to send without the main contract.",
+            );
+        }
+
+        const isAchStandaloneSend =
+            !includeMainContract &&
+            supplementalLayoutKeys.length === 1 &&
+            supplementalLayoutKeys[0] === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE;
+        const sendPackageSelection: ContractSendPackageSelection | undefined =
+            sendPayload.sendPackage ??
+            (includeMainContract
+                ? {
+                      includeMainContract: true,
+                      includeAddendum: Boolean(supplementalLayoutKey),
+                      includeDisclosure: (sendPayload.supplementalDocumentRefs ?? []).length > 0,
+                  }
+                : isAchStandaloneSend
+                  ? undefined
+                  : {
+                        includeMainContract: false,
+                        includeAddendum: Boolean(supplementalLayoutKey),
+                        includeDisclosure: (sendPayload.supplementalDocumentRefs ?? []).length > 0,
+                    });
 
         const applicationSignerEmail = getPrimaryRecipientEmail().trim();
         const applicationSignerName = getPrimaryRecipientName();
@@ -1545,7 +1578,7 @@ export default function ContractTab({
                 (fetchedContract as { contractPrefillOverrides?: unknown } | null)
                     ?.contractPrefillOverrides,
             );
-            const savedAchSignerOverrides = !includeMainContract
+            const savedAchSignerOverrides = isAchStandaloneSend
                 ? parseAchSignerOverridesFromPrefill(
                       (fetchedContract as { contractPrefillOverrides?: unknown } | null)
                           ?.contractPrefillOverrides,
@@ -1554,7 +1587,7 @@ export default function ContractTab({
 
             let roles: DocuSignTemplateRolePayload[] = sendPayload.signerRoles?.length
                 ? sendPayload.signerRoles
-                : !includeMainContract && savedAchSignerOverrides?.length
+                : isAchStandaloneSend && savedAchSignerOverrides?.length
                   ? buildDocuSignRolesFromEditorRows(savedAchSignerOverrides)
                   : savedSignerOverrides?.length
                     ? buildDocuSignRolesFromEditorRows(savedSignerOverrides)
@@ -1663,12 +1696,20 @@ export default function ContractTab({
                 merchantContext.businessName.trim() ||
                 merchantContext.clientLegalName.trim() ||
                 docuSignClientName;
-            const docuSignEmailSubject = includeMainContract
-                ? buildContractEnvelopeEmailSubject(docuSignBusinessName, approvedAmount)
-                : buildAchFormEnvelopeEmailSubject(docuSignBusinessName);
-            const docuSignEmailMessage = includeMainContract
-                ? `Please review and sign your agreement with ${CONTRACT_ENVELOPE_LENDER_NAME}.`
-                : `Please review and sign the ACH authorization for ${docuSignBusinessName}.`;
+            const docuSignEmailSubject = isAchStandaloneSend
+                ? buildAchFormEnvelopeEmailSubject(docuSignBusinessName)
+                : sendPackageSelection
+                  ? buildPackageEnvelopeEmailSubject(
+                        docuSignBusinessName,
+                        sendPackageSelection,
+                        approvedAmount,
+                    )
+                  : buildContractEnvelopeEmailSubject(docuSignBusinessName, approvedAmount);
+            const docuSignEmailMessage = isAchStandaloneSend
+                ? `Please review and sign the ACH authorization for ${docuSignBusinessName}.`
+                : sendPackageSelection
+                  ? buildPackageEnvelopeEmailMessage(docuSignBusinessName, sendPackageSelection)
+                  : `Please review and sign your agreement with ${CONTRACT_ENVELOPE_LENDER_NAME}.`;
 
             const firstOwnerFromDb = ownerRows[0] as {
                 firstName?: string;
@@ -1778,6 +1819,7 @@ export default function ContractTab({
             const mergeRequest = {
                 supplementalLayoutKeys,
                 includeMainContract,
+                sendPackage: sendPackageSelection,
                 ownerCount,
                 roles,
                 prefillFields: prefillFieldsPayload,
@@ -1849,7 +1891,7 @@ export default function ContractTab({
                             ?.contractPrefillOverrides ?? null;
 
                     let contractPrefillOverrides: Record<string, unknown>;
-                    if (!includeMainContract) {
+                    if (isAchStandaloneSend) {
                         contractPrefillOverrides = mergeAchSignerOverridesIntoPrefill(
                             prefillBase,
                             signerRowsToPersist.map((row) => ({
@@ -1865,6 +1907,23 @@ export default function ContractTab({
                                 status: "DRAFT",
                             },
                         );
+                    } else if (!includeMainContract && sendPackageSelection) {
+                        contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
+                            prefillBase,
+                            signerRowsToPersist,
+                        );
+                        contractPrefillOverrides = mergeStandalonePackageDocuSignIntoPrefill(
+                            contractPrefillOverrides,
+                            {
+                                envelopeId: String(documentId),
+                                status: "DRAFT",
+                                package: {
+                                    includeMainContract: sendPackageSelection.includeMainContract,
+                                    includeAddendum: sendPackageSelection.includeAddendum,
+                                    includeDisclosure: sendPackageSelection.includeDisclosure,
+                                },
+                            },
+                        );
                     } else {
                         contractPrefillOverrides = mergeContractPrefillWithSignerOverrides(
                             prefillBase,
@@ -1878,12 +1937,12 @@ export default function ContractTab({
                             id: contractNumericId,
                             data: {
                                 contractPrefillOverrides,
-                                ...(!includeMainContract
-                                    ? {}
-                                    : {
+                                ...(includeMainContract
+                                    ? {
                                           ...(primary?.email ? { clientEmail: primary.email } : {}),
                                           ...(primary?.name ? { clientName: primary.name } : {}),
-                                      }),
+                                      }
+                                    : {}),
                             },
                         }),
                     ).unwrap();
@@ -2043,6 +2102,7 @@ export default function ContractTab({
         funderName?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
         prefillFields?: Array<{ id: string; value: string }>;
+        sendPackage?: ContractSendPackageSelection;
     }) => {
         const result = await runDocuSignEnvelope(payload, {
             autoSend: false,
@@ -2052,7 +2112,9 @@ export default function ContractTab({
         if (!envelopeId) {
             throw new Error("DocuSign did not return an envelope ID after creating the draft.");
         }
-        await persistContractGeneratedStage();
+        if (payload.includeMainContract !== false) {
+            await persistContractGeneratedStage();
+        }
         await reloadFetchedContract();
         const ccEmailed = result.ccPrefilledEmail?.emailed;
         if (ccEmailed?.length) {

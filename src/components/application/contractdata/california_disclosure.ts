@@ -121,10 +121,32 @@ export const weeklyCaliforniaDisclosureMergeRoleFormFields: CaliforniaDisclosure
         textField("disclosure_page3_net", 3, 434, 206),
     ];
 
+const CALIFORNIA_OWNER1_ONLY_FIELD_IDS = new Set(["Signature1", "signature_date"]);
+const CALIFORNIA_OWNER2_ONLY_FIELD_IDS = new Set(["Signature2", "signature_date_owner2"]);
+
+function californiaDisclosureFieldsForSignerRole(
+    fields: CaliforniaDisclosureMergeRoleFormField[],
+    roleIndex: number,
+): CaliforniaDisclosureMergeRoleFormField[] {
+    return fields.filter((field) => {
+        if (CALIFORNIA_OWNER1_ONLY_FIELD_IDS.has(field.id)) {
+            return roleIndex === 1;
+        }
+        if (CALIFORNIA_OWNER2_ONLY_FIELD_IDS.has(field.id)) {
+            return roleIndex === 2;
+        }
+        // Prefill text fields belong to the primary signer only.
+        return roleIndex === 1;
+    });
+}
+
 export function californiaDisclosureMergeRoleFormFieldsForRole(
     roleIndex: number,
 ): Array<CaliforniaDisclosureMergeRoleFormField & { roleIndex: number }> {
-    return californiaDisclosureMergeRoleFormFields.map((field) => ({
+    return californiaDisclosureFieldsForSignerRole(
+        californiaDisclosureMergeRoleFormFields,
+        roleIndex,
+    ).map((field) => ({
         ...field,
         roleIndex,
     }));
@@ -133,7 +155,10 @@ export function californiaDisclosureMergeRoleFormFieldsForRole(
 export function weeklyCaliforniaDisclosureMergeRoleFormFieldsForRole(
     roleIndex: number,
 ): Array<CaliforniaDisclosureMergeRoleFormField & { roleIndex: number }> {
-    return weeklyCaliforniaDisclosureMergeRoleFormFields.map((field) => ({
+    return californiaDisclosureFieldsForSignerRole(
+        weeklyCaliforniaDisclosureMergeRoleFormFields,
+        roleIndex,
+    ).map((field) => ({
         ...field,
         roleIndex,
     }));

@@ -1,7 +1,5 @@
 /** Platform PDF + coordinate layouts — PDF bytes from BoldSignTemplate.pdfUrl (Cloudinary). */
 
-import { DOCUSIGN_PRIMARY_SIGNER_ROLE } from "./docusignTemplateConfig";
-
 export const PLATFORM_LAYOUT_KEYS = {
     contract: "contract",
     flexAddendum: "flex_addendum",
@@ -15,13 +13,13 @@ export type PlatformLayoutKey =
 /** Legal funder name on state disclosure forms (not Contract.funderName Katan II / III). */
 export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Katan Capital";
 
-/** DocuSign envelope role names — must match template / backend DOCUSIGN_DEFAULT_ROLE_NAME. */
-export const PLATFORM_PRIMARY_SIGNER_ROLE = DOCUSIGN_PRIMARY_SIGNER_ROLE;
-export const PLATFORM_SECONDARY_SIGNER_ROLE = "Signer";
+/** DocuSign envelope role names — must match backend platform-document-registry slots. */
+export const PLATFORM_PRIMARY_SIGNER_ROLE = "Client";
+export const PLATFORM_SECONDARY_SIGNER_ROLE = "Owner 2";
 
 export const PLATFORM_SIGNER_SLOTS = [
     { roleIndex: 1, roleName: PLATFORM_PRIMARY_SIGNER_ROLE, signerOrder: 1 },
-    { roleIndex: 2, roleName: PLATFORM_PRIMARY_SIGNER_ROLE, signerOrder: 2 },
+    { roleIndex: 2, roleName: PLATFORM_SECONDARY_SIGNER_ROLE, signerOrder: 2 },
 ] as const;
 
 export type SupplementalDocumentOption = {
