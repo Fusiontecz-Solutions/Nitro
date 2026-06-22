@@ -8,6 +8,10 @@ import {
 import { buildDailyCaliforniaContractPrefillFields } from "./daily_california";
 import { buildCaliforniaDisclosurePage3Amounts, resolveCaliforniaEstimatedTermDays } from "./california_disclosure";
 import {
+    buildNewYorkDisclosurePage3Amounts,
+    resolveNewYorkPage1LineAmount,
+} from "./new_york_disclosure";
+import {
     buildDisclosureCalculatorInputsFromSources,
     calculateDisclosureMetrics,
 } from "./disclosureAprCalculator";
@@ -82,6 +86,9 @@ export interface StateDisclosureContext {
     prepaymentReceivedByDate?: string;
     /** Amount required to trigger prepayment discount. */
     prepaymentDiscountAmount?: string;
+    /** Optional page 3 line amounts (default 0.00 when empty). */
+    page3Line1?: string;
+    page3Line2?: string;
 }
 
 type StateDisclosureBuilder = (ctx: StateDisclosureContext) => ContractPrefillField[];
@@ -119,13 +126,11 @@ function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): Contract
 }
 
 function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPrefillField[] {
-    const page3 = buildCaliforniaDisclosurePage3Amounts({
+    const page3 = buildNewYorkDisclosurePage3Amounts({
         recipientFunds: ctx.fundingDisbursed,
         brokerFee: ctx.brokerFeePaidToBroker,
-        fundingProvided: ctx.fundingProvided,
-        fundingDisbursed: ctx.fundingDisbursed,
-        page3Line1: "0.00",
-        page3Line2: "0.00",
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
     });
     return [
         ...buildDailyCaliforniaContractPrefillFields({
@@ -134,11 +139,7 @@ function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPre
             estimatedPayment: ctx.estimatedPayment,
             estimatedMonthlyCost: ctx.estimatedMonthlyCost,
             paymentTotal: ctx.totalRepayment,
-            estimatedTerm: resolveCaliforniaEstimatedTermDays({
-                estimatedTermDays: ctx.estimatedTermDays,
-                estimatedNumberOfPayments: ctx.estimatedNumberOfPayments,
-                frequency: ctx.frequency,
-            }),
+            estimatedTerm: ctx.estimatedTermDays ?? "",
             avarageMonthlyIncome: ctx.averageMonthlyIncome,
             payementExceededPercent: ctx.paymentExceededPercent,
             monthlyIncome: ctx.averageMonthlyIncome,
@@ -147,8 +148,8 @@ function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPre
             recipientName: ctx.recipientName?.toUpperCase(),
             recipientFunds: ctx.fundingDisbursed,
             brokerFee: ctx.brokerFeePaidToBroker,
-            page3Line1: "0.00",
-            page3Line2: "0.00",
+            page3Line1: page3.page3Line1,
+            page3Line2: page3.page3Line2,
             page3Subtotal: page3.page3Subtotal,
             page3Net: page3.page3Net,
             signatureDate: ctx.signatureDate,
@@ -156,7 +157,7 @@ function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPre
         {
             id: "disclosure_page1_line_1",
             label: "Page 1 line 1 amount",
-            value: "0.00",
+            value: resolveNewYorkPage1LineAmount(undefined),
         },
     ];
 }
@@ -656,6 +657,11 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     );
 
     let estimatedTermDays = "";
+    let estimatedMonthlyCost = "";
+    let averageMonthlyIncomeFromCalculator = "";
+    let estimatedPaymentFromCalculator = "";
+    let paymentExceededPercentFromCalculator = "";
+    let estimatedAnnualPercentageRateFromCalculator = "";
     try {
         const calcInputs = buildDisclosureCalculatorInputsFromSources({
             contract: args.contract ?? null,
@@ -671,9 +677,39 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         if (metrics.estimatedTermDays > 0) {
             estimatedTermDays = String(metrics.estimatedTermDays);
         }
+        if (metrics.estimatedMonthlyCost > 0) {
+            estimatedMonthlyCost = formatUsd(metrics.estimatedMonthlyCost);
+        }
+        if (metrics.estimatedMerchantAverageMonthlyRevenue > 0) {
+            averageMonthlyIncomeFromCalculator = formatUsd(
+                metrics.estimatedMerchantAverageMonthlyRevenue,
+            );
+        }
+        if (metrics.estimatedPayment > 0) {
+            estimatedPaymentFromCalculator = formatUsd(metrics.estimatedPayment);
+        }
+        if (metrics.percentOfDailyIncomePurchased > 0) {
+            paymentExceededPercentFromCalculator = formatPercent(
+                metrics.percentOfDailyIncomePurchased,
+            );
+        }
+        if (metrics.estimatedAnnualPercentageRate > 0) {
+            estimatedAnnualPercentageRateFromCalculator = formatPercent(
+                metrics.estimatedAnnualPercentageRate,
+            );
+        }
     } catch {
         estimatedTermDays = "";
     }
+
+    const resolvedAverageMonthlyIncome =
+        averageMonthlyIncomeFromCalculator || averageMonthlyIncome;
+    const resolvedEstimatedPayment = estimatedPayment || estimatedPaymentFromCalculator;
+    const resolvedPaymentExceededPercent =
+        paymentExceededPercentFromCalculator ||
+        (percentOfGross !== undefined ? formatPercent(percentOfGross) : "");
+    const resolvedEstimatedApr =
+        estimatedAnnualPercentageRateFromCalculator || estimatedAnnualPercentageRate;
 
     return {
         fundingProvided,
@@ -682,10 +718,10 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         totalRepayment,
         totalDollarCost,
         financeCharge: totalDollarCost,
-        estimatedPayment,
-        estimatedAnnualPercentageRate,
-        paymentExceededPercent: percentOfGross !== undefined ? formatPercent(percentOfGross) : "",
-        averageMonthlyIncome,
+        estimatedPayment: resolvedEstimatedPayment,
+        estimatedAnnualPercentageRate: resolvedEstimatedApr,
+        paymentExceededPercent: resolvedPaymentExceededPercent,
+        averageMonthlyIncome: resolvedAverageMonthlyIncome,
         estimatedTerm: termLength !== undefined ? String(Math.trunc(termLength)) : "",
         estimatedTermDays,
         frequency,
@@ -699,6 +735,7 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         prepaymentReceivedByDate: signatureDate,
         prepaymentDiscountAmount: "",
         brokerFeePaidToBroker: "0.00",
+        estimatedMonthlyCost,
     };
 }
 

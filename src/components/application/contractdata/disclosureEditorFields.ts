@@ -12,6 +12,7 @@ import {
     isUtahDisclosureState,
     mapUtahDisclosureCalculatorToPdfFields,
 } from "./daily_utah";
+import { buildNewYorkDisclosurePage3Amounts } from "./new_york_disclosure";
 import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
 import type { StateDisclosureContext } from "./stateDisclosurePrefill";
 
@@ -38,6 +39,10 @@ export const DISCLOSURE_EDITOR_FIELD_CATALOG: ReadonlyArray<{ id: string; label:
     },
     { id: "disclosure_term_days", label: "Estimated term (days)" },
     { id: "disclosure_broker_fee", label: "Broker fee (paid to broker)" },
+    { id: "disclosure_page3_line_1", label: "Page 3 line 1 amount" },
+    { id: "disclosure_page3_line_2", label: "Page 3 line 2 amount" },
+    { id: "disclosure_page3_subtotal", label: "Page 3 subtotal" },
+    { id: "disclosure_page3_net", label: "Page 3 net amount" },
     { id: "client_name", label: "Merchant / recipient name" },
     { id: "funder_name", label: "Funder / provider name" },
     { id: "disclosure_date", label: "Disclosure date" },
@@ -119,6 +124,10 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     ],
     disclosure_term_days: ["disclosure_term_days", "estimated_term", "estimated_number_of_payement", "estimated_time_periodic_paymement"],
     disclosure_broker_fee: ["disclosure_broker_fee", "appendix_underwriting_fees"],
+    disclosure_page3_line_1: ["disclosure_page3_line_1"],
+    disclosure_page3_line_2: ["disclosure_page3_line_2"],
+    disclosure_page3_subtotal: ["disclosure_page3_subtotal"],
+    disclosure_page3_net: ["disclosure_page3_net"],
     client_name: ["client_name", "recipient_name", "disclosure_name"],
     funder_name: ["funder_name"],
     disclosure_date: [
@@ -235,6 +244,12 @@ export function buildDisclosureEditorFieldsFromContext(
     ctx: StateDisclosureContext,
 ): ContractPrefillField[] {
     const disclosureDate = formatDisclosureUsDate(ctx.signatureDate) || "";
+    const page3 = buildNewYorkDisclosurePage3Amounts({
+        recipientFunds: ctx.fundingDisbursed,
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
+        brokerFee: ctx.brokerFeePaidToBroker,
+    });
 
     const values: Record<string, string> = {
         disclosure_avg_monthly_revenue: ctx.averageMonthlyIncome ?? "",
@@ -244,9 +259,14 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_finance_charge: ctx.financeCharge || ctx.totalDollarCost || "",
         disclosure_total_payment: ctx.totalRepayment ?? "",
         disclosure_estimated_payment: ctx.estimatedPayment ?? "",
+        disclosure_monthly_cost: ctx.estimatedMonthlyCost ?? "",
         disclosure_payment_terms: ctx.percentOfBusinessIncome || ctx.paymentExceededPercent || "",
-        disclosure_term_days: ctx.estimatedTerm ?? "",
+        disclosure_term_days: ctx.estimatedTermDays ?? ctx.estimatedTerm ?? "",
         disclosure_broker_fee: ctx.brokerFeePaidToBroker ?? "0.00",
+        disclosure_page3_line_1: page3.page3Line1,
+        disclosure_page3_line_2: page3.page3Line2,
+        disclosure_page3_subtotal: page3.page3Subtotal,
+        disclosure_page3_net: page3.page3Net,
         client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
         funder_name: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         disclosure_date: disclosureDate,

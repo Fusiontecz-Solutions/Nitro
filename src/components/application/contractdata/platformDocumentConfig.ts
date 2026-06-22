@@ -17,11 +17,11 @@ export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Woodmere Financial";
 
 /** DocuSign envelope role names — must match template / backend DOCUSIGN_DEFAULT_ROLE_NAME. */
 export const PLATFORM_PRIMARY_SIGNER_ROLE = DOCUSIGN_PRIMARY_SIGNER_ROLE;
-export const PLATFORM_SECONDARY_SIGNER_ROLE = "Signer";
+export const PLATFORM_SECONDARY_SIGNER_ROLE = "Owner 2";
 
 export const PLATFORM_SIGNER_SLOTS = [
     { roleIndex: 1, roleName: PLATFORM_PRIMARY_SIGNER_ROLE, signerOrder: 1 },
-    { roleIndex: 2, roleName: PLATFORM_PRIMARY_SIGNER_ROLE, signerOrder: 2 },
+    { roleIndex: 2, roleName: PLATFORM_SECONDARY_SIGNER_ROLE, signerOrder: 2 },
 ] as const;
 
 export type SupplementalDocumentOption = {

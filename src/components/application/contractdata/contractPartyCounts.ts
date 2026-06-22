@@ -169,7 +169,7 @@ export function collapseDocuSignRolesToSignerSlots(
     if (primary) {
         out.push({
             ...primary,
-            signerRole: "Client",
+            signerRole: "Signer",
             signerOrder: 1,
             roleIndex: 1,
         });
