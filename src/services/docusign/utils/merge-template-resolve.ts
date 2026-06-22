@@ -1,4 +1,9 @@
 import prisma from '../../../config/prismaClient';
+import {
+  findBoldSignTemplatePdfUrlForLayout,
+  isDocumentLayoutKey,
+  PLATFORM_DOCUMENTS,
+} from '../platform-document-registry';
 import type { DocumentLayout } from './convert-docusign-template-export';
 import {
   getDocumentLayout,
@@ -10,12 +15,15 @@ import {
   prefillFieldsToValueMap,
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
+import { tryBuildStateDisclosureLayoutFromDbRow } from './state-document-layout';
 
 export type ResolvedMergeTemplate = {
   sourceRef: string;
   name?: string;
   pdfUrl?: string;
   layoutKey?: DocumentLayoutKey;
+  /** When set, coordinates come from `state-document-config.ts` (disclosure merge). */
+  inlineLayout?: DocumentLayout;
 };
 
 export async function resolveTemplateRefForMerge(
@@ -24,6 +32,22 @@ export async function resolveTemplateRefForMerge(
   const sourceRef = String(ref || '').trim();
   if (!sourceRef) {
     throw new Error('Empty template reference');
+  }
+
+  if (isDocumentLayoutKey(sourceRef)) {
+    const def = PLATFORM_DOCUMENTS[sourceRef];
+    const dbPdfUrl = await findBoldSignTemplatePdfUrlForLayout(sourceRef);
+    if (!dbPdfUrl) {
+      throw new Error(
+        `No Cloudinary pdfUrl for "${def.name}". Set pdfUrl on the BoldSignTemplate row with layoutKey "${sourceRef}".`,
+      );
+    }
+    return {
+      sourceRef,
+      name: def.name,
+      layoutKey: sourceRef,
+      pdfUrl: dbPdfUrl,
+    };
   }
 
   const row = await prisma.boldSignTemplate.findFirst({
@@ -39,15 +63,16 @@ export async function resolveTemplateRefForMerge(
       resolveLayoutKeyFromBoldSignType(String(row.type || '')) ||
       undefined;
     const pdfUrl = String(row.pdfUrl || '').trim() || undefined;
+    const inlineLayout = tryBuildStateDisclosureLayoutFromDbRow(row);
 
     if (!pdfUrl) {
       throw new Error(
         `Template "${row.name}" has no pdfUrl. Upload a PDF to Cloudinary and set pdfUrl on the document template record.`,
       );
     }
-    if (!layoutKey) {
+    if (!layoutKey && !inlineLayout) {
       throw new Error(
-        `Template "${row.name}" has no layoutKey. Set layoutKey (e.g. flex_addendum) on the document template record.`,
+        `Template "${row.name}" has no layoutKey and no state-document-config entry for frequency="${row.frequency}" state="${row.state}".`,
       );
     }
 
@@ -56,6 +81,7 @@ export async function resolveTemplateRefForMerge(
       name: row.name,
       pdfUrl,
       layoutKey,
+      inlineLayout: inlineLayout || undefined,
     };
   }
 
@@ -64,12 +90,28 @@ export async function resolveTemplateRefForMerge(
   );
 }
 
-export async function fetchPdfAsBase64(url: string): Promise<string> {
+export function assertValidPdfBuffer(buf: Buffer, context?: string): void {
+  const header = buf.subarray(0, Math.min(5, buf.length)).toString('ascii');
+  if (buf.length < 5 || header !== '%PDF-') {
+    const hint = context ? ` for "${context}"` : '';
+    throw new Error(
+      `Downloaded file is not a valid PDF${hint}. Check the Cloudinary pdfUrl points to a real PDF.`,
+    );
+  }
+}
+
+export async function fetchPdfAsBase64(
+  url: string,
+  context?: string,
+): Promise<string> {
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`Failed to download PDF (${res.status})`);
+    throw new Error(
+      `Failed to download PDF (${res.status})${context ? ` for "${context}"` : ''}`,
+    );
   }
   const buf = Buffer.from(await res.arrayBuffer());
+  assertValidPdfBuffer(buf, context);
   return buf.toString('base64');
 }
 
@@ -142,13 +184,34 @@ export async function buildPdfCompositeFromResolved(
   ownerCount = 1,
   guarantorCount = 0,
 ): Promise<Record<string, unknown>> {
-  if (!resolved.pdfUrl || !resolved.layoutKey) {
+  if (!resolved.pdfUrl || (!resolved.layoutKey && !resolved.inlineLayout)) {
     throw new Error(
-      `Template "${resolved.name || resolved.sourceRef}" is missing pdfUrl or layoutKey`,
+      `Template "${resolved.name || resolved.sourceRef}" is missing pdfUrl or layout`,
     );
   }
-  const layout = getDocumentLayout(resolved.layoutKey);
-  const documentBase64 = await fetchPdfAsBase64(resolved.pdfUrl);
+  const layout =
+    resolved.inlineLayout ||
+    (resolved.layoutKey ? getDocumentLayout(resolved.layoutKey) : null);
+  if (!layout) {
+    throw new Error(
+      `Template "${resolved.name || resolved.sourceRef}" could not resolve a document layout`,
+    );
+  }
+  const pdfUrl = String(resolved.pdfUrl || '').trim();
+  if (!pdfUrl || pdfUrl.startsWith('platform://')) {
+    throw new Error(
+      `Template "${resolved.name || resolved.sourceRef}" is missing a Cloudinary pdfUrl.`,
+    );
+  }
+  const documentBase64 = await fetchPdfAsBase64(
+    pdfUrl,
+    resolved.name || resolved.sourceRef,
+  );
+  if (!documentBase64) {
+    throw new Error(
+      `Template "${resolved.name || resolved.sourceRef}" PDF could not be loaded`,
+    );
+  }
   const values = prefillFieldsToValueMap(prefillFields);
   return buildPdfCompositeTemplate({
     compositeTemplateId,

@@ -391,16 +391,20 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
         let letterPdfName: string | undefined;
 
         if (wantLetterPdf) {
-            const { renderLetterHtmlToPdfBuffer, sanitizeLetterPdfFilename } = await import(
-                '../services/pdf/letterHtmlToPdf.service'
+            const { requireHtmlPdfMailAttachment } = await import(
+                '../services/emailHtmlPdfAttachment.service'
             );
             const rawPdfName =
                 typeof letterPdfFilename === 'string' && letterPdfFilename.trim()
                     ? letterPdfFilename.trim()
                     : `${String(subject || 'letter').trim().slice(0, 120) || 'letter'}`;
-            letterPdfName = sanitizeLetterPdfFilename(rawPdfName);
             try {
-                letterPdfBuffer = await renderLetterHtmlToPdfBuffer(String(body ?? ''));
+                const pdfAttachment = await requireHtmlPdfMailAttachment(
+                    String(body ?? ''),
+                    rawPdfName,
+                );
+                letterPdfBuffer = pdfAttachment.content;
+                letterPdfName = pdfAttachment.filename;
             } catch (pdfErr: unknown) {
                 console.error('[gmail/send] Letter PDF generation failed:', pdfErr);
                 res.status(500).json({
@@ -441,6 +445,18 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
                 bcc,
                 replyTo,
                 from: getDefaultMailFrom(),
+                ...(letterPdfBuffer && letterPdfName
+                    ? {
+                          attachments: [
+                              {
+                                  filename: letterPdfName,
+                                  content: letterPdfBuffer,
+                                  contentType: 'application/pdf',
+                                  contentDisposition: 'attachment',
+                              },
+                          ],
+                      }
+                    : {}),
             });
             if (!result) {
                 throw new Error('Failed to send email via SMTP');

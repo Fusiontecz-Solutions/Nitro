@@ -313,3 +313,54 @@ export async function listPaymentMailLogs(applicationId: string, user: Authentic
 
   return { forbidden: false, notFound: false, logs };
 }
+
+export interface UpdatePaymentMailLogInput {
+  status?: 'queued' | 'sent' | 'failed';
+}
+
+/**
+ * Update an existing payment mail log row for an application (status only — the
+ * model has no tracking/attachment columns). Enforces the same access rules as
+ * create/list and verifies the log belongs to the given application.
+ */
+export async function updatePaymentMailLog(
+  applicationId: string,
+  user: AuthenticatedUser | null,
+  logId: string,
+  input: UpdatePaymentMailLogInput,
+) {
+  const access = await assertApplicationMailLogAccess(applicationId, user);
+  if (!access.application) {
+    return { forbidden: false, notFound: true, log: null };
+  }
+  if (access.forbidden) {
+    return { forbidden: true, notFound: false, log: null };
+  }
+
+  const existing = await prisma.paymentMailLog.findFirst({
+    where: { id: logId, applicationId: access.application.id },
+  });
+  if (!existing) {
+    return { forbidden: false, notFound: true, log: null };
+  }
+
+  const data: { status?: PaymentMailLogStatus } = {};
+  if (input.status !== undefined) {
+    const prismaStatus = toPrismaMailLogStatus(input.status);
+    if (!prismaStatus) {
+      return { forbidden: false, notFound: false, badRequest: true as const, log: null };
+    }
+    data.status = prismaStatus;
+  }
+
+  if (Object.keys(data).length === 0) {
+    return { forbidden: false, notFound: false, log: existing };
+  }
+
+  const log = await prisma.paymentMailLog.update({
+    where: { id: existing.id },
+    data,
+  });
+
+  return { forbidden: false, notFound: false, log };
+}

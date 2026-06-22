@@ -96,17 +96,17 @@ model BoldSignTemplate {
   name                     String
   type                     String
   state                    String?
-  /** Legacy DocuSign/BoldSign template UUID — optional when using platform PDF + layout. */
+  /// * Legacy DocuSign/BoldSign template UUID — optional when using platform PDF + layout.
   templateId               String?
-  /** PDF URL (Cloudinary) when not using remote DocuSign template. */
-  pdfUrl                   String?
-  pdfPublicId              String?
-  originalFileName         String?
-  /** Coordinate layout key, e.g. `flex_addendum`, `balance_transfer`. */
-  layoutKey                String?
   createdAt                DateTime                          @default(now())
   frequency                String?
   id                       String                            @id @default(uuid()) @db.Uuid
+  /// * Identifies which platform layout (signing field positions) this template uses.
+  layoutKey                String?
+  originalFileName         String?
+  pdfPublicId              String?
+  /// * PDF URL (Cloudinary) when not using remote DocuSign template.
+  pdfUrl                   String?
   contractTemplateMappings ContractDocumentTemplateMapping[]
 }
 

@@ -143,12 +143,13 @@ export function resolveDecisionLogicInvitationBaseUrl(): string {
 export function resolveCrmFrontendBaseUrl(): string | undefined {
   const inProd = process.env.NODE_ENV === 'production';
 
-  // Email / invite links: never prefer localhost when a public origin is configured.
+  // Honor explicit FRONTEND_URL in all environments (including localhost dev).
+  const explicit = pickExplicitFrontendUrlEnv();
+  if (explicit) return explicit;
+
+  // Email / invite links: prefer a public origin when configured.
   const publicOrigin = pickFirstPublicFrontendOrigin();
   if (publicOrigin) return publicOrigin;
-
-  const explicit = pickExplicitFrontendUrlEnv();
-  if (explicit && (inProd || isPublicOrigin(explicit))) return explicit;
 
   if (!inProd) {
     const devLocal = String(

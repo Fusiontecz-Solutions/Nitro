@@ -1,5 +1,6 @@
 import fs from 'fs';
 import nodemailer from 'nodemailer';
+import { resolveEmailBrandDisplayName } from '../constants/emailBrand';
 
 const sendgridApiKey = process.env.SENDGRID_API_KEY?.trim();
 const useSendgrid = Boolean(sendgridApiKey);
@@ -17,24 +18,9 @@ export function isOutboundSmtpConfigured(): boolean {
     );
 }
 
-const DEFAULT_DISPLAY_NAME = 'Woodmere Financial';
-
-const LEGACY_MAIL_FROM_NAMES = new Set([
-    'crm',
-    'in-house crm',
-    'ih crm',
-    'in house crm',
-]);
-
 /** Display name for outbound SMTP / SendGrid (read at send time, not module load). */
 function getMailFromDisplayName(): string {
-    const envName =
-        process.env.MAIL_FROM_NAME?.trim() ||
-        process.env.SENDGRID_FROM_NAME?.trim();
-    if (envName && !LEGACY_MAIL_FROM_NAMES.has(envName.toLowerCase())) {
-        return envName;
-    }
-    return DEFAULT_DISPLAY_NAME;
+    return resolveEmailBrandDisplayName();
 }
 
 /** Strip optional `"Name"` wrapper and extract the bare email from a From value. */

@@ -11,7 +11,7 @@ import * as path from 'path';
 
 export type DocumentLayoutPlacement = {
   id: string;
-  type: 'text' | 'date' | 'signature' | 'initial';
+  type: 'text' | 'date' | 'signature' | 'initial' | 'attachment';
   variable?: string;
   slot?: string;
   /** CRM signer role when type is signature | initial */
@@ -29,6 +29,8 @@ export type DocumentLayoutPlacement = {
   height?: string;
   optional?: boolean;
   sourceTabLabel?: string;
+  /** When true, prefill tab is locked so signers cannot edit. */
+  lockedForSigner?: boolean;
 };
 
 export type DocumentLayout = {
@@ -36,6 +38,8 @@ export type DocumentLayout = {
   key: string;
   name: string;
   description?: string;
+  /** When true, do not mirror primary initials for owner 2 (standalone ACH send). */
+  skipOwner2InitialMirror?: boolean;
   legacyDocuSignTemplateId?: string;
   pdf?: {
     source: 'contractTemplate' | 'boldSignTemplate';

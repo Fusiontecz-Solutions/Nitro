@@ -760,6 +760,12 @@ function plainTextBodyToHtmlEmail(body: string): string {
 </html>`;
 }
 
+export interface GmailEmailAttachment {
+    filename: string;
+    content: Buffer;
+    contentType?: string;
+}
+
 export interface SendEmailOptions {
     accessToken: string;
     to: string | string[];
@@ -772,6 +778,57 @@ export interface SendEmailOptions {
     threadId?: string;      // set when replying to an existing thread
     inReplyTo?: string;     // Message-ID header of the message being replied to
     references?: string;    // References header for threading
+    attachments?: GmailEmailAttachment[];
+}
+
+function encodeRfc2047Filename(filename: string): string {
+    const safe = String(filename || 'attachment').replace(/[\r\n"]/g, '_');
+    if (/^[\x20-\x7E]+$/.test(safe)) {
+        return `filename="${safe}"`;
+    }
+    const encoded = Buffer.from(safe, 'utf8')
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+    return `filename*=UTF-8''${encodeURIComponent(safe)}`;
+}
+
+function buildMultipartMixedEmailBody(
+    htmlBody: string,
+    attachments: GmailEmailAttachment[],
+): { contentType: string; body: string } {
+    const boundary = `mixed_${Date.now().toString(16)}_${Math.random().toString(16).slice(2)}`;
+    const parts: string[] = [];
+
+    parts.push(`--${boundary}`);
+    parts.push('Content-Type: text/html; charset=utf-8');
+    parts.push('Content-Transfer-Encoding: 7bit');
+    parts.push('');
+    parts.push(htmlBody);
+
+    for (const attachment of attachments) {
+        const filename = attachment.filename || 'attachment';
+        const contentType = attachment.contentType || 'application/octet-stream';
+        const base64 = Buffer.isBuffer(attachment.content)
+            ? attachment.content.toString('base64')
+            : Buffer.from(String(attachment.content)).toString('base64');
+
+        parts.push(`--${boundary}`);
+        parts.push(`Content-Type: ${contentType}`);
+        parts.push(`Content-Disposition: attachment; ${encodeRfc2047Filename(filename)}`);
+        parts.push('Content-Transfer-Encoding: base64');
+        parts.push('');
+        parts.push(base64.replace(/(.{76})/g, '$1\r\n').replace(/\r\n$/, ''));
+    }
+
+    parts.push(`--${boundary}--`);
+    parts.push('');
+
+    return {
+        contentType: `multipart/mixed; boundary="${boundary}"`,
+        body: parts.join('\r\n'),
+    };
 }
 
 /**
@@ -791,6 +848,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<any> {
         threadId,
         inReplyTo,
         references,
+        attachments,
     } = options;
 
     if (!accessToken) {
@@ -833,12 +891,23 @@ export async function sendEmail(options: SendEmailOptions): Promise<any> {
     }
 
     headers.push('MIME-Version: 1.0');
-    headers.push('Content-Type: text/html; charset=utf-8');
 
     const htmlBody = looksLikeHtmlEmail(body) ? body : plainTextBodyToHtmlEmail(body);
+    const fileAttachments = (attachments ?? []).filter(
+        (item) => item?.content && String(item.filename || '').trim(),
+    );
+
+    let messageBody = htmlBody;
+    if (fileAttachments.length) {
+        const multipart = buildMultipartMixedEmailBody(htmlBody, fileAttachments);
+        headers.push(`Content-Type: ${multipart.contentType}`);
+        messageBody = multipart.body;
+    } else {
+        headers.push('Content-Type: text/html; charset=utf-8');
+    }
 
     // Combine headers + body into RFC 2822 message
-    const rawMessage = `${headers.join('\r\n')}\r\n\r\n${htmlBody}`;
+    const rawMessage = `${headers.join('\r\n')}\r\n\r\n${messageBody}`;
 
     // Gmail API expects web-safe base64 (base64url)
     const encodedMessage = Buffer.from(rawMessage)

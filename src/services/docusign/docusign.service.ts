@@ -54,7 +54,12 @@ import {
   filterSupplementalRefs,
   resolveSupplementalRefsFromDb,
 } from './utils/platform-layout-envelope';
-import { buildDocuSignEnvelopeEmailSubject } from './utils/docusign-email-subject';
+import {
+  buildContractEnvelopeDocumentName,
+  buildContractEnvelopeEmailSubject,
+  buildContractEnvelopePdfFilename,
+  normalizeContractCcEmailSubject,
+} from '../../utils/contractEnvelopeEmailSubject';
 
 /** Contract signing status labels for notifications */
 const CONTRACT_STATUS_LABELS: Record<string, string> = {
@@ -902,6 +907,168 @@ export class DocusignService {
     return 'Client';
   }
 
+  private async resolveApplicationContractEmailContext(
+    applicationId: string,
+  ): Promise<{ businessName: string | null; offerAmount: number | null }> {
+    try {
+      const contract = await prisma.contract.findFirst({
+        where: { applicationId },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          legalName: true,
+          clientName: true,
+          doingBusinessAs: true,
+          approvedAmount: true,
+          purchaseAmount: true,
+          purchasePrice: true,
+        },
+      });
+
+      let businessName = String(
+        contract?.legalName || contract?.doingBusinessAs || contract?.clientName || '',
+      ).trim();
+      let offerAmount =
+        contract?.approvedAmount != null ? Number(contract.approvedAmount) : null;
+
+      const app = await prisma.application.findUnique({
+        where: { id: applicationId },
+        select: {
+          dealDisplayName: true,
+          client: {
+            select: { businessName: true },
+          },
+          OfferDecision: {
+            select: { offer: true },
+          },
+          termsOffers: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { approvedAmount: true },
+          },
+        },
+      });
+
+      if (!businessName) {
+        businessName = String(
+          app?.client?.businessName || app?.dealDisplayName || '',
+        ).trim();
+      }
+
+      if (offerAmount == null || !Number.isFinite(offerAmount)) {
+        const fromOfferDecision =
+          app?.OfferDecision?.offer != null ? Number(app.OfferDecision.offer) : null;
+        const fromTerms =
+          app?.termsOffers?.[0]?.approvedAmount != null
+            ? Number(app.termsOffers[0].approvedAmount)
+            : null;
+        const fromPurchaseAmount =
+          contract?.purchaseAmount != null
+            ? Number(String(contract.purchaseAmount).replace(/[$,\s]/g, ''))
+            : null;
+        const fromPurchasePrice =
+          contract?.purchasePrice != null
+            ? Number(String(contract.purchasePrice).replace(/[$,\s]/g, ''))
+            : null;
+        offerAmount =
+          fromOfferDecision != null && Number.isFinite(fromOfferDecision)
+            ? fromOfferDecision
+            : fromTerms != null && Number.isFinite(fromTerms)
+              ? fromTerms
+              : fromPurchaseAmount != null && Number.isFinite(fromPurchaseAmount)
+                ? fromPurchaseAmount
+                : fromPurchasePrice != null && Number.isFinite(fromPurchasePrice)
+                  ? fromPurchasePrice
+                  : null;
+      }
+
+      return {
+        businessName: businessName || null,
+        offerAmount: offerAmount != null && Number.isFinite(offerAmount) ? offerAmount : null,
+      };
+    } catch {
+      return { businessName: null, offerAmount: null };
+    }
+  }
+
+  private resolveContractContextFromPrefillFields(
+    prefillFields?: PrefillField[],
+  ): { businessName: string | null; offerAmount: number | string | null } {
+    if (!prefillFields?.length) {
+      return { businessName: null, offerAmount: null };
+    }
+    const map = new Map<string, string>();
+    for (const field of prefillFields) {
+      const id = String(field.id || '').trim();
+      const value = String(field.value ?? '').trim();
+      if (id && value) map.set(id.toLowerCase(), value);
+    }
+    const pick = (...keys: string[]) => {
+      for (const key of keys) {
+        const v = map.get(key.toLowerCase());
+        if (v) return v;
+      }
+      return '';
+    };
+    const businessName =
+      pick(
+        'client_legal_name',
+        'client_name',
+        'legal_name',
+        'business_legal_name',
+        'merchant_legal_name',
+        'doing_business_as',
+        'dba',
+      ) || null;
+    const offerAmount =
+      pick(
+        'approved_amount',
+        'approvedamount',
+        'net_to_merchant',
+        'netfundprovided',
+        'net_fund_provided',
+        'funding_provided',
+        'total_amount_business_fund',
+        'purchase_amount',
+        'purchased_amount',
+        'purchase_price',
+        'purchaseprice',
+        'total_amount_tobe_paid_to_provider',
+        'disclosure_amount_financed',
+      ) || null;
+    return { businessName, offerAmount };
+  }
+
+  private async resolveContractEnvelopeTitle(options: {
+    applicationId?: string;
+    title?: string;
+    prefillFields?: PrefillField[];
+  }): Promise<string> {
+    const fromPrefill = this.resolveContractContextFromPrefillFields(options.prefillFields);
+    const appId = String(options.applicationId || '').trim();
+
+    if (appId) {
+      const ctx = await this.resolveApplicationContractEmailContext(appId);
+      const businessName = ctx.businessName || fromPrefill.businessName;
+      const offerAmount = ctx.offerAmount ?? fromPrefill.offerAmount;
+      if (businessName) {
+        return buildContractEnvelopeEmailSubject(businessName, offerAmount);
+      }
+    }
+
+    if (fromPrefill.businessName) {
+      return buildContractEnvelopeEmailSubject(
+        fromPrefill.businessName,
+        fromPrefill.offerAmount,
+      );
+    }
+
+    const override = String(options.title || '').trim();
+    if (override) return override;
+
+    const clientName = await this.resolveClientDisplayNameForApplication(appId);
+    return buildContractEnvelopeEmailSubject(clientName, fromPrefill.offerAmount);
+  }
+
   private async resolveEnvelopeEmailSubject(
     client: AxiosInstance,
     accountId: string,
@@ -920,8 +1087,15 @@ export class DocusignService {
     } catch {
       /* fall through */
     }
+    const appId = String(applicationId || '').trim();
+    if (appId) {
+      const ctx = await this.resolveApplicationContractEmailContext(appId);
+      if (ctx.businessName) {
+        return buildContractEnvelopeEmailSubject(ctx.businessName, ctx.offerAmount);
+      }
+    }
     const clientName = await this.resolveClientDisplayNameForApplication(applicationId);
-    return buildDocuSignEnvelopeEmailSubject(clientName);
+    return buildContractEnvelopeEmailSubject(clientName, null);
   }
 
   private buildEnvelopeTextCustomFields(
@@ -1368,7 +1542,12 @@ export class DocusignService {
 
     const findByRoleReusable = (roleKey: string) => {
       if (!roleKey) return null;
-      return normalized.find((row) => row.roleName.toLowerCase() === roleKey) || null;
+      const idx = normalized.findIndex(
+        (row, ni) => !used.has(ni) && row.roleName.toLowerCase() === roleKey,
+      );
+      if (idx < 0) return null;
+      used.add(idx);
+      return normalized[idx];
     };
 
     return envelopeSigners.map((signer, slotIdx) => {
@@ -2475,8 +2654,10 @@ export class DocusignService {
       return { emailed: [] };
     }
 
-    const subject =
-      subjectBase.trim() || buildDocuSignEnvelopeEmailSubject('Contract');
+    const subject = normalizeContractCcEmailSubject(
+      subjectBase.trim() || buildContractEnvelopeEmailSubject('Business', null),
+    );
+    const pdfFilename = buildContractEnvelopePdfFilename(subject);
     const emailed: string[] = [];
     for (const to of list) {
       try {
@@ -2486,7 +2667,7 @@ export class DocusignService {
           html: '<p>Please find the signed contract package attached for your records.</p>',
           attachments: [
             {
-              filename: 'contract-with-addendum.pdf',
+              filename: pdfFilename,
               content: pdf,
               contentType: 'application/pdf',
             },
@@ -2762,8 +2943,21 @@ export class DocusignService {
   ) {
     const { client, accountId } = await this.getAuthContext(userId);
 
+    const isStandaloneOnly =
+      (options.standaloneDocumentRefs?.length ?? 0) > 0 &&
+      !(options.supplementalRefs?.length ?? 0);
+
     let built;
     try {
+      const sendImmediately = options.autoSend === true;
+      const envelopeSubject = isStandaloneOnly
+        ? String(options.title || '').trim() || 'ACH Authorization'
+        : await this.resolveContractEnvelopeTitle({
+            applicationId: options.applicationId,
+            title: options.title,
+            prefillFields: options.prefillFields,
+          });
+
       built = await buildPlatformLayoutEnvelopeDefinition({
         supplementalRefs: options.supplementalRefs,
         standaloneDocumentRefs: options.standaloneDocumentRefs,
@@ -2771,8 +2965,13 @@ export class DocusignService {
         prefillFields: options.prefillFields,
         ownerCount: options.ownerCount,
         guarantorCount: options.guarantorCount,
-        title: options.title,
+        title: envelopeSubject,
         message: options.message,
+        documentName: isStandaloneOnly
+          ? undefined
+          : buildContractEnvelopeDocumentName(envelopeSubject),
+        flattenPrefillInPdf: sendImmediately,
+        lockDataTabs: sendImmediately,
       });
     } catch (err: any) {
       throw new BadRequestException(err?.message || String(err));
@@ -2800,7 +2999,7 @@ export class DocusignService {
         skipApplicationEnvelopeLink: options.skipApplicationEnvelopeLink,
         redirectUrl: options.redirectUrl,
         ccEmails: options.ccEmails,
-        title: options.title,
+        title: built.envelopeDefinition.emailSubject as string | undefined,
         prefillFields: options.prefillFields,
         autoSend: options.autoSend,
         createTimePrefillTabCount: built.createTimePrefillTabCount,

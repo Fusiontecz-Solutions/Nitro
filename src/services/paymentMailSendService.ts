@@ -12,6 +12,7 @@ import {
 } from './paymentMailLogService';
 import { recordCommunicationAudit } from './systemActivityLogService';
 import { inferRecipientTypeFromCategory } from './outboundCommunicationService';
+import { buildHtmlPdfMailAttachment } from './emailHtmlPdfAttachment.service';
 
 export interface SendPaymentTemplateMailInput {
   to: string;
@@ -88,6 +89,10 @@ export async function sendTrackedPaymentTemplateMail(
       req,
     );
 
+    const pdfFilenameBase =
+      input.templateName?.trim() || input.subject?.trim() || input.category || 'letter';
+    const pdfAttachment = await buildHtmlPdfMailAttachment(input.body, pdfFilenameBase);
+
     const summary = `Sent ${input.category} "${input.templateName}" to ${input.to}`;
     await recordCommunicationAudit(req, {
       outboundCommunicationId: trackingId,
@@ -107,6 +112,7 @@ export async function sendTrackedPaymentTemplateMail(
         categoryLabel: input.category,
         recipient: input.to,
         status: 'sent',
+        hasHtmlPdf: Boolean(pdfAttachment),
       },
     });
 
@@ -120,6 +126,7 @@ export async function sendTrackedPaymentTemplateMail(
       from: getSendGridMailFrom(),
       trackingId,
       categories: ['payment-template'],
+      attachments: pdfAttachment ? [pdfAttachment] : undefined,
     });
 
     const sgMessageId =

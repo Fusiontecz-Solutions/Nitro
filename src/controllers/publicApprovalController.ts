@@ -1,11 +1,16 @@
 import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import type { User } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import {
   createPublicPortalToken,
   isPublicPortalTokenTableReady,
+  resolvePortalToken,
   sha256Hex,
 } from '../services/publicPortalTokenService';
+import { buildDocumentRequestListForApplication } from '../services/documentRequestListService';
+import uploadService from '../services/uploadService';
+import { notifyRequestersDocumentReceived } from '../services/documentRequestFulfillmentService';
 
 // For public pages we only return the minimal fields Approval needs.
 const mapApplicationForApproval = (app: any) => {
@@ -29,6 +34,32 @@ const mapApplicationForApproval = (app: any) => {
           },
         }
       : null,
+  };
+};
+
+const mapOfferDecisionForApproval = (row: any) => {
+  if (!row) return null;
+
+  return {
+    _id: row.id,
+    id: row.id,
+    application: row.applicationId,
+    decision: row.decision,
+    position: row.position,
+    offer: row.offer,
+    rate: row.rate,
+    factorRate: row.rate,
+    term: row.term,
+    frequency: row.frequency,
+    repayPerPeriod: row.repayPerPeriod,
+    monthlyPayment: row.monthlyPayment,
+    fees: row.fees,
+    ourRemit: row.ourRemit,
+    totalRemit: row.totalRemit,
+    refinanceAmount: row.refinanceAmount,
+    declineReason: row.declineReason,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 };
 
@@ -57,6 +88,27 @@ const mapTermsOfferForApproval = (offer: any) => {
     updatedAt: offer.updatedAt,
   };
 };
+
+/**
+ * Public portal links are emailed to ISO partners. Upload APIs still require a CRM JWT,
+ * so we attach the session to a real User — prefer the ISO's CRM account when one exists,
+ * otherwise the referring agent or sales rep. Anyone holding the secret link may use the
+ * portal; we are not restricting upload to that user's login email.
+ */
+async function resolvePublicPortalSessionUser(application: {
+  referringAgent: User | null;
+  salesRepresentative: User | null;
+  iso: { email: string | null } | null;
+}): Promise<User | null> {
+  const isoEmail = String(application.iso?.email || '').trim();
+  if (isoEmail) {
+    const isoUser = await prisma.user.findFirst({
+      where: { email: { equals: isoEmail, mode: 'insensitive' }, isActive: true },
+    });
+    if (isoUser) return isoUser;
+  }
+  return application.referringAgent ?? application.salesRepresentative ?? null;
+}
 
 const mapApplicationForPortalStatus = (app: any) => {
   if (!app) return null;
@@ -173,17 +225,23 @@ class PublicApprovalController {
             });
           }
 
-          const termsOffers = await prisma.termsOffer.findMany({
-            where: { applicationId: appRecord.id },
-            orderBy: { createdAt: 'desc' },
-            take: 10,
-          });
+          const [termsOffers, offerDecision] = await Promise.all([
+            prisma.termsOffer.findMany({
+              where: { applicationId: appRecord.id },
+              orderBy: { createdAt: 'desc' },
+              take: 10,
+            }),
+            prisma.offerDecision.findUnique({
+              where: { applicationId: appRecord.id },
+            }),
+          ]);
 
           return res.status(200).json({
             success: true,
             data: {
               application: mapApplicationForApproval(appRecord),
               termsOffers: termsOffers.map(mapTermsOfferForApproval),
+              offerDecision: mapOfferDecisionForApproval(offerDecision),
               expiresAt: null,
             },
           });
@@ -214,17 +272,23 @@ class PublicApprovalController {
         return res.status(404).json({ success: false, code: 'APPLICATION_NOT_FOUND', message: 'Application not found' });
       }
 
-      const termsOffers = await prisma.termsOffer.findMany({
-        where: { applicationId: tokenRecord.applicationId },
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-      });
+      const [termsOffers, offerDecision] = await Promise.all([
+        prisma.termsOffer.findMany({
+          where: { applicationId: tokenRecord.applicationId },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+        }),
+        prisma.offerDecision.findUnique({
+          where: { applicationId: tokenRecord.applicationId },
+        }),
+      ]);
 
       return res.status(200).json({
         success: true,
         data: {
           application: mapApplicationForApproval(appRecord),
           termsOffers: termsOffers.map(mapTermsOfferForApproval),
+          offerDecision: mapOfferDecisionForApproval(offerDecision),
           expiresAt: tokenRecord.expiresAt ?? null,
         },
       });
@@ -339,6 +403,8 @@ class PublicApprovalController {
         where: { id: applicationId },
         include: {
           referringAgent: true,
+          salesRepresentative: true,
+          iso: true,
           client: true,
         },
       });
@@ -347,15 +413,14 @@ class PublicApprovalController {
         return res.status(404).json({ success: false, message: 'Application not found' });
       }
 
-      // The recipient is the referring agent (see email send logic).
-      if (!application.referringAgent) {
+      const agent = await resolvePublicPortalSessionUser(application);
+      if (!agent) {
         return res.status(403).json({
           success: false,
-          message: 'This link is not associated with a valid agent',
+          message:
+            'This application has no portal user. Link a CRM user to the ISO email, or assign a referring agent.',
         });
       }
-
-      const agent = application.referringAgent;
 
       const jwtSecret = process.env.JWT_SECRET;
       if (!jwtSecret) {
@@ -404,7 +469,194 @@ class PublicApprovalController {
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }
+
+  /** Public: document request portal — list requested documents (no login). */
+  async getDocumentRequestPortalByToken(req: Request, res: Response) {
+    try {
+      const token = req.params.token;
+      if (!token) {
+        return res.status(400).json({ success: false, message: 'Token is required' });
+      }
+
+      const resolved = await resolvePortalToken(token);
+      if (!resolved) {
+        const tokenHash = sha256Hex(token);
+        const tokenRecord = await prisma.publicApprovalToken.findUnique({
+          where: { tokenHash },
+        });
+        if (tokenRecord?.expiresAt && tokenRecord.expiresAt < new Date()) {
+          return res.status(410).json({
+            success: false,
+            code: 'TOKEN_EXPIRED',
+            message: 'Link expired',
+            expiresAt: tokenRecord.expiresAt,
+          });
+        }
+        return res.status(404).json({
+          success: false,
+          code: 'TOKEN_NOT_FOUND',
+          message: 'Link not found',
+        });
+      }
+
+      const appRecord = await prisma.application.findUnique({
+        where: { id: resolved.applicationId },
+        include: { client: true },
+      });
+
+      if (!appRecord) {
+        return res.status(404).json({
+          success: false,
+          code: 'APPLICATION_NOT_FOUND',
+          message: 'Application not found',
+        });
+      }
+
+      const client = appRecord.client;
+      const clientName =
+        client?.businessName ||
+        `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
+        'Client';
+
+      const documents = await buildDocumentRequestListForApplication(appRecord.id);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          application: {
+            id: appRecord.id,
+            applicationId: appRecord.applicationId,
+            clientName,
+          },
+          documents,
+          expiresAt: resolved.expiresAt,
+        },
+      });
+    } catch (error) {
+      console.error('PublicApprovalController.getDocumentRequestPortalByToken error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  /** Public: upload a requested document via portal token (no login). */
+  async uploadDocumentRequestByToken(req: Request, res: Response) {
+    try {
+      const token = req.params.token;
+      if (!token) {
+        return res.status(400).json({ success: false, message: 'Token is required' });
+      }
+
+      const resolved = await resolvePortalToken(token);
+      if (!resolved) {
+        const tokenHash = sha256Hex(token);
+        const tokenRecord = await prisma.publicApprovalToken.findUnique({
+          where: { tokenHash },
+        });
+        if (tokenRecord?.expiresAt && tokenRecord.expiresAt < new Date()) {
+          return res.status(410).json({
+            success: false,
+            code: 'TOKEN_EXPIRED',
+            message: 'Link expired',
+            expiresAt: tokenRecord.expiresAt,
+          });
+        }
+        return res.status(404).json({
+          success: false,
+          code: 'TOKEN_NOT_FOUND',
+          message: 'Link not found',
+        });
+      }
+
+      const requestedDocumentSlug = String(
+        (req.body as { requestedDocumentSlug?: string })?.requestedDocumentSlug || '',
+      )
+        .trim()
+        .toLowerCase();
+
+      if (!requestedDocumentSlug) {
+        return res.status(400).json({
+          success: false,
+          message: 'requestedDocumentSlug is required',
+        });
+      }
+
+      const reqFiles = (req as any).files;
+      const rawFile = reqFiles?.file ?? reqFiles?.files;
+      const file = Array.isArray(rawFile) ? rawFile[0] : rawFile;
+
+      if (!file) {
+        return res.status(400).json({
+          success: false,
+          message: 'No file uploaded',
+        });
+      }
+
+      const application = await prisma.application.findUnique({
+        where: { id: resolved.applicationId },
+        select: {
+          id: true,
+          applicationId: true,
+          salesRepresentativeId: true,
+          createdById: true,
+        },
+      });
+
+      if (!application) {
+        return res.status(404).json({
+          success: false,
+          message: 'Application not found',
+        });
+      }
+
+      const folder = 'ih-crm/applications';
+      const uploadResult = await uploadService.uploadFile(file, folder);
+
+      if (!uploadResult.success || !uploadResult.data) {
+        return res.status(500).json({
+          success: false,
+          message: uploadResult.message || uploadResult.error || 'Failed to upload file',
+        });
+      }
+
+      await prisma.applicationFile.create({
+        data: {
+          applicationId: application.id,
+          url: uploadResult.data.secure_url,
+          publicId: uploadResult.data.public_id,
+          originalName: uploadResult.fileName || file.name,
+          mimeType: uploadResult.data.format,
+          size: uploadResult.data.bytes,
+          requestedDocumentSlug,
+        },
+      });
+
+      const uploaderUserId =
+        application.salesRepresentativeId || application.createdById || '';
+
+      if (uploaderUserId) {
+        try {
+          await notifyRequestersDocumentReceived({
+            applicationUuid: application.id,
+            documentSlug: requestedDocumentSlug,
+            uploadedByUserId: uploaderUserId,
+          });
+        } catch (notifyErr) {
+          console.error('Public document upload notify failed:', notifyErr);
+        }
+      }
+
+      const documents = await buildDocumentRequestListForApplication(application.id);
+
+      return res.status(200).json({
+        success: true,
+        message: 'File uploaded successfully',
+        data: { documents },
+      });
+    } catch (error) {
+      console.error('PublicApprovalController.uploadDocumentRequestByToken error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
 }
 
 export default new PublicApprovalController();
-

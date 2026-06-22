@@ -8,6 +8,12 @@ import {
     buildBrandHeaderStyles,
     buildBrandLogoAttachments,
 } from '../constants/brand';
+import { buildHtmlPdfMailAttachment } from './emailHtmlPdfAttachment.service';
+import {
+    buildIsoApprovalEmailPackage,
+    resolveIsoApprovalEmailSubject,
+} from './applicationApprovalEmailRenderService';
+import { htmlContainsApprovalUrlPlaceholder } from '../templates/applicationApprovalEmailPlaceholders';
 import {
   resolveCrmFrontendBaseUrl,
   resolveDecisionLogicInvitationBaseUrl,
@@ -146,6 +152,9 @@ export interface ApplicationApprovalEmailParams {
     companyName: string;
     viewApplicationUrl?: string;
     calculateApprovalUrl?: string;
+    /** Pre-rendered branded HTML (CRM frontend template). When omitted, the server renders the new template. */
+    html?: string;
+    subject?: string;
     /** Optional logo image link shown at the top (overrides APPROVAL_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
     /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
@@ -161,6 +170,7 @@ export const buildApplicationApprovalEmailHtml = ({
 }: Omit<ApplicationApprovalEmailParams, 'to'>): string => {
     const safeClientName = clientName || 'Valued Client';
     const safeCompanyName = companyName || 'your company';
+    const primaryActionUrl = calculateApprovalUrl || viewApplicationUrl || '#';
     const emailHeader = buildIsoBrandedEmailHeaderHtml(
         bannerLogoUrl || APPROVAL_BANNER_LOGO_URL,
         'APPLICATION APPROVED',
@@ -220,13 +230,13 @@ export const buildApplicationApprovalEmailHtml = ({
                                         </p>
 
                                         <p style="font-size: 14px; color: #666666; line-height: 1.5;">
-                                            Please click on the button below to calculate your approvals. You do not need a Woodmere Financial CRM login to use our calculator! Everyone on your team will have immediate access via this email.
+                                            Use the button below to calculate your approvals, review offer details, and leave comments — no Woodmere Financial CRM login required. Everyone on your team can access everything from this secure link.
                                         </p>
 
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
                                             <tr>
                                                 <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Calculate your Approval</a>
+                                                    <a href="${primaryActionUrl}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Calculate your Approval</a>
                                                 </td>
                                             </tr>
                                         </table>
@@ -252,24 +262,7 @@ export const buildApplicationApprovalEmailHtml = ({
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #111111; margin-top: 30px; font-weight: bold;">To view your application in Woodmere Financial CRM, click on the button below.</p>
-                                        <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
-                                            <tr>
-                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
-                                                </td>
-                                            </tr>
-                                        </table>
-
-                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you need more information or have any questions/comments, contact your representative directly or leave a comment in the portal by clicking on the button below.</p>
-                                        
-                                        <table border="0" cellpadding="0" cellspacing="0">
-                                            <tr>
-                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">Write Comment</a>
-                                                </td>
-                                            </tr>
-                                        </table>
+                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you need more information or have questions, contact your representative directly or leave a comment from the same approval link above.</p>
                                     </td>
                                 </tr>
                             </table>
@@ -284,6 +277,76 @@ export const buildApplicationApprovalEmailHtml = ({
 `
 };
 
+export interface ApplicationRejectionEmailParams {
+    to: string;
+    subject?: string;
+    /** Fully-rendered, branded rejection email HTML (built by the caller). */
+    html: string;
+    trackingId?: string;
+}
+
+/**
+ * Sends the application rejection/decline template to the linked ISO.
+ * The HTML is rendered by the caller (the CRM frontend's rejection template),
+ * so this only handles delivery + tracking.
+ *
+ * @returns send result; `sgMessageId` is stored for webhook fallback matching
+ */
+export async function sendApplicationRejectionEmail({
+    to,
+    subject,
+    html,
+    trackingId,
+}: ApplicationRejectionEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
+    const toTrimmed = String(to || '').trim();
+    if (!toTrimmed) {
+        // eslint-disable-next-line no-console
+        console.warn('[email] Application rejection skipped: empty recipient');
+        return { sent: false };
+    }
+
+    const htmlBody = String(html || '').trim();
+    if (!htmlBody) {
+        // eslint-disable-next-line no-console
+        console.warn('[email] Application rejection skipped: empty html');
+        return { sent: false };
+    }
+
+    const safeSubject = String(subject || '').trim() || 'Application Update';
+
+    try {
+        const pdfAttachment = await buildHtmlPdfMailAttachment(htmlBody, 'application-rejected');
+        const response = await sendMail({
+            to: toTrimmed,
+            subject: safeSubject,
+            html: htmlBody,
+            attachments: [
+                ...buildBrandLogoAttachments(),
+                ...(pdfAttachment ? [pdfAttachment] : []),
+            ],
+            trackingId,
+            categories: ['application-rejection'],
+        });
+        return { sent: true, sgMessageId: response?.messageId };
+    } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error('Application rejection email send failed:', { to: toTrimmed, error });
+        return { sent: false };
+    }
+}
+
+/** @returns send result; `sgMessageId` is stored for webhook fallback matching */
+function assertSendReadyApprovalHtml(html: string): string | null {
+    const trimmed = String(html || '').trim();
+    if (!trimmed || htmlContainsApprovalUrlPlaceholder(trimmed)) {
+        return null;
+    }
+    if (!/\/public\/application\/approval\//i.test(trimmed)) {
+        return null;
+    }
+    return trimmed;
+}
+
 /** @returns send result; `sgMessageId` is stored for webhook fallback matching */
 export async function sendApplicationApprovalEmail({
     to,
@@ -291,7 +354,8 @@ export async function sendApplicationApprovalEmail({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
-    bannerLogoUrl,
+    html: customHtml,
+    subject: customSubject,
     trackingId,
 }: ApplicationApprovalEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
@@ -301,21 +365,34 @@ export async function sendApplicationApprovalEmail({
         return { sent: false };
     }
 
-    const subject = 'Your Application Has Been Approved';
-    const html = buildApplicationApprovalEmailHtml({
-        clientName,
-        companyName,
-        viewApplicationUrl,
-        calculateApprovalUrl,
-        bannerLogoUrl,
-    });
+    const subject = resolveIsoApprovalEmailSubject(false, customSubject);
+    let html = assertSendReadyApprovalHtml(String(customHtml || ''));
+
+    if (!html && calculateApprovalUrl) {
+        const built = buildIsoApprovalEmailPackage({
+            resend: false,
+            clientName,
+            companyName,
+            isoApprovalUrl: calculateApprovalUrl,
+            customSubject,
+        });
+        html = built?.html ?? null;
+    }
+
+    if (!html) {
+        console.error(
+            '[email] Application approval skipped: ISO public portal URL was not resolved (check FRONTEND_URL)',
+        );
+        return { sent: false };
+    }
 
     try {
+        const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'application-approved');
         const response = await sendMail({
             to: toTrimmed,
             subject,
             html,
-            attachments: buildBrandLogoAttachments(),
+            attachments: pdfAttachment ? [pdfAttachment] : undefined,
             trackingId,
             categories: ['application-approval'],
         });
@@ -510,6 +587,84 @@ export async function sendOperationsDisbursementReadyEmail({
     }
 }
 
+function formatOfferEmailCurrency(value?: number | null): string | undefined {
+    if (value == null || !Number.isFinite(value)) return undefined;
+    return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(value);
+}
+
+function formatOfferEmailFactorRate(value?: number | null): string | undefined {
+    if (value == null || !Number.isFinite(value)) return undefined;
+    return value.toLocaleString('en-US', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 4,
+    });
+}
+
+/** Application summary block for ISO-branded approval / offer-updated emails. */
+function buildIsoOfferEmailApplicationDetailsHtml({
+    applicationNumber,
+    companyName,
+    merchantName,
+    merchantEmail,
+    merchantPhone,
+    approvedAmount,
+    factorRate,
+    repaymentAmount,
+}: {
+    applicationNumber?: number | string;
+    companyName: string;
+    merchantName?: string;
+    merchantEmail?: string;
+    merchantPhone?: string;
+    approvedAmount?: number;
+    factorRate?: number;
+    repaymentAmount?: number;
+}): string {
+    const rows: { label: string; value: string }[] = [];
+    const safeAppRef =
+        applicationNumber != null && String(applicationNumber).trim() !== ''
+            ? `#${String(applicationNumber).trim()}`
+            : '';
+    if (safeAppRef) rows.push({ label: 'Application ID', value: safeAppRef });
+    rows.push({ label: 'Business Name', value: companyName || '—' });
+    if (merchantName) rows.push({ label: 'Merchant / Owner', value: merchantName });
+    if (merchantEmail) {
+        rows.push({
+            label: 'Owner Email',
+            value: `<a href="mailto:${merchantEmail}" style="color: #0b71a9; text-decoration: none;">${merchantEmail}</a>`,
+        });
+    }
+    if (merchantPhone) rows.push({ label: 'Owner Phone', value: merchantPhone });
+
+    const formattedApprovedAmount = formatOfferEmailCurrency(approvedAmount);
+    const formattedFactorRate = formatOfferEmailFactorRate(factorRate);
+    const formattedRepaymentAmount = formatOfferEmailCurrency(repaymentAmount);
+    if (formattedApprovedAmount) rows.push({ label: 'Approved Amount', value: formattedApprovedAmount });
+    if (formattedFactorRate) rows.push({ label: 'Factor Rate', value: formattedFactorRate });
+    if (formattedRepaymentAmount) rows.push({ label: 'Repayment Amount', value: formattedRepaymentAmount });
+
+    const detailRows = rows
+        .map(
+            (row) => `
+                                            <tr>
+                                                <td style="padding: 8px 12px; font-size: 12px; color: #888888; border-bottom: 1px solid #eeeeee; width: 38%;">${row.label}</td>
+                                                <td style="padding: 8px 12px; font-size: 13px; color: #111111; font-weight: bold; border-bottom: 1px solid #eeeeee;">${row.value}</td>
+                                            </tr>`,
+        )
+        .join('');
+
+    return `
+                                        <h4 style="margin: 28px 0 10px 0; font-size: 15px; color: #111111; text-decoration: underline; letter-spacing: 0.5px;">APPLICATION DETAILS</h4>
+                                        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #fafafa; border: 1px solid #e8e8e8; border-radius: 4px;">
+                                            ${detailRows}
+                                        </table>`;
+}
+
 /** Client email when offer values are updated after approval comments. */
 export interface ApplicationOfferUpdatedEmailParams {
     to: string;
@@ -517,6 +672,16 @@ export interface ApplicationOfferUpdatedEmailParams {
     companyName: string;
     viewApplicationUrl?: string;
     calculateApprovalUrl?: string;
+    /** Pre-rendered branded HTML (CRM frontend template). When omitted, the server renders the new template. */
+    html?: string;
+    subject?: string;
+    applicationNumber?: number | string;
+    merchantName?: string;
+    merchantEmail?: string;
+    merchantPhone?: string;
+    approvedAmount?: number;
+    factorRate?: number;
+    repaymentAmount?: number;
     /** Optional logo image link shown at the top (overrides OFFER_UPDATED_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
     /** OutboundCommunication id for SendGrid delivery/open tracking (echoed back as `ocid`). */
@@ -528,14 +693,32 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
+    applicationNumber,
+    merchantName,
+    merchantEmail,
+    merchantPhone,
+    approvedAmount,
+    factorRate,
+    repaymentAmount,
     bannerLogoUrl,
 }: Omit<ApplicationOfferUpdatedEmailParams, 'to'>): string => {
     const safeClientName = clientName || 'Valued Client';
     const safeCompanyName = companyName || 'your company';
+    const primaryActionUrl = calculateApprovalUrl || viewApplicationUrl || '#';
+    const applicationDetailsBlock = buildIsoOfferEmailApplicationDetailsHtml({
+        applicationNumber,
+        companyName: safeCompanyName,
+        merchantName,
+        merchantEmail,
+        merchantPhone,
+        approvedAmount,
+        factorRate,
+        repaymentAmount,
+    });
     const emailHeader = buildIsoBrandedEmailHeaderHtml(
         bannerLogoUrl || OFFER_UPDATED_BANNER_LOGO_URL,
         'OFFER UPDATED',
-        'Your offer values have been updated based on the latest approval mail comment.',
+        '',
     );
 
     return `
@@ -591,27 +774,20 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
                                         </p>
 
                                         <p style="font-size: 14px; color: #666666; line-height: 1.5;">
-                                            Please review the updated offer details and recalculate approval values if needed.
+                                            Use the button below to review the updated offer, recalculate approval values if needed, and view your full application details — no Woodmere Financial CRM login required.
                                         </p>
 
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin: 20px 0;">
                                             <tr>
                                                 <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Review Updated Offer</a>
+                                                    <a href="${primaryActionUrl}" style="display: inline-block; padding: 12px 25px; color: #ffffff; font-size: 16px; font-weight: bold; text-decoration: none;">Review Updated Offer</a>
                                                 </td>
                                             </tr>
                                         </table>
 
-                                        <p style="font-size: 14px; color: #111111; margin-top: 24px; font-weight: bold;">To view your application in Woodmere Financial CRM, click the button below.</p>
-                                        <table border="0" cellpadding="0" cellspacing="0" style="margin-bottom: 25px;">
-                                            <tr>
-                                                <td align="center" bgcolor="#111111" style="border-radius: 5px;">
-                                                    <a href="${calculateApprovalUrl || '#'}" style="display: inline-block; padding: 10px 20px; color: #ffffff; font-size: 14px; font-weight: bold; text-decoration: none;">View your Application</a>
-                                                </td>
-                                            </tr>
-                                        </table>
+                                        ${applicationDetailsBlock}
 
-                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you have questions, please reply to the latest approval mail comment thread or contact your representative.</p>
+                                        <p style="font-size: 13px; color: #666666; margin-top: 20px; line-height: 1.4;">If you have questions, reply to the latest approval mail comment thread, leave a comment from the link above, or contact your representative.</p>
                                     </td>
                                 </tr>
                             </table>
@@ -632,7 +808,8 @@ export async function sendApplicationOfferUpdatedEmail({
     companyName,
     viewApplicationUrl,
     calculateApprovalUrl,
-    bannerLogoUrl,
+    html: customHtml,
+    subject: customSubject,
     trackingId,
 }: ApplicationOfferUpdatedEmailParams): Promise<{ sent: boolean; sgMessageId?: string }> {
     const toTrimmed = String(to || '').trim();
@@ -642,21 +819,34 @@ export async function sendApplicationOfferUpdatedEmail({
         return { sent: false };
     }
 
-    const subject = 'Your Offer Values Have Been Updated';
-    const html = buildApplicationOfferUpdatedEmailHtml({
-        clientName,
-        companyName,
-        viewApplicationUrl,
-        calculateApprovalUrl,
-        bannerLogoUrl,
-    });
+    const subject = resolveIsoApprovalEmailSubject(true, customSubject);
+    let html = assertSendReadyApprovalHtml(String(customHtml || ''));
+
+    if (!html && calculateApprovalUrl) {
+        const built = buildIsoApprovalEmailPackage({
+            resend: true,
+            clientName,
+            companyName,
+            isoApprovalUrl: calculateApprovalUrl,
+            customSubject,
+        });
+        html = built?.html ?? null;
+    }
+
+    if (!html) {
+        console.error(
+            '[email] Offer update skipped: ISO public portal URL was not resolved (check FRONTEND_URL)',
+        );
+        return { sent: false };
+    }
 
     try {
+        const pdfAttachment = await buildHtmlPdfMailAttachment(html, 'offer-updated');
         const response = await sendMail({
             to: toTrimmed,
             subject,
             html,
-            attachments: buildBrandLogoAttachments(),
+            attachments: pdfAttachment ? [pdfAttachment] : undefined,
             trackingId,
             categories: ['offer-updated'],
         });
@@ -1379,8 +1569,6 @@ export interface DocumentRequestEmailParams {
     note?: string;
     /** Optional CRM deep link for internal staff only. */
     viewApplicationUrl?: string;
-    /** Public secure URL: /public/application/documents/:token (no CRM login). */
-    publicPortalUrl?: string;
 }
 
 function formatDocumentRequestList(
@@ -1402,6 +1590,8 @@ function formatDocumentRequestList(
 export type DocumentRequestEmailResult = {
     sent: boolean;
     error?: string;
+    /** SendGrid message id stored for webhook fallback matching. */
+    sgMessageId?: string;
 };
 
 /** Email ISO when underwriting requests documents on a deal (SendGrid SMTP). */
@@ -1415,7 +1605,6 @@ export async function sendDocumentRequestEmail({
     requestAdditional,
     note,
     viewApplicationUrl,
-    publicPortalUrl,
 }: DocumentRequestEmailParams): Promise<DocumentRequestEmailResult> {
     const recipients = [...new Set((to || []).map((e) => String(e || '').trim()).filter(Boolean))];
     if (!recipients.length) {
@@ -1432,9 +1621,7 @@ export async function sendDocumentRequestEmail({
     const safeIso = isoName?.trim() || 'there';
     const appLabel = applicationNumber != null ? String(applicationNumber) : 'N/A';
     const subject = `Document request — Application #${appLabel} (${clientName})`;
-    const uploadUrl =
-        (publicPortalUrl || '').trim() || (viewApplicationUrl || '').trim() || undefined;
-    const isPublicTokenLink = Boolean((publicPortalUrl || '').trim());
+    const uploadUrl = (viewApplicationUrl || '').trim() || undefined;
     const noteBlock = note?.trim()
         ? `<p style="margin:16px 0 0;"><strong>Note from underwriting:</strong><br/>${note
               .trim()
@@ -1443,7 +1630,7 @@ export async function sendDocumentRequestEmail({
               .replace(/>/g, '&gt;')
               .replace(/\n/g, '<br/>')}</p>`
         : '';
-    const html = `
+    const defaultHtml = `
 <!DOCTYPE html>
 <html>
 <body style="font-family:Arial,Helvetica,sans-serif;color:#111827;line-height:1.5;margin:0;padding:0;">
@@ -1470,21 +1657,27 @@ export async function sendDocumentRequestEmail({
 </body>
 </html>`;
 
+    // Prefer the branded HTML supplied by the client (upload-URL placeholder
+    // already swapped for the real link); fall back to the default template.
+    const html = customHtml?.trim() ? customHtml : defaultHtml;
+
     const ccList = [...new Set((cc || []).map((e) => String(e || '').trim()).filter(Boolean))];
 
     try {
-        await sendSendGridMail({
+        const response = await sendSendGridMail({
             to: recipients,
             cc: ccList.length ? ccList : undefined,
             subject,
             html,
             attachments: buildBrandLogoAttachments(),
+            trackingId,
+            categories: ['document-request'],
         });
         console.info('[email] Document request sent via SendGrid', {
             to: recipients,
             cc: ccList.length ? ccList : undefined,
         });
-        return { sent: true };
+        return { sent: true, sgMessageId: response?.messageId };
     } catch (error: unknown) {
         let message =
             error instanceof Error ? error.message : 'SendGrid failed to deliver the document request email';
