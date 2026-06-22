@@ -57,6 +57,10 @@ router.post(
 );
 
 // Send approval email to client (non-blocking email send)
+router.get(
+    '/approval-email-payload',
+    applicationController.getApprovalEmailPayload.bind(applicationController),
+);
 router.post('/send-approval-email', applicationController.sendApprovalEmail.bind(applicationController));
 
 // Funded / funds-released email (OPERATIONS only; non-blocking)
@@ -166,6 +170,9 @@ router.patch('/:id/state', applicationController.updateState.bind(applicationCon
 // Update document checklist (checked document labels)
 router.patch('/:id/document-checklist', applicationController.updateDocumentChecklist.bind(applicationController));
 
+// Generate a one-time 4-digit action code for edit/delete (notifies Super Admins)
+router.post('/:id/action-code', applicationController.requestActionCode.bind(applicationController));
+
 // Reject/Decline application
 router.post('/:id/reject', applicationController.rejectApplication.bind(applicationController));
 
@@ -182,6 +189,10 @@ router.get('/:id/activity-logs', applicationController.getActivityLogs.bind(appl
 // Payment workspace: mail send history (persisted)
 router.get('/:id/payment-mail-logs', applicationController.getPaymentMailLogs.bind(applicationController));
 router.post('/:id/payment-mail-logs', applicationController.createPaymentMailLog.bind(applicationController));
+router.put(
+    '/:id/payment-mail-logs/:logId',
+    applicationController.updatePaymentMailLog.bind(applicationController),
+);
 
 // Disbursement review: planned debit schedule (persisted on confirm)
 router.get(
@@ -192,6 +203,7 @@ router.put(
     '/:id/schedule-payment-tracking',
     schedulePaymentTrackingController.replaceForApplication.bind(schedulePaymentTrackingController),
 );
+
 
 // Duplicate applications (dedupes) - UW/Admin only
 router.get('/:id/duplicates', applicationController.getDuplicates.bind(applicationController));

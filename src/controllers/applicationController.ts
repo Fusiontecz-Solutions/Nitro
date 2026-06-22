@@ -58,10 +58,12 @@ import {
     sendApplicationSentToUnderwritingClientEmail,
     sendApplicationUnderwritingCompletedClientEmail,
     sendUnderwriterNewApplicationEmail,
+    sendApplicationRejectionEmail,
 } from '../services/emailService';
 import { isOutboundSmtpConfigured } from '../config/nodemailer';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import { notifyDocumentRequestRecipientsOnUpload } from '../services/documentRequestNotificationService';
+import { resolveUploadDocumentSlug } from '../utils/documentRequestMatch';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 import { generateNextDealId } from '../utils/generateNextDealId';
 import {
@@ -77,6 +79,7 @@ import {
 import {
     listPaymentMailLogs,
     createPaymentMailLog as persistPaymentMailLog,
+    updatePaymentMailLog as persistUpdatePaymentMailLog,
     enrichPaymentMailLogsForApi,
     formatPaymentMailLogApiRow,
 } from '../services/paymentMailLogService';
@@ -96,10 +99,17 @@ import {
 } from '../services/applicationBulkExcelIngestService';
 import { approveApplication } from '../services/applicationApprovalService';
 import {
-    buildApplicationApprovalEmailHtml,
-    buildApplicationOfferUpdatedEmailHtml,
-} from '../services/emailService';
+    buildIsoApprovalEmailPackage,
+    resolveIsoApprovalEmailSubject,
+} from '../services/applicationApprovalEmailRenderService';
+import { resolveIsoApprovalPortalUrl } from '../services/isoApprovalPortalUrlService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
+import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
+import {
+    generateApplicationActionCode,
+    type ActionCodeOperation,
+} from '../services/actionCodeService';
+import { resolveApplicationApprovalEmailContext } from '../services/applicationApprovalEmailContext';
 type ApplicationState =
     | 'DRAFT'
     | 'PENDING'
@@ -625,6 +635,8 @@ export const mapApplicationToApi = (app: any) => {
             mimeType: f.mimeType,
             size: f.size,
             uploadedAt: f.uploadedAt,
+            requestedDocumentSlug: f.requestedDocumentSlug ?? null,
+            documentType: f.requestedDocumentSlug ?? null,
         })) || [];
 
     /** Matches ISO portal `/iso/:id/application-payout-status` (IsoApplicationPayout). */
@@ -1105,19 +1117,29 @@ class ApplicationController {
 
             const newFiles: any[] = [];
             const failedUploads: string[] = [];
+            const uploadBodyFields = {
+                documentType: (req.body as { documentType?: unknown })?.documentType,
+                requestedDocumentSlug: (req.body as { requestedDocumentSlug?: unknown })
+                    ?.requestedDocumentSlug,
+            };
 
             for (let i = 0; i < uploadResults.length; i++) {
                 const result = uploadResults[i];
                 const fileName = filesToUpload[i]?.name || 'unknown';
 
                 if (result.success && result.data) {
+                    const storedOriginalName = result.fileName || fileName;
                     newFiles.push({
                         url: result.data.secure_url,
                         publicId: result.data.public_id,
-                        originalName: result.fileName || fileName,
+                        originalName: storedOriginalName,
                         mimeType: result.data.format,
                         size: result.data.bytes,
                         uploadedAt: new Date(),
+                        requestedDocumentSlug: resolveUploadDocumentSlug(
+                            storedOriginalName,
+                            uploadBodyFields,
+                        ),
                     });
                 } else {
                     console.error(`Failed to upload file ${fileName}:`, result.error || result.message);
@@ -1143,6 +1165,7 @@ class ApplicationController {
                         mimeType: f.mimeType,
                         size: f.size,
                         uploadedAt: f.uploadedAt,
+                        requestedDocumentSlug: f.requestedDocumentSlug ?? undefined,
                     })),
                 });
             } catch (dbError: any) {
@@ -2589,6 +2612,61 @@ class ApplicationController {
         }
     }
 
+    // Generate a 4-digit action code for edit/delete (notifies Super Admins)
+    async requestActionCode(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const operation = String(req.body?.operation ?? '').trim().toLowerCase() as ActionCodeOperation;
+            if (operation !== 'edit' && operation !== 'delete') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'operation must be "edit" or "delete"',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const result = await generateApplicationActionCode(
+                application.id,
+                operation,
+                authUser?.id ?? null,
+            );
+
+            return res.status(200).json({
+                success: true,
+                message: 'Action code generated and sent to Super Admins',
+                data: {
+                    expiresAt: result.expiresAt,
+                    operation,
+                },
+            });
+        } catch (error) {
+            console.error('Request application action code error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
     // Update application
     async update(req: Request, res: Response) {
         try {
@@ -3656,7 +3734,7 @@ class ApplicationController {
     async rejectApplication(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const { reason, additionalComments } = req.body;
+            const { reason, additionalComments, emailHtml, emailSubject } = req.body;
             const authUser = getAuthenticatedUser(req);
             const currentUserRole = authUser?.role;
             const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
@@ -3812,10 +3890,119 @@ class ApplicationController {
                 console.error('Failed to create activity log for rejection:', logError);
             }
 
+            // Best-effort: email the rejection template (rendered by the FE) to the
+            // linked ISO. Never fail the rejection if the email cannot be sent.
+            let rejectionEmailedTo: string | null = null;
+            try {
+                const rejectionHtml = typeof emailHtml === 'string' ? emailHtml.trim() : '';
+                if (rejectionHtml) {
+                    const appIsoId = (applicationRecord as any).isoId
+                        ? String((applicationRecord as any).isoId).trim()
+                        : '';
+
+                    let isoEmail = '';
+                    if (appIsoId) {
+                        const isoRow = await prisma.iso.findUnique({
+                            where: { id: appIsoId },
+                            select: { email: true },
+                        });
+                        isoEmail = String(isoRow?.email || '').trim();
+                    }
+
+                    if (!isoEmail) {
+                        console.warn(
+                            '[reject] No ISO email on file; rejection template not emailed. Application:',
+                            applicationRecord.id,
+                        );
+                    } else if (!isOutboundSmtpConfigured()) {
+                        console.warn(
+                            '[reject] SMTP not configured; rejection template not emailed. Set SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS.',
+                        );
+                    } else {
+                        const subject =
+                            (typeof emailSubject === 'string' && emailSubject.trim()) ||
+                            'Application Update';
+                        const rejectionTrackingId = randomUUID();
+
+                        // Create the mail-log row BEFORE sending so webhook events can
+                        // correlate delivery/open/click back to this OutboundCommunication.
+                        try {
+                            const authUserForLog = getAuthenticatedUser(req);
+                            const roleLabel = authUserForLog?.role
+                                ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
+                                : 'User';
+                            const actorName = (req as any).user?.name || '';
+
+                            await recordCommunicationAudit(req, {
+                                outboundCommunicationId: rejectionTrackingId,
+                                applicationId: applicationRecord.id,
+                                channel: 'EMAIL',
+                                recipientType: 'ISO',
+                                recipient: isoEmail,
+                                subject,
+                                body: rejectionHtml,
+                                templateName: 'Application rejected (ISO)',
+                                actionType: 'APPLICATION_REJECTED' as ApplicationActivityActionType,
+                                user: authUserForLog,
+                                currentStatus: `${applicationRecord.currentQueue} / ${applicationRecord.currentState}`,
+                                actionDescription:
+                                    `${roleLabel} ${actorName}`.trim() +
+                                    ' sent rejection email to the linked ISO.',
+                                metadata: {
+                                    emailSentTo: [isoEmail],
+                                    sentToLinkedIsoOnly: true,
+                                    template: 'rejection',
+                                    status: 'sent',
+                                },
+                            });
+                        } catch (logError) {
+                            console.error('Failed to create activity log for rejection email:', logError);
+                        }
+
+                        const result = await sendApplicationRejectionEmail({
+                            to: isoEmail,
+                            subject,
+                            html: rejectionHtml,
+                            trackingId: rejectionTrackingId,
+                        });
+
+                        if (result.sent) {
+                            rejectionEmailedTo = isoEmail;
+                        }
+
+                        if (result.sgMessageId) {
+                            try {
+                                const existing = await prisma.outboundCommunication.findUnique({
+                                    where: { id: rejectionTrackingId },
+                                    select: { metadata: true },
+                                });
+                                const mergedMeta = {
+                                    ...(existing?.metadata &&
+                                    typeof existing.metadata === 'object' &&
+                                    !Array.isArray(existing.metadata)
+                                        ? (existing.metadata as Record<string, unknown>)
+                                        : {}),
+                                    sgMessageId: result.sgMessageId,
+                                };
+                                await prisma.outboundCommunication.update({
+                                    where: { id: rejectionTrackingId },
+                                    data: { metadata: mergedMeta as object },
+                                });
+                            } catch (metaErr) {
+                                console.error('[rejectEmail] failed to store sgMessageId:', metaErr);
+                            }
+                        }
+                    }
+                }
+            } catch (emailError) {
+                console.error('Failed to send rejection email to ISO:', emailError);
+            }
+
             return res.status(200).json({
                 success: true,
                 message: 'Application rejected successfully',
                 data: application,
+                rejectionEmailedTo,
             });
         } catch (error) {
             console.error('Reject application error:', error);
@@ -5308,13 +5495,73 @@ class ApplicationController {
     //             });
     //         }
     //     }
+    /** Merge fields for the CRM frontend approval email template (no send). */
+    async getApprovalEmailPayload(req: Request, res: Response) {
+        try {
+            const applicationId = String(req.query.applicationId || '').trim();
+            const resend = String(req.query.resend || '').toLowerCase() === 'true';
+
+            if (!applicationId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'applicationId is required',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(applicationId)
+                ? { applicationId: Number(applicationId) }
+                : { id: applicationId };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, {
+                client: true,
+                iso: true,
+            });
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const context = await resolveApplicationApprovalEmailContext(application as any, {
+                resend,
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: {
+                    subject: context.subject,
+                    templateValues: context.templateValues,
+                    isoEmail: context.isoEmail,
+                },
+            });
+        } catch (error: any) {
+            const message = error?.message || 'Failed to resolve approval email payload';
+            const status = /not linked to an ISO|no email on file/i.test(message) ? 400 : 500;
+            console.error('Get approval email payload error:', error);
+            return res.status(status).json({
+                success: false,
+                message,
+            });
+        }
+    }
+
     // Send approval email to client for a given application (async email, non-blocking)
     async sendApprovalEmail(req: Request, res: Response) {
         try {
             const { applicationId, resend } = req.body as {
-                applicationId?: string | number;
-                resend?: boolean;
-            };
+                    applicationId?: string | number;
+                    resend?: boolean;
+                };
 
             if (!applicationId) {
                 return res.status(400).json({
@@ -5325,6 +5572,7 @@ class ApplicationController {
 
             const authUser = getAuthenticatedUser(req);
             const applicationIdStr = String(applicationId);
+            const isResend = !!resend;
 
             const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(applicationIdStr)
                 ? { applicationId: Number(applicationIdStr) }
@@ -5369,143 +5617,64 @@ class ApplicationController {
                 });
             }
 
-            const client: any = (application as any).client;
-            let iso: any = (application as any).iso;
-
-            const clientBusinessName = client?.businessName || 'Unknown Business';
-            let isoName = String(iso?.name || '').trim();
-            let isoEmailRaw = String(iso?.email || '').trim();
-            const appIsoId = (application as any).isoId ? String((application as any).isoId).trim() : '';
-
-            if (!appIsoId) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        'This application is not linked to an ISO. Link an ISO to the deal before sending the approval email (only the ISO record receives this message).',
-                });
-            }
-
-            if (!iso || !isoEmailRaw) {
-                const isoRow = await prisma.iso.findUnique({
-                    where: { id: appIsoId },
-                    select: { name: true, email: true },
-                });
-                if (isoRow) {
-                    iso = { ...iso, ...isoRow };
-                    isoName = isoName || String(isoRow.name || '').trim();
-                    isoEmailRaw = isoEmailRaw || String(isoRow.email || '').trim();
-                }
-            }
-
-            const merchantGreetingName =
-                `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() ||
-                clientBusinessName ||
-                'there';
-            const companyName = clientBusinessName;
-            const merchantName =
-                `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() || undefined;
-            const merchantEmail =
-                String(client?.ownerEmail || client?.businessEmail || '').trim() || undefined;
-            const merchantPhone =
-                String(client?.ownerMobileNumber || client?.businessNumber || '').trim() || undefined;
-
-            const toOfferNumber = (value: unknown): number | undefined => {
-                if (value == null) return undefined;
-                const n = Number(value);
-                return Number.isFinite(n) ? n : undefined;
-            };
-            const latestTermsOffer = Array.isArray((application as any).termsOffers)
-                ? (application as any).termsOffers[0]
-                : null;
-            const offerDecision = (application as any).OfferDecision;
-            const approvedAmount =
-                toOfferNumber(latestTermsOffer?.approvedAmount) ?? toOfferNumber(offerDecision?.offer);
-            const factorRate =
-                toOfferNumber(latestTermsOffer?.factorRate) ?? toOfferNumber(offerDecision?.rate);
-            let repaymentAmount =
-                toOfferNumber(latestTermsOffer?.paybackAmount) ?? toOfferNumber(offerDecision?.totalRemit);
-            if (repaymentAmount == null && approvedAmount != null && factorRate != null) {
-                repaymentAmount = approvedAmount * factorRate;
-            }
-
-            if (!isoEmailRaw) {
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        'The linked ISO has no email on file. Add an email to that ISO in the broker/ISO settings, then try again.',
-                });
-            }
-
-            const baseUrl = resolveCrmFrontendBaseUrl() || '';
-
-            const numericAppId = (application as any).applicationId;
-            const fallbackId = (application as any).id;
-            const viewApplicationUrl = baseUrl
-                ? `${baseUrl.replace(/\/$/, '')}/applications/${numericAppId || fallbackId}`
-                : undefined;
-
-            if (!fallbackId) {
-                return res.status(500).json({
-                    success: false,
-                    message: 'Failed to resolve application id for approval link',
-                });
-            }
-
-            let approvalLinkToken = fallbackId;
+            let context;
             try {
-                const portalToken = await createPublicPortalToken(fallbackId, { expiresInDays: 90 });
-                if (portalToken) {
-                    approvalLinkToken = portalToken;
-                }
-            } catch (tokenErr) {
-                console.error('Approval email: public portal token failed, using application id in link:', tokenErr);
+                context = await resolveApplicationApprovalEmailContext(application as any, {
+                    resend: isResend,
+                });
+            } catch (contextErr: any) {
+                const message = contextErr?.message || 'Failed to resolve approval email context';
+                const status = /not linked to an ISO|no email on file/i.test(message) ? 400 : 500;
+                return res.status(status).json({ success: false, message });
             }
 
-            const feBase = resolveCrmFrontendBaseUrl() || '';
-            const calculateApprovalUrl = feBase
-                ? `${feBase.replace(/\/$/, '')}/public/application/approval/${approvalLinkToken}`
-                : undefined;
+            const emailSubjectFromBody =
+                typeof (req.body as { emailSubject?: string }).emailSubject === 'string'
+                    ? (req.body as { emailSubject?: string }).emailSubject
+                    : undefined;
 
-            const isoRecipientName = isoName || isoEmailRaw || merchantGreetingName;
+            const isoApprovalUrl = await resolveIsoApprovalPortalUrl(String((application as any).id), {
+                expiresInDays: 90,
+            });
+
+            if (!isoApprovalUrl) {
+                return res.status(502).json({
+                    success: false,
+                    message:
+                        'Could not build the ISO approval email link. Set FRONTEND_URL (or LOCAL_FRONTEND_URL) in the API .env so the public approval portal URL can be generated.',
+                });
+            }
+
+            const emailPackage = buildIsoApprovalEmailPackage({
+                resend: isResend,
+                clientName: context.isoRecipientName,
+                companyName: context.companyName,
+                isoApprovalUrl,
+                customSubject:
+                    typeof emailSubjectFromBody === 'string' ? emailSubjectFromBody : context.subject,
+            });
+
+            if (!emailPackage) {
+                return res.status(502).json({
+                    success: false,
+                    message:
+                        'Could not build the ISO approval email link. Set FRONTEND_URL (or LOCAL_FRONTEND_URL) in the API .env so the public approval portal URL can be generated.',
+                });
+            }
+
+            const emailSubject = emailPackage.subject;
+            const resolvedEmailHtml = emailPackage.html;
+
             const recipients: { to: string; clientName: string }[] = [
-                { to: isoEmailRaw, clientName: isoRecipientName },
+                { to: context.isoEmail, clientName: context.isoRecipientName },
             ];
 
-            const emailSubject = resend
-                ? 'Your Offer Values Have Been Updated'
-                : 'Your Application Has Been Approved';
-            const emailHtml = resend
-                ? buildApplicationOfferUpdatedEmailHtml({
-                    clientName: isoRecipientName,
-                    companyName,
-                    viewApplicationUrl,
-                    calculateApprovalUrl,
-                    applicationNumber: numericAppId,
-                    merchantName,
-                    merchantEmail,
-                    merchantPhone,
-                    approvedAmount,
-                    factorRate,
-                    repaymentAmount,
-                })
-                : buildApplicationApprovalEmailHtml({
-                    clientName: isoRecipientName,
-                    companyName,
-                    viewApplicationUrl,
-                    calculateApprovalUrl,
-                });
-
-            // Pre-generate the OutboundCommunication id so it can ride along as the
-            // SendGrid tracking arg (`ocid`); the Event Webhook later uses it to flip
-            // this mail-log row to delivered / opened / clicked / bounced.
             const approvalTrackingId = randomUUID();
 
-            const approvalEmailLogSuffix = resend
+            const approvalEmailLogSuffix = isResend
                 ? ' resent updated offer email to the linked ISO.'
                 : ' sent approval email to the linked ISO.';
 
-            // Create the mail-log row BEFORE sending so webhook events (which can
-            // arrive within seconds) always find the OutboundCommunication by ocid.
             try {
                 const authUserForLog = getAuthenticatedUser(req);
                 const roleLabel = authUserForLog?.role
@@ -5520,8 +5689,8 @@ class ApplicationController {
                     recipientType: 'ISO',
                     recipient: recipients.map((r) => r.to).join(', '),
                     subject: emailSubject,
-                    body: emailHtml,
-                    templateName: resend ? 'Offer updated (ISO)' : 'Application approved (ISO)',
+                    body: resolvedEmailHtml,
+                    templateName: isResend ? 'Offer updated (ISO)' : 'Application approved (ISO)',
                     actionType: 'APPROVED',
                     user: authUserForLog,
                     currentStatus: `${(application as any).currentQueue} / ${(application as any).currentState}`,
@@ -5529,8 +5698,8 @@ class ApplicationController {
                     metadata: {
                         emailSentTo: recipients.map((r) => r.to),
                         sentToLinkedIsoOnly: true,
-                        resend: !!resend,
-                        template: resend ? 'offer-updated' : 'approval',
+                        resend: isResend,
+                        template: isResend ? 'offer-updated' : 'approval',
                         status: 'sent',
                         hasHtmlPdf: true,
                     },
@@ -5541,30 +5710,18 @@ class ApplicationController {
 
             const deliveryResults = await Promise.all(
                 recipients.map(async ({ to, clientName }) => {
-                    const result = resend
-                        ? await sendApplicationOfferUpdatedEmail({
-                            to,
-                            clientName,
-                            companyName,
-                            viewApplicationUrl,
-                            calculateApprovalUrl,
-                            applicationNumber: numericAppId,
-                            merchantName,
-                            merchantEmail,
-                            merchantPhone,
-                            approvedAmount,
-                            factorRate,
-                            repaymentAmount,
-                            trackingId: approvalTrackingId,
-                        })
-                        : await sendApplicationApprovalEmail({
-                            to,
-                            clientName,
-                            companyName,
-                            viewApplicationUrl,
-                            calculateApprovalUrl,
-                            trackingId: approvalTrackingId,
-                        });
+                    const sendParams = {
+                        to,
+                        clientName,
+                        companyName: context.companyName,
+                        calculateApprovalUrl: isoApprovalUrl,
+                        html: resolvedEmailHtml,
+                        subject: emailSubject,
+                        trackingId: approvalTrackingId,
+                    };
+                    const result = isResend
+                        ? await sendApplicationOfferUpdatedEmail(sendParams)
+                        : await sendApplicationApprovalEmail(sendParams);
                     return { to, ok: result.sent, sgMessageId: result.sgMessageId };
                 }),
             );
@@ -5581,20 +5738,7 @@ class ApplicationController {
             const sgMessageId = deliveryResults.find((r) => r.sgMessageId)?.sgMessageId;
             if (sgMessageId) {
                 try {
-                    const existing = await prisma.outboundCommunication.findUnique({
-                        where: { id: approvalTrackingId },
-                        select: { metadata: true },
-                    });
-                    const mergedMeta = {
-                        ...(existing?.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
-                            ? (existing.metadata as Record<string, unknown>)
-                            : {}),
-                        sgMessageId,
-                    };
-                    await prisma.outboundCommunication.update({
-                        where: { id: approvalTrackingId },
-                        data: { metadata: mergedMeta as object },
-                    });
+                    await storeSgMessageIdOnOutbound(approvalTrackingId, sgMessageId);
                 } catch (metaErr) {
                     console.error('[approvalEmail] failed to store sgMessageId:', metaErr);
                 }
@@ -5602,7 +5746,7 @@ class ApplicationController {
 
             return res.status(200).json({
                 success: true,
-                message: resend ? 'Updated offer email sent' : 'Approval email sent',
+                message: isResend ? 'Updated offer email sent' : 'Approval email sent',
                 data: { delivered: deliveryResults.filter((r) => r.ok).map((r) => r.to) },
             });
         } catch (error: any) {
@@ -5938,6 +6082,63 @@ class ApplicationController {
                 success: false,
                 message: 'Internal server error',
             });
+        }
+    }
+
+    async updatePaymentMailLog(req: Request, res: Response) {
+        try {
+            const { id, logId } = req.params;
+            const authUser = getAuthenticatedUser(req);
+
+            const appIdStr = String(id);
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(appIdStr)
+                ? { applicationId: Number(appIdStr) }
+                : { id: appIdStr };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            const body = req.body as Record<string, unknown>;
+            const statusRaw =
+                typeof body.status === 'string' ? body.status.trim().toLowerCase() : undefined;
+
+            const result = await persistUpdatePaymentMailLog(application.id, authUser, String(logId), {
+                status: statusRaw as 'queued' | 'sent' | 'failed' | undefined,
+            });
+
+            if (result.forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+            if (result.notFound) {
+                return res.status(404).json({ success: false, message: 'Mail log not found' });
+            }
+            if ((result as any).badRequest) {
+                return res.status(400).json({ success: false, message: 'Invalid status' });
+            }
+            if (!result.log) {
+                return res.status(500).json({ success: false, message: 'Failed to update mail log' });
+            }
+
+            return res.status(200).json({
+                success: true,
+                data: formatPaymentMailLogApiRow(result.log),
+            });
+        } catch (error: any) {
+            console.error('Update payment mail log error:', error);
+            return res.status(500).json({ success: false, message: 'Internal server error' });
         }
     }
 

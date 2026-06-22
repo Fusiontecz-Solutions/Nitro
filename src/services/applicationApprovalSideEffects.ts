@@ -1,7 +1,11 @@
 import prisma from '../config/prismaClient';
+import { randomUUID } from 'crypto';
 import { sendApplicationApprovalEmail } from './emailService';
+import { buildIsoApprovalEmailPackage } from './applicationApprovalEmailRenderService';
+import { recordCommunicationAudit } from './systemActivityLogService';
+import { storeSgMessageIdOnOutbound } from './outboundCommunicationService';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
-import { createPublicPortalToken } from './publicPortalTokenService';
+import { resolveIsoApprovalPortalUrl } from './isoApprovalPortalUrlService';
 import { emitToUser } from '../socket';
 import {
     APPLICATION_QUEUE_CONTRACT_PENDING,
@@ -473,38 +477,102 @@ export async function processApplicationApprovalSideEffects(
             ? `${baseUrl.replace(/\/$/, '')}/applications/${applicationNumber}`
             : undefined;
 
-        let calculateApprovalUrl: string | undefined;
-        try {
-            const token = await createPublicPortalToken(application.id, { expiresInDays: 90 });
-            if (token && baseUrl) {
-                calculateApprovalUrl = `${baseUrl.replace(/\/$/, '')}/public/application/approval/${token}`;
-            }
-        } catch (tokenErr) {
-            console.error('[approvalSideEffects] portal token generation failed:', tokenErr);
-        }
+        const calculateApprovalUrl = await resolveIsoApprovalPortalUrl(application.id, {
+            expiresInDays: 90,
+        });
 
         const isoEmail = String(iso?.email ?? '').trim();
         const isoName = String(iso?.name ?? '').trim();
+        const isoRecipientName = isoName || isoEmail;
+        const companyName = businessName || clientName;
 
         /*
          * Email: only the linked ISO mailbox receives the branded approval template.
          * No step/workflow mail to agent, underwriter, final underwriter, operations, or admin.
          * (Manual "Send approval email" from the CRM uses the same ISO-only templates.)
          */
-        if (isoEmail) {
+        if (isoEmail && calculateApprovalUrl) {
+            const emailPackage = buildIsoApprovalEmailPackage({
+                resend: false,
+                clientName: isoRecipientName,
+                companyName,
+                isoApprovalUrl: calculateApprovalUrl,
+            });
+
+            if (!emailPackage) {
+                console.warn(
+                    '[approvalSideEffects] skipped ISO approval email — portal URL could not be embedded',
+                    applicationNumber,
+                );
+            } else {
+            const { subject: emailSubject, html: emailHtml } = emailPackage;
+            const approvalTrackingId = randomUUID();
+
+            try {
+                const actorRole = String(payload.actorRole ?? '').trim();
+                const roleLabel = actorRole ? actorRole.toUpperCase().replace(/_/g, ' ') : 'System';
+                const actorName = String(payload.actorName ?? '').trim();
+
+                await recordCommunicationAudit(null, {
+                    outboundCommunicationId: approvalTrackingId,
+                    applicationId: application.id,
+                    channel: 'EMAIL',
+                    recipientType: 'ISO',
+                    recipient: isoEmail,
+                    subject: emailSubject,
+                    body: emailHtml,
+                    templateName: 'Application approved (ISO)',
+                    actionType: 'APPROVED',
+                    user: payload.actorId
+                        ? {
+                              id: payload.actorId,
+                              role: String(payload.actorRole ?? 'USER'),
+                          }
+                        : null,
+                    currentStatus: `${application.currentQueue} / ${application.currentState}`,
+                    actionDescription:
+                        `${roleLabel} ${actorName}`.trim() + ' sent approval email to the linked ISO.',
+                    metadata: {
+                        emailSentTo: [isoEmail],
+                        sentToLinkedIsoOnly: true,
+                        resend: false,
+                        template: 'approval',
+                        status: 'sent',
+                        hasHtmlPdf: true,
+                        automatedSideEffect: true,
+                    },
+                });
+            } catch (logError) {
+                console.error('[approvalSideEffects] failed to create mail audit log:', logError);
+            }
+
             const result = await sendApplicationApprovalEmail({
                 to: isoEmail,
-                clientName: isoName || isoEmail,
-                companyName: businessName || clientName,
-                viewApplicationUrl,
+                clientName: isoRecipientName,
+                companyName,
                 calculateApprovalUrl,
+                html: emailHtml,
+                subject: emailSubject,
+                trackingId: approvalTrackingId,
             });
-            if (!result.sent) {
+            if (result.sent && result.sgMessageId) {
+                try {
+                    await storeSgMessageIdOnOutbound(approvalTrackingId, result.sgMessageId);
+                } catch (metaErr) {
+                    console.error('[approvalSideEffects] failed to store sgMessageId:', metaErr);
+                }
+            } else if (!result.sent) {
                 console.warn(
                     '[approvalSideEffects] ISO approval email was not delivered for application',
                     applicationNumber
                 );
             }
+            }
+        } else if (isoEmail) {
+            console.warn(
+                '[approvalSideEffects] skipped ISO approval email — could not resolve public portal URL',
+                applicationNumber,
+            );
         } else {
             console.warn(
                 '[approvalSideEffects] skipped ISO approval email — no linked ISO email on application',

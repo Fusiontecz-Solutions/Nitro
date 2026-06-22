@@ -1,6 +1,8 @@
 // @ts-nocheck
+import { randomUUID } from 'crypto';
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
+import { recordCommunicationAudit } from '../services/systemActivityLogService';
 import {
     APPLICATION_USER_ATTRIBUTION_ERROR,
     resolveApplicationAttributedUserId,
@@ -11,6 +13,7 @@ import {
 } from '../services/fundingCallDisbursementSideEffects';
 import { sendDocumentRequestEmail } from '../services/emailService';
 import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
+import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import {
     DOCUMENT_REQUEST_LABELS,
     documentRequestDisplayLabel,
@@ -119,6 +122,8 @@ const mapApplicationToApi = (app: any) => {
             mimeType: f.mimeType,
             size: f.size,
             uploadedAt: f.uploadedAt,
+            requestedDocumentSlug: f.requestedDocumentSlug ?? null,
+            documentType: f.requestedDocumentSlug ?? null,
         })) || [];
 
     return {
@@ -228,6 +233,8 @@ class NotificationController {
                 isoEmail,
                 additionalToEmails,
                 ccEmails,
+                emailHtml,
+                emailSubject,
             } = req.body;
             const currentUserRole = (req as any).user?.role;
             const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
@@ -445,13 +452,60 @@ class NotificationController {
 
             let documentRequestEmailSent = false;
             let documentRequestEmailError: string | undefined;
+            // Tracking correlation for the SendGrid Event Webhook. The id is echoed
+            // back as `ocid` so delivery / open / click events can be matched to the
+            // OutboundCommunication mail-log row created below.
+            let documentRequestTrackingId: string | undefined;
+            let documentRequestSgMessageId: string | undefined;
+            let documentRequestEmailSubject: string | undefined;
+            let documentRequestEmailBody: string | undefined;
             if (emailTo.length > 0) {
                 const numericAppId = (application as any).applicationId;
                 const feBase = resolveCrmFrontendBaseUrl() || '';
-                const viewApplicationUrl =
-                    feBase && numericAppId != null && String(numericAppId).trim() !== ''
-                        ? `${feBase.replace(/\/$/, '')}/application-details/${numericAppId}/documents`
+
+                // Public, no-login upload link so the ISO can upload documents
+                // without signing into the CRM. Falls back to the internal
+                // application details page only if the public token can't be created.
+                let viewApplicationUrl: string | undefined;
+                try {
+                    const portalToken = await createPublicPortalToken((application as any).id, {
+                        expiresInDays: 90,
+                    });
+                    if (portalToken && feBase) {
+                        viewApplicationUrl = `${feBase.replace(/\/$/, '')}/public/application/documents/${portalToken}`;
+                    }
+                } catch (tokenErr) {
+                    console.error('Public portal token failed (document request email):', tokenErr);
+                }
+
+                if (!viewApplicationUrl) {
+                    viewApplicationUrl =
+                        feBase && numericAppId != null && String(numericAppId).trim() !== ''
+                            ? `${feBase.replace(/\/$/, '')}/application-details/${numericAppId}/documents`
+                            : undefined;
+                }
+
+                // The frontend ships branded HTML with a placeholder for the
+                // upload link; swap in the real (token) URL here so the link is
+                // never built client-side.
+                const DOCUMENT_REQUEST_UPLOAD_URL_PLACEHOLDER = '__DOCUMENT_REQUEST_UPLOAD_URL__';
+                let customHtml: string | undefined;
+                if (typeof emailHtml === 'string' && emailHtml.trim() && viewApplicationUrl) {
+                    customHtml = emailHtml.split(DOCUMENT_REQUEST_UPLOAD_URL_PLACEHOLDER).join(viewApplicationUrl);
+                }
+                const customSubject =
+                    typeof emailSubject === 'string' && emailSubject.trim()
+                        ? emailSubject.trim()
                         : undefined;
+
+                documentRequestTrackingId = randomUUID();
+                documentRequestEmailSubject =
+                    customSubject ||
+                    `Document request — Application #${
+                        numericAppId != null ? numericAppId : 'N/A'
+                    } (${clientName})`;
+                documentRequestEmailBody = customHtml;
+
                 const emailResult = await sendDocumentRequestEmail({
                     to: emailTo,
                     cc: ccList,
@@ -462,9 +516,13 @@ class NotificationController {
                     requestAdditional: requestAdditional || false,
                     note: fullNote || undefined,
                     viewApplicationUrl,
+                    html: customHtml,
+                    subject: customSubject,
+                    trackingId: documentRequestTrackingId,
                 });
                 documentRequestEmailSent = emailResult.sent;
                 documentRequestEmailError = emailResult.error;
+                documentRequestSgMessageId = emailResult.sgMessageId;
             }
 
             // Best-effort application activity log for document request
@@ -477,30 +535,84 @@ class NotificationController {
                     ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
                     : 'User';
                 const actorName = (req as any).user?.name || '';
+                const currentStatus = `${(applicationToUpdate as any)?.currentQueue ?? (application as any).currentQueue} / ${
+                    (applicationToUpdate as any)?.currentState ?? (application as any).currentState
+                }`;
+                const baseMetadata = {
+                    requestedDocuments: documentsArray,
+                    requestAdditional: requestAdditional || false,
+                    reason: reasonText,
+                    additionalComments: additionalCommentsText,
+                    emailedTo: emailTo,
+                    emailedCc: ccList,
+                    documentRequestEmailSent,
+                } as any;
 
-                await prisma.applicationActivityLog.create({
-                    data: {
+                if (documentRequestEmailSent && documentRequestTrackingId) {
+                    // Tracked path: create the OutboundCommunication mail-log row (id =
+                    // trackingId) and a linked activity log so SendGrid webhook events
+                    // can update the delivery / open / click status afterwards.
+                    await recordCommunicationAudit(req, {
+                        outboundCommunicationId: documentRequestTrackingId,
                         applicationId: application.id,
-                        userId: attributedCreatedById,
-                        userRole: authUserForLog.role as any,
+                        channel: 'EMAIL',
+                        recipientType: 'ISO',
+                        recipient: [...emailTo, ...ccList].join(', '),
+                        subject: documentRequestEmailSubject,
+                        body: documentRequestEmailBody,
+                        templateName: 'Document request (ISO)',
                         actionType: 'DOCUMENT_REQUESTED',
+                        user: authUserForLog,
+                        currentStatus,
                         actionDescription:
-                            `${roleLabel} ${actorName}`.trim() + ' requested additional documents from the client.',
-                        previousStatus: `${(application as any).currentQueue} / ${(application as any).currentState}`,
-                        currentStatus: `${(applicationToUpdate as any)?.currentQueue ?? (application as any).currentQueue} / ${
-                            (applicationToUpdate as any)?.currentState ?? (application as any).currentState
-                        }`,
+                            `${roleLabel} ${actorName}`.trim() +
+                            ' requested additional documents from the client.',
                         metadata: {
-                            requestedDocuments: documentsArray,
-                            requestAdditional: requestAdditional || false,
-                            reason: reasonText,
-                            additionalComments: additionalCommentsText,
-                            emailedTo: emailTo,
-                            emailedCc: ccList,
-                            documentRequestEmailSent,
-                        } as any,
-                    },
-                });
+                            ...baseMetadata,
+                            template: 'document-request',
+                            status: 'sent',
+                        },
+                    });
+
+                    // Persist the SendGrid message id so webhook events without an
+                    // `ocid` custom arg can still be matched back to this row.
+                    if (documentRequestSgMessageId) {
+                        try {
+                            const existing = await prisma.outboundCommunication.findUnique({
+                                where: { id: documentRequestTrackingId },
+                                select: { metadata: true },
+                            });
+                            const mergedMeta = {
+                                ...(existing?.metadata &&
+                                typeof existing.metadata === 'object' &&
+                                !Array.isArray(existing.metadata)
+                                    ? (existing.metadata as Record<string, unknown>)
+                                    : {}),
+                                sgMessageId: documentRequestSgMessageId,
+                            };
+                            await prisma.outboundCommunication.update({
+                                where: { id: documentRequestTrackingId },
+                                data: { metadata: mergedMeta as object },
+                            });
+                        } catch (metaErr) {
+                            console.error('[documentRequestEmail] failed to store sgMessageId:', metaErr);
+                        }
+                    }
+                } else {
+                    await prisma.applicationActivityLog.create({
+                        data: {
+                            applicationId: application.id,
+                            userId: attributedCreatedById,
+                            userRole: authUserForLog.role as any,
+                            actionType: 'DOCUMENT_REQUESTED',
+                            actionDescription:
+                                `${roleLabel} ${actorName}`.trim() + ' requested additional documents from the client.',
+                            previousStatus: `${(application as any).currentQueue} / ${(application as any).currentState}`,
+                            currentStatus,
+                            metadata: baseMetadata,
+                        },
+                    });
+                }
             } catch (logError) {
                 console.error('Failed to create application activity log for document request:', logError);
             }
@@ -1153,14 +1265,32 @@ class NotificationController {
                       }
                     : undefined;
 
-            const documents = Array.from(documentMap.entries()).map(([name, data]) => ({
-                name,
-                label: documentRequestDisplayLabel(name),
-                status: data.status,
-                createdAt: data.createdAt,
-                requestedBy: mapRequestUser(data.requestedBy),
-                message: data.message,
-            }));
+            // Most-recent uploaded file that satisfies a requested document slug
+            // (used to expose preview / replace / remove on the upload portal).
+            const matchedFileFor = (docName: string) => {
+                const matches = (application.files || []).filter((f: any) =>
+                    isDocumentRequestFulfilled(docName, [f]),
+                );
+                if (matches.length === 0) return undefined;
+                return matches.sort(
+                    (a: any, b: any) =>
+                        new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
+                )[0];
+            };
+
+            const documents = Array.from(documentMap.entries()).map(([name, data]) => {
+                const file = data.status === 'Complete' ? matchedFileFor(name) : undefined;
+                return {
+                    name,
+                    label: documentRequestDisplayLabel(name),
+                    status: data.status,
+                    createdAt: data.createdAt,
+                    requestedBy: mapRequestUser(data.requestedBy),
+                    message: data.message,
+                    fileId: file?.id,
+                    fileUrl: file?.url,
+                };
+            });
 
             // Add general requests (sorted by createdAt desc)
             generalRequests

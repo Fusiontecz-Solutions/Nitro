@@ -1,6 +1,7 @@
 import express from 'express';
 import publicApprovalController from '../controllers/publicApprovalController';
 import { authenticateToken } from '../middleware/authMiddleware';
+import { forbidRoles } from '../middleware/forbidRoles';
 
 const router = express.Router();
 
@@ -8,6 +9,7 @@ const router = express.Router();
 router.post(
   '/application/:applicationId/approval-token',
   authenticateToken,
+  forbidRoles('AGENT'),
   publicApprovalController.createToken.bind(publicApprovalController)
 );
 
@@ -15,6 +17,17 @@ router.post(
 router.get(
   '/application/:token/portal-status',
   publicApprovalController.getPortalStatusByToken.bind(publicApprovalController)
+);
+
+// Public: document request portal (register before the generic `/:token` handler)
+router.get(
+  '/application/:token/document-request',
+  publicApprovalController.getDocumentRequestPortalByToken.bind(publicApprovalController)
+);
+
+router.post(
+  '/application/:token/document-request/upload',
+  publicApprovalController.uploadDocumentRequestByToken.bind(publicApprovalController)
 );
 
 // Public: open approval by token (no auth required)
@@ -31,4 +44,3 @@ router.post(
 );
 
 export default router;
-

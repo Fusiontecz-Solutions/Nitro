@@ -198,6 +198,7 @@ export async function refreshSuperAdminPlatformSnapshot(): Promise<SuperAdminPla
       totalPayback: toDecimal(cards.totalPayback),
       collectionEfficiency: cards.collectionEfficiency,
       lastRefreshedAt: now,
+      updatedAt: now,
     };
 
     const row = await prisma.superAdminPlateform.upsert({

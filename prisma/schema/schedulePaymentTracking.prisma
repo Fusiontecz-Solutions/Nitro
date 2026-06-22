@@ -1,21 +1,21 @@
 /// Planned debit schedule captured at disbursement confirmation (deal review).
 model SchedulePaymentTracking {
-  id                 String                          @id @default(uuid()) @db.Uuid
-  applicationId      String                          @db.Uuid
+  id                 String                        @id @default(uuid()) @db.Uuid
+  applicationId      String                        @db.Uuid
   dealId             String?
-  batchId            String                          @db.Uuid
+  batchId            String                        @db.Uuid
   paymentNumber      Int
-  scheduledDate      DateTime                        @db.Date
-  amount             Decimal                         @db.Decimal(12, 2)
+  scheduledDate      DateTime                      @db.Date
+  amount             Decimal                       @db.Decimal(12, 2)
   label              String?
-  paymentStartDate   DateTime?                       @db.Date
-  effectiveStartDate DateTime?                       @db.Date
-  status             SchedulePaymentTrackingStatus   @default(SCHEDULED)
-  confirmedById      String?                         @db.Uuid
-  createdAt          DateTime                        @default(now())
-  updatedAt          DateTime                        @updatedAt
-  application        Application                     @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  confirmedBy        User?                           @relation("SchedulePaymentTrackingConfirmedBy", fields: [confirmedById], references: [id])
+  paymentStartDate   DateTime?                     @db.Date
+  effectiveStartDate DateTime?                     @db.Date
+  status             SchedulePaymentTrackingStatus @default(SCHEDULED)
+  confirmedById      String?                       @db.Uuid
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+  application        Application                   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  confirmedBy        User?                         @relation("SchedulePaymentTrackingConfirmedBy", fields: [confirmedById], references: [id])
 
   @@unique([batchId, paymentNumber])
   @@index([applicationId])

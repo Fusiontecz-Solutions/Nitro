@@ -106,6 +106,170 @@ function buildClientSearchConditions(search: string): Record<string, unknown>[] 
     return conditions;
 }
 
+type OwnerInput = {
+    firstName?: string;
+    middleName?: string;
+    lastName?: string;
+    email?: string;
+    mobileNumber?: string;
+    dateOfBirth?: string | Date;
+    ssn?: string;
+    ficoScore?: number | string;
+    ownershipStartDate?: string | Date;
+    ownershipPercentage?: number | string;
+    address?: {
+        address1?: string;
+        address2?: string;
+        city?: string;
+        state?: string;
+        zipCode?: string;
+    };
+};
+
+const mapOwnerAddress = (owner: OwnerInput) => ({
+    address1: owner.address?.address1 || '',
+    address2: owner.address?.address2 || '',
+    city: owner.address?.city || '',
+    state: owner.address?.state || '',
+    zipCode: owner.address?.zipCode || '',
+});
+
+const mapOwnerInputToPrisma = (owner: OwnerInput) => {
+    const ownerAddress = mapOwnerAddress(owner);
+    return {
+        firstName: owner.firstName || '',
+        middleName: owner.middleName || null,
+        lastName: owner.lastName || '',
+        email: owner.email || null,
+        mobileNumber: owner.mobileNumber || null,
+        dateOfBirth: owner.dateOfBirth ? new Date(owner.dateOfBirth) : null,
+        ssn: owner.ssn || null,
+        ficoScore: owner.ficoScore != null && owner.ficoScore !== '' ? Number(owner.ficoScore) : null,
+        ownershipStartDate: owner.ownershipStartDate ? new Date(owner.ownershipStartDate) : null,
+        ownershipPercentage:
+            owner.ownershipPercentage != null && owner.ownershipPercentage !== ''
+                ? Number(owner.ownershipPercentage)
+                : null,
+        address1: ownerAddress.address1 || null,
+        address2: ownerAddress.address2 || null,
+        city: ownerAddress.city || null,
+        state: ownerAddress.state || null,
+        zipCode: ownerAddress.zipCode || null,
+    };
+};
+
+const mapOwnerRecordToApi = (owner: any) => ({
+    firstName: owner.firstName,
+    middleName: owner.middleName || '',
+    lastName: owner.lastName,
+    email: owner.email || '',
+    mobileNumber: owner.mobileNumber || '',
+    dateOfBirth: owner.dateOfBirth,
+    ssn: owner.ssn || '',
+    ficoScore: owner.ficoScore ?? undefined,
+    ownershipStartDate: owner.ownershipStartDate,
+    ownershipPercentage: owner.ownershipPercentage ?? undefined,
+    address: {
+        address1: owner.address1 || '',
+        address2: owner.address2 || '',
+        city: owner.city || '',
+        state: owner.state || '',
+        zipCode: owner.zipCode || '',
+    },
+});
+
+const mapFlatClientOwnerToApi = (client: any) => ({
+    firstName: client.ownerFirstName,
+    middleName: client.ownerMiddleName || '',
+    lastName: client.ownerLastName,
+    email: client.ownerEmail || '',
+    mobileNumber: client.ownerMobileNumber || '',
+    dateOfBirth: client.ownerDateOfBirth,
+    ssn: client.ownerSsn || '',
+    ficoScore: client.ownerFicoScore ?? undefined,
+    ownershipStartDate: client.ownerOwnershipStartDate,
+    ownershipPercentage: client.ownerOwnershipPercentage ?? undefined,
+    address: {
+        address1: client.ownerAddress1 || '',
+        address2: client.ownerAddress2 || '',
+        city: client.ownerCity || '',
+        state: client.ownerState || '',
+        zipCode: client.ownerZipCode || '',
+    },
+});
+
+const normalizeOwnersFromBody = (body: { owners?: OwnerInput[]; owner?: OwnerInput }): OwnerInput[] => {
+    if (Array.isArray(body.owners) && body.owners.length > 0) {
+        return body.owners;
+    }
+    if (body.owner) {
+        return [body.owner];
+    }
+    return [];
+};
+
+const syncPrimaryOwnerToClientFields = (owner: OwnerInput) => {
+    const ownerData = mapOwnerInputToPrisma(owner);
+    return {
+        ownerFirstName: ownerData.firstName,
+        ownerMiddleName: ownerData.middleName,
+        ownerLastName: ownerData.lastName,
+        ownerEmail: ownerData.email,
+        ownerMobileNumber: ownerData.mobileNumber,
+        ownerDateOfBirth: ownerData.dateOfBirth,
+        ownerSsn: ownerData.ssn,
+        ownerFicoScore: ownerData.ficoScore,
+        ownerOwnershipStartDate: ownerData.ownershipStartDate,
+        ownerOwnershipPercentage: ownerData.ownershipPercentage,
+        ownerAddress1: ownerData.address1,
+        ownerAddress2: ownerData.address2,
+        ownerCity: ownerData.city,
+        ownerState: ownerData.state,
+        ownerZipCode: ownerData.zipCode,
+    };
+};
+
+const assertNoDuplicateOwnerSsns = async (
+    owners: OwnerInput[],
+    excludeClientId?: string,
+): Promise<string | null> => {
+    const ssns = owners
+        .map((owner) => (owner.ssn ? String(owner.ssn).trim() : ''))
+        .filter(Boolean);
+
+    const uniqueSsns = new Set(ssns);
+    if (uniqueSsns.size !== ssns.length) {
+        return 'Duplicate SSN found among owners.';
+    }
+
+    for (const ssn of uniqueSsns) {
+        const existingClient = await prisma.client.findFirst({
+            where: {
+                ownerSsn: ssn,
+                ...(excludeClientId ? { NOT: { id: excludeClientId } } : {}),
+            },
+        });
+
+        if (existingClient) {
+            return 'Client already exists with this SSN.';
+        }
+    }
+
+    return null;
+};
+
+const clientInclude = {
+    createdBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+    },
+    assignedTo: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+    },
+    owners: {
+        orderBy: { sortOrder: 'asc' as const },
+    },
+};
+
 // Helper to map Prisma Client record to the Mongo-like shape the frontend expects
 const mapClientToApi = (client: any) => {
     if (!client) return client;
@@ -149,8 +313,18 @@ const mapClientToApi = (client: any) => {
         ownerCity,
         ownerState,
         ownerZipCode,
+        owners: clientOwners,
         ...rest
     } = client;
+
+    const owners =
+        Array.isArray(clientOwners) && clientOwners.length > 0
+            ? clientOwners.map(mapOwnerRecordToApi)
+            : ownerFirstName && ownerLastName
+              ? [mapFlatClientOwnerToApi(client)]
+              : [];
+
+    const primaryOwner = owners[0] || mapFlatClientOwnerToApi(client);
 
     return {
         ...rest,
@@ -180,25 +354,8 @@ const mapClientToApi = (client: any) => {
                 zipCode: businessZipCode || '',
             },
         },
-        owner: {
-            firstName: ownerFirstName,
-            middleName: ownerMiddleName || '',
-            lastName: ownerLastName,
-            email: ownerEmail || '',
-            mobileNumber: ownerMobileNumber || '',
-            dateOfBirth: ownerDateOfBirth,
-            ssn: ownerSsn || '',
-            ficoScore: ownerFicoScore ?? undefined,
-            ownershipStartDate: ownerOwnershipStartDate,
-            ownershipPercentage: ownerOwnershipPercentage ?? undefined,
-            address: {
-                address1: ownerAddress1 || '',
-                address2: ownerAddress2 || '',
-                city: ownerCity || '',
-                state: ownerState || '',
-                zipCode: ownerZipCode || '',
-            },
-        },
+        owner: primaryOwner,
+        owners,
         createdBy: createdBy
             ? {
                 _id: createdBy.id,
@@ -224,13 +381,23 @@ class ClientController {
     // Create a new client
     async create(req: Request, res: Response) {
         try {
-            const { business, owner, notes, assignedTo } = req.body;
+            const { business, notes, assignedTo } = req.body;
+            const owners = normalizeOwnersFromBody(req.body);
+            const primaryOwner = owners[0];
 
             // Validate required fields
-            if (!business?.name || !owner?.firstName || !owner?.lastName) {
+            if (!business?.name || !primaryOwner?.firstName || !primaryOwner?.lastName) {
                 return res.status(400).json({
                     success: false,
                     message: 'Business name, owner first name, and owner last name are required',
+                });
+            }
+
+            const duplicateSsnMessage = await assertNoDuplicateOwnerSsns(owners);
+            if (duplicateSsnMessage) {
+                return res.status(409).json({
+                    success: false,
+                    message: duplicateSsnMessage,
                 });
             }
 
@@ -260,86 +427,43 @@ class ClientController {
                 address: businessAddress,
             };
 
-            // Build owner address object (handle both flat and nested structures)
-            const ownerAddress = {
-                address1: owner.address?.address1 || '',
-                address2: owner.address?.address2 || '',
-                city: owner.address?.city || '',
-                state: owner.address?.state || '',
-                zipCode: owner.address?.zipCode || '',
-            };
-
-            const ownerData: any = {
-                firstName: owner.firstName,
-                middleName: owner.middleName,
-                lastName: owner.lastName,
-                email: owner.email,
-                mobileNumber: owner.mobileNumber,
-                // Convert to JS Date for Prisma
-                dateOfBirth: owner.dateOfBirth ? new Date(owner.dateOfBirth) : undefined,
-                ssn: owner.ssn,
-                ficoScore: owner.ficoScore ? Number(owner.ficoScore) : undefined,
-                ownershipStartDate: owner.ownershipStartDate
-                    ? new Date(owner.ownershipStartDate)
-                    : undefined,
-                ownershipPercentage: owner.ownershipPercentage ? Number(owner.ownershipPercentage) : undefined,
-                address: ownerAddress,
-            };
-
-            // Prevent duplicate clients by SSN (ownerSsn)
-            const normalizedSsn = ownerData.ssn ? String(ownerData.ssn).trim() : '';
-            if (normalizedSsn) {
-                const existingClient = await prisma.client.findFirst({
-                    where: {
-                        ownerSsn: normalizedSsn,
+            const client = await prisma.$transaction(async (tx) => {
+                const createdClient = await tx.client.create({
+                    data: {
+                        businessName: businessData.name,
+                        businessEmail: businessData.email || null,
+                        businessNumber: businessData.number || null,
+                        businessWebsite: businessData.website || null,
+                        businessIncorporationDate: businessData.incorporationDate || null,
+                        businessIncorporationState: businessData.incorporationState || null,
+                        businessEntityType: businessData.businessEntityType || null,
+                        businessEinNumber: businessData.einNumber || null,
+                        businessAnnualRevenue: businessData.annualRevenue ?? null,
+                        businessMonthlyRevenue: businessData.monthlyRevenue ?? null,
+                        businessAddress1: businessAddress.address1 || null,
+                        businessAddress2: businessAddress.address2 || null,
+                        businessCity: businessAddress.city || null,
+                        businessState: businessAddress.state || null,
+                        businessZipCode: businessAddress.zipCode || null,
+                        ...syncPrimaryOwnerToClientFields(primaryOwner),
+                        notes: notes || null,
+                        assignedToId: assignedTo || null,
+                        createdById: await resolveOptionalTenantUserId(req),
                     },
                 });
 
-                if (existingClient) {
-                    console.warn('Duplicate client creation attempt detected for SSN:', normalizedSsn, 'existing clientId:', existingClient.clientId);
-                    return res.status(409).json({
-                        success: false,
-                        message: 'Client already exists with this SSN.',
-                    });
-                }
-            }
+                await tx.clientOwner.createMany({
+                    data: owners.map((owner, index) => ({
+                        clientId: createdClient.id,
+                        sortOrder: index,
+                        ...mapOwnerInputToPrisma(owner),
+                    })),
+                });
 
-            const client = await prisma.client.create({
-                data: {
-                    businessName: businessData.name,
-                    businessEmail: businessData.email || null,
-                    businessNumber: businessData.number || null,
-                    businessWebsite: businessData.website || null,
-                    businessIncorporationDate: businessData.incorporationDate || null,
-                    businessIncorporationState: businessData.incorporationState || null,
-                    businessEntityType: businessData.businessEntityType || null,
-                    businessEinNumber: businessData.einNumber || null,
-                    businessAnnualRevenue: businessData.annualRevenue ?? null,
-                    businessMonthlyRevenue: businessData.monthlyRevenue ?? null,
-                    businessAddress1: businessAddress.address1 || null,
-                    businessAddress2: businessAddress.address2 || null,
-                    businessCity: businessAddress.city || null,
-                    businessState: businessAddress.state || null,
-                    businessZipCode: businessAddress.zipCode || null,
-                    ownerFirstName: ownerData.firstName,
-                    ownerMiddleName: ownerData.middleName || null,
-                    ownerLastName: ownerData.lastName,
-                    ownerEmail: ownerData.email || null,
-                    ownerMobileNumber: ownerData.mobileNumber || null,
-                    ownerDateOfBirth: ownerData.dateOfBirth || null,
-                    ownerSsn: ownerData.ssn || null,
-                    ownerFicoScore: ownerData.ficoScore ?? null,
-                    ownerOwnershipStartDate: ownerData.ownershipStartDate || null,
-                    ownerOwnershipPercentage: ownerData.ownershipPercentage ?? null,
-                    ownerAddress1: ownerAddress.address1 || null,
-                    ownerAddress2: ownerAddress.address2 || null,
-                    ownerCity: ownerAddress.city || null,
-                    ownerState: ownerAddress.state || null,
-                    ownerZipCode: ownerAddress.zipCode || null,
-                    notes: notes || null,
-                    assignedToId: assignedTo || null,
-                    createdById: await resolveOptionalTenantUserId(req),
-                },
+                return tx.client.findUnique({
+                    where: { id: createdClient.id },
+                    include: clientInclude,
+                });
             });
 
             return res.status(201).json({
@@ -410,6 +534,9 @@ class ClientController {
                         assignedTo: {
                             select: { id: true, firstName: true, lastName: true, email: true },
                         },
+                        owners: {
+                            orderBy: { sortOrder: 'asc' },
+                        },
                     },
                 }),
                 prisma.client.count({ where }),
@@ -441,14 +568,7 @@ class ClientController {
 
             const client = await prisma.client.findUnique({
                 where: { id },
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+                include: clientInclude,
             });
 
             if (!client) {
@@ -478,14 +598,7 @@ class ClientController {
 
             const client = await prisma.client.findUnique({
                 where: { clientId: Number(clientId) },
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+                include: clientInclude,
             });
 
             if (!client) {
@@ -512,7 +625,8 @@ class ClientController {
     async update(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const { business, owner, status, notes, assignedTo } = req.body;
+            const { business, status, notes, assignedTo } = req.body;
+            const owners = normalizeOwnersFromBody(req.body);
 
             const client = await prisma.client.findUnique({ where: { id } });
 
@@ -550,52 +664,16 @@ class ClientController {
                 if (business.address?.zipCode !== undefined) updateData.businessZipCode = business.address.zipCode;
             }
 
-            // Update owner data if provided
-            if (owner) {
-                if (owner.firstName !== undefined) updateData.ownerFirstName = owner.firstName;
-                if (owner.middleName !== undefined) updateData.ownerMiddleName = owner.middleName;
-                if (owner.lastName !== undefined) updateData.ownerLastName = owner.lastName;
-                if (owner.email !== undefined) updateData.ownerEmail = owner.email;
-                if (owner.mobileNumber !== undefined) updateData.ownerMobileNumber = owner.mobileNumber;
-                if (owner.dateOfBirth !== undefined) {
-                    updateData.ownerDateOfBirth = owner.dateOfBirth ? new Date(owner.dateOfBirth) : null;
+            if (owners.length > 0) {
+                const duplicateSsnMessage = await assertNoDuplicateOwnerSsns(owners, id);
+                if (duplicateSsnMessage) {
+                    return res.status(409).json({
+                        success: false,
+                        message: duplicateSsnMessage,
+                    });
                 }
 
-                if (owner.ssn !== undefined) {
-                    const newSsn = String(owner.ssn).trim();
-                    if (newSsn) {
-                        const existingWithSsn = await prisma.client.findFirst({
-                            where: {
-                                ownerSsn: newSsn,
-                                NOT: { id },
-                            },
-                        });
-
-                        if (existingWithSsn) {
-                            console.warn('Duplicate client SSN update attempt detected for SSN:', newSsn, 'existing clientId:', existingWithSsn.clientId);
-                            return res.status(409).json({
-                                success: false,
-                                message: 'Client already exists with this SSN.',
-                            });
-                        }
-                    }
-
-                    updateData.ownerSsn = owner.ssn;
-                }
-
-                if (owner.ficoScore !== undefined) updateData.ownerFicoScore = Number(owner.ficoScore);
-                if (owner.ownershipStartDate !== undefined) {
-                    updateData.ownerOwnershipStartDate = owner.ownershipStartDate
-                        ? new Date(owner.ownershipStartDate)
-                        : null;
-                }
-                if (owner.ownershipPercentage !== undefined) updateData.ownerOwnershipPercentage = Number(owner.ownershipPercentage);
-
-                if (owner.address?.address1 !== undefined) updateData.ownerAddress1 = owner.address.address1;
-                if (owner.address?.address2 !== undefined) updateData.ownerAddress2 = owner.address.address2;
-                if (owner.address?.city !== undefined) updateData.ownerCity = owner.address.city;
-                if (owner.address?.state !== undefined) updateData.ownerState = owner.address.state;
-                if (owner.address?.zipCode !== undefined) updateData.ownerZipCode = owner.address.zipCode;
+                Object.assign(updateData, syncPrimaryOwnerToClientFields(owners[0]));
             }
 
             // Update other fields
@@ -603,17 +681,27 @@ class ClientController {
             if (notes !== undefined) updateData.notes = notes;
             if (assignedTo !== undefined) updateData.assignedToId = assignedTo;
 
-            const updatedClient = await prisma.client.update({
-                where: { id },
-                data: updateData,
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+            const updatedClient = await prisma.$transaction(async (tx) => {
+                await tx.client.update({
+                    where: { id },
+                    data: updateData,
+                });
+
+                if (owners.length > 0) {
+                    await tx.clientOwner.deleteMany({ where: { clientId: id } });
+                    await tx.clientOwner.createMany({
+                        data: owners.map((owner, index) => ({
+                            clientId: id,
+                            sortOrder: index,
+                            ...mapOwnerInputToPrisma(owner),
+                        })),
+                    });
+                }
+
+                return tx.client.findUnique({
+                    where: { id },
+                    include: clientInclude,
+                });
             });
 
             return res.status(200).json({
@@ -673,14 +761,7 @@ class ClientController {
             const client = await prisma.client.update({
                 where: { id },
                 data: { status },
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+                include: clientInclude,
             });
 
             if (!client) {
