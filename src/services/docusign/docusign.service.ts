@@ -1483,7 +1483,12 @@ export class DocusignService {
 
     const findByRoleReusable = (roleKey: string) => {
       if (!roleKey) return null;
-      return normalized.find((row) => row.roleName.toLowerCase() === roleKey) || null;
+      const idx = normalized.findIndex(
+        (row, ni) => !used.has(ni) && row.roleName.toLowerCase() === roleKey,
+      );
+      if (idx < 0) return null;
+      used.add(idx);
+      return normalized[idx];
     };
 
     return envelopeSigners.map((signer, slotIdx) => {

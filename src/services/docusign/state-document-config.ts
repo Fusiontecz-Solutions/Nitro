@@ -510,7 +510,7 @@ const NEW_YORK_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'funding_provided', x: '345', y: '139' },
   { tabLabel: 'funder_name', x: '415', y: '95' },
   { tabLabel: 'estimated_annual_percentage_rate', x: '178', y: '280' },
-  { tabLabel: 'avarage_monthly_income', x: '331', y: '359' },
+  { tabLabel: 'avarage_monthly_income', x: '331', y: '360' },
   { tabLabel: 'disclosure_merchant_name', x: '420', y: '344' },
   { tabLabel: 'funder_name', x: '432', y: '418' },
   { tabLabel: 'finance_charge', x: '183', y: '465' },
@@ -522,7 +522,7 @@ const NEW_YORK_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
     optional: true,
     lockedForSigner: true,
   },
-  { tabLabel: 'estimated_payment', x: '184', y: '520' },
+  { tabLabel: 'estimated_payment', x: '182', y: '520' },
   { tabLabel: 'funder_name', x: '173', y: '538' },
   { tabLabel: 'payement_exceeded_percent', x: '426', y: '602' },
   { tabLabel: 'client_name', x: '182', y: '619' },
@@ -551,9 +551,9 @@ const NEW_YORK_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
     optional: true,
     lockedForSigner: true,
   },
-  { tabLabel: 'disclosure_page3_subtotal', x: '448', y: '164', pageNumber: '3' },
+  { tabLabel: 'disclosure_page3_subtotal', x: '443', y: '161', pageNumber: '3' },
   { tabLabel: 'disclosure_broker_fee', x: '448', y: '183', pageNumber: '3' },
-  { tabLabel: 'disclosure_page3_net', x: '447', y: '206', pageNumber: '3' },
+  { tabLabel: 'disclosure_page3_net', x: '444', y: '204', pageNumber: '3' },
 ];
 
 /** Louisiana disclosure (La. R.S. 3138.4) — daily + weekly share page 1 amounts and page 2 signatures. */

@@ -8,15 +8,14 @@ import {
   getPrefillDisplayLabel,
 } from './prefill-layout-bridge';
 import type { PrefillFieldInput } from './docusign-prefill';
-import { DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
+import { DOCUSIGN_DEFAULT_ROLE_NAME, DOCUSIGN_SECONDARY_ROLE_NAME } from './docusign-client';
 import {
   applyDocuSignPrefillTabStyle,
   resolveDocuSignPrefillTabWidth,
 } from './docusign-tab-style';
 import { embedArialPdfFont } from './embed-arial-pdf-font';
 
-const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
-  process.env.DOCUSIGN_SECONDARY_ROLE_NAME || 'Signer';
+const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
 
 export type LayoutSignerInput = {
   roleName: string;
@@ -589,7 +588,6 @@ function toTextTab(
       value,
       ...(lockDataTabs || placement.lockedForSigner ? { locked: 'true' } : {}),
       ...(placement.optional ? { optional: 'true' } : {}),
-      shared: 'true',
       width,
       ...(placement.height ? { height: placement.height } : {}),
     },
