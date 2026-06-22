@@ -101,16 +101,13 @@ model BoldSignTemplate {
   createdAt                DateTime                          @default(now())
   frequency                String?
   id                       String                            @id @default(uuid()) @db.Uuid
-  /// * PDF URL (Cloudinary) when not using remote DocuSign template.
-  pdfUrl                   String?
-  funderName               String?
-  labelKey                 String?
   /// * Identifies which platform layout (signing field positions) this template uses.
   layoutKey                String?
+  originalFileName         String?
+  pdfPublicId              String?
+  /// * PDF URL (Cloudinary) when not using remote DocuSign template.
+  pdfUrl                   String?
   contractTemplateMappings ContractDocumentTemplateMapping[]
-
-  @@index([funderName, type])
-  @@index([labelKey, funderName])
 }
 
 model ContractDocumentTemplateMapping {

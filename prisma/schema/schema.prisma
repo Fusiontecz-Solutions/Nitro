@@ -10,6 +10,7 @@ datasource db {
 model FileMetadata {
   id                String           @id @default(uuid())
   fileName          String
+  documentType      String?
   filePath          String
   fileUrl           String
   downloadUrl       String
@@ -23,7 +24,6 @@ model FileMetadata {
   isSystemGenerated Boolean          @default(false)
   stipulationId     Int?
   userId            String?
-  documentType      String?
   Client            Client?          @relation(fields: [clientId], references: [id])
   contract          Contract?        @relation(fields: [contractId], references: [id], onDelete: Cascade)
   DocumentRequest   DocumentRequest? @relation("DocumentRequestFiles", fields: [documentRequestId], references: [id], onDelete: Cascade)

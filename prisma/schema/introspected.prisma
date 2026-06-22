@@ -148,8 +148,8 @@ model CollectionPayment {
   createdById         String?                 @db.Uuid
   createdAt           DateTime                @default(now())
   updatedAt           DateTime                @updatedAt
-  Date                DateTime?               @db.Date
   returnDate          DateTime?               @map("ReturnDate") @db.Date
+  Date                DateTime?               @db.Date
   dealId              String?
   TransactionCategory String?
   transactionStatus   String?
@@ -183,36 +183,36 @@ model PaymentTemplate {
   @@index([updatedAt])
 }
 
-model superAdminPlateform {
+model SuperAdminPlateform {
   id                        String   @id @default("platform")
   clientCount               Int      @default(0)
   isoCount                  Int      @default(0)
   totalDealsCount           Int      @default(0)
   fundedDealsCount          Int      @default(0)
-  dealCount                 Int      @default(0)
   commissionPortalDealCount Int      @default(0)
   commissionDealsFunded     Int      @default(0)
   totalCommission           Decimal  @default(0) @db.Decimal(14, 2)
-  commissionPaid            Decimal  @default(0) @db.Decimal(14, 2)
-  commissionPending         Decimal  @default(0) @db.Decimal(14, 2)
-  commissionProcessing      Decimal  @default(0) @db.Decimal(14, 2)
-  commissionApproved        Decimal  @default(0) @db.Decimal(14, 2)
-  commissionClawback        Decimal  @default(0) @db.Decimal(14, 2)
-  totalFundedVolume         Decimal  @default(0) @db.Decimal(14, 2)
-  fundedTotal               Decimal  @default(0) @db.Decimal(14, 2)
-  netFundingTotal           Decimal  @default(0) @db.Decimal(14, 2)
-  abovePrincipalTotal       Decimal  @default(0) @db.Decimal(14, 2)
-  recoveredAmount           Decimal  @default(0) @db.Decimal(14, 2)
-  failedPaymentAmount       Decimal  @default(0) @db.Decimal(14, 2)
-  failedPaymentCount        Int      @default(0)
-  dueToday                  Decimal  @default(0) @db.Decimal(14, 2)
-  dueNext7Days              Decimal  @default(0) @db.Decimal(14, 2)
-  totalDues                 Decimal  @default(0) @db.Decimal(14, 2)
-  totalPayback              Decimal  @default(0) @db.Decimal(14, 2)
-  collectionEfficiency      Float    @default(0)
   lastRefreshedAt           DateTime @default(now())
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime
+  abovePrincipalTotal       Decimal  @default(0) @db.Decimal(14, 2)
+  collectionEfficiency      Float    @default(0)
+  commissionApproved        Decimal  @default(0) @db.Decimal(14, 2)
+  commissionClawback        Decimal  @default(0) @db.Decimal(14, 2)
+  commissionPaid            Decimal  @default(0) @db.Decimal(14, 2)
+  commissionPending         Decimal  @default(0) @db.Decimal(14, 2)
+  commissionProcessing      Decimal  @default(0) @db.Decimal(14, 2)
+  dealCount                 Int      @default(0)
+  dueNext7Days              Decimal  @default(0) @db.Decimal(14, 2)
+  dueToday                  Decimal  @default(0) @db.Decimal(14, 2)
+  failedPaymentAmount       Decimal  @default(0) @db.Decimal(14, 2)
+  failedPaymentCount        Int      @default(0)
+  fundedTotal               Decimal  @default(0) @db.Decimal(14, 2)
+  netFundingTotal           Decimal  @default(0) @db.Decimal(14, 2)
+  recoveredAmount           Decimal  @default(0) @db.Decimal(14, 2)
+  totalDues                 Decimal  @default(0) @db.Decimal(14, 2)
+  totalFundedVolume         Decimal  @default(0) @db.Decimal(14, 2)
+  totalPayback              Decimal  @default(0) @db.Decimal(14, 2)
 }
 
 enum CollectionPaymentSource {

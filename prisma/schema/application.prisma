@@ -131,10 +131,6 @@ model Client {
   createdAt                  DateTime         @default(now())
   updatedAt                  DateTime         @updatedAt
   driverLicense              String?
-  actionCode                 String?          @db.VarChar(4)
-  actionCodeGeneratedAt      DateTime?
-  actionCodeOperation        String?
-  actionCodeUsedAt           DateTime?
   achs                       ACH[]
   addendums                  Addendum[]
   applications               Application[]
@@ -190,14 +186,9 @@ model Application {
   dealDisplayName          String?
   dealId                   String?
   status                   String?
-  claimedAt                DateTime?
   claimedByUnderwriterId   String?                       @db.Uuid
+  claimedAt                DateTime?
   category                 String?
-  organization             String?
-  actionCode               String?                       @db.VarChar(4)
-  actionCodeGeneratedAt    DateTime?
-  actionCodeOperation      String?
-  actionCodeUsedAt         DateTime?
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
   client                   Client                        @relation(fields: [clientId], references: [id])
   createdBy                User?                         @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
@@ -281,7 +272,6 @@ model ApplicationFile {
   mimeType              String?
   size                  Int?
   uploadedAt            DateTime    @default(now())
-  /// * Slug of the requested document this upload fulfills (e.g. driving_license, voided_check).
   requestedDocumentSlug String?
   application           Application @relation(fields: [applicationId], references: [id])
 
@@ -309,12 +299,11 @@ model ContractTemplate {
   originalName String?
   uploadedById String?  @db.Uuid
   createdAt    DateTime @default(now())
-  funderName   String?
+  layoutKey    String   @default("contract")
   uploadedBy   User?    @relation(fields: [uploadedById], references: [id])
 
   @@index([uploadedById])
   @@index([createdAt])
-  @@index([funderName, createdAt])
 }
 
 model CommissionRequest {
@@ -747,17 +736,16 @@ model GoogleOAuth {
 }
 
 model Document {
-  id                     Int         @id @default(autoincrement())
-  applicationId          String      @unique @db.Uuid
-  envelopeId             String      @unique
-  status                 String
-  sentAt                 DateTime?
-  completedAt            DateTime?
-  createdAt              DateTime    @default(now())
-  updatedAt              DateTime    @updatedAt
-  userId                 Int
-  ccPrefilledEmailSentAt DateTime?
-  application            Application @relation(fields: [applicationId], references: [id])
+  id            Int         @id @default(autoincrement())
+  applicationId String      @unique @db.Uuid
+  envelopeId    String      @unique
+  status        String
+  sentAt        DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  userId        Int
+  application   Application @relation(fields: [applicationId], references: [id])
 }
 
 model Addendum {
@@ -935,15 +923,11 @@ model PaymentMailLog {
   status        PaymentMailLogStatus
   createdById   String?              @db.Uuid
   createdAt     DateTime             @default(now()) @db.Timestamptz(6)
-  metadata      Json?
-  sgMessageId   String?
-  updatedAt     DateTime             @default(now()) @db.Timestamptz(6)
   application   Application          @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   createdBy     User?                @relation("PaymentMailLogCreatedBy", fields: [createdById], references: [id])
 
   @@index([applicationId])
   @@index([createdAt])
-  @@index([sgMessageId])
 }
 
 enum IsoApplicationPayoutStatus {
@@ -956,14 +940,6 @@ enum PaymentMailLogStatus {
   QUEUED
   SENT
   FAILED
-  DELIVERED
-  OPENED
-  CLICKED
-  DEFERRED
-  BOUNCED
-  DROPPED
-  SPAM
-  UNSUBSCRIBED
 }
 
 enum Role {
