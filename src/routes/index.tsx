@@ -11,6 +11,7 @@ import DashboardPage from "../pages/dashboard/DashboardPage";
 import OperationsDashboard from "../pages/dashboard/OperationsDashboard";
 import ToShowApplication from "../pages/dashboard/ToShowApplication";
 import RootLayout from "../components/layout/RootLayout";
+import RouteErrorBoundary from "../components/RouteErrorBoundary";
 import LoginPage from "../pages/auth/LoginPage";
 import SignupPage from "../pages/auth/SignupPage";
 import ForgotPasswordPage from "../pages/auth/ForgotPasswordPage";
@@ -68,7 +69,7 @@ import DealPipeline from '../pages/Dealpipeline/DealPipeline';
 import DealbyId from '../pages/Dealpipeline/DealbyId';
 import NotificationDashboard from '../pages/NotificationDashboard/NotificationDashboard';
 import LetterGeneratorDealById from '../pages/letterGenerator/LetterGeneratorDealById';
-// import TemplatePlayground from '../pages/templates/TemplatePlayground';
+import TemplatePlayground from '../pages/templates/TemplatePlayground';
 import { applicationsPageLoader } from './applicationsLoader';
 import {
   normalizeRoleKey,
@@ -120,6 +121,9 @@ const createRoute = (config: RouteConfig): RouteObject => {
     return {
         path,
         element,
+        // Recover gracefully (and override React Router's raw default screen) when
+        // a route throws during render/commit — e.g. transient removeChild DOM crashes.
+        errorElement: <RouteErrorBoundary />,
         ...(children?.length ? { children: mapChildRoutes(children) } : {}),
     } as RouteObject;
 };
@@ -177,6 +181,10 @@ const Routes: RouteObject[] = [
     createRoute({
         path: '/decision-logic/success',
         element: <DecisionLogicSuccessPage />
+    }),
+    createRoute({
+        path: '/template-playground',
+        element: <TemplatePlayground />
     }),
     createRoute({
         path: '/login',

@@ -1198,42 +1198,39 @@ const ApprovedApplicationModal = ({
                                         : "Sending approval email to ISO..."
                                 );
                                 try {
-                                    try {
-                                        await dispatch(
-                                            sendApprovalEmail({
-                                                applicationId: applicationUuid,
-                                                resend: !!resendApprovalEmail,
-                                            })
-                                        ).unwrap();
-                                        toast.update(toastId, {
-                                            render: resendApprovalEmail
-                                                ? "Updated offer email sent to the linked ISO when that ISO has an email on file."
-                                                : "Approval email sent to the linked ISO when that ISO has an email on file.",
-                                            type: "success",
-                                            isLoading: false,
-                                            autoClose: 3000,
-                                        });
-                                    } catch (emailError) {
-                                        console.error("Failed to send approval email:", emailError);
-                                        const backendMessage =
-                                            typeof emailError === "string"
-                                                ? emailError
-                                                : emailError instanceof Error
-                                                  ? emailError.message
-                                                  : "";
-                                        const fallbackMessage = resendApprovalEmail
-                                            ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
-                                            : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).";
-                                        toast.update(toastId, {
-                                            render: backendMessage || fallbackMessage,
-                                            type: "warning",
-                                            isLoading: false,
-                                            autoClose: 7000,
-                                        });
-                                    }
-
+                                    await dispatch(
+                                        sendApprovalEmail({
+                                            applicationId: applicationUuid,
+                                            resend: !!resendApprovalEmail,
+                                        })
+                                    ).unwrap();
+                                    toast.update(toastId, {
+                                        render: resendApprovalEmail
+                                            ? "Updated offer email sent to the linked ISO when that ISO has an email on file."
+                                            : "Approval email sent to the linked ISO when that ISO has an email on file.",
+                                        type: "success",
+                                        isLoading: false,
+                                        autoClose: 3000,
+                                    });
                                     onProceedToContract?.();
                                     onOpenChange(false);
+                                } catch (emailError) {
+                                    console.error("Failed to send approval email:", emailError);
+                                    const backendMessage =
+                                        typeof emailError === "string"
+                                            ? emailError
+                                            : emailError instanceof Error
+                                              ? emailError.message
+                                              : "";
+                                    const fallbackMessage = resendApprovalEmail
+                                        ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
+                                        : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).";
+                                    toast.update(toastId, {
+                                        render: backendMessage || fallbackMessage,
+                                        type: "warning",
+                                        isLoading: false,
+                                        autoClose: 7000,
+                                    });
                                 } finally {
                                     setIsSubmitting(false);
                                 }

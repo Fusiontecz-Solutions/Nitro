@@ -32,9 +32,12 @@ export function applicationsListSortFromTable(
 
 /**
  * Pipeline dropdown values that must use `operationsStatus` (not a single `currentQueue`
- * equality), so lists match mixed queue/state rows for the signed-contract stage.
+ * equality), so contract-stage lists match mixed queue/state rows reliably.
  */
 const PIPELINE_STATUS_USES_OPERATIONS_STATUS = new Set([
+  "Contract_Pending",
+  "Contract_Generated",
+  "Contract_Sent",
   "Signed_Contracts",
   "Contract_Signed",
 ]);

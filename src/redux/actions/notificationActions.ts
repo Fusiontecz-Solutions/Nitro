@@ -11,6 +11,15 @@ export interface SendDocumentRequestPayload {
     /** Extra To addresses besides ISO. */
     additionalToEmails?: string[];
     ccEmails?: string[];
+    /**
+     * Branded email HTML rendered on the client with the upload-URL placeholder
+     * (`__DOCUMENT_REQUEST_UPLOAD_URL__`). The backend swaps the placeholder for
+     * the real public upload link before sending. The frontend never builds the
+     * real link itself.
+     */
+    emailHtml?: string;
+    /** Subject line for the branded document request email. */
+    emailSubject?: string;
 }
 
 export interface NotifyFinalUnderwriterPayload {

@@ -44,6 +44,10 @@ import { isSentBackDocumentationRequest } from "@/lib/documentRequestMatch";
 
 import { normalizeRoleKey } from "@/lib/sessionRole";
 
+import { renderDocumentRequestEmailHtml } from "@/pages/templates/documentRequestEmailHtml";
+
+import { documentRequestEmailSubject } from "@/pages/templates/documentRequestEmailShared";
+
 import { X } from "lucide-react";
 
 
@@ -558,6 +562,28 @@ const RequestMissingDocumentsModal = ({
                 if (extraTo.length) payload.additionalToEmails = extraTo;
 
                 if (ccList.length) payload.ccEmails = ccList;
+
+                const requestedLabels = selectedDocuments
+                    .map(
+                        (id) =>
+                            DOCUMENT_REQUEST_OPTIONS.find((opt) => opt.id === id)?.label ||
+                            id,
+                    )
+                    .filter(Boolean);
+
+                const appNumber =
+                    (applicationData as { applicationId?: number } | null)?.applicationId ??
+                    formattedApplicationId;
+
+                // Render the branded email with the upload-URL placeholder; the
+                // backend swaps it for the real public upload link before sending.
+                payload.emailHtml = renderDocumentRequestEmailHtml({
+                    iso_name: linkedIso.name,
+                    requested_documents: requestedLabels.join("\n"),
+                    note: data.reason || "",
+                });
+
+                payload.emailSubject = documentRequestEmailSubject(appNumber ?? "N/A");
 
             }
 

@@ -146,7 +146,11 @@ export default function AgentDealIsoTag({
     );
     const [taggingIso, setTaggingIso] = useState(false);
     const [savingEmail, setSavingEmail] = useState(false);
+    const [isoSelectOpen, setIsoSelectOpen] = useState(false);
+    /** Keeps the link-ISO layout mounted until Radix Select finishes closing its portal. */
+    const [deferLinkedLayout, setDeferLinkedLayout] = useState(false);
     const taggingIsoRef = useRef(false);
+    const deferLinkedLayoutRef = useRef(false);
     const isoSearchInputRef = useRef<HTMLInputElement>(null);
     const [emailDraft, setEmailDraft] = useState("");
     const [editingEmail, setEditingEmail] = useState(false);
@@ -214,6 +218,12 @@ export default function AgentDealIsoTag({
         setEditingEmail(false);
     }, [linkedIso.email, linkedIsoId]);
 
+    const releaseDeferredLinkedLayout = useCallback(() => {
+        if (!deferLinkedLayoutRef.current) return;
+        deferLinkedLayoutRef.current = false;
+        window.setTimeout(() => setDeferLinkedLayout(false), 200);
+    }, []);
+
     const handlePickIso = useCallback(
         async (isoId: string) => {
             if (!isoId?.trim() || !targetApplicationId) return;
@@ -241,9 +251,10 @@ export default function AgentDealIsoTag({
             } finally {
                 taggingIsoRef.current = false;
                 setTaggingIso(false);
+                releaseDeferredLinkedLayout();
             }
         },
-        [dispatch, targetApplicationId, hasIso, linkedIsoId],
+        [dispatch, targetApplicationId, hasIso, linkedIsoId, releaseDeferredLinkedLayout],
     );
 
     const handleSaveEmail = useCallback(async () => {
@@ -283,6 +294,8 @@ export default function AgentDealIsoTag({
 
     if (!showDynamicData) return null;
 
+    const renderLinkedLayout = hasIso && !deferLinkedLayout;
+
     const controlsDisabled =
         !alwaysEditable ||
         taggingIso ||
@@ -311,7 +324,7 @@ export default function AgentDealIsoTag({
 
     const sectionTitle = fetchLoading
         ? "ISO Partner"
-        : hasIso
+        : renderLinkedLayout
           ? alwaysEditable && editingEmail
               ? "Edit ISO"
               : "Linked ISO"
@@ -344,8 +357,10 @@ export default function AgentDealIsoTag({
     const isoSelect = (
         <Select
             disabled={controlsDisabled}
+            open={isoSelectOpen}
             value={hasIso && linkedIsoId ? linkedIsoId : undefined}
             onOpenChange={(open: boolean) => {
+                setIsoSelectOpen(open);
                 if (!open) {
                     setIsoSearchQuery("");
                     return;
@@ -354,6 +369,11 @@ export default function AgentDealIsoTag({
             }}
             onValueChange={(v: string) => {
                 setIsoSearchQuery("");
+                setIsoSelectOpen(false);
+                if (!hasIso) {
+                    deferLinkedLayoutRef.current = true;
+                    setDeferLinkedLayout(true);
+                }
                 void handlePickIso(v);
             }}
         >
@@ -596,7 +616,7 @@ export default function AgentDealIsoTag({
                         <Skeleton className="h-3 max-w-[300px] rounded" />
                     </div>
                 </div>
-            ) : hasIso ? (
+            ) : renderLinkedLayout ? (
                 <div
                     className={cn(
                         isCompact ? "" : bodyPad,

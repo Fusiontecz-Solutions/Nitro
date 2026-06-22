@@ -5,7 +5,6 @@ import { axiosGet, axiosPost } from "@/redux/axios";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import Approval from "@/components/application/Approval";
 import CommentSection from "@/components/application/CommentSection";
-// import RequiredDocument from "@/components/application/RequiredDocument";
 import { getApplicationById } from "@/redux/actions/applicationActions";
 import type { AppDispatch } from "@/redux/store";
 import { formatDateTimeUS } from "@/lib/utils";
@@ -17,6 +16,7 @@ type PublicApprovalResponse = {
   data?: {
     application: any;
     termsOffers: TermsOffer[];
+    offerDecision?: Record<string, unknown> | null;
     expiresAt: string | Date | null;
   };
   code?: string;
@@ -43,6 +43,7 @@ const PublicApprovalPage = () => {
   const [expiresAt, setExpiresAt] = useState<string | Date | null>(null);
   const [application, setApplication] = useState<any>(null);
   const [termsOffers, setTermsOffers] = useState<TermsOffer[] | null>(null);
+  const [offerDecision, setOfferDecision] = useState<Record<string, unknown> | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -74,6 +75,7 @@ const PublicApprovalPage = () => {
 
         setApplication(body.data.application);
         setTermsOffers(body.data.termsOffers || []);
+        setOfferDecision(body.data.offerDecision ?? null);
         setExpiresAt(body.data.expiresAt);
 
         const sessionBody = sessionRes.data as {
@@ -190,6 +192,7 @@ const PublicApprovalPage = () => {
               showSendToClient={false}
               applicationData={application}
               termsOffers={termsOffers}
+              offerDecision={offerDecision}
             />
             <div className="mt-6">
               <CommentSection
@@ -198,9 +201,6 @@ const PublicApprovalPage = () => {
                 publicMode
               />
             </div>
-            {/* <div className="mt-6">
-              <RequiredDocument publicMode />
-            </div> */}
           </>
         ) : (
           <div className="text-sm text-[#687182]">No approval data available.</div>
