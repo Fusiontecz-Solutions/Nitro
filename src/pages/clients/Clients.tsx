@@ -108,6 +108,14 @@ export default function Clients() {
     [dispatch],
   );
 
+  const handleNavigateToEditClient = useCallback(
+    (client: Client) => {
+      if (!client.clientId) return;
+      navigate(`/create-clients/${client.clientId}`);
+    },
+    [navigate],
+  );
+
   // Format date (Month Day, Year)
   const formatDate = useCallback((dateString?: string) => {
     return formatDateUtil(dateString ?? "", "-");
@@ -985,6 +993,7 @@ export default function Clients() {
                 loadingMessage="Loading clients..."
                 emptyMessage="No clients found"
                 emptySubMessage="Try adjusting your search or filter criteria"
+                onRowClick={(row) => handleNavigateToEditClient(row.original)}
               />
             </div>
           </div>

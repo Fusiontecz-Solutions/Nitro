@@ -3,7 +3,7 @@ import { useForm, useFieldArray, useWatch, type SubmitHandler } from 'react-hook
 import { yupResolver } from '@hookform/resolvers/yup'
 import * as yup from 'yup'
 import { Button } from '@/components/ui/button'
-import { useMemo, useEffect } from 'react'
+import { useMemo, useEffect, type ReactNode } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router'
 import { Card, CardContent } from '@/components/ui/card'
 import { useDispatch, useSelector } from 'react-redux'
@@ -158,6 +158,38 @@ const isOwnerComplete = (owner?: OwnerDetail) => {
 		owner.address?.zipCode?.trim()
 	)
 }
+
+type FormSectionProps = {
+	title: string
+	headerAction?: ReactNode
+	isDark: boolean
+	isViewMode: boolean
+	children: ReactNode
+}
+
+const FormSection = ({ title, headerAction, isDark, isViewMode, children }: FormSectionProps) => (
+	<Card className={`rounded-sm box-border shadow-[0px_4px_20px_0px_#00000005] p-0 border pb-5 ${
+		isDark ? 'bg-[#141517] border-[#374151]' : 'border-[#FDFDFD]'
+	}`}>
+		<CardContent className="space-y-3 p-0">
+			<div className={`flex items-center justify-between gap-3 px-6 py-3 ${
+				isDark ? 'bg-[#2A2B2F]' : 'bg-[#F9FAFD]'
+			}`}>
+				<h2 className={`text-base font-[600] font-roboto ${
+					isDark ? 'text-white' : 'text-[#374151]'
+				}`}>{title}</h2>
+				{headerAction}
+			</div>
+			<div
+				className={`px-6 grid grid-cols-1 md:grid-cols-2 gap-4 ${
+					isViewMode ? 'pointer-events-none opacity-75' : ''
+				}`}
+			>
+				{children}
+			</div>
+		</CardContent>
+	</Card>
+)
 
 const CreateClient = () => {
 	const navigate = useNavigate()
@@ -401,30 +433,6 @@ const CreateClient = () => {
 		append({ ...emptyOwner, address: { ...emptyAddress } })
 	}
 
-	const Section = ({ title, headerAction, children }: { title: string; headerAction?: React.ReactNode; children: React.ReactNode }) => (
-		<Card className={`rounded-sm box-border shadow-[0px_4px_20px_0px_#00000005] p-0 border pb-5 ${
-			isDark ? 'bg-[#141517] border-[#374151]' : 'border-[#FDFDFD]'
-		}`}>
-			<CardContent className="space-y-3 p-0">
-				<div className={`flex items-center justify-between gap-3 px-6 py-3 ${
-					isDark ? 'bg-[#2A2B2F]' : 'bg-[#F9FAFD]'
-				}`}>
-					<h2 className={`text-base font-[600] font-roboto ${
-						isDark ? 'text-white' : 'text-[#374151]'
-					}`}>{title}</h2>
-					{headerAction}
-				</div>
-				<div
-					className={`px-6 grid grid-cols-1 md:grid-cols-2 gap-4 ${
-						isViewMode ? 'pointer-events-none opacity-75' : ''
-					}`}
-				>
-					{children}
-				</div>
-			</CardContent>
-		</Card>
-	)
-
 	const labelClassName = isDark ? 'text-white' : 'text-[#374151]'
 
 	// Show loading state while fetching client data in edit mode
@@ -464,7 +472,7 @@ const CreateClient = () => {
 					<form onSubmit={isViewMode ? undefined : handleSubmit(onSubmit)} className="space-y-6">
 						<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 							{/* Business Profile Section */}
-							<Section title="Business Profile">
+							<FormSection title="Business Profile" isDark={isDark} isViewMode={isViewMode}>
 								<TextField control={control} name="business.name" label="Business Name" placeholder="Enter business name" labelClassName={labelClassName} required />
 								<EmailField control={control} name="business.email" label="Email" placeholder="Enter email address" labelClassName={labelClassName} required />
 								<PhoneField control={control} name="business.number" label="Phone Number" placeholder="(XXX) XXX-XXXX" labelClassName={labelClassName} />
@@ -496,11 +504,13 @@ const CreateClient = () => {
 								<TextField control={control} name="business.address.city" label="City" placeholder="Enter city" labelClassName={labelClassName} required />
 								<TextField control={control} name="business.address.state" label="State" required placeholder="e.g., FL" labelClassName={labelClassName} />
 								<TextField control={control} name="business.address.zipCode" label="Zip Code" required placeholder="XXXXX" labelClassName={labelClassName} />
-							</Section>
+							</FormSection>
 
 							{/* Business Owner Detail Section */}
-							<Section
+							<FormSection
 								title="Business Owner Detail"
+								isDark={isDark}
+								isViewMode={isViewMode}
 								headerAction={!isViewMode && (
 									<Button
 										type="button"
@@ -580,7 +590,7 @@ const CreateClient = () => {
 										</p>
 									</div>
 								)}
-							</Section>
+							</FormSection>
 						</div>
 
 						<div className="flex items-center justify-end gap-3 pt-2">
