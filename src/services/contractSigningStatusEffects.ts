@@ -1,6 +1,7 @@
 import type { Role } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { emitToUser } from '../socket';
+import { deriveCategory, deriveActionUrl } from './notificationCategory';
 import {
   createApplicationActivityLog,
   type ApplicationActivityActionType,
@@ -92,6 +93,18 @@ const toApiNotification = (notification: any) => {
         : undefined,
     isRead: notification.isRead,
     readAt: notification.readAt,
+    category: notification.category ?? deriveCategory(notification.type, application),
+    bucket: notification.bucket ?? 'inbox',
+    importance: notification.importance ?? 'normal',
+    snoozedUntil: notification.snoozedUntil ?? null,
+    isArchived: notification.isArchived ?? false,
+    actionUrl:
+      notification.actionUrl ??
+      deriveActionUrl({
+        type: notification.type,
+        applicationNumber: application?.applicationId,
+        applicationUuid: notification.applicationId ?? application?.id,
+      }),
     createdBy: createdBy
       ? {
           _id: createdBy.id,
@@ -166,6 +179,7 @@ async function createAndPushNotifications(
           title: base.title,
           message: base.message,
           type: base.type,
+          category: deriveCategory(base.type),
           recipientId: r.id,
           applicationId: base.applicationId,
           createdById: base.createdById,

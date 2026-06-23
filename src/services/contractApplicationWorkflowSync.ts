@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { scheduleApplicationStageNotification } from './applicationStageNotificationService';
 
 /** Approved deal awaiting contract generation. */
 export const APPLICATION_QUEUE_CONTRACT_PENDING = 'Contract Pending';
@@ -213,6 +214,18 @@ async function syncApplicationWorkflowStage(
     newQueue: updated.currentQueue,
     newState: updated.currentState,
     ...meta,
+  });
+
+  scheduleApplicationStageNotification({
+    application: {
+      id: updated.id,
+      applicationId: updated.applicationId,
+      currentQueue: updated.currentQueue,
+      currentState: updated.currentState,
+    },
+    previousQueue: application.currentQueue,
+    previousState: application.currentState,
+    transitionAction: 'QUEUE_CHANGED',
   });
 
   return true;

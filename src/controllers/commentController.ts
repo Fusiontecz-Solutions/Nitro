@@ -7,6 +7,7 @@ import {
   type AuthenticatedUser,
 } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import { notificationTriageDefaults } from '../services/notificationCategory';
 
 const applicationAccessDeniedMessage =
   'Forbidden: you do not have access to this application';
@@ -259,6 +260,7 @@ class CommentController {
                 recipientId,
                 applicationId: application.id,
                 createdById: userId || undefined,
+                ...notificationTriageDefaults('application_update', application),
               })),
             });
 

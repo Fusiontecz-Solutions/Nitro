@@ -19,14 +19,23 @@ router.post(
 // Get notifications for current user
 router.get('/', notificationController.getNotifications.bind(notificationController));
 
+// Triage counts for headings + bell badge (register before param routes)
+router.get('/summary', notificationController.getSummary.bind(notificationController));
+
 // Get document requests for an application
 router.get('/document-requests/:applicationId', notificationController.getDocumentRequestsByApplication.bind(notificationController));
 
+// Bulk triage update (multi-select). Must precede '/:id/...' so 'bulk' isn't read as an id.
+router.patch('/bulk', notificationController.bulkUpdate.bind(notificationController));
+
+// Mark all notifications as read for current user (precede '/:id/read')
+router.patch('/read-all', notificationController.markAllAsRead.bind(notificationController));
+
+// Update per-user triage state (bucket / importance / snooze / archive / read)
+router.patch('/:id/state', notificationController.updateNotificationState.bind(notificationController));
+
 // Mark notification as read
 router.patch('/:id/read', notificationController.markAsRead.bind(notificationController));
-
-// Mark all notifications as read for current user
-router.patch('/read-all', notificationController.markAllAsRead.bind(notificationController));
 
 // Delete a notification
 router.delete('/:id', notificationController.deleteNotification.bind(notificationController));

@@ -418,6 +418,7 @@ class CommissionRequestController {
             title: 'New Commission Request',
             message: notificationMessage,
             type: 'commission_request',
+            category: 'others',
             applicationId: application.id,
             createdById: agentId,
           };
@@ -855,6 +856,7 @@ class CommissionRequestController {
                     : 'Commission Request Updated',
               message: fullMessage,
               type: 'commission_request_update',
+              category: 'others',
               recipientId: agentId,
               applicationId: app?.id,
               createdById: String(user.id),
@@ -1053,6 +1055,7 @@ class CommissionRequestController {
               title: 'Commission Request Deleted',
               message,
               type: 'commission_request_delete',
+              category: 'others',
               recipientId: agentId,
               applicationId: app?.id,
               createdById: String(user.id),

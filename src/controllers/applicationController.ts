@@ -101,6 +101,10 @@ import {
     type BulkImportSummary,
 } from '../services/applicationBulkExcelIngestService';
 import { approveApplication } from '../services/business/applicationApprovalService';
+import {
+    scheduleApplicationStageNotification,
+    notifyApplicationRejected,
+} from '../services/applicationStageNotificationService';
 
 type ApplicationState =
     | 'DRAFT'
@@ -965,6 +969,14 @@ class ApplicationController {
             } catch (logError) {
                 console.error('Failed to create activity log for application creation:', logError);
             }
+
+            scheduleApplicationStageNotification({
+                application: application as any,
+                transitionAction: 'CREATED',
+                actorId: createdById,
+                actorName: (req as any).user?.name || '',
+                actorRole: authUser?.role || null,
+            });
 
             invalidateAllApplicationStatsCache();
 
@@ -2767,6 +2779,12 @@ class ApplicationController {
                 }
             }
 
+            const previousQueue = application.currentQueue;
+            const previousState = application.currentState;
+            const statusSentToFu =
+                status !== undefined &&
+                String(status).trim().toLowerCase() === 'sent to final underwriter';
+
             const updatedRecord = await prisma.application.update({
                 where: whereClause,
                 data,
@@ -2782,6 +2800,23 @@ class ApplicationController {
             });
 
             const updatedApplication = mapApplicationToApi(updatedRecord);
+
+            if (
+                data.currentQueue !== undefined ||
+                data.currentState !== undefined ||
+                status !== undefined
+            ) {
+                const authUserForNotif = getAuthenticatedUser(req);
+                scheduleApplicationStageNotification({
+                    application: updatedRecord as any,
+                    previousQueue,
+                    previousState,
+                    actorId: authUserForNotif?.id || null,
+                    actorName: (req as any).user?.name || '',
+                    actorRole: authUserForNotif?.role || null,
+                    transitionAction: statusSentToFu ? 'SEND_TO_FINAL_UNDERWRITER' : 'QUEUE_CHANGED',
+                });
+            }
 
             invalidateAllApplicationStatsCache();
 
@@ -2939,12 +2974,22 @@ class ApplicationController {
                 console.error('Failed to create activity log for queue update:', logError);
             }
 
-            // Best-effort notification: when an Agent sends an application to Underwriting, notify all Underwriters
+            // Stage notifications (all queue transitions + realtime push)
             try {
-                const upperQueue = normalizeQueueToken(applicationRecord.currentQueue);
                 const authUserForNotif = getAuthenticatedUser(req);
-                const roleUpper = String(authUserForNotif?.role || '').toUpperCase();
+                scheduleApplicationStageNotification({
+                    application: applicationRecord as any,
+                    previousQueue,
+                    previousState: existingApplication.currentState,
+                    actorId: authUserForNotif?.id || null,
+                    actorName: (req as any).user?.name || '',
+                    actorRole: authUserForNotif?.role || null,
+                    transitionAction: transition.action ?? 'QUEUE_CHANGED',
+                });
 
+                // Best-effort email when Agent sends to Underwriter (unchanged behaviour)
+                const upperQueue = normalizeQueueToken(applicationRecord.currentQueue);
+                const roleUpper = String(authUserForNotif?.role || '').toUpperCase();
                 if (upperQueue === 'UNDERWRITER' && roleUpper === 'AGENT') {
                     const attributedSenderId = await resolveApplicationAttributedUserId(
                         req,
@@ -2959,9 +3004,6 @@ class ApplicationController {
                         'Client';
                     const appIdNumber = (applicationRecord as any)?.applicationId ?? '';
 
-                    const title = `${senderName} sent a new application`;
-                    const message = `New application${appIdNumber ? ` #${appIdNumber}` : ''} for ${clientName}.`;
-
                     const underwriters = await prisma.user.findMany({
                         where: { role: 'UNDERWRITER', isActive: true },
                         select: { id: true, email: true, firstName: true, lastName: true },
@@ -2975,20 +3017,6 @@ class ApplicationController {
                         }))
                         .filter((u) => u.id && u.id !== senderId);
 
-                    if (recipients.length > 0) {
-                        await prisma.notification.createMany({
-                            data: recipients.map(({ id: recipientId }) => ({
-                                title,
-                                message,
-                                type: 'application_update',
-                                recipientId,
-                                applicationId: applicationRecord.id,
-                                createdById: senderId || null,
-                            })),
-                        });
-                    }
-
-                    // Best-effort email to underwriters (fire-and-forget; does not block request)
                     const baseUrl = resolveCrmFrontendBaseUrl();
                     const appRouteId =
                         (applicationRecord as any)?.applicationId != null &&
@@ -3017,7 +3045,7 @@ class ApplicationController {
                     });
                 }
             } catch (notifError) {
-                console.error('Failed to create underwriter notification for queue update:', notifError);
+                console.error('Failed to create stage notification for queue update:', notifError);
             }
 
             invalidateAllApplicationStatsCache();
@@ -3557,19 +3585,12 @@ class ApplicationController {
             // Send notification to Agent and Underwriters (when Final Underwriter rejects)
             try {
                 const appRecord = applicationRecord as any;
-                const clientName = (application as any).client?.business?.name ||
-                    `${(application as any).client?.owner?.firstName || ''} ${(application as any).client?.owner?.lastName || ''}`.trim() ||
-                    'Unknown Client';
-                const applicationIdNumber = (application as any).applicationId || 'N/A';
-                const notificationTitle = `Application #${applicationIdNumber} Rejected`;
-                const notificationMessage = `Your application #${applicationIdNumber} for ${clientName} has been rejected. Reason: ${fullNote}`;
-
-                // Use raw IDs - exclude sender (don't notify yourself)
-                const recipientIds = new Set<string>();
                 const attributedCreatedById = await resolveApplicationAttributedUserId(
                     req,
                     appRecord,
                 );
+
+                const recipientIds = new Set<string>();
                 const addIfNotSender = (id: string) => {
                     const sid = String(id);
                     if (sid && sid !== String(attributedCreatedById)) recipientIds.add(sid);
@@ -3584,19 +3605,12 @@ class ApplicationController {
                     underwriters.forEach((u) => addIfNotSender(u.id));
                 }
 
-                const appIdForNotif = appRecord.id;
-                for (const recId of recipientIds) {
-                    await prisma.notification.create({
-                        data: {
-                            title: notificationTitle,
-                            message: notificationMessage,
-                            type: 'application_update',
-                            recipientId: String(recId),
-                            applicationId: appIdForNotif,
-                            createdById: attributedCreatedById,
-                        },
-                    });
-                }
+                await notifyApplicationRejected({
+                    application: appRecord,
+                    actorId: attributedCreatedById,
+                    reason: fullNote,
+                    extraRecipientIds: Array.from(recipientIds),
+                });
 
                 if (recipientIds.size === 0) {
                     console.warn('No recipient found for rejection notification. Application:', appRecord.id);
@@ -4342,6 +4356,13 @@ class ApplicationController {
                     ),
                 );
 
+                scheduleApplicationStageNotification({
+                    application: (applicationAfterPdf || createdApplication) as any,
+                    transitionAction: 'CREATED',
+                    actorId: currentUserId,
+                    actorName: (req as any).user?.name || '',
+                });
+
                 return res.status(200).json({
                     success: true,
                     message: 'Client already exists. Application has been created for the existing client.',
@@ -4461,6 +4482,13 @@ class ApplicationController {
                     2,
                 ),
             );
+
+            scheduleApplicationStageNotification({
+                application: (applicationAfterPdf || createdApplication) as any,
+                transitionAction: 'CREATED',
+                actorId: currentUserId,
+                actorName: (req as any).user?.name || '',
+            });
 
             return res.status(200).json({
                 success: true,

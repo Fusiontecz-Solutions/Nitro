@@ -10,6 +10,10 @@ import {
   createApplicationActivityLog,
   type ApplicationActivityActionType,
 } from '../services/applicationActivityLogService';
+import {
+    scheduleApplicationStageNotification,
+    notifyApplicationRejected,
+} from '../services/applicationStageNotificationService';
 
 /** Align with deal-pipeline queue labels (Agent, Underwriter, Final Underwriter, Contracted, Final). */
 const normalizeQueueKey = (queue: string | null | undefined) =>
@@ -224,14 +228,6 @@ class FundingCallController {
         }
 
         try {
-          const clientName =
-            appRecord.client?.businessName ||
-            `${appRecord.client?.ownerFirstName || ''} ${appRecord.client?.ownerLastName || ''}`.trim() ||
-            'Unknown Client';
-          const applicationIdNumber = appRecord.applicationId || 'N/A';
-          const notificationTitle = `Application #${applicationIdNumber} Rejected`;
-          const notificationMessage = `Application #${applicationIdNumber} for ${clientName} was declined during funding call. Reason: ${declineReason}`;
-
           const recipientIds = new Set<string>();
           const addIfNotSender = (id: string | null | undefined) => {
             const sid = id ? String(id) : '';
@@ -240,32 +236,43 @@ class FundingCallController {
           addIfNotSender(appRecord.referringAgentId);
           addIfNotSender(appRecord.salesRepresentativeId);
 
-          for (const recId of recipientIds) {
-            await prisma.notification.create({
-              data: {
-                title: notificationTitle,
-                message: notificationMessage,
-                type: 'application_update',
-                recipientId: recId,
-                applicationId: appRecord.id,
-                createdById: createdBy,
-              },
-            });
-          }
+          await notifyApplicationRejected({
+            application: { ...appRecord, ...declinedApp },
+            actorId: createdBy,
+            reason: declineReason,
+            extraRecipientIds: Array.from(recipientIds),
+          });
         } catch (notificationError) {
           console.error('Failed to send funding call rejection notification:', notificationError);
         }
       } else if (shouldSetApplicationQueueToFundingCall(appRecord.currentQueue)) {
+        const previousQueue = appRecord.currentQueue;
+        const previousState = appRecord.currentState;
         const updatedApp = await prisma.application.update({
           where: { id: appRecord.id },
           data: {
             currentQueue: 'Funding Call',
             currentState: 'FUNDING_CALL',
           },
+          include: {
+            client: true,
+            referringAgent: { select: { id: true } },
+            salesRepresentative: { select: { id: true } },
+            createdBy: { select: { id: true } },
+          },
         });
         applicationForResponse = updatedApp
           ? { ...record.Application, ...updatedApp }
           : record.Application;
+
+        scheduleApplicationStageNotification({
+          application: updatedApp as any,
+          previousQueue,
+          previousState,
+          actorId: createdBy,
+          actorName: (req as any).user?.name || '',
+          transitionAction: 'QUEUE_CHANGED',
+        });
       }
 
 

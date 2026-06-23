@@ -1,23 +1,27 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
-import { randomUUID } from 'crypto';
 import prisma from '../config/prismaClient';
 import { buildAgentApplicationVisibilityWhere } from '../services/applicationService';
 import {
-    DOCUMENT_REQUEST_EMAIL_PDF_FILENAME,
     sendDocumentRequestEmail,
 } from '../services/emailService';
 import {
+    findFulfilledDocumentForRequest,
+    getDocumentRequestConfig,
     humanizeDocumentRequestLabels,
 } from '../constants/documentRequestTypes';
-import { buildDocumentRequestListForApplication } from '../services/documentRequestListService';
-import { createPublicPortalToken } from '../services/publicPortalTokenService';
+import { loadDocumentRequestFulfillmentContext } from '../services/documentRequestFulfillmentService';
+import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
 import {
-    buildPublicDocumentRequestPortalUrl,
-    resolveCrmFrontendBaseUrl,
-} from '../utils/crmFrontendUrl';
-import { recordCommunicationAudit } from '../services/systemActivityLogService';
-import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
+    deriveCategory,
+    deriveActionUrl,
+    NOTIFICATION_CATEGORIES,
+} from '../services/notificationCategory';
+import { notifyApplicationStageChange } from '../services/applicationStageNotificationService';
+
+// Allowed user-set triage values (validated on PATCH).
+const NOTIFICATION_BUCKETS = ['inbox', 'todo', 'follow_up', 'snoozed', 'done'] as const;
+const NOTIFICATION_IMPORTANCE = ['urgent', 'high', 'normal', 'low'] as const;
 
 // Helper to map Prisma Application (with includes) to the API shape previously returned by Mongoose
 const mapApplicationToApi = (app: any) => {
@@ -167,8 +171,26 @@ const mapNotificationToApi = (notification: any) => {
         createdById,
         createdAt,
         updatedAt,
+        category,
+        bucket,
+        importance,
+        snoozedUntil,
+        isArchived,
+        actionUrl,
         ...rest
     } = notification;
+
+    // Derive a category for legacy rows whose stored value is still the default.
+    const resolvedCategory =
+        category && category !== 'system' ? category : deriveCategory(type, application);
+    const resolvedActionUrl =
+        actionUrl ||
+        deriveActionUrl({
+            category: resolvedCategory,
+            type,
+            applicationNumber: application?.applicationId,
+            applicationUuid: applicationId ?? application?.id,
+        });
 
     return {
         ...rest,
@@ -177,6 +199,12 @@ const mapNotificationToApi = (notification: any) => {
         title,
         message,
         type,
+        category: resolvedCategory,
+        bucket: bucket ?? 'inbox',
+        importance: importance ?? 'normal',
+        snoozedUntil: snoozedUntil ?? null,
+        isArchived: isArchived ?? false,
+        actionUrl: resolvedActionUrl,
         recipient: recipient
             ? {
                   _id: recipient.id,
@@ -195,6 +223,13 @@ const mapNotificationToApi = (notification: any) => {
                   type: application.type,
                   currentQueue: application.currentQueue,
                   currentState: application.currentState,
+                  loanAmount: application.loanAmount ?? null,
+                  dealId: application.dealId ?? null,
+                  dealDisplayName: application.dealDisplayName ?? null,
+                  businessName: application.client?.businessName ?? null,
+                  ownerName: application.client
+                      ? `${application.client.ownerFirstName || ''} ${application.client.ownerLastName || ''}`.trim() || null
+                      : null,
               }
             : applicationId,
         documentRequestDetails:
@@ -374,6 +409,7 @@ class NotificationController {
                 title: notificationTitle,
                 message: notificationMessage,
                 type: 'document_request',
+                category: deriveCategory('document_request', application as any),
                 applicationId: application.id,
                 documentRequestedDocuments: documentsArray,
                 documentRequestAdditional: requestAdditional || false,
@@ -388,13 +424,6 @@ class NotificationController {
                     });
                     if (!firstNotification) firstNotification = created;
                 }
-            } else {
-                // ISO email-only (or no other in-app recipient): still persist so the
-                // public upload portal and RequestedDocumentsPanel can list the request.
-                const created = await prisma.notification.create({
-                    data: { ...notificationData, recipientId: String(createdBy) },
-                });
-                firstNotification = created;
             }
 
             const appUpdateData: { note?: string; currentQueue?: string; currentState?: string } = {};
@@ -426,102 +455,13 @@ class NotificationController {
             let emailError: string | undefined;
             const emailedTo: string[] = [];
             const emailedCc: string[] = [];
-            let documentRequestCommunicationLogged = false;
 
             if (isIsoEmailRequest && uniqueEmailTo.length > 0) {
                 const crmBase = resolveCrmFrontendBaseUrl();
-                let viewApplicationUrl: string | undefined;
-                if (crmBase) {
-                    try {
-                        const portalToken = await createPublicPortalToken(application.id, {
-                            expiresInDays: 90,
-                        });
-                        if (portalToken) {
-                            viewApplicationUrl = buildPublicDocumentRequestPortalUrl(
-                                crmBase,
-                                portalToken,
-                            );
-                        }
-                    } catch (tokenErr) {
-                        console.error('Document request portal token generation failed:', tokenErr);
-                    }
-                    if (!viewApplicationUrl) {
-                        const businessApplicationId = app.applicationId ?? applicationIdNumber;
-                        viewApplicationUrl = `${crmBase.replace(/\/$/, '')}/application-details/${businessApplicationId}/documents`;
-                    }
-                }
-                const clientEmailHtml =
-                    typeof emailHtml === 'string' && emailHtml.trim() ? emailHtml.trim() : undefined;
-                const clientEmailSubject =
-                    typeof emailSubject === 'string' && emailSubject.trim()
-                        ? emailSubject.trim()
-                        : undefined;
-                const usesNewTemplate = Boolean(clientEmailHtml);
-                let trackingId: string | undefined;
-
-                if (usesNewTemplate) {
-                    trackingId = randomUUID();
-                    const authUserForLog = {
-                        id: createdBy,
-                        role: (req as any).user?.role,
-                    };
-                    const roleLabel = authUserForLog?.role
-                        ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
-                        : 'User';
-                    const actorName = (req as any).user?.name || '';
-                    const resolvedSubject =
-                        clientEmailSubject || `Document request — Application #${applicationIdNumber}`;
-
-                    const refreshedForAudit = await prisma.application.findUnique({
-                        where: { id: application.id },
-                        select: { currentQueue: true, currentState: true },
-                    });
-
-                    try {
-                        await recordCommunicationAudit(req, {
-                            outboundCommunicationId: trackingId,
-                            applicationId: application.id,
-                            channel: 'EMAIL',
-                            recipientType: 'ISO',
-                            recipient: uniqueEmailTo.join(', '),
-                            subject: resolvedSubject,
-                            body: clientEmailHtml,
-                            templateName: 'Document upload request template',
-                            actionType: 'DOCUMENT_REQUESTED',
-                            actionDescription:
-                                `${roleLabel} ${actorName}`.trim() +
-                                ' requested additional documents from the ISO.',
-                            currentStatus: `${refreshedForAudit?.currentQueue ?? app.currentQueue} / ${
-                                refreshedForAudit?.currentState ?? app.currentState
-                            }`,
-                            user: authUserForLog,
-                            metadata: {
-                                requestedDocuments: documentsArray,
-                                requestAdditional: requestAdditional || false,
-                                reason: reasonText,
-                                additionalComments: additionalCommentsText,
-                                emailedTo: uniqueEmailTo,
-                                emailedCc: emailCcList,
-                                documentRequestEmailSent: true,
-                                template: 'document-request',
-                                status: 'sent',
-                                hasLetterPdf: true,
-                                attachments: [DOCUMENT_REQUEST_EMAIL_PDF_FILENAME],
-                                delivery: {
-                                    status: 'sent',
-                                    sentAt: new Date().toISOString(),
-                                },
-                            },
-                        });
-                        documentRequestCommunicationLogged = true;
-                    } catch (auditErr) {
-                        console.error(
-                            'Failed to create communication audit for document request email:',
-                            auditErr,
-                        );
-                    }
-                }
-
+                const businessApplicationId = app.applicationId ?? applicationIdNumber;
+                const viewApplicationUrl = crmBase
+                    ? `${crmBase.replace(/\/$/, '')}/application-details/${businessApplicationId}/documents`
+                    : undefined;
                 const emailResult = await sendDocumentRequestEmail({
                     to: uniqueEmailTo,
                     cc: emailCcList,
@@ -532,9 +472,14 @@ class NotificationController {
                     requestAdditional: Boolean(requestAdditional),
                     note: reasonText || undefined,
                     viewApplicationUrl,
-                    html: clientEmailHtml,
-                    subject: clientEmailSubject,
-                    trackingId,
+                    html:
+                        typeof emailHtml === 'string' && emailHtml.trim()
+                            ? emailHtml.trim()
+                            : undefined,
+                    subject:
+                        typeof emailSubject === 'string' && emailSubject.trim()
+                            ? emailSubject.trim()
+                            : undefined,
                 });
                 emailSent = emailResult.sent;
                 emailError = emailResult.error;
@@ -542,17 +487,8 @@ class NotificationController {
                     emailedTo.push(...uniqueEmailTo);
                     emailedCc.push(...emailCcList);
                 }
-
-                if (trackingId && emailSent && emailResult.sgMessageId) {
-                    try {
-                        await storeSgMessageIdOnOutbound(trackingId, emailResult.sgMessageId);
-                    } catch (metaErr) {
-                        console.error('Failed to store SendGrid message id for document request:', metaErr);
-                    }
-                }
             }
 
-            if (!documentRequestCommunicationLogged) {
             try {
                 const authUserForLog = {
                     id: createdBy,
@@ -595,7 +531,6 @@ class NotificationController {
                 });
             } catch (logError) {
                 console.error('Failed to create application activity log for document request:', logError);
-            }
             }
 
             const updatedApplicationRecord = await prisma.application.findUnique({
@@ -721,15 +656,6 @@ class NotificationController {
                 String((req as any).user?.name || '').trim() ||
                 'Underwriter';
 
-            const clientName =
-                (application as any).client?.businessName ||
-                `${(application as any).client?.ownerFirstName || ''} ${(application as any).client?.ownerLastName || ''}`.trim() ||
-                'Client';
-            const appIdNumber = (application as any).applicationId ?? '';
-
-            const title = `${senderName} forwarded an application for final review`;
-            const message = `Application${appIdNumber ? ` #${appIdNumber}` : ''} for ${clientName} is ready for Final Underwriter review.`;
-
             const finalUnderwriters = await prisma.user.findMany({
                 where: { role: 'FINAL_UNDERWRITER', isActive: true },
                 select: { id: true },
@@ -748,15 +674,11 @@ class NotificationController {
                 });
             }
 
-            await prisma.notification.createMany({
-                data: recipients.map((recipientId) => ({
-                    title,
-                    message,
-                    type: 'application_update',
-                    recipientId,
-                    applicationId: application.id,
-                    createdById: senderId,
-                })),
+            await notifyApplicationStageChange({
+                application: application as any,
+                actorId: senderId,
+                actorName: senderName,
+                transitionAction: 'SEND_TO_FINAL_UNDERWRITER',
             });
 
             return res.status(201).json({
@@ -784,7 +706,8 @@ class NotificationController {
                 });
             }
 
-            const { isRead, limit, page } = req.query;
+            const { isRead, limit, page, bucket, category, importance, archived, includeSnoozed } =
+                req.query;
 
             // Parse and validate limit
             let limitNum = 50; // default
@@ -823,6 +746,47 @@ class NotificationController {
                 where.isRead = isReadStr === 'true' || isReadStr === '1';
             }
 
+            // Triage filters (per-user buckets / MCA category / importance).
+            const andClauses: any[] = [];
+            const bucketStr = bucket !== undefined ? String(bucket).trim().toLowerCase() : '';
+            if (bucketStr) where.bucket = bucketStr;
+            if (category !== undefined && String(category).trim()) {
+                where.category = String(category).trim().toLowerCase();
+            }
+            if (importance !== undefined && String(importance).trim()) {
+                where.importance = String(importance).trim().toLowerCase();
+            }
+
+            // Archived rows are hidden unless explicitly requested.
+            const wantsArchived =
+                archived !== undefined &&
+                (String(archived).toLowerCase() === 'true' || String(archived) === '1');
+            where.isArchived = wantsArchived;
+
+            // Hide snoozed-but-not-yet-due rows from default lists. They reappear once
+            // `snoozedUntil` passes, or when the user opens the Snoozed bucket explicitly,
+            // or passes includeSnoozed=1.
+            const wantsIncludeSnoozed =
+                includeSnoozed !== undefined &&
+                (String(includeSnoozed).toLowerCase() === 'true' || String(includeSnoozed) === '1');
+            if (!wantsIncludeSnoozed && bucketStr !== 'snoozed') {
+                andClauses.push({
+                    OR: [
+                        { bucket: { not: 'snoozed' } },
+                        { snoozedUntil: null },
+                        { snoozedUntil: { lte: new Date() } },
+                    ],
+                });
+            }
+
+            if (andClauses.length > 0) {
+                where.AND = Array.isArray(where.AND)
+                    ? [...where.AND, ...andClauses]
+                    : where.AND
+                      ? [where.AND, ...andClauses]
+                      : andClauses;
+            }
+
             const roleNorm = String((req as any).user?.role || '')
                 .trim()
                 .toUpperCase()
@@ -852,6 +816,10 @@ class NotificationController {
                         type: true,
                         currentQueue: true,
                         currentState: true,
+                        loanAmount: true,
+                        dealId: true,
+                        dealDisplayName: true,
+                        client: { select: { businessName: true, ownerFirstName: true, ownerLastName: true } },
                     },
                 },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -1059,6 +1027,205 @@ class NotificationController {
         }
     }
 
+    // Counts for the dashboard headings + bell badge (current user's inbox).
+    async getSummary(req: Request, res: Response) {
+        try {
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                return res.status(401).json({ success: false, message: 'User authentication required' });
+            }
+
+            const base: any = { recipientId: String(userId), isArchived: false };
+            const now = new Date();
+            const dueOrNotSnoozed = {
+                OR: [
+                    { bucket: { not: 'snoozed' } },
+                    { snoozedUntil: null },
+                    { snoozedUntil: { lte: now } },
+                ],
+            };
+
+            const [total, unread, urgent, bucketGroups, categoryGroups] = await Promise.all([
+                prisma.notification.count({ where: base }),
+                prisma.notification.count({ where: { ...base, isRead: false, AND: [dueOrNotSnoozed] } }),
+                prisma.notification.count({ where: { ...base, importance: 'urgent', AND: [dueOrNotSnoozed] } }),
+                prisma.notification.groupBy({ by: ['bucket'], where: base, _count: { _all: true } }),
+                prisma.notification.groupBy({ by: ['category'], where: base, _count: { _all: true } }),
+            ]);
+
+            const toMap = (groups: any[], key: string) =>
+                groups.reduce((acc: Record<string, number>, g: any) => {
+                    acc[String(g[key] ?? 'system')] = g._count?._all ?? 0;
+                    return acc;
+                }, {});
+
+            return res.status(200).json({
+                success: true,
+                data: {
+                    total,
+                    unread,
+                    urgent,
+                    byBucket: toMap(bucketGroups, 'bucket'),
+                    byCategory: toMap(categoryGroups, 'category'),
+                },
+            });
+        } catch (error: any) {
+            console.error('Get notification summary error:', error);
+            return res.status(500).json({ success: false, message: error.message || 'Internal server error' });
+        }
+    }
+
+    /** Build a validated triage patch from a request body (shared by single + bulk update). */
+    private buildTriagePatch(body: any): { patch: Record<string, unknown>; error?: string } {
+        const patch: Record<string, unknown> = {};
+
+        if (body.bucket !== undefined) {
+            const b = String(body.bucket).trim().toLowerCase();
+            if (!NOTIFICATION_BUCKETS.includes(b as any)) {
+                return { patch, error: `Invalid bucket. Allowed: ${NOTIFICATION_BUCKETS.join(', ')}` };
+            }
+            patch.bucket = b;
+            // Leaving the snoozed bucket clears any pending snooze.
+            if (b !== 'snoozed') patch.snoozedUntil = null;
+        }
+
+        if (body.importance !== undefined) {
+            const imp = String(body.importance).trim().toLowerCase();
+            if (!NOTIFICATION_IMPORTANCE.includes(imp as any)) {
+                return { patch, error: `Invalid importance. Allowed: ${NOTIFICATION_IMPORTANCE.join(', ')}` };
+            }
+            patch.importance = imp;
+        }
+
+        if (body.category !== undefined && String(body.category).trim()) {
+            const cat = String(body.category).trim().toLowerCase();
+            if (!NOTIFICATION_CATEGORIES.includes(cat as any)) {
+                return { patch, error: `Invalid category. Allowed: ${NOTIFICATION_CATEGORIES.join(', ')}` };
+            }
+            patch.category = cat;
+        }
+
+        if (body.snoozedUntil !== undefined) {
+            if (body.snoozedUntil === null || String(body.snoozedUntil).trim() === '') {
+                patch.snoozedUntil = null;
+            } else {
+                const d = new Date(body.snoozedUntil);
+                if (Number.isNaN(d.getTime())) return { patch, error: 'Invalid snoozedUntil date' };
+                patch.snoozedUntil = d;
+                patch.bucket = 'snoozed'; // snoozing implies the snoozed bucket
+            }
+        }
+
+        if (body.isArchived !== undefined) patch.isArchived = Boolean(body.isArchived);
+        if (body.isRead !== undefined) {
+            patch.isRead = Boolean(body.isRead);
+            patch.readAt = body.isRead ? new Date() : null;
+        }
+
+        return { patch };
+    }
+
+    // Update per-user triage state (bucket / importance / snooze / archive / read) for one notification.
+    async updateNotificationState(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                return res.status(401).json({ success: false, message: 'User authentication required' });
+            }
+
+            const role = String((req as any).user?.role || '').toUpperCase();
+            const isSuperAdmin = role === 'SUPER_ADMIN' || role === 'SUPERADMIN';
+
+            const notification = await prisma.notification.findUnique({ where: { id } });
+            if (!notification) {
+                return res.status(404).json({ success: false, message: 'Notification not found' });
+            }
+            if (String(notification.recipientId) !== String(userId) && !isSuperAdmin) {
+                return res.status(403).json({ success: false, message: 'Unauthorized to update this notification' });
+            }
+
+            const { patch, error } = this.buildTriagePatch(req.body ?? {});
+            if (error) return res.status(400).json({ success: false, message: error });
+            if (Object.keys(patch).length === 0) {
+                return res.status(400).json({ success: false, message: 'No valid fields to update' });
+            }
+
+            const updatedRecord = await prisma.notification.update({
+                where: { id },
+                data: patch,
+                include: {
+                    recipient: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    application: {
+                        select: {
+                            id: true,
+                            applicationId: true,
+                            priority: true,
+                            type: true,
+                            currentQueue: true,
+                            currentState: true,
+                            loanAmount: true,
+                            dealId: true,
+                            dealDisplayName: true,
+                            client: { select: { businessName: true, ownerFirstName: true, ownerLastName: true } },
+                        },
+                    },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                },
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: 'Notification updated',
+                data: mapNotificationToApi(updatedRecord),
+            });
+        } catch (error: any) {
+            console.error('Update notification state error:', error);
+            return res.status(500).json({ success: false, message: error.message || 'Internal server error' });
+        }
+    }
+
+    // Apply the same triage patch to many notifications (multi-select in the dashboard).
+    async bulkUpdate(req: Request, res: Response) {
+        try {
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                return res.status(401).json({ success: false, message: 'User authentication required' });
+            }
+            const role = String((req as any).user?.role || '').toUpperCase();
+            const isSuperAdmin = role === 'SUPER_ADMIN' || role === 'SUPERADMIN';
+
+            const ids = Array.isArray(req.body?.ids)
+                ? req.body.ids.map((x: any) => String(x)).filter(Boolean)
+                : [];
+            if (ids.length === 0) {
+                return res.status(400).json({ success: false, message: 'ids array is required' });
+            }
+
+            const { patch, error } = this.buildTriagePatch(req.body?.patch ?? {});
+            if (error) return res.status(400).json({ success: false, message: error });
+            if (Object.keys(patch).length === 0) {
+                return res.status(400).json({ success: false, message: 'No valid fields to update' });
+            }
+
+            // Non-super-admins can only mutate their own notifications.
+            const where: any = isSuperAdmin
+                ? { id: { in: ids } }
+                : { id: { in: ids }, recipientId: String(userId) };
+
+            const result = await prisma.notification.updateMany({ where, data: patch });
+
+            return res.status(200).json({
+                success: true,
+                message: `${result.count} notification(s) updated`,
+                updatedCount: result.count,
+            });
+        } catch (error: any) {
+            console.error('Bulk update notifications error:', error);
+            return res.status(500).json({ success: false, message: error.message || 'Internal server error' });
+        }
+    }
+
     // Get document requests for an application
     async getDocumentRequestsByApplication(req: Request, res: Response) {
         try {
@@ -1092,7 +1259,112 @@ class NotificationController {
                 });
             }
 
-            const documents = await buildDocumentRequestListForApplication(application.id);
+            const fulfillmentContext = await loadDocumentRequestFulfillmentContext(application.id);
+            const applicationFiles = fulfillmentContext?.applicationFiles ?? application.files ?? [];
+            const contractFiles = fulfillmentContext?.contractFiles ?? [];
+
+            // Get all document request notifications for this application
+            const notificationsRecords = await prisma.notification.findMany({
+                where: {
+                    applicationId: application.id,
+                    type: 'document_request',
+                },
+                orderBy: { createdAt: 'desc' },
+                include: {
+                    createdBy: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                },
+            });
+
+            // Extract all unique requested documents and their status
+            const documentMap = new Map<
+                string,
+                {
+                    status: 'Complete' | 'Pending';
+                    createdAt: Date;
+                    requestedBy?: any;
+                    message?: string;
+                    label?: string;
+                    fileUrl?: string;
+                    fileId?: string;
+                    contractUploadKey?: string;
+                }
+            >();
+            const generalRequests: {
+                name: string;
+                status: 'Pending';
+                createdAt: Date;
+                requestedBy?: any;
+                message?: string;
+            }[] = [];
+
+            notificationsRecords.forEach((notification: any) => {
+                const requestedDocs = notification.documentRequestedDocuments || [];
+
+                // Specific document requests
+                requestedDocs.forEach((docSlug: string) => {
+                    const config = getDocumentRequestConfig(docSlug);
+                    const fulfilled = findFulfilledDocumentForRequest(docSlug, {
+                        applicationFiles,
+                        contractFiles,
+                    });
+                    const isUploaded = fulfilled != null;
+
+                    if (
+                        !documentMap.has(docSlug) ||
+                        (documentMap.get(docSlug)?.createdAt &&
+                            notification.createdAt > documentMap.get(docSlug)!.createdAt)
+                    ) {
+                        documentMap.set(docSlug, {
+                            status: isUploaded ? 'Complete' : 'Pending',
+                            createdAt: notification.createdAt,
+                            requestedBy: notification.createdBy,
+                            label: config?.label,
+                            fileUrl: fulfilled?.url,
+                            fileId: fulfilled?.fileId,
+                            contractUploadKey: config?.contractUploadKey,
+                        });
+                    }
+                });
+
+                // General "Sent Back for Documentation" requests (no specific docs - e.g. from Final Underwriter)
+                if (requestedDocs.length === 0 && notification.message) {
+                    generalRequests.push({
+                        name: 'Sent Back for Documentation',
+                        status: 'Pending',
+                        createdAt: notification.createdAt,
+                        requestedBy: notification.createdBy,
+                        message: notification.message,
+                    });
+                }
+            });
+
+            // Convert map to array, then append general requests (Final Underwriter send-back)
+            const documents = Array.from(documentMap.entries()).map(([name, data]) => ({
+                name,
+                label: data.label,
+                status: data.status,
+                createdAt: data.createdAt,
+                requestedBy: data.requestedBy,
+                message: data.message,
+                fileUrl: data.fileUrl,
+                fileId: data.fileId,
+                contractUploadKey: data.contractUploadKey,
+            }));
+
+            // Add general requests (sorted by createdAt desc)
+            generalRequests
+                .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+                .forEach((req) => {
+                    documents.push({
+                        name: req.name,
+                        status: req.status,
+                        createdAt: req.createdAt,
+                        requestedBy: req.requestedBy,
+                        message: req.message,
+                    });
+                });
 
             return res.status(200).json({
                 success: true,

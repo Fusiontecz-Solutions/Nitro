@@ -8,6 +8,7 @@ import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
 import { extractPdfPlainTextForParsing } from './pdfIngestionService';
 import { normalizeOcrTextForParsing } from './ocrFieldExtraction';
 import { logExtractedBusinessDataCsv } from './csvConverter';
+import { scheduleApplicationStageNotification } from './applicationStageNotificationService';
 
 export type UserRole = Role;
 
@@ -438,6 +439,12 @@ export async function createClientAndApplicationFromPDFBuffer(
             ),
         );
 
+        scheduleApplicationStageNotification({
+            application: applicationWithFiles as any,
+            transitionAction: 'CREATED',
+            actorId: userId,
+        });
+
         return {
             client: clientRecord,
             application: applicationWithFiles,
@@ -528,6 +535,12 @@ export async function createClientAndApplicationFromPDFBuffer(
             2,
         ),
     );
+
+    scheduleApplicationStageNotification({
+        application: applicationWithFiles as any,
+        transitionAction: 'CREATED',
+        actorId: userId,
+    });
 
     return {
         client: result.newClient,

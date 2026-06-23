@@ -468,6 +468,12 @@ model Notification {
   createdById                String?      @db.Uuid
   createdAt                  DateTime     @default(now())
   updatedAt                  DateTime     @updatedAt
+  category                   String       @default("system")
+  bucket                     String       @default("inbox")
+  importance                 String       @default("normal")
+  snoozedUntil               DateTime?
+  isArchived                 Boolean      @default(false)
+  actionUrl                  String?
   application                Application? @relation(fields: [applicationId], references: [id])
   createdBy                  User?        @relation("NotificationCreatedBy", fields: [createdById], references: [id])
   recipient                  User         @relation("NotificationRecipient", fields: [recipientId], references: [id])
@@ -475,6 +481,9 @@ model Notification {
   @@index([recipientId, isRead])
   @@index([applicationId])
   @@index([createdAt])
+  @@index([recipientId, bucket])
+  @@index([recipientId, importance])
+  @@index([recipientId, category])
 }
 
 model Position {

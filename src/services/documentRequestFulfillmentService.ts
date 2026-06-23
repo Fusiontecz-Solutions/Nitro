@@ -4,6 +4,7 @@ import {
   findFulfilledDocumentForRequest,
   getDocumentRequestConfig,
 } from '../constants/documentRequestTypes';
+import { deriveCategory } from './notificationCategory';
 
 export async function loadDocumentRequestFulfillmentContext(applicationUuid: string) {
   const application = await prisma.application.findUnique({
@@ -98,6 +99,7 @@ export async function notifyRequestersDocumentReceived(options: {
           title: 'Requested document received',
           message: `${label} was uploaded for Application #${appNum}.`,
           type: 'document_received',
+          category: deriveCategory('document_received'),
           applicationId: application.id,
           recipientId,
           createdById: uploaderId || recipientId,
