@@ -1311,7 +1311,7 @@ export default function ContractTab({
                     id: String(applicationUuid),
                     data: {
                         currentQueue: "Contract Generated",
-                        currentState: "Contract_Generated",
+                        currentState: "CONTRACT_GENERATED",
                     },
                 }),
             ).unwrap();
@@ -2116,6 +2116,9 @@ export default function ContractTab({
             await persistContractGeneratedStage();
         }
         await reloadFetchedContract();
+        if (applicationUuid) {
+            void dispatch(getApplicationById(String(applicationUuid)));
+        }
         const ccEmailed = result.ccPrefilledEmail?.emailed;
         if (ccEmailed?.length) {
             toast.success(`CC copy emailed to: ${ccEmailed.join(", ")}`);
