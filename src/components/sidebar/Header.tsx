@@ -6,6 +6,7 @@ import type { user } from "../../redux/slices/authSlice";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import NotificationDropdown from "@/components/notifications/NotificationDropdown";
 
 import { useLocation, useNavigate } from "react-router";
 
@@ -76,7 +77,7 @@ const Header = () => {
                     </div>
                     <div className="flex items-center gap-3">
                         <ThemeToggle />
-                        {/* <NotificationDropdown /> */}
+                        <NotificationDropdown />
                         <button
                             type="button"
                             onClick={() => navigate("/user-setting")}

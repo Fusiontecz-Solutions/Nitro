@@ -16,26 +16,18 @@ function safeAppReturnPath(raw: string | null): string | null {
 import { Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import type { AppDispatch, RootState } from '../../redux/store';
 import { login } from '../../redux/actions/authActions';
-import { getApplicationStats } from '../../redux/actions/applicationActions';
-import {
-  fetchOperationsDashboardSummary,
-  fetchOperationsDashboardRecentCases,
-} from '../../redux/actions/operationsDashboardActions';
-import { getPaymentDashboard } from '../../redux/actions/paymentDashboardActions';
 import { useDispatch, useSelector } from 'react-redux';
 import { toast } from 'react-toastify';
 
 import LoginImg from "../../assets/imageLogin.webp"
-<<<<<<< HEAD
 import { resolveAppLogoSrc } from '@/constants/appLogo';
-import { useTheme } from '@/context/ThemeContext';
-=======
-import { APP_LOGO_SRC } from '@/constants/appLogo';
 import { normalizeRoleKey } from '@/lib/sessionRole';
+import { useTheme } from '@/context/ThemeContext';
 import { syndicatorMustNotAccessPath } from '@/lib/syndicatorAdminRoutes';
->>>>>>> origin/autodeal-create
+import { isAgentAllowedPath } from '@/lib/agentAccess';
 
 export default function LoginPage() {
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -58,24 +50,16 @@ export default function LoginPage() {
         localStorage.setItem('role', result.user.role);
         toast.success(result?.message);
 
-        void dispatch(getApplicationStats());
-        const role = result.user.role;
-        if (
-          role === 'OPERATIONS' ||
-          role === 'SUPER_ADMIN' ||
-          role === 'SUPERADMIN'
-        ) {
-          void dispatch(fetchOperationsDashboardSummary());
-          void dispatch(fetchOperationsDashboardRecentCases());
-          void dispatch(getPaymentDashboard());
-        }
-
         const afterLogin = safeAppReturnPath(searchParams.get('returnUrl'));
         const roleKey = normalizeRoleKey(result.user.role ?? '');
+        const returnPath = afterLogin?.split('?')[0] ?? '';
         const blockedReturn =
-          roleKey === 'SYNDICATOR' &&
-          afterLogin != null &&
-          syndicatorMustNotAccessPath(afterLogin.split('?')[0] ?? '');
+          (roleKey === 'SYNDICATOR' &&
+            afterLogin != null &&
+            syndicatorMustNotAccessPath(returnPath)) ||
+          (roleKey === 'AGENT' &&
+            afterLogin != null &&
+            !isAgentAllowedPath(returnPath));
         if (afterLogin && !blockedReturn) {
           navigate(afterLogin, { replace: true });
         } else {
@@ -190,6 +174,8 @@ export default function LoginPage() {
               >
                 {loading ? 'Signing In...' : 'Sign In'}
               </button>
+<<<<<<< HEAD
+=======
 
               <div className="flex items-center gap-3 my-2">
                 <div className="flex-1 h-px bg-gray-300" />
@@ -221,6 +207,7 @@ export default function LoginPage() {
                 </svg>
                 Sign in with Google
               </button>
+>>>>>>> origin/new_branch_latest
             </form>
 
             {/* <p className="mt-6 text-sm text-gray-600">

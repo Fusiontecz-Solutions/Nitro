@@ -10,7 +10,7 @@ export interface SendDocumentRequestPayload {
     isoEmail?: string;
     additionalToEmails?: string[];
     ccEmails?: string[];
-    /** Branded HTML from frontend template (backend injects upload portal URL). */
+    /** Pre-rendered HTML from the CRM email template. */
     emailHtml?: string;
     emailSubject?: string;
 }
@@ -72,27 +72,38 @@ export const notifyFinalUnderwriterOnAssignment = createAsyncThunk(
     }
 );
 
+export interface GetNotificationsParams {
+    isRead?: boolean;
+    limit?: number;
+    page?: number;
+    personalOnly?: boolean;
+    /** Action bucket: inbox | todo | follow_up | snoozed | done */
+    bucket?: string;
+    /** MCA category filter */
+    category?: string;
+    /** Importance filter: urgent | high | normal | low */
+    importance?: string;
+    /** Include archived rows (default false) */
+    archived?: boolean;
+    /** Include not-yet-due snoozed rows (default false) */
+    includeSnoozed?: boolean;
+}
+
 // Get notifications for current user
 export const getNotifications = createAsyncThunk(
     'notification/getNotifications',
-    async (
-        params: { isRead?: boolean; limit?: number; page?: number; personalOnly?: boolean } = {},
-        { rejectWithValue },
-    ) => {
+    async (params: GetNotificationsParams = {}, { rejectWithValue }) => {
         try {
             const queryParams = new URLSearchParams();
-            if (params.isRead !== undefined) {
-                queryParams.append('isRead', params.isRead.toString());
-            }
-            if (params.limit) {
-                queryParams.append('limit', params.limit.toString());
-            }
-            if (params.page) {
-                queryParams.append('page', params.page.toString());
-            }
-            if (params.personalOnly) {
-                queryParams.append('personalOnly', 'true');
-            }
+            if (params.isRead !== undefined) queryParams.append('isRead', params.isRead.toString());
+            if (params.limit) queryParams.append('limit', params.limit.toString());
+            if (params.page) queryParams.append('page', params.page.toString());
+            if (params.personalOnly) queryParams.append('personalOnly', 'true');
+            if (params.bucket) queryParams.append('bucket', params.bucket);
+            if (params.category) queryParams.append('category', params.category);
+            if (params.importance) queryParams.append('importance', params.importance);
+            if (params.archived) queryParams.append('archived', 'true');
+            if (params.includeSnoozed) queryParams.append('includeSnoozed', 'true');
 
             const url = `/notifications${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
             const response = await axiosGet(url);
@@ -102,6 +113,58 @@ export const getNotifications = createAsyncThunk(
             return rejectWithValue(
                 error.response?.data?.message || 'Failed to fetch notifications'
             );
+        }
+    }
+);
+
+export interface NotificationStatePatch {
+    bucket?: string;
+    importance?: string;
+    category?: string;
+    /** ISO string, or null to clear the snooze */
+    snoozedUntil?: string | null;
+    isArchived?: boolean;
+    isRead?: boolean;
+}
+
+// Triage counts for headings + bell badge
+export const getNotificationSummary = createAsyncThunk(
+    'notification/getSummary',
+    async (_: void | undefined, { rejectWithValue }) => {
+        try {
+            const response = await axiosGet('/notifications/summary');
+            return response.data;
+        } catch (error: any) {
+            console.error('Get notification summary error:', error);
+            return rejectWithValue(error.response?.data?.message || 'Failed to fetch notification summary');
+        }
+    }
+);
+
+// Update per-user triage state for a single notification
+export const updateNotificationState = createAsyncThunk(
+    'notification/updateState',
+    async ({ id, patch }: { id: string; patch: NotificationStatePatch }, { rejectWithValue }) => {
+        try {
+            const response = await axiosPatch(`/notifications/${id}/state`, patch);
+            return response.data;
+        } catch (error: any) {
+            console.error('Update notification state error:', error);
+            return rejectWithValue(error.response?.data?.message || 'Failed to update notification');
+        }
+    }
+);
+
+// Apply a triage patch to many notifications at once
+export const bulkUpdateNotifications = createAsyncThunk(
+    'notification/bulkUpdate',
+    async ({ ids, patch }: { ids: string[]; patch: NotificationStatePatch }, { rejectWithValue }) => {
+        try {
+            const response = await axiosPatch('/notifications/bulk', { ids, patch });
+            return { ...response.data, ids, patch };
+        } catch (error: any) {
+            console.error('Bulk update notifications error:', error);
+            return rejectWithValue(error.response?.data?.message || 'Failed to update notifications');
         }
     }
 );

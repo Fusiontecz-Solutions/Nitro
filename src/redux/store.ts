@@ -84,7 +84,8 @@ import {
     sendDocumentRequestSlice,
     markAsReadSlice,
     markAllAsReadSlice,
-    documentRequestsSlice
+    documentRequestsSlice,
+    notificationSummarySlice,
 } from './slices/notificationSlice';
 import chatReducer from '@/redux/slices/chatSlice';
 import teamChatReducer from './slices/teamChatSlice';
@@ -228,6 +229,7 @@ export const store = configureStore({
         markNotificationAsRead: markAsReadSlice.reducer,
         markAllNotificationsAsRead: markAllAsReadSlice.reducer,
         documentRequests: documentRequestsSlice.reducer,
+        notificationSummary: notificationSummarySlice.reducer,
         // Chat reducer
         chat: chatReducer,
         teamChat: teamChatReducer,
