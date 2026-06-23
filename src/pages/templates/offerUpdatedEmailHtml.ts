@@ -17,6 +17,8 @@ const OFFER_UPDATED_EMAIL_FOOTER_LOGO_SRC =
   "https://res.cloudinary.com/dfy6ahsqz/image/upload/v1780324705/white_logo_d8bsb1.svg";
 
 const EMAIL_WIDTH = 600;
+/** Centered body column — left-aligned text within a horizontally centered block. */
+const BODY_CONTENT_WIDTH = 440;
 /** Minimum white body height — compact but keeps watermark breathing room. */
 const EMAIL_BODY_MIN_HEIGHT = 440;
 
@@ -110,7 +112,7 @@ export function renderOfferUpdatedEmailHtml(values: TemplateValues): string {
           </tr>
 
           <tr>
-            <td class="content-pad" valign="middle" height="${EMAIL_BODY_MIN_HEIGHT}" style="padding:32px 45px 0 45px;min-height:${EMAIL_BODY_MIN_HEIGHT}px;height:${EMAIL_BODY_MIN_HEIGHT}px;background-color:#ffffff;background-image:url('${watermarkSrc}');background-repeat:no-repeat;background-position:right center;background-size:contain;vertical-align:middle;">
+            <td class="content-pad" valign="top" height="${EMAIL_BODY_MIN_HEIGHT}" style="padding:32px 45px 40px 45px;min-height:${EMAIL_BODY_MIN_HEIGHT}px;height:${EMAIL_BODY_MIN_HEIGHT}px;background-color:#ffffff;background-image:url('${watermarkSrc}');background-repeat:no-repeat;background-position:right center;background-size:contain;vertical-align:top;">
               <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="width:100%;border-collapse:collapse;">
 
                 <tr>
@@ -122,7 +124,7 @@ export function renderOfferUpdatedEmailHtml(values: TemplateValues): string {
                 </tr>
 
                 <tr>
-                  <td align="center" style="padding:0 0 28px 0;">
+                  <td align="center" style="padding:0 0 8px 0;">
                     <p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.4;color:#4b5563;">
                       Your approved offer values have been updated.
                     </p>
@@ -130,32 +132,40 @@ export function renderOfferUpdatedEmailHtml(values: TemplateValues): string {
                 </tr>
 
                 <tr>
-                  <td align="left" style="padding:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;line-height:1.4;color:#1f2937;text-align:left;">
-                    Hi ${clientName}
-                  </td>
-                </tr>
+                  <td align="center" style="padding:0;">
+                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="${BODY_CONTENT_WIDTH}" align="center" style="width:${BODY_CONTENT_WIDTH}px;max-width:100%;border-collapse:collapse;margin:0 auto;">
 
-                <tr>
-                  <td align="left" style="padding:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:#6b7280;text-align:left;">
-                    Your offer values for <strong style="color:#1f2937;font-weight:bold;">&apos;${companyName}&apos;</strong> have been updated by <strong style="color:#1f2937;font-weight:bold;">${brandName}.</strong>
-                  </td>
-                </tr>
+                      <tr>
+                        <td align="left" style="padding:32px 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;line-height:1.4;color:#1f2937;text-align:left;">
+                          Hi ${clientName}
+                        </td>
+                      </tr>
 
-                <tr>
-                  <td align="left" style="padding:0 0 22px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:#6b7280;text-align:left;">
-                    Please click on the button below to review your updated offer and recalculate your approvals. You do not need a ${crmName} login to use our calculator! Everyone on your team will have immediate access via this email.
-                  </td>
-                </tr>
+                      <tr>
+                        <td align="left" style="padding:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:#6b7280;text-align:left;">
+                          Your offer values for <strong style="color:#1f2937;font-weight:bold;">&apos;${companyName}&apos;</strong> have been updated by <strong style="color:#1f2937;font-weight:bold;">${brandName}.</strong>
+                        </td>
+                      </tr>
 
-                <tr>
-                  <td align="left" style="padding:0 0 24px 0;text-align:left;">
-                    ${buildStyledCtaButton(calculateHref, "Review Updated Offer", 0)}
-                  </td>
-                </tr>
+                      <tr>
+                        <td align="left" style="padding:0 0 22px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:#6b7280;text-align:left;">
+                          Please click on the button below to review your updated offer and recalculate your approvals. You do not need a ${crmName} login to use our calculator! Everyone on your team will have immediate access via this email.
+                        </td>
+                      </tr>
 
-                <tr>
-                  <td align="left" style="padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:#6b7280;text-align:left;">
-                    If you need more information or have any questions, contact your representative directly.
+                      <tr>
+                        <td align="left" style="padding:0 0 24px 0;text-align:left;">
+                          ${buildStyledCtaButton(calculateHref, "Review Updated Offer", 0)}
+                        </td>
+                      </tr>
+
+                      <tr>
+                        <td align="left" style="padding:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:#6b7280;text-align:left;">
+                          If you need more information or have any questions, contact your representative directly.
+                        </td>
+                      </tr>
+
+                    </table>
                   </td>
                 </tr>
 

@@ -9,8 +9,9 @@ import { updateClient } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { updateApplication } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
-import { Pencil } from "lucide-react";
+import { Pencil, ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
+import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 
 interface ApplicationBasicDetailsProps {
     /** When provided (e.g. on application-detail overview for agent), only show data for this application — no static values */
@@ -49,6 +50,78 @@ const mergeUserNoteWithStructuredSections = (
     return trimmedUser ? `${trimmedUser}\n\n${structured}` : structured;
 };
 
+const toDateInput = (raw: unknown) => {
+    if (!raw) return "";
+    const d = new Date(String(raw));
+    return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+};
+
+type OwnerForm = {
+    firstName: string;
+    lastName: string;
+    email: string;
+    mobileNumber: string;
+    dateOfBirth: string;
+    ssn: string;
+    ficoScore: string;
+    ownershipPercentage: string;
+    address1: string;
+    city: string;
+    state: string;
+    zipCode: string;
+};
+
+const mapOwnerToForm = (owner: any): OwnerForm => ({
+    firstName: String(owner?.firstName ?? ""),
+    lastName: String(owner?.lastName ?? ""),
+    email: String(owner?.email ?? ""),
+    mobileNumber: String(owner?.mobileNumber ?? ""),
+    dateOfBirth: toDateInput(owner?.dateOfBirth),
+    ssn: String(owner?.ssn ?? ""),
+    ficoScore: String(owner?.ficoScore ?? ""),
+    ownershipPercentage: String(owner?.ownershipPercentage ?? ""),
+    address1: String(owner?.address?.address1 ?? ""),
+    city: String(owner?.address?.city ?? ""),
+    state: String(owner?.address?.state ?? ""),
+    zipCode: String(owner?.address?.zipCode ?? ""),
+});
+
+const emptyOwnerForm: OwnerForm = mapOwnerToForm({});
+
+/** Build the API owner payload from an editable owner form. */
+const ownerFormToPayload = (owner: OwnerForm) => ({
+    firstName: owner.firstName,
+    lastName: owner.lastName,
+    email: owner.email,
+    mobileNumber: owner.mobileNumber,
+    dateOfBirth: owner.dateOfBirth || null,
+    ssn: owner.ssn,
+    ficoScore: owner.ficoScore === "" ? null : Number(owner.ficoScore),
+    ownershipPercentage:
+        owner.ownershipPercentage === "" ? null : Number(owner.ownershipPercentage),
+    address: {
+        address1: owner.address1,
+        city: owner.city,
+        state: owner.state,
+        zipCode: owner.zipCode,
+    },
+});
+
+const OWNER_FIELD_DEFS: ReadonlyArray<readonly [string, keyof OwnerForm]> = [
+    ["First Name", "firstName"],
+    ["Last Name", "lastName"],
+    ["Email", "email"],
+    ["Mobile Number", "mobileNumber"],
+    ["Date of Birth", "dateOfBirth"],
+    ["Social Security Number (SSN)", "ssn"],
+    ["FICO Score", "ficoScore"],
+    ["Ownership Percentage", "ownershipPercentage"],
+    ["Address 1", "address1"],
+    ["City", "city"],
+    ["State", "state"],
+    ["Zip Code", "zipCode"],
+];
+
 const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps) => {
     const dispatch: AppDispatch = useDispatch();
     const { resolvedTheme } = useTheme();
@@ -68,14 +141,10 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         normalizedRole === "AGENT" || normalizedRole === "SUPER_ADMIN";
 
     const data = applicationData as any;
-    const clientId = String(data?.client?.id ?? "");
+    const applicationClient = data?.client;
+    const clientId = String(applicationClient?.id ?? applicationClient?._id ?? "");
     const targetApplicationId = String(applicationId || data?.id || data?.applicationId || "");
-
-    const toDateInput = (raw: unknown) => {
-        if (!raw) return "";
-        const d = new Date(String(raw));
-        return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
-    };
+    const { owners: resolvedOwnerRecords } = useApplicationClientOwners(applicationClient);
 
     const [form, setForm] = useState({
         businessName: "",
@@ -91,57 +160,66 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         businessCity: "",
         businessState: "",
         businessZipCode: "",
-        ownerFirstName: "",
-        ownerLastName: "",
-        ownerEmail: "",
-        ownerMobileNumber: "",
-        ownerDateOfBirth: "",
-        ownerSsn: "",
-        ownerFicoScore: "",
-        ownerOwnershipPercentage: "",
-        ownerAddress1: "",
-        ownerCity: "",
-        ownerState: "",
-        ownerZipCode: "",
         loanAmount: "",
         note: "",
+    });
+    const [owners, setOwners] = useState<OwnerForm[]>([{ ...emptyOwnerForm }]);
+    const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0);
+
+    const buildBusinessForm = (app: any) => ({
+        businessName: String(app?.client?.business?.name ?? ""),
+        businessEmail: String(app?.client?.business?.email ?? ""),
+        businessNumber: String(app?.client?.business?.number ?? ""),
+        incorporationDate: toDateInput(app?.client?.business?.incorporationDate),
+        businessEntityType: String(app?.client?.business?.businessEntityType ?? ""),
+        website: String(app?.client?.business?.website ?? ""),
+        incorporationState: String(app?.client?.business?.incorporationState ?? ""),
+        monthlyRevenue: String(app?.client?.business?.monthlyRevenue ?? ""),
+        einNumber: String(app?.client?.business?.einNumber ?? ""),
+        businessAddress1: String(app?.client?.business?.address?.address1 ?? ""),
+        businessCity: String(app?.client?.business?.address?.city ?? ""),
+        businessState: String(app?.client?.business?.address?.state ?? ""),
+        businessZipCode: String(app?.client?.business?.address?.zipCode ?? ""),
+        loanAmount: String(app?.loanAmount ?? ""),
+        note: stripStructuredSections(String(app?.note ?? "")),
     });
 
     useEffect(() => {
         const app = applicationData as any;
-        setForm({
-            businessName: String(app?.client?.business?.name ?? ""),
-            businessEmail: String(app?.client?.business?.email ?? ""),
-            businessNumber: String(app?.client?.business?.number ?? ""),
-            incorporationDate: toDateInput(app?.client?.business?.incorporationDate),
-            businessEntityType: String(app?.client?.business?.businessEntityType ?? ""),
-            website: String(app?.client?.business?.website ?? ""),
-            incorporationState: String(app?.client?.business?.incorporationState ?? ""),
-            monthlyRevenue: String(app?.client?.business?.monthlyRevenue ?? ""),
-            einNumber: String(app?.client?.business?.einNumber ?? ""),
-            businessAddress1: String(app?.client?.business?.address?.address1 ?? ""),
-            businessCity: String(app?.client?.business?.address?.city ?? ""),
-            businessState: String(app?.client?.business?.address?.state ?? ""),
-            businessZipCode: String(app?.client?.business?.address?.zipCode ?? ""),
-            ownerFirstName: String(app?.client?.owner?.firstName ?? ""),
-            ownerLastName: String(app?.client?.owner?.lastName ?? ""),
-            ownerEmail: String(app?.client?.owner?.email ?? ""),
-            ownerMobileNumber: String(app?.client?.owner?.mobileNumber ?? ""),
-            ownerDateOfBirth: toDateInput(app?.client?.owner?.dateOfBirth),
-            ownerSsn: String(app?.client?.owner?.ssn ?? ""),
-            ownerFicoScore: String(app?.client?.owner?.ficoScore ?? ""),
-            ownerOwnershipPercentage: String(app?.client?.owner?.ownershipPercentage ?? ""),
-            ownerAddress1: String(app?.client?.owner?.address?.address1 ?? ""),
-            ownerCity: String(app?.client?.owner?.address?.city ?? ""),
-            ownerState: String(app?.client?.owner?.address?.state ?? ""),
-            ownerZipCode: String(app?.client?.owner?.address?.zipCode ?? ""),
-            loanAmount: String(app?.loanAmount ?? ""),
-            note: stripStructuredSections(String(app?.note ?? "")),
-        });
-    }, [applicationData]);
+        setForm(buildBusinessForm(app));
+        if (!isEditMode) {
+            const nextOwners = resolvedOwnerRecords.length
+                ? resolvedOwnerRecords.map(mapOwnerToForm)
+                : [{ ...emptyOwnerForm }];
+            setOwners(nextOwners);
+            setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+        }
+    }, [applicationData, resolvedOwnerRecords, isEditMode]);
 
     const updateField = (key: keyof typeof form, value: string) =>
         setForm((prev) => ({ ...prev, [key]: value }));
+
+    const updateOwnerField = (index: number, key: keyof OwnerForm, value: string) =>
+        setOwners((prev) =>
+            prev.map((owner, i) => (i === index ? { ...owner, [key]: value } : owner))
+        );
+
+    const addOwner = () => {
+        setOwners((prev) => {
+            const next = [...prev, { ...emptyOwnerForm }];
+            setExpandedOwnerIndex(next.length - 1);
+            return next;
+        });
+    };
+
+    const removeOwner = (index: number) => {
+        setOwners((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)));
+        setExpandedOwnerIndex((current) => {
+            if (current === index) return Math.max(0, index - 1);
+            if (current > index) return current - 1;
+            return current;
+        });
+    };
 
     const displayValue = (key: keyof typeof form) => {
         const value = String(form[key] ?? "").trim();
@@ -155,9 +233,26 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         return value;
     };
 
-    const fields = useMemo(
-        () => ({
-            business: [
+    const displayOwnerValue = (owner: OwnerForm, key: keyof OwnerForm) => {
+        const value = String(owner[key] ?? "").trim();
+        if (!value) return "-";
+        if (key.toLowerCase().includes("date")) {
+            const d = new Date(value);
+            return Number.isNaN(d.getTime())
+                ? "-"
+                : d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+        }
+        return value;
+    };
+
+    const ownerLabel = (owner: OwnerForm, index: number) => {
+        const fullName = `${owner.firstName} ${owner.lastName}`.trim();
+        return fullName || `Owner ${index + 1}`;
+    };
+
+    const businessFields = useMemo(
+        () =>
+            [
                 ["Business Name", "businessName"],
                 ["Business Email", "businessEmail"],
                 ["Business Number", "businessNumber"],
@@ -174,21 +269,6 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                 ["Loan Amount", "loanAmount"],
                 ["Application Note", "note"],
             ] as const,
-            owner: [
-                ["First Name", "ownerFirstName"],
-                ["Last Name", "ownerLastName"],
-                ["Email", "ownerEmail"],
-                ["Mobile Number", "ownerMobileNumber"],
-                ["Date of Birth", "ownerDateOfBirth"],
-                ["Social Security Number (SSN)", "ownerSsn"],
-                ["FICO Score", "ownerFicoScore"],
-                ["Ownership Percentage", "ownerOwnershipPercentage"],
-                ["Address 1", "ownerAddress1"],
-                ["City", "ownerCity"],
-                ["State", "ownerState"],
-                ["Zip Code", "ownerZipCode"],
-            ] as const,
-        }),
         []
     );
 
@@ -207,6 +287,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         }
         setSaving(true);
         try {
+            const ownersPayload = owners.map(ownerFormToPayload);
             await dispatch(
                 updateClient({
                     id: clientId,
@@ -228,25 +309,8 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                                 zipCode: form.businessZipCode,
                             },
                         },
-                        owner: {
-                            firstName: form.ownerFirstName,
-                            lastName: form.ownerLastName,
-                            email: form.ownerEmail,
-                            mobileNumber: form.ownerMobileNumber,
-                            dateOfBirth: form.ownerDateOfBirth || null,
-                            ssn: form.ownerSsn,
-                            ficoScore: form.ownerFicoScore === "" ? null : Number(form.ownerFicoScore),
-                            ownershipPercentage:
-                                form.ownerOwnershipPercentage === ""
-                                    ? null
-                                    : Number(form.ownerOwnershipPercentage),
-                            address: {
-                                address1: form.ownerAddress1,
-                                city: form.ownerCity,
-                                state: form.ownerState,
-                                zipCode: form.ownerZipCode,
-                            },
-                        },
+                        owners: ownersPayload,
+                        owner: ownersPayload[0],
                     } as any,
                 })
             ).unwrap();
@@ -274,6 +338,17 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         }
     };
 
+    const cancelEdit = () => {
+        setIsEditMode(false);
+        const app = applicationData as any;
+        setForm(buildBusinessForm(app));
+        const nextOwners = resolvedOwnerRecords.length
+            ? resolvedOwnerRecords.map(mapOwnerToForm)
+            : [{ ...emptyOwnerForm }];
+        setOwners(nextOwners);
+        setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+    };
+
     return (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
             <Card className={`gap-0 border shadow-md dark:shadow-lg p-0 rounded-b-md pb-3 ${isDark ? "bg-[#141517] border-[#374151]" : "border-[#FDFDFD]"}`}>
@@ -286,7 +361,10 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => setIsEditMode(true)}
+                                onClick={() => {
+                                    setIsEditMode(true);
+                                    setExpandedOwnerIndex(0);
+                                }}
                                 disabled={fetchLoading || saving}
                             >
                                 <Pencil className="h-4 w-4" />
@@ -299,39 +377,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => {
-                                        setIsEditMode(false);
-                                        const app = applicationData as any;
-                                        setForm({
-                                            businessName: String(app?.client?.business?.name ?? ""),
-                                            businessEmail: String(app?.client?.business?.email ?? ""),
-                                            businessNumber: String(app?.client?.business?.number ?? ""),
-                                            incorporationDate: toDateInput(app?.client?.business?.incorporationDate),
-                                            businessEntityType: String(app?.client?.business?.businessEntityType ?? ""),
-                                            website: String(app?.client?.business?.website ?? ""),
-                                            incorporationState: String(app?.client?.business?.incorporationState ?? ""),
-                                            monthlyRevenue: String(app?.client?.business?.monthlyRevenue ?? ""),
-                                            einNumber: String(app?.client?.business?.einNumber ?? ""),
-                                            businessAddress1: String(app?.client?.business?.address?.address1 ?? ""),
-                                            businessCity: String(app?.client?.business?.address?.city ?? ""),
-                                            businessState: String(app?.client?.business?.address?.state ?? ""),
-                                            businessZipCode: String(app?.client?.business?.address?.zipCode ?? ""),
-                                            ownerFirstName: String(app?.client?.owner?.firstName ?? ""),
-                                            ownerLastName: String(app?.client?.owner?.lastName ?? ""),
-                                            ownerEmail: String(app?.client?.owner?.email ?? ""),
-                                            ownerMobileNumber: String(app?.client?.owner?.mobileNumber ?? ""),
-                                            ownerDateOfBirth: toDateInput(app?.client?.owner?.dateOfBirth),
-                                            ownerSsn: String(app?.client?.owner?.ssn ?? ""),
-                                            ownerFicoScore: String(app?.client?.owner?.ficoScore ?? ""),
-                                            ownerOwnershipPercentage: String(app?.client?.owner?.ownershipPercentage ?? ""),
-                                            ownerAddress1: String(app?.client?.owner?.address?.address1 ?? ""),
-                                            ownerCity: String(app?.client?.owner?.address?.city ?? ""),
-                                            ownerState: String(app?.client?.owner?.address?.state ?? ""),
-                                            ownerZipCode: String(app?.client?.owner?.address?.zipCode ?? ""),
-                                            loanAmount: String(app?.loanAmount ?? ""),
-                                            note: stripStructuredSections(String(app?.note ?? "")),
-                                        });
-                                    }}
+                                    onClick={cancelEdit}
                                     disabled={saving}
                                 >
                                     Cancel
@@ -350,7 +396,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                 </CardHeader>
                 <CardContent className="pt-0 px-6">
                     <div className="space-y-2">
-                        {fields.business.map(([label, key], index) => (
+                        {businessFields.map(([label, key], index) => (
                             <div
                                 key={index}
                                 className="grid grid-cols-2 gap-4 py-1 font-roboto"
@@ -376,32 +422,91 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
 
             <Card className={`gap-0 border shadow-md dark:shadow-lg p-0 rounded-b-md pb-3 ${isDark ? "bg-[#141517] border-[#374151]" : "border-[#FDFDFD]"}`}>
                 <CardHeader className="pb-0 p-0">
-                    <CardTitle className={`rounded-t-sm text-base font-[600] font-roboto px-6 py-3 ${isDark ? "text-white bg-[#2A2B2F]" : "text-[#374151] bg-[#F9FAFD]"}`}>
-                        Business Owner Details
-                    </CardTitle>
+                    <div className={`rounded-t-sm text-base font-[600] font-roboto px-6 py-3 flex items-center justify-between ${isDark ? "text-white bg-[#2A2B2F]" : "text-[#374151] bg-[#F9FAFD]"}`}>
+                        <CardTitle>
+                            {owners.length > 1 ? `Business Owner Details (${owners.length})` : "Business Owner Details"}
+                        </CardTitle>
+                        {isEditMode && canEditBasicDetails ? (
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={addOwner}
+                                disabled={fetchLoading || saving}
+                                className="h-8 gap-1 text-[var(--brand)] hover:text-[var(--brand)]/90"
+                            >
+                                <Plus className="h-4 w-4" />
+                                Add Owner
+                            </Button>
+                        ) : null}
+                    </div>
                 </CardHeader>
                 <CardContent className="pt-0 px-6">
-                    <div className="space-y-2">
-                        {fields.owner.map(([label, key], index) => (
-                            <div
-                                key={index}
-                                className="grid grid-cols-2 gap-4 py-1 font-roboto"
-                            >
-                                <span className={`text-sm font-medium ${isDark ? "text-[#C07BE0]" : "text-[var(--brand)]"}`}>{label}</span>
-                                {isEditMode ? (
-                                    <Input
-                                        type={key.toLowerCase().includes("date") ? "date" : key.toLowerCase().includes("email") ? "email" : "text"}
-                                        value={form[key]}
-                                        onChange={(e) => updateField(key, e.target.value)}
-                                        disabled={fetchLoading || saving}
-                                    />
-                                ) : (
-                                    <span className={`text-sm ${isDark ? "text-white" : "text-[#4B5563]"}`}>
-                                        {displayValue(key)}
-                                    </span>
-                                )}
-                            </div>
-                        ))}
+                    <div className="space-y-3 pt-3">
+                        {owners.map((owner, ownerIndex) => {
+                            const isExpanded = expandedOwnerIndex === ownerIndex;
+                            return (
+                                <div
+                                    key={ownerIndex}
+                                    className={`rounded-md border overflow-hidden ${isDark ? "border-[#374151]" : "border-[#E5E7EB]"}`}
+                                >
+                                    <button
+                                        type="button"
+                                        onClick={() => setExpandedOwnerIndex(isExpanded ? -1 : ownerIndex)}
+                                        className={`w-full flex items-center justify-between px-4 py-3 text-left cursor-pointer ${isDark ? "bg-[#1E1F23] hover:bg-[#25262B]" : "bg-[#F9FAFD] hover:bg-[#F3F4F6]"}`}
+                                    >
+                                        <span className={`text-sm font-medium ${isDark ? "text-white" : "text-[#374151]"}`}>
+                                            {ownerLabel(owner, ownerIndex)}
+                                        </span>
+                                        <div className="flex items-center gap-2">
+                                            {isEditMode && canEditBasicDetails && owners.length > 1 ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        removeOwner(ownerIndex);
+                                                    }}
+                                                    disabled={saving}
+                                                    className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-transparent"
+                                                >
+                                                    <Trash2 className="h-4 w-4" />
+                                                </Button>
+                                            ) : null}
+                                            {isExpanded ? (
+                                                <ChevronUp className={`h-4 w-4 ${isDark ? "text-white" : "text-[#374151]"}`} />
+                                            ) : (
+                                                <ChevronDown className={`h-4 w-4 ${isDark ? "text-white" : "text-[#374151]"}`} />
+                                            )}
+                                        </div>
+                                    </button>
+
+                                    <div className={isExpanded ? "px-4 py-2 space-y-2" : "hidden"}>
+                                        {OWNER_FIELD_DEFS.map(([label, key]) => (
+                                            <div
+                                                key={key}
+                                                className="grid grid-cols-2 gap-4 py-1 font-roboto"
+                                            >
+                                                <span className={`text-sm font-medium ${isDark ? "text-[#C07BE0]" : "text-[var(--brand)]"}`}>{label}</span>
+                                                {isEditMode ? (
+                                                    <Input
+                                                        type={key.toLowerCase().includes("date") ? "date" : key.toLowerCase().includes("email") ? "email" : "text"}
+                                                        value={owner[key]}
+                                                        onChange={(e) => updateOwnerField(ownerIndex, key, e.target.value)}
+                                                        disabled={fetchLoading || saving}
+                                                    />
+                                                ) : (
+                                                    <span className={`text-sm ${isDark ? "text-white" : "text-[#4B5563]"}`}>
+                                                        {displayOwnerValue(owner, key)}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })}
                     </div>
                 </CardContent>
             </Card>

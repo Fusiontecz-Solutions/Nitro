@@ -1,5 +1,9 @@
 import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
-import { parseTerm } from "@/lib/offerRepaymentCalculations";
+import {
+    parseTerm,
+    resolveOfferFactorRate,
+    resolveOfferPayback,
+} from "@/lib/offerRepaymentCalculations";
 import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
 
 export interface ContractPrefillField {
@@ -1001,7 +1005,17 @@ function offerDecisionEffectiveRecordForNet(
     return odRoot;
 }
 
-function resolvePaybackAmountDollars(sources: NetToMerchantPrefillSources): number | undefined {
+type OfferDecisionPrefillContext = {
+    app: Record<string, unknown> | null | undefined;
+    contract: Record<string, unknown> | null | undefined;
+    odRoot: Record<string, unknown> | null;
+    odEff: Record<string, unknown> | null;
+    terms0: Record<string, unknown> | null;
+};
+
+function getOfferDecisionPrefillContext(
+    sources: NetToMerchantPrefillSources,
+): OfferDecisionPrefillContext {
     const app = sources.application;
     const contract = sources.contract;
     const odRoot =
@@ -1011,14 +1025,64 @@ function resolvePaybackAmountDollars(sources: NetToMerchantPrefillSources): numb
         (app?.OfferDecision as Record<string, unknown> | undefined) ??
         null;
     const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
-    const payback =
-        coerceToFiniteNumber(contract?.purchasePrice) ??
-        coerceToFiniteNumber(contract?.totalAmount) ??
-        coerceToFiniteNumber(odEff?.totalRemit) ??
-        coerceToFiniteNumber(odRoot?.totalRemit) ??
-        coerceToFiniteNumber(odEff?.paybackAmount) ??
-        coerceToFiniteNumber(odRoot?.paybackAmount);
-    return payback !== undefined && payback > 0 ? payback : undefined;
+    const termsRaw = app?.termsOffers;
+    const terms0 =
+        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null;
+    return { app, contract, odRoot, odEff, terms0 };
+}
+
+function resolveOfferAdvanceDollars(
+    ctx: OfferDecisionPrefillContext,
+    sources?: NetToMerchantPrefillSources,
+): number {
+    const { odRoot, odEff, terms0, contract } = ctx;
+    return (
+        coerceToFiniteNumber(sources?.prefill?.purchaseAmount) ??
+        coerceToFiniteNumber(contract?.purchaseAmount) ??
+        coerceToFiniteNumber(odEff?.offer) ??
+        coerceToFiniteNumber(odEff?.approvedAmount) ??
+        coerceToFiniteNumber(odRoot?.offer) ??
+        coerceToFiniteNumber(odRoot?.approvedAmount) ??
+        coerceToFiniteNumber(terms0?.approvedAmount) ??
+        coerceToFiniteNumber(contract?.approvedAmount) ??
+        0
+    );
+}
+
+function resolveOfferFactorRateFromContext(ctx: OfferDecisionPrefillContext): number {
+    const { odRoot, odEff, terms0 } = ctx;
+    return resolveOfferFactorRate({
+        offerDecisionRate:
+            coerceToFiniteNumber(odRoot?.rate) ?? coerceToFiniteNumber(odEff?.rate),
+        offerDecisionFactorRate:
+            coerceToFiniteNumber(odRoot?.factorRate) ?? coerceToFiniteNumber(odEff?.factorRate),
+        termsFactorRate: coerceToFiniteNumber(terms0?.factorRate),
+    });
+}
+
+/** Payback = offer amount × factor rate (not OfferDecision.totalRemit, which is leverage %). */
+export function resolvePaybackAmountDollars(sources: NetToMerchantPrefillSources): number | undefined {
+    const ctx = getOfferDecisionPrefillContext(sources);
+    const advance = resolveOfferAdvanceDollars(ctx, sources);
+    const factorRate = resolveOfferFactorRateFromContext(ctx);
+    const { odRoot, odEff, terms0, contract } = ctx;
+
+    const payback = resolveOfferPayback(advance, factorRate, {
+        termsPaybackAmount: coerceToFiniteNumber(terms0?.paybackAmount),
+        offerPaybackAmount:
+            coerceToFiniteNumber(odEff?.paybackAmount) ?? coerceToFiniteNumber(odRoot?.paybackAmount),
+        totalRemit:
+            coerceToFiniteNumber(odEff?.totalRemit) ?? coerceToFiniteNumber(odRoot?.totalRemit),
+    });
+    if (payback > 0) return payback;
+
+    const legacy =
+        coerceToFiniteNumber(contract?.purchasePrice) ?? coerceToFiniteNumber(contract?.totalAmount);
+    return legacy !== undefined && legacy > 0 ? legacy : undefined;
 }
 
 /**
@@ -1297,16 +1361,12 @@ export function resolveRemittancePrefillValue(sources: NetToMerchantPrefillSourc
         if (asNum) return asNum;
     }
 
-    const totalRemit =
-        coerceToFiniteNumber(odRoot?.totalRemit) ??
-        coerceToFiniteNumber(odEff?.totalRemit) ??
-        coerceToFiniteNumber(contract?.purchasePrice) ??
-        coerceToFiniteNumber(contract?.totalAmount);
+    const payback = resolvePaybackAmountDollars(sources);
     const numPayments =
         coerceToFiniteNumber(odRoot?.numberOfPayments) ??
         coerceToFiniteNumber(terms0?.numberOfPayments);
-    if (totalRemit !== undefined && numPayments !== undefined && numPayments > 0) {
-        return truncateDecimalPrefill(totalRemit / numPayments);
+    if (payback !== undefined && numPayments !== undefined && numPayments > 0) {
+        return truncateDecimalPrefill(payback / numPayments);
     }
 
     return saved && !isPaymentFrequencyLabel(saved) ? saved : "";
@@ -1638,6 +1698,8 @@ export function categorizeDealReviewPrefillFieldId(id: string): string {
     if (
         s === "agreement_date" ||
         s === "entity_type" ||
+        s === "typeofentity1" ||
+        s === "entitytype" ||
         s === "federal_tax_id_ein" ||
         s === "state_of_inc" ||
         s === "doing_business_as"
@@ -2538,7 +2600,11 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
     const paymentBank = (row.paymentBank ?? null) as Record<string, unknown> | null;
 
     const purchaseAmount = firstTruncateDecimal(row.purchaseAmount, offer?.offer, row.approvedAmount);
-    const purchasePrice = firstTruncateDecimal(row.purchasePrice, offer?.totalRemit, row.totalAmount);
+    const paybackNum = resolvePaybackAmountDollars({ contract: row, offerDecision: offer });
+    const purchasePrice =
+        paybackNum !== undefined
+            ? truncateDecimalPrefill(paybackNum)
+            : firstTruncateDecimal(row.purchasePrice, row.totalAmount);
     const purchasePercent = str(row.purchasePercent);
     const netToMerchant =
         str(row.netToMerchant) ||
@@ -2686,6 +2752,9 @@ export const LIVE_OFFER_MONEY_PREFILL_KEYS: ReadonlyArray<keyof BuildContractPre
     "appendixUnderwritingFees",
     "achAuthorizationAccountHolderBankTransactionFee",
     "achAuthorizationAccountHolderBankNumberOfTransactions",
+    // Addendum principal block mirrors the same deal — keep its offer/payback in sync with the live offer.
+    "addendumDatedPrincipalOwnerAmount",
+    "addendumDatedPrincipalOwnerAmount2",
 ];
 
 /** Pick only the non-empty offer-derived money values from a live-offer prefill partial. */
@@ -2782,14 +2851,21 @@ function getLiveOfferPrefillArgs(
 
     const feesRaw = odEff?.fees ?? odRoot?.fees ?? terms0?.fees;
     const remittance = resolveRemittancePrefillValue(sources);
+    const offerAmountNum = resolveOfferAdvanceDollars(
+        { app: app ?? undefined, contract: null, odRoot, odEff, terms0 },
+        sources,
+    );
+    const offerAmount =
+        offerAmountNum > 0
+            ? truncateDecimalPrefill(offerAmountNum)
+            : firstTruncateDecimal(odEff?.offer, odRoot?.offer, terms0?.approvedAmount);
+    const paybackNum = resolvePaybackAmountDollars(sources);
+    const paybackAmount =
+        paybackNum !== undefined ? truncateDecimalPrefill(paybackNum) : "";
 
     return {
-        purchaseAmount: firstTruncateDecimal(odEff?.offer, odRoot?.offer, terms0?.approvedAmount),
-        purchasePrice: firstTruncateDecimal(
-            odEff?.totalRemit,
-            odRoot?.totalRemit,
-            terms0?.totalRemit,
-        ),
+        purchaseAmount: offerAmount,
+        purchasePrice: paybackAmount,
         frequency: resolveOfferFrequencyLabel(sources),
         remittance,
         netToMerchant: formatNetToMerchantPrefillValue(computeNetToMerchantDollars(sources)),
@@ -2799,6 +2875,9 @@ function getLiveOfferPrefillArgs(
         achAuthorizationAccountHolderBankTransactionFee: remittance,
         achAuthorizationAccountHolderBankNumberOfTransactions:
             resolveNumberOfPaymentsPrefillValue(sources),
+        // Addendum principal block uses the same fresh offer/payback as the main deal terms.
+        addendumDatedPrincipalOwnerAmount: offerAmount,
+        addendumDatedPrincipalOwnerAmount2: paybackAmount,
     };
 }
 

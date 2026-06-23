@@ -4,7 +4,8 @@ import {
     getClients,
     updateClient,
     deleteClient,
-    getClientByClientId
+    getClientByClientId,
+    getClientById,
 } from '../actions/clientActions';
 import type { Client } from '../../types/clientTypes';
 
@@ -164,6 +165,24 @@ export const clientDetailSlice = createSlice({
                 state.success = true;
             })
             .addCase(getClientByClientId.rejected, (state, action) => {
+                state.loading = false;
+                state.currentClientId = null;
+                state.error = action.payload as string;
+                state.success = false;
+            })
+            .addCase(getClientById.pending, (state) => {
+                state.loading = true;
+                state.currentClientId = null;
+                state.error = null;
+            })
+            .addCase(getClientById.fulfilled, (state, action) => {
+                state.loading = false;
+                state.data = action.payload.data || action.payload;
+                state.currentClientId = String(action.meta.arg ?? "");
+                state.error = null;
+                state.success = true;
+            })
+            .addCase(getClientById.rejected, (state, action) => {
                 state.loading = false;
                 state.currentClientId = null;
                 state.error = action.payload as string;

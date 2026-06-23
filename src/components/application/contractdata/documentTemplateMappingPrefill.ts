@@ -3,6 +3,7 @@ import {
     getContractPrefillEditDefaultsFromApplication,
     resolveBalanceTransferMerchantContext,
     resolveNumberOfPaymentsPrefillValue,
+    resolvePaybackAmountDollars,
     resolveRemittancePrefillValue,
 } from "./Contract";
 import {
@@ -270,10 +271,14 @@ function buildBalanceTransferComputed(
         recipientAddress: sctx.recipientAddress,
     });
     const offer = (c.offer ?? null) as Record<string, unknown> | null;
+    const paybackNum = resolvePaybackAmountDollars({
+        contract: c,
+        offerDecision: offer,
+        application,
+    });
     const purchasePrice =
         str(c.purchasePrice) ||
-        str(c.purchaseAmount) ||
-        str(offer?.totalRemit) ||
+        (paybackNum != null ? String(paybackNum) : "") ||
         str(offer?.paybackAmount);
     return buildBalanceTransferSheetContractPrefillFields({
         merchantLegalName: merchant.clientName,
@@ -456,7 +461,8 @@ function buildDiscoverEpoComputed(contract: Record<string, unknown> | null, sctx
     let p60 = "";
     let p90 = "";
     let p120 = "";
-    const total = Number(c.purchasePrice ?? offer?.totalRemit ?? offer?.paybackAmount);
+    const paybackNum = resolvePaybackAmountDollars({ contract: c, offerDecision: offer });
+    const total = paybackNum ?? Number(c.purchasePrice ?? offer?.paybackAmount);
     if (Number.isFinite(total)) {
         p60 = payFmt(total * (60 / 100));
         p90 = payFmt(total * (90 / 100));

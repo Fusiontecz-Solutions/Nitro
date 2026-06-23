@@ -5642,7 +5642,7 @@ const PDFViewerModal = ({
                                             <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2.5 dark:border-slate-600 dark:bg-slate-950">
                                                 <Checkbox
                                                     checked={includeMainContractInSend}
-                                                    onCheckedChange={(checked) =>
+                                                    onCheckedChange={(checked: boolean | "indeterminate") =>
                                                         setIncludeMainContractInSend(checked === true)
                                                     }
                                                     className="mt-0.5"

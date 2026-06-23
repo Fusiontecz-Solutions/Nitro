@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router";
-import { Button } from "@/components/ui/button";
 import ApprovedApplicationModal from "./ApprovedApplicationModal";
 import RequestMissingDocumentsModal from "./RequestMissingDocumentsModal";
 import RejectApplicationModal from "./RejectApplicationModal";
@@ -23,6 +22,10 @@ interface ChecksAndDecisionProps {
     /** Narrow sidebar layout: stack decision buttons vertically for ~30% column width. */
     compactLayout?: boolean;
 }
+
+/** Legacy decision CTAs — solid colors, not the app-wide brand-gradient Button theme. */
+const decisionButtonBase =
+    "rounded-md text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden transition-colors outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#276D9C] disabled:opacity-50 disabled:cursor-not-allowed";
 
 const ChecksAndDecision = ({
     isFinalUnderwriter,
@@ -179,15 +182,11 @@ const ChecksAndDecision = ({
                         : "grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-4 px-6 pb-6"
                 }`}>
                     {/* Approved Button */}
-                    <Button
+                    <button
+                        type="button"
                         onClick={() => setIsApprovalModalOpen(true)}
                         disabled={showIsoApprovalMailFlow ? false : disablePrimaryDecisionButton}
-                        variant={showIsoApprovalMailFlow ? "default" : undefined}
-                        className={`rounded-md text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed ${
-                            showIsoApprovalMailFlow
-                                ? ""
-                                : "bg-[#16A34A] hover:bg-green-700 shadow-md shadow-green-700/25"
-                        }`}
+                        className={`${decisionButtonBase} bg-[#16A34A] hover:bg-green-700 shadow-md shadow-green-700/25`}
                     >
                         <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">
                             {showIsoApprovalMailFlow
@@ -199,26 +198,27 @@ const ChecksAndDecision = ({
                                 ? isoApprovalMailButtonDescription
                                 : "Confirm terms and send for final underwriting review"}
                         </span>
-                    </Button>
+                    </button>
 
                     {/* Send back for documents Button */}
-                    <Button
+                    <button
+                        type="button"
                         onClick={() => setIsRequestDocumentsModalOpen(true)}
-                        className="rounded-md bg-[#EAA95A] hover:bg-[#EAA95A]/90 text-white h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden"
+                        className={`${decisionButtonBase} bg-[#EAA95A] hover:bg-[#EAA95A]/90`}
                     >
                         <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">Send back for documents</span>
                         <span className="text-xs font-normal opacity-90 whitespace-normal break-words w-full leading-snug px-1">Request additional documents</span>
-                    </Button>
+                    </button>
 
                     {/* Decline Button */}
-                    <Button
+                    <button
+                        type="button"
                         onClick={() => setIsRejectModalOpen(true)}
-                        variant="destructive"
-                        className="rounded-md h-auto py-4 px-3 box-border cursor-pointer flex flex-col gap-1.5 items-center justify-center text-center w-full overflow-hidden"
+                        className={`${decisionButtonBase} bg-[#DC331D] hover:bg-[#DC331D]/90`}
                     >
                         <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">Decline</span>
                         <span className="text-xs font-normal opacity-90 whitespace-normal break-words w-full leading-snug px-1">Decline this application</span>
-                    </Button>
+                    </button>
                 </div>
             </div>
             )}

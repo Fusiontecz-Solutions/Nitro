@@ -4,6 +4,7 @@ import {
     getApplicationPrimaryRecipientName,
     resolveAppendixUnderwritingFeesDollars,
     resolveBalanceTransferMerchantContext,
+    resolvePaybackAmountDollars,
 } from "./Contract";
 import { buildDailyCaliforniaContractPrefillFields } from "./daily_california";
 import { buildCaliforniaDisclosurePage3Amounts, resolveCaliforniaEstimatedTermDays } from "./california_disclosure";
@@ -572,9 +573,15 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
     const purchaseAmount = coerceFiniteNumber(
         contract.purchaseAmount ?? offer?.offer ?? offer?.approvedAmount ?? contract.approvedAmount,
     );
-    const purchasePrice = coerceFiniteNumber(
-        contract.purchasePrice ?? offer?.totalRemit ?? offer?.paybackAmount ?? contract.totalAmount,
-    );
+    const purchasePrice =
+        resolvePaybackAmountDollars({
+            contract,
+            offerDecision: offer,
+            application: args.application ?? undefined,
+        }) ??
+        coerceFiniteNumber(
+            contract.purchasePrice ?? offer?.paybackAmount ?? contract.totalAmount,
+        );
     const purchasePercent = coerceFiniteNumber(
         contract.purchasePercent ??
             contract.purchase_percent ??
