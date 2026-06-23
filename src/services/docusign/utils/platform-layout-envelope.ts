@@ -25,13 +25,19 @@ const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
 
 export type DocumentLayoutWithBase64 = DocumentLayout & { documentBase64: string };
 
-export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutWithBase64> {
-  const layoutKey = DOCUMENT_LAYOUT_KEYS.contract;
+export async function loadMainContractLayoutPackage(
+  layoutKey: DocumentLayoutKey = DOCUMENT_LAYOUT_KEYS.contract,
+): Promise<DocumentLayoutWithBase64> {
   const layout = getDocumentLayout(layoutKey);
   try {
     const documentBase64 = await loadPlatformDocumentPdfBase64(layoutKey);
     return { ...layout, documentBase64 };
   } catch {
+    if (layoutKey !== DOCUMENT_LAYOUT_KEYS.contract) {
+      throw new Error(
+        `No PDF configured for "${layout.name}". Upload to Cloudinary and set BoldSignTemplate.pdfUrl with layoutKey "${layoutKey}".`,
+      );
+    }
     const latest = await prisma.contractTemplate.findFirst({
       orderBy: { createdAt: 'desc' },
     });
@@ -43,6 +49,11 @@ export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutW
     const documentBase64 = await fetchPdfAsBase64(latest.url);
     return { ...layout, documentBase64 };
   }
+}
+
+/** @deprecated Use loadMainContractLayoutPackage */
+export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutWithBase64> {
+  return loadMainContractLayoutPackage(DOCUMENT_LAYOUT_KEYS.contract);
 }
 
 export async function loadSupplementalLayoutPackage(
@@ -261,6 +272,8 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   supplementalRefs?: string[];
   /** When false, envelope contains only supplemental layouts (e.g. standalone ACH). */
   includeMainContract?: boolean;
+  /** Platform layout key for the main contract PDF (default: Katan contract). */
+  mainContractLayoutKey?: DocumentLayoutKey;
   roles: Array<Record<string, unknown>>;
   prefillFields?: Array<{ id: string; value: string }>;
   ownerCount?: number;
@@ -276,7 +289,11 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   const includeMainContract = options.includeMainContract !== false;
   const layouts: DocumentLayoutWithBase64[] = [];
   if (includeMainContract) {
-    layouts.push(await loadLatestContractLayoutPackage());
+    layouts.push(
+      await loadMainContractLayoutPackage(
+        options.mainContractLayoutKey || DOCUMENT_LAYOUT_KEYS.contract,
+      ),
+    );
   }
   for (const ref of options.supplementalRefs || []) {
     layouts.push(await loadSupplementalLayoutPackage(ref));
@@ -343,7 +360,8 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
         (sum, s) =>
           sum +
           (s.tabs?.textTabs?.length || 0) +
-          (s.tabs?.dateTabs?.length || 0),
+          (s.tabs?.dateTabs?.length || 0) +
+          (s.tabs?.dateSignedTabs?.length || 0),
         0,
       );
 

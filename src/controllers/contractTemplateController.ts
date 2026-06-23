@@ -67,6 +67,15 @@ class ContractTemplateController {
     // Get the most recently uploaded global contract template
     async getLatest(req: Request, res: Response) {
         try {
+            const layoutKey = String(req.query.layoutKey || 'contract').trim() || 'contract';
+            const byLayout = await this.resolveContractTemplateByLayoutKey(layoutKey);
+            if (byLayout) {
+                return res.status(200).json({
+                    success: true,
+                    data: byLayout,
+                });
+            }
+
             const latest = await prisma.contractTemplate.findFirst({
                 orderBy: { createdAt: 'desc' },
             });
@@ -82,6 +91,58 @@ class ContractTemplateController {
                 message: error?.message || 'Internal server error',
             });
         }
+    }
+
+    private async resolveContractTemplateByLayoutKey(layoutKey: string) {
+        const key = String(layoutKey || '').trim();
+        if (!key) return null;
+
+        const boldSign = await prisma.boldSignTemplate.findFirst({
+            where: {
+                OR: [{ layoutKey: key }, { templateId: key }],
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (boldSign?.pdfUrl) {
+            return {
+                id: boldSign.id,
+                url: boldSign.pdfUrl,
+                originalName:
+                    boldSign.name ||
+                    (key === 'alliance_bridge_contract'
+                        ? 'ALLIANCE BRIDGE CAPITAL.pdf'
+                        : 'Contract.pdf'),
+                layoutKey: key,
+                source: 'boldSignTemplate',
+            };
+        }
+
+        const contractTemplate = await prisma.contractTemplate.findFirst({
+            where: { layoutKey: key },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (contractTemplate?.url) {
+            return {
+                ...contractTemplate,
+                layoutKey: key,
+                source: 'contractTemplate',
+            };
+        }
+
+        if (key === 'contract') {
+            const latest = await prisma.contractTemplate.findFirst({
+                orderBy: { createdAt: 'desc' },
+            });
+            if (latest?.url) {
+                return {
+                    ...latest,
+                    layoutKey: key,
+                    source: 'contractTemplate',
+                };
+            }
+        }
+
+        return null;
     }
 }
 

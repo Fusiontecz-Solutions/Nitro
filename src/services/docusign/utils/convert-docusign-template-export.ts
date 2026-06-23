@@ -125,7 +125,18 @@ export function convertDocuSignTemplateExport(
         const t = raw as Record<string, unknown>;
         const tabType = normalizeTabType(String(t.tabType || ''), tabKey);
         const label = String(t.tabLabel || t.name || '').trim();
-        const optional = t.optional === 'true' || t.required === 'false';
+        const tabTypeRaw = String(t.tabType || tabKey).toLowerCase();
+        const lockedForSigner = String(t.locked || '').toLowerCase() === 'true';
+        const isSignOptional =
+          tabTypeRaw.includes('optional') ||
+          String(t.name || '').toLowerCase().includes('optional');
+        /** Manifest `required: false` = signer not required to edit — NOT skip-when-empty. */
+        const placementOptional =
+          tabType === 'signature' || tabType === 'initial'
+            ? isSignOptional
+            : tabType === 'text'
+              ? !lockedForSigner
+              : false;
         const pageNumber = String(t.pageNumber || '1');
         const x = String(t.xPosition ?? '');
         const y = String(t.yPosition ?? '');
@@ -139,7 +150,8 @@ export function convertDocuSignTemplateExport(
           ...(t.width ? { width: String(t.width) } : {}),
           ...(t.height ? { height: String(t.height) } : {}),
           signerRole: roleName,
-          optional,
+          optional: placementOptional,
+          ...(lockedForSigner ? { lockedForSigner: true as const } : {}),
           ...(label ? { sourceTabLabel: label } : {}),
         };
 
@@ -190,6 +202,16 @@ export function convertDocuSignTemplateExport(
     }
   }
 
+  return buildDocumentLayoutFromPlacements(meta, j, doc, signers, placements);
+}
+
+function buildDocumentLayoutFromPlacements(
+  meta: { key: string; name?: string; pdfSource?: 'contractTemplate' | 'boldSignTemplate'; pdfFileName?: string; description?: string },
+  j: Record<string, unknown>,
+  doc: Record<string, unknown> | undefined,
+  signers: Array<Record<string, unknown>>,
+  placements: DocumentLayoutPlacement[],
+): DocumentLayout {
   const variables = [
     ...new Set(
       placements
@@ -224,6 +246,97 @@ export function convertDocuSignTemplateExport(
     })),
     variables,
     placements,
+  };
+}
+
+function normalizeManifestTabKey(label: string): string {
+  return String(label || '').trim().toLowerCase().replace(/_/g, '');
+}
+
+/** Matches HardRock `isSecondOwnerOnlyTextTab` — hidden when ownerCount is 1. */
+function isSecondOwnerOnlyManifestLabel(label: string): boolean {
+  const k = normalizeManifestTabKey(label);
+  if (!k) return false;
+  if (
+    /owner2/.test(k) ||
+    /seller2/.test(k) ||
+    /merchantname2/.test(k) ||
+    /guarantor2/.test(k) ||
+    /guarantyowner2/.test(k) ||
+    /guarantyguarantor2/.test(k)
+  ) {
+    return true;
+  }
+  if (k === 'guarantyguarantor2name' || k === 'guarantyowner2name') {
+    return true;
+  }
+  if (/addendumdatedprincipalowner2/.test(k)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Discover / Alliance Bridge manifests: optional sign slots and owner-2 date tabs
+ * route to the second signer (Owner 2) when `ownerCount >= 2`.
+ */
+function applyDiscoverStyleOwnerRouting(
+  placements: DocumentLayoutPlacement[],
+): DocumentLayoutPlacement[] {
+  return placements.map((placement) => {
+    const label = String(
+      placement.variable || placement.sourceTabLabel || placement.slot || '',
+    ).trim();
+
+    const isOwner2Text = placement.type === 'text' && isSecondOwnerOnlyManifestLabel(label);
+    const isOwner2Signature =
+      placement.type === 'signature' && placement.optional === true;
+    const isOwner2Date =
+      placement.type === 'date' && isSecondOwnerOnlyManifestLabel(label);
+
+    if (!isOwner2Text && !isOwner2Signature && !isOwner2Date) {
+      return placement;
+    }
+
+    return {
+      ...placement,
+      signerParty: 'secondary',
+      when: 'owners >= 2',
+    };
+  });
+}
+
+/** Root-level `tabs` export (e.g. alliance_bridge_contract.json) without full DocuSign template envelope. */
+export function convertSimplifiedTabsContractExport(
+  exportJson: Record<string, unknown>,
+  meta: {
+    key: string;
+    name?: string;
+    description?: string;
+    pdfSource?: 'contractTemplate' | 'boldSignTemplate';
+    pdfFileName?: string;
+  },
+): DocumentLayout {
+  const wrapped = {
+    name: meta.name || exportJson.name,
+    documents: [
+      {
+        documentId: '1',
+        name: exportJson.documentName || meta.pdfFileName,
+        pageCount: exportJson.pageCount,
+      },
+    ],
+    recipients: {
+      signers: [
+        { roleName: 'Client', routingOrder: 1, tabs: exportJson.tabs || {} },
+        { roleName: 'Owner 2', routingOrder: 2, tabs: {} },
+      ],
+    },
+  };
+  const layout = convertDocuSignTemplateExport(wrapped, meta);
+  return {
+    ...layout,
+    placements: applyDiscoverStyleOwnerRouting(layout.placements),
   };
 }
 

@@ -170,6 +170,23 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   guaranty_guarantor2_ss: ['guaranty_owner2_ss'],
   guaranty_owner2_driver_license: ['guaranty_guarantor2_driver_license'],
   guaranty_guarantor2_driver_license: ['guaranty_owner2_driver_license'],
+  seller_1_name: [
+    'owner1_guarantor_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'guaranty_client_name',
+    'client_name',
+  ],
+  seller_2_name: [
+    'owner2_guarantor_name',
+    'guaranty_owner2_name',
+    'guaranty_guarantor2_name',
+    'merchant2_name',
+    'appendix_merchant2_name',
+  ],
+  doing_business_as: ['dba', 'security_doing_business_as'],
+  client_phone: ['authorized_business_phone', 'guarantor_phone'],
+  exhibit_company_name_1: ['exhibit_company_name_2', 'exhibit_company_name_3'],
 };
 
 /**
@@ -185,6 +202,7 @@ const PARTY2_NAME_KEYS = [
   'guaranty_guarantor2_name',
   'merchant2_name',
   'appendix_merchant2_name',
+  'seller_2_name',
 ] as const;
 
 const PARTY1_NAME_KEYS = [
@@ -194,6 +212,7 @@ const PARTY1_NAME_KEYS = [
   'guaranty_guarantor1_name',
   'guaranty_client_name',
   'security_guarantor',
+  'seller_1_name',
 ] as const;
 
 const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss'] as const;
@@ -309,6 +328,7 @@ type DocuSignTab = Record<string, string | undefined>;
 type SignerTabBuckets = {
   textTabs: DocuSignTab[];
   dateTabs: DocuSignTab[];
+  dateSignedTabs: DocuSignTab[];
   signHereTabs: DocuSignTab[];
   initialHereTabs: DocuSignTab[];
   signerAttachmentTabs: DocuSignTab[];
@@ -318,6 +338,7 @@ function emptySignerTabBuckets(): SignerTabBuckets {
   return {
     textTabs: [],
     dateTabs: [],
+    dateSignedTabs: [],
     signHereTabs: [],
     initialHereTabs: [],
     signerAttachmentTabs: [],
@@ -564,14 +585,11 @@ function placementAllowed(
   return true;
 }
 
-function includeEmptyLockedOptionalTextPlacement(
-  placement: DocumentLayoutPlacement,
-): boolean {
-  return (
-    placement.type === 'text' &&
-    placement.optional === true &&
-    placement.lockedForSigner === true
-  );
+function shouldIncludeEmptyTextPlacement(placement: DocumentLayoutPlacement): boolean {
+  if (placement.type !== 'text') return false;
+  if (placement.lockedForSigner) return true;
+  if (placement.optional) return true;
+  return false;
 }
 
 function toTextTab(
@@ -604,6 +622,7 @@ function toTextTab(
       xPosition: placement.x,
       yPosition: placement.y,
       value,
+      required: placement.optional ? undefined : 'false',
       ...(lockDataTabs || placement.lockedForSigner ? { locked: 'true' } : {}),
       ...(placement.optional ? { optional: 'true' } : {}),
       shared: 'true',
@@ -663,17 +682,43 @@ export async function renderFlattenedLayoutPdf(
   return Buffer.from(await pdfDoc.save());
 }
 
+function toDateSignedTab(
+  placement: DocumentLayoutPlacement,
+  envelopeDocumentId: string,
+): DocuSignTab {
+  const tabLabel =
+    String(placement.sourceTabLabel || '').trim() ||
+    String(placement.variable || '').trim() ||
+    placement.slot ||
+    `date_signed_${placement.id}`;
+  return applyDocuSignPrefillTabStyle(
+    {
+      tabLabel,
+      name: 'DateSigned',
+      documentId: envelopeDocumentId,
+      pageNumber: placement.pageNumber,
+      xPosition: placement.x,
+      yPosition: placement.y,
+      ...(placement.width ? { width: placement.width } : {}),
+      ...(placement.height ? { height: placement.height } : {}),
+    },
+    { height: placement.height },
+  );
+}
+
 function toSignTab(
   placement: DocumentLayoutPlacement,
   envelopeDocumentId: string,
 ): DocuSignTab {
+  const isOptional = placement.optional === true;
   return {
     tabLabel: placement.slot || `${placement.type}_${placement.id}`,
     documentId: envelopeDocumentId,
     pageNumber: placement.pageNumber,
     xPosition: placement.x,
     yPosition: placement.y,
-    optional: placement.optional ? 'true' : 'false',
+    optional: isOptional ? 'true' : 'false',
+    ...(isOptional ? {} : { required: 'true' }),
   };
 }
 
@@ -729,13 +774,18 @@ export function buildRecipientTabsByRoleForLayout(
 
     const bucket = ensureSigner(signerIndex);
 
-    if (placement.type === 'text' || placement.type === 'date') {
+    if (placement.type === 'date') {
+      bucket.dateSignedTabs.push(toDateSignedTab(placement, envelopeDocumentId));
+      continue;
+    }
+
+    if (placement.type === 'text') {
       const variable = placement.variable || '';
       const value = resolveTextPlacementValue(variable, values);
-      if (!value && !includeEmptyLockedOptionalTextPlacement(placement)) continue;
-      const tab = toTextTab(placement, value, envelopeDocumentId);
-      if (placement.type === 'date') bucket.dateTabs.push(tab);
-      else bucket.textTabs.push(tab);
+      if (!value && !shouldIncludeEmptyTextPlacement(placement)) {
+        continue;
+      }
+      bucket.textTabs.push(toTextTab(placement, value, envelopeDocumentId));
       continue;
     }
 
@@ -761,6 +811,7 @@ function signerHasTabs(tabs: SignerTabBuckets): boolean {
   return (
     tabs.textTabs.length +
       tabs.dateTabs.length +
+      tabs.dateSignedTabs.length +
       tabs.signHereTabs.length +
       tabs.initialHereTabs.length +
       tabs.signerAttachmentTabs.length >
@@ -828,19 +879,22 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
 
       const bucket = ensureSigner(signerIndex);
 
-      if (placement.type === 'text' || placement.type === 'date') {
+      if (placement.type === 'date') {
+        bucket.dateSignedTabs.push(toDateSignedTab(placement, envelopeDocId));
+        continue;
+      }
+
+      if (placement.type === 'text') {
         if (
           options.skipTextDateTabs &&
-          !includeEmptyLockedOptionalTextPlacement(placement)
+          !shouldIncludeEmptyTextPlacement(placement)
         ) {
           continue;
         }
         const variable = placement.variable || '';
         const value = resolveTextPlacementValue(variable, values);
-        if (!value && !includeEmptyLockedOptionalTextPlacement(placement)) continue;
-        const tab = toTextTab(placement, value, envelopeDocId, options.lockDataTabs);
-        if (placement.type === 'date') bucket.dateTabs.push(tab);
-        else bucket.textTabs.push(tab);
+        if (!value && !shouldIncludeEmptyTextPlacement(placement)) continue;
+        bucket.textTabs.push(toTextTab(placement, value, envelopeDocId, options.lockDataTabs));
         continue;
       }
 

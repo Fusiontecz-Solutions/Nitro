@@ -78,6 +78,11 @@ import {
   filterSupplementalRefs,
   resolveSupplementalRefsFromDb,
 } from './utils/platform-layout-envelope';
+import {
+  DOCUMENT_LAYOUT_KEYS,
+  type DocumentLayoutKey,
+} from './layouts/document-layout.registry';
+import { isDocumentLayoutKey } from './platform-document-registry';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
 import {
   findApplicationIdByAchEnvelopeId,
@@ -3706,6 +3711,25 @@ export class DocusignService {
     return resolveSupplementalRefsFromDb(filters);
   }
 
+  private resolveMainContractLayoutKeyOption(
+    layoutKeyRaw?: string | null,
+  ): DocumentLayoutKey | undefined {
+    const key = String(layoutKeyRaw || '').trim();
+    if (!key) return undefined;
+    if (!isDocumentLayoutKey(key)) {
+      throw new BadRequestException(`Unknown main contract layout key "${key}".`);
+    }
+    if (
+      key === DOCUMENT_LAYOUT_KEYS.contract ||
+      key === DOCUMENT_LAYOUT_KEYS.allianceBridgeContract
+    ) {
+      return key;
+    }
+    throw new BadRequestException(
+      `Layout key "${key}" is not allowed as the main contract document.`,
+    );
+  }
+
   private decoratePlatformLayoutEnvelope(
     envelopeDefinition: Record<string, unknown>,
     options: {
@@ -3748,6 +3772,7 @@ export class DocusignService {
     options: {
       supplementalRefs?: string[];
       includeMainContract?: boolean;
+      mainContractLayoutKey?: string;
       redirectUrl?: string;
       title?: string;
       message?: string;
@@ -3786,6 +3811,9 @@ export class DocusignService {
       built = await buildPlatformLayoutEnvelopeDefinition({
         supplementalRefs,
         includeMainContract: options.includeMainContract,
+        mainContractLayoutKey: this.resolveMainContractLayoutKeyOption(
+          options.mainContractLayoutKey,
+        ),
         roles: options.roles,
         prefillFields: options.prefillFields,
         ownerCount: options.ownerCount,
@@ -3928,6 +3956,7 @@ export class DocusignService {
       supplementalLayoutKeys?: string[];
       supplementalDocumentRefs?: string[];
       includeMainContract?: boolean;
+      mainContractLayoutKey?: string;
       contractTemplateFilters?: {
         state?: string | null;
         frequency?: string | null;
@@ -3982,6 +4011,7 @@ export class DocusignService {
     return this.sendEnvelopeFromPlatformLayouts(userId, {
       supplementalRefs,
       includeMainContract: options.includeMainContract,
+      mainContractLayoutKey: options.mainContractLayoutKey,
       roles: options.roles,
       prefillFields: options.prefillFields,
       redirectUrl: options.redirectUrl,
