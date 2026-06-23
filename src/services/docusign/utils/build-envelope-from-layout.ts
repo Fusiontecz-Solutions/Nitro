@@ -16,7 +16,7 @@ import {
 import { embedArialPdfFont } from './embed-arial-pdf-font';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
-  process.env.DOCUSIGN_SECONDARY_ROLE_NAME || 'Signer';
+  process.env.DOCUSIGN_SECONDARY_ROLE_NAME || 'Owner 2';
 
 export type LayoutSignerInput = {
   roleName: string;
@@ -324,30 +324,85 @@ function emptySignerTabBuckets(): SignerTabBuckets {
   };
 }
 
-function resolvePrimarySignerRoleName(signers: LayoutSignerInput[]): string {
-  return (
-    signers.find((s) => /^signer$/i.test(s.roleName))?.roleName ||
-    signers.find((s) => /receiver|client|merchant|customer/i.test(s.roleName))?.roleName ||
-    signers.find((s) => /^owner$/i.test(s.roleName))?.roleName ||
-    signers.find((s) => /^guarantor$/i.test(s.roleName))?.roleName ||
-    signers[0]?.roleName ||
-    DOCUSIGN_DEFAULT_ROLE_NAME
+function resolvePrimarySignerIndex(signers: LayoutSignerInput[]): number {
+  const idx = signers.findIndex((s) =>
+    /receiver|client|merchant|customer/i.test(s.roleName),
   );
+  if (idx >= 0) return idx;
+  const ownerIdx = signers.findIndex((s) => /^owner$/i.test(s.roleName));
+  if (ownerIdx >= 0) return ownerIdx;
+  const guarantorIdx = signers.findIndex((s) => /^guarantor$/i.test(s.roleName));
+  if (guarantorIdx >= 0) return guarantorIdx;
+  return 0;
+}
+
+function resolveSecondarySignerIndex(signers: LayoutSignerInput[]): number {
+  const primaryIdx = resolvePrimarySignerIndex(signers);
+  const owner2Idx = signers.findIndex((s) => /owner\s*2|guarantor\s*2/i.test(s.roleName));
+  if (owner2Idx >= 0 && owner2Idx !== primaryIdx) return owner2Idx;
+
+  const primaryEmail = String(signers[primaryIdx]?.email || '')
+    .trim()
+    .toLowerCase();
+  for (let i = signers.length - 1; i >= 0; i--) {
+    if (i === primaryIdx) continue;
+    const email = String(signers[i]?.email || '').trim().toLowerCase();
+    if (email && email !== primaryEmail) return i;
+  }
+  if (signers.length > 1) {
+    return primaryIdx === 0 ? 1 : 0;
+  }
+  return primaryIdx;
+}
+
+function resolvePrimarySignerRoleName(signers: LayoutSignerInput[]): string {
+  const idx = resolvePrimarySignerIndex(signers);
+  return signers[idx]?.roleName || DOCUSIGN_DEFAULT_ROLE_NAME;
 }
 
 function resolveSecondarySignerRoleName(signers: LayoutSignerInput[]): string {
-  const primaryRole = resolvePrimarySignerRoleName(signers).toLowerCase();
+  const primaryIdx = resolvePrimarySignerIndex(signers);
+  const secondaryIdx = resolveSecondarySignerIndex(signers);
+  if (secondaryIdx !== primaryIdx) {
+    return signers[secondaryIdx]?.roleName || DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME;
+  }
   return (
     signers.find((s) => /owner\s*2/i.test(s.roleName))?.roleName ||
     signers.find((s) => /guarantor\s*2/i.test(s.roleName))?.roleName ||
-    signers.find(
-      (s) =>
-        /^signer$/i.test(s.roleName) &&
-        s.roleName.toLowerCase() !== primaryRole,
-    )?.roleName ||
-    signers.find((s) => s.roleName.toLowerCase() !== primaryRole)?.roleName ||
     DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME
   );
+}
+
+function resolvePlacementSignerIndex(
+  placement: DocumentLayoutPlacement,
+  signers: LayoutSignerInput[],
+  counts: LayoutPartyCounts,
+): number {
+  const party = placement.signerParty;
+
+  if (isSecondaryParty(party)) {
+    if (counts.ownerCount >= 2) {
+      return resolveSecondarySignerIndex(signers);
+    }
+    if (placement.type === 'initial') {
+      return resolvePrimarySignerIndex(signers);
+    }
+    return signers.length > 1 ? resolveSecondarySignerIndex(signers) : 0;
+  }
+
+  if (isPrimaryParty(party)) {
+    return resolvePrimarySignerIndex(signers);
+  }
+
+  const legacy = String(placement.signerRole || '').trim();
+  if (legacy && legacy.toLowerCase() !== 'signer') {
+    const idx = signers.findIndex(
+      (s) => s.roleName.toLowerCase() === legacy.toLowerCase(),
+    );
+    if (idx >= 0) return idx;
+  }
+
+  return resolvePrimarySignerIndex(signers);
 }
 
 function isSecondaryParty(party: string | undefined): boolean {
@@ -657,22 +712,22 @@ export function buildRecipientTabsByRoleForLayout(
   values: Record<string, string>,
   signers: LayoutSignerInput[],
   counts: LayoutPartyCounts,
-): Map<string, SignerTabBuckets> {
-  const signerTabs = new Map<string, SignerTabBuckets>();
+): Map<number, SignerTabBuckets> {
+  const signerTabs = new Map<number, SignerTabBuckets>();
 
-  const ensureSigner = (roleName: string) => {
-    if (!signerTabs.has(roleName)) {
-      signerTabs.set(roleName, emptySignerTabBuckets());
+  const ensureSigner = (signerIndex: number) => {
+    if (!signerTabs.has(signerIndex)) {
+      signerTabs.set(signerIndex, emptySignerTabBuckets());
     }
-    return signerTabs.get(roleName)!;
+    return signerTabs.get(signerIndex)!;
   };
 
   for (const placement of layout.placements) {
     if (!placementAllowed(placement, counts, values)) continue;
 
-    const roleName = resolvePlacementSignerRoleName(placement, signers, counts);
+    const signerIndex = resolvePlacementSignerIndex(placement, signers, counts);
 
-    const bucket = ensureSigner(roleName);
+    const bucket = ensureSigner(signerIndex);
 
     if (placement.type === 'text' || placement.type === 'date') {
       const variable = placement.variable || '';
@@ -752,13 +807,13 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     });
   });
 
-  const signerTabs = new Map<string, SignerTabBuckets>();
+  const signerTabs = new Map<number, SignerTabBuckets>();
 
-  const ensureSigner = (roleName: string) => {
-    if (!signerTabs.has(roleName)) {
-      signerTabs.set(roleName, emptySignerTabBuckets());
+  const ensureSigner = (signerIndex: number) => {
+    if (!signerTabs.has(signerIndex)) {
+      signerTabs.set(signerIndex, emptySignerTabBuckets());
     }
-    return signerTabs.get(roleName)!;
+    return signerTabs.get(signerIndex)!;
   };
 
   const expandedLayouts = expandLayoutsWithOwner2Initials(options.layouts, counts.ownerCount);
@@ -769,9 +824,9 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     for (const placement of layout.placements) {
       if (!placementAllowed(placement, counts, values)) continue;
 
-      const roleName = resolvePlacementSignerRoleName(placement, options.signers, counts);
+      const signerIndex = resolvePlacementSignerIndex(placement, options.signers, counts);
 
-      const bucket = ensureSigner(roleName);
+      const bucket = ensureSigner(signerIndex);
 
       if (placement.type === 'text' || placement.type === 'date') {
         if (
@@ -807,8 +862,8 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
 
   const emptyTabs = emptySignerTabBuckets;
 
-  const mappedSigners = options.signers.map((s) => {
-    const tabs = signerTabs.get(s.roleName) || emptyTabs();
+  const mappedSigners = options.signers.map((s, idx) => {
+    const tabs = signerTabs.get(idx) || emptyTabs();
     return {
       roleName: s.roleName,
       name: s.name,
@@ -819,28 +874,16 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   });
 
   if (counts.ownerCount >= 2) {
-    const secondaryRole = resolveSecondarySignerRoleName(options.signers);
-    const secondaryTabs = signerTabs.get(secondaryRole);
+    const secondaryIdx = resolveSecondarySignerIndex(options.signers);
+    const secondaryTabs = signerTabs.get(secondaryIdx);
     const hasSecondaryRecipient = mappedSigners.some(
-      (s) => s.roleName.toLowerCase() === secondaryRole.toLowerCase() && signerHasTabs(s.tabs),
+      (s, idx) => idx === secondaryIdx && signerHasTabs(s.tabs),
     );
     if (!hasSecondaryRecipient && secondaryTabs && signerHasTabs(secondaryTabs)) {
-      const primaryEmail = String(
-        options.signers.find((s) => /client|merchant|customer/i.test(s.roleName))?.email ||
-          options.signers[0]?.email ||
-          '',
-      )
-        .trim()
-        .toLowerCase();
-      const secondaryInput =
-        options.signers.find((s) => s.roleName.toLowerCase() === secondaryRole.toLowerCase()) ||
-        options.signers.find((s) => {
-          const email = String(s.email || '').trim().toLowerCase();
-          return Boolean(email && email !== primaryEmail);
-        });
+      const secondaryInput = options.signers[secondaryIdx];
       if (secondaryInput) {
         mappedSigners.push({
-          roleName: secondaryRole,
+          roleName: secondaryInput.roleName || resolveSecondarySignerRoleName(options.signers),
           name: secondaryInput.name,
           email: secondaryInput.email,
           routingOrder: secondaryInput.routingOrder ?? 2,

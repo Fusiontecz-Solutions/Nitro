@@ -18,9 +18,10 @@ import {
 } from './build-envelope-from-layout';
 import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
 import { DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
+import { PLATFORM_SIGNER_SLOTS } from '../platform-document-registry';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
-  process.env.DOCUSIGN_SECONDARY_ROLE_NAME || 'Signer';
+  process.env.DOCUSIGN_SECONDARY_ROLE_NAME || PLATFORM_SIGNER_SLOTS[1].roleName;
 
 export type DocumentLayoutWithBase64 = DocumentLayout & { documentBase64: string };
 
@@ -146,20 +147,23 @@ export function collapseSignerRolesForLayoutEnvelope(
       withEmail[1];
   }
 
+  const primaryRoleName = PLATFORM_SIGNER_SLOTS[0].roleName;
+  const secondaryRoleName = DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME;
+
   const out: Array<Record<string, unknown>> = [];
   if (primary) {
     out.push({
       ...primary,
-      signerRole: DOCUSIGN_DEFAULT_ROLE_NAME,
-      roleName: DOCUSIGN_DEFAULT_ROLE_NAME,
+      signerRole: primaryRoleName,
+      roleName: primaryRoleName,
       signerOrder: 1,
     });
   }
   if (secondary && secondary !== primary) {
     out.push({
       ...secondary,
-      signerRole: DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME,
-      roleName: DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME,
+      signerRole: secondaryRoleName,
+      roleName: secondaryRoleName,
       signerOrder: 2,
     });
   }

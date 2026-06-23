@@ -333,6 +333,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       ownerCount,
       guarantorCount,
       contractId,
+      sendPackage,
     } = req.body;
 
     const hasSupplementalLayoutKeys =
@@ -394,6 +395,14 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       contractId:
         contractId != null && Number.isFinite(Number(contractId)) && Number(contractId) > 0
           ? Number(contractId)
+          : undefined,
+      sendPackage:
+        sendPackage && typeof sendPackage === 'object' && !Array.isArray(sendPackage)
+          ? {
+              includeMainContract: sendPackage.includeMainContract === true,
+              includeAddendum: sendPackage.includeAddendum === true,
+              includeDisclosure: sendPackage.includeDisclosure === true,
+            }
           : undefined,
     });
 
