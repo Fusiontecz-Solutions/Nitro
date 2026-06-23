@@ -1,11 +1,18 @@
 import prisma from '../config/prismaClient';
-import { sendApplicationApprovalEmail } from './emailService';
+import { randomUUID } from 'crypto';
+import {
+    sendApplicationApprovalEmail,
+    buildApplicationApprovalEmailHtml,
+    APPROVAL_EMAIL_PDF_FILENAME,
+} from './emailService';
 import {
     buildPublicApprovalPortalUrl,
     resolveCrmFrontendBaseUrl,
 } from '../utils/crmFrontendUrl';
 import { createPublicPortalToken } from './publicPortalTokenService';
 import { emitToUser } from '../socket';
+import { recordCommunicationAudit } from './systemActivityLogService';
+import { storeSgMessageIdOnOutbound } from './outboundCommunicationService';
 import {
     APPLICATION_QUEUE_CONTRACT_PENDING,
     APPLICATION_STATE_CONTRACT_PENDING,
@@ -501,18 +508,84 @@ export async function processApplicationApprovalSideEffects(
          */
         if (!isIsoActor) {
             if (isoEmail) {
-                const result = await sendApplicationApprovalEmail({
-                    to: isoEmail,
-                    clientName: isoName || isoEmail,
+                const isoRecipientName = isoName || isoEmail;
+                const emailSubject = 'Your Application Has Been Approved';
+                const emailHtml = buildApplicationApprovalEmailHtml({
+                    clientName: isoRecipientName,
                     companyName: businessName || clientName,
                     viewApplicationUrl,
                     calculateApprovalUrl,
                 });
-                if (!result) {
+                const trackingId = randomUUID();
+                const actorRoleLabel = payload.actorRole
+                    ? String(payload.actorRole).toUpperCase().replace(/_/g, ' ')
+                    : 'User';
+                const actorLabel = `${actorRoleLabel} ${payload.actorName || ''}`.trim();
+
+                try {
+                    await recordCommunicationAudit(null, {
+                        outboundCommunicationId: trackingId,
+                        applicationId: application.id,
+                        channel: 'EMAIL',
+                        recipientType: 'ISO',
+                        recipient: isoEmail,
+                        subject: emailSubject,
+                        body: emailHtml,
+                        templateName: 'Application approved template',
+                        actionType: 'APPROVED',
+                        user: payload.actorId
+                            ? {
+                                  id: payload.actorId,
+                                  role: payload.actorRole || 'USER',
+                              }
+                            : null,
+                        actionDescription: `${actorLabel} sent approval email to the linked ISO.`,
+                        currentStatus: `${application.currentQueue} / ${application.currentState}`,
+                        metadata: {
+                            emailSentTo: [isoEmail],
+                            sentToLinkedIsoOnly: true,
+                            autoSentOnApproval: true,
+                            template: 'approval',
+                            status: 'sent',
+                            hasLetterPdf: true,
+                            attachments: [APPROVAL_EMAIL_PDF_FILENAME],
+                            delivery: {
+                                status: 'sent',
+                                sentAt: new Date().toISOString(),
+                            },
+                        },
+                    });
+                } catch (auditErr) {
+                    console.error(
+                        '[approvalSideEffects] failed to log approval email audit:',
+                        auditErr,
+                    );
+                }
+
+                const result = await sendApplicationApprovalEmail({
+                    to: isoEmail,
+                    clientName: isoRecipientName,
+                    companyName: businessName || clientName,
+                    viewApplicationUrl,
+                    calculateApprovalUrl,
+                    html: emailHtml,
+                    subject: emailSubject,
+                    trackingId,
+                });
+                if (!result.sent) {
                     console.warn(
                         '[approvalSideEffects] ISO approval email was not delivered for application',
                         applicationNumber
                     );
+                } else if (result.sgMessageId) {
+                    try {
+                        await storeSgMessageIdOnOutbound(trackingId, result.sgMessageId);
+                    } catch (metaErr) {
+                        console.error(
+                            '[approvalSideEffects] failed to store SendGrid message id:',
+                            metaErr,
+                        );
+                    }
                 }
             } else {
                 console.warn(

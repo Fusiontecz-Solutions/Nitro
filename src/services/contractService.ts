@@ -18,6 +18,10 @@ import {
   normalizeKycDocumentType,
   type KycExtractionMapped,
 } from './contractKycPrefillMapper';
+import {
+  syncContractPrefillToBankDetail,
+  type PlainBankFromRequest,
+} from './bankDetailContractSync';
 
 async function resolvePaymentBankDetailForContract(
   prismaClient: typeof prisma | any,
@@ -212,6 +216,36 @@ function applyContractExtraFields(target: Record<string, unknown>, source: Contr
     const raw = source[key];
     target[key] = raw == null ? null : String(raw);
   }
+}
+
+function extractPlainBankFromContractUpdate(
+  data: Record<string, unknown>,
+): PlainBankFromRequest | null {
+  const overrides =
+    data.contractPrefillOverrides != null &&
+    typeof data.contractPrefillOverrides === 'object' &&
+    !Array.isArray(data.contractPrefillOverrides)
+      ? (data.contractPrefillOverrides as Record<string, unknown>)
+      : {};
+
+  const bankName = firstNonEmptyString(
+    data.authorizationClientBankName,
+    overrides.authorizationClientBankName,
+    overrides.achAuthorizationAccountHolderBankName,
+  );
+  const accountNumber = firstNonEmptyString(
+    data.authorizationClientBankAccount,
+    overrides.authorizationClientBankAccount,
+    overrides.achAuthorizationAccountHolderBankAccountNumber,
+  );
+  const routingNumber = firstNonEmptyString(
+    data.authorizationClientBankRouting,
+    overrides.authorizationClientBankRouting,
+    overrides.achAuthorizationAccountHolderBankRoutingNumber,
+  );
+
+  if (!bankName && !accountNumber && !routingNumber) return null;
+  return { bankName, accountNumber, routingNumber };
 }
 
 function firstNonEmptyString(...values: unknown[]): string {
@@ -1255,6 +1289,20 @@ class ContractService {
       data: updateData,
       include: contractInclude,
     });
+
+    const applicationId = String((row as { applicationId?: string | null }).applicationId ?? '').trim();
+    const plainBank = extractPlainBankFromContractUpdate(data as Record<string, unknown>);
+    if (plainBank && applicationId) {
+      const paymentBank = (row as { paymentBank?: { id?: string } | null }).paymentBank;
+      try {
+        await syncContractPrefillToBankDetail(applicationId, plainBank, {
+          bankDetailId: paymentBank?.id,
+        });
+      } catch (err) {
+        console.error('syncContractPrefillToBankDetail failed:', err);
+      }
+    }
+
     return mapContractRecordForApi(row as Record<string, unknown>);
   }
 

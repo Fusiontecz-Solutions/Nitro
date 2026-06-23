@@ -14,6 +14,7 @@ import {
     assertReadyToCreateNewClientFromPdf,
     type AuthenticatedUser,
 } from '../services/applicationService';
+import { mapClientToApi, resolveClientOwners } from '../utils/clientMapper';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import { getApplicationStageAccessForUser } from '../services/applicationStageAccess';
 import {
@@ -62,6 +63,7 @@ import {
     sendUnderwriterNewApplicationEmail,
 } from '../services/emailService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
+import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
 import {
     buildPublicApprovalPortalUrl,
     resolveCrmFrontendBaseUrl,
@@ -579,6 +581,9 @@ export const mapApplicationToApi = (app: any) => {
             }
             : undefined;
 
+    const owners = client ? resolveClientOwners(client) : [];
+    const primaryOwner = owners[0];
+
     const mappedClient =
         client &&
         ({
@@ -605,7 +610,7 @@ export const mapApplicationToApi = (app: any) => {
                     zipCode: client.businessZipCode || '',
                 },
             },
-            owner: {
+            owner: primaryOwner ?? {
                 firstName: client.ownerFirstName,
                 middleName: client.ownerMiddleName || '',
                 lastName: client.ownerLastName,
@@ -624,6 +629,7 @@ export const mapApplicationToApi = (app: any) => {
                     zipCode: client.ownerZipCode || '',
                 },
             },
+            owners,
         } as any);
 
     // files in Mongo were subdocuments with _id; here we synthesize _id from id
@@ -718,59 +724,6 @@ export const mapApplicationToApi = (app: any) => {
             : null,
         isoCommissionPayout,
         files: mappedFiles,
-    };
-};
-
-// Helper to map Prisma Client to the API shape previously returned by Mongoose
-const mapClientToApi = (client: any) => {
-    if (!client) return client;
-
-    return {
-        _id: client.id,
-        id: client.id,
-        clientId: client.clientId,
-        business: {
-            name: client.businessName,
-            email: client.businessEmail || '',
-            number: client.businessNumber || '',
-            website: client.businessWebsite || '',
-            incorporationDate: client.businessIncorporationDate,
-            incorporationState: client.businessIncorporationState || '',
-            businessEntityType: client.businessEntityType || '',
-            einNumber: client.businessEinNumber || '',
-            annualRevenue: client.businessAnnualRevenue ?? undefined,
-            monthlyRevenue: client.businessMonthlyRevenue ?? undefined,
-            address: {
-                address1: client.businessAddress1 || '',
-                address2: client.businessAddress2 || '',
-                city: client.businessCity || '',
-                state: client.businessState || '',
-                zipCode: client.businessZipCode || '',
-            },
-        },
-        owner: {
-            firstName: client.ownerFirstName,
-            middleName: client.ownerMiddleName || '',
-            lastName: client.ownerLastName,
-            email: client.ownerEmail || '',
-            mobileNumber: client.ownerMobileNumber || '',
-            dateOfBirth: client.ownerDateOfBirth,
-            ssn: client.ownerSsn || '',
-            ficoScore: client.ownerFicoScore ?? undefined,
-            ownershipStartDate: client.ownerOwnershipStartDate,
-            ownershipPercentage: client.ownerOwnershipPercentage ?? undefined,
-            address: {
-                address1: client.ownerAddress1 || '',
-                address2: client.ownerAddress2 || '',
-                city: client.ownerCity || '',
-                state: client.ownerState || '',
-                zipCode: client.ownerZipCode || '',
-            },
-        },
-        status: client.status,
-        notes: client.notes || '',
-        createdAt: client.createdAt,
-        updatedAt: client.updatedAt,
     };
 };
 
@@ -2319,7 +2272,13 @@ class ApplicationController {
                 referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
                 salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                client: true,
+                client: {
+                    include: {
+                        owners: {
+                            orderBy: { sortOrder: 'asc' as const },
+                        },
+                    },
+                },
                 iso: true,
                 files: true,
                 claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -5332,18 +5291,13 @@ class ApplicationController {
                         clientName: isoRecipientName,
                         companyName,
                         calculateApprovalUrl,
-                        applicationNumber: offerApplicationNumber,
-                        merchantName: merchantFullName,
-                        merchantEmail,
-                        merchantPhone,
-                        approvedAmount: offerApprovedAmount,
-                        factorRate: offerFactorRate,
-                        repaymentAmount: offerRepaymentAmount,
+                        viewApplicationUrl,
                     })
                     : buildApplicationApprovalEmailHtml({
                         clientName: isoRecipientName,
                         companyName,
                         calculateApprovalUrl,
+                        viewApplicationUrl,
                     }));
 
             const trackingId = randomUUID();
@@ -5390,7 +5344,7 @@ class ApplicationController {
 
             const deliveryResults = await Promise.all(
                 recipients.map(async ({ to, clientName }) => {
-                    const ok = resend
+                    const sendResult = resend
                         ? await sendApplicationOfferUpdatedEmail({
                             to,
                             clientName,
@@ -5418,7 +5372,11 @@ class ApplicationController {
                             subject: emailSubject,
                             trackingId,
                         });
-                    return { to, ok };
+                    return {
+                        to,
+                        ok: sendResult.sent,
+                        sgMessageId: sendResult.sgMessageId,
+                    };
                 }),
             );
             const anyDelivered = deliveryResults.some((r) => r.ok);
@@ -5453,6 +5411,17 @@ class ApplicationController {
                 });
             } catch (metaErr) {
                 console.error('Failed to update approval email delivery metadata:', metaErr);
+            }
+
+            const deliveredSgMessageId = deliveryResults.find(
+                (r) => r.ok && r.sgMessageId,
+            )?.sgMessageId;
+            if (deliveredSgMessageId) {
+                try {
+                    await storeSgMessageIdOnOutbound(trackingId, deliveredSgMessageId);
+                } catch (metaErr) {
+                    console.error('Failed to store SendGrid message id for approval email:', metaErr);
+                }
             }
 
             return res.status(200).json({

@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { encryptField } from '../utils/fieldEncryption';
 
 export type PlainBankFromRequest = {
   bankName?: string;
@@ -73,5 +74,52 @@ export async function syncBankDetailToContractPrefill(
       accountNumber: accountNumber || null,
       routingNumber: routingNumber || null,
     },
+  });
+}
+
+/**
+ * After Contract prefill/column update, sync plaintext bank fields back to BankDetail
+ * so CRM bank details stay in sync with contract flow edits (inverse of syncBankDetailToContractPrefill).
+ */
+export async function syncContractPrefillToBankDetail(
+  applicationId: string,
+  plainBank: PlainBankFromRequest,
+  options?: { bankDetailId?: string },
+): Promise<void> {
+  const bankName = String(plainBank.bankName ?? '').trim();
+  const accountNumber = String(plainBank.accountNumber ?? '').trim();
+  const routingNumber =
+    plainBank.routingNumber != null ? String(plainBank.routingNumber).trim() : '';
+
+  if (!bankName && !accountNumber && !routingNumber) return;
+
+  let bankDetailId = options?.bankDetailId;
+  if (!bankDetailId) {
+    const contract = await prisma.contract.findUnique({
+      where: { applicationId },
+      select: { paymentBankId: true },
+    });
+    bankDetailId = contract?.paymentBankId ?? undefined;
+  }
+  if (!bankDetailId) {
+    const latest = await prisma.bankDetail.findFirst({
+      where: { applicationId },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+    bankDetailId = latest?.id;
+  }
+  if (!bankDetailId) return;
+
+  const data: Prisma.BankDetailUpdateInput = {};
+  if (bankName) data.bankName = bankName;
+  if (accountNumber) data.accountNumber = encryptField(accountNumber);
+  if (routingNumber) data.routingNumber = encryptField(routingNumber);
+
+  if (Object.keys(data).length === 0) return;
+
+  await prisma.bankDetail.update({
+    where: { id: bankDetailId },
+    data,
   });
 }
