@@ -82,6 +82,12 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
   const paymentCompany = escapeHtml(pickOrNA(values, v.payment_company_name));
   const paymentAddress1 = escapeHtml(pickOrNA(values, v.payment_address_line1));
   const paymentAddress2 = escapeHtml(pickOrNA(values, v.payment_address_line2));
+  const paymentRoutingNumber = escapeHtml(
+    pickOrNA(values, v.payment_routing_number),
+  );
+  const paymentAccountNumber = escapeHtml(
+    pickOrNA(values, v.payment_account_number),
+  );
   const senderName = escapeHtml(pickOrNA(values, v.sender_name));
   const signatureTitle = escapeHtml(PAY_OFF_LETTER_SIGNATURE_TITLE);
   const companyName = escapeHtml(APP_COMPANY_NAME);
@@ -236,7 +242,7 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                 <tr>
                   <td style="padding:0 0 24px 0;">
                     <table role="presentation" class="info-table" border="0" cellpadding="0" cellspacing="0" width="${INFO_TABLE_WIDTH}" style="width:${INFO_TABLE_WIDTH}px;max-width:100%;border-collapse:collapse;background-color:#ffffff;border:2px solid #0ea5e9;border-radius:8px;overflow:hidden;">
-                      ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.account, "&#128179;", iconAccount), "Account Number", accountLastFour, "font-family:Arial,Helvetica,sans-serif;font-size:18px;color:#666666;")}
+                      ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.account, "&#128179;", iconAccount), "Account Number", paymentAccountNumber, "font-family:Arial,Helvetica,sans-serif;font-size:18px;color:#666666;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.payoff, "$", iconPayoff), "Payoff Amount", payoffAmount, "font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;color:#111111;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.date, "&#128197;", iconDate), "Good Through Date", goodThroughDate, "font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#666666;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.note, "&#128196;", iconNote), "Note", noteText, "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.4;color:#777777;", false)}
@@ -256,7 +262,7 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding:0 0 3px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#4b5563;">
+                  <td style="padding:0 0 3px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;color:#1f2937;">
                     ${paymentCompany}
                   </td>
                 </tr>
@@ -266,8 +272,15 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding:0 0 35px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#4b5563;">
+                  <td style="padding:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#4b5563;">
                     ${paymentAddress2}
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:0 0 35px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#4b5563;">
+                    <strong style="display:block;color:#1f2937;padding-bottom:3px;">Routing</strong>
+                    ${paymentRoutingNumber}
                   </td>
                 </tr>
 

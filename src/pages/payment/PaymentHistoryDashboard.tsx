@@ -1191,7 +1191,7 @@ const StatCard: React.FC<StatCardProps> = ({
   ariaLabel,
 }) => {
   const accent =
-    "from-[#276D9C]/10 via-sky-400/5 to-transparent dark:from-[#276D9C]/20 dark:via-sky-300/10 dark:to-transparent";
+    "from-[var(--brand)]/10 via-sky-400/5 to-transparent dark:from-[var(--brand)]/20 dark:via-sky-300/10 dark:to-transparent";
   const footerValueTone =
     trendType === "up"
       ? "text-emerald-500"
@@ -1228,7 +1228,7 @@ const StatCard: React.FC<StatCardProps> = ({
       }
       className={`group relative ${hasFooter ? "min-h-[146px]" : hasTitleMeta ? "min-h-[124px]" : "min-h-[112px]"} overflow-hidden rounded-2xl border border-border/70 bg-card/90 p-5 shadow-xl ring-1 ring-inset ring-border/40 transition-all duration-200 hover:border-border dark:border-white/10 dark:bg-white/[0.04] dark:ring-white/10 ${
         isInteractive
-          ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-2xl hover:ring-2 hover:ring-[#276D9C]/30 focus-visible:-translate-y-0.5 focus-visible:shadow-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/50 dark:hover:ring-sky-300/30 dark:focus-visible:ring-sky-300/50"
+          ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-2xl hover:ring-2 hover:ring-[var(--brand)]/30 focus-visible:-translate-y-0.5 focus-visible:shadow-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/50 dark:hover:ring-sky-300/30 dark:focus-visible:ring-sky-300/50"
           : ""
       } ${className ?? ""}`}
     >
@@ -2647,7 +2647,7 @@ export const PaymentHistoryDashboard = () => {
                 setPendingViewDealId(row.original.id);
                 navigate(dealPath);
               }}
-              className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+              className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
               disabled={isOpeningThisDeal}
               aria-label={`View deal ${row.original.displayId}`}
               aria-busy={isOpeningThisDeal}
@@ -3348,7 +3348,7 @@ export const PaymentHistoryDashboard = () => {
               >
                 <defs>
                   <linearGradient id="gradientColor" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" stopColor="#276D9C" />
+                    <stop offset="0%" stopColor="var(--brand)" />
                     <stop offset="100%" stopColor="#22d3ee" />
                   </linearGradient>
                 </defs>
@@ -3477,7 +3477,7 @@ export const PaymentHistoryDashboard = () => {
         >
           {blockPaymentTableLoader ? (
             <div className="flex items-center justify-center gap-2 px-6 py-16 text-sm text-muted-foreground">
-              <Loader2 className="size-5 animate-spin text-[#276D9C]" aria-hidden />
+              <Loader2 className="size-5 animate-spin text-[var(--brand)]" aria-hidden />
               Loading payment dashboard…
             </div>
           ) : viewMode === "list" ? (
@@ -3530,7 +3530,7 @@ export const PaymentHistoryDashboard = () => {
                         }
                       }}
                       aria-label={`Open deal ${tx.displayId}`}
-                      className={`flex cursor-pointer flex-col gap-3 rounded-lg border p-4 text-left shadow-sm transition hover:ring-2 hover:ring-[#276D9C]/20 ${
+                      className={`flex cursor-pointer flex-col gap-3 rounded-lg border p-4 text-left shadow-sm transition hover:ring-2 hover:ring-[var(--brand)]/20 ${
                         isDark
                           ? "border-[#374151] bg-[#1a1b1e]"
                           : "border-[#F0F0F0] bg-card"
@@ -3553,7 +3553,7 @@ export const PaymentHistoryDashboard = () => {
                             e.stopPropagation();
                             navigate(paymentDealPath(tx.id));
                           }}
-                          className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                          className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                           aria-label="View deal"
                         >
                           <Eye className="h-4 w-4" />

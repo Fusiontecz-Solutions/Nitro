@@ -207,7 +207,7 @@ export default function EligibilityAnalysis() {
             <h3 className="text-sm font-semibold text-[#111827]">Credit Report</h3>
             <Button
               size="sm"
-              className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+              variant="default"
               onClick={openCreditReportModal}
             >
               Initiate Credit Report
@@ -230,7 +230,7 @@ export default function EligibilityAnalysis() {
             <h3 className="text-sm font-semibold text-[#111827]">Decision Logic</h3>
             <Button
               size="sm"
-              className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+              variant="default"
               onClick={onInitiateDecisionLogic}
             >
               Initiate Decision Logic
@@ -271,7 +271,7 @@ export default function EligibilityAnalysis() {
 
               {dlReportLoading && !dlReportRow ? (
                 <div className="flex items-center gap-2 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-4 text-xs text-[#6B7280]">
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[#276D9C]" aria-hidden />
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--brand)]" aria-hidden />
                   Loading Decision Logic report…
                 </div>
               ) : null}
@@ -344,7 +344,7 @@ export default function EligibilityAnalysis() {
             <Button
               type="button"
               size="sm"
-              className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+              variant="default"
               onClick={() => processDecisionLogicRequest(selectedBankAccountId)}
               disabled={isSubmittingDecisionLogic || !selectedBankAccountId}
             >

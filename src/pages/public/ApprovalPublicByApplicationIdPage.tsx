@@ -19,7 +19,7 @@ const ApprovalPublicByApplicationIdPage = () => {
     return (
       <div className="min-h-screen bg-background p-4 md:p-6">
         <div className="max-w-screen-2xl mx-auto">
-          <div className="text-xl font-semibold text-[#151357]">Approval</div>
+          <div className="text-xl font-semibold text-[var(--brand)]">Approval</div>
           <div className="mt-6 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
             No approval data available for application <strong>{applicationId}</strong>.
           </div>

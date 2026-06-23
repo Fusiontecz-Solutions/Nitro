@@ -68,13 +68,20 @@ import {
     showDocuSignTabMessage,
 } from "./docusignSenderTab";
 import type { DocuSignTemplateRolePayload } from "./contractdata/templateRecipients";
-import { buildDocuSignRolesFromEditorRows } from "./contractdata/templateRecipients";
+import {
+    buildDocuSignRolesFromEditorRows,
+} from "./contractdata/templateRecipients";
 import { DOCUSIGN_DEFAULT_SIGNER_ROLE } from "./contractdata/docusignTemplateConfig";
+import {
+    buildContractSignerRowsFromOwnerParties,
+    resolveClientOwnerPartiesFromApplication,
+    syncContractSignerRowsToCrm,
+} from "./contractdata/contractSignerOwnersSync";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 const DOCUSIGN_PRIMARY_BTN_CLASS =
-    "h-9 shrink-0 cursor-pointer border-0 bg-[#276D9C] px-6 text-white shadow-sm hover:bg-[#276D9C]/90 focus-visible:ring-[#276D9C]/40";
+    "h-9 shrink-0 cursor-pointer border-0 bg-[var(--brand)] px-6 text-white shadow-sm hover:bg-[var(--brand)]/90 focus-visible:ring-[var(--brand)]/40";
 
 type AchPdfTab = "template" | "filled";
 
@@ -287,14 +294,28 @@ export default function ACHViewerModal({
         achCapsuleStatus !== "SENT" &&
         achCapsuleStatus !== "VIEWED";
 
-    const defaultAchSignerRow = useMemo(
-        (): AchSignerOverrideRow => ({
+    const suggestedAchSignerRows = useMemo(
+        () => buildContractSignerRowsFromOwnerParties(
+            resolveClientOwnerPartiesFromApplication(applicationData),
+        ),
+        [applicationData],
+    );
+
+    const defaultAchSignerRow = useMemo((): AchSignerOverrideRow => {
+        const primary = suggestedAchSignerRows[0];
+        if (primary?.email) {
+            return {
+                role: DOCUSIGN_DEFAULT_SIGNER_ROLE,
+                name: primary.name,
+                email: primary.email,
+            };
+        }
+        return {
             role: DOCUSIGN_DEFAULT_SIGNER_ROLE,
             name: getApplicationPrimaryRecipientName(applicationData),
             email: getSignerRecipientEmailForContract(applicationData, resolvedContract).trim(),
-        }),
-        [applicationData, resolvedContract],
-    );
+        };
+    }, [applicationData, resolvedContract, suggestedAchSignerRows]);
 
     const achSummarySigners = useMemo((): AchSignerOverrideRow[] => {
         if (achSignerOverrides?.length) return achSignerOverrides;
@@ -645,6 +666,22 @@ export default function ACHViewerModal({
             );
             setAchSignerOverrides(rows);
             setShowAchSignerEditor(false);
+
+            if (contractId != null) {
+                try {
+                    await syncContractSignerRowsToCrm({
+                        dispatch,
+                        contractId,
+                        applicationData,
+                        signerRows: rows,
+                    });
+                } catch (syncOwnerErr: unknown) {
+                    console.error(syncOwnerErr);
+                    toast.warn(
+                        "ACH signers saved on the contract, but owner records could not be synced to CRM.",
+                    );
+                }
+            }
 
             const draftEnvelopeId = String(linkedEnvelopeId ?? "").trim();
             if (draftEnvelopeId && achCapsuleStatus === "DRAFT") {
@@ -1005,7 +1042,7 @@ export default function ACHViewerModal({
                             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950/50">
                                 <div className="mb-4 flex items-start justify-between gap-2">
                                     <div className="flex min-w-0 items-start gap-2.5">
-                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/10 text-[#276D9C]">
+                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/10 text-[var(--brand)]">
                                             <Landmark className="h-4 w-4" aria-hidden />
                                         </div>
                                         <div className="min-w-0">
@@ -1029,7 +1066,7 @@ export default function ACHViewerModal({
 
                                 <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-900/60">
                                     <FileText
-                                        className="h-4 w-4 shrink-0 text-[#276D9C]"
+                                        className="h-4 w-4 shrink-0 text-[var(--brand)]"
                                         aria-hidden
                                     />
                                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800 dark:text-slate-100">
@@ -1039,7 +1076,7 @@ export default function ACHViewerModal({
                                         <button
                                             type="button"
                                             title="Edit ACH form fields"
-                                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-white hover:text-[#276D9C] dark:hover:bg-slate-800"
+                                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-white hover:text-[var(--brand)] dark:hover:bg-slate-800"
                                             onClick={() => setAchPrefillEditOpen(true)}
                                         >
                                             <Pencil className="h-4 w-4" aria-hidden />
@@ -1051,14 +1088,14 @@ export default function ACHViewerModal({
 
                             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950/50">
                                 <div className="mb-3 flex items-center justify-between gap-2">
-                                    <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                    <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                                         <User className="h-3.5 w-3.5" aria-hidden />
                                         ACH signer
                                     </span>
                                     {canEditAchRecipients ? (
                                         <button
                                             type="button"
-                                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:border-[#276D9C]/40 hover:bg-[#276D9C]/5 hover:text-[#276D9C] dark:border-slate-600 dark:bg-slate-900"
+                                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:border-[var(--brand)]/40 hover:bg-[var(--brand)]/5 hover:text-[var(--brand)] dark:border-slate-600 dark:bg-slate-900"
                                             title="Change ACH signer"
                                             aria-label="Change ACH signer"
                                             onClick={openAchSignerEditor}
@@ -1074,7 +1111,7 @@ export default function ACHViewerModal({
                                                 key={`${signer.role}-${idx}`}
                                                 className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-900/60"
                                             >
-                                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+                                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
                                                     <User className="h-4 w-4" aria-hidden />
                                                 </div>
                                                 <div className="min-w-0 flex-1">
@@ -1101,7 +1138,7 @@ export default function ACHViewerModal({
                                                 type="button"
                                                 variant="outline"
                                                 size="sm"
-                                                className="mt-2 h-8 text-xs border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/5"
+                                                className="mt-2 h-8 text-xs border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/5"
                                                 onClick={openAchSignerEditor}
                                             >
                                                 <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -1214,7 +1251,7 @@ export default function ACHViewerModal({
                                             <Button
                                                 type="button"
                                                 size="sm"
-                                                className="h-8 bg-[#3B8BD1] px-6 text-xs text-white hover:bg-[#2d6fad]"
+                                                className="h-8 bg-[var(--brand)] px-6 text-xs text-white hover:bg-[var(--brand-hover)]"
                                                 disabled={
                                                     savingAchSigners ||
                                                     achSignerEditorRows.every((r) => !r.role.trim())
@@ -1229,7 +1266,7 @@ export default function ACHViewerModal({
                             </div>
 
                             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950/50">
-                                <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                                     <Mail className="h-3.5 w-3.5" aria-hidden />
                                     CC (copy only — not a signer)
                                 </span>
@@ -1239,10 +1276,10 @@ export default function ACHViewerModal({
                                         return (
                                             <span
                                                 key={email}
-                                                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/8 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[#276D9C]/30 dark:bg-[#276D9C]/15 dark:text-slate-100"
+                                                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/8 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[var(--brand)]/30 dark:bg-[var(--brand)]/15 dark:text-slate-100"
                                             >
                                                 <Mail
-                                                    className="h-3 w-3 shrink-0 text-[#276D9C] opacity-80"
+                                                    className="h-3 w-3 shrink-0 text-[var(--brand)] opacity-80"
                                                     aria-hidden
                                                 />
                                                 <span className="max-w-[220px] truncate" title={email}>
@@ -1288,7 +1325,7 @@ export default function ACHViewerModal({
                                             type="button"
                                             variant="outline"
                                             size="sm"
-                                            className="h-9 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                            className="h-9 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                             onClick={addAchCcFromDraft}
                                         >
                                             Add CC

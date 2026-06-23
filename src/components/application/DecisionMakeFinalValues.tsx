@@ -1,10 +1,17 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, useRef, useCallback, type ReactNode } from "react";
 import { useSelector } from "react-redux";
 import type { RootState } from "@/redux/store";
 
 import BankAnalysisTable from "./BankAnalysisTable";
 import OfferDecisionToggle from "./OfferDecisionToggle";
 import PositionTableCalculator from "./PositionTableCalculator";
+
+export type DecisionTabSectionContext = {
+  /** True when offer is approved/saved and user has not clicked Edit. */
+  componentsReadOnly: boolean;
+  /** Bulk-save hook for bank cards — wired to Approve & Save. */
+  onRegisterBankSaveAll?: (saveAll: () => Promise<boolean>) => void;
+};
 
 type DecisionMakeFinalValuesProps = {
   applicationId?: string | null;
@@ -22,7 +29,9 @@ type DecisionMakeFinalValuesProps = {
     loading: boolean;
   }) => void;
   /** e.g. bank totals table — shown after offer, before positions (Decision Making layout). */
-  betweenOfferAndPositions?: ReactNode;
+  betweenOfferAndPositions?:
+    | ReactNode
+    | ((ctx: DecisionTabSectionContext) => ReactNode);
 };
 
 function toISODateOrEmpty(input: unknown): string {
@@ -88,8 +97,6 @@ export default function DecisionMakeFinalValues({
   );
   const positionsState = useSelector((state: RootState) => state.positions);
 
-
-
   const fromRedux =
     (applicationData as any)?.applicationId ??
     (applicationData as any)?._id ??
@@ -105,6 +112,50 @@ export default function DecisionMakeFinalValues({
   const [bankNetCreditAvg, setBankNetCreditAvg] = useState<number | null>(
     null,
   );
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
+
+  const saveAllPositionsRef = useRef<(() => Promise<boolean>) | null>(null);
+  const saveAllBanksRef = useRef<(() => Promise<boolean>) | null>(null);
+
+  const handleRegisterSaveAllPositions = useCallback(
+    (saveAll: () => Promise<boolean>) => {
+      saveAllPositionsRef.current = saveAll;
+    },
+    [],
+  );
+
+  const handleRegisterSaveAllBanks = useCallback(
+    (saveAll: () => Promise<boolean>) => {
+      saveAllBanksRef.current = saveAll;
+    },
+    [],
+  );
+
+  const useDeferredSave = allowOfferEdit || allowPositionsEdit;
+
+  const handleApproveSaveAll = useCallback(async (): Promise<boolean> => {
+    if (!useDeferredSave) return true;
+
+    try {
+      const banksOk = (await saveAllBanksRef.current?.()) ?? true;
+      if (!banksOk) return false;
+    } catch (err) {
+      console.error("Failed to save bank analysis on approve:", err);
+      return false;
+    }
+
+    try {
+      const positionsOk = (await saveAllPositionsRef.current?.()) ?? true;
+      if (!positionsOk) return false;
+    } catch (err) {
+      console.error("Failed to save positions on approve:", err);
+      return false;
+    }
+
+    return true;
+  }, [useDeferredSave]);
+
+  const componentsReadOnly = isPreviewMode || !allowPositionsEdit;
 
   const scopedPositions = useMemo(() => {
     if (!effectiveApplicationId) return [];
@@ -135,6 +186,18 @@ export default function DecisionMakeFinalValues({
     return mapPositionsForCalculator(scopedPositions);
   }, [scopedPositions]);
 
+  const sectionContext: DecisionTabSectionContext = {
+    componentsReadOnly,
+    onRegisterBankSaveAll: useDeferredSave
+      ? handleRegisterSaveAllBanks
+      : undefined,
+  };
+
+  const betweenSection =
+    typeof betweenOfferAndPositions === "function"
+      ? betweenOfferAndPositions(sectionContext)
+      : betweenOfferAndPositions;
+
   return (
     <div className="space-y-6 w-full">
       {/* Mount bank totals off-screen so we can reuse avgNetCredit for remit calculations */}
@@ -158,21 +221,27 @@ export default function DecisionMakeFinalValues({
         applicationId={effectiveApplicationId || undefined}
         disabled={!allowOfferEdit}
         showFooterActions={allowOfferEdit}
+        actionsAtTop
+        showPreviewBadge
+        onPreviewModeChange={setIsPreviewMode}
         showLeverageTable
         onSummaryMetricsChange={onSummaryMetricsChange}
+        onApprove={useDeferredSave ? handleApproveSaveAll : undefined}
       />
 
-      {betweenOfferAndPositions}
+      {betweenSection}
 
       <PositionTableCalculator
         applicationId={effectiveApplicationId || undefined}
         positions={calculatorPositions as any}
         avgBankNetCredit={bankNetCreditAvg ?? undefined}
-        readOnly={!allowPositionsEdit}
+        readOnly={componentsReadOnly}
         disableDelete={allowPositionsEdit && positionsDisableDelete}
         disableCreate={allowPositionsEdit && positionsDisableCreate}
+        onRegisterSaveAll={
+          useDeferredSave ? handleRegisterSaveAllPositions : undefined
+        }
       />
     </div>
   );
 }
-

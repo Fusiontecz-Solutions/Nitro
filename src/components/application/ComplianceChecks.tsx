@@ -56,7 +56,7 @@ const ComplianceChecks = () => {
                 <div className="relative w-full">
                     <div className={`w-full ${isDark ? 'bg-muted' : 'bg-[#E9EDF5]'} rounded-full h-2.5`}>
                         <div 
-                            className="h-full bg-[#276D9C] rounded-full transition-all duration-300"
+                            className="h-full bg-[var(--brand)] rounded-full transition-all duration-300"
                             style={{ width: `${progressPercentage}%` }}
                         ></div>
                     </div>

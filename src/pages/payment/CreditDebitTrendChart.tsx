@@ -94,7 +94,7 @@ function MoneyOutflowTooltip({ active, payload, label, labelFormatter }: MoneyOu
     >
       <p className="mb-2 text-sm font-bold text-slate-900">{formattedLabel}</p>
       <p className="font-semibold text-[#64748B]">Debit amount: {formatCurrencyFull(sumPaidOutflow)}</p>
-      <p className="font-semibold text-[#276D9C]">Credit amount: {formatCurrencyFull(sumRepaidInflow)}</p>
+      <p className="font-semibold text-[var(--brand)]">Credit amount: {formatCurrencyFull(sumRepaidInflow)}</p>
     </div>
   );
 }
@@ -206,7 +206,7 @@ export default function CreditDebitTrendChart({
       >
         {chartDataLoading ? (
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-lg bg-card/85 backdrop-blur-[1px]">
-            <Loader2 className="size-8 animate-spin text-[#276D9C]" aria-hidden />
+            <Loader2 className="size-8 animate-spin text-[var(--brand)]" aria-hidden />
             <span className="text-xs font-medium text-muted-foreground">Loading transactions…</span>
           </div>
         ) : null}
@@ -265,13 +265,13 @@ export default function CreditDebitTrendChart({
             <Bar
               dataKey="inflow"
               name="Credit amount"
-              fill="#276D9C"
+              fill="var(--brand)"
               barSize={moneyFlowView === "monthly" ? 8 : 18}
               minPointSize={(value) => getMoneyFlowBarMinPointSize(value, moneyFlowView)}
               isAnimationActive={false}
             >
               {safeChartMoneyFlowData.map((entry) => (
-                <Cell key={`in-${entry.label}`} fill="#276D9C" />
+                <Cell key={`in-${entry.label}`} fill="var(--brand)" />
               ))}
             </Bar>
           </BarChart>

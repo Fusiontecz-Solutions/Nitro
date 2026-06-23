@@ -156,7 +156,7 @@ const PublicDocumentRequestPage = () => {
         <div className="mx-auto max-w-screen-md">
           <div className="mb-2 text-center">{brandLogo}</div>
           <div className="mt-4 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
-            <div className="font-semibold text-[#151357]">
+            <div className="font-semibold text-[var(--brand)]">
               {errorCode === "TOKEN_EXPIRED" ? "Link expired" : "Link not available"}
             </div>
             {errorCode === "TOKEN_EXPIRED" && expiresAt ? (
@@ -272,7 +272,7 @@ const PublicDocumentRequestPage = () => {
                               type="button"
                               size="sm"
                               variant="outline"
-                              className="h-8 gap-1 border-[#276D9C]/30 px-2.5 text-xs text-[#276D9C] hover:bg-[#276D9C]/5"
+                              className="h-8 gap-1 border-[var(--brand)]/30 px-2.5 text-xs text-[var(--brand)] hover:bg-[var(--brand)]/5"
                               disabled={isUploading}
                               onClick={() => fileInputRefs.current[doc.name]?.click()}
                             >

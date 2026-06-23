@@ -272,7 +272,7 @@ export const ApprovedOfferDisplay: React.FC<ApprovedOfferDisplayProps> = ({
           <span className="text-[14px] font-semibold text-[#4a5568] dark:text-slate-300">
             Existing Active Positions
           </span>
-          <span className="text-[16px] font-semibold text-[#2563eb] dark:text-white">
+          <span className="text-[16px] font-semibold text-[var(--brand)] dark:text-white">
             {activeCount}
           </span>
         </div>

@@ -302,7 +302,7 @@ export default function MailLogs() {
               className={cn(
                 "rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition-colors",
                 scope === id
-                  ? "bg-[#276D9C] text-white shadow-sm"
+                  ? "bg-[var(--brand)] text-white shadow-sm"
                   : "text-muted-foreground hover:bg-background hover:text-foreground"
               )}
             >
@@ -334,7 +334,7 @@ export default function MailLogs() {
               className={cn(
                 "rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors",
                 statusFilter === id
-                  ? "bg-[#276D9C] text-white shadow-sm"
+                  ? "bg-[var(--brand)] text-white shadow-sm"
                   : "text-muted-foreground hover:bg-background hover:text-foreground"
               )}
             >
@@ -347,7 +347,7 @@ export default function MailLogs() {
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-            <div className="flex size-12 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+            <div className="flex size-12 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
               <Inbox className="size-6" aria-hidden />
             </div>
             <div className="max-w-md space-y-1">

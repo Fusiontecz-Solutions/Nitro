@@ -154,7 +154,8 @@ export function buildSuggestedContractSignerRows(input: {
     }
 
     let ownerIndex = 0;
-    for (const o of input.owners || []) {
+    const ownerInputs = input.owners || [];
+    for (const o of ownerInputs) {
         const email = String(o.ownerEmail || "").trim();
         const name =
             `${String(o.ownerFirstName || "").trim()} ${String(o.ownerLastName || "").trim()}`.trim();
@@ -171,7 +172,14 @@ export function buildSuggestedContractSignerRows(input: {
                         primary.name ||
                         clientName ||
                         (email ? email.split("@")[0] : ""),
+                    email: email || primary.email,
                 };
+            } else {
+                rows.push({
+                    role: resolveDocuSignSignerRole(),
+                    name: displayName || clientName || (email ? email.split("@")[0] : "Signer"),
+                    email: email || clientEmail,
+                });
             }
             continue;
         }
@@ -180,6 +188,28 @@ export function buildSuggestedContractSignerRows(input: {
             name: displayName,
             email,
         });
+    }
+
+    /** Two owners on the application → two signer slots (Signer 1 / Signer 2). */
+    if (ownerInputs.filter((o) => {
+        const email = String(o.ownerEmail || "").trim();
+        const name =
+            `${String(o.ownerFirstName || "").trim()} ${String(o.ownerLastName || "").trim()}`.trim();
+        return Boolean(email || name);
+    }).length >= 2 && rows.length < 2) {
+        const second = ownerInputs
+            .map((o) => ({
+                email: String(o.ownerEmail || "").trim(),
+                name: `${String(o.ownerFirstName || "").trim()} ${String(o.ownerLastName || "").trim()}`.trim(),
+            }))
+            .filter((o) => o.email || o.name)[1];
+        if (second) {
+            rows.push({
+                role: resolveDocuSignSignerRole(),
+                name: second.name || (second.email ? second.email.split("@")[0] : ""),
+                email: second.email,
+            });
+        }
     }
 
     let guarantorIndex = 0;

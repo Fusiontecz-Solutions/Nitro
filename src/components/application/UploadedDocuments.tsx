@@ -232,7 +232,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                 size="sm"
                                 onClick={handleUploadSelectedFiles}
                                 disabled={selectedFiles.length === 0 || uploadLoading}
-                                className="h-8 px-3 text-xs font-medium bg-[#276D9C] hover:bg-[#276D9C] text-white cursor-pointer shadow-md"
+                                className="h-8 px-3 text-xs font-medium bg-[var(--brand)] hover:bg-[var(--brand)] text-white cursor-pointer shadow-md"
                             >
                                 {uploadLoading ? "Uploading..." : "Upload"}
                             </Button>
@@ -331,13 +331,13 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                         <TableCell
                                             className={cn(
                                                 'text-[0.85rem] py-2 px-6 font-poppins text-foreground',
-                                                pinned && 'border-l-2 border-l-[#2563EB] dark:border-l-[#5AACEA]',
+                                                pinned && 'border-l-2 border-l-[var(--brand)] dark:border-l-[#C07BE0]',
                                             )}
                                         >
                                             <div className="flex flex-col gap-1">
                                                 <span className="flex items-center gap-1.5">
                                                     {pinned && (
-                                                        <Pin className="h-3.5 w-3.5 shrink-0 fill-[#2563EB] text-[#2563EB] dark:fill-[#5AACEA] dark:text-[#5AACEA]" />
+                                                        <Pin className="h-3.5 w-3.5 shrink-0 fill-[var(--brand)] text-[var(--brand)] dark:fill-[#C07BE0] dark:text-[#C07BE0]" />
                                                     )}
                                                     {file.originalName}
                                                 </span>
@@ -351,8 +351,8 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                                             className={cn(
                                                                 'inline-flex w-fit items-center rounded-md px-2 py-0.5 text-[10px] font-semibold',
                                                                 pinned
-                                                                    ? 'bg-[#2563EB] text-white dark:bg-[#5AACEA] dark:text-[#0b1220]'
-                                                                    : 'bg-[#EAF1FA] text-[#276D9C] dark:bg-[#1f2937] dark:text-[#5AACEA]',
+                                                                    ? 'bg-[var(--brand)] text-white dark:bg-[#C07BE0] dark:text-[#0b1220]'
+                                                                    : 'bg-[#EAF1FA] text-[var(--brand)] dark:bg-[#1f2937] dark:text-[#C07BE0]',
                                                             )}
                                                         >
                                                             {label}

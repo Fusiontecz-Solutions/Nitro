@@ -129,7 +129,7 @@ export default function ContractTemplateModal({
                         type="button"
                         onClick={handleContinue}
                         disabled={!selectedFile}
-                        className="bg-[#3B8BD1] hover:bg-[#2d6fad] text-white"
+                        className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white"
                     >
                         Continue
                     </Button>

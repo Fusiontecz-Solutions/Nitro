@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Check, Trash2, Pencil, Loader2 } from "lucide-react";
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -11,6 +17,7 @@ import {
   formatPercentUS,
   normalizeApiDateToYyyyMmDd,
 } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 interface IPosition {
   /** Optional backend ID when saved to the API. */
@@ -69,6 +76,16 @@ interface PositionsTableProps {
   disableCreate?: boolean;
   bankAllocationOptions?: Array<{ id: number; label: string }>;
   onRowsChange?: (rows: IPosition[]) => void;
+  /**
+   * Hide the per-row "save & lock" (check) control. Used when an external
+   * action (e.g. Offer "Approve & Save") persists every row at once.
+   */
+  hideRowSave?: boolean;
+  /**
+   * Parent receives the bulk-save function so it can persist all rows from
+   * Offer "Approve & Save" without per-row save buttons.
+   */
+  onRegisterSaveAll?: (saveAll: () => Promise<boolean>) => void;
 }
 
 const ACTIVE_STATUSES = ["ACTIVE", "REFI", "PIF", "REVERSE"] as const;
@@ -164,6 +181,31 @@ function buildRowsEmitSignature(rows: IPosition[]): string {
       isLocked: !!r.isLocked,
     })),
   );
+}
+
+/** True when a row has any user-entered data (so empty placeholder rows are skipped on bulk save). */
+function rowHasMeaningfulData(row: IPosition | undefined | null): boolean {
+  if (!row) return false;
+  const valueKeys: (keyof IPosition)[] = [
+    "lender",
+    "installment",
+    "amountFunded",
+    "totalRepayments",
+    "monthlyMcaPmts",
+    "mcaRemit",
+    "loanAmount",
+    "paymentTerm",
+    "startingDate",
+  ];
+  for (const key of valueKeys) {
+    const v = row[key];
+    if (v != null && String(v).trim() !== "") return true;
+  }
+  const status = String(row.status || "").trim().toUpperCase();
+  if (status && status !== "SELECT") return true;
+  const frequency = String(row.frequency || "").trim();
+  if (frequency && frequency !== "Select") return true;
+  return false;
 }
 
 /**
@@ -823,7 +865,7 @@ function FootPlainEditCell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function PositionsTableCalculator({
+export default function PositionTableCalculator({
   positions: positionsProp,
   frequencyOptions = ["Select", "Daily", "Weekly", "Bi-Weekly", "Monthly"],
   statusOptions = ["Select", "ACTIVE", "REVERSE", "REFI", "PIF", "ONE TIME", "STOP", "RECOVERY", "LOWER"],
@@ -835,6 +877,8 @@ export default function PositionsTableCalculator({
   disableCreate,
   bankAllocationOptions = [],
   onRowsChange,
+  hideRowSave,
+  onRegisterSaveAll,
 }: PositionsTableProps) {
   /** Stable: do not default to `createPlaceholderRows()` here — a new array every render breaks effects. */
   const positions = positionsProp;
@@ -846,6 +890,7 @@ export default function PositionsTableCalculator({
   const isReadOnly = !!readOnly;
   const isDeleteDisabled = !!disableDelete;
   const isCreateDisabled = !!disableCreate;
+  const effectiveHideRowSave = hideRowSave || Boolean(onRegisterSaveAll);
   const positionsState = useSelector((state: RootState) => state.positions);
   const effectiveApplicationId =
     applicationId ??
@@ -872,8 +917,6 @@ export default function PositionsTableCalculator({
   const [isDeletingRowIndex, setIsDeletingRowIndex] = useState<number | null>(null);
   const [hasUserAddedRow, setHasUserAddedRow] = useState(false);
   const lastKeyWasEnterRef = useRef(false);
-  /** Prevents double-submit when the save (check) control is clicked faster than React disables it. */
-  const positionLockSaveInFlightRef = useRef<Set<number>>(new Set());
   const lastRowsEmitSignatureRef = useRef<string>("");
   const [allocationModal, setAllocationModal] = useState<{
     open: boolean;
@@ -1194,17 +1237,22 @@ export default function PositionsTableCalculator({
     }
   };
 
-  const handleLockRow = async (index: number) => {
-    if (isReadOnly) return;
-    const row = rows[index];
-    if (!row) return;
+  /**
+   * Validate and persist a single row (create or update). Returns a status so
+   * the bulk {@link saveAll} flow can keep going and report overall success.
+   * When `silent`, success toasts are suppressed (errors are always surfaced).
+   */
+  const persistRow = async (
+    index: number,
+    row: IPosition,
+    opts?: { silent?: boolean },
+  ): Promise<"saved" | "invalid" | "error"> => {
+    if (!row) return "invalid";
+    const silent = !!opts?.silent;
+    const fail = (msg: string) => {
+      if (!silent) toast.error(msg);
+    };
 
-    if (positionLockSaveInFlightRef.current.has(index)) {
-      return;
-    }
-    positionLockSaveInFlightRef.current.add(index);
-
-    try {
     // If we don't have an application to attach to, just lock locally
     if (!effectiveApplicationId) {
       setRows((prev) => {
@@ -1213,8 +1261,8 @@ export default function PositionsTableCalculator({
         next[index] = { ...next[index], isLocked: true };
         return next;
       });
-      toast.error("No application selected. Unable to save position to the server.");
-      return;
+      fail("No application selected. Unable to save position to the server.");
+      return "error";
     }
 
     const amountFundedNum = parseNum(row.amountFunded);
@@ -1230,8 +1278,8 @@ export default function PositionsTableCalculator({
     const paymentTermNum = parseNum(row.paymentTerm);
 
     if (Number.isNaN(amountFundedNum) || amountFundedNum <= 0) {
-      toast.error("Please enter a valid Amount Funded before saving this position.");
-      return;
+      fail("Please enter a valid Amount Funded before saving this position.");
+      return "invalid";
     }
 
     const lender = row.lender?.trim() || "";
@@ -1239,18 +1287,18 @@ export default function PositionsTableCalculator({
     const frequency = row.frequency || "";
 
     if (!lender) {
-      toast.error("Please enter the LENDER name before saving this position.");
-      return;
+      fail("Please enter the LENDER name before saving this position.");
+      return "invalid";
     }
 
     if (!frequency || frequency === "Select") {
-      toast.error("Please select a FREQUENCY before saving this position.");
-      return;
+      fail("Please select a FREQUENCY before saving this position.");
+      return "invalid";
     }
 
     if (Number.isNaN(installmentNum) || installmentNum <= 0) {
-      toast.error("Please enter a valid REPAYMENT amount before saving this position.");
-      return;
+      fail("Please enter a valid REPAYMENT amount before saving this position.");
+      return "invalid";
     }
 
     // PIF / REFI / etc.: EST. Lvg not shown or blank; persist 0. Others require valid EST. Lvg %.
@@ -1261,8 +1309,8 @@ export default function PositionsTableCalculator({
       !["PIF", "ONE TIME", "STOP", "REFI"].includes(status) &&
       (Number.isNaN(effectiveRemit) || effectiveRemit <= 0)
     ) {
-      toast.error("Please enter or compute a valid EST. Lvg % before saving this position.");
-      return;
+      fail("Please enter or compute a valid EST. Lvg % before saving this position.");
+      return "invalid";
     }
 
     const fundingDate = toDateInputValue(row.startingDate || "") || todayMax;
@@ -1315,14 +1363,14 @@ export default function PositionsTableCalculator({
             data: updatePayload,
           }),
         ).unwrap();
-        toast.success("Position updated successfully.");
+        if (!silent) toast.success("Position updated successfully.");
       } else {
         const result = await dispatch(createPosition(basePayload)).unwrap();
         const created = (result as any).data || result;
         if (created && typeof created === "object" && created._id) {
           savedId = String(created._id);
         }
-        toast.success("Position saved successfully.");
+        if (!silent) toast.success("Position saved successfully.");
       }
 
       setRows((prev) => {
@@ -1354,6 +1402,7 @@ export default function PositionsTableCalculator({
         });
         return next;
       });
+      return "saved";
     } catch (error: any) {
       console.error("Save position error:", error);
       const message =
@@ -1361,13 +1410,33 @@ export default function PositionsTableCalculator({
         error?.message ||
         "Failed to save position. Please try again.";
       toast.error(message);
+      return "error";
     } finally {
       setIsSavingRowIndex(null);
     }
-    } finally {
-      positionLockSaveInFlightRef.current.delete(index);
-    }
   };
+
+  /**
+   * Persist every row that contains data in one pass. Already-saved (locked)
+   * rows are skipped; empty placeholder rows are ignored. Registered with the
+   * parent via {@link onRegisterSaveAll} for Offer "Approve & Save".
+   */
+  const saveAll = useCallback(async (): Promise<boolean> => {
+    const current = rows;
+    let allOk = true;
+    for (let i = 0; i < current.length; i++) {
+      const row = current[i];
+      if (!rowHasMeaningfulData(row)) continue;
+      if (row?.isLocked && row?._id) continue;
+      const result = await persistRow(i, row, { silent: false });
+      if (result !== "saved") allOk = false;
+    }
+    return allOk;
+  }, [rows]);
+
+  useEffect(() => {
+    onRegisterSaveAll?.(saveAll);
+  }, [onRegisterSaveAll, saveAll]);
 
   const handleUnlockRow = (index: number) => {
     if (isReadOnly) return;
@@ -1593,13 +1662,14 @@ export default function PositionsTableCalculator({
           <h2 className="text-lg font-bold uppercase tracking-wide text-[#334155] dark:text-slate-100">Positions</h2>
         </div>
         {!isReadOnly && !isCreateDisabled && (
-          <button
+          <Button
             type="button"
+            variant="default"
             onClick={handleAddRow}
-            className="bg-[#2B70A1] hover:bg-[#235d85] cursor-pointer text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+            className="font-semibold"
           >
             Create Position
-          </button>
+          </Button>
         )}
       </div>
       <div className="min-w-0 w-full max-h-[min(70vh,560px)] overflow-auto rounded-b-xl overscroll-x-contain">
@@ -2537,10 +2607,16 @@ export default function PositionsTableCalculator({
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
+                          ) : effectiveHideRowSave ? (
+                            isSaving ? (
+                              <span className="text-emerald-600 p-1 inline-flex items-center justify-center">
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              </span>
+                            ) : null
                           ) : (
                             <button
                               type="button"
-                              onClick={() => handleLockRow(index)}
+                              onClick={() => void persistRow(index, rows[index])}
                               disabled={isBusy}
                               className="text-emerald-600 cursor-pointer hover:text-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none p-1 inline-flex items-center justify-center"
                               title="Save and lock"
@@ -2864,10 +2940,11 @@ export default function PositionsTableCalculator({
               >
                 Cancel
               </button>
-              <button
+              <Button
                 type="button"
+                variant="default"
                 disabled={!allocationModal.selectedBankId}
-                className="px-3 py-2 text-sm rounded cursor-pointer bg-[#2B70A1] text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={() => {
                   if (allocationModal.rowIndex >= 0 && allocationModal.selectedBankId) {
                     handleUpdateRow(
@@ -2880,7 +2957,7 @@ export default function PositionsTableCalculator({
                 }}
               >
                 Allocate
-              </button>
+              </Button>
             </div>
           </div>
         </div>

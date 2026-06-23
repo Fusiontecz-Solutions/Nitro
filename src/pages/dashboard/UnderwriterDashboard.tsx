@@ -88,7 +88,7 @@ export default function UnderwriterDashboard() {
           </div>
           <Button
             onClick={() => navigate('/applications')}
-            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white shrink-0"
+            className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white shrink-0"
           >
             <Briefcase className="mr-2 h-4 w-4" />
             View Applications
@@ -107,7 +107,7 @@ export default function UnderwriterDashboard() {
             <div className="flex items-start justify-between gap-2">
               <div>
                 <p className="text-sm text-muted-foreground font-medium">Pending</p>
-                <p className={`mt-1 text-2xl font-semibold ${isDark ? 'text-white' : 'text-[#151357]'}`}>
+                <p className={`mt-1 text-2xl font-semibold ${isDark ? 'text-white' : 'text-[var(--brand)]'}`}>
                   {formatNumber(statsData?.workflowPending?.count ?? 0)}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
@@ -129,7 +129,7 @@ export default function UnderwriterDashboard() {
             <div className="flex items-start justify-between gap-2">
               <div>
                 <p className="text-sm text-muted-foreground font-medium">In Progress</p>
-                <p className={`mt-1 text-2xl font-semibold ${isDark ? 'text-white' : 'text-[#151357]'}`}>
+                <p className={`mt-1 text-2xl font-semibold ${isDark ? 'text-white' : 'text-[var(--brand)]'}`}>
                   {formatNumber(statsData?.workflowInProgress?.count ?? 0)}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
@@ -161,7 +161,7 @@ export default function UnderwriterDashboard() {
                   </p>
                   <p
                     className={`mt-1 text-xl font-semibold ${
-                      isDark ? 'text-white' : 'text-[#151357]'
+                      isDark ? 'text-white' : 'text-[var(--brand)]'
                     }`}
                   >
                     {item.value}
@@ -199,7 +199,7 @@ export default function UnderwriterDashboard() {
           <Button
             variant="outline"
             onClick={() => navigate('/applications')}
-            className="border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+            className="border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
           >
             Go to Applications
           </Button>

@@ -240,7 +240,7 @@ export default function ApplicationDetailsSheet({
     !business
   const summaryGradient = isDark
     ? "linear-gradient(90deg, #6F7887 0%, #6F7887 40%, #AAAEB5 100%)"
-    : "linear-gradient(135deg, #3B8BD1 0%, #2566A9 50%, #0E416E 100%)"
+    : "linear-gradient(135deg, var(--brand) 0%, #2566A9 50%, #0E416E 100%)"
 
 
   return (

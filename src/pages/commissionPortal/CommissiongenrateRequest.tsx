@@ -419,7 +419,7 @@ export default function CommissiongenrateRequest({ applicationId, commissionRequ
             <div className="flex justify-end gap-3 pt-2">
                 <Button
                     type="submit"
-                    className="px-4 py-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+                    className="px-4 py-2 bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90"
                     disabled={loading}
                 >
                     {loading ? 'Submitting...' : 'Submit Request'}

@@ -207,7 +207,7 @@ export default function OwnerModal({
             type="button"
             disabled={saving}
             onClick={handleSave}
-            className="bg-[#3B8BD1] hover:bg-[#2d6fad] text-white px-7"
+            className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white px-7"
           >
             {saving ? "Saving..." : "Save"}
           </Button>

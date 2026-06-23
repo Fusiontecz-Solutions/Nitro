@@ -868,7 +868,7 @@ const CreateApplication = () => {
                                         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:flex-nowrap">
                                             <Button
                                                 type="button"
-                                                className="h-9 shrink-0 px-4 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                                                className="h-9 shrink-0 px-4 gap-2 bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 cursor-pointer"
                                                 onClick={() => navigate('/create-clients')}
                                             >
                                                 Add Client
@@ -888,7 +888,7 @@ const CreateApplication = () => {
                                                 <Button
                                                     type="button"
                                                     variant="outline"
-                                                    className="h-9 whitespace-nowrap px-4 gap-2 border border-[#276D9C] text-[#276D9C] bg-transparent shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[#276D9C]/90"
+                                                    className="h-9 whitespace-nowrap px-4 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
                                                     onClick={() => autoClientPdfInputRef.current?.click()}
                                                     disabled={isAutoCreatingClient}
                                                 >
@@ -984,7 +984,7 @@ const CreateApplication = () => {
                                     <Button
                                         type="button"
                                         onClick={handleDocumentSubmit}
-                                        className="h-9 px-4 bg-blue-600 text-white hover:bg-blue-700"
+                                        className="h-9 px-4 bg-primary text-primary-foreground hover:bg-primary/90"
                                         disabled={uploadedFiles.length === 0 || uploadLoading}
                                     >
                                         {uploadLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -1117,7 +1117,7 @@ const CreateApplication = () => {
                             <Button
                                 type="button"
                                 variant="outline"
-                                className="px-4 py-2 gap-2 border border-[#276D9C] text-[#276D9C] bg-transparent cursor-pointer shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[#276D9C]/90"
+                                className="px-4 py-2 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent cursor-pointer shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
                                 onClick={() => navigate('/applications')}
                                 disabled={isLoading}
                             >
@@ -1125,7 +1125,7 @@ const CreateApplication = () => {
                             </Button>
                             <Button
                                 type="submit"
-                                className="px-4 shadow-[0px_0px_0px_1px_#5E5ADB] py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
+                                className="px-4 shadow-[0px_0px_0px_1px_#5E5ADB] py-2 gap-2 bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
                                 disabled={isLoading || !isValid}
                             >
                                 {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

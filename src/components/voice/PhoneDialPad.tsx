@@ -17,11 +17,11 @@ const keyBase =
   "group relative flex h-14 w-full items-center justify-center rounded-2xl text-xl font-semibold tabular-nums tracking-tight " +
   "border border-border/50 bg-gradient-to-b from-background to-muted/40 text-foreground shadow-sm " +
   "transition-all duration-200 ease-out " +
-  "hover:border-[#276D9C]/35 hover:from-muted/50 hover:to-muted/30 hover:shadow-[0_0_24px_-8px_rgba(39,109,156,0.45)] " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
+  "hover:border-[var(--brand)]/35 hover:from-muted/50 hover:to-muted/30 hover:shadow-[0_0_24px_-8px_rgba(39,109,156,0.45)] " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
   "active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40 " +
   "dark:border-white/[0.08] dark:from-white/[0.07] dark:to-white/[0.02] dark:text-white/95 " +
-  "dark:hover:border-[#276D9C]/40 dark:hover:from-white/[0.1] dark:hover:to-white/[0.04] dark:hover:shadow-[0_0_28px_-6px_rgba(39,109,156,0.55)] " +
+  "dark:hover:border-[var(--brand)]/40 dark:hover:from-white/[0.1] dark:hover:to-white/[0.04] dark:hover:shadow-[0_0_28px_-6px_rgba(39,109,156,0.55)] " +
   "dark:focus-visible:ring-offset-0 sm:h-[3.25rem] sm:text-2xl";
 
 export function PhoneDialPad({ onDigit, disabled, className }: PhoneDialPadProps) {

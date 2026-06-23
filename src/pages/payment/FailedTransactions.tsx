@@ -650,13 +650,13 @@ export default function FailedTransactions() {
   const summaryDeals = summary.dealCountDisplay ?? summary.dealCount.toLocaleString("en-US");
 
   const tableHeadClass =
-    "border-b-2 border-[#276D9C]/15 bg-gradient-to-b from-slate-100 to-slate-50/95 px-4 py-3.5 text-left text-[11px] font-bold uppercase tracking-[0.08em] text-slate-600 dark:border-[#276D9C]/25 dark:from-slate-900 dark:to-slate-900/90 dark:text-slate-300";
+    "border-b-2 border-[var(--brand)]/15 bg-gradient-to-b from-slate-100 to-slate-50/95 px-4 py-3.5 text-left text-[11px] font-bold uppercase tracking-[0.08em] text-slate-600 dark:border-[var(--brand)]/25 dark:from-slate-900 dark:to-slate-900/90 dark:text-slate-300";
 
   const tableCellClass =
     "border-b border-slate-100 px-4 py-3 align-middle text-sm text-foreground transition-colors group-hover/row:border-slate-200/80 dark:border-slate-800/80";
 
   const tableRowClass = (idx: number) =>
-    `group/row border-l-[3px] border-l-transparent transition-colors hover:border-l-[#276D9C]/70 hover:bg-[#276D9C]/[0.04] dark:hover:bg-[#276D9C]/10 ${
+    `group/row border-l-[3px] border-l-transparent transition-colors hover:border-l-[var(--brand)]/70 hover:bg-[var(--brand)]/[0.04] dark:hover:bg-[var(--brand)]/10 ${
       idx % 2 === 0
         ? "bg-white dark:bg-slate-950/40"
         : "bg-slate-50/80 dark:bg-slate-900/25"
@@ -681,7 +681,7 @@ export default function FailedTransactions() {
           animate={{ opacity: 1, y: 0 }}
           className="mb-8"
         >
-          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-[#276D9C]">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--brand)]">
             Collections
           </p>
           <h1 className="text-balance text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
@@ -694,7 +694,7 @@ export default function FailedTransactions() {
           {showSummaryTotalsSpinner ? (
             <div className="flex min-h-[8.5rem] flex-col items-center justify-center gap-3 rounded-2xl border border-border/70 bg-card/80 px-6 py-12 text-center shadow-sm dark:border-white/10 dark:bg-card/40">
               <Loader2
-                className="size-9 animate-spin text-[#276D9C]"
+                className="size-9 animate-spin text-[var(--brand)]"
                 aria-hidden
               />
               <div>
@@ -714,7 +714,7 @@ export default function FailedTransactions() {
                   aria-live="polite"
                 >
                   <div className="flex items-center gap-2 rounded-full border border-border/70 bg-card/95 px-4 py-2 text-sm font-medium text-foreground shadow-lg dark:border-white/10">
-                    <Loader2 className="size-4 shrink-0 animate-spin text-[#276D9C]" aria-hidden />
+                    <Loader2 className="size-4 shrink-0 animate-spin text-[var(--brand)]" aria-hidden />
                     Updating totals…
                   </div>
                 </div>
@@ -753,7 +753,7 @@ export default function FailedTransactions() {
                 />
                 <Input
                   placeholder="Search by business name or deal ID…"
-                  className="h-10 rounded-xl border-border/80 bg-background/80 pl-10 shadow-inner transition-[box-shadow,border-color] duration-200 focus-visible:border-[#276D9C]/50 focus-visible:ring-[#276D9C]/20"
+                  className="h-10 rounded-xl border-border/80 bg-background/80 pl-10 shadow-inner transition-[box-shadow,border-color] duration-200 focus-visible:border-[var(--brand)]/50 focus-visible:ring-[var(--brand)]/20"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
@@ -787,10 +787,10 @@ export default function FailedTransactions() {
                         type="button"
                         onClick={() => selectPreset(preset.id)}
                         aria-pressed={active}
-                        className={`inline-flex h-9 cursor-pointer items-center justify-center whitespace-nowrap rounded-lg border px-3 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40 ${
+                        className={`inline-flex h-9 cursor-pointer items-center justify-center whitespace-nowrap rounded-lg border px-3 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 ${
                           active
-                            ? "border-[#276D9C] bg-[#276D9C] text-white shadow-sm hover:bg-[#1f5d86]"
-                            : "border-border/80 bg-background/90 text-muted-foreground hover:border-[#276D9C]/35 hover:bg-background hover:text-foreground"
+                            ? "border-[var(--brand)] bg-[var(--brand)] text-white shadow-sm hover:bg-[#1f5d86]"
+                            : "border-border/80 bg-background/90 text-muted-foreground hover:border-[var(--brand)]/35 hover:bg-background hover:text-foreground"
                         }`}
                       >
                         {preset.label}
@@ -830,9 +830,9 @@ export default function FailedTransactions() {
                     onClick={applyCustomDateRange}
                     className={`h-9 shrink-0 rounded-lg px-3.5 text-xs font-semibold ${
                       customRangePendingApply
-                        ? "bg-[#276D9C] text-white hover:bg-[#1f5d86]"
+                        ? "bg-[var(--brand)] text-white hover:bg-[#1f5d86]"
                         : customRange
-                          ? "border-[#276D9C]/40 bg-[#276D9C]/10 text-[#276D9C] hover:bg-[#276D9C]/15"
+                          ? "border-[var(--brand)]/40 bg-[var(--brand)]/10 text-[var(--brand)] hover:bg-[var(--brand)]/15"
                           : ""
                     }`}
                   >
@@ -890,7 +890,7 @@ export default function FailedTransactions() {
             {isRefetchingTable ? (
               <div className="pointer-events-none absolute inset-0 z-10 flex items-start justify-center bg-background/40 pt-24 backdrop-blur-[1px] dark:bg-background/30">
                 <div className="flex items-center gap-2 rounded-full border border-border/60 bg-card/95 px-4 py-2 text-xs font-medium text-muted-foreground shadow-lg">
-                  <Loader2 className="size-3.5 animate-spin text-[#276D9C]" aria-hidden />
+                  <Loader2 className="size-3.5 animate-spin text-[var(--brand)]" aria-hidden />
                   Updating…
                 </div>
               </div>
@@ -963,7 +963,7 @@ export default function FailedTransactions() {
                         onClick={openDeal}
                         disabled={!canOpenDeal}
                         title={canOpenDeal ? `Open deal ${dealToken}` : undefined}
-                        className={`group/dl inline-flex w-fit max-w-full items-center gap-1.5 rounded-lg border border-transparent bg-[#276D9C]/[0.06] px-2.5 py-1 text-left text-sm font-semibold tabular-nums text-[#276D9C] transition-all hover:border-[#276D9C]/25 hover:bg-[#276D9C]/10 hover:text-[#1b4e6f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-foreground disabled:opacity-80 dark:hover:bg-[#276D9C]/20 ${canOpenDeal ? "cursor-pointer" : ""}`}
+                        className={`group/dl inline-flex w-fit max-w-full items-center gap-1.5 rounded-lg border border-transparent bg-[var(--brand)]/[0.06] px-2.5 py-1 text-left text-sm font-semibold tabular-nums text-[var(--brand)] transition-all hover:border-[var(--brand)]/25 hover:bg-[var(--brand)]/10 hover:text-[var(--brand-accent-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-foreground disabled:opacity-80 dark:hover:bg-[var(--brand)]/20 ${canOpenDeal ? "cursor-pointer" : ""}`}
                       >
                         <span className="truncate">{dealToken}</span>
                         {canOpenDeal ? (
@@ -1014,7 +1014,7 @@ export default function FailedTransactions() {
                             dealLabel: dealLabelFromGroup(group),
                           });
                         }}
-                        className="h-8 rounded-lg border-[#276D9C]/30 px-3 text-xs font-semibold text-[#276D9C] hover:bg-[#276D9C]/10 hover:text-[#1b4e6f] disabled:opacity-50"
+                        className="h-8 rounded-lg border-[var(--brand)]/30 px-3 text-xs font-semibold text-[var(--brand)] hover:bg-[var(--brand)]/10 hover:text-[var(--brand-accent-strong)] disabled:opacity-50"
                       >
                         View summary
                       </Button>
@@ -1318,9 +1318,9 @@ function SortableHeader({
       onClick={() => onToggle(sortKey)}
       aria-label={`Sort by ${label} (${nextDir})`}
       aria-sort={isActive ? (direction === "asc" ? "ascending" : "descending") : "none"}
-      className={`group/sort -mx-1 inline-flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40 ${
+      className={`group/sort -mx-1 inline-flex w-full cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 ${
         align === "right" ? "justify-end" : "justify-start"
-      } ${isActive ? "text-[#276D9C] dark:text-sky-300" : ""}`}
+      } ${isActive ? "text-[var(--brand)] dark:text-sky-300" : ""}`}
     >
       <span>{label}</span>
       <Icon

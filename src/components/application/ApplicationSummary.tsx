@@ -127,10 +127,8 @@ const ApplicationSummary = ({
     }
     const actionRequired = showDynamicData ? formatActionRequired((applicationData as any)?.note) : "--";
 
-    // Different gradients for light and dark mode
-    const gradient = isDark
-        ? "linear-gradient(135deg, #1F2837 0%, #243244 45%, #2E4258 100%)"
-        : "linear-gradient(135deg, #3B8BD1 0%, #2566A9 50%, #0E416E 100%)";
+    // Brand gradient is theme- and mode-aware via the --brand-gradient CSS var.
+    const gradient = "var(--brand-gradient)";
 
     const panelTint = isDark ? "bg-white/10 border border-white/15" : "bg-white/30";
 
@@ -252,7 +250,7 @@ const ApplicationSummary = ({
                 {/* {isUnderwriter && (
                     <div className="flex gap-2 items-center">
                         <Button variant="outline" className="h-9 gap-2 w-fit">
-                            <span className="w-fit bg-[#276D9C] text-white px-2 py-1 rounded-sm">Edit</span>
+                            <span className="w-fit bg-[var(--brand)] text-white px-2 py-1 rounded-sm">Edit</span>
                         </Button>
                         <Button variant="outline" className="h-9 gap-2 bg-[#FFC3C3]">Delete</Button>
                     </div>

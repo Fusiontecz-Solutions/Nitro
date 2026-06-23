@@ -37,6 +37,11 @@ body {
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-mid: var(--brand-mid);
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-accent-strong: var(--brand-accent-strong);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -62,16 +67,34 @@ body {
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* Light theme aligned with Operations Dashboard (slate canvas, white surfaces, #276D9C accent) */
+/* -------------------------------------------------------------------------- */
+/* DYNAMIC BRAND THEME                                                         */
+/* The brand palette is driven by the VITE_THEME env var (see main.tsx).       */
+/*   - default (no attribute / VITE_THEME!=katan) => legacy BLUE theme         */
+/*   - html[data-theme="katan"]                    => current PURPLE theme     */
+/* All components reference the --brand-* tokens (or --primary which maps to   */
+/* --brand), so swapping the env var re-themes the whole app end-to-end.       */
+/* -------------------------------------------------------------------------- */
+
+/* Light theme (slate canvas, white surfaces). Brand = legacy BLUE by default. */
 :root {
   --radius: 0.625rem;
+
+  /* Brand palette — default BLUE (legacy) theme */
+  --brand: #276d9c;
+  --brand-hover: #1b4e6f;
+  --brand-mid: #2f7fb3;
+  --brand-accent: #1FA5E3;
+  --brand-accent-strong: #1b4e6f;
+  --brand-gradient: linear-gradient(135deg, #276d9c 0%, #2f7fb3 40%, #1FA5E3 100%);
+
   --background: #f8fafc;
   --foreground: #111827;
   --card: #ffffff;
   --card-foreground: #111827;
   --popover: #ffffff;
   --popover-foreground: #111827;
-  --primary: #276d9c;
+  --primary: var(--brand);
   --primary-foreground: #ffffff;
   --secondary: #f1f5f9;
   --secondary-foreground: #111827;
@@ -82,30 +105,38 @@ body {
   --destructive: oklch(0.577 0.245 27.325);
   --border: #e5e7eb;
   --input: #e5e7eb;
-  --ring: #276d9c;
-  --chart-1: #276d9c;
+  --ring: var(--brand);
+  --chart-1: var(--brand);
   --chart-2: #f97316;
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: #ffffff;
   --sidebar-foreground: #111827;
-  --sidebar-primary: #276d9c;
+  --sidebar-primary: var(--brand);
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #f1f5f9;
   --sidebar-accent-foreground: #111827;
   --sidebar-border: #e5e7eb;
-  --sidebar-ring: #276d9c;
+  --sidebar-ring: var(--brand);
 }
 
 .dark {
+  /* Brand palette — default BLUE (legacy) theme, dark mode */
+  --brand: #3d8bc0;
+  --brand-hover: #2f7fb3;
+  --brand-mid: #2f7fb3;
+  --brand-accent: #1FA5E3;
+  --brand-accent-strong: #144A66;
+  --brand-gradient: linear-gradient(135deg, #144A66 0%, #1b4e6f 45%, #1FA5E3 100%);
+
   --background: #141517;
   --foreground: #f9fafb;
   --card: #1a1b1e;
   --card-foreground: #f9fafb;
   --popover: #1a1b1e;
   --popover-foreground: #f9fafb;
-  --primary: #3d8bc0;
+  --primary: var(--brand);
   --primary-foreground: #ffffff;
   --secondary: #27272f;
   --secondary-foreground: #f9fafb;
@@ -116,20 +147,39 @@ body {
   --destructive: oklch(0.704 0.191 22.216);
   --border: #374151;
   --input: #374151;
-  --ring: #3d8bc0;
-  --chart-1: #3d8bc0;
+  --ring: var(--brand);
+  --chart-1: var(--brand);
   --chart-2: #fb923c;
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: #1a1b1e;
   --sidebar-foreground: #f9fafb;
-  --sidebar-primary: #3d8bc0;
+  --sidebar-primary: var(--brand);
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #27272f;
   --sidebar-accent-foreground: #f9fafb;
   --sidebar-border: #374151;
-  --sidebar-ring: #3d8bc0;
+  --sidebar-ring: var(--brand);
+}
+
+/* ----- KATAN (purple) theme overrides — applied when VITE_THEME=katan ------ */
+[data-theme="katan"] {
+  --brand: #A962CD;
+  --brand-hover: #8F4BB5;
+  --brand-mid: #7B52C4;
+  --brand-accent: #1FA5E3;
+  --brand-accent-strong: #1b4e6f;
+  --brand-gradient: linear-gradient(135deg, #A962CD 0%, #7B52C4 40%, #1FA5E3 100%);
+}
+
+.dark[data-theme="katan"] {
+  --brand: #A962CD;
+  --brand-hover: #8F4BB5;
+  --brand-mid: #7B52C4;
+  --brand-accent: #1FA5E3;
+  --brand-accent-strong: #144A66;
+  --brand-gradient: linear-gradient(135deg, #3D2450 0%, #2E1A40 45%, #144A66 100%);
 }
 
 @layer base {
@@ -183,6 +233,25 @@ body {
     font-weight: 600;
     line-height: 1.35;
     color: #475569;
+  }
+
+  /* Primary actions — matches Button variant="default" / --brand-gradient */
+  .btn-brand-gradient {
+    background-image: var(--brand-gradient);
+    background-color: transparent;
+    color: var(--primary-foreground);
+  }
+
+  .btn-brand-gradient:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  /* Pipeline tab chevron active state */
+  .tab-pipeline-active,
+  .tab-pipeline-active[data-state="active"] {
+    background-image: var(--brand-gradient) !important;
+    background-color: transparent !important;
+    color: #ffffff !important;
   }
 }
 

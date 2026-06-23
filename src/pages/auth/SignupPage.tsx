@@ -192,7 +192,7 @@ export default function SignupPage() {
         </div>
       </div>
 
-      <button className="fixed bottom-6 right-6 bg-blue-600 hover:bg-blue-700 text-white rounded-full px-6 py-3 flex items-center gap-2 shadow-lg transition-all duration-200 hover:scale-105 z-20">
+      <button className="fixed bottom-6 right-6 bg-primary hover:bg-primary/90 text-primary-foreground rounded-full px-6 py-3 flex items-center gap-2 shadow-lg transition-all duration-200 hover:scale-105 z-20">
         <MessageCircle className="h-5 w-5" />
         <span className="font-medium">Talk with Us</span>
       </button>

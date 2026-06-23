@@ -239,13 +239,13 @@ const MyNotes = ({ applicationId: applicationIdProp, notes: externalNotes, onNot
                         value={newNote}
                         onChange={(e) => setNewNote(e.target.value)}
                         placeholder="Write your notes here.."
-                        className={`min-h-[120px] resize-none rounded-sm text-sm outline-none focus:ring-2 focus:ring-[#276D9C]/20 ${
+                        className={`min-h-[120px] resize-none rounded-sm text-sm outline-none focus:ring-2 focus:ring-[var(--brand)]/20 ${
                             isDark ? 'bg-[#141517] border-[#374151] text-white' : 'border-border'
                         }`}
                     />
                     <Button
                         onClick={handlePostComment}
-                        className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white w-36 px-10 py-0 text-xs font-semibold uppercase tracking-wide rounded-sm"
+                        className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white w-36 px-10 py-0 text-xs font-semibold uppercase tracking-wide rounded-sm"
                         disabled={createLoading || !applicationId}
                     >
                         {createLoading ? (
@@ -274,12 +274,12 @@ const MyNotes = ({ applicationId: applicationIdProp, notes: externalNotes, onNot
                         border-radius: 9999px;
                     }
                     .notes-scroll::-webkit-scrollbar-thumb {
-                        background: linear-gradient(180deg, #276D9C 0%, #0B5C86 100%);
+                        background: linear-gradient(180deg, var(--brand) 0%, #0B5C86 100%);
                         border-radius: 9999px;
                         border: 2px solid rgba(255, 255, 255, 0.35);
                     }
                     .notes-scroll::-webkit-scrollbar-thumb:hover {
-                        background: linear-gradient(180deg, #3B82F6 0%, #276D9C 100%);
+                        background: linear-gradient(180deg, #3B82F6 0%, var(--brand) 100%);
                         box-shadow: 0 0 0 3px rgba(39, 109, 156, 0.20);
                     }
                     .notes-scroll::-webkit-scrollbar-corner {
@@ -292,7 +292,7 @@ const MyNotes = ({ applicationId: applicationIdProp, notes: externalNotes, onNot
                         background: rgba(147, 197, 253, 0.08);
                     }
                     .dark .notes-scroll::-webkit-scrollbar-thumb {
-                        background: linear-gradient(180deg, #93C5FD 0%, #276D9C 100%);
+                        background: linear-gradient(180deg, #93C5FD 0%, var(--brand) 100%);
                         border: 2px solid rgba(20, 21, 23, 0.7);
                     }
                 `}</style>

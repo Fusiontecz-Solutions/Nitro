@@ -53,7 +53,7 @@ export function resolveAchSigningStepperState(
         DRAFT: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200",
         SENT: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200",
         VIEWED: "bg-amber-100 text-amber-900 dark:bg-amber-900/35 dark:text-amber-100",
-        SIGNED: "bg-[#276D9C]/12 text-[#276D9C]",
+        SIGNED: "bg-[var(--brand)]/12 text-[var(--brand)]",
         VOIDED: "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
     };
 

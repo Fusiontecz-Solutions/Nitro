@@ -274,7 +274,7 @@ const Cases = () => {
           <button
             type="button"
             onClick={() => setViewApplication(row.original)}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
             aria-label="View case details"
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -445,7 +445,7 @@ const Cases = () => {
           </h1>
           <p className="text-sm text-muted-foreground">
             View and manage all applications that have reached the{" "}
-            <span className="font-medium text-[#276D9C]">Contracted</span> stage.
+            <span className="font-medium text-[var(--brand)]">Contracted</span> stage.
           </p>
         </div>
         <div className="flex items-center gap-3 justify-end">

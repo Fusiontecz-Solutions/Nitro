@@ -6,6 +6,7 @@ import { useTheme } from "@/context/ThemeContext";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { updateClient } from "@/redux/actions/clientActions";
+import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { updateApplication } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
 import { Pencil } from "lucide-react";
@@ -268,6 +269,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
         } catch (error: any) {
             toast.error(error?.message || String(error) || "Failed to update details.");
         } finally {
+            dispatch(resetUpdateClient());
             setSaving(false);
         }
     };
@@ -353,7 +355,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                                 key={index}
                                 className="grid grid-cols-2 gap-4 py-1 font-roboto"
                             >
-                                <span className={`text-sm font-medium ${isDark ? "text-[#5AACEA]" : "text-[#276D9C]"}`}>{label}</span>
+                                <span className={`text-sm font-medium ${isDark ? "text-[#C07BE0]" : "text-[var(--brand)]"}`}>{label}</span>
                                 {isEditMode ? (
                                     <Input
                                         type={key.toLowerCase().includes("date") ? "date" : key.toLowerCase().includes("email") ? "email" : "text"}
@@ -385,7 +387,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                                 key={index}
                                 className="grid grid-cols-2 gap-4 py-1 font-roboto"
                             >
-                                <span className={`text-sm font-medium ${isDark ? "text-[#5AACEA]" : "text-[#276D9C]"}`}>{label}</span>
+                                <span className={`text-sm font-medium ${isDark ? "text-[#C07BE0]" : "text-[var(--brand)]"}`}>{label}</span>
                                 {isEditMode ? (
                                     <Input
                                         type={key.toLowerCase().includes("date") ? "date" : key.toLowerCase().includes("email") ? "email" : "text"}

@@ -97,7 +97,7 @@ const CustomSlider = ({ value, onChange, min, max, step = 1, disabled = false }:
             {/* Track */}
             <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-2 overflow-hidden rounded-full bg-muted">
                 <div
-                    className="h-full bg-[#1E88E5]"
+                    className="h-full bg-[var(--brand-accent)]"
                     style={{ width: `${percentage}%` }}
                 />
             </div>
@@ -116,7 +116,7 @@ const CustomSlider = ({ value, onChange, min, max, step = 1, disabled = false }:
 
             {/* Thumb */}
             <div
-                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-[#1E88E5] rounded-full shadow-md border-2 border-background"
+                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-[var(--brand-accent)] rounded-full shadow-md border-2 border-background"
                 style={{ left: `calc(${percentage}% - 8px)` }}
             />
         </div>
@@ -142,9 +142,9 @@ const CircularProgress = ({
     isDark = false,
 }: CircularProgressProps) => {
     const rings = [
-        { percentage: Math.min(100, (advanceAmount / 100000) * 75), color: "#1E3A5F", radius: 80 },
-        { percentage: Math.min(100, (term / 24) * 100), color: "#3B82C4", radius: 60 },
-        { percentage: Math.min(100, (upsell / 50) * 100), color: "#93C5FD", radius: 40 },
+        { percentage: Math.min(100, (advanceAmount / 100000) * 75), color: "#5C3670", radius: 80 },
+        { percentage: Math.min(100, (term / 24) * 100), color: "var(--brand)", radius: 60 },
+        { percentage: Math.min(100, (upsell / 50) * 100), color: "var(--brand-accent)", radius: 40 },
     ];
 
     const trackStroke = isDark ? "#334155" : "#E5E7EB";
@@ -152,7 +152,7 @@ const CircularProgress = ({
         ? "bg-slate-950/95 shadow-xl shadow-black/40 border border-slate-700/80"
         : "bg-white/95 backdrop-blur-sm shadow-lg border border-gray-100";
     const labelClass = isDark ? "text-slate-400" : "text-gray-600";
-    const valueClass = "font-semibold text-[#1E88E5] text-right whitespace-nowrap tabular-nums";
+    const valueClass = "font-semibold text-[var(--brand-accent)] text-right whitespace-nowrap tabular-nums";
 
     const summaryRows = [
         { label: "Purchase amount", value: formatCurrency(advanceAmount) },
@@ -506,10 +506,8 @@ const Approval = ({
 
     const centerGaugePaymentLabel = `${applicantSummary.frequency} Payment`;
 
-    // Different gradients for light and dark mode
-    const gradient = isDark
-        ? "linear-gradient(90deg, #6F7887 0%, #6F7887 40%, #AAAEB5 100%)"
-        : "linear-gradient(135deg, #3B8BD1 0%, #2566A9 50%, #0E416E 100%)";
+    // Brand gradient is theme- and mode-aware via the --brand-gradient CSS var.
+    const gradient = "var(--brand-gradient)";
 
     // const handleSendToClient = async () => {
     //     if (!canSendToClient) return;
@@ -649,7 +647,7 @@ const Approval = ({
                                         <label className="text-sm font-medium text-gray-700">
                                             Purchase Amount ($)
                                         </label>
-                                        <span className="text-sm font-semibold text-[#1E88E5]">
+                                        <span className="text-sm font-semibold text-[var(--brand-accent)]">
                                             {termsOffersLoading ? "—" : formatCurrency(advanceAmount ?? 0)}
                                         </span>
                                     </div>
@@ -696,7 +694,7 @@ const Approval = ({
                                         <label className="text-sm font-medium text-gray-700">
                                             Est. Term 
                                         </label>
-                                        {/* <span className="text-sm font-semibold text-[#1E88E5]">{term ?? 24}</span> */}
+                                        {/* <span className="text-sm font-semibold text-[var(--brand-accent)]">{term ?? 24}</span> */}
                                     </div>
                                     <Controller
                                         name="term"
@@ -734,7 +732,7 @@ const Approval = ({
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
                                         <label className="text-sm font-medium text-gray-700">Upsell (%)</label>
-                                        {/* <span className="text-sm font-semibold text-[#1E88E5]">{upsell ?? 0}</span> */}
+                                        {/* <span className="text-sm font-semibold text-[var(--brand-accent)]">{upsell ?? 0}</span> */}
                                     </div>
                                     <Controller
                                         name="upsell"
@@ -835,7 +833,7 @@ const Approval = ({
                                                     <div key={index} className="w-full">
                                                         <div className="flex w-full items-center gap-2 py-2">
                                                             <div className="flex w-[55%] min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[#1E88E5]">
+                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[var(--brand-accent)]">
                                                                     {item.label}
                                                                 </span>
                                                                 {calculatorEditable ? (
@@ -885,7 +883,7 @@ const Approval = ({
                                                     <div key={index} className="w-full">
                                                         <div className="flex w-full items-center gap-2 py-2">
                                                             <div className="flex w-[55%] min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[#1E88E5]">
+                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[var(--brand-accent)]">
                                                                     {item.label}
                                                                 </span>
                                                                 <div className="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-input bg-background px-2 shadow-sm">
@@ -931,7 +929,7 @@ const Approval = ({
 
                                             return (
                                                 <div key={index} className="flex w-full items-center justify-between gap-2 py-2">
-                                                    <span className="w-[55%] shrink-0 text-sm font-medium text-[#1E88E5]">{item.label}</span>
+                                                    <span className="w-[55%] shrink-0 text-sm font-medium text-[var(--brand-accent)]">{item.label}</span>
                                                     <span className="w-[45%] min-w-0 text-right text-sm font-semibold text-foreground break-words">
                                                         {item.value}
                                                     </span>

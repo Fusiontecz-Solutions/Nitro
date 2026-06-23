@@ -89,7 +89,7 @@ const paymentStatusBadge: Record<
   manual: {
     label: "Manual",
     className:
-      "border-[#276D9C]/30 bg-[#276D9C]/10 text-[#276D9C] dark:text-[#5ba3d4]",
+      "border-[var(--brand)]/30 bg-[var(--brand)]/10 text-[var(--brand)] dark:text-[#5ba3d4]",
   },
   credit: {
     label: "Credit",
@@ -437,7 +437,7 @@ function PaymentScheduletab({
 
           {/* <Button
             type="button"
-            className="h-10 gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+            className="h-10 gap-2 bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
             onClick={() => {
               setNewPayment({ amount: "", date: getTodayInputDate(), note: "", status: "upcoming" });
               setShowAddPayment(true);
@@ -452,7 +452,7 @@ function PaymentScheduletab({
             fallback={
               <Button
                 type="button"
-                className="h-10 gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+                className="h-10 gap-2 bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
                 disabled
               >
                 Track Schedule Payments
@@ -469,7 +469,7 @@ function PaymentScheduletab({
           <Button
             type="button"
             variant="outline"
-            className="h-10 gap-2 border-2 border-solid border-[#276D9C] bg-background text-[#276D9C] shadow-none hover:bg-background hover:text-[#276D9C] dark:border-[#276D9C] dark:hover:bg-background"
+            className="h-10 gap-2 border-2 border-solid border-[var(--brand)] bg-background text-[var(--brand)] shadow-none hover:bg-background hover:text-[var(--brand)] dark:border-[var(--brand)] dark:hover:bg-background"
             onClick={() => {
               navigate("/gmail");
             }}
@@ -500,7 +500,7 @@ function PaymentScheduletab({
             className={cn(
               "h-9 rounded-md border px-4 cursor-pointer text-sm font-semibold transition-colors",
               activeFilterTab === tab.key
-                ? "border-[#276D9C] bg-[#276D9C] text-white"
+                ? "border-[var(--brand)] bg-[var(--brand)] text-white"
                 : isDark
                   ? "border-white/15 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
                   : "border-border/70 bg-background text-muted-foreground hover:bg-muted/40 hover:text-foreground"
@@ -538,7 +538,7 @@ function PaymentScheduletab({
                   className="h-[300px] align-middle text-center text-sm text-muted-foreground"
                 >
                   <div className="flex flex-col items-center justify-center gap-3">
-                    <Loader2 className="h-8 w-8 animate-spin text-[#276D9C]" aria-hidden />
+                    <Loader2 className="h-8 w-8 animate-spin text-[var(--brand)]" aria-hidden />
                     <span>Loading paymentsâ€¦</span>
                   </div>
                 </TableCell>
@@ -705,7 +705,7 @@ function PaymentScheduletab({
                     onClick={() => setCurrentPage(pageNum)}
                     className={`h-7 min-w-7 shrink-0 px-2 inline-flex items-center justify-center rounded-md border text-[11px] font-semibold transition-colors ${
                       safeCurrentPage === pageNum
-                        ? "bg-[#276D9C] border-[#276D9C] text-white"
+                        ? "bg-[var(--brand)] border-[var(--brand)] text-white"
                         : "bg-background border-border text-muted-foreground hover:text-foreground hover:bg-accent/60"
                     }`}
                     aria-label={`Page ${pageNum}`}
@@ -824,7 +824,7 @@ function PaymentScheduletab({
             </Button>
             <Button
               type="button"
-              className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+              className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
               onClick={handleAddPayment}
               disabled={isSavingAddPayment || !newPayment.amount || !newPayment.date}
             >
@@ -936,7 +936,7 @@ function PaymentScheduletab({
             {updateMode === "view" ? (
               <Button
                 type="button"
-                className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+                className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
                 onClick={() => setUpdateMode("edit")}
               >
                 Edit
@@ -944,7 +944,7 @@ function PaymentScheduletab({
             ) : (
               <Button
                 type="button"
-                className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+                className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
                 onClick={handleUpdatePayment}
                 disabled={!showUpdateModal || isSavingUpdatePayment}
               >

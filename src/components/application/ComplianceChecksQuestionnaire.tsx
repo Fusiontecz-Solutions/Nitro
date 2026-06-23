@@ -397,7 +397,7 @@ const ComplianceChecksQuestionnaire = ({
                         }`}
                     >
                         <div
-                            className="h-full rounded-full bg-[#276D9C] transition-all duration-300"
+                            className="h-full rounded-full bg-[var(--brand)] transition-all duration-300"
                             style={{ width: `${progressPercentage}%` }}
                         />
                     </div>

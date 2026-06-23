@@ -152,7 +152,7 @@ function typeBadgeClass(type: Notification['type'], isDark: boolean): string {
 function getDetailIcon(type: Notification['type']) {
   switch (type) {
     case 'document_request':
-      return <FileText className="size-5 text-[#276D9C] dark:text-sky-400" />
+      return <FileText className="size-5 text-[var(--brand)] dark:text-sky-400" />
     case 'contract_signing':
       return <FileText className="size-5 text-indigo-600 dark:text-indigo-400" />
     default:
@@ -385,10 +385,10 @@ export default function NotificationDashboard() {
               <div
                 className={cn(
                   'flex size-11 items-center justify-center rounded-xl',
-                  isDark ? 'bg-[#276D9C]/15' : 'bg-[#276D9C]/10',
+                  isDark ? 'bg-[var(--brand)]/15' : 'bg-[var(--brand)]/10',
                 )}
               >
-                <Bell className="size-6 text-[#276D9C] dark:text-sky-400" />
+                <Bell className="size-6 text-[var(--brand)] dark:text-sky-400" />
               </div>
               {unreadInFeedCount > 0 ? (
                 <span
@@ -426,7 +426,7 @@ export default function NotificationDashboard() {
                   : 'Updates from your workspace'}
               </p>
               {isSuperAdmin && unreadOwnInFeed > 0 ? (
-                <p className="mt-1 text-xs font-medium text-[#276D9C] dark:text-sky-400">
+                <p className="mt-1 text-xs font-medium text-[var(--brand)] dark:text-sky-400">
                   {unreadOwnInFeed} unread in your inbox
                 </p>
               ) : null}
@@ -447,7 +447,7 @@ export default function NotificationDashboard() {
                 className={cn(
                   'rounded-full px-3 py-1.5 text-xs font-medium transition-all sm:text-sm',
                   activeFilter === filter
-                    ? 'bg-[#276D9C] text-white shadow-sm dark:bg-[#276D9C] dark:text-white'
+                    ? 'bg-[var(--brand)] text-white shadow-sm dark:bg-[var(--brand)] dark:text-white'
                     : cn(
                         'text-muted-foreground hover:bg-muted/80 hover:text-foreground',
                         isDark ? 'hover:bg-white/5' : 'hover:bg-slate-100',
@@ -520,8 +520,8 @@ export default function NotificationDashboard() {
                     'flex w-full gap-3 rounded-lg border p-3 text-left transition-all sm:p-3.5',
                     isSelected
                       ? cn(
-                          'border-[#276D9C]/35 shadow-md ring-2 ring-[#276D9C]/20',
-                          isDark ? 'bg-[#276D9C]/10' : 'bg-card',
+                          'border-[var(--brand)]/35 shadow-md ring-2 ring-[var(--brand)]/20',
+                          isDark ? 'bg-[var(--brand)]/10' : 'bg-card',
                         )
                       : cn(
                           'border-transparent bg-transparent hover:border-border hover:bg-muted/40',
@@ -643,7 +643,7 @@ export default function NotificationDashboard() {
                     {displayTitle(selectedNotification)}
                   </h2>
                   {!selectedNotification.isRead && (
-                    <Badge className="border-0 bg-[#276D9C]/15 text-[#276D9C] dark:bg-sky-500/20 dark:text-sky-300">
+                    <Badge className="border-0 bg-[var(--brand)]/15 text-[var(--brand)] dark:bg-sky-500/20 dark:text-sky-300">
                       Unread
                     </Badge>
                   )}
@@ -653,7 +653,7 @@ export default function NotificationDashboard() {
                   {applicationDisplayLabel(selectedNotification) ? (
                     <>
                       <span className="mx-1.5 text-border">·</span>
-                      <span className="font-medium text-[#276D9C] dark:text-sky-400">
+                      <span className="font-medium text-[var(--brand)] dark:text-sky-400">
                         {applicationDisplayLabel(selectedNotification)}
                       </span>
                     </>
@@ -749,7 +749,7 @@ export default function NotificationDashboard() {
               >
                 <Button
                   type="button"
-                  className="gap-2 bg-[#276D9C] hover:bg-[#1f5a82] cursor-pointer "
+                  className="gap-2 bg-[var(--brand)] hover:bg-[#1f5a82] cursor-pointer "
                   onClick={() => openLinkedApplication(selectedNotification)}
                 >
                   <ExternalLink className="size-4" />

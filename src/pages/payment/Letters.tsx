@@ -509,9 +509,11 @@ function buildDefaultValues(
     account_number: merchantAccountRef,
     salutation_name: salutationName,
     good_through_date: goodThroughDate,
-    payment_company_name: DEFAULT_PAYOFF_WIRE_DETAILS.beneficiary_name,
+    payment_company_name: DEFAULT_PAYOFF_WIRE_DETAILS.bank_name,
     payment_address_line1: DEFAULT_PAYOFF_WIRE_DETAILS.bank_address_line1,
     payment_address_line2: DEFAULT_PAYOFF_WIRE_DETAILS.bank_city_state_zip,
+    payment_routing_number: DEFAULT_PAYOFF_WIRE_DETAILS.routing_number,
+    payment_account_number: DEFAULT_PAYOFF_WIRE_DETAILS.account_number,
     sender_name: senderName,
     account_status: "Zero Balance",
   };
@@ -886,7 +888,7 @@ export default function Letters() {
     <div className="mx-auto w-full max-w-[1600px] p-3">
       <div className="mb-5 rounded-xl border border-border/70 bg-card/95 px-5 py-4 dark:border-white/10 dark:bg-white/[0.03]">
         <div>
-          {/* <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-[#276D9C]">
+          {/* <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--brand)]">
             <Mail className="size-3.5" />
             Correspondence
           </div> */}
@@ -906,8 +908,8 @@ export default function Letters() {
           <Card className="overflow-hidden border-border/70 bg-card shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
             <CardHeader className="border-b border-border/60 bg-muted/30 py-4 dark:border-white/10 dark:bg-white/[0.03]">
               <CardTitle className="text-md flex items-center gap-2 font-medium text-foreground">
-                <span className="flex size-8 items-center justify-center rounded-lg bg-[#276D9C]/12">
-                  <FileText className="size-4 text-[#276D9C]" />
+                <span className="flex size-8 items-center justify-center rounded-lg bg-[var(--brand)]/12">
+                  <FileText className="size-4 text-[var(--brand)]" />
                 </span>
                 Template Configuration
               </CardTitle>
@@ -1040,14 +1042,14 @@ export default function Letters() {
           <div className="space-y-4">
             <div className="flex items-center justify-between rounded-xl border border-border/70 bg-card/95 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
               <div className="flex items-center gap-3">
-                <span className="hidden h-8 w-1 rounded-full bg-[#276D9C] sm:block" aria-hidden />
+                <span className="hidden h-8 w-1 rounded-full bg-[var(--brand)] sm:block" aria-hidden />
                 <Mail className="size-5" />
                 <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Live Preview
                 </h3>
               </div>
               {isSending && (
-                <span className="rounded-full bg-blue-50 px-3 py-1 text-[10px] font-medium text-[#276D9C] animate-pulse">
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-[10px] font-medium text-[var(--brand)] animate-pulse">
                   Processing...
                 </span>
               )}
@@ -1128,7 +1130,7 @@ export default function Letters() {
                 <Button
                   onClick={() => void sendLetter()}
                   disabled={!selectedTemplate || isSending}
-                  className="w-full bg-[#276D9C] py-5 text-base font-semibold text-white cursor-pointer hover:bg-[#1e547a]"
+                  className="w-full bg-[var(--brand)] py-5 text-base font-semibold text-white cursor-pointer hover:bg-[#1e547a]"
                 >
                   {isSending ? (
                     "Sending..."

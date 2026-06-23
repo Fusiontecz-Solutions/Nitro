@@ -46,6 +46,16 @@ export const PAY_OFF_LETTER_VARIABLES: TemplateVariable[] = [
     label: "Payment Address Line 2",
     placeholder: "City, State, 12345",
   },
+  {
+    key: "payment_routing_number",
+    label: "Routing Number",
+    placeholder: "067015096",
+  },
+  {
+    key: "payment_account_number",
+    label: "Payment Account Number",
+    placeholder: "0210047692",
+  },
   { key: "sender_name", label: "Sender Name", placeholder: "Your Name" },
 ];
 
@@ -65,17 +75,20 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
   const recipientName = pick(values, v.recipient_name);
   const recipientAddress1 = pick(values, v.recipient_address_line1);
   const recipientAddress2 = pick(values, v.recipient_address_line2);
+  const accountNumber = pick(values, v.account_number);
   const accountLastFour = (() => {
     const raw = values[v.account_number.key]?.trim() ?? "";
-    if (!raw) return pick(values, v.account_number);
+    if (!raw) return accountNumber;
     const digits = raw.replace(/\D/g, "");
-    return digits.length >= 4 ? digits.slice(-4) : digits || pick(values, v.account_number);
+    return digits.length >= 4 ? digits.slice(-4) : digits || accountNumber;
   })();
   const payoffAmount = pick(values, v.payoff_amount);
   const goodThroughDate = pick(values, v.good_through_date);
   const paymentCompany = pick(values, v.payment_company_name);
   const paymentAddress1 = pick(values, v.payment_address_line1);
   const paymentAddress2 = pick(values, v.payment_address_line2);
+  const paymentRoutingNumber = pick(values, v.payment_routing_number);
+  const paymentAccountNumber = pick(values, v.payment_account_number);
   const senderName = pick(values, v.sender_name);
 
   return (
@@ -124,7 +137,7 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
               received after the good through date may require a new payoff.
             </p>
             <p style={{ margin: "0 0 8px" }}>
-              <strong>Account Number:</strong> {accountLastFour}
+              <strong>Account Number:</strong> {paymentAccountNumber}
             </p>
             <p style={{ margin: "0 0 8px" }}>
               <strong>Payoff Amount:</strong> {payoffAmount}
@@ -140,9 +153,46 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
             <p style={{ margin: "0 0 4px", fontWeight: "bold", color: "#1f2937" }}>
               Payment Address
             </p>
-            <p style={{ margin: "0 0 3px" }}>{paymentCompany}</p>
+            <p style={{ margin: "0 0 3px", fontWeight: "bold", color: "#1f2937" }}>{paymentCompany}</p>
             <p style={{ margin: "0 0 3px" }}>{paymentAddress1}</p>
-            <p style={{ margin: "0 0 24px" }}>{paymentAddress2}</p>
+            <p style={{ margin: "0 0 16px" }}>{paymentAddress2}</p>
+            <table
+              role="presentation"
+              cellPadding={0}
+              cellSpacing={0}
+              style={{ borderCollapse: "collapse", margin: "0 0 24px" }}
+            >
+              <tbody>
+                <tr>
+                  <td style={{ padding: "0 48px 0 0", verticalAlign: "top" }}>
+                    <span
+                      style={{
+                        display: "block",
+                        fontWeight: "bold",
+                        color: "#1f2937",
+                        paddingBottom: 3,
+                      }}
+                    >
+                      Routing
+                    </span>
+                    <span style={{ color: "#4b5563" }}>{paymentRoutingNumber}</span>
+                  </td>
+                  <td style={{ verticalAlign: "top" }}>
+                    <span
+                      style={{
+                        display: "block",
+                        fontWeight: "bold",
+                        color: "#1f2937",
+                        paddingBottom: 3,
+                      }}
+                    >
+                      Account Number
+                    </span>
+                    <span style={{ color: "#4b5563" }}>{paymentAccountNumber}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
             <p style={{ margin: "0 0 20px", fontSize: 14, color: "#718096", fontStyle: "italic" }}>
               Sincerely,
             </p>

@@ -110,7 +110,7 @@ export default function Settings() {
           </h1>
           {isAdmin && (
             <Button
-              className="gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 shrink-0 cursor-pointer"
+              className="gap-2 bg-[var(--brand)] hover:bg-[var(--brand)]/90 shrink-0 cursor-pointer"
               onClick={() => setAddModalOpen(true)}
             >
               <UserPlus className="h-4 w-4" />
@@ -131,7 +131,7 @@ export default function Settings() {
                   className={cn(
                     'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer disabled:cursor-not-allowed',
                     'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182] data-[state=inactive]:hover:text-foreground',
-                    'data-[state=active]:bg-[#276D9C] data-[state=active]:text-white data-[state=active]:shadow-sm'
+                    'data-[state=active]:bg-[var(--brand)] data-[state=active]:text-white data-[state=active]:shadow-sm'
                   )}
                 >
                   <User className="h-4 w-4 shrink-0" aria-hidden />

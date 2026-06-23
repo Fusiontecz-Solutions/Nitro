@@ -261,7 +261,7 @@ export const ChatInput = ({
           type="button"
           onClick={handleSend}
           disabled={disabled || (!message.trim() && pendingAttachments.length === 0)}
-          className="shrink-0 w-9 h-9 rounded-full bg-blue-600 hover:bg-blue-500 flex items-center justify-center text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="shrink-0 w-9 h-9 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           aria-label="Send message"
         >
           <Send className="h-4 w-4" />

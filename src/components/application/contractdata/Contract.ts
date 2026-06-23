@@ -1,5 +1,6 @@
 import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
 import { parseTerm } from "@/lib/offerRepaymentCalculations";
+import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
 
 export interface ContractPrefillField {
     id: string;
@@ -2139,6 +2140,19 @@ export function overlaySavedAppendixFeeOnPrefillFields(
     overrides: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
     sources?: NetToMerchantPrefillSources,
 ): ContractPrefillField[] {
+    if (sources?.offerDecision || sources?.application) {
+        // Keep the live-offer fee already computed onto the fields; don't re-apply the stale
+        // saved override. Resolve from the explicit OfferDecision or the application's offer/terms.
+        const liveFee = str(
+            getLiveOfferPrefillArgs(sources.application ?? null, {
+                offerDecision: sources.offerDecision ?? null,
+            }).appendixUnderwritingFees,
+        );
+        if (liveFee) {
+            return fields;
+        }
+    }
+
     const normalized = mergeContractPrefillOverrideLayers(overrides);
     const rawFee = str(normalized.appendixUnderwritingFees);
     if (!rawFee) return fields;
@@ -2399,38 +2413,68 @@ function epoExtraFields(row: Record<string, unknown> | null | undefined): Contra
     return out;
 }
 
-function ownersToPrefillPartial(rows: Record<string, unknown>[] | null | undefined): Partial<BuildContractPrefillFieldsArgs> {
-    if (!rows?.length) return {};
+/** Mirror each linked owner into Client / Owner / Guarantor slots for that index (1 or 2). */
+export function applyOwnerRowsToPrefillMerge(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+    rows: Record<string, unknown>[] | null | undefined,
+): void {
+    if (!rows?.length) return;
+
     const o1 = rows[0];
+    if (o1) {
+        const n1 = ownerFullName(o1.firstName, o1.lastName);
+        const ssn1 = str(o1.ssnNumber ?? o1.ssn);
+        const dl1 = str(o1.driverLicenseNumber ?? o1.driverLicense);
+        if (n1 || ssn1 || dl1 || partyEmail(o1)) {
+            if (n1) {
+                partial.owner1GuarantorName = n1;
+                partial.guarantyClientName = n1;
+                partial.guarantyOwner1Name = n1;
+                partial.guarantyGuarantor1Name = n1;
+                partial.securityGuarantor = n1;
+                partial.exhibitOwnerName = n1;
+            }
+            if (ssn1) {
+                partial.guarantySs = ssn1;
+                partial.guarantyOwner1Ss = ssn1;
+                partial.guarantyGuarantor1Ss = ssn1;
+            }
+            if (dl1) {
+                partial.guarantySsDriverLicense = dl1;
+                partial.guarantyOwner1DriverLicense = dl1;
+                partial.guarantyGuarantor1DriverLicense = dl1;
+            }
+        }
+    }
+
     const o2 = rows[1];
-    const n1 = ownerFullName(o1?.firstName, o1?.lastName);
-    const ssn1 = str(o1?.ssnNumber ?? o1?.ssn);
-    const dl1 = str(o1?.driverLicenseNumber ?? o1?.driverLicense);
-    const n2Candidate = ownerFullName(o2?.firstName, o2?.lastName);
-    const hasSecondOwner = Boolean(
-        rows[1] && (partyEmail(o2) || n2Candidate),
-    );
-    const out: Partial<BuildContractPrefillFieldsArgs> = {
-        owner1GuarantorName: n1,
-        guarantyOwner1Name: n1,
-        guarantyOwner1Ss: ssn1,
-        guarantyOwner1DriverLicense: dl1,
-        exhibitOwnerName: n1,
-    };
+    const n2 = ownerFullName(o2?.firstName, o2?.lastName);
+    const hasSecondOwner = Boolean(o2 && (partyEmail(o2) || n2));
     if (hasSecondOwner) {
-        const n2 = n2Candidate;
         const ssn2 = str(o2?.ssnNumber ?? o2?.ssn);
         const dl2 = str(o2?.driverLicenseNumber ?? o2?.driverLicense);
-        out.merchant2Name = n2;
-        out.owner2GuarantorName = n2;
-        out.guarantyOwner2Name = n2;
-        out.guarantyGuarantor2Name = n2;
-        out.guarantyOwner2Ss = ssn2;
-        out.guarantyGuarantor2Ss = ssn2;
-        out.guarantyOwner2DriverLicense = dl2;
-        out.guarantyGuarantor2DriverLicense = dl2;
-        out.exhibitOwnerName = n1 || n2;
+        if (n2) {
+            partial.merchant2Name = n2;
+            partial.owner2GuarantorName = n2;
+            partial.guarantyOwner2Name = n2;
+            partial.guarantyGuarantor2Name = n2;
+        }
+        if (ssn2) {
+            partial.guarantyOwner2Ss = ssn2;
+            partial.guarantyGuarantor2Ss = ssn2;
+        }
+        if (dl2) {
+            partial.guarantyOwner2DriverLicense = dl2;
+            partial.guarantyGuarantor2DriverLicense = dl2;
+        }
+        const n1 = ownerFullName(rows[0]?.firstName, rows[0]?.lastName);
+        partial.exhibitOwnerName = n1 || n2;
     }
+}
+
+function ownersToPrefillPartial(rows: Record<string, unknown>[] | null | undefined): Partial<BuildContractPrefillFieldsArgs> {
+    const out: Partial<BuildContractPrefillFieldsArgs> = {};
+    applyOwnerRowsToPrefillMerge(out, rows);
     return out;
 }
 
@@ -2627,6 +2671,89 @@ function contractPrefillOverridesFromRow(
     return normalizeContractPrefillOverrides(row.contractPrefillOverrides) ?? {};
 }
 
+/**
+ * Offer-derived deal-terms money keys that must always reflect the live OfferDecision when one
+ * is available. Saved contract prefill overrides (a snapshot taken when the contract was last
+ * edited) must not clobber these — otherwise updating the offer in the CRM leaves the contract
+ * modal showing the old amounts.
+ */
+export const LIVE_OFFER_MONEY_PREFILL_KEYS: ReadonlyArray<keyof BuildContractPrefillFieldsArgs> = [
+    "purchaseAmount",
+    "purchasePrice",
+    "remittance",
+    "frequency",
+    "netToMerchant",
+    "appendixUnderwritingFees",
+    "achAuthorizationAccountHolderBankTransactionFee",
+    "achAuthorizationAccountHolderBankNumberOfTransactions",
+];
+
+/** Pick only the non-empty offer-derived money values from a live-offer prefill partial. */
+function pickLiveOfferMoneyOverlay(
+    liveOfferArgs: Partial<BuildContractPrefillFieldsArgs>,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const overlay: Partial<BuildContractPrefillFieldsArgs> = {};
+    for (const key of LIVE_OFFER_MONEY_PREFILL_KEYS) {
+        const value = str((liveOfferArgs as Record<string, unknown>)[key]);
+        if (value) (overlay as Record<string, unknown>)[key] = value;
+    }
+    return overlay;
+}
+
+/**
+ * True when a live offer source is available for syncing deal-terms money fields.
+ *
+ * The contract modal/summary fetches the OfferDecision separately, but that request can be
+ * null/stale (e.g. nothing was re-approved, or the GET is racing) while the freshly loaded
+ * application still carries the updated offer in `offerDecision`/`OfferDecision`/`termsOffers`.
+ * Gating the sync only on the explicit `offerDecision` argument made the contract fall back to
+ * the stale saved-override snapshot in that case. Treat any of these as a valid live source so
+ * the updated CRM offer always wins over cached values.
+ */
+export function hasLiveOfferPrefillSource(
+    anyApp: unknown,
+    offerDecision: Record<string, unknown> | null | undefined,
+): boolean {
+    if (offerDecision && typeof offerDecision === "object") return true;
+    const app = (anyApp ?? null) as Record<string, unknown> | null;
+    if (app?.offerDecision && typeof app.offerDecision === "object") return true;
+    if (app?.OfferDecision && typeof app.OfferDecision === "object") return true;
+    const termsRaw = app?.termsOffers;
+    if (Array.isArray(termsRaw) && termsRaw.length > 0) return true;
+    if (termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)) return true;
+    return false;
+}
+
+/** Remove stale saved-override snapshots for offer-derived fields when a live offer exists. */
+export function stripStaleOfferOverridesFromPersisted(
+    persisted: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
+    offerDecision: Record<string, unknown> | null | undefined,
+    anyApp?: unknown,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const base = { ...(persisted ?? {}) } as Record<string, unknown>;
+    if (!hasLiveOfferPrefillSource(anyApp, offerDecision)) {
+        return base as Partial<BuildContractPrefillFieldsArgs>;
+    }
+    for (const key of LIVE_OFFER_MONEY_PREFILL_KEYS) {
+        delete base[key];
+    }
+    for (const key of APPENDIX_FEE_OVERRIDE_ALIASES) {
+        delete base[key];
+    }
+    return base as Partial<BuildContractPrefillFieldsArgs>;
+}
+
+/** Re-apply live OfferDecision values on top of a prefill partial (deal terms + fees + ACH payment rows). */
+export function applyLiveOfferSyncToPrefillPartial(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+    anyApp: unknown,
+    offerDecision: Record<string, unknown> | null | undefined,
+): Partial<BuildContractPrefillFieldsArgs> {
+    if (!hasLiveOfferPrefillSource(anyApp, offerDecision)) return partial;
+    const liveArgs = getLiveOfferPrefillArgs(anyApp, { offerDecision: offerDecision ?? null });
+    return { ...partial, ...pickLiveOfferMoneyOverlay(liveArgs) };
+}
+
 /** Offer / banking fields recomputed from the current OfferDecision (not stale contract scalars). */
 function getLiveOfferPrefillArgs(
     anyApp: unknown,
@@ -2689,12 +2816,28 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
     const businessZip = String(r.businessZip || bi?.zip || "");
     const taxEin = String(r.ein || bi?.federalTaxIdEin || "");
     const phone = String(r.businessPhone || r.ownerPhone || "");
+    const client = a?.client || {};
+    const relatedOwners = client.owners;
+    const o0 =
+        Array.isArray(relatedOwners) && relatedOwners.length
+            ? (relatedOwners[0] as Record<string, unknown>)
+            : null;
+    const own = (client.owner ?? {}) as Record<string, unknown>;
+    const ownerFirst = str(
+        o0?.firstName ?? client.ownerFirstName ?? own.firstName ?? r.ownerFirst,
+    );
+    const ownerLast = str(o0?.lastName ?? client.ownerLastName ?? own.lastName ?? r.ownerLast);
+    const ownerSsn = str(o0?.ssn ?? client.ownerSsn ?? own.ssn ?? r.ownerSsn);
+    const ownerDriverLicense = str(
+        o0?.driverLicense ?? client.driverLicense ?? own.driverLicense ?? r.ownerDriverLicense,
+    );
+    const ownerName = ownerFullName(ownerFirst, ownerLast) || customerName;
     return {
         customerName,
         legalName,
         clientName: customerName || legalName,
         appendixClientName: customerName || legalName,
-        exhibitOwnerName: customerName || legalName,
+        exhibitOwnerName: ownerName || customerName || legalName,
         doingBusinessAs: String(r.dba || bi?.dba || ""),
         securityDoingBusinessAs: String(r.dba || bi?.dba || ""),
         achAuthorizationAccountHolderDba: String(r.dba || bi?.dba || ""),
@@ -2718,7 +2861,7 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         securityBusinessAddressCity: businessCity,
         securityBusinessAddressState: businessState,
         securityBusinessAddressZip: businessZip,
-        securityGuarantor: customerName || legalName,
+        securityGuarantor: ownerName || customerName || legalName,
         clientEmail: String(
             r.businessEmail ||
             r.ownerEmail ||
@@ -2728,12 +2871,16 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         ),
         clientPhone: phone,
         authorizedBusinessPhone: phone,
-        guarantyClientName: customerName || legalName,
-        guarantySs: String(r.ownerSsn || ""),
-        guarantySsDriverLicense: String(r.ownerDriverLicense || ""),
-        guarantyOwner1Name: ownerFullName(r.ownerFirst, r.ownerLast),
-        guarantyOwner1Ss: String(r.ownerSsn || ""),
-        guarantyOwner1DriverLicense: String(r.ownerDriverLicense || ""),
+        guarantyClientName: ownerName,
+        guarantySs: ownerSsn,
+        guarantySsDriverLicense: ownerDriverLicense,
+        guarantyOwner1Name: ownerName,
+        guarantyOwner1Ss: ownerSsn,
+        guarantyOwner1DriverLicense: ownerDriverLicense,
+        guarantyGuarantor1Name: ownerName,
+        guarantyGuarantor1Ss: ownerSsn,
+        guarantyGuarantor1DriverLicense: ownerDriverLicense,
+        owner1GuarantorName: ownerName,
         authorizationApplication: customerName || legalName,
         authorizationClientName: customerName || "",
         authorizationClientNamePrint: customerName || "",
@@ -2952,6 +3099,7 @@ export function getContractPrefillEditDefaultsFromApplication(
     const rec = options?.contractRecords;
     const clientArgs = getApplicationClientPrefillArgs(anyApp);
     const contractPartial = contractRowToPrefillPartial(rec?.contract ?? null);
+    const resolvedOwners = resolveOwnerRowsForContractPrefill(anyApp, rec?.owners ?? null);
     const merchantBusinessName = resolveMerchantBusinessNameForPrefill(
         rec?.contract ?? null,
         clientArgs,
@@ -2961,15 +3109,15 @@ export function getContractPrefillEditDefaultsFromApplication(
         ...exhibitValuesToPrefillPartial(rec?.contract ?? null),
         ...achRowToPrefillPartial(rec?.ach ?? null, merchantBusinessName),
         ...addendumRowToPrefillPartial(rec?.addendum ?? null),
-        ...ownersToPrefillPartial(rec?.owners ?? null),
         ...guarantorsToPrefillPartial(rec?.guarantors ?? null),
+        ...ownersToPrefillPartial(resolvedOwners),
         ...bankDetailRowToPrefillPartial(rec?.bankDetail ?? null),
     };
     const contractOverrides = contractPrefillOverridesFromRow(rec?.contract ?? null);
     const liveOfferArgs = getLiveOfferPrefillArgs(anyApp, {
         offerDecision: options?.offerDecision ?? null,
     });
-    const ownerFallback = ownerFullName(rec?.owners?.[0]?.firstName, rec?.owners?.[0]?.lastName);
+    const ownerFallback = ownerFullName(resolvedOwners[0]?.firstName, resolvedOwners[0]?.lastName);
     const customerName =
         str(clientArgs.customerName) ||
         str(contractPartial.customerName) ||
@@ -3012,6 +3160,10 @@ export function getContractPrefillEditDefaultsFromApplication(
         ),
     });
     const mergedBeforeFees = applyLiveBankDetailsToPrefillMerge(recordPartial, mergedBase);
+    if (hasLiveOfferPrefillSource(anyApp, options?.offerDecision)) {
+        // Live offer wins over the stale saved-override snapshot for offer-derived money fields.
+        Object.assign(mergedBeforeFees, pickLiveOfferMoneyOverlay(liveOfferArgs));
+    }
     stripImpliedPurchasePercentFromOffer(mergedBeforeFees, options?.offerDecision ?? null);
     if (!str(mergedBeforeFees.authorizationClientName) && customerName) {
         mergedBeforeFees.authorizationClientName = customerName;
@@ -3053,6 +3205,17 @@ export function buildContractPrefillFieldsFromApplication(
 ): ContractPrefillField[] {
     const rec = options?.contractRecords;
     const savedOverrides = mergeContractPrefillOverrideLayers(options?.overrides);
+    const liveOfferAvailable = hasLiveOfferPrefillSource(anyApp, options?.offerDecision);
+    if (liveOfferAvailable) {
+        // Always reflect the freshly fetched offer for deal-terms money fields; drop the stale
+        // saved-override snapshot so an updated CRM offer is shown on the contract modal.
+        for (const key of LIVE_OFFER_MONEY_PREFILL_KEYS) {
+            delete (savedOverrides as Record<string, unknown>)[key];
+        }
+        for (const key of APPENDIX_FEE_OVERRIDE_ALIASES) {
+            delete (savedOverrides as Record<string, unknown>)[key];
+        }
+    }
     const baseMerged = getContractPrefillEditDefaultsFromApplication(anyApp, {
         agreementDate: options?.agreementDate,
         contractRecords: rec,
@@ -3100,6 +3263,14 @@ export function buildContractPrefillFieldsFromApplication(
     Object.assign(merged, finalizeContractPrefillMoneyFields(merged, moneySources));
     if (Object.keys(savedOverrides).length > 0) {
         Object.assign(merged, savedOverrides);
+    }
+    if (liveOfferAvailable) {
+        Object.assign(
+            merged,
+            pickLiveOfferMoneyOverlay(
+                getLiveOfferPrefillArgs(anyApp, { offerDecision: options?.offerDecision ?? null }),
+            ),
+        );
     }
     coerceNumericPrefillMoneyStrings(merged);
     if (!str(savedOverrides.purchasePercent)) {

@@ -2049,7 +2049,7 @@ export default function DashboardPage() {
                                 e.stopPropagation();
                                 void handleOpenDashboardApplicationDetails(app);
                               }}
-                              className="inline-flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+                              className="inline-flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
                               aria-label="View application details"
                             >
                               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current">
@@ -2087,7 +2087,7 @@ export default function DashboardPage() {
                           }
                         }}
                         onClick={() => handleNavigateDashboardApplication(app)}
-                        className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${isDark
+                        className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${isDark
                           ? "bg-[#1a1b1e] border-[#374151]"
                           : "bg-card border-[#F0F0F0]"
                           }`}
@@ -2112,7 +2112,7 @@ export default function DashboardPage() {
                               e.stopPropagation();
                               void handleOpenDashboardApplicationDetails(app);
                             }}
-                            className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                            className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                             aria-label="Preview application"
                           >
                             <EyeIcon className="h-4 w-4" />
@@ -2221,7 +2221,7 @@ export default function DashboardPage() {
                     <button
                       className={`flex items-center gap-2 px-3 py-2 h-9 rounded-md transition-colors ${isDark
                         ? 'bg-[#141517] hover:bg-[#374151] text-white'
-                        : 'bg-white hover:bg-gray-50 text-black border border-[#3184BB]'
+                        : 'bg-white hover:bg-gray-50 text-black border border-[var(--brand)]'
                         }`}
                       style={isDark ? { border: '1px solid rgba(118, 183, 226, 0.5)' } : {}}
                     >
@@ -2255,7 +2255,7 @@ export default function DashboardPage() {
                       </div>
                       <Button
                         onClick={handleDateChange}
-                        className="w-full bg-[#3184BB] hover:bg-[#3184BB]/90 text-white"
+                        className="w-full bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
                       >
                         Apply
                       </Button>
@@ -2369,7 +2369,7 @@ export default function DashboardPage() {
                             isAdminSevenDayTile && c.title === "Pending",
                         })
                       }
-                      className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                      className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                     >
                       <CornerSummaryCard
                         isDark={isDark}
@@ -2415,7 +2415,7 @@ export default function DashboardPage() {
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-[#276D9C]"></div>
+                      <div className="w-3 h-3 rounded-full bg-[var(--brand)]"></div>
                       <span className="text-xs text-muted-foreground">
                         Funded
                         {adminStats?.applications && (
@@ -2489,14 +2489,14 @@ export default function DashboardPage() {
 
                       {/* Bars matching the image colors */}
                       <Bar dataKey="rejected" name="Rejected" fill="#A9CCE3" barSize={10} />
-                      <Bar dataKey="funded" name="Funded" fill="#276D9C" barSize={10} />
+                      <Bar dataKey="funded" name="Funded" fill="var(--brand)" barSize={10} />
                       <Bar dataKey="approved" name="Approved" fill="#3b82f6" barSize={10} />
 
                       {/* The Connection Line anchoring to the highest bar (Funded) */}
                       <Line
                         type="linear"
                         dataKey="funded"
-                        stroke="#276D9C"
+                        stroke="var(--brand)"
                         strokeWidth={1.5}
                         dot={false}
                         activeDot={false}
@@ -2593,9 +2593,9 @@ export default function DashboardPage() {
                     >
                       <defs>
                         <linearGradient id="colorCommissionAdmin" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#276D9C" stopOpacity={0.3} />
+                          <stop offset="5%" stopColor="var(--brand)" stopOpacity={0.3} />
                           <stop offset="95%" stopColor="#F5FBFF" stopOpacity={0} />
-                          <stop offset="95%" stopColor="#276D9C" stopOpacity={0} />
+                          <stop offset="95%" stopColor="var(--brand)" stopOpacity={0} />
                         </linearGradient>
                       </defs>
                       <CartesianGrid vertical={false} horizontal={false} strokeDasharray="3 3" />
@@ -2630,7 +2630,7 @@ export default function DashboardPage() {
                         ticks={[0, 1000, 2000, 3000, 4000, 5000, 6000]}
                       />
                       <Tooltip
-                        cursor={{ stroke: '#276D9C', strokeWidth: 1 }}
+                        cursor={{ stroke: 'var(--brand)', strokeWidth: 1 }}
                         contentStyle={{
                           backgroundColor: 'white',
                           borderRadius: '8px',
@@ -2645,8 +2645,8 @@ export default function DashboardPage() {
                           return (
                             <div className="bg-white rounded-lg p-3 shadow-lg">
                               <div className="flex items-center gap-2 mb-2">
-                                <div className="w-2 h-2 rounded-full bg-[#276D9C]"></div>
-                                <p className="text-[#276D9C] font-semibold text-sm">{monthName}</p>
+                                <div className="w-2 h-2 rounded-full bg-[var(--brand)]"></div>
+                                <p className="text-[var(--brand)] font-semibold text-sm">{monthName}</p>
                               </div>
                               <p className="text-black text-sm">
                                 <span className="font-medium">Commission: </span>
@@ -2659,11 +2659,11 @@ export default function DashboardPage() {
                       <Area
                         type="linear"
                         dataKey="value"
-                        stroke="#276D9C"
+                        stroke="var(--brand)"
                         strokeWidth={2}
                         fill="url(#colorCommissionAdmin)"
-                        dot={{ r: 4, fill: '#276D9C' }}
-                        activeDot={{ r: 6, fill: '#276D9C' }}
+                        dot={{ r: 4, fill: 'var(--brand)' }}
+                        activeDot={{ r: 6, fill: 'var(--brand)' }}
                       />
                     </AreaChart>
                   </ResponsiveContainer>
@@ -2678,7 +2678,7 @@ export default function DashboardPage() {
               <div className={`rounded-xl border shadow-sm overflow-hidden ${surfaceBase}`}>
                 <div className="p-4 bg-slate-50/50 border-b flex justify-between items-center">
                   <h3 className="text-md font-bold text-black-600">Recent Applications</h3>
-                  <Button variant="ghost" size="sm" className="bg-[#276D9C] hover:bg-[#1e567d] text-white text-sm h-9 px-4">View All</Button>
+                  <Button variant="ghost" size="sm" className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white text-sm h-9 px-4">View All</Button>
                 </div>
                 <Table>
                   <TableHeader className="bg-slate-100/50">
@@ -2747,7 +2747,7 @@ export default function DashboardPage() {
                     <button
                       className={`flex items-center gap-2 px-3 py-2 h-9 rounded-md transition-colors ${isDark
                         ? "bg-[#141517] hover:bg-[#374151] text-white"
-                        : "bg-white hover:bg-gray-50 text-black border border-[#3184BB]"
+                        : "bg-white hover:bg-gray-50 text-black border border-[var(--brand)]"
                         }`}
                       style={isDark ? { border: "1px solid rgba(118, 183, 226, 0.5)" } : {}}
                     >
@@ -2790,7 +2790,7 @@ export default function DashboardPage() {
                       </div>
                       <Button
                         onClick={handleDateChange}
-                        className="w-full bg-[#3184BB] hover:bg-[#3184BB]/90 text-white"
+                        className="w-full bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
                       >
                         Apply
                       </Button>
@@ -2825,7 +2825,7 @@ export default function DashboardPage() {
                     }
                   }}
                   onClick={() => goToApplicationsForStatCard(c.title)}
-                  className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                  className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                 >
                   <CornerSummaryCard
                     isDark={isDark}
@@ -2873,7 +2873,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="h-4 w-px"></div>
                     <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-[#276D9C]"></div>
+                      <div className="w-3 h-3 rounded-full bg-[var(--brand)]"></div>
                       <span className="text-sm text-muted-foreground">
                         Funded
                       </span>
@@ -3003,7 +3003,7 @@ export default function DashboardPage() {
                       <Bar
                         dataKey="funded"
                         name="Funded"
-                        fill="#276D9C"
+                        fill="var(--brand)"
                         radius={[3, 3, 0, 0]}
                         barSize={12}
                       />
@@ -3103,7 +3103,7 @@ export default function DashboardPage() {
                           >
                             <stop
                               offset="5%"
-                              stopColor="#276D9C"
+                              stopColor="var(--brand)"
                               stopOpacity={0.3}
                             />
                             <stop
@@ -3113,7 +3113,7 @@ export default function DashboardPage() {
                             />
                             <stop
                               offset="95%"
-                              stopColor="#276D9C"
+                              stopColor="var(--brand)"
                               stopOpacity={0}
                             />
                           </linearGradient>
@@ -3157,7 +3157,7 @@ export default function DashboardPage() {
                           ]}
                         />
                         <Tooltip
-                          cursor={{ stroke: "#276D9C", strokeWidth: 1 }}
+                          cursor={{ stroke: "var(--brand)", strokeWidth: 1 }}
                           contentStyle={{
                             backgroundColor: "white",
                             borderRadius: "8px",
@@ -3197,8 +3197,8 @@ export default function DashboardPage() {
                             return (
                               <div className="bg-white rounded-lg p-3 shadow-lg">
                                 <div className="flex items-center gap-2 mb-2">
-                                  <div className="w-2 h-2 rounded-full bg-[#276D9C]"></div>
-                                  <p className="text-[#276D9C] font-semibold text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-[var(--brand)]"></div>
+                                  <p className="text-[var(--brand)] font-semibold text-sm">
                                     {displayLabel}
                                   </p>
                                 </div>
@@ -3213,11 +3213,11 @@ export default function DashboardPage() {
                         <Area
                           type="monotone"
                           dataKey="value"
-                          stroke="#276D9C"
+                          stroke="var(--brand)"
                           strokeWidth={2}
                           fill="url(#colorCommission)"
-                          dot={{ r: 4, fill: "#276D9C" }}
-                          activeDot={{ r: 6, fill: "#276D9C" }}
+                          dot={{ r: 4, fill: "var(--brand)" }}
+                          activeDot={{ r: 6, fill: "var(--brand)" }}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -3248,7 +3248,7 @@ export default function DashboardPage() {
                   {userRole !== "FINAL_UNDERWRITER" && (
                     <Button
                       variant="outline"
-                      className="h-9 gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white hover:text-white border-[#276D9C]"
+                      className="h-9 gap-2 bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white hover:text-white border-[var(--brand)]"
                       onClick={() => navigate("/case-management")}
                     >
                       <span className="text-sm font-semibold">
@@ -3264,7 +3264,7 @@ export default function DashboardPage() {
                       <button
                         className={`flex items-center gap-2 px-3 py-2 h-9 rounded-md transition-colors ${isDark
                           ? "bg-[#141517] hover:bg-[#374151] text-white"
-                          : "bg-white hover:bg-gray-50 text-black border border-[#3184BB]"
+                          : "bg-white hover:bg-gray-50 text-black border border-[var(--brand)]"
                           }`}
                         style={
                           isDark
@@ -3315,7 +3315,7 @@ export default function DashboardPage() {
                         </div>
                         <Button
                           onClick={handleDateChange}
-                          className="w-full bg-[#3184BB] hover:bg-[#3184BB]/90 text-white"
+                          className="w-full bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white"
                         >
                           Apply
                         </Button>
@@ -3339,7 +3339,7 @@ export default function DashboardPage() {
                       }
                     }}
                     onClick={() => goToApplicationsForStatCard(c.title)}
-                    className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                    className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                   >
                     <CornerSummaryCard
                       isDark={isDark}
@@ -3371,7 +3371,7 @@ export default function DashboardPage() {
                           }
                         }}
                         onClick={() => goToApplicationsForStatCard(c.title)}
-                        className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                        className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                       >
                         <CornerSummaryCard
                           isDark={isDark}
@@ -3399,7 +3399,7 @@ export default function DashboardPage() {
                             }
                           }}
                           onClick={() => goToApplicationsForStatCard(c.title)}
-                          className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                          className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                         >
                           <CornerSummaryCard
                             isDark={isDark}
@@ -3439,7 +3439,7 @@ export default function DashboardPage() {
                       </div>
                       <div className="h-4 w-px"></div>
                       <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 rounded-full bg-[#276D9C]"></div>
+                        <div className="w-3 h-3 rounded-full bg-[var(--brand)]"></div>
                         <span className="text-sm text-muted-foreground">
                           Funded
                         </span>
@@ -3569,7 +3569,7 @@ export default function DashboardPage() {
                         <Bar
                           dataKey="funded"
                           name="Funded"
-                          fill="#276D9C"
+                          fill="var(--brand)"
                           radius={[3, 3, 0, 0]}
                           barSize={12}
                         />
@@ -3600,7 +3600,7 @@ export default function DashboardPage() {
                   conversionText={pipelineConversionText}
                   pipelineView={pipelineView}
                   onSelectView={setPipelineView}
-                  dropdownButtonClassName="h-8 gap-2 rounded-md border-none bg-background font-inter text-sm text-[#151357] shadow-none"
+                  dropdownButtonClassName="h-8 gap-2 rounded-md border-none bg-background font-inter text-sm text-[var(--brand)] shadow-none"
                 />
               </section>
 

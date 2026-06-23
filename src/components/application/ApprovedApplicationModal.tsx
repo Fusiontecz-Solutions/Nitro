@@ -1154,7 +1154,7 @@ const ApprovedApplicationModal = ({
                                 type="button"
                                 onClick={() => void handleUpdateOffer()}
                                 disabled={isUpdatingOffer}
-                                className="bg-[#3B8BD1] hover:bg-[#3B8BD1]/90 text-white px-6"
+                                className="px-6"
                             >
                                 {isUpdatingOffer ? "Updating…" : "Update"}
                             </Button>

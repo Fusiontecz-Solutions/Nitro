@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import type React from "react";
 import {
@@ -872,7 +872,7 @@ export default function DealReviewDialog({
         <DialogHeader className="px-6 pt-5 pb-4 border-b border-slate-100/80 bg-gradient-to-b from-slate-50/80 to-white dark:from-slate-900/50 dark:to-[#141517] dark:border-slate-700">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-start gap-3 min-w-0">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-md shadow-blue-600/25">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-blue-600/25">
                 <BadgeCheck className="h-5 w-5" />
               </div>
               <div className="min-w-0">

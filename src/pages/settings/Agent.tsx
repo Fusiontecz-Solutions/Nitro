@@ -56,7 +56,7 @@ function Agent({ users, loading, error }: AgentProps) {
     <div className="rounded-sm border border-border bg-card overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="bg-[#276D9C] hover:bg-[#276D9C] dark:bg-primary border-b-0">
+          <TableRow className="bg-[var(--brand)] hover:bg-[var(--brand)] dark:bg-primary border-b-0">
             <TableHead className="text-white font-medium">Agent</TableHead>
             <TableHead className="text-white font-medium">EMAIL</TableHead>
             <TableHead className="text-white font-medium">PHONE</TableHead>

@@ -258,7 +258,7 @@ export default function ActionLogs() {
               className={cn(
                 "rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors",
                 filter === id
-                  ? "bg-[#276D9C] text-white shadow-sm"
+                  ? "bg-[var(--brand)] text-white shadow-sm"
                   : "text-muted-foreground hover:bg-background hover:text-foreground"
               )}
             >

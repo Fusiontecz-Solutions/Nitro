@@ -448,7 +448,7 @@ export default function AgentDealIsoTag({
                 <span
                     className={cn(
                         "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg",
-                        isDark ? "bg-zinc-800 text-sky-400" : "bg-[#3B8BD1]/10 text-[#2566A9]",
+                        isDark ? "bg-zinc-800 text-sky-400" : "bg-[var(--brand)]/10 text-[#2566A9]",
                     )}
                 >
                     {icon}
@@ -467,7 +467,7 @@ export default function AgentDealIsoTag({
                 "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm font-medium transition-colors",
                 isDark
                     ? "border-zinc-700 bg-zinc-800/80 text-sky-300 hover:border-sky-500/40 hover:bg-zinc-800 hover:text-sky-200"
-                    : "border-slate-200 bg-white text-[#276D9C] hover:border-[#3B8BD1]/40 hover:bg-[#3B8BD1]/5 hover:text-[#2566A9]",
+                    : "border-slate-200 bg-white text-[var(--brand)] hover:border-[var(--brand)]/40 hover:bg-[var(--brand)]/5 hover:text-[#2566A9]",
             )}
             aria-label="Edit ISO email"
         >
@@ -517,7 +517,7 @@ export default function AgentDealIsoTag({
                 <Mail
                     className={cn(
                         "absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2",
-                        isDark ? "text-zinc-500" : "text-[#3B8BD1]",
+                        isDark ? "text-zinc-500" : "text-[var(--brand)]",
                     )}
                     strokeWidth={2}
                     aria-hidden
@@ -544,7 +544,7 @@ export default function AgentDealIsoTag({
                     onClick={() => void handleSaveEmail()}
                     className={cn(
                         clickAction,
-                        "h-10 gap-1.5 bg-[#3B8BD1] px-4 text-sm font-semibold text-white hover:bg-[#2566A9] rounded-lg",
+                        "h-10 gap-1.5 bg-[var(--brand)] px-4 text-sm font-semibold text-white hover:bg-[#2566A9] rounded-lg",
                     )}
                 >
                     {savingEmail ? (
@@ -581,7 +581,7 @@ export default function AgentDealIsoTag({
                 {/* <Building2
                     className={cn(
                         "h-5 w-5 shrink-0",
-                        isDark ? "text-[#5AACEA]" : "text-[#276D9C]",
+                        isDark ? "text-[#C07BE0]" : "text-[var(--brand)]",
                     )}
                     aria-hidden
                 /> */}

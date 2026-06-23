@@ -413,12 +413,14 @@ function buildKatanAchComputed(
         contract,
         offerDecision,
     };
-    const transactionFee =
-        str(c.achAuthorizationAccountHolderBankTransactionFee) ||
-        resolveRemittancePrefillValue(sources);
-    const numberOfTransactions =
-        str(c.achAuthorizationAccountHolderBankNumberOfTransactions) ||
-        resolveNumberOfPaymentsPrefillValue(sources);
+    const transactionFee = offerDecision
+        ? resolveRemittancePrefillValue(sources)
+        : str(c.achAuthorizationAccountHolderBankTransactionFee) ||
+          resolveRemittancePrefillValue(sources);
+    const numberOfTransactions = offerDecision
+        ? resolveNumberOfPaymentsPrefillValue(sources)
+        : str(c.achAuthorizationAccountHolderBankNumberOfTransactions) ||
+          resolveNumberOfPaymentsPrefillValue(sources);
     return buildKatanAchAuthorizationAddendumPrefillFields({
         authorizationClientName: str(c.authorizationClientName),
         authorizationClientBankName: str(c.authorizationClientBankName),

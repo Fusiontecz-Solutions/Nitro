@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { updateClient } from "@/redux/actions/clientActions";
+import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { getApplicationById } from "@/redux/actions/applicationActions";
 import { axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
@@ -263,6 +264,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             toast.error(e?.message || String(e) || "Couldn't Verify and .");
             return false;
         } finally {
+            dispatch(resetUpdateClient());
             setSaving(false);
         }
     };
@@ -308,7 +310,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             <DialogContent className="sm:max-w-2xl max-h-[88vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
-                        <ClipboardCheck className="h-5 w-5 text-[#2563EB]" /> Review &amp; approve application
+                        <ClipboardCheck className="h-5 w-5 text-[var(--brand)]" /> Review &amp; approve application
                     </DialogTitle>
                 </DialogHeader>
 
@@ -332,7 +334,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                 <div className="flex items-center gap-2 mt-3 mb-3">
                     {STEPS.map((label, i) => (
                         <div key={label} className="flex items-center gap-2">
-                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${i <= step ? "bg-[#2563EB] text-white" : "bg-muted text-muted-foreground"}`}>{i + 1}</span>
+                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${i <= step ? "bg-[var(--brand)] text-white" : "bg-muted text-muted-foreground"}`}>{i + 1}</span>
                             <span className={`text-xs ${i === step ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{label}</span>
                             {i < STEPS.length - 1 && <span className="mx-1 h-px w-5 bg-border" />}
                         </div>
@@ -378,7 +380,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                             <Button variant="outline" onClick={() => void saveCorrections()} disabled={saving}>
                                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck2 className="h-4 w-4" />} Verify and Save
                             </Button>
-                            <Button onClick={() => setStep(1)} className="bg-[#2563EB] hover:bg-[#1d4ed8] text-white">Next →</Button>
+                            <Button onClick={() => setStep(1)} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">Next →</Button>
                         </div>
                     </div>
                 )}
@@ -417,7 +419,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
 
                         <div className="flex justify-between gap-2 pt-1">
                             <Button variant="outline" onClick={() => setStep(0)}>← Back</Button>
-                            <Button onClick={() => setStep(2)} className="bg-[#2563EB] hover:bg-[#1d4ed8] text-white">Next →</Button>
+                            <Button onClick={() => setStep(2)} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">Next →</Button>
                         </div>
                     </div>
                 )}
@@ -508,19 +510,19 @@ function DocRow({
     return (
         <div
             className={`flex items-center justify-between gap-3 rounded-lg border p-3 ${pinned
-                ? "border-[#2563EB]/40 bg-[#EAF1FA]/50 dark:border-[#5AACEA]/30 dark:bg-[#1f2937]/40"
+                ? "border-[var(--brand)]/40 bg-[#EAF1FA]/50 dark:border-[#C07BE0]/30 dark:bg-[#1f2937]/40"
                 : ""
                 }`}
         >
             <div className="flex items-center gap-3 min-w-0">
-                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[#2563EB] dark:bg-[#1f2937] dark:text-[#5AACEA]">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[var(--brand)] dark:bg-[#1f2937] dark:text-[#C07BE0]">
                     <Icon className="h-[18px] w-[18px]" />
                 </span>
                 <div className="min-w-0">
                     <p className="flex items-center gap-1.5 text-sm font-medium leading-tight">
                         {label}
                         {pinned && (
-                            <span className="inline-flex items-center gap-0.5 rounded-md bg-[#2563EB] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
+                            <span className="inline-flex items-center gap-0.5 rounded-md bg-[var(--brand)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
                                 <Pin className="h-2.5 w-2.5" /> Pinned
                             </span>
                         )}

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -87,6 +87,10 @@ interface BankAnalysisTableProps {
     allocatedBankAnalysisId?: number;
   }>;
   onBanksMetaChange?: (banks: Array<{ id: number; accountNumber: string }>) => void;
+  /** When true, hide per-bank Save rows / account Save — bulk save runs on Approve & Save. */
+  hideToolbarSave?: boolean;
+  /** Registers a bulk-save hook for the parent Approve & Save flow. */
+  onRegisterSaveAll?: (saveAll: () => Promise<boolean>) => void;
 }
 
 const parseCurrency = (value: string): number => {
@@ -298,8 +302,12 @@ const BankAnalysisTable = ({
   applicationId: applicationIdProp,
   positions = [],
   onBanksMetaChange,
+  hideToolbarSave = false,
+  onRegisterSaveAll,
 }: BankAnalysisTableProps) => {
   const isReadOnly = !!readOnly;
+  /** Hide per-bank Save when bulk save is wired (e.g. Offer "Approve & Save"). */
+  const deferToolbarSave = hideToolbarSave || Boolean(onRegisterSaveAll);
   const isDeleteDisabled = !!disableDelete;
   const isCreateDisabled = !!disableCreate;
   const [fundingBreakdownModal, setFundingBreakdownModal] = useState<{
@@ -987,6 +995,42 @@ const BankAnalysisTable = ({
     }
   };
 
+  const bankNeedsPersist = (bank: BankAnalysisInstance): boolean =>
+    Boolean(bank.accountNumber?.trim()) ||
+    bank.rows.some((row) => hasAnyValue(row));
+
+  /**
+   * Persist every bank card (account number + month rows) in one pass.
+   * Registered with the parent for Offer "Approve & Save".
+   */
+  const saveAll = useCallback(async (): Promise<boolean> => {
+    if (!applicationId) return true;
+    let allOk = true;
+    for (const bank of banks) {
+      if (!bankNeedsPersist(bank)) continue;
+      const result = await saveBank(bank);
+      if (result === "failed") {
+        allOk = false;
+      } else if (result === "saved") {
+        setBanks((prev) =>
+          prev.map((b) =>
+            b.id === bank.id
+              ? {
+                  ...b,
+                  accountHeaderLocked: Boolean(bank.accountNumber?.trim()),
+                }
+              : b,
+          ),
+        );
+      }
+    }
+    return allOk;
+  }, [applicationId, banks]);
+
+  useEffect(() => {
+    onRegisterSaveAll?.(saveAll);
+  }, [onRegisterSaveAll, saveAll]);
+
   /** Persist account number only. Backend update skips rows when `rows` is omitted, so row edits stay local until full save. */
   const saveAccountHeaderOnly = async (
     bank: BankAnalysisInstance,
@@ -1052,7 +1096,25 @@ const BankAnalysisTable = ({
             <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
               {!isReadOnly && bank.rows.length > 0 && (
                 <>
-                  {bank.rows.every((r) => r.isLocked) ? (
+                  {deferToolbarSave ? (
+                    bank.rows.every((r) => r.isLocked) ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                        disabled={
+                          isInitialLoading ||
+                          bulkSavingBankId === bank.id ||
+                          deletingBankId === bank.id ||
+                          savingHeaderBankId === bank.id
+                        }
+                        onClick={() => handleUnlockAllBankRows(bank.id)}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Edit rows
+                      </Button>
+                    ) : null
+                  ) : bank.rows.every((r) => r.isLocked) ? (
                     <Button
                       type="button"
                       variant="outline"
@@ -1071,7 +1133,7 @@ const BankAnalysisTable = ({
                   ) : (
                     <Button
                       type="button"
-                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--brand)] px-3 text-xs font-medium text-white hover:bg-[var(--brand-hover)]"
                       disabled={
                         isInitialLoading ||
                         bulkSavingBankId === bank.id ||
@@ -1100,18 +1162,20 @@ const BankAnalysisTable = ({
               </span>
               <Input
                 className={`h-9 w-36 shrink-0 rounded-md border border-[#E2E8F0] text-xs dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-400 ${
-                  bank.accountHeaderLocked || isReadOnly
+                  (!deferToolbarSave && bank.accountHeaderLocked) || isReadOnly
                     ? "bg-slate-50 dark:bg-slate-800/70"
                     : "bg-white dark:bg-slate-900"
                 }`}
                 placeholder={isInitialLoading ? "Loading..." : "Enter account number"}
-                readOnly={!!bank.accountHeaderLocked || isReadOnly}
+                readOnly={
+                  isReadOnly || (!deferToolbarSave && !!bank.accountHeaderLocked)
+                }
                 value={bank.accountNumber}
                 onChange={(e) =>
                   handleAccountChange(bank.id, e.target.value)
                 }
               />
-              {!isReadOnly && bank.accountHeaderLocked ? (
+              {!isReadOnly && !deferToolbarSave && bank.accountHeaderLocked ? (
                 <>
                   <span
                     className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-300"
@@ -1139,10 +1203,10 @@ const BankAnalysisTable = ({
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
                 </>
-              ) : !isReadOnly ? (
+              ) : !isReadOnly && !deferToolbarSave ? (
                 <Button
                   type="button"
-                  className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                  className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--brand)] px-3 text-xs font-medium text-white hover:bg-[var(--brand-hover)]"
                   disabled={isInitialLoading || savingHeaderBankId === bank.id}
                   onClick={async () => {
                     setSavingHeaderBankId(bank.id);
@@ -1185,7 +1249,7 @@ const BankAnalysisTable = ({
                   {!isCreateDisabled && bankIndex === 0 && (
                     <Button
                       type="button"
-                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[var(--brand)] px-3 text-xs font-medium text-white hover:bg-[var(--brand-hover)]"
                       disabled={isInitialLoading}
                       onClick={handleAddBank}
                     >
