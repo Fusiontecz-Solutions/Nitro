@@ -29,6 +29,8 @@ export type BoldSignMergeAndSendPayload = {
   supplementalLayoutKeys?: string[];
   /** When false, envelope omits the main contract PDF (standalone supplemental send). */
   includeMainContract?: boolean;
+  /** Platform layout key for the main contract PDF (Katan vs Alliance Bridge). */
+  mainContractLayoutKey?: string | null;
   /** @deprecated Use supplementalLayoutKeys — accepts layout keys or legacy CRM row ids. */
   supplementalDocumentRefs?: string[];
   ownerCount?: number;

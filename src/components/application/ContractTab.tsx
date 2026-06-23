@@ -51,6 +51,7 @@ import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
 import { Ban, FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
+import { resolveMainContractLayoutKey } from "./contractdata/contractFunderConfig";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
 import { mergeContractCcEmailList } from "./boldsignCcList";
@@ -1496,6 +1497,8 @@ export default function ContractTab({
             includeMainContract?: boolean;
             /** Current funder from contract modal (may not be persisted yet). */
             funderName?: string | null;
+            /** Main contract layout key (Katan vs Alliance Bridge). */
+            mainContractLayoutKey?: string | null;
             /** CRM recipient overrides for this send (does not edit DocuSign template). */
             signerRoles?: DocuSignTemplateRolePayload[];
             /** Deal Review values from the contract modal (latest UI state). */
@@ -1816,9 +1819,16 @@ export default function ContractTab({
             });
 
             const contractNumericIdForSend = Number((latestContract as { id?: unknown })?.id);
+            const mainContractLayoutKey =
+                String(sendPayload.mainContractLayoutKey ?? "").trim() ||
+                resolveMainContractLayoutKey(
+                    sendPayload.funderName ??
+                        (latestContract as { funderName?: string | null })?.funderName,
+                );
             const mergeRequest = {
                 supplementalLayoutKeys,
                 includeMainContract,
+                mainContractLayoutKey,
                 sendPackage: sendPackageSelection,
                 ownerCount,
                 roles,
@@ -2100,6 +2110,7 @@ export default function ContractTab({
         supplementalDocumentRefs?: string[];
         includeMainContract?: boolean;
         funderName?: string | null;
+        mainContractLayoutKey?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
         prefillFields?: Array<{ id: string; value: string }>;
         sendPackage?: ContractSendPackageSelection;
