@@ -76,7 +76,6 @@ import {
 } from './utils/platform-layout-envelope';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
 import {
-  contractHasAchAuthorizationEnvelope,
   findApplicationIdByAchEnvelopeId,
   isStandaloneAchEnvelope,
   linkAchAuthorizationEnvelopeToContract,
@@ -95,8 +94,11 @@ import {
 } from './utils/standalone-package-docusign';
 import {
   archiveMainContractEnvelopeToHistory,
+  isCompletedEnvelopeStatus,
+  resolveArchivedMainContractEnvelopeStatus,
   updateArchivedContractSendHistoryStatus,
 } from './utils/contract-send-history';
+import { syncApplicationOnMainContractResend } from '../contractApplicationWorkflowSync';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
 import { handleContractSigningStatusTransition } from '../contractSigningStatusEffects';
 import { mergeDefaultContractCcEmails } from '../../utils/contractCcDefaults';
@@ -2580,13 +2582,34 @@ export class DocusignService {
     });
     const priorEnvelopeId = String(existingDoc?.envelopeId ?? '').trim();
     if (priorEnvelopeId && priorEnvelopeId !== newEnvelopeId) {
-      const priorIsAch = await contractHasAchAuthorizationEnvelope(priorEnvelopeId);
-      if (!priorIsAch) {
-        await archiveMainContractEnvelopeToHistory(applicationId, {
-          envelopeId: priorEnvelopeId,
-          status: String(existingDoc?.status ?? 'draft'),
-          sentAt: existingDoc?.sentAt,
-          completedAt: existingDoc?.completedAt,
+      const contractRow = await prisma.contract.findUnique({
+        where: { applicationId },
+        select: { id: true, status: true },
+      });
+      const archiveStatus = resolveArchivedMainContractEnvelopeStatus(
+        existingDoc?.status,
+        contractRow?.status,
+      );
+      const priorWasCompleted = isCompletedEnvelopeStatus(
+        existingDoc?.status,
+        contractRow?.status,
+      );
+
+      await archiveMainContractEnvelopeToHistory(applicationId, {
+        envelopeId: priorEnvelopeId,
+        status: archiveStatus,
+        sentAt: existingDoc?.sentAt,
+        completedAt:
+          existingDoc?.completedAt ??
+          (priorWasCompleted ? new Date() : null),
+      });
+
+      if (priorWasCompleted) {
+        await syncApplicationOnMainContractResend(prisma, applicationId, {
+          source: 'docusign.linkEnvelopeToApplication',
+          contractId: contractRow?.id,
+          contractStatusPrevious: String(contractRow?.status ?? ''),
+          contractStatusNew: 'DRAFT',
         });
       }
     }
@@ -2823,8 +2846,6 @@ export class DocusignService {
       'contractgenerated',
       'contractout',
       'contractsout',
-      'contractsigned',
-      'signedcontracts',
       'final',
       'fundingcall',
       'disbursment',
@@ -2837,7 +2858,7 @@ export class DocusignService {
       where: { id: appId },
       data: {
         currentQueue: 'Contract Generated',
-        currentState: 'Contract_Generated',
+        currentState: 'CONTRACT_GENERATED',
       },
     });
   }
@@ -2851,22 +2872,6 @@ export class DocusignService {
     if (!appId) return;
     const status = String(internalStatus || '').trim().toLowerCase();
 
-    const normalizeQueueKey = (queue: string | null | undefined) =>
-      String(queue ?? '')
-        .trim()
-        .replace(/[\s_-]+/g, '')
-        .toLowerCase();
-
-    const postSignedQueueKeys = new Set([
-      'contractsigned',
-      'signedcontracts',
-      'final',
-      'fundingcall',
-      'disbursment',
-      'disbursement',
-      'funded',
-    ]);
-
     if (status === 'completed') {
       await prisma.application.updateMany({
         where: { id: appId },
@@ -2879,20 +2884,13 @@ export class DocusignService {
     }
 
     if (['sent', 'viewed', 'signed'].includes(status)) {
-      const app = await prisma.application.findUnique({
+      await prisma.application.updateMany({
         where: { id: appId },
-        select: { currentQueue: true },
+        data: {
+          currentQueue: 'Contract Out',
+          currentState: 'Contract Out',
+        },
       });
-      const qKey = normalizeQueueKey(app?.currentQueue);
-      if (!postSignedQueueKeys.has(qKey)) {
-        await prisma.application.updateMany({
-          where: { id: appId },
-          data: {
-            currentQueue: 'Contract Out',
-            currentState: 'Contract Out',
-          },
-        });
-      }
     }
   }
 

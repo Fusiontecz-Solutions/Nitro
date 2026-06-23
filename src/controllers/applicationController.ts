@@ -283,6 +283,9 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
 /** API input → verbatim `Application.currentState` string (not a Prisma workflow enum). */
 const verbatimApplicationStateByInput: Record<string, string> = {
     'Contract Out': 'Contract Out',
+    Contract_Generated: 'CONTRACT_GENERATED',
+    CONTRACT_GENERATED: 'CONTRACT_GENERATED',
+    'Contract Generated': 'CONTRACT_GENERATED',
 };
 
 const applicationStatePrismaToApi: Record<ApplicationState, string> = {

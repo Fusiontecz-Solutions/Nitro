@@ -237,6 +237,23 @@ export async function syncApplicationToContractGenerated(
   );
 }
 
+/**
+ * When a new main-contract DocuSign envelope replaces a prior send (resend after signed, etc.),
+ * move the deal back to Contract Generated so downstream sent/completed webhooks can advance it again.
+ */
+export async function syncApplicationOnMainContractResend(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  meta: ContractWorkflowSyncMeta,
+): Promise<boolean> {
+  return syncApplicationWorkflowStage(
+    prismaClient,
+    applicationId,
+    contractGeneratedApplicationUpdateData(),
+    meta,
+  );
+}
+
 /** After envelope is sent / viewed / partially signed — awaiting completion. */
 export async function syncApplicationToContractSent(
   prismaClient: PrismaLike,
@@ -416,11 +433,38 @@ export async function applyContractCompletedSyncToApplicationRecord(
 
   const contract = await prismaClient.contract.findFirst({
     where: { applicationId: applicationRecord.id },
-    select: { id: true, applicationId: true, status: true },
+    select: {
+      id: true,
+      applicationId: true,
+      status: true,
+      application: {
+        select: {
+          document: {
+            select: { status: true, envelopeId: true },
+          },
+        },
+      },
+    },
     orderBy: { updatedAt: 'desc' },
   });
 
   if (!contract) return false;
+
+  const contractStatusNorm = normalizeContractStatus(contract.status);
+  if (contractStatusNorm === 'DRAFT') return false;
+
+  const activeDocumentStatus = String(
+    contract.application?.document?.status ?? '',
+  )
+    .trim()
+    .toLowerCase();
+  if (
+    activeDocumentStatus &&
+    activeDocumentStatus !== 'completed' &&
+    contractStatusNorm === 'COMPLETED'
+  ) {
+    return false;
+  }
 
   const synced = await maybeSyncApplicationFromCompletedContract(
     prismaClient,
