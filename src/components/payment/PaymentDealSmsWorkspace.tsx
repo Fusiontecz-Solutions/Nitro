@@ -457,7 +457,7 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-8 gap-1 px-2 text-xs font-semibold text-[#276D9C] hover:bg-[#276D9C]/10 hover:text-[#276D9C] dark:text-[#5AACEA]"
+                className="h-8 gap-1 px-2 text-xs font-semibold text-[var(--brand)] hover:bg-[var(--brand)]/10 hover:text-[var(--brand)] dark:text-[#C07BE0]"
                 onClick={onNewChat}
               >
                 <Plus className="size-3.5" aria-hidden />
@@ -492,12 +492,12 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                           className={cn(
                             "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors",
                             active
-                              ? "bg-[#276D9C]/10 dark:bg-[#276D9C]/18"
+                              ? "bg-[var(--brand)]/10 dark:bg-[var(--brand)]/18"
                               : "hover:bg-muted/40 dark:hover:bg-white/[0.04]",
                           )}
                         >
                           <span
-                            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[#276D9C] text-sm font-semibold text-white"
+                            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-sm font-semibold text-white"
                             aria-hidden
                           >
                             {contactInitial(c.name)}
@@ -507,7 +507,7 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                               <span className="truncate text-sm font-semibold text-foreground">{c.name}</span>
                               {matched ? (
                                 <span
-                                  className="size-1.5 shrink-0 rounded-full bg-[#276D9C]"
+                                  className="size-1.5 shrink-0 rounded-full bg-[var(--brand)]"
                                   title="On this deal"
                                   aria-hidden
                                 />
@@ -556,14 +556,14 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                             className={cn(
                               "flex w-full flex-col gap-0.5 px-3 py-2.5 text-left text-sm transition-colors",
                               active
-                                ? "bg-[#276D9C]/12 dark:bg-[#276D9C]/20"
+                                ? "bg-[var(--brand)]/12 dark:bg-[var(--brand)]/20"
                                 : "hover:bg-muted/50 dark:hover:bg-white/[0.04]",
                             )}
                           >
                             <span className="flex items-center gap-2 font-medium">
                               {matched ? (
                                 <span
-                                  className="size-1.5 shrink-0 rounded-full bg-[#276D9C]"
+                                  className="size-1.5 shrink-0 rounded-full bg-[var(--brand)]"
                                   title="Matches this deal"
                                   aria-hidden
                                 />
@@ -631,7 +631,7 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                               className={cn(
                                 "max-w-[85%] rounded-2xl px-3 py-2 text-sm shadow-sm",
                                 outbound
-                                  ? "rounded-br-md bg-[#276D9C] text-white"
+                                  ? "rounded-br-md bg-[var(--brand)] text-white"
                                   : "rounded-bl-md border border-border/60 bg-muted/40 text-foreground dark:border-white/10 dark:bg-white/[0.06]",
                               )}
                             >
@@ -666,7 +666,7 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                     <Button
                       type="button"
                       size="sm"
-                      className="gap-2 bg-[#276D9C] hover:bg-[#215a84]"
+                      className="gap-2 bg-[var(--brand)] hover:bg-[#215a84]"
                       disabled={!compose.trim() || sendLoading}
                       onClick={() => void sendInboxMessage()}
                     >
@@ -727,7 +727,7 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                       <Button
                         type="button"
                         variant="default"
-                        className="gap-2 bg-[#276D9C] hover:bg-[#215a84]"
+                        className="gap-2 bg-[var(--brand)] hover:bg-[#215a84]"
                         disabled={!smsBody.trim() || !smsPhone.trim() || sendLoading}
                         onClick={() => void sendComposeSms()}
                       >
@@ -744,7 +744,7 @@ export function PaymentDealSmsWorkspace({ dealContacts, matchPhones }: Props) {
                       variant={configured ? "outline" : "default"}
                       className={cn(
                         "gap-2",
-                        !configured && "bg-[#276D9C] hover:bg-[#215a84]",
+                        !configured && "bg-[var(--brand)] hover:bg-[#215a84]",
                       )}
                       disabled={sendLoading}
                       onClick={() => void copySmsDraft()}

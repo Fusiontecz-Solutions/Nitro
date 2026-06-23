@@ -454,7 +454,7 @@ export default function MonthHistoryCommission() {
                                 type="button"
                                 className={cn(
                                     selectToolbarClass(isDark),
-                                    'flex items-center justify-between gap-2 px-3 text-left text-sm font-medium text-foreground shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-[#3184BB]/40',
+                                    'flex items-center justify-between gap-2 px-3 text-left text-sm font-medium text-foreground shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40',
                                 )}
                                 aria-label="Filter by month"
                             >
@@ -483,7 +483,7 @@ export default function MonthHistoryCommission() {
                                     'mb-2 flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                                     selectedMonthKey === 'all'
                                         ? isDark
-                                            ? 'bg-[#3184BB]/25 text-foreground'
+                                            ? 'bg-[var(--brand)]/25 text-foreground'
                                             : 'bg-[#E8F4FC] text-foreground'
                                         : 'text-muted-foreground hover:bg-muted/60',
                                 )}
@@ -494,7 +494,7 @@ export default function MonthHistoryCommission() {
                             >
                                 All months
                                 {selectedMonthKey === 'all' ? (
-                                    <Check className="h-4 w-4 text-[#3184BB]" aria-hidden />
+                                    <Check className="h-4 w-4 text-[var(--brand)]" aria-hidden />
                                 ) : null}
                             </button>
                             <div
@@ -537,8 +537,8 @@ export default function MonthHistoryCommission() {
                                                 'relative rounded-lg px-2 py-2 text-xs font-semibold transition-colors',
                                                 selected
                                                     ? isDark
-                                                        ? 'bg-[#3184BB]/35 text-foreground ring-1 ring-[#3184BB]/50'
-                                                        : 'bg-[#E8F4FC] text-foreground ring-1 ring-[#3184BB]/40'
+                                                        ? 'bg-[var(--brand)]/35 text-foreground ring-1 ring-[var(--brand)]/50'
+                                                        : 'bg-[#E8F4FC] text-foreground ring-1 ring-[var(--brand)]/40'
                                                     : isDark
                                                       ? 'text-muted-foreground hover:bg-white/5'
                                                       : 'text-muted-foreground hover:bg-muted/70',
@@ -551,7 +551,7 @@ export default function MonthHistoryCommission() {
                                             {label}
                                             {selected ? (
                                                 <Check
-                                                    className="absolute right-1 top-1 h-3 w-3 text-[#3184BB]"
+                                                    className="absolute right-1 top-1 h-3 w-3 text-[var(--brand)]"
                                                     aria-hidden
                                                 />
                                             ) : null}
@@ -576,7 +576,7 @@ export default function MonthHistoryCommission() {
                 </div>
                 <Button
                     type="button"
-                    className="h-10 w-full shrink-0 rounded-xl bg-[#3184BB] px-5 font-semibold shadow-[0_8px_24px_-12px_rgba(49,132,187,0.9)] hover:bg-[#276D9C] sm:w-fit lg:ml-auto"
+                    className="h-10 w-full shrink-0 rounded-xl bg-[var(--brand)] px-5 font-semibold shadow-[0_8px_24px_-12px_rgba(169,98,205,0.9)] hover:bg-[var(--brand)] sm:w-fit lg:ml-auto"
                     disabled={statusFilteredRows.length === 0}
                     onClick={() => downloadDealRowsCsv(statusFilteredRows)}
                 >
@@ -608,7 +608,7 @@ export default function MonthHistoryCommission() {
                         {tableMessage === 'loading' && (
                             <TableRow>
                                 <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
-                                    <Loader2 className="mx-auto mb-2 h-8 w-8 animate-spin text-[#3184BB]" />
+                                    <Loader2 className="mx-auto mb-2 h-8 w-8 animate-spin text-[var(--brand)]" />
                                     Loading applications…
                                 </TableCell>
                             </TableRow>
@@ -652,7 +652,7 @@ export default function MonthHistoryCommission() {
                                     </TableCell>
                                     <TableCell className={cn(tdCommission, 'text-muted-foreground')}>{deal.month}</TableCell>
                                     <TableCell className={tdCommission}>{deal.iso}</TableCell>
-                                    <TableCell className={cn(tdCommission, 'text-[#3184BB] font-semibold')}>
+                                    <TableCell className={cn(tdCommission, 'text-[var(--brand)] font-semibold')}>
                                         {formatCurrency(deal.funded)}
                                     </TableCell>
                                     <TableCell

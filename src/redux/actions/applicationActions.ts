@@ -693,9 +693,14 @@ export const sendApprovalEmail = createAsyncThunk(
         {
             applicationId,
             resend,
+            emailHtml,
+            emailSubject,
         }: {
             applicationId: string | number;
             resend?: boolean;
+            /** Branded HTML rendered by the frontend approval template (backend injects URL / names). */
+            emailHtml?: string;
+            emailSubject?: string;
         },
         { rejectWithValue }
     ) => {
@@ -703,6 +708,8 @@ export const sendApprovalEmail = createAsyncThunk(
             const response = await axiosPost('/applications/send-approval-email', {
                 applicationId,
                 resend: !!resend,
+                ...(emailHtml ? { emailHtml } : {}),
+                ...(emailSubject ? { emailSubject } : {}),
             });
             return response.data;
         } catch (error: any) {

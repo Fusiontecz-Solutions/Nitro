@@ -31,7 +31,7 @@ export function AvochatoCallDialog({ defaultPhone = "", defaultSubdomain = "" }:
           type="button"
           variant="outline"
           size="sm"
-          className="group gap-2 shrink-0 border-[#276D9C]/25 bg-gradient-to-b from-background to-muted/30 shadow-sm transition-all hover:border-[#276D9C]/45 hover:shadow-[0_0_20px_-6px_rgba(39,109,156,0.4)] dark:border-[#276D9C]/30 dark:from-white/[0.05] dark:to-transparent dark:hover:shadow-[0_0_24px_-4px_rgba(39,109,156,0.45)]"
+          className="group gap-2 shrink-0 border-[var(--brand)]/25 bg-gradient-to-b from-background to-muted/30 shadow-sm transition-all hover:border-[var(--brand)]/45 hover:shadow-[0_0_20px_-6px_rgba(39,109,156,0.4)] dark:border-[var(--brand)]/30 dark:from-white/[0.05] dark:to-transparent dark:hover:shadow-[0_0_24px_-4px_rgba(39,109,156,0.45)]"
           disabled={disabledTrigger}
           title={
             disabledTrigger
@@ -39,16 +39,16 @@ export function AvochatoCallDialog({ defaultPhone = "", defaultSubdomain = "" }:
               : "Call via Avochato"
           }
         >
-          <Phone className="size-4 text-[#276D9C] transition-transform group-hover:scale-110 dark:text-[#5AACEA]" aria-hidden />
+          <Phone className="size-4 text-[var(--brand)] transition-transform group-hover:scale-110 dark:text-[#C07BE0]" aria-hidden />
           Avochato call
         </Button>
       </DialogTrigger>
       <DialogContent
-        className="sm:max-w-lg border-border/60 bg-card/95 shadow-2xl shadow-black/20 ring-1 ring-[#276D9C]/10 backdrop-blur-xl dark:border-white/10 dark:bg-[#0a0f14]/95 dark:shadow-black/50 dark:ring-[#276D9C]/20"
+        className="sm:max-w-lg border-border/60 bg-card/95 shadow-2xl shadow-black/20 ring-1 ring-[var(--brand)]/10 backdrop-blur-xl dark:border-white/10 dark:bg-[#0a0f14]/95 dark:shadow-black/50 dark:ring-[var(--brand)]/20"
         aria-describedby="avochato-call-desc"
       >
         <DialogHeader className="space-y-1.5">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#276D9C] dark:text-[#5AACEA]">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--brand)] dark:text-[#C07BE0]">
             Voice link
           </p>
           <DialogTitle className="text-xl tracking-tight">Secure Avochato call</DialogTitle>

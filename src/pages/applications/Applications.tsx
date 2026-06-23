@@ -1086,7 +1086,7 @@ const Applications = () => {
               e.stopPropagation();
               handleOpenApplicationDetails(row.original);
             }}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
             aria-label="View application in drawer"
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -1915,7 +1915,7 @@ const Applications = () => {
 
               {pdfFile && (
                 <Button
-                  className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                  className="px-4 py-2 gap-2 bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 cursor-pointer"
                   onClick={handleExtractBusinessDetails}
                   disabled={isExtractingPDF}
                 >
@@ -1928,7 +1928,7 @@ const Applications = () => {
               {isSuperAdmin && (
                 <div className="flex flex-col items-start gap-1">
                   <Button
-                    className="px-4   py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer disabled:cursor-not-allowed"
+                    className="px-4   py-2 gap-2 bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 cursor-pointer disabled:cursor-not-allowed"
                     onClick={() => bulkUploadInputRef.current?.click()}
                     disabled={bulkUploadProgress.status === "processing"}
                   >
@@ -1953,7 +1953,7 @@ const Applications = () => {
                       {bulkUploadProgress.errors.length > 0 && (
                         <button
                           type="button"
-                          className="mt-0.5 text-[#276D9C] hover:underline cursor-pointer"
+                          className="mt-0.5 text-[var(--brand)] hover:underline cursor-pointer"
                           onClick={() => setShowBulkUploadErrorsDialog(true)}
                         >
                           View {bulkUploadProgress.errors.length} failed row
@@ -1967,7 +1967,7 @@ const Applications = () => {
             </div>
             {canCreateNewApplication && (
               <Button
-                className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                className="px-4 py-2 gap-2 bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 cursor-pointer"
                 onClick={() => navigate("/create-applications")}
               >
                 <Plus className="size-4" />
@@ -2041,7 +2041,7 @@ const Applications = () => {
                 }}
                 onMouseEnter={() => prefetchBrowseFromStatCard(c.title)}
                 onFocus={() => prefetchBrowseFromStatCard(c.title)}
-                className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
               >
                 <CornerSummaryCard
                   isDark={isDark}
@@ -2353,7 +2353,7 @@ const Applications = () => {
                         }
                       }}
                       aria-label={`Open application ${getApplicationDealIdDisplay(app)} (${app._id})`}
-                      className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${isDark
+                      className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${isDark
                         ? "bg-[#1a1b1e] border-[#374151]"
                         : "bg-card border-[#F0F0F0]"
                         } ${row.getIsSelected() ? "ring-2 ring-blue-400/60" : ""}`}
@@ -2396,7 +2396,7 @@ const Applications = () => {
                           <button
                             type="button"
                             onClick={() => void handleOpenApplicationDetails(app)}
-                            className="flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                            className="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                             aria-label="View application in drawer"
                           >
                             <EyeIcon className="h-4 w-4" />
@@ -2534,7 +2534,7 @@ const Applications = () => {
             <Button
               type="button"
               onClick={() => setShowAlreadyExistsDialog(false)}
-              className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+              className="bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90"
             >
               OK
             </Button>
@@ -2626,7 +2626,7 @@ const Applications = () => {
               </Button>
               <Button
                 type="button"
-                className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 gap-2"
+                className="bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 gap-2"
                 onClick={() => {
                   setShowBulkUploadErrorsDialog(false);
                   bulkUploadInputRef.current?.click();
@@ -2694,7 +2694,7 @@ const Applications = () => {
                   setPartialExtractedData(null);
                   navigate("/create-applications");
                 }}
-                className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+                className="bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90"
               >
                 Open New Application
               </Button>

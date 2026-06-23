@@ -66,15 +66,16 @@ export default function ApplicationSheetBankAnalysis({
         applicationId={resolvedApplicationId}
         allowOfferEdit={canEditDecisionMaking}
         allowPositionsEdit={canEditDecisionMaking}
-        betweenOfferAndPositions={
+        betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) => (
           <BankAnalysisTable
             showOnlyTotals={!canEditDecisionMaking}
-            readOnly={!canEditDecisionMaking}
-            disableCreate={!canEditDecisionMaking}
+            readOnly={componentsReadOnly || !canEditDecisionMaking}
+            disableCreate={componentsReadOnly || !canEditDecisionMaking}
             applicationId={resolvedApplicationId}
             positions={scopedPositions as any}
+            onRegisterSaveAll={onRegisterBankSaveAll}
           />
-        }
+        )}
       />
     </div>
   )

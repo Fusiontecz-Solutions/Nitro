@@ -350,8 +350,8 @@ const RequestMissingDocumentsModal = ({
                                             "flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors",
                                             isSelected
                                                 ? isDark
-                                                    ? "border-[#276D9C]/50 bg-[#276D9C]/10"
-                                                    : "border-[#276D9C]/40 bg-[#276D9C]/5"
+                                                    ? "border-[var(--brand)]/50 bg-[var(--brand)]/10"
+                                                    : "border-[var(--brand)]/40 bg-[var(--brand)]/5"
                                                 : isDark
                                                   ? "border-gray-700 bg-transparent hover:bg-gray-800/50"
                                                   : "border-slate-200 bg-white hover:bg-slate-50",
@@ -387,8 +387,8 @@ const RequestMissingDocumentsModal = ({
                             "flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5",
                             requestAdditional
                                 ? isDark
-                                    ? "border-[#276D9C]/50 bg-[#276D9C]/10"
-                                    : "border-[#276D9C]/40 bg-[#276D9C]/5"
+                                    ? "border-[var(--brand)]/50 bg-[var(--brand)]/10"
+                                    : "border-[var(--brand)]/40 bg-[var(--brand)]/5"
                                 : isDark
                                   ? "border-gray-700"
                                   : "border-slate-200",

@@ -185,7 +185,7 @@ export default function ApplicationSheetBankDetail({
     };
 
     const labelClass = isOverview
-        ? `text-xs font-medium ${isDark ? "text-[#5AACEA]" : "text-[#276D9C]"}`
+        ? `text-xs font-medium ${isDark ? "text-[#C07BE0]" : "text-[var(--brand)]"}`
         : "text-xs font-semibold text-muted-foreground uppercase tracking-wide";
 
     const inputClass = isOverview
@@ -376,7 +376,7 @@ export default function ApplicationSheetBankDetail({
             </Button>
             <Button
                 size={isOverview ? "sm" : "default"}
-                className="cursor-pointer bg-[#3B8BD1] text-white hover:bg-[#337dbb]"
+                className="cursor-pointer bg-[var(--brand)] text-white hover:bg-[var(--brand-hover)]"
                 onClick={() => void handleSave()}
                 disabled={saving}
             >

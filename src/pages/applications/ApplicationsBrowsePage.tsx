@@ -413,7 +413,7 @@ export default function ApplicationsBrowsePage() {
               e.stopPropagation();
               void handleOpenApplicationDetails(row.original);
             }}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
             aria-label="Preview application in drawer"
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -663,7 +663,7 @@ export default function ApplicationsBrowsePage() {
           }`}
       >
         {/* <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center rounded-full border border-[#276D9C]/30 bg-[#276D9C]/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-[#276D9C]">
+          <span className="inline-flex items-center rounded-full border border-[var(--brand)]/30 bg-[var(--brand)]/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-[var(--brand)]">
             Applications
           </span>
         </div> */}

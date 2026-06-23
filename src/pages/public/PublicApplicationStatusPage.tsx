@@ -168,7 +168,7 @@ const PublicApplicationStatusPage = () => {
       <div className="min-h-screen bg-background p-4 md:p-6">
         <div className="mx-auto max-w-7xl">
           <div className="mt-6 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
-            <div className="font-semibold text-[#151357]">
+            <div className="font-semibold text-[var(--brand)]">
               {errorCode === "TOKEN_EXPIRED" ? "Link expired" : "Link not available"}
             </div>
             {errorCode === "TOKEN_EXPIRED" && expiresAt ? (
@@ -187,7 +187,7 @@ const PublicApplicationStatusPage = () => {
       <div className="min-h-screen bg-background p-4 md:p-6">
         <div className="mx-auto max-w-7xl">
           <div className="mt-6 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
-            <div className="font-semibold text-[#151357]">Session error</div>
+            <div className="font-semibold text-[var(--brand)]">Session error</div>
             <div className="mt-1">{sessionError}</div>
           </div>
         </div>
@@ -244,7 +244,7 @@ const PublicApplicationStatusPage = () => {
               </div>
             ) : !detailReady ? (
               <div className="rounded-lg border border-[#E5E7EB] bg-white p-10 text-center text-sm text-[#687182]">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[#276D9C] border-t-transparent align-[-0.125em]" />
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[var(--brand)] border-t-transparent align-[-0.125em]" />
                 <span className="ml-2">Loading application details…</span>
               </div>
             ) : (
@@ -264,27 +264,27 @@ const PublicApplicationStatusPage = () => {
               <h2 className="mb-4 text-base font-semibold text-[#374151]">Summary</h2>
               <dl className="space-y-2 text-sm">
                 <div className="grid grid-cols-2 gap-2">
-                  <dt className="font-medium text-[#276D9C]">Reference</dt>
+                  <dt className="font-medium text-[var(--brand)]">Reference</dt>
                   <dd className="text-[#4B5563]">
                     {app.applicationId != null ? `#${app.applicationId}` : app.id.slice(0, 8) + "…"}
                   </dd>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <dt className="font-medium text-[#276D9C]">Business</dt>
+                  <dt className="font-medium text-[var(--brand)]">Business</dt>
                   <dd className="text-[#4B5563]">{businessName}</dd>
                 </div>
                 {ownerName ? (
                   <div className="grid grid-cols-2 gap-2">
-                    <dt className="font-medium text-[#276D9C]">Owner</dt>
+                    <dt className="font-medium text-[var(--brand)]">Owner</dt>
                     <dd className="text-[#4B5563]">{ownerName}</dd>
                   </div>
                 ) : null}
                 <div className="grid grid-cols-2 gap-2">
-                  <dt className="font-medium text-[#276D9C]">Stage</dt>
+                  <dt className="font-medium text-[var(--brand)]">Stage</dt>
                   <dd className="text-[#4B5563]">{formatLabel(app.currentQueue)}</dd>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <dt className="font-medium text-[#276D9C]">Status</dt>
+                  <dt className="font-medium text-[var(--brand)]">Status</dt>
                   <dd className="text-[#4B5563]">{formatLabel(app.currentState)}</dd>
                 </div>
               </dl>

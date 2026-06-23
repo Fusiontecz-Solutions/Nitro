@@ -68,7 +68,7 @@ type SidebarNavIcon = ComponentType<SvgIconProps>;
 
 type PipelineAccent =
   | "contract-pending"
-  | "contract-generated"
+  | "contract-sent"
   | "contract-signed"
   | "final"
   | "funding-call"
@@ -228,9 +228,9 @@ const dealPipelineSection: SidebarNavSection = {
           pipelineAccent: "contract-pending",
         },
         {
-          label: operationsDashboardStatusTitle("Contract_Generated"),
-          operationsStatus: "Contract_Generated",
-          pipelineAccent: "contract-generated",
+          label: operationsDashboardStatusTitle("Contract_Sent"),
+          operationsStatus: "Contract_Sent",
+          pipelineAccent: "contract-sent",
         },
         {
           label: operationsDashboardStatusTitle("Contract_Signed"),
@@ -516,18 +516,23 @@ const Sidebar = () => {
     : "bg-sidebar border-r border-sidebar-border";
 
   const sectionHeadingClass =
-    "mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground group-data-[collapsible=icon]:hidden";
+    "mb-2 px-2 text-sm font-bold uppercase tracking-wider text-muted-foreground group-data-[collapsible=icon]:hidden";
 
   const mainSidebarTitleClass =
-    "mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground group-data-[collapsible=icon]:hidden";
+    "mt-3 text-xs font-bold uppercase tracking-wider text-muted-foreground group-data-[collapsible=icon]:hidden";
+
+  const navHoverClass =
+    "hover:text-primary hover:[&_svg]:text-primary hover:[&_*]:text-primary";
 
   const navButtonClass = isDark
-    ? "w-full h-9 rounded-lg px-2 text-[15px] text-foreground/90 [&_svg]:text-foreground/90 hover:bg-sidebar-accent data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
-    : "w-full h-9 rounded-lg px-2 text-[15px] text-muted-foreground [&_svg]:text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground hover:[&_svg]:text-sidebar-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0";
+    ? `w-full h-9 rounded-lg px-2 text-[15px] text-foreground/90 [&_svg]:text-foreground/90 hover:bg-sidebar-accent ${navHoverClass} data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0`
+    : `w-full h-9 rounded-lg px-2 text-[15px] text-muted-foreground [&_svg]:text-muted-foreground hover:bg-sidebar-accent/60 ${navHoverClass} data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[active=true]:[&_svg]:text-sidebar-accent-foreground data-[active=true]:font-medium group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0`;
+
+  const subNavButtonClass = `!h-auto min-h-8 items-center overflow-visible py-1.5 text-sm leading-snug [&>span:last-child]:truncate-none hover:bg-sidebar-accent/60 ${navHoverClass}`;
 
   const logoutButtonClass = isDark
-    ? "w-full h-9 cursor-pointer rounded-lg px-2 text-foreground hover:bg-sidebar-accent [&_svg]:text-foreground"
-    : "w-full h-9 cursor-pointer rounded-lg px-2 text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground [&_svg]:text-muted-foreground hover:[&_svg]:text-sidebar-foreground";
+    ? `w-full h-9 cursor-pointer rounded-lg px-2 text-foreground hover:bg-sidebar-accent [&_svg]:text-foreground ${navHoverClass}`
+    : `w-full h-9 cursor-pointer rounded-lg px-2 text-muted-foreground hover:bg-sidebar-accent/60 [&_svg]:text-muted-foreground ${navHoverClass}`;
 
   return (
     <UISidebar collapsible="icon" side="left">
@@ -634,7 +639,7 @@ const Sidebar = () => {
                                 <NavIcon icon={item.icon} />
                               </span>
                               <span className="min-w-0 flex-1 truncate">
-                                <span className="mr-1 text-muted-foreground" aria-hidden>
+                                <span className="mr-1 opacity-70" aria-hidden>
                                   •
                                 </span>
                                 {item.label}
@@ -667,7 +672,7 @@ const Sidebar = () => {
                                     asChild
                                     isActive={childActive}
                                     size="md"
-                                    className="!h-auto min-h-8 items-center overflow-visible py-1.5 text-sm leading-snug [&>span:last-child]:truncate-none"
+                                    className={subNavButtonClass}
                                   >
                                     <Link
                                       to={childTo}

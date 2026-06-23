@@ -52,11 +52,13 @@ export interface Application {
         business?: {
             name?: string;
             email?: string;
+            address?: import("./clientTypes").Address;
         };
         owner?: {
             firstName?: string;
             lastName?: string;
             email?: string;
+            address?: import("./clientTypes").Address;
         };
     };
     loanAmount?: number | null;

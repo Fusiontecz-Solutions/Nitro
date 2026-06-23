@@ -82,7 +82,7 @@ const Header = () => {
                             onClick={() => navigate("/user-setting")}
                             className="flex items-center gap-2 cursor-pointer"
                         >
-                            <div className="h-8 w-8 rounded-full bg-[#276D9C] text-white text-xs font-semibold flex items-center justify-center">{user?.firstName?.slice(0, 1).toUpperCase()}{user?.lastName?.slice(0, 1).toUpperCase()}</div>
+                            <div className="h-8 w-8 rounded-full bg-[var(--brand)] text-white text-xs font-semibold flex items-center justify-center">{user?.firstName?.slice(0, 1).toUpperCase()}{user?.lastName?.slice(0, 1).toUpperCase()}</div>
                             <div className="hidden sm:block">
                                 <div className="text-sm font-medium text-foreground capitalize">{user?.firstName + ' ' + user?.lastName || 'John Doe'}</div>
                             </div>

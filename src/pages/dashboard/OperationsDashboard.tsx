@@ -380,7 +380,7 @@ export const OperationsDashboard = () => {
         label: "Underwriter",
         value: caseStageCounts.Underwriter ?? 0,
         helper: "In underwriting review",
-        icon: <Search className="h-6 w-6 text-[#276D9C]" />,
+        icon: <Search className="h-6 w-6 text-[var(--brand)]" />,
         operationsStatus: "Underwriter",
       },
       {
@@ -509,7 +509,7 @@ export const OperationsDashboard = () => {
           e.preventDefault();
           handleSummaryCardClick(card);
         }}
-        className={`h-full overflow-hidden rounded-xl text-left transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40 ${sectionShadowClass} ${
+        className={`h-full overflow-hidden rounded-xl text-left transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 ${sectionShadowClass} ${
           card.operationsStatus && !statCardsShowSkeleton
             ? "cursor-pointer"
             : "cursor-default"
@@ -729,7 +729,7 @@ export const OperationsDashboard = () => {
                   <Bar
                     dataKey="cases"
                     radius={[4, 4, 0, 0]}
-                    fill="#276D9C"
+                    fill="var(--brand)"
                   />
                 </BarChart>
               </ResponsiveContainer>
@@ -750,7 +750,7 @@ export const OperationsDashboard = () => {
             </div>
             <div className="flex items-center gap-4 text-xs font-medium text-muted-foreground">
               <div className="inline-flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full bg-[#276D9C]" />
+                <span className="h-2.5 w-2.5 rounded-full bg-[var(--brand)]" />
                 <span>Collected</span>
               </div>
               <div className="inline-flex items-center gap-2">
@@ -768,8 +768,8 @@ export const OperationsDashboard = () => {
               >
                 <defs>
                   <linearGradient id="collectedArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#276D9C" stopOpacity={0.7} />
-                    <stop offset="95%" stopColor="#276D9C" stopOpacity={0.05} />
+                    <stop offset="5%" stopColor="var(--brand)" stopOpacity={0.7} />
+                    <stop offset="95%" stopColor="var(--brand)" stopOpacity={0.05} />
                   </linearGradient>
                   <linearGradient id="pendingArea" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#F97316" stopOpacity={0.7} />
@@ -810,7 +810,7 @@ export const OperationsDashboard = () => {
                   type="monotone"
                   dataKey="collected"
                   name="collected"
-                  stroke="#276D9C"
+                  stroke="var(--brand)"
                   strokeWidth={2}
                   fill="url(#collectedArea)"
                   dot={{ strokeWidth: 1, r: 3 }}
@@ -879,7 +879,7 @@ export const OperationsDashboard = () => {
                         ? "Search contract signed..."
                         : "Search contracted..."
                   }
-                  className="h-10 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#276D9C]/30"
+                  className="h-10 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/30"
                 />
               </div>
               <div
@@ -1057,7 +1057,7 @@ export const OperationsDashboard = () => {
                                 e.stopPropagation();
                                 void handleOpenRecentCasePreview(item);
                               }}
-                              className="inline-flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] dark:text-sky-400 dark:hover:text-sky-300 cursor-pointer"
+                              className="inline-flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] dark:text-sky-400 dark:hover:text-sky-300 cursor-pointer"
                               aria-label="View application details"
                             >
                               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current">
@@ -1094,7 +1094,7 @@ export const OperationsDashboard = () => {
                             }
                           }}
                           onClick={() => handleNavigateRecentCase(item)}
-                          className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${
+                          className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${
                             isDark
                               ? "bg-[#1a1b1e] border-[#374151]"
                               : "bg-card border-[#F0F0F0]"
@@ -1120,7 +1120,7 @@ export const OperationsDashboard = () => {
                                 e.stopPropagation();
                                 void handleOpenRecentCasePreview(item);
                               }}
-                              className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                              className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                               aria-label="Preview application"
                             >
                               <EyeIcon className="h-4 w-4" />

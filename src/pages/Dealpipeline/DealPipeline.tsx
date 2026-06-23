@@ -482,7 +482,7 @@ export default function DealPipeline() {
               e.stopPropagation();
               openPreviewForDealId(row.original.id);
             }}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
             aria-label="Preview application in drawer"
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -709,9 +709,9 @@ export default function DealPipeline() {
                     <motion.div
                       className={`w-10 h-10 flex items-center justify-center rounded-full cursor-pointer border-2 transition-all
                   ${isCompleted
-                          ? "bg-[#276D9C] border-[#276D9C] text-white"
+                          ? "bg-[var(--brand)] border-[var(--brand)] text-white"
                           : isActive
-                            ? "border-[#276D9C] text-[#276D9C] bg-white dark:bg-background"
+                            ? "border-[var(--brand)] text-[var(--brand)] bg-white dark:bg-background"
                             : "border-slate-300 text-slate-400 bg-white dark:bg-card"
                         }`}
                       animate={{
@@ -737,7 +737,7 @@ export default function DealPipeline() {
 
                     <motion.span
                       className={`mt-2 text-[13px] font-bold uppercase tracking-tight leading-none
-                ${isActive || isCompleted ? "text-[#276D9C]" : "text-slate-400"}`}
+                ${isActive || isCompleted ? "text-[var(--brand)]" : "text-slate-400"}`}
                       animate={{ y: isActive ? -1 : 0 }}
                       transition={{ duration: 0.2 }}
                     >
@@ -758,7 +758,7 @@ export default function DealPipeline() {
                   <div className="flex-1 mt-5 h-[2px] mx-6 bg-slate-200 dark:bg-slate-700 relative">
                     <motion.div
                       className={`absolute top-0 left-0 h-full transition-all duration-500
-                  ${isCompleted ? "bg-[#276D9C] w-full" : "bg-transparent w-0"}`}
+                  ${isCompleted ? "bg-[var(--brand)] w-full" : "bg-transparent w-0"}`}
                       initial={false}
                       animate={{ width: isCompleted ? "100%" : "0%" }}
                       transition={{ duration: 0.35, ease: "easeInOut" }}
@@ -914,7 +914,7 @@ export default function DealPipeline() {
                       }
                     }}
                     aria-label={`Open deal ${deal.code}`}
-                    className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${
+                    className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${
                       isDark ? "bg-[#1a1b1e] border-[#374151]" : "bg-card border-[#F0F0F0]"
                     }`}
                   >
@@ -931,7 +931,7 @@ export default function DealPipeline() {
                           e.stopPropagation();
                           openPreviewForDealId(deal.id);
                         }}
-                        className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                        className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                         aria-label="Preview application in drawer"
                       >
                         <EyeIcon className="h-4 w-4" />

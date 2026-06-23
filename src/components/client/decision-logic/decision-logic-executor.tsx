@@ -420,7 +420,7 @@ export default function DecisionLogicExecutor({
 
   return (
     <div className="dl-widget-page flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-slate-100 antialiased">
-      <header className="shrink-0 bg-[#276D9C] shadow-[0_1px_0_rgba(0,0,0,0.08)]">
+      <header className="shrink-0 bg-[var(--brand)] shadow-[0_1px_0_rgba(0,0,0,0.08)]">
         <div className="mx-auto flex w-full max-w-[1920px] flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 md:px-8">
           <div className="flex min-w-0 items-start gap-3">
             <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white ring-1 ring-white/25">
@@ -479,7 +479,7 @@ export default function DecisionLogicExecutor({
               ) : (
                 <div className="flex min-h-[50dvh] flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
                   <Loader2
-                    className="h-10 w-10 animate-spin text-[#276D9C]"
+                    className="h-10 w-10 animate-spin text-[var(--brand)]"
                     aria-hidden
                   />
                   <div>

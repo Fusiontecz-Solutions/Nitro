@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import {
     Building2,
     ChevronRight,
+    CopyCheck,
     DollarSign,
     FilePenLine,
     FileText,
@@ -39,9 +40,12 @@ import {
 } from "@/components/ui/select";
 import {
     applyLiveBankDetailsToPrefillMerge,
+    applyLiveOfferSyncToPrefillPartial,
+    applyOwnerRowsToPrefillMerge,
     contractPrefillToContractColumnUpdate,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
+    stripStaleOfferOverridesFromPersisted,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./Contract";
@@ -74,6 +78,8 @@ import {
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
 import { getPlatformSignerRoleRows } from "./platformDocumentConfig";
+import { syncContractPrefillToSourceRecords } from "./contractPrefillSourceSync";
+import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -237,6 +243,48 @@ function contractPrefillSectionKeys(section: ContractPrefillSection): ContractPr
     return section.groups.flatMap((g) => g.keys);
 }
 
+/** Client 1 → Owner 1 → Guarantor 1, then Client 2 → Owner 2 → Guarantor 2 (per linked owner). */
+function buildGuarantyPartyGroups(ownerCount: number): ContractPrefillSectionGroup[] {
+    const groups: ContractPrefillSectionGroup[] = [];
+    if (ownerCount >= 1) {
+        groups.push({
+            heading: "Client 1",
+            keys: ["guarantyClientName", "guarantySs", "guarantySsDriverLicense"],
+        });
+        groups.push({
+            heading: "Owner 1",
+            keys: ["guarantyOwner1Name", "guarantyOwner1Ss", "guarantyOwner1DriverLicense"],
+        });
+        groups.push({
+            heading: "Guarantor 1",
+            keys: [
+                "guarantyGuarantor1Name",
+                "guarantyGuarantor1Ss",
+                "guarantyGuarantor1DriverLicense",
+            ],
+        });
+    }
+    if (ownerCount >= 2) {
+        groups.push({
+            heading: "Client 2",
+            keys: ["merchant2Name", "guarantyOwner2Ss", "guarantyOwner2DriverLicense"],
+        });
+        groups.push({
+            heading: "Owner 2",
+            keys: ["guarantyOwner2Name", "guarantyOwner2Ss", "guarantyOwner2DriverLicense"],
+        });
+        groups.push({
+            heading: "Guarantor 2",
+            keys: [
+                "guarantyGuarantor2Name",
+                "guarantyGuarantor2Ss",
+                "guarantyGuarantor2DriverLicense",
+            ],
+        });
+    }
+    return groups;
+}
+
 /**
  * Document-aligned sections for the Katan RPA stack (RPA → Security → Guaranty → Appendix → ACH → Addendum).
  * Order follows the contract PDF flow so users can verify fields section by section.
@@ -371,30 +419,10 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "guaranty",
             title: "Guaranty of performance",
-            description: "Guaranty blocks — client, owners, guarantors; SSN and driver license lines.",
+            description:
+                "Guaranty blocks per linked owner — each owner's name, SSN, and driver license fill Client, Owner, and Guarantor lines for that owner.",
             Icon: Shield,
-            groups: [
-                {
-                    heading: "Client",
-                    keys: ["guarantyClientName", "guarantySs", "guarantySsDriverLicense"],
-                },
-                {
-                    heading: "Owner 1",
-                    keys: ["guarantyOwner1Name", "guarantyOwner1Ss", "guarantyOwner1DriverLicense"],
-                },
-                {
-                    heading: "Owner 2",
-                    keys: ["guarantyOwner2Name", "guarantyOwner2Ss", "guarantyOwner2DriverLicense"],
-                },
-                {
-                    heading: "Guarantor 1",
-                    keys: ["guarantyGuarantor1Name", "guarantyGuarantor1Ss", "guarantyGuarantor1DriverLicense"],
-                },
-                {
-                    heading: "Guarantor 2",
-                    keys: ["guarantyGuarantor2Name", "guarantyGuarantor2Ss", "guarantyGuarantor2DriverLicense"],
-                },
-            ],
+            groups: buildGuarantyPartyGroups(2),
         },
         {
             id: "appendix",
@@ -579,19 +607,34 @@ function mergeSignerEditorRows(
 function applySecondOwnerNameToPrefillPartial(
     partial: Partial<BuildContractPrefillFieldsArgs>,
     secondOwnerName: string,
+    secondOwnerSs?: string,
+    secondOwnerDriverLicense?: string,
 ): void {
     const name = String(secondOwnerName || "").trim();
-    if (!name) return;
-    const keys = [
-        "owner2GuarantorName",
-        "merchant2Name",
-        "guarantyOwner2Name",
-        "guarantyGuarantor2Name",
-        "addendumDatedPrincipalOwner2Name",
-    ] as const;
-    for (const key of keys) {
-        if (!String(partial[key] || "").trim()) {
-            partial[key] = name;
+    if (name) {
+        const keys = [
+            "owner2GuarantorName",
+            "merchant2Name",
+            "guarantyOwner2Name",
+            "guarantyGuarantor2Name",
+            "addendumDatedPrincipalOwner2Name",
+        ] as const;
+        for (const key of keys) {
+            if (!String(partial[key] || "").trim()) {
+                partial[key] = name;
+            }
+        }
+    }
+    const ssn = String(secondOwnerSs || "").trim();
+    if (ssn) {
+        for (const key of ["guarantyOwner2Ss", "guarantyGuarantor2Ss"] as const) {
+            if (!String(partial[key] || "").trim()) partial[key] = ssn;
+        }
+    }
+    const dl = String(secondOwnerDriverLicense || "").trim();
+    if (dl) {
+        for (const key of ["guarantyOwner2DriverLicense", "guarantyGuarantor2DriverLicense"] as const) {
+            if (!String(partial[key] || "").trim()) partial[key] = dl;
         }
     }
 }
@@ -691,6 +734,211 @@ const US_STATE_ABBR_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
     "achAuthorizationAccountHolderState",
     "achAuthorizationAccountHolderBankState",
 ];
+
+/**
+ * Fields that hold the SAME logical value but are repeated across contract sections
+ * (e.g. EIN, routing number, bank name, business address appear in RPA, Security, ACH …).
+ * The "Sync to all" button on a section copies that section's value for each group into
+ * every sibling field so the user types shared values only once.
+ *
+ * Groupings mirror how `getContractPrefillEditDefaultsFromApplication` seeds these fields
+ * from a single source value, so syncing matches the application's own defaults.
+ */
+type PrefillSyncGroup = {
+    id: string;
+    label: string;
+    keys: ContractPrefillFormFieldKey[];
+};
+
+const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
+    {
+        id: "ein",
+        label: "EIN / Tax ID",
+        keys: ["federalTaxIdEin", "securityTaxEin", "authorizationClientTaxId"],
+    },
+    {
+        id: "dba",
+        label: "DBA",
+        keys: ["doingBusinessAs", "securityDoingBusinessAs", "achAuthorizationAccountHolderDba"],
+    },
+    {
+        id: "routing",
+        label: "Routing number",
+        keys: ["authorizationClientBankRouting", "achAuthorizationAccountHolderBankRoutingNumber"],
+    },
+    {
+        id: "account",
+        label: "Account number",
+        keys: ["authorizationClientBankAccount", "achAuthorizationAccountHolderBankAccountNumber"],
+    },
+    {
+        id: "bankName",
+        label: "Bank name",
+        keys: ["authorizationClientBankName", "achAuthorizationAccountHolderBankName"],
+    },
+    {
+        id: "businessName",
+        label: "Business / legal name",
+        keys: [
+            "legalName",
+            "securityBusinessName",
+            "achAuthorizationAccountHolderName",
+            "achAuthorizationConcentAccountHolderName",
+            "addendumDatedPrincipalBusiness",
+        ],
+    },
+    {
+        id: "clientName",
+        label: "Client / primary name",
+        keys: [
+            "customerName",
+            "clientName",
+            "appendixClientName",
+            "authorizationApplication",
+            "authorizationClientName",
+            "authorizationClientNamePrint",
+            "guarantyClientName",
+            "securityGuarantor",
+            "exhibitOwnerName",
+            "addendumDatedPrincipalOwner",
+        ],
+    },
+    {
+        id: "businessPhone",
+        label: "Business phone",
+        keys: ["clientPhone", "authorizedBusinessPhone", "achAuthorizationAccountHolderPhone"],
+    },
+    {
+        id: "street",
+        label: "Street",
+        keys: [
+            "businessAddress",
+            "businessAddressContract",
+            "securityBusinessAddress",
+            "achAuthorizationAccountHolderAddress",
+        ],
+    },
+    {
+        id: "city",
+        label: "City",
+        keys: [
+            "businessAddressCity",
+            "businessAddressContractCity",
+            "securityBusinessAddressCity",
+            "achAuthorizationAccountHolderCity",
+        ],
+    },
+    {
+        id: "addressState",
+        label: "State",
+        keys: [
+            "businessAddressState",
+            "businessAddressContractState",
+            "securityBusinessAddressState",
+            "achAuthorizationAccountHolderState",
+        ],
+    },
+    {
+        id: "zip",
+        label: "ZIP",
+        keys: [
+            "businessAddressZip",
+            "businessAddressContractZip",
+            "securityBusinessAddressZip",
+            "achAuthorizationAccountHolderZip",
+        ],
+    },
+    {
+        id: "offerAmount",
+        label: "Offer amount",
+        keys: ["purchaseAmount", "addendumDatedPrincipalOwnerAmount"],
+    },
+    {
+        id: "paybackAmount",
+        label: "Payback amount",
+        keys: ["purchasePrice", "addendumDatedPrincipalOwnerAmount2"],
+    },
+    {
+        id: "owner1Name",
+        label: "Owner 1 name",
+        keys: [
+            "owner1GuarantorName",
+            "guarantyClientName",
+            "guarantyOwner1Name",
+            "guarantyGuarantor1Name",
+            "addendumDatedPrincipalOwner1Name",
+        ],
+    },
+    {
+        id: "owner2Name",
+        label: "Owner 2 name",
+        keys: [
+            "owner2GuarantorName",
+            "merchant2Name",
+            "guarantyOwner2Name",
+            "guarantyGuarantor2Name",
+            "addendumDatedPrincipalOwner2Name",
+        ],
+    },
+    {
+        id: "ssn",
+        label: "SSN",
+        keys: ["guarantySs", "guarantyOwner1Ss", "guarantyGuarantor1Ss"],
+    },
+    {
+        id: "driverLicense",
+        label: "Driver license",
+        keys: [
+            "guarantySsDriverLicense",
+            "guarantyOwner1DriverLicense",
+            "guarantyGuarantor1DriverLicense",
+        ],
+    },
+    {
+        id: "owner2Ssn",
+        label: "Owner 2 SSN",
+        keys: ["guarantyOwner2Ss", "guarantyGuarantor2Ss"],
+    },
+    {
+        id: "owner2DriverLicense",
+        label: "Owner 2 driver license",
+        keys: ["guarantyOwner2DriverLicense", "guarantyGuarantor2DriverLicense"],
+    },
+    {
+        id: "date",
+        label: "Date",
+        keys: [
+            "agreementDate",
+            "authorizationClientDate",
+            "achAuthorizationAccountHolderDate",
+            "achAuthorizationConcentAccountHolderDate",
+            "addendumDated",
+            "addendumDatedPrincipalOwner1Date",
+            "addendumDatedPrincipalOwner2Date",
+        ],
+    },
+];
+
+/** Owner-party groups mirrored on every keystroke (Client ↔ Owner ↔ Guarantor per index). */
+const OWNER_PARTY_REALTIME_MIRROR_GROUP_IDS = new Set([
+    "owner1Name",
+    "owner2Name",
+    "ssn",
+    "driverLicense",
+    "owner2Ssn",
+    "owner2DriverLicense",
+]);
+
+const PREFILL_REALTIME_MIRROR_BY_KEY = (() => {
+    const map = new Map<ContractPrefillFormFieldKey, ContractPrefillFormFieldKey[]>();
+    for (const group of PREFILL_SYNC_GROUPS) {
+        if (!OWNER_PARTY_REALTIME_MIRROR_GROUP_IDS.has(group.id)) continue;
+        for (const key of group.keys) {
+            map.set(key, group.keys);
+        }
+    }
+    return map;
+})();
 
 function trimField(values: Record<keyof BuildContractPrefillFieldsArgs, string>, key: keyof BuildContractPrefillFieldsArgs) {
     return String(values[key] ?? "").trim();
@@ -880,6 +1128,8 @@ export type ContractPrefillEditFormProps = {
     resolvedContract?: Record<string, unknown> | null;
     /** Live CRM signer rows from Summary (may be unsaved); used for owner-2 field visibility and hydration. */
     contractSignerOverrides?: ContractSignerOverrideRow[] | null;
+    /** Called after offer/client/application rows are synced from saved prefill. */
+    onSourceRecordsSynced?: () => void;
 };
 
 function isPasswordPrefillKey(key: keyof BuildContractPrefillFieldsArgs): boolean {
@@ -907,6 +1157,7 @@ export function ContractPrefillEditForm({
     contractDisclosureFrequency = null,
     resolvedContract = null,
     contractSignerOverrides = null,
+    onSourceRecordsSynced,
 }: ContractPrefillEditFormProps) {
     const dispatch = useDispatch<AppDispatch>();
     const [values, setValues] = useState<Record<keyof BuildContractPrefillFieldsArgs, string>>(emptyValuesRecord);
@@ -1074,14 +1325,32 @@ export function ContractPrefillEditForm({
         [resolvedSignerRows],
     );
 
+    const resolvedOwnerRows = useMemo(
+        () => resolveOwnerRowsForContractPrefill(applicationData, contractRecords?.owners ?? null),
+        [applicationData, contractRecords?.owners],
+    );
+
     const activeOwnerCount = useMemo(
         () =>
-            resolveActiveOwnerCount({
-                owners: contractRecords?.owners ?? null,
-                guarantors: contractRecords?.guarantors ?? null,
-                signerRoles: contractSignerRolesForCounts,
-            }),
-        [contractRecords?.owners, contractRecords?.guarantors, contractSignerRolesForCounts],
+            Math.min(
+                2,
+                Math.max(
+                    resolvedOwnerRows.length,
+                    resolveActiveOwnerCount({
+                        owners: resolvedOwnerRows.length
+                            ? resolvedOwnerRows
+                            : (contractRecords?.owners ?? null),
+                        guarantors: contractRecords?.guarantors ?? null,
+                        signerRoles: contractSignerRolesForCounts,
+                    }),
+                ),
+            ),
+        [
+            resolvedOwnerRows,
+            contractRecords?.owners,
+            contractRecords?.guarantors,
+            contractSignerRolesForCounts,
+        ],
     );
     const owner2KeySet = useMemo(() => new Set<string>(OWNER2_PREFILL_FORM_KEYS), []);
     const guarantor2KeySet = useMemo(() => new Set<string>(GUARANTOR2_PREFILL_FORM_KEYS), []);
@@ -1095,15 +1364,28 @@ export function ContractPrefillEditForm({
                 return true;
             });
 
-        const sections = CONTRACT_PREFILL_SECTIONS.map((section) => ({
-            ...section,
-            groups: section.groups
-                .map((group) => ({
-                    ...group,
-                    keys: filterGroupKeys(group.keys),
-                }))
-                .filter((group) => group.keys.length > 0),
-        })).filter((section) => section.groups.length > 0);
+        const sections = CONTRACT_PREFILL_SECTIONS.map((section) => {
+            if (section.id === "guaranty") {
+                return {
+                    ...section,
+                    groups: buildGuarantyPartyGroups(activeOwnerCount)
+                        .map((group) => ({
+                            ...group,
+                            keys: filterGroupKeys(group.keys),
+                        }))
+                        .filter((group) => group.keys.length > 0),
+                };
+            }
+            return {
+                ...section,
+                groups: section.groups
+                    .map((group) => ({
+                        ...group,
+                        keys: filterGroupKeys(group.keys),
+                    }))
+                    .filter((group) => group.keys.length > 0),
+            };
+        }).filter((section) => section.groups.length > 0);
 
         if (activeOwnerCount >= 2) {
             sections.splice(
@@ -1160,6 +1442,7 @@ export function ContractPrefillEditForm({
         showSecondPartyFields,
         owner2KeySet,
         guarantor2KeySet,
+        activeOwnerCount,
     ]);
 
     const seededAddendumMappingIdRef = useRef<string | null>(null);
@@ -1207,13 +1490,18 @@ export function ContractPrefillEditForm({
             contractRecords,
             offerDecision,
         });
-        const persisted =
+        const persistedRaw =
             persistedPrefillOverrides === undefined
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (stripDocumentTemplateBlobFromPrefillOverrides(persistedPrefillOverrides) ??
                     ({} as Partial<BuildContractPrefillFieldsArgs>));
+        const persisted = stripStaleOfferOverridesFromPersisted(
+            persistedRaw,
+            offerDecision,
+            applicationData,
+        );
         const mergedBase = { ...defaults, ...persisted };
-        const merged = applyLiveBankDetailsToPrefillMerge(
+        let merged = applyLiveBankDetailsToPrefillMerge(
             defaults,
             finalizeContractPrefillMoneyFields(mergedBase, {
                 application: applicationData as Record<string, unknown> | undefined,
@@ -1222,23 +1510,43 @@ export function ContractPrefillEditForm({
                 prefill: mergedBase,
             }),
         );
-        const ownerCount = resolveActiveOwnerCount({
-            owners: contractRecords?.owners ?? null,
-            guarantors: contractRecords?.guarantors ?? null,
-            signerRoles: contractSignerRolesForCounts,
-        });
+        merged = applyLiveOfferSyncToPrefillPartial(merged, applicationData, offerDecision);
+        const ownerCount = Math.min(
+            2,
+            Math.max(
+                resolvedOwnerRows.length,
+                resolveActiveOwnerCount({
+                    owners: resolvedOwnerRows.length
+                        ? resolvedOwnerRows
+                        : (contractRecords?.owners ?? null),
+                    guarantors: contractRecords?.guarantors ?? null,
+                    signerRoles: contractSignerRolesForCounts,
+                }),
+            ),
+        );
+        applyOwnerRowsToPrefillMerge(merged, resolvedOwnerRows);
         if (ownerCount >= 2) {
             const signerRoles = buildDocuSignRolesFromEditorRows(
                 mergeSignerEditorRows(resolvedSignerRows, ownerCount),
             );
+            const secondRow = resolvedOwnerRows[1];
             const secondOwnerName =
-                resolveOwnerRowFullName(contractRecords?.owners?.[1]) ||
+                resolveOwnerRowFullName(secondRow) ||
                 resolveSecondOwnerSignerName(
                     signerRoles,
                     ownerCount,
-                    contractRecords?.owners ?? null,
+                    resolvedOwnerRows,
                 );
-            applySecondOwnerNameToPrefillPartial(merged, secondOwnerName);
+            const secondOwnerSs = String(secondRow?.ssnNumber ?? secondRow?.ssn ?? "").trim();
+            const secondOwnerDriverLicense = String(
+                secondRow?.driverLicenseNumber ?? secondRow?.driverLicense ?? "",
+            ).trim();
+            applySecondOwnerNameToPrefillPartial(
+                merged,
+                secondOwnerName,
+                secondOwnerSs,
+                secondOwnerDriverLicense,
+            );
         }
         setValues(mergeFormState(merged));
         setSignerEditorRows(mergeSignerEditorRows(resolvedSignerRows, ownerCount));
@@ -1251,6 +1559,7 @@ export function ContractPrefillEditForm({
         offerDecision,
         contractSignerRolesForCounts,
         resolvedSignerRows,
+        resolvedOwnerRows,
     ]);
 
     /** Stable ref so `resetFromSources` stays current without widening effect deps below. */
@@ -1288,6 +1597,69 @@ export function ContractPrefillEditForm({
         // Intentionally omit `persistedPrefillOverrides` — re-hydrating on parent updates resets in-progress edits.
     }, [open, formReady]);
 
+    const offerDecisionSyncKey = useMemo(() => {
+        const root =
+            offerDecision && typeof offerDecision === "object"
+                ? offerDecision
+                : (() => {
+                      // Fall back to the offer carried on the freshly loaded application so the
+                      // re-sync still fires when the dedicated OfferDecision fetch is null/stale.
+                      const app = applicationData as Record<string, unknown> | null;
+                      const embedded =
+                          (app?.offerDecision as Record<string, unknown> | undefined) ??
+                          (app?.OfferDecision as Record<string, unknown> | undefined) ??
+                          null;
+                      if (embedded && typeof embedded === "object" && !Array.isArray(embedded)) {
+                          return embedded;
+                      }
+                      const termsRaw = app?.termsOffers;
+                      if (Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object") {
+                          return termsRaw[0] as Record<string, unknown>;
+                      }
+                      if (termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)) {
+                          return termsRaw as Record<string, unknown>;
+                      }
+                      return null;
+                  })();
+        if (!root || typeof root !== "object") return "";
+        const inner =
+            root.offer != null &&
+            typeof root.offer === "object" &&
+            !Array.isArray(root.offer)
+                ? (root.offer as Record<string, unknown>)
+                : root;
+        return [
+            inner.offer,
+            inner.approvedAmount,
+            inner.totalRemit,
+            inner.fees,
+            inner.repayPerPeriod,
+            inner.paymentAmount,
+            inner.dailyPayment,
+            inner.frequency,
+            inner.numberOfPayments,
+            inner.paymentsTerms,
+            inner.term,
+            inner.termLength,
+        ]
+            .map((v) => String(v ?? ""))
+            .join("|");
+    }, [offerDecision, applicationData]);
+
+    /** When the live offer arrives or changes after open, refresh offer-derived fields without wiping other edits. */
+    useEffect(() => {
+        if (!open || !offerDecisionSyncKey) return;
+        setValues((prev) =>
+            mergeFormState(
+                applyLiveOfferSyncToPrefillPartial(
+                    prev as Partial<BuildContractPrefillFieldsArgs>,
+                    applicationData,
+                    offerDecision,
+                ),
+            ),
+        );
+    }, [open, offerDecisionSyncKey, applicationData, offerDecision]);
+
     useEffect(() => {
         if (!open) {
             setFieldErrors({});
@@ -1308,6 +1680,20 @@ export function ContractPrefillEditForm({
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
     const isLinkedDisclosureSection = activeSectionId === LINKED_DOCUSIGN_DISCLOSURE_SECTION_ID;
     const isContractSignersSection = activeSectionId === CONTRACT_SIGNERS_PREFILL_SECTION_ID;
+
+    /** Shared-value groups (EIN, routing, address, …) that have a field on the current stage. */
+    const activeSectionSyncGroups = useMemo(() => {
+        if (
+            !activeSection ||
+            isContractSignersSection ||
+            isLinkedAddendumSection ||
+            isLinkedDisclosureSection
+        ) {
+            return [] as PrefillSyncGroup[];
+        }
+        const keysInSection = new Set<string>(activeSection.groups.flatMap((g) => g.keys));
+        return PREFILL_SYNC_GROUPS.filter((group) => group.keys.some((k) => keysInSection.has(k)));
+    }, [activeSection, isContractSignersSection, isLinkedAddendumSection, isLinkedDisclosureSection]);
 
     const handleSave = async () => {
         setSaveError(null);
@@ -1426,6 +1812,25 @@ export function ContractPrefillEditForm({
             onPersistedPrefillChange?.(mainSaved);
             onPersistedPrefillFullChange?.(fullSaved);
             setValues(mergeFormState(mainSaved));
+            try {
+                await syncContractPrefillToSourceRecords({
+                    dispatch,
+                    applicationData,
+                    applicationUuid,
+                    prefill: payload,
+                    offerDecision,
+                    contractGuarantors: contractRecords?.guarantors ?? null,
+                    bankDetail: contractRecords?.bankDetail ?? null,
+                });
+                onSourceRecordsSynced?.();
+            } catch (syncErr) {
+                console.error(syncErr);
+                const syncMsg =
+                    syncErr instanceof Error
+                        ? syncErr.message
+                        : "Contract saved, but application or offer sync failed.";
+                toast.warn(syncMsg);
+            }
             const appKey = String(applicationUuid ?? "").trim();
             if (appKey) {
                 try {
@@ -1435,7 +1840,7 @@ export function ContractPrefillEditForm({
                 }
             }
             setSaveError(null);
-            toast.success("Contract prefill fields saved.");
+            toast.success("Contract prefill, offer, application, and bank details saved.");
             onOpenChange(false);
         } catch (e) {
             console.error(e);
@@ -1503,15 +1908,83 @@ export function ContractPrefillEditForm({
         }
     };
 
-    const setField = (key: keyof BuildContractPrefillFieldsArgs, v: string) => {
-        setValues((prev) => ({ ...prev, [key]: v }));
-        setSaveError(null);
+    const setField = useCallback(
+        (key: keyof BuildContractPrefillFieldsArgs, v: string) => {
+            setValues((prev) => {
+                const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {
+                    [key]: v,
+                };
+                const mirrorKeys = PREFILL_REALTIME_MIRROR_BY_KEY.get(key as ContractPrefillFormFieldKey);
+                if (mirrorKeys) {
+                    for (const mirrorKey of mirrorKeys) {
+                        if (mirrorKey === key) continue;
+                        if (
+                            !showSecondPartyFields &&
+                            (owner2KeySet.has(mirrorKey) || guarantor2KeySet.has(mirrorKey))
+                        ) {
+                            continue;
+                        }
+                        updates[mirrorKey] = v;
+                    }
+                }
+                return { ...prev, ...updates };
+            });
+            setSaveError(null);
+            setFieldErrors((prev) => {
+                const mirrorKeys = PREFILL_REALTIME_MIRROR_BY_KEY.get(key as ContractPrefillFormFieldKey);
+                if (!prev[key] && !mirrorKeys?.some((k) => prev[k])) return prev;
+                const next = { ...prev };
+                delete next[key];
+                for (const mirrorKey of mirrorKeys ?? []) {
+                    delete next[mirrorKey];
+                }
+                return next;
+            });
+        },
+        [showSecondPartyFields, owner2KeySet, guarantor2KeySet],
+    );
+
+    /**
+     * Push the current stage's shared values (EIN, routing, address, names, …) to the matching
+     * fields on every other stage so the user does not retype the same value section by section.
+     */
+    const handleSyncSectionToAll = () => {
+        if (readOnly || !activeSection) return;
+        const keysInSection = new Set<string>(activeSection.groups.flatMap((g) => g.keys));
+        const isHiddenTarget = (k: keyof BuildContractPrefillFieldsArgs) =>
+            !showSecondPartyFields && (owner2KeySet.has(k) || guarantor2KeySet.has(k));
+        const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {};
+        const syncedLabels: string[] = [];
+        for (const group of PREFILL_SYNC_GROUPS) {
+            const sourceKey = group.keys.find(
+                (k) => keysInSection.has(k) && String(values[k] ?? "").trim() !== "",
+            );
+            if (!sourceKey) continue;
+            const value = String(values[sourceKey] ?? "");
+            let changed = false;
+            for (const k of group.keys) {
+                if (isHiddenTarget(k)) continue;
+                if (String(values[k] ?? "") !== value) {
+                    updates[k] = value;
+                    changed = true;
+                }
+            }
+            if (changed) syncedLabels.push(group.label);
+        }
+        if (!syncedLabels.length) {
+            toast.info("Fill a shared field on this stage first, then sync.");
+            return;
+        }
+        setValues((prev) => ({ ...prev, ...updates }));
         setFieldErrors((prev) => {
-            if (!prev[key]) return prev;
             const next = { ...prev };
-            delete next[key];
+            for (const k of Object.keys(updates) as (keyof BuildContractPrefillFieldsArgs)[]) {
+                delete next[k];
+            }
             return next;
         });
+        setSaveError(null);
+        toast.success(`Synced ${syncedLabels.join(", ")} to every stage.`);
     };
 
     return (
@@ -1520,9 +1993,9 @@ export function ContractPrefillEditForm({
                 className="flex max-h-[92vh] w-[min(100vw-2rem,960px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px]"
                 onOpenAutoFocus={(e: any) => e.preventDefault()}
             >
-                <DialogHeader className="shrink-0 border-b border-[#276D9C]/15 bg-gradient-to-r from-[#276D9C]/10 via-white to-slate-50 px-6 py-4 dark:from-[#276D9C]/20 dark:via-slate-950 dark:to-slate-900">
+                <DialogHeader className="shrink-0 border-b border-[var(--brand)]/15 bg-gradient-to-r from-[var(--brand)]/10 via-white to-slate-50 px-6 py-4 dark:from-[var(--brand)]/20 dark:via-slate-950 dark:to-slate-900">
                     <div className="flex items-start gap-3">
-                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#276D9C] text-white shadow-md shadow-[#276D9C]/25">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--brand)] text-white shadow-md shadow-[var(--brand)]/25">
                             <ScrollText className="h-5 w-5" aria-hidden />
                         </div>
                         <div className="min-w-0 space-y-1">
@@ -1548,7 +2021,7 @@ export function ContractPrefillEditForm({
 
                 {!formReady ? (
                     <div className="flex min-h-[min(52vh,420px)] flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-sm text-muted-foreground">
-                        <Loader2 className="h-8 w-8 animate-spin text-[#276D9C]" aria-hidden />
+                        <Loader2 className="h-8 w-8 animate-spin text-[var(--brand)]" aria-hidden />
                         <span>Loading saved prefill overrides…</span>
                     </div>
                 ) : (
@@ -1559,7 +2032,7 @@ export function ContractPrefillEditForm({
                         Section
                     </Label>
                     <Select value={activeSectionId} onValueChange={setActiveSectionId}>
-                        <SelectTrigger className="h-10 w-full border-[#276D9C]/25 bg-white dark:border-slate-600 dark:bg-slate-950">
+                        <SelectTrigger className="h-10 w-full border-[var(--brand)]/25 bg-white dark:border-slate-600 dark:bg-slate-950">
                             <SelectValue placeholder="Choose section" />
                         </SelectTrigger>
                         <SelectContent position="popper" className="z-[10200] max-h-[min(70vh,420px)]">
@@ -1578,7 +2051,7 @@ export function ContractPrefillEditForm({
                         className="hidden max-h-[min(58vh,520px)] w-[220px] shrink-0 flex-col gap-0.5 overflow-y-auto border-b border-slate-200 p-3 md:flex md:border-b-0 md:border-r dark:border-slate-700"
                         aria-label="Contract sections"
                     >
-                        <p className="mb-2 flex items-center gap-1.5 px-2 text-[10px] font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                        <p className="mb-2 flex items-center gap-1.5 px-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                             <LayoutList className="h-3 w-3" aria-hidden />
                             Outline
                         </p>
@@ -1592,7 +2065,7 @@ export function ContractPrefillEditForm({
                                     className={cn(
                                         "flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
                                         isActive
-                                            ? "bg-[#276D9C]/12 font-medium text-[#276D9C] ring-1 ring-[#276D9C]/25 dark:bg-[#276D9C]/20 dark:text-[#7eb8e8]"
+                                            ? "bg-[var(--brand)]/12 font-medium text-[var(--brand)] ring-1 ring-[var(--brand)]/25 dark:bg-[var(--brand)]/20 dark:text-[#7eb8e8]"
                                             : "text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800",
                                     )}
                                 >
@@ -1606,20 +2079,47 @@ export function ContractPrefillEditForm({
                     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
                         {activeSection ? (
                             <div className="space-y-4">
-                                <div className="rounded-xl border border-[#276D9C]/12 bg-slate-50/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-900/50">
-                                    <div className="flex items-start gap-3">
-                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]">
-                                            <activeSection.Icon className="h-4 w-4" aria-hidden />
+                                <div className="rounded-xl border border-[var(--brand)]/12 bg-slate-50/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-900/50">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="flex min-w-0 items-start gap-3">
+                                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]">
+                                                <activeSection.Icon className="h-4 w-4" aria-hidden />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                    {activeSection.title}
+                                                </h4>
+                                                <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                                                    {activeSection.description}
+                                                </p>
+                                            </div>
                                         </div>
-                                        <div className="min-w-0">
-                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                                {activeSection.title}
-                                            </h4>
-                                            <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
-                                                {activeSection.description}
-                                            </p>
-                                        </div>
+                                        {!readOnly && activeSectionSyncGroups.length > 0 ? (
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={handleSyncSectionToAll}
+                                                disabled={saving}
+                                                title={`Copy this stage's shared fields (${activeSectionSyncGroups
+                                                    .map((g) => g.label)
+                                                    .join(", ")}) to every other stage`}
+                                                className="h-8 shrink-0 gap-1.5 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                                            >
+                                                <CopyCheck className="h-3.5 w-3.5" aria-hidden />
+                                                Sync to all
+                                            </Button>
+                                        ) : null}
                                     </div>
+                                    {!readOnly && activeSectionSyncGroups.length > 0 ? (
+                                        <p className="mt-2 pl-12 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                                            Shared with other stages:{" "}
+                                            <span className="font-medium text-slate-600 dark:text-slate-300">
+                                                {activeSectionSyncGroups.map((g) => g.label).join(", ")}
+                                            </span>
+                                            . Fill them once here, then click “Sync to all”.
+                                        </p>
+                                    ) : null}
                                 </div>
                                 {isContractSignersSection ? (
                                     <div className="space-y-4">
@@ -1838,7 +2338,7 @@ export function ContractPrefillEditForm({
                                             type="button"
                                             variant="outline"
                                             size="sm"
-                                            className="gap-1 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                            className="gap-1 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                             onClick={() => setActiveSectionId(nextSection.id)}
                                         >
                                             Next: {nextSection.title}
@@ -1884,7 +2384,7 @@ export function ContractPrefillEditForm({
                         </Button>
                         {!readOnly && (
                             <Button
-                                className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                                className="bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 cursor-pointer"
                                 type="button"
                                 onClick={() => void handleSave()}
                                 disabled={saving || !formReady || parsePositiveContractId(contractId) == null}

@@ -876,7 +876,7 @@ export default function DealDetails() {
                         value={isoSearch}
                         onChange={(e) => setIsoSearch(e.target.value)}
                         placeholder="Search ISO..."
-                        className="h-8 w-full rounded-md border border-input bg-background pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-[#3184BB]/25"
+                        className="h-8 w-full rounded-md border border-input bg-background pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-[var(--brand)]/25"
                       />
                     </div>
                     <button
@@ -886,7 +886,7 @@ export default function DealDetails() {
                         setIsoDropdownOpen(false);
                       }}
                       className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedIsoId === "all"
-                        ? "bg-[#3184BB]/10 text-[#3184BB]"
+                        ? "bg-[var(--brand)]/10 text-[var(--brand)]"
                         : "text-foreground hover:bg-muted"
                         }`}
                     >
@@ -904,7 +904,7 @@ export default function DealDetails() {
                               setIsoDropdownOpen(false);
                             }}
                             className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedIsoId === item.id
-                              ? "bg-[#3184BB]/10 text-[#3184BB]"
+                              ? "bg-[var(--brand)]/10 text-[var(--brand)]"
                               : "text-foreground hover:bg-muted"
                               }`}
                           >
@@ -932,7 +932,7 @@ export default function DealDetails() {
                   value={dealSearch}
                   onChange={(e) => setDealSearch(e.target.value)}
                   placeholder="Search by merchant name..."
-                  className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-[#3184BB]/25"
+                  className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-[var(--brand)]/25"
                 />
               </div>
             </div>
@@ -943,7 +943,7 @@ export default function DealDetails() {
                   : "border-[#D6E4F1] bg-white/80"
               }`}
             >
-              <Gauge className="h-4 w-4 text-[#3184BB]" />
+              <Gauge className="h-4 w-4 text-[var(--brand)]" />
               <span className="text-xs font-medium text-muted-foreground">
                 {`${deals.length} deals · ${deals.filter((d) => d.status === "PAID").length} paid`}
               </span>
@@ -962,7 +962,7 @@ export default function DealDetails() {
               }`}
           >
             <div className="flex items-center gap-3">
-              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#3184BB]/15 text-[#3184BB]">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--brand)]/15 text-[var(--brand)]">
                 <FileText className="h-4 w-4" />
               </span>
               <div>
@@ -978,8 +978,8 @@ export default function DealDetails() {
                   value={selectedQueueFilter}
                   onChange={(e) => setSelectedQueueFilter(e.target.value)}
                   className={`h-9 appearance-none rounded-lg border pl-3 pr-9 text-xs font-medium text-foreground shadow-sm transition-all duration-200 outline-none ${isDark
-                    ? "border-[#3A4A5F] bg-[#111827] hover:border-[#4A607A] focus:border-[#5B9FD1] focus:ring-2 focus:ring-[#3184BB]/25"
-                    : "border-[#D5E3F0] bg-white hover:border-[#B6CEE3] focus:border-[#3184BB] focus:ring-2 focus:ring-[#3184BB]/20"
+                    ? "border-[#3A4A5F] bg-[#111827] hover:border-[#4A607A] focus:border-[#5B9FD1] focus:ring-2 focus:ring-[var(--brand)]/25"
+                    : "border-[#D5E3F0] bg-white hover:border-[#B6CEE3] focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20"
                     }`}
                   aria-label="Filter deals by queue"
                 >
@@ -1029,7 +1029,7 @@ export default function DealDetails() {
                     type="button"
                     onClick={() => setSelectedId(deal.id)}
                     className={`group relative w-full overflow-hidden rounded-2xl border text-left transition-all duration-200 ${isActive
-                      ? "border-[#3184BB]/55 bg-gradient-to-br from-[#3184BB]/14 to-transparent shadow-[0_20px_50px_-28px_rgba(49,132,187,0.85)] ring-1 ring-[#3184BB]/25"
+                      ? "border-[var(--brand)]/55 bg-gradient-to-br from-[var(--brand)]/14 to-transparent shadow-[0_20px_50px_-28px_rgba(169,98,205,0.85)] ring-1 ring-[var(--brand)]/25"
                       : isDark
                         ? "border-[#2A3546] bg-[#131923]/90 hover:border-[#3D4F66] hover:bg-[#151d2a]"
                         : "border-[#E5EDF5] bg-white/90 hover:border-[#C5D9ED] hover:shadow-md"
@@ -1037,14 +1037,14 @@ export default function DealDetails() {
                   >
                     <span
                       className={`absolute left-0 top-0 h-full w-1 rounded-l-2xl transition-colors ${isActive
-                        ? "bg-[#3184BB]"
+                        ? "bg-[var(--brand)]"
                         : "bg-transparent group-hover:bg-slate-400/40"
                         }`}
                     />
                     <div className="flex items-stretch gap-3 pl-3.5 pr-4 py-3.5">
                       <div
                         className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-sm font-bold ${isActive
-                          ? "bg-[#3184BB] text-white shadow-md shadow-[#3184BB]/30"
+                          ? "bg-[var(--brand)] text-white shadow-md shadow-[var(--brand)]/30"
                           : isDark
                             ? "bg-slate-800 text-slate-200"
                             : "bg-slate-100 text-slate-700"
@@ -1067,7 +1067,7 @@ export default function DealDetails() {
                         </div>
 
                         <div className="flex flex-wrap items-center  text-[11px]">
-                          {/* <span className="font-medium text-[#3184BB]">Offer: {formatCurrency(deal.offerAmount)}</span> */}
+                          {/* <span className="font-medium text-[var(--brand)]">Offer: {formatCurrency(deal.offerAmount)}</span> */}
                           <span className="text-muted-foreground">·</span>
                           <span className="text-muted-foreground">
                             Created:{" "}
@@ -1099,7 +1099,7 @@ export default function DealDetails() {
               <>
                 <div className="space-y-5 pb-6">
                   <div className="flex items-start gap-4">
-                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#3184BB] text-base font-semibold text-white">
+                    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[var(--brand)] text-base font-semibold text-white">
                       {initial}
                     </div>
                     <div className="min-w-0 flex-1 space-y-2">
@@ -1135,7 +1135,7 @@ export default function DealDetails() {
                             Commission rate
                           </label>
                           <div
-                            className="flex h-11 w-full items-stretch overflow-hidden rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-[#3184BB]/40"
+                            className="flex h-11 w-full items-stretch overflow-hidden rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-[var(--brand)]/40"
                           >
                             <span
                               className="flex shrink-0 items-center justify-center border-r border-border px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"
@@ -1195,7 +1195,7 @@ export default function DealDetails() {
                                 savingCommission || !canSaveCommissionDraft
                               }
                               onClick={() => void handleSaveCommission()}
-                              className="h-9 w-full shrink-0 rounded-md bg-[#3184BB] px-4 text-xs font-semibold text-white transition-colors hover:bg-[#2A73AA] sm:h-9 sm:w-auto disabled:opacity-60 disabled:pointer-events-none"
+                              className="h-9 w-full shrink-0 rounded-md bg-[var(--brand)] px-4 text-xs font-semibold text-white transition-colors hover:bg-[var(--brand-hover)] sm:h-9 sm:w-auto disabled:opacity-60 disabled:pointer-events-none"
                             >
                               {savingCommission ? "Saving…" : "Update Commission"}
                             </Button>
@@ -1256,7 +1256,7 @@ export default function DealDetails() {
                         <p className="text-sm font-semibold text-foreground">
                           Funding
                         </p>
-                        {/* <span className="text-xs text-[#3184BB]">Terms</span> */}
+                        {/* <span className="text-xs text-[var(--brand)]">Terms</span> */}
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2">
                         {fundingCardData.map(([label, value, emphasis]) => (
@@ -1339,7 +1339,7 @@ function DetailTile({
         {label}
       </p>
       <p
-        className={`mt-1 truncate text-sm ${emphasis ? "font-semibold text-[#3184BB]" : "font-medium text-foreground"}`}
+        className={`mt-1 truncate text-sm ${emphasis ? "font-semibold text-[var(--brand)]" : "font-medium text-foreground"}`}
       >
         {value}
       </p>

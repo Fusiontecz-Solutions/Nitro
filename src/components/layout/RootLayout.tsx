@@ -52,6 +52,7 @@ const allowedPathsForUnderwriter = (pathname: string): boolean => {
     if (pathname === '/team-chat') return true;
     if (pathname === '/notifications') return true;
     if (pathname === '/user-setting') return true;
+    if (pathname === '/template/playground') return true;
     return false;
 };
 

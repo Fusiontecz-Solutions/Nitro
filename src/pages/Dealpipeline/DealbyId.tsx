@@ -105,10 +105,12 @@ export default function DealbyId() {
                     <CommentSection />
                   </div>
                 ) : (
-                  <div className="flex flex-row mt-6 gap-4 w-full">
-                    <ChecksAndDecision hideUnderwritingDecision />
-                    <div className="w-[50%] max-h-[467px] overflow-y-auto">
+                  <div className="flex flex-row mt-6 gap-4 w-full items-stretch">
+                    <div className="flex-[7] min-w-0 max-h-[467px] overflow-y-auto">
                       <CommentSection />
+                    </div>
+                    <div className="flex-[3] min-w-0">
+                      <ChecksAndDecision hideUnderwritingDecision compactLayout />
                     </div>
                   </div>
                 )}

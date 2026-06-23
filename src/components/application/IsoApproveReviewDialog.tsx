@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { updateClient } from "@/redux/actions/clientActions";
+import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { getApplicationById } from "@/redux/actions/applicationActions";
 import { axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
@@ -23,8 +24,11 @@ import {
     Banknote,
     Files,
     Pin,
+    ChevronDown,
+    ChevronUp,
 } from "lucide-react";
 import { normalizeDocumentSlug } from "@/constants/documentRequestTypes";
+import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 
 type ApprovalSummary = {
     borrowerName?: string;
@@ -129,6 +133,32 @@ const fromDobDisplay = (display: string): string | null => {
     return null;
 };
 
+type OwnerForm = {
+    firstName: string;
+    lastName: string;
+    email: string;
+    mobileNumber: string;
+    ssn: string;
+    dateOfBirth: string;
+    address1: string;
+    city: string;
+    state: string;
+    zipCode: string;
+};
+
+const buildOwnerForm = (owner: any): OwnerForm => ({
+    firstName: String(owner?.firstName ?? ""),
+    lastName: String(owner?.lastName ?? ""),
+    email: String(owner?.email ?? ""),
+    mobileNumber: String(owner?.mobileNumber ?? ""),
+    ssn: String(owner?.ssn ?? ""),
+    dateOfBirth: toDobDisplay(owner?.dateOfBirth),
+    address1: String(owner?.address?.address1 ?? ""),
+    city: String(owner?.address?.city ?? ""),
+    state: String(owner?.address?.state ?? ""),
+    zipCode: String(owner?.address?.zipCode ?? ""),
+});
+
 const buildUploadedFromFiles = (files: unknown[] | undefined): Record<string, string[]> => {
     const map: Record<string, string[]> = {};
     for (const f of files ?? []) {
@@ -149,12 +179,13 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
     const clientId = String(app?.client?.id ?? app?.client?._id ?? "");
     const applicationId = String(app?.id ?? app?._id ?? applicationData?.id ?? applicationData?._id ?? "");
     const business = app?.client?.business ?? {};
-    const owner = app?.client?.owner ?? {};
+    const { owners: resolvedOwnerRecords } = useApplicationClientOwners(open ? app?.client : null);
 
     const [step, setStep] = useState(0);
     const [saving, setSaving] = useState(false);
     const [uploading, setUploading] = useState<string | null>(null);
     const [uploaded, setUploaded] = useState<Record<string, string[]>>({});
+    const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0);
 
     const buildForm = () => ({
         businessName: String(business?.name ?? ""),
@@ -165,18 +196,14 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
         businessCity: String(business?.address?.city ?? ""),
         businessState: String(business?.address?.state ?? ""),
         businessZipCode: String(business?.address?.zipCode ?? ""),
-        ownerFirstName: String(owner?.firstName ?? ""),
-        ownerLastName: String(owner?.lastName ?? ""),
-        ownerEmail: String(owner?.email ?? ""),
-        ownerMobileNumber: String(owner?.mobileNumber ?? ""),
-        ownerSsn: String(owner?.ssn ?? ""),
-        ownerDateOfBirth: toDobDisplay(owner?.dateOfBirth),
-        ownerAddress1: String(owner?.address?.address1 ?? ""),
-        ownerCity: String(owner?.address?.city ?? ""),
-        ownerState: String(owner?.address?.state ?? ""),
-        ownerZipCode: String(owner?.address?.zipCode ?? ""),
     });
     const [form, setForm] = useState(buildForm);
+    const [owners, setOwners] = useState<OwnerForm[]>([buildOwnerForm({})]);
+
+    const mapResolvedOwnersToForm = () =>
+        resolvedOwnerRecords.length
+            ? resolvedOwnerRecords.map(buildOwnerForm)
+            : [buildOwnerForm({})];
 
     // Reset to a clean state whenever the dialog (re)opens or the client loads.
     // NOTE: we intentionally do NOT depend on `app?.files` here — after an upload
@@ -186,10 +213,20 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
         if (open) {
             setStep(0);
             setForm(buildForm());
+            setOwners(mapResolvedOwnersToForm());
+            setExpandedOwnerIndex(resolvedOwnerRecords.length > 1 ? -1 : 0);
             setUploaded(buildUploadedFromFiles(app?.files));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, clientId]);
+
+    useEffect(() => {
+        if (!open) return;
+        const nextOwners = mapResolvedOwnersToForm();
+        setOwners(nextOwners);
+        setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, resolvedOwnerRecords]);
 
     // Keep the uploaded list in sync with the server (e.g. files loaded after the
     // dialog opened) without disturbing the current step or optimistic updates.
@@ -212,17 +249,37 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
 
     const set = (k: keyof ReturnType<typeof buildForm>, v: string) => setForm((p) => ({ ...p, [k]: v }));
 
+    const setOwner = (index: number, k: keyof OwnerForm, v: string) =>
+        setOwners((prev) => prev.map((o, i) => (i === index ? { ...o, [k]: v } : o)));
+
     const saveCorrections = async () => {
         if (!clientId) {
             toast.info("Merchant details are still loading — please wait a moment.");
             return false;
         }
-        if (form.ownerDateOfBirth.trim() && !fromDobDisplay(form.ownerDateOfBirth)) {
+        const hasInvalidDob = owners.some(
+            (o) => o.dateOfBirth.trim() && !fromDobDisplay(o.dateOfBirth),
+        );
+        if (hasInvalidDob) {
             toast.error("Date of birth must be in mm-dd-yy format (e.g. 03-15-85). You can also use mm-dd-yyyy.");
             return false;
         }
         setSaving(true);
         try {
+            const ownersPayload = owners.map((o) => ({
+                firstName: o.firstName,
+                lastName: o.lastName,
+                email: o.email,
+                mobileNumber: o.mobileNumber,
+                ssn: o.ssn,
+                dateOfBirth: fromDobDisplay(o.dateOfBirth),
+                address: {
+                    address1: o.address1,
+                    city: o.city,
+                    state: o.state,
+                    zipCode: o.zipCode,
+                },
+            }));
             await dispatch(
                 updateClient({
                     id: clientId,
@@ -239,20 +296,8 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                                 zipCode: form.businessZipCode,
                             },
                         },
-                        owner: {
-                            firstName: form.ownerFirstName,
-                            lastName: form.ownerLastName,
-                            email: form.ownerEmail,
-                            mobileNumber: form.ownerMobileNumber,
-                            ssn: form.ownerSsn,
-                            dateOfBirth: fromDobDisplay(form.ownerDateOfBirth),
-                            address: {
-                                address1: form.ownerAddress1,
-                                city: form.ownerCity,
-                                state: form.ownerState,
-                                zipCode: form.ownerZipCode,
-                            },
-                        },
+                        owners: ownersPayload,
+                        owner: ownersPayload[0],
                     } as any,
                 }),
             ).unwrap();
@@ -263,6 +308,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             toast.error(e?.message || String(e) || "Couldn't Verify and .");
             return false;
         } finally {
+            dispatch(resetUpdateClient());
             setSaving(false);
         }
     };
@@ -301,14 +347,24 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
         onOpenChange(false);
     };
 
-    const fullName = `${form.ownerFirstName} ${form.ownerLastName}`.trim() || "—";
+    const ownerLabel = (owner: OwnerForm, index: number) => {
+        const name = `${owner.firstName} ${owner.lastName}`.trim();
+        return name || `Owner ${index + 1}`;
+    };
+
+    const primaryOwner = owners[0];
+    const primaryOwnerName = primaryOwner
+        ? `${primaryOwner.firstName} ${primaryOwner.lastName}`.trim()
+        : "";
+    const fullName =
+        (primaryOwnerName || "—") + (owners.length > 1 ? ` (+${owners.length - 1} more)` : "");
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-2xl max-h-[88vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
-                        <ClipboardCheck className="h-5 w-5 text-[#2563EB]" /> Review &amp; approve application
+                        <ClipboardCheck className="h-5 w-5 text-[var(--brand)]" /> Review &amp; approve application
                     </DialogTitle>
                 </DialogHeader>
 
@@ -332,7 +388,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                 <div className="flex items-center gap-2 mt-3 mb-3">
                     {STEPS.map((label, i) => (
                         <div key={label} className="flex items-center gap-2">
-                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${i <= step ? "bg-[#2563EB] text-white" : "bg-muted text-muted-foreground"}`}>{i + 1}</span>
+                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${i <= step ? "bg-[var(--brand)] text-white" : "bg-muted text-muted-foreground"}`}>{i + 1}</span>
                             <span className={`text-xs ${i === step ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{label}</span>
                             {i < STEPS.length - 1 && <span className="mx-1 h-px w-5 bg-border" />}
                         </div>
@@ -353,32 +409,58 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                             <Field label="State" value={form.businessState} onChange={(v) => set("businessState", v)} />
                             <Field label="Zip" value={form.businessZipCode} onChange={(v) => set("businessZipCode", v)} />
                         </Section>
-                        <Section title="Owner">
-                            <Field label="First name" value={form.ownerFirstName} onChange={(v) => set("ownerFirstName", v)} />
-                            <Field label="Last name" value={form.ownerLastName} onChange={(v) => set("ownerLastName", v)} />
-                            <Field label="Email" value={form.ownerEmail} onChange={(v) => set("ownerEmail", v)} />
-                            <Field label="Mobile" value={form.ownerMobileNumber} onChange={(v) => set("ownerMobileNumber", v)} />
-                            <Field label="SSN" value={form.ownerSsn} onChange={(v) => set("ownerSsn", v)} />
-                            <Field
-                                label="Date of birth"
-                                value={form.ownerDateOfBirth}
-                                onChange={(v) => set("ownerDateOfBirth", v)}
-                                placeholder="mm-dd-yy"
-                                onBlur={() => {
-                                    const iso = fromDobDisplay(form.ownerDateOfBirth);
-                                    if (iso) set("ownerDateOfBirth", toDobDisplay(iso));
-                                }}
-                            />
-                            <Field label="Address" value={form.ownerAddress1} onChange={(v) => set("ownerAddress1", v)} full />
-                            <Field label="City" value={form.ownerCity} onChange={(v) => set("ownerCity", v)} />
-                            <Field label="State" value={form.ownerState} onChange={(v) => set("ownerState", v)} />
-                            <Field label="Zip" value={form.ownerZipCode} onChange={(v) => set("ownerZipCode", v)} />
-                        </Section>
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {owners.length > 1 ? `Owners (${owners.length})` : "Owner"}
+                            </p>
+                            {owners.map((owner, index) => {
+                                const isExpanded = expandedOwnerIndex === index;
+                                return (
+                                    <div key={index} className="rounded-lg border overflow-hidden">
+                                        <button
+                                            type="button"
+                                            onClick={() => setExpandedOwnerIndex(isExpanded ? -1 : index)}
+                                            className="flex w-full items-center justify-between gap-2 bg-muted/40 px-3 py-2 text-left"
+                                        >
+                                            <span className="text-sm font-medium">{ownerLabel(owner, index)}</span>
+                                            {isExpanded ? (
+                                                <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                                            ) : (
+                                                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                            )}
+                                        </button>
+                                        {isExpanded && (
+                                            <div className="grid grid-cols-2 gap-x-4 gap-y-3 p-3">
+                                                <Field label="First name" value={owner.firstName} onChange={(v) => setOwner(index, "firstName", v)} />
+                                                <Field label="Last name" value={owner.lastName} onChange={(v) => setOwner(index, "lastName", v)} />
+                                                <Field label="Email" value={owner.email} onChange={(v) => setOwner(index, "email", v)} />
+                                                <Field label="Mobile" value={owner.mobileNumber} onChange={(v) => setOwner(index, "mobileNumber", v)} />
+                                                <Field label="SSN" value={owner.ssn} onChange={(v) => setOwner(index, "ssn", v)} />
+                                                <Field
+                                                    label="Date of birth"
+                                                    value={owner.dateOfBirth}
+                                                    onChange={(v) => setOwner(index, "dateOfBirth", v)}
+                                                    placeholder="mm-dd-yy"
+                                                    onBlur={() => {
+                                                        const iso = fromDobDisplay(owner.dateOfBirth);
+                                                        if (iso) setOwner(index, "dateOfBirth", toDobDisplay(iso));
+                                                    }}
+                                                />
+                                                <Field label="Address" value={owner.address1} onChange={(v) => setOwner(index, "address1", v)} full />
+                                                <Field label="City" value={owner.city} onChange={(v) => setOwner(index, "city", v)} />
+                                                <Field label="State" value={owner.state} onChange={(v) => setOwner(index, "state", v)} />
+                                                <Field label="Zip" value={owner.zipCode} onChange={(v) => setOwner(index, "zipCode", v)} />
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
                         <div className="flex justify-between gap-2 pt-1">
                             <Button variant="outline" onClick={() => void saveCorrections()} disabled={saving}>
                                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck2 className="h-4 w-4" />} Verify and Save
                             </Button>
-                            <Button onClick={() => setStep(1)} className="bg-[#2563EB] hover:bg-[#1d4ed8] text-white">Next →</Button>
+                            <Button onClick={() => setStep(1)} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">Next →</Button>
                         </div>
                     </div>
                 )}
@@ -417,7 +499,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
 
                         <div className="flex justify-between gap-2 pt-1">
                             <Button variant="outline" onClick={() => setStep(0)}>← Back</Button>
-                            <Button onClick={() => setStep(2)} className="bg-[#2563EB] hover:bg-[#1d4ed8] text-white">Next →</Button>
+                            <Button onClick={() => setStep(2)} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">Next →</Button>
                         </div>
                     </div>
                 )}
@@ -428,7 +510,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                         <p className="text-sm text-muted-foreground">You're approving this application:</p>
                         <div className="rounded-lg border bg-muted/30 p-4 text-sm space-y-1.5">
                             <Row label="Business" value={form.businessName || "—"} />
-                            <Row label="Owner" value={fullName} />
+                            <Row label={owners.length > 1 ? "Owners" : "Owner"} value={fullName} />
                             <Row label="Documents uploaded" value={`${totalUploaded} file(s)`} />
                         </div>
                         <div className="flex justify-between gap-2 pt-1">
@@ -508,19 +590,19 @@ function DocRow({
     return (
         <div
             className={`flex items-center justify-between gap-3 rounded-lg border p-3 ${pinned
-                ? "border-[#2563EB]/40 bg-[#EAF1FA]/50 dark:border-[#5AACEA]/30 dark:bg-[#1f2937]/40"
+                ? "border-[var(--brand)]/40 bg-[#EAF1FA]/50 dark:border-[#C07BE0]/30 dark:bg-[#1f2937]/40"
                 : ""
                 }`}
         >
             <div className="flex items-center gap-3 min-w-0">
-                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[#2563EB] dark:bg-[#1f2937] dark:text-[#5AACEA]">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[var(--brand)] dark:bg-[#1f2937] dark:text-[#C07BE0]">
                     <Icon className="h-[18px] w-[18px]" />
                 </span>
                 <div className="min-w-0">
                     <p className="flex items-center gap-1.5 text-sm font-medium leading-tight">
                         {label}
                         {pinned && (
-                            <span className="inline-flex items-center gap-0.5 rounded-md bg-[#2563EB] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
+                            <span className="inline-flex items-center gap-0.5 rounded-md bg-[var(--brand)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
                                 <Pin className="h-2.5 w-2.5" /> Pinned
                             </span>
                         )}

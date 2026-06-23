@@ -9,6 +9,15 @@ const APPLICATION_REJECTION_EMAIL_LOGO_SRC =
   "https://res.cloudinary.com/dfy6ahsqz/image/upload/v1780324705/white_logo_d8bsb1.svg";
 
 /**
+ * Center faded background watermark layout image.
+ * Cloudinary `o_7` reduces opacity to 7% and `f_png` rasterizes the SVG so the
+ * opacity is baked into the served asset (CSS opacity can't target a
+ * background-image in email clients).
+ */
+const APPLICATION_REJECTION_EMAIL_WATERMARK_SRC =
+  "https://res.cloudinary.com/dfy6ahsqz/image/upload/o_7,f_png/v1780324705/white_logo_d8bsb1.png";
+
+/**
  * Gmail / Outlook-safe HTML for the ISO application-declined email.
  * Table-based layout with hosted PNG logo, purple accent bars, a blue
  * "Reason For Decline" panel, and a footer ribbon. No SVG or CSS background
@@ -22,6 +31,7 @@ export function renderApplicationRejectionEmailHtml(
   const primaryReason = escapeHtml(fields.primaryReason);
   const otherReasonsText = fields.otherReasons;
   const logoSrc = escapeHtml(APPLICATION_REJECTION_EMAIL_LOGO_SRC);
+  const watermarkSrc = escapeHtml(APPLICATION_REJECTION_EMAIL_WATERMARK_SRC);
 
   const otherReasonsBlock = otherReasonsText
     ? `
@@ -121,7 +131,7 @@ export function renderApplicationRejectionEmailHtml(
 
                 <!-- Body Content Area -->
                 <tr>
-                  <td class="content-pad" style="padding:30px 45px 30px 45px;">
+                  <td class="content-pad" style="padding:30px 45px 30px 45px;background-color:#ffffff;background-image:url('${watermarkSrc}');background-repeat:no-repeat;background-position:right center;background-size:contain;">
                     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
 
                       <tr>

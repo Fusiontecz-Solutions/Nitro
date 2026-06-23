@@ -132,7 +132,7 @@ export default function UserSetting() {
               <Card className="border-border">
                 <CardContent className="pt-6 flex flex-col items-center md:items-center gap-4">
                   <div className="relative flex items-center justify-center">
-                    <div className="h-24 w-24 rounded-full flex items-center justify-center border border-border/70 shadow-sm text-3xl font-semibold text-white bg-[#276D9C]">
+                    <div className="h-24 w-24 rounded-full flex items-center justify-center border border-border/70 shadow-sm text-3xl font-semibold text-white bg-[var(--brand)]">
                       {initials}
                     </div>
                     {/* <span className="absolute -bottom-1 -right-1 inline-flex items-center rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-medium text-emerald-950 shadow-sm">

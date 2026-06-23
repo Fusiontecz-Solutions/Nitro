@@ -632,7 +632,7 @@ const ApplicationDetails = () => {
                 <Button
                     type="button"
                     variant="default"
-                    className="min-w-[8rem] bg-[#151357] text-white shadow-sm hover:bg-[#151357]/90 disabled:opacity-40 dark:bg-[#6BB8EA] dark:hover:bg-[#52A6DF] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
+                    className="min-w-[8rem] disabled:opacity-40"
                     disabled={!nextTab}
                     onClick={() => nextTab && changeTabScrollTop(nextTab.id)}
                 >
@@ -777,7 +777,7 @@ const ApplicationDetails = () => {
                         aria-expanded={auditLogOpen}
                         aria-haspopup="dialog"
                         aria-pressed={auditLogOpen}
-                        className="group shrink-0 gap-2 rounded-full border border-[#151357]/30 bg-gradient-to-b from-[#151357]/[0.1] to-[#151357]/[0.04] px-4 py-2 text-sm font-semibold text-[#151357] shadow-sm transition-all hover:border-[#151357]/45 hover:from-[#151357]/15 hover:to-[#151357]/08 hover:shadow-md active:scale-[0.98] dark:border-primary/35 dark:from-primary/20 dark:to-primary/8 dark:text-foreground dark:hover:border-primary/50"
+                        className="group shrink-0 gap-2 rounded-full border border-[var(--brand)]/30 bg-gradient-to-b from-[var(--brand)]/[0.1] to-[var(--brand)]/[0.04] px-4 py-2 text-sm font-semibold text-[var(--brand)] shadow-sm transition-all hover:border-[var(--brand)]/45 hover:from-[var(--brand)]/15 hover:to-[var(--brand)]/08 hover:shadow-md active:scale-[0.98] dark:border-primary/35 dark:from-primary/20 dark:to-primary/8 dark:text-foreground dark:hover:border-primary/50"
                     >
                         <ScrollText
                             className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
@@ -795,7 +795,7 @@ const ApplicationDetails = () => {
                     rel="noopener noreferrer"
                     className="flex flex-col"
                 >
-                    <span className="text-sm font-semibold text-[#3B8BD1] underline">
+                    <span className="text-sm font-semibold text-[var(--brand)] underline">
                         {link.label}
                     </span>
                     <span className="text-xs text-[#687182]">
@@ -846,10 +846,11 @@ const ApplicationDetails = () => {
                                             <div className={`absolute inset-0 ${isDark ? 'bg-gray-600' : 'bg-white'}`} style={{ clipPath }} />
                                             <TabsTrigger
                                                 value={tab.id}
-                                                className="relative cursor-pointer whitespace-nowrap px-5 py-2.5 text-xs font-bold border-0 shadow-none rounded-none sm:px-6 sm:text-sm lg:px-8"
+                                                className={`relative cursor-pointer whitespace-nowrap px-5 py-2.5 text-xs font-bold border-0 shadow-none rounded-none sm:px-6 sm:text-sm lg:px-8 data-[state=active]:shadow-none ${isActive ? "tab-pipeline-active" : ""}`}
                                                 style={{
-                                                    backgroundColor: isActive ? '#151357' : '#E8E9EC80',
-                                                    color: isActive ? '#FFFFFF' : '#000000',
+                                                    ...(isActive
+                                                        ? { color: "#FFFFFF" }
+                                                        : { backgroundColor: '#E8E9EC80', color: '#000000' }),
                                                     clipPath: triggerClip,
                                                 }}
                                             >
@@ -885,18 +886,28 @@ const ApplicationDetails = () => {
                                             allowOfferEdit
                                             allowPositionsEdit
                                             onSummaryMetricsChange={handleSummaryMetricsChange}
-                                            betweenOfferAndPositions={
-                                                <BankAnalysisTable disableDelete disableCreate />
-                                            }
+                                            betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) => (
+                                                <BankAnalysisTable
+                                                    disableDelete
+                                                    disableCreate
+                                                    readOnly={componentsReadOnly}
+                                                    onRegisterSaveAll={onRegisterBankSaveAll}
+                                                />
+                                            )}
                                         />
                                     </div>
                                     <div className="flex flex-row gap-4 w-full mt-10 items-stretch">
-                                        <ChecksAndDecision
-                                            isFinalUnderwriter={true}
-                                            previewMode={isStagePreview}
-                                            onProceedToContract={() => handleTabChange("contract")}
-                                        />
-                                        <div className="w-[50%]"><CommentSection readOnly={commentsReadOnly} /></div>
+                                        <div className="flex-[7] min-w-0 flex flex-col">
+                                            <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                        </div>
+                                        <div className="flex-[3] min-w-0 flex flex-col">
+                                            <ChecksAndDecision
+                                                isFinalUnderwriter={true}
+                                                previewMode={isStagePreview}
+                                                compactLayout
+                                                onProceedToContract={() => handleTabChange("contract")}
+                                            />
+                                        </div>
                                     </div>
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
@@ -979,17 +990,17 @@ const ApplicationDetails = () => {
                                             <TabsTrigger
                                                 value={tab.id}
                                                 disabled={isDisabled}
-                                                className={`relative whitespace-nowrap px-5 py-2 text-xs font-bold border-0 shadow-none transition-all duration-200 rounded-none sm:px-6 sm:text-sm lg:px-8 ${isDisabled
+                                                className={`relative whitespace-nowrap px-5 py-2 text-xs font-bold border-0 shadow-none transition-all duration-200 rounded-none sm:px-6 sm:text-sm lg:px-8 data-[state=active]:shadow-none ${isDisabled
                                                         ? "cursor-not-allowed opacity-45"
                                                         : "cursor-pointer"
-                                                    }`}
+                                                    } ${isActive ? "tab-pipeline-active" : ""}`}
                                                 style={{
-                                                    backgroundColor: isDark
-                                                        ? (isActive ? '#5AACEA' : '#374151')
-                                                        : (isActive ? '#151357' : '#E8E9EC80'),
-                                                    color: isDark
-                                                        ? '#FFFFFF'
-                                                        : (isActive ? '#FFFFFF' : '#000000'),
+                                                    ...(isActive
+                                                        ? { color: "#FFFFFF" }
+                                                        : {
+                                                            backgroundColor: isDark ? '#374151' : '#E8E9EC80',
+                                                            color: isDark ? '#FFFFFF' : '#000000',
+                                                        }),
                                                     clipPath: isFirst
                                                         ? "polygon(0 0, calc(100% - 20px) 0, calc(100% - 2px) 50%, calc(100% - 20px) 100%, 0 100%)"
                                                         : isLast
@@ -1036,9 +1047,10 @@ const ApplicationDetails = () => {
                                             <div className="flex justify-end mb-4">
                                                 <Button
                                                     type="button"
+                                                    variant="default"
                                                     onClick={handleSendToUnderwriter}
                                                     disabled={sendingToUnderwriter}
-                                                    className="bg-[#3B8BD1] hover:bg-[#3B8BD1] text-white mt-4 px-4 py-2 text-sm font-medium rounded-md cursor-pointer disabled:opacity-40"
+                                                    className="mt-4 disabled:opacity-40"
                                                 >
                                                     {sendingToUnderwriter ? "Sending..." : "Send to Underwriter"}
                                                 </Button>
@@ -1056,9 +1068,10 @@ const ApplicationDetails = () => {
                                         <div className="flex justify-end mb-4">
                                             <Button
                                                 type="button"
+                                                variant="default"
                                                 onClick={handleSendToUnderwriter}
                                                 disabled={sendingToUnderwriter}
-                                                className="bg-[#3B8BD1] hover:bg-[#3B8BD1] text-white mt-4 px-4 py-2 text-sm font-medium rounded-md cursor-pointer disabled:opacity-40"
+                                                className="mt-4 disabled:opacity-40"
                                             >
                                                 {sendingToUnderwriter ? "Sending..." : "Send to Underwriter"}
                                             </Button>
@@ -1149,11 +1162,6 @@ const ApplicationDetails = () => {
                                     {!hideBusinessProfileOnDecisionMakingTab && (
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                     )}
-                                    {isSuperAdmin ? (
-                                        <div className="mt-6">
-                                            <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
-                                        </div>
-                                    ) : null}
                                     <div className="mt-6">
                                         <DecisionMakeFinalValues
                                             applicationId={applicationId}
@@ -1167,7 +1175,7 @@ const ApplicationDetails = () => {
                                                 !superAdminPipelineEditOverride &&
                                                 !isPlainUnderwriter
                                             }
-                                            betweenOfferAndPositions={
+                                            betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) =>
                                                 isUnderwriter ||
                                                 roleKey === "OPERATIONS" ||
                                                 superAdminPipelineEditOverride ? (
@@ -1176,23 +1184,27 @@ const ApplicationDetails = () => {
                                                             !superAdminPipelineEditOverride
                                                         }
                                                         disableCreate={
-                                                            !superAdminPipelineEditOverride &&
-                                                            !plainUnderwriterWorkflowEdit &&
-                                                            (pipelineStageReadOnly ||
-                                                                isOperationsReadOnlyPipelineTab)
+                                                            componentsReadOnly ||
+                                                            (!superAdminPipelineEditOverride &&
+                                                                !plainUnderwriterWorkflowEdit &&
+                                                                (pipelineStageReadOnly ||
+                                                                    isOperationsReadOnlyPipelineTab))
                                                         }
                                                         readOnly={
-                                                            !superAdminPipelineEditOverride &&
-                                                            !plainUnderwriterWorkflowEdit &&
-                                                            !operationsValueEditOverride &&
-                                                            (pipelineStageReadOnly ||
-                                                                isOperationsReadOnlyPipelineTab)
+                                                            componentsReadOnly ||
+                                                            (!superAdminPipelineEditOverride &&
+                                                                !plainUnderwriterWorkflowEdit &&
+                                                                !operationsValueEditOverride &&
+                                                                (pipelineStageReadOnly ||
+                                                                    isOperationsReadOnlyPipelineTab))
                                                         }
+                                                        onRegisterSaveAll={onRegisterBankSaveAll}
                                                     />
                                                 ) : (
                                                     <BankAnalysisTable
                                                         showOnlyTotals
                                                         readOnly={
+                                                            componentsReadOnly ||
                                                             pipelineStageReadOnly ||
                                                             isOperationsReadOnlyPipelineTab
                                                         }
@@ -1202,16 +1214,21 @@ const ApplicationDetails = () => {
                                         />
                                     </div>
                                     <div className="flex flex-row mt-6 gap-4 w-full items-stretch">
-                                        <ChecksAndDecision
-                                            canSendApprovalMailToIso={isSuperAdmin}
-                                            hideUnderwritingDecision={roleKey === "OPERATIONS"}
-                                            previewMode={
-                                                !superAdminPipelineEditOverride &&
-                                                (isStagePreview ||
-                                                    isOperationsTabBehindCurrentDeal)
-                                            }
-                                        />
-                                        <div className="w-[50%]"><CommentSection readOnly={commentsReadOnly} /></div>
+                                        <div className="flex-[7] min-w-0 flex flex-col">
+                                            <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                        </div>
+                                        <div className="flex-[3] min-w-0 flex flex-col">
+                                            <ChecksAndDecision
+                                                canSendApprovalMailToIso={isSuperAdmin}
+                                                hideUnderwritingDecision={roleKey === "OPERATIONS"}
+                                                compactLayout
+                                                previewMode={
+                                                    !superAdminPipelineEditOverride &&
+                                                    (isStagePreview ||
+                                                        isOperationsTabBehindCurrentDeal)
+                                                }
+                                            />
+                                        </div>
                                     </div>
                             </LazyTabContent>
                             </>

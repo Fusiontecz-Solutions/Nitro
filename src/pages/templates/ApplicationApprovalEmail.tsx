@@ -319,41 +319,6 @@ export default function ApplicationApprovalEmail({
                       </tbody>
                     </table>
 
-                    <p
-                      style={{
-                        fontSize: 14,
-                        color: "#0b71a9",
-                        margin: "28px 0 0 0",
-                        fontWeight: "bold",
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      To view your application in {fields.crmName}, click on the
-                      button below.
-                    </p>
-
-                    <EmailCtaButton
-                      href={fields.viewApplicationUrl}
-                      label="View your Application"
-                    />
-
-                    <p
-                      style={{
-                        fontSize: 13,
-                        color: "#777",
-                        margin: "8px 0 0 0",
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      If you need more information or have any questions/comments,
-                      contact your representative directly or leave a comment in
-                      the portal by clicking on the button below.
-                    </p>
-
-                    <EmailCtaButton
-                      href={fields.viewCommentUrl}
-                      label="View Comment"
-                    />
                   </td>
                 </tr>
               </tbody>

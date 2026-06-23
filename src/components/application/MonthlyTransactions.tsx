@@ -186,7 +186,7 @@ const MonthlyTransactions = ({ data }: MonthlyTransactionsProps) => {
                                 />
                                 <Bar dataKey="other" stackId="a" fill="#3B82F6" name="Other"  barSize={40} />
                                 <Bar dataKey="nonBusiness" stackId="a" fill="#76B7E2" name="Non Business" barSize={40} />
-                                <Bar dataKey="funded" stackId="a" fill="#276D9C" name="Funded" radius={[0, 4, 4, 0]}  barSize={40} />
+                                <Bar dataKey="funded" stackId="a" fill="var(--brand)" name="Funded" radius={[0, 4, 4, 0]}  barSize={40} />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>

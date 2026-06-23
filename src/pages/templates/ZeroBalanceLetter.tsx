@@ -6,7 +6,7 @@ import { pick } from "./types";
 
 /**
  * Zero-balance confirmation letter merge fields. The sent email HTML is rendered
- * by `zeroBalanceLetterEmailHtml.ts` (gold/navy layout).
+ * by `zeroBalanceLetterEmailHtml.ts` (purple/cyan layout).
  */
 export const ZERO_BALANCE_LETTER_VARIABLES: TemplateVariable[] = [
   { key: "letter_date", label: "Letter Date", placeholder: "May 20, 2024" },

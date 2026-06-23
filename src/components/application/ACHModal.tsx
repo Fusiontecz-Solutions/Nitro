@@ -179,7 +179,7 @@ export default function ACHModal({ open, onOpenChange, applicationId, onSave }: 
                     <Button
                         type="button"
                         size="sm"
-                        className="bg-[#3B8BD1] hover:bg-[#2d6fad] text-white"
+                        className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white"
                         onClick={addEntry}
                     >
                         Add
@@ -312,7 +312,7 @@ export default function ACHModal({ open, onOpenChange, applicationId, onSave }: 
                         type="button"
                         disabled={saving}
                         onClick={handleSave}
-                        className="bg-[#3B8BD1] hover:bg-[#2d6fad] text-white"
+                        className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white"
                     >
                         {saving ? "Saving..." : "Save"}
                     </Button>

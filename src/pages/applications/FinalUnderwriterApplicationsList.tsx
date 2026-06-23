@@ -428,7 +428,7 @@ export default function FinalUnderwriterApplicationsList() {
                     <button
                         type="button"
                         onClick={() => handleOpenApplicationDetails(row.original)}
-                        className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+                        className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
                         aria-label="View application details"
                     >
                         <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -706,7 +706,7 @@ export default function FinalUnderwriterApplicationsList() {
                                 const q = statCardTitleToApplicationsQuery(c.title);
                                 navigate(buildApplicationsBrowseUrl(q));
                             }}
-                            className={`rounded-lg border py-3 px-5 shadow-[0px_4px_20px_0px_#00000005] cursor-pointer transition duration-300 hover:ring-2 hover:ring-[#276D9C]/25 ${isDark ? "hover:shadow-lg" : "hover:shadow-lg"
+                            className={`rounded-lg border py-3 px-5 shadow-[0px_4px_20px_0px_#00000005] cursor-pointer transition duration-300 hover:ring-2 hover:ring-[var(--brand)]/25 ${isDark ? "hover:shadow-lg" : "hover:shadow-lg"
                                 } ${isDark
                                     ? "bg-[#141517] border-[#374151]"
                                     : "bg-card border-[#FDFDFD]"

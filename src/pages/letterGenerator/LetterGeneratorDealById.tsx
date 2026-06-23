@@ -75,7 +75,7 @@ export default function LetterGeneratorDealById() {
               <button
                 type="button"
                 onClick={() => navigate("/letter-generator")}
-                className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-all hover:border-[#276D9C]/40 hover:text-[#276D9C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/30 focus-visible:ring-offset-2"
+                className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-all hover:border-[var(--brand)]/40 hover:text-[var(--brand)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/30 focus-visible:ring-offset-2"
                 aria-label="Back to disbursement list"
                 title="Back to list"
               >
@@ -101,7 +101,7 @@ export default function LetterGeneratorDealById() {
                   onClick={() => setActiveTab(id)}
                   className={`rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition-colors sm:px-4 ${
                     activeTab === id
-                      ? "bg-[#276D9C] text-white shadow-sm"
+                      ? "bg-[var(--brand)] text-white shadow-sm"
                       : "text-muted-foreground hover:bg-background hover:text-foreground"
                   }`}
                 >

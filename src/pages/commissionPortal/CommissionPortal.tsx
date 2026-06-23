@@ -277,7 +277,7 @@ const CommissionPortal = () => {
                             onClick={() => setActiveTab(key)}
                             className={
                                 activeTab === key
-                                    ? 'cursor-pointer bg-[#3184BB] hover:bg-[#276D9C] text-xs font-medium text-white gap-1.5'
+                                    ? 'cursor-pointer bg-[var(--brand)] hover:bg-[var(--brand)] text-xs font-medium text-white gap-1.5'
                                     : 'cursor-pointer text-[14px] text-muted-foreground hover:text-foreground gap-1.5'
                             }
                         >
@@ -488,7 +488,7 @@ const CommissionPortal = () => {
                                                 <Bar
                                                     name="Pending"
                                                     dataKey="pending"
-                                                    fill={isDark ? '#3184BB' : '#3184BB'}
+                                                    fill={isDark ? 'var(--brand)' : 'var(--brand)'}
                                                     fillOpacity={commissionSeriesOpacity('pending')}
                                                     radius={[8, 8, 0, 0]}
                                                     activeBar={{
@@ -723,7 +723,7 @@ const CommissionPortal = () => {
                                                         <TableCell className={tdRecentCommissionApps}>
                                                             <button
                                                                 type="button"
-                                                                className="cursor-pointer font-medium text-[#276D9C] hover:text-[#1b4e6f] hover:underline"
+                                                                className="cursor-pointer font-medium text-[var(--brand)] hover:text-[var(--brand-accent-strong)] hover:underline"
                                                                 onClick={() => {
                                                                     if (safeAppId != null) {
                                                                         navigate(`/application-details/${safeAppId}`)

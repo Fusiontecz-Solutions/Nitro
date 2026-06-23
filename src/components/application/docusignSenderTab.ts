@@ -9,7 +9,7 @@ const DOCUSIGN_LOADING_PAGE_HTML = `<!DOCTYPE html>
     .card { text-align: center; max-width: 22rem; padding: 2rem 1.5rem; }
     .spinner {
       width: 3rem; height: 3rem; margin: 0 auto 1.25rem;
-      border: 3px solid #276d9c33; border-top-color: #276d9c;
+      border: 3px solid #A962CD33; border-top-color: #A962CD;
       border-radius: 50%; animation: spin 0.85s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }

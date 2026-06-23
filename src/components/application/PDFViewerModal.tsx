@@ -122,6 +122,7 @@ import { DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS } from "./contractdata/docusignPol
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
 import { watchDocuSignSenderReturn } from "./contractdata/watchDocuSignSenderReturn";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
+import { clearOfferDecision } from "@/redux/slices/offerDecisionSlice";
 import {
     isDefaultContractCcEmail,
     loadBoldSignCcEmailList,
@@ -169,6 +170,15 @@ import {
     supplementalOptionLabel,
 } from "./contractdata/platformDocumentConfig";
 import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
+import {
+    buildContractSignerRowsFromOwnerParties,
+    fetchFreshOwnerPartiesForContractSigners,
+    mergeContractSignerEditorRows,
+    reconcileSignerRowsWithFreshOwners,
+    resolveOwnerPartiesForContractSigners,
+    syncContractSignerRowsToCrm,
+} from "./contractdata/contractSignerOwnersSync";
+import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
     getTemplateRoleEmailFromRow,
@@ -189,7 +199,7 @@ import {
 import { axiosDelete, axiosGet, axiosPatch, axiosPost } from "@/redux/axios";
 
 const DOCUSIGN_PRIMARY_BTN_CLASS =
-    "h-9 shrink-0 cursor-pointer border-0 bg-[#276D9C] px-6 text-white shadow-sm hover:bg-[#276D9C]/90 focus-visible:ring-[#276D9C]/40";
+    "h-9 shrink-0 cursor-pointer border-0 bg-[var(--brand)] px-6 text-white shadow-sm hover:bg-[var(--brand)]/90 focus-visible:ring-[var(--brand)]/40";
 
 /** Fingerprint of saved prefill used to invalidate a reused DocuSign draft after edits. */
 function docuSignPrefillDraftFingerprint(input: {
@@ -232,8 +242,8 @@ const DOCUSIGN_LOADING_PAGE_HTML = `<!DOCTYPE html>
       width: 3rem;
       height: 3rem;
       margin: 0 auto 1.25rem;
-      border: 3px solid #276d9c33;
-      border-top-color: #276d9c;
+      border: 3px solid #A962CD33;
+      border-top-color: #A962CD;
       border-radius: 50%;
       animation: spin 0.85s linear infinite;
     }
@@ -561,6 +571,33 @@ function placeholderForEncryptedBankField(fieldKey: string, rawEncrypted: string
     return null;
 }
 
+/**
+ * Map a stored/normalized entity type value back to the label the client actually
+ * selected (LLC, S-Corp, ...). Falls back to the BoldSign value with underscores
+ * replaced by spaces for anything unrecognized.
+ */
+function entityTypeDisplayLabel(raw: string): string {
+    const key = raw.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+    const byKey: Record<string, string> = {
+        "limited liability company": "LLC",
+        llc: "LLC",
+        corporation: "Corporation",
+        partnership: "Partnership",
+        "sole proprietorship": "Sole Proprietorship",
+        "s corporation": "S-Corp",
+        "s corp": "S-Corp",
+        scorp: "S-Corp",
+        "c corporation": "C-Corp",
+        "c corp": "C-Corp",
+        ccorp: "C-Corp",
+        "non profit": "Non-Profit",
+        nonprofit: "Non-Profit",
+        other: "Other",
+    };
+    if (byKey[key]) return byKey[key];
+    return raw.replace(/_/g, " ");
+}
+
 function formatDisplayValueForUs(fieldKey: string, value: unknown): string {
     if (value === null || value === undefined) return "—";
     const s = String(value).trim();
@@ -572,6 +609,13 @@ function formatDisplayValueForUs(fieldKey: string, value: unknown): string {
 
     if (key.includes("date")) {
         return toUsDateDisplay(s);
+    }
+
+    // Entity type values are normalized to the BoldSign dropdown format (e.g.
+    // "Limited_Liability_Company") for sending, but the client record stores short
+    // labels (LLC, S-Corp, ...). Map back to the client's value for the Deal Review panel.
+    if (key.includes("entity_type") || key.includes("type_of_entity") || key.includes("entitytype")) {
+        return entityTypeDisplayLabel(s);
     }
 
     const moneyLike =
@@ -1272,42 +1316,73 @@ const PDFViewerModal = ({
     const guarantorListState = useSelector((state: RootState) => state.contractGuarantorList);
     const bankDetailsListState = useSelector((state: RootState) => state.bankDetails);
 
-    /** DocuSign/BoldSign template roles for Summary (top-level `roles`, not `raw.roles`). */
-    const suggestedContractSignerRows = useMemo(
-        () =>
-            buildSuggestedContractSignerRows({
-                clientName: getApplicationPrimaryRecipientName(applicationData),
-                clientEmail: primaryClientRecipientEmail,
-                owners: ownerEntries,
-                guarantors: guarantorEntries,
-            }),
-        [
-            applicationData,
-            primaryClientRecipientEmail,
-            ownerEntries,
-            guarantorEntries,
-        ],
+    const contractOwnerRows = useMemo(
+        () => (Array.isArray(ownerListState.data) ? ownerListState.data : []),
+        [ownerListState.data],
     );
+
+    /** Owners from contract CRM rows, application client, or live Info Required edits. */
+    const resolvedOwnerParties = useMemo(
+        () =>
+            resolveOwnerPartiesForContractSigners(
+                applicationData,
+                contractOwnerRows,
+                activeInfoPanel === "owner" ? ownerEntries : null,
+            ),
+        [applicationData, contractOwnerRows, activeInfoPanel, ownerEntries],
+    );
+
+    /** DocuSign/BoldSign template roles for Summary (top-level `roles`, not `raw.roles`). */
+    const suggestedContractSignerRows = useMemo(() => {
+        const fromOwners = buildContractSignerRowsFromOwnerParties(resolvedOwnerParties);
+        if (fromOwners.length > 0) return fromOwners;
+        return buildSuggestedContractSignerRows({
+            clientName: getApplicationPrimaryRecipientName(applicationData),
+            clientEmail: primaryClientRecipientEmail,
+            owners: resolvedOwnerParties,
+            guarantors: guarantorEntries,
+        });
+    }, [
+        applicationData,
+        primaryClientRecipientEmail,
+        resolvedOwnerParties,
+        guarantorEntries,
+    ]);
+
+    /** Live CRM owners win over stale saved contract signer overrides. */
+    const effectiveContractSignerRows = useMemo(
+        () =>
+            reconcileSignerRowsWithFreshOwners(
+                contractSignerOverrides,
+                suggestedContractSignerRows,
+            ),
+        [contractSignerOverrides, suggestedContractSignerRows],
+    );
+
+    const applicationOwnerSignerCount = resolvedOwnerParties.length;
 
     const activeOwnerCount = useMemo(
         () =>
-            resolveActiveOwnerCount({
-                owners: ownerEntries.map((o) => ({
-                    email: String((o as { ownerEmail?: string }).ownerEmail || "").trim(),
-                    firstName: String((o as { ownerFirstName?: string }).ownerFirstName || "").trim(),
-                    lastName: String((o as { ownerLastName?: string }).ownerLastName || "").trim(),
-                })),
-                guarantors: guarantorEntries.map((g) => ({
-                    email: String((g as { guarantorEmail?: string }).guarantorEmail || "").trim(),
-                    firstName: String((g as { guarantorFirstName?: string }).guarantorFirstName || "").trim(),
-                    lastName: String((g as { guarantorLastName?: string }).guarantorLastName || "").trim(),
-                })),
-                signerRoles: suggestedContractSignerRows.map((r) => ({
-                    signerRole: r.role,
-                    signerEmail: r.email,
-                })),
-            }),
-        [ownerEntries, guarantorEntries, suggestedContractSignerRows],
+            Math.max(
+                applicationOwnerSignerCount,
+                resolveActiveOwnerCount({
+                    owners: resolvedOwnerParties.map((o) => ({
+                        email: String(o.ownerEmail || "").trim(),
+                        firstName: String(o.ownerFirstName || "").trim(),
+                        lastName: String(o.ownerLastName || "").trim(),
+                    })),
+                    guarantors: guarantorEntries.map((g) => ({
+                        email: String((g as { guarantorEmail?: string }).guarantorEmail || "").trim(),
+                        firstName: String((g as { guarantorFirstName?: string }).guarantorFirstName || "").trim(),
+                        lastName: String((g as { guarantorLastName?: string }).guarantorLastName || "").trim(),
+                    })),
+                    signerRoles: suggestedContractSignerRows.map((r) => ({
+                        signerRole: r.role,
+                        signerEmail: r.email,
+                    })),
+                }),
+            ),
+        [applicationOwnerSignerCount, resolvedOwnerParties, guarantorEntries, suggestedContractSignerRows],
     );
 
     const templateRoleRowsForSigner = useMemo(
@@ -1322,29 +1397,21 @@ const PDFViewerModal = ({
                 applicationData,
                 resolvedContract,
                 templateRoleRowsForSigner,
-                ownerEntries
-                    .map((o) => String((o as { ownerEmail?: string }).ownerEmail || "").trim())
+                resolvedOwnerParties
+                    .map((o) => String(o.ownerEmail || "").trim())
                     .filter(Boolean),
             ),
         [
             applicationData,
             resolvedContract,
             templateRoleRowsForSigner,
-            ownerEntries,
+            resolvedOwnerParties,
         ],
     );
 
     const summaryTemplateRoles = useMemo(() => {
-        if (contractSignerOverrides?.length) {
-            return contractSignerOverrides.map((r, idx) => ({
-                roleName: r.role,
-                signerEmail: r.email,
-                signerName: r.name,
-                roleIndex: idx + 1,
-            }));
-        }
-        if (suggestedContractSignerRows.length > 0) {
-            return suggestedRowsToSummaryTemplateRoles(suggestedContractSignerRows);
+        if (effectiveContractSignerRows.length > 0) {
+            return suggestedRowsToSummaryTemplateRoles(effectiveContractSignerRows);
         }
         if (templateRoleRowsForSigner.length > 0) return templateRoleRowsForSigner;
         const signerEmail = docuSignSignerEmail.email.trim();
@@ -1358,13 +1425,21 @@ const PDFViewerModal = ({
             },
         ];
     }, [
-        contractSignerOverrides,
-        suggestedContractSignerRows,
+        effectiveContractSignerRows,
         templateRoleRowsForSigner,
         docuSignSignerEmail.email,
     ]);
 
     const hasSavedSignerOverrides = Boolean(contractSignerOverrides?.length);
+
+    /**
+     * Summary cards are built from `effectiveContractSignerRows`, which already carry
+     * the correct per-owner email (each owner row from the linked client). Those rows
+     * must be displayed as-is — otherwise `mergeBoldSignRoleSignerEmail` collapses every
+     * generic "Signer" role to the primary CRM email and all owners show the same address.
+     */
+    const summaryRolesCarryOwnerEmails =
+        hasSavedSignerOverrides || effectiveContractSignerRows.length > 0;
 
     const uploadedDocs = Array.isArray(uploadedDocsState.data)
         ? uploadedDocsState.data
@@ -1640,6 +1715,9 @@ const PDFViewerModal = ({
 
     useEffect(() => {
         if (!isOpen || !applicationIdForLookup) return;
+        dispatch(clearOfferDecision());
+        invalidateApplicationDetailCache(applicationIdForLookup);
+        void dispatch(getApplicationById(applicationIdForLookup));
         void dispatch(getOfferDecisionByApplication(applicationIdForLookup));
         void dispatch(getBankDetails({ application: applicationIdForLookup }));
     }, [isOpen, applicationIdForLookup, dispatch]);
@@ -1788,6 +1866,16 @@ const PDFViewerModal = ({
         return Number.isFinite(n) ? n : null;
     }, [resolvedContractId, contractId]);
 
+    /** Always reload owners when entering Summary so CRM edits appear immediately. */
+    useEffect(() => {
+        if (!isOpen || activeStep !== "summary" || !applicationIdForLookup) return;
+        invalidateApplicationDetailCache(applicationIdForLookup);
+        void dispatch(getApplicationById(applicationIdForLookup));
+        if (effectiveContractId != null) {
+            void dispatch(getAllContractOwners({ contractId: effectiveContractId }));
+        }
+    }, [isOpen, activeStep, applicationIdForLookup, effectiveContractId, dispatch]);
+
     const linkedEnvelopeId = useMemo(() => {
         const session = String(sessionEnvelopeId || "").trim();
         if (session) return session;
@@ -1835,22 +1923,20 @@ const PDFViewerModal = ({
         canResendSignedContract && !canCancelSentContract && !docuSignOpenUrl;
 
     const contractSignersValidationError = useMemo(() => {
-        const roles = contractSignerOverrides?.length
-            ? buildDocuSignRolesFromEditorRows(contractSignerOverrides)
-            : suggestedContractSignerRows.length > 1
-              ? buildDocuSignRolesFromEditorRows(suggestedContractSignerRows)
-              : buildBoldSignRolesFromTemplateRecipients(
-                    templateRoleRowsForSigner,
-                    String(docuSignSignerEmail.email || "").trim(),
-                    getApplicationPrimaryRecipientName(applicationData),
-                    { singleSignerOnly: false },
-                );
-        return getContractSignerValidationMessage(roles, contractSignerOverrides);
+        const roles =
+            effectiveContractSignerRows.length > 0
+                ? buildDocuSignRolesFromEditorRows(effectiveContractSignerRows)
+                : buildBoldSignRolesFromTemplateRecipients(
+                      templateRoleRowsForSigner,
+                      String(docuSignSignerEmail.email || "").trim(),
+                      getApplicationPrimaryRecipientName(applicationData),
+                      { singleSignerOnly: false },
+                  );
+        return getContractSignerValidationMessage(roles, effectiveContractSignerRows);
     }, [
         applicationData,
-        contractSignerOverrides,
         docuSignSignerEmail.email,
-        suggestedContractSignerRows,
+        effectiveContractSignerRows,
         templateRoleRowsForSigner,
     ]);
 
@@ -1891,26 +1977,8 @@ const PDFViewerModal = ({
     includeMainContractInSendRef.current = includeMainContractInSend;
 
     const signerRolesDraftFingerprint = useMemo(
-        () =>
-            contractSignerOverridesFingerprint(
-                contractSignerOverrides?.length
-                    ? contractSignerOverrides
-                    : buildBoldSignRolesFromTemplateRecipients(
-                          templateRoleRowsForSigner,
-                          String(docuSignSignerEmail.email || "").trim(),
-                          getApplicationPrimaryRecipientName(applicationData),
-                      ).map((r) => ({
-                          role: r.signerRole,
-                          name: r.signerName,
-                          email: r.signerEmail,
-                      })),
-            ),
-        [
-            contractSignerOverrides,
-            templateRoleRowsForSigner,
-            docuSignSignerEmail.email,
-            applicationData,
-        ],
+        () => contractSignerOverridesFingerprint(effectiveContractSignerRows),
+        [effectiveContractSignerRows],
     );
 
     const invalidateDocuSignDraftSession = useCallback(() => {
@@ -1923,52 +1991,93 @@ const PDFViewerModal = ({
         draftPreparedPackageFingerprintRef.current = null;
     }, []);
 
-    const openRecipientEditorFromSummary = useCallback(() => {
+    const openRecipientEditorFromSummary = useCallback(async () => {
+        let freshParties = resolvedOwnerParties;
+        if (applicationIdForLookup) {
+            invalidateApplicationDetailCache(applicationIdForLookup);
+            freshParties = await fetchFreshOwnerPartiesForContractSigners(
+                dispatch,
+                applicationIdForLookup,
+                effectiveContractId,
+            );
+        }
+        const freshSuggested = buildContractSignerRowsFromOwnerParties(freshParties);
+        const liveSignerRows = reconcileSignerRowsWithFreshOwners(
+            contractSignerOverrides,
+            freshSuggested.length > 0
+                ? freshSuggested
+                : suggestedContractSignerRows,
+        );
+
         const existing = summaryTemplateRoles;
-        if (existing.length > 0) {
-            setRecipientEditorRows(
-                existing.map((roleRow, idx) => {
-                    const row = roleRow as Record<string, unknown>;
-                    const role = getTemplateRoleLabel(row);
-                    const email = resolveSignerEmailForSummary(
-                        role,
-                        getTemplateRoleEmailFromRow(row),
-                        docuSignSignerEmail.email,
-                        hasSavedSignerOverrides,
-                    );
-                    return {
-                        id: String(idx + 1),
-                        role: resolveDocuSignSignerRole(role),
-                        name: getTemplateRoleNameFromRow(row),
-                        email,
-                    };
-                }),
-            );
+        let editorRows: ContractSignerOverrideRow[] = [];
+        if (liveSignerRows.length > 0) {
+            editorRows = liveSignerRows;
+        } else if (existing.length > 0) {
+            editorRows = existing.map((roleRow) => {
+                const row = roleRow as Record<string, unknown>;
+                const role = getTemplateRoleLabel(row);
+                const email = resolveSignerEmailForSummary(
+                    role,
+                    getTemplateRoleEmailFromRow(row),
+                    docuSignSignerEmail.email,
+                    hasSavedSignerOverrides,
+                );
+                return {
+                    role: resolveDocuSignSignerRole(role),
+                    name: getTemplateRoleNameFromRow(row),
+                    email,
+                };
+            });
         } else if (suggestedContractSignerRows.length) {
-            setRecipientEditorRows(
-                suggestedContractSignerRows.map((row, idx) => ({
-                    id: String(idx + 1),
-                    role: row.role,
-                    name: row.name,
-                    email: row.email,
-                })),
-            );
+            editorRows = suggestedContractSignerRows.map((row) => ({
+                role: row.role,
+                name: row.name,
+                email: row.email,
+            }));
         } else {
-            setRecipientEditorRows([
+            editorRows = [
                 {
-                    id: "1",
                     role: DOCUSIGN_DEFAULT_SIGNER_ROLE,
                     name: getApplicationPrimaryRecipientName(applicationData),
                     email: primaryClientRecipientEmail,
                 },
-            ]);
+            ];
         }
+        const targetSignerCount = Math.max(
+            freshParties.length,
+            resolvedOwnerParties.length,
+            activeOwnerCount,
+            liveSignerRows.length,
+            editorRows.length,
+            1,
+        );
+        const merged = mergeContractSignerEditorRows(
+            editorRows,
+            liveSignerRows.length ? liveSignerRows : suggestedContractSignerRows,
+            targetSignerCount,
+            freshParties.length ? freshParties : resolvedOwnerParties,
+        );
+        setRecipientEditorRows(
+            merged.map((row, idx) => ({
+                id: String(idx + 1),
+                role: row.role,
+                name: row.name,
+                email: row.email,
+            })),
+        );
         setShowRecipientEditor(true);
     }, [
+        activeOwnerCount,
         applicationData,
+        applicationIdForLookup,
+        contractSignerOverrides,
+        dispatch,
         docuSignSignerEmail.email,
+        effectiveContractId,
         hasSavedSignerOverrides,
         primaryClientRecipientEmail,
+        resolvedOwnerParties,
         suggestedContractSignerRows,
         summaryTemplateRoles,
     ]);
@@ -2177,11 +2286,8 @@ const PDFViewerModal = ({
     primarySignerEmailRef.current = docuSignSignerEmail.email;
 
     const buildDocuSignRolesForSync = useCallback((): DocuSignTemplateRolePayload[] => {
-        if (contractSignerOverrides?.length) {
-            return buildDocuSignRolesFromEditorRows(contractSignerOverrides);
-        }
-        if (suggestedContractSignerRows.length > 1) {
-            return buildDocuSignRolesFromEditorRows(suggestedContractSignerRows);
+        if (effectiveContractSignerRows.length > 0) {
+            return buildDocuSignRolesFromEditorRows(effectiveContractSignerRows);
         }
         const signerEmail = String(primarySignerEmailRef.current || "").trim();
         const signerName = getApplicationPrimaryRecipientName(applicationData);
@@ -2193,8 +2299,7 @@ const PDFViewerModal = ({
         );
     }, [
         applicationData,
-        contractSignerOverrides,
-        suggestedContractSignerRows,
+        effectiveContractSignerRows,
         templateRoleRowsForSigner,
     ]);
 
@@ -2611,13 +2716,7 @@ const PDFViewerModal = ({
                 const sessionEnv = String(sessionEnvelopeId || "").trim() || null;
                 const signerRolesForSend = buildDocuSignRolesForSync();
                 const signerFingerprintForSend = contractSignerOverridesFingerprint(
-                    contractSignerOverrides?.length
-                        ? contractSignerOverrides
-                        : signerRolesForSend.map((r) => ({
-                              role: r.signerRole,
-                              name: r.signerName,
-                              email: r.signerEmail,
-                          })),
+                    effectiveContractSignerRows,
                 );
                 const currentOwnerCount = resolveActiveOwnerCount({
                     signerRoles: signerRolesForSend.map((r) => ({
@@ -5042,8 +5141,8 @@ const PDFViewerModal = ({
                                     sentStepUnlocked,
                                 );
 
-                                const circleDone = "w-5 h-5 shrink-0 rounded-full border-2 border-[#276D9C] bg-[#276D9C]/10 text-[#276D9C] flex items-center justify-center text-[10px]";
-                                const circleCurrent = "w-5 h-5 shrink-0 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-semibold";
+                                const circleDone = "w-5 h-5 shrink-0 rounded-full border-2 border-[var(--brand)] bg-[var(--brand)]/10 text-[var(--brand)] flex items-center justify-center text-[10px]";
+                                const circleCurrent = "w-5 h-5 shrink-0 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-semibold";
                                 const circlePending = "w-5 h-5 shrink-0 rounded-full border border-slate-300 text-slate-500 flex items-center justify-center text-[10px]";
 
                                 return (
@@ -5055,7 +5154,7 @@ const PDFViewerModal = ({
                                                 setActiveStep("documents");
                                             }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${docGreenActive
-                                                ? "text-[#276D9C] font-semibold"
+                                                ? "text-[var(--brand)] font-semibold"
                                                 : onDocuments
                                                     ? "text-blue-600 font-semibold"
                                                     : "text-slate-500"
@@ -5078,7 +5177,7 @@ const PDFViewerModal = ({
                                         <button
                                             type="button"
                                             onClick={() => setActiveStep("info")}
-                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${infoGreenActive ? "text-[#276D9C] font-semibold" : "text-slate-500"
+                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${infoGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
                                                 }`}
                                         >
                                             <span className={infoGreenActive ? circleDone : circlePending}>
@@ -5090,7 +5189,7 @@ const PDFViewerModal = ({
                                         <button
                                             type="button"
                                             onClick={() => setActiveStep("summary")}
-                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${summaryGreenActive ? "text-[#276D9C] font-semibold" : "text-slate-500"
+                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${summaryGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
                                                 }`}
                                         >
                                             <span className={summaryGreenActive ? circleDone : circlePending}>
@@ -5105,7 +5204,7 @@ const PDFViewerModal = ({
                                             onClick={() => {
                                                 if (canOpenSentStep) setActiveStep("sent");
                                             }}
-                                            className={`flex cursor-pointer items-center  gap-2 transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${sentGreenActive ? "text-[#276D9C] font-semibold" : "text-slate-500"
+                                            className={`flex cursor-pointer items-center  gap-2 transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${sentGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
                                                 }`}
                                         >
                                             <span className={sentGreenActive ? circleDone : circlePending}>
@@ -5129,8 +5228,8 @@ const PDFViewerModal = ({
                                 {/* Dynamic Section Heading */}
                                 <section>
                                     {activeStep === "info" ? (
-                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[#276D9C]/20 bg-gradient-to-r from-[#276D9C]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[#276D9C]/25 dark:from-[#276D9C]/15 dark:via-slate-900 dark:to-slate-900">
-                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#276D9C] text-white shadow-md shadow-[#276D9C]/25">
+                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[var(--brand)]/20 bg-gradient-to-r from-[var(--brand)]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[var(--brand)]/25 dark:from-[var(--brand)]/15 dark:via-slate-900 dark:to-slate-900">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--brand)] text-white shadow-md shadow-[var(--brand)]/25">
                                                 <ScrollText className="h-5 w-5" aria-hidden />
                                             </div>
                                             <div className="min-w-0 pt-0.5">
@@ -5144,8 +5243,8 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
                                     ) : activeStep === "sent" ? (
-                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[#276D9C]/20 bg-gradient-to-r from-[#276D9C]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[#276D9C]/25 dark:from-[#276D9C]/15 dark:via-slate-900 dark:to-slate-900">
-                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#276D9C] text-white shadow-md shadow-[#276D9C]/25">
+                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[var(--brand)]/20 bg-gradient-to-r from-[var(--brand)]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[var(--brand)]/25 dark:from-[var(--brand)]/15 dark:via-slate-900 dark:to-slate-900">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--brand)] text-white shadow-md shadow-[var(--brand)]/25">
                                                 <BadgeCheck className="h-5 w-5" aria-hidden />
                                             </div>
                                             <div className="min-w-0 pt-0.5">
@@ -5474,7 +5573,7 @@ const PDFViewerModal = ({
                                         {/* Section header */}
                                         {/* <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
                                             <div className="flex items-start gap-3">
-                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/10 text-[#276D9C]">
+                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/10 text-[var(--brand)]">
                                                     <Info className="h-4 w-4" />
                                                 </div>
                                                 <div className="min-w-0">
@@ -5561,17 +5660,17 @@ const PDFViewerModal = ({
                                         ) : null}
 
                                         {/* Addendum document picker */}
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
                                                 <div className="flex min-w-0 items-start gap-2.5">
                                                     <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                         aria-hidden
                                                     >
                                                         <FileText className="h-4 w-4" />
                                                     </div>
                                                     <div className="min-w-0">
-                                                        <label className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        <label className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                                                             Addendum Document
                                                         </label>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -5587,7 +5686,7 @@ const PDFViewerModal = ({
                                                 )}
                                             </div>
                                             <select
-                                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs text-slate-800 outline-none transition focus:border-[#276D9C] focus:ring-2 focus:ring-[#276D9C]/20 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100"
+                                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs text-slate-800 outline-none transition focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100"
                                                 value={selectedAddendumOption}
                                                 onChange={(e) => {
                                                     const value = e.target.value;
@@ -5633,16 +5732,16 @@ const PDFViewerModal = ({
                                                 ) : null}
                                             </select>
                                         </div>
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start gap-2.5">
                                                 <div
-                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                     aria-hidden
                                                 >
                                                     <Landmark className="h-4 w-4" />
                                                 </div>
                                                 <div>
-                                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                                                         Contract Meta
                                                     </h4>
                                                     <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -5653,7 +5752,7 @@ const PDFViewerModal = ({
                                             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                                 <div className="space-y-1.5">
                                                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300" htmlFor="pdf-viewer-contract-state-info">
-                                                        <MapPin className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <MapPin className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Select State
                                                     </label>
                                                     <Select
@@ -5679,7 +5778,7 @@ const PDFViewerModal = ({
                                                     >
                                                         <SelectTrigger
                                                             id="pdf-viewer-contract-state-info"
-                                                            className="h-10 w-full rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600"
+                                                            className="h-10 w-full rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600"
                                                         >
                                                             <SelectValue placeholder="Select state" />
                                                         </SelectTrigger>
@@ -5694,7 +5793,7 @@ const PDFViewerModal = ({
                                                 </div>
                                                 <div className="space-y-1.5">
                                                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300" htmlFor="pdf-viewer-contract-funder-info">
-                                                        <Building2 className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <Building2 className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Select Funder
                                                     </label>
                                                     <Select
@@ -5709,7 +5808,7 @@ const PDFViewerModal = ({
                                                     >
                                                         <SelectTrigger
                                                             id="pdf-viewer-contract-funder-info"
-                                                            className="h-10 w-full rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600"
+                                                            className="h-10 w-full rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600"
                                                         >
                                                             <SelectValue placeholder="Select funder" />
                                                         </SelectTrigger>
@@ -5725,17 +5824,17 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
 
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
                                                 <div className="flex min-w-0 items-start gap-2.5">
                                                     <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                         aria-hidden
                                                     >
                                                         <ScrollText className="h-4 w-4" />
                                                     </div>
                                                     <div className="min-w-0">
-                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                                                             State disclosure
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -5744,7 +5843,7 @@ const PDFViewerModal = ({
                                                     </div>
                                                 </div>
                                                 {linkingDisclosureTemplate ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#276D9C]">
+                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--brand)]">
                                                         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                                                         Loading
                                                     </span>
@@ -5759,9 +5858,9 @@ const PDFViewerModal = ({
 
                                             <div className="space-y-2">
                                                 {linkingDisclosureTemplate ? (
-                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[#276D9C]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
+                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--brand)]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
                                                         <Loader2
-                                                            className="h-8 w-8 animate-spin text-[#276D9C]"
+                                                            className="h-8 w-8 animate-spin text-[var(--brand)]"
                                                             aria-hidden
                                                         />
                                                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
@@ -5804,7 +5903,7 @@ const PDFViewerModal = ({
                                                                 type="button"
                                                                 size="icon"
                                                                 variant="ghost"
-                                                                className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                 title="View disclosure PDF"
                                                                 disabled={
                                                                     previewingTemplateId ===
@@ -5840,7 +5939,7 @@ const PDFViewerModal = ({
                                                     <Button
                                                         type="button"
                                                         variant="outline"
-                                                        className="h-9 w-full border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                        className="h-9 w-full border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                                         onClick={() => setDisclosureCalcModalOpen(true)}
                                                     >
                                                         <Calculator className="mr-2 h-4 w-4" />
@@ -5849,7 +5948,7 @@ const PDFViewerModal = ({
                                                     </>
                                                 ) : (
                                                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
-                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
                                                             <ScrollText className="h-5 w-5" aria-hidden />
                                                         </div>
                                                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
@@ -5866,17 +5965,17 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
 
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
                                                 <div className="flex min-w-0 items-start gap-2.5">
                                                     <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                         aria-hidden
                                                     >
                                                         <Layers className="h-4 w-4" />
                                                     </div>
                                                     <div className="min-w-0">
-                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                                                             Addendum
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -5885,7 +5984,7 @@ const PDFViewerModal = ({
                                                     </div>
                                                 </div>
                                                 {loadingTemplateMappings ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#276D9C]">
+                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--brand)]">
                                                         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                                                         Loading
                                                     </span>
@@ -5893,7 +5992,7 @@ const PDFViewerModal = ({
                                             </div>
 
                                             <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                <FileSignature className="h-3 w-3 text-[#276D9C]" aria-hidden />
+                                                <FileSignature className="h-3 w-3 text-[var(--brand)]" aria-hidden />
                                                 DocuSign templates
                                             </p>
                                             <div className="space-y-2">
@@ -5935,7 +6034,7 @@ const PDFViewerModal = ({
                                                                         type="button"
                                                                         size="icon"
                                                                         variant="ghost"
-                                                                        className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                        className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                         title="View template PDF"
                                                                         disabled={
                                                                             previewingTemplateId ===
@@ -5984,7 +6083,7 @@ const PDFViewerModal = ({
                                                             </div>
                                                 ) : (
                                                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
-                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
                                                             <Layers className="h-5 w-5" aria-hidden />
                                                         </div>
                                                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
@@ -6024,7 +6123,7 @@ const PDFViewerModal = ({
                                                                         type="button"
                                                                         size="icon"
                                                                         variant="ghost"
-                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                         title="View PDF"
                                                                         onClick={() =>
                                                                             void handlePreviewUploadedDocument(String(file?.id || ""))
@@ -6077,7 +6176,7 @@ const PDFViewerModal = ({
                                                                         type="button"
                                                                         size="icon"
                                                                         variant="ghost"
-                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                         title="View PDF"
                                                                         onClick={() =>
                                                                             void handlePreviewUploadedDocument(String(file?.id || ""))
@@ -6116,16 +6215,16 @@ const PDFViewerModal = ({
                                         </div>
 
 
-                                        {/* <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        {/* <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start gap-2.5">
                                                 <div
-                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                     aria-hidden
                                                 >
                                                     <ClipboardList className="h-4 w-4" />
                                                 </div>
                                                 <div>
-                                                    <p className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                    <p className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
                                                         Add / Edit Information
                                                     </p>
                                                     <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -6149,10 +6248,10 @@ const PDFViewerModal = ({
                                                             className={cn(
                                                                 "group flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-medium transition-all",
                                                                 isActive
-                                                                    ? "border-[#276D9C] bg-[#276D9C]/10 text-[#276D9C] shadow-sm ring-1 ring-[#276D9C]/30"
+                                                                    ? "border-[var(--brand)] bg-[var(--brand)]/10 text-[var(--brand)] shadow-sm ring-1 ring-[var(--brand)]/30"
                                                                     : isSelected
-                                                                        ? "border-[#276D9C]/40 bg-[#276D9C]/5 text-slate-800 dark:text-slate-200"
-                                                                        : "border-slate-200 bg-white text-slate-600 hover:border-[#276D9C]/35 hover:bg-[#276D9C]/5 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300",
+                                                                        ? "border-[var(--brand)]/40 bg-[var(--brand)]/5 text-slate-800 dark:text-slate-200"
+                                                                        : "border-slate-200 bg-white text-slate-600 hover:border-[var(--brand)]/35 hover:bg-[var(--brand)]/5 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300",
                                                             )}
                                                         >
                                                             <Checkbox
@@ -6173,7 +6272,7 @@ const PDFViewerModal = ({
                                                                         });
                                                                     }
                                                                 }}
-                                                                className="border-[#276D9C]/60 data-[state=checked]:bg-[#276D9C] data-[state=checked]:border-[#276D9C]"
+                                                                className="border-[var(--brand)]/60 data-[state=checked]:bg-[var(--brand)] data-[state=checked]:border-[var(--brand)]"
                                                             />
                                                             <TabIcon
                                                                 className={cn(
@@ -6191,13 +6290,13 @@ const PDFViewerModal = ({
 
 
                                         {activeInfoPanel && (
-                                            <div className="overflow-hidden rounded-xl border border-[#276D9C]/20 bg-white shadow-sm animate-in fade-in slide-in-from-top-1 duration-200 dark:border-slate-700 dark:bg-slate-900">
-                                                <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-[#276D9C]/5 to-transparent px-4 py-3">
+                                            <div className="overflow-hidden rounded-xl border border-[var(--brand)]/20 bg-white shadow-sm animate-in fade-in slide-in-from-top-1 duration-200 dark:border-slate-700 dark:bg-slate-900">
+                                                <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-[var(--brand)]/5 to-transparent px-4 py-3">
                                                     <div className="flex items-center gap-2">
-                                                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#276D9C]/10 text-[#276D9C]">
+                                                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--brand)]/10 text-[var(--brand)]">
                                                             <Pencil className="h-3.5 w-3.5" />
                                                         </span>
-                                                        <p className="text-xs font-bold uppercase tracking-wider text-[#276D9C]">
+                                                        <p className="text-xs font-bold uppercase tracking-wider text-[var(--brand)]">
                                                             {activeInfoPanel} Details
                                                         </p>
                                                     </div>
@@ -6208,7 +6307,7 @@ const PDFViewerModal = ({
                                                                 type="button"
                                                                 size="sm"
                                                                 variant="ghost"
-                                                                className="h-7 gap-1 text-[10px] text-[#276D9C] hover:text-[#276D9C]/90 hover:bg-[#276D9C]/10 cursor-pointer"
+                                                                className="h-7 gap-1 text-[10px] text-[var(--brand)] hover:text-[var(--brand)]/90 hover:bg-[var(--brand)]/10 cursor-pointer"
                                                                 onClick={() => {
                                                                     if (activeInfoPanel === "addendum") {
                                                                         setAddendumEntries((prev) => [...prev, {
@@ -6526,7 +6625,7 @@ const PDFViewerModal = ({
 
                                                 <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50/50 px-4 py-3">
                                                     {infoPanelMessage && (
-                                                        <p className="mr-auto inline-flex items-center gap-1.5 text-[11px] font-medium text-[#276D9C]">
+                                                        <p className="mr-auto inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--brand)]">
                                                             <Info className="h-3 w-3" />
                                                             {infoPanelMessage}
                                                         </p>
@@ -6534,7 +6633,7 @@ const PDFViewerModal = ({
                                                     <Button type="button" variant="ghost" size="sm" className="h-8 text-slate-500 cursor-pointer" onClick={resetActivePanel}>
                                                         Cancel
                                                     </Button>
-                                                    <Button type="button" className="h-8 cursor-pointer bg-[#276D9C] px-6 text-xs text-white hover:bg-[#276D9C]/90" onClick={saveActivePanel}>
+                                                    <Button type="button" className="h-8 cursor-pointer bg-[var(--brand)] px-6 text-xs text-white hover:bg-[var(--brand)]/90" onClick={saveActivePanel}>
                                                         Save Details
                                                     </Button>
                                                 </div>
@@ -6549,7 +6648,7 @@ const PDFViewerModal = ({
                                                 <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
                                                     Saved Records
                                                 </h4>
-                                                <span className="h-px flex-1 bg-gradient-to-r from-[#276D9C]/25 to-slate-200 dark:to-slate-700" />
+                                                <span className="h-px flex-1 bg-gradient-to-r from-[var(--brand)]/25 to-slate-200 dark:to-slate-700" />
                                             </div>
 
                                         
@@ -6775,7 +6874,7 @@ const PDFViewerModal = ({
                                                         type="button"
                                                         variant="outline"
                                                         size="sm"
-                                                        className="h-8 text-xs border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/5"
+                                                        className="h-8 text-xs border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/5"
                                                         onClick={openRecipientEditorFromSummary}
                                                     >
                                                         <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -6798,7 +6897,7 @@ const PDFViewerModal = ({
                                                         roleLabel,
                                                         getTemplateRoleEmailFromRow(roleRow),
                                                         docuSignSignerEmail.email,
-                                                        hasSavedSignerOverrides,
+                                                        summaryRolesCarryOwnerEmails,
                                                     );
                                                     const signer = {
                                                         role: roleLabel || `Role-${index + 1}`,
@@ -6811,9 +6910,9 @@ const PDFViewerModal = ({
                                                     return (
                                                         <div
                                                             key={`${signer.role}-${index}`}
-                                                            className={`group relative flex items-center gap-4 rounded-xl border p-3 transition-all hover:shadow-sm cursor-pointer ${isOwner ? "border-[#276D9C]/10 bg-[#276D9C]/10/30" :
-                                                                isGuarantor ? "border-[#276D9C]/10 bg-[#276D9C]/10/30" :
-                                                                    "border-[#276D9C]/10 bg-[#276D9C]/10/30"
+                                                            className={`group relative flex items-center gap-4 rounded-xl border p-3 transition-all hover:shadow-sm cursor-pointer ${isOwner ? "border-[var(--brand)]/10 bg-[var(--brand)]/10/30" :
+                                                                isGuarantor ? "border-[var(--brand)]/10 bg-[var(--brand)]/10/30" :
+                                                                    "border-[var(--brand)]/10 bg-[var(--brand)]/10/30"
                                                                 }`}
                                                         >
                                                             {/* Role Icon/Avatar */}
@@ -6875,7 +6974,7 @@ const PDFViewerModal = ({
                                                             <div className="ml-auto shrink-0">
                                                                 <button
                                                                     type="button"
-                                                                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:border-[#276D9C]/40 hover:bg-[#276D9C]/5 hover:text-[#276D9C]"
+                                                                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:border-[var(--brand)]/40 hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
                                                                     title="Edit recipient email"
                                                                     aria-label={`Edit recipient email for ${signer.role}`}
                                                                     onClick={(e) => {
@@ -6902,7 +7001,7 @@ const PDFViewerModal = ({
                                                         type="button"
                                                         variant="outline"
                                                         size="sm"
-                                                        className="h-8 text-xs border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/5"
+                                                        className="h-8 text-xs border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/5"
                                                         onClick={openRecipientEditorFromSummary}
                                                     >
                                                         <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -7070,7 +7169,7 @@ const PDFViewerModal = ({
                                                         </Button>
                                                         <Button
                                                             type="button"
-                                                            className="h-8 text-xs bg-[#3B8BD1] hover:bg-[#2d6fad] text-white px-6"
+                                                            className="h-8 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white px-6"
                                                             disabled={
                                                                 savingContractRecipients ||
                                                                 recipientEditorRows.every((r) => !r.email.trim())
@@ -7153,6 +7252,23 @@ const PDFViewerModal = ({
                                                                     }
                                                                     setContractSignerOverrides(rows);
                                                                     draftPreparedSignerRolesRef.current = fp;
+
+                                                                    if (cid != null) {
+                                                                        try {
+                                                                            await syncContractSignerRowsToCrm({
+                                                                                dispatch,
+                                                                                contractId: cid,
+                                                                                applicationData,
+                                                                                signerRows: rows,
+                                                                                existingContractOwners: contractOwnerRows,
+                                                                            });
+                                                                        } catch (syncOwnerErr: unknown) {
+                                                                            console.error(syncOwnerErr);
+                                                                            toast.warn(
+                                                                                "Signers saved on the contract, but owner records could not be synced to CRM.",
+                                                                            );
+                                                                        }
+                                                                    }
 
                                                                     const draftEnvelopeId =
                                                                         resolveDraftEnvelopeIdForSync(
@@ -7426,7 +7542,7 @@ const PDFViewerModal = ({
                                                     type="button"
                                                     variant="outline"
                                                     size="sm"
-                                                    className="h-8 border-[#276D9C]/30 bg-white hover:bg-[#276D9C]/5 dark:bg-slate-950"
+                                                    className="h-8 border-[var(--brand)]/30 bg-white hover:bg-[var(--brand)]/5 dark:bg-slate-950"
                                                     onClick={() => setContractPrefillEditOpen(true)}
                                                 >
                                                     <ScrollText className="mr-1.5 h-3.5 w-3.5" aria-hidden />
@@ -7442,8 +7558,8 @@ const PDFViewerModal = ({
 
                                 {activeStep === "sent" && (
                                     <section className="space-y-4">
-                                        <div className="overflow-hidden rounded-2xl border border-[#276D9C]/20 bg-white shadow-sm dark:border-[#276D9C]/25 dark:bg-slate-950">
-                                            <div className="bg-gradient-to-r from-[#276D9C] to-[#1f83b4] px-5 py-5 text-white">
+                                        <div className="overflow-hidden rounded-2xl border border-[var(--brand)]/20 bg-white shadow-sm dark:border-[var(--brand)]/25 dark:bg-slate-950">
+                                            <div className="bg-gradient-to-r from-[var(--brand)] to-[#1f83b4] px-5 py-5 text-white">
                                                 <div className="flex items-start gap-3">
                                                     <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/25">
                                                         <CheckCircle2 className="h-7 w-7" aria-hidden />
@@ -7471,7 +7587,7 @@ const PDFViewerModal = ({
                                             <div className="grid gap-3 p-4 sm:grid-cols-2">
                                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
                                                     <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                        <FileSignature className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <FileSignature className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Document
                                                     </div>
                                                     <p className="break-words text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -7480,7 +7596,7 @@ const PDFViewerModal = ({
                                                 </div>
                                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
                                                     <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                        <Clock className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <Clock className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Sent time
                                                     </div>
                                                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -7501,10 +7617,10 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
 
-                                        <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                        <div className="rounded-2xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                                             <div className="mb-3 flex items-center justify-between gap-3">
                                                 <div className="flex items-center gap-2">
-                                                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#276D9C]/10 text-[#276D9C]">
+                                                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--brand)]/10 text-[var(--brand)]">
                                                         <Mail className="h-4 w-4" aria-hidden />
                                                     </div>
                                                     <div>
@@ -7526,7 +7642,7 @@ const PDFViewerModal = ({
                                                     {sentCcEmails.map((email) => (
                                                         <span
                                                             key={email}
-                                                            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/8 px-2.5 py-1 text-xs font-medium text-[#276D9C]"
+                                                            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/8 px-2.5 py-1 text-xs font-medium text-[var(--brand)]"
                                                         >
                                                             <Mail className="h-3.5 w-3.5 shrink-0" aria-hidden />
                                                             <span className="truncate">{email}</span>
@@ -7540,10 +7656,10 @@ const PDFViewerModal = ({
                                             )}
                                         </div>
 
-                                        <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                        <div className="rounded-2xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                                             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                                                 <div className="flex items-start gap-2">
-                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#276D9C]/10 text-[#276D9C]">
+                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--brand)]/10 text-[var(--brand)]">
                                                         <Info className="h-4 w-4" aria-hidden />
                                                     </div>
                                                     <div>
@@ -7580,7 +7696,7 @@ const PDFViewerModal = ({
                                                 return (
                                                     <div className="space-y-3">
                                                         <div className="flex flex-wrap items-center gap-2">
-                                                            <span className="inline-flex items-center rounded-full bg-[#276D9C]/12 px-3 py-1 text-xs font-semibold text-[#276D9C]">
+                                                            <span className="inline-flex items-center rounded-full bg-[var(--brand)]/12 px-3 py-1 text-xs font-semibold text-[var(--brand)]">
                                                                 {formatContractSigningStatusLabel(resolvedContract?.status)}
                                                             </span>
                                                         </div>
@@ -7596,7 +7712,7 @@ const PDFViewerModal = ({
                                                                                     className={cn(
                                                                                         "flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold transition-colors",
                                                                                         isDone
-                                                                                            ? "border-[#276D9C] bg-[#276D9C] text-white shadow-sm shadow-[#276D9C]/25"
+                                                                                            ? "border-[var(--brand)] bg-[var(--brand)] text-white shadow-sm shadow-[var(--brand)]/25"
                                                                                             : "border-slate-300 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-950",
                                                                                     )}
                                                                                 >
@@ -7608,7 +7724,7 @@ const PDFViewerModal = ({
                                                                                 <div
                                                                                     className={cn(
                                                                                         "mt-0.5 text-[10px] leading-snug",
-                                                                                        isCurrent ? "text-[#276D9C]" : "text-slate-400",
+                                                                                        isCurrent ? "text-[var(--brand)]" : "text-slate-400",
                                                                                     )}
                                                                                 >
                                                                                     {step.hint}
@@ -7618,7 +7734,7 @@ const PDFViewerModal = ({
                                                                                 <div
                                                                                     className={cn(
                                                                                         "mt-4 h-0.5 w-8 shrink-0 rounded-full",
-                                                                                        activeIndex > index ? "bg-[#276D9C]" : "bg-slate-200 dark:bg-slate-700",
+                                                                                        activeIndex > index ? "bg-[var(--brand)]" : "bg-slate-200 dark:bg-slate-700",
                                                                                     )}
                                                                                 />
                                                                             ) : null}
@@ -7658,7 +7774,7 @@ const PDFViewerModal = ({
                                                             forceReloadDocuSignPdfPreview();
                                                         })();
                                                     }}
-                                                    className="inline-flex cursor-pointer h-5 w-5 shrink-0 items-center justify-center rounded-full text-[#276D9C] transition-colors hover:bg-[#276D9C]/10 disabled:cursor-not-allowed disabled:opacity-60"
+                                                    className="inline-flex cursor-pointer h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--brand)] transition-colors hover:bg-[var(--brand)]/10 disabled:cursor-not-allowed disabled:opacity-60"
                                                 >
                                                     <RefreshCw
                                                         className={cn(
@@ -7716,7 +7832,7 @@ const PDFViewerModal = ({
                                         <Button
                                             type="button"
                                             size="sm"
-                                            className="ml-auto h-9 rounded-sm bg-[#276D9C] px-4 text-sm text-white hover:bg-[#276D9C]/90"
+                                            className="ml-auto h-9 rounded-sm bg-[var(--brand)] px-4 text-sm text-white hover:bg-[var(--brand)]/90"
                                             onClick={goToNextStep}
                                         >
                                             Next
@@ -7785,7 +7901,7 @@ const PDFViewerModal = ({
                                 {pdfRightPaneTab === "template" ? (
                                     loadingInlinePreview ? (
                                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
-                                            <Loader2 className="h-6 w-6 animate-spin text-[#276D9C]" aria-hidden />
+                                            <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
                                             <span>Loading document preview…</span>
                                         </div>
                                     ) : (
@@ -7797,7 +7913,7 @@ const PDFViewerModal = ({
                                     )
                                 ) : prefilledBoldSignPdfLoading ? (
                                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
-                                        <Loader2 className="h-6 w-6 animate-spin text-[#276D9C]" aria-hidden />
+                                        <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
                                         <span>Loading contract from DocuSign…</span>
                                     </div>
                                 ) : prefilledBoldSignPdfUrl ? (
@@ -7815,10 +7931,10 @@ const PDFViewerModal = ({
                     </div>
 
                     {/* 3. Global Footer — CC + send (shrink-0 + compact so PDF pane keeps maximum height) */}
-                    <div className="flex shrink-0 flex-col gap-2 border-t border-[#276D9C]/10 bg-gradient-to-r from-slate-50/90 via-white to-[#276D9C]/5 px-6 py-3 dark:border-slate-700 dark:from-slate-900 dark:via-slate-900 dark:to-[#276D9C]/10 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
+                    <div className="flex shrink-0 flex-col gap-2 border-t border-[var(--brand)]/10 bg-gradient-to-r from-slate-50/90 via-white to-[var(--brand)]/5 px-6 py-3 dark:border-slate-700 dark:from-slate-900 dark:via-slate-900 dark:to-[var(--brand)]/10 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
                         <div className="min-w-0 flex-1 space-y-2">
                             <p className="text-[11px] text-slate-600 dark:text-slate-300">
-                                <span className="font-semibold text-[#276D9C] dark:text-[#5a9fd4]">
+                                <span className="font-semibold text-[var(--brand)] dark:text-[#5a9fd4]">
                                     Must sign (DocuSign signer):
                                 </span>{" "}
                                 {docuSignSignerEmail.email ? (
@@ -7840,8 +7956,8 @@ const PDFViewerModal = ({
                                 )}
                             </p>
                             <div className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-                                <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
-                                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#276D9C]/12">
+                                <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[#5a9fd4]">
+                                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--brand)]/12">
                                         <Mail className="h-3.5 w-3.5" aria-hidden />
                                     </span>
                                     CC (copy only — not a signer)
@@ -7853,9 +7969,9 @@ const PDFViewerModal = ({
                                     return (
                                     <span
                                         key={email}
-                                        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/8 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[#276D9C]/30 dark:bg-[#276D9C]/15 dark:text-slate-100"
+                                        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/8 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[var(--brand)]/30 dark:bg-[var(--brand)]/15 dark:text-slate-100"
                                     >
-                                        <Mail className="h-3 w-3 shrink-0 text-[#276D9C] opacity-80" aria-hidden />
+                                        <Mail className="h-3 w-3 shrink-0 text-[var(--brand)] opacity-80" aria-hidden />
                                         <span className="max-w-[220px] truncate" title={email}>
                                             {email}
                                         </span>
@@ -7901,7 +8017,7 @@ const PDFViewerModal = ({
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    className="h-9 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                    className="h-9 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                     disabled={canCancelSentContract || isCancellingContract}
                                     onClick={addPdfCcFromDraft}
                                 >
@@ -8097,7 +8213,12 @@ const PDFViewerModal = ({
                 contractDisclosureState={selectedState}
                 contractDisclosureFrequency={contractDisclosureFrequency}
                 resolvedContract={resolvedContract}
-                contractSignerOverrides={contractSignerOverrides}
+                contractSignerOverrides={effectiveContractSignerRows}
+                onSourceRecordsSynced={() => {
+                    if (applicationIdForLookup) {
+                        void dispatch(getBankDetails({ application: applicationIdForLookup }));
+                    }
+                }}
             />
             <TemplateMappingPrefillEditDialog
                 open={addendumPrefillEditOpen}

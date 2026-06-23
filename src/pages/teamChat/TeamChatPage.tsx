@@ -715,7 +715,7 @@ const TeamChat = () => {
         if (id && String(id).startsWith('temp-')) {
             return <Check className="w-3 h-3 text-gray-400" />;
         }
-        return <CheckCheck className="w-3 h-3 text-[#5AACEA]" />;
+        return <CheckCheck className="w-3 h-3 text-[#C07BE0]" />;
     };
 
     // ════════════════════════════════════════════════════════════════
@@ -730,7 +730,7 @@ const TeamChat = () => {
                 {/* Search */}
                 <div className="p-3">
                     <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border ${isDark ? 'bg-[#244966] border-[#2e5a7c]' : 'bg-[#ECF5FE] border-[#D6E7F6]'}`}>
-                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${isDark ? 'bg-[#276D9C]/35 text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${isDark ? 'bg-[var(--brand)]/35 text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[var(--brand)]'}`}>
                             <Search className="size-3.5" />
                         </span>
                         <input
@@ -822,12 +822,12 @@ const TeamChat = () => {
                                             : (isDark ? 'text-[#b8d5ef] hover:bg-[#214760]/70' : 'text-gray-700 hover:bg-[#EEF6FF]')
                                             }`}
                                     >
-                                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${activeChannelId === dm.id ? 'bg-white/20 text-white' : isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${activeChannelId === dm.id ? 'bg-white/20 text-white' : isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[var(--brand)]'}`}>
                                             <User className="size-3.5 shrink-0" />
                                         </span>
                                         <span className="truncate">{displayName}</span>
                                         {!!dm.unreadCount && dm.unreadCount > 0 && (
-                                            <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold bg-[#276D9C] text-white rounded-full">
+                                            <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold bg-[var(--brand)] text-white rounded-full">
                                                 {dm.unreadCount}
                                             </span>
                                         )}
@@ -850,15 +850,15 @@ const TeamChat = () => {
                 <div className={`px-4 py-2.5 flex items-center justify-between border-b shadow-sm ${isDark ? 'bg-[#16324a] border-[#1f3b57]' : 'bg-white border-[#D6E7F6]'}`}>
                     <div className="flex items-center gap-2 min-w-0">
                         {activeChannel ? (
-                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[var(--brand)]'}`}>
                                 <Hash className="size-4 shrink-0" />
                             </span>
                         ) : activeDM ? (
-                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[var(--brand)]'}`}>
                                 <User className="size-4 shrink-0" />
                             </span>
                         ) : (
-                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 opacity-60 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 opacity-60 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[var(--brand)]'}`}>
                                 <Hash className="size-4 shrink-0" />
                             </span>
                         )}
@@ -929,13 +929,13 @@ const TeamChat = () => {
                                     <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'} mb-1 group`}>
                                         <div
                                             className={`relative w-fit max-w-[65%] min-w-0 shrink px-3 py-1.5 rounded-lg shadow-sm ${isMine
-                                                ? (isDark ? 'bg-[#276D9C] text-[#e1e3e6]' : 'bg-[#DAEDFF] text-black')
+                                                ? (isDark ? 'bg-[var(--brand)] text-[#e1e3e6]' : 'bg-[#DAEDFF] text-black')
                                                 : (isDark ? 'bg-[#214760] text-[#e1e3e6]' : 'bg-white text-black')
                                                 }`}
                                         >
 
                                             {!isMine && (
-                                                <p className="text-xs font-semibold text-[#5AACEA] mb-0.5">{senderName}</p>
+                                                <p className="text-xs font-semibold text-[#C07BE0] mb-0.5">{senderName}</p>
                                             )}
 
                                             <div className="flex w-fit min-w-0 max-w-full flex-col">
@@ -1152,8 +1152,8 @@ const TeamChat = () => {
                                             : 'Type a message'
                                 }
                                 className={`border rounded-md focus-visible:ring-1 ${isDark
-                                    ? 'bg-[#244966] border-[#244966] text-[#e1e3e6] placeholder:text-gray-400 focus-visible:ring-[#276D9C]'
-                                    : 'bg-[#F7FBFF] border-[#D6E7F6] focus-visible:ring-[#5AACEA]'
+                                    ? 'bg-[#244966] border-[#244966] text-[#e1e3e6] placeholder:text-gray-400 focus-visible:ring-[var(--brand)]'
+                                    : 'bg-[#F7FBFF] border-[#D6E7F6] focus-visible:ring-[#C07BE0]'
                                     }`}
                                 disabled={!activeChannelId || attachmentUploading}
                             />
@@ -1162,7 +1162,7 @@ const TeamChat = () => {
                         {/* Emoji */}
                         <Smile
                             className={`size-5 shrink-0 cursor-pointer transition-colors ${showEmojiPicker
-                                ? 'text-[#5AACEA]'
+                                ? 'text-[#C07BE0]'
                                 : (isDark ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700')
                                 }`}
                             onClick={handleEmojiClick}
@@ -1179,7 +1179,7 @@ const TeamChat = () => {
                                 attachmentUploading
                             }
                             className={`p-2 rounded-full transition-colors ${(input.trim() || pendingAttachments.length > 0) && activeChannelId && !attachmentUploading
-                                ? 'bg-[#276D9C] hover:bg-[#2e7fb5] text-white'
+                                ? 'bg-[var(--brand)] hover:bg-[#2e7fb5] text-white'
                                 : (isDark ? 'text-gray-600' : 'text-gray-400')
                                 }`}
                         >
@@ -1238,7 +1238,7 @@ const TeamChat = () => {
                                                     'text-[13px] font-semibold rounded-full',
                                                     isDark
                                                         ? 'bg-sky-900/50 text-sky-200'
-                                                        : 'bg-[#DAEDFF] text-[#276D9C]',
+                                                        : 'bg-[#DAEDFF] text-[var(--brand)]',
                                                 )}
                                             >
                                                 {initials}
@@ -1256,7 +1256,7 @@ const TeamChat = () => {
                                         <p
                                             className={cn(
                                                 'text-sm font-medium truncate',
-                                                isDark ? 'text-sky-100' : 'text-[#276D9C]',
+                                                isDark ? 'text-sky-100' : 'text-[var(--brand)]',
                                             )}
                                         >
                                             {fullName}
@@ -1319,7 +1319,7 @@ const TeamChat = () => {
                                                 'rounded-2xl text-2xl font-bold',
                                                 isDark
                                                     ? 'bg-sky-900/50 text-sky-200'
-                                                    : 'bg-[#DAEDFF] text-[#276D9C]',
+                                                    : 'bg-[#DAEDFF] text-[var(--brand)]',
                                             )}
                                         >
                                             {getInitials(selectedMember.firstName, selectedMember.lastName)}
@@ -1474,7 +1474,7 @@ const TeamChat = () => {
                                                 'rounded-2xl text-2xl font-bold',
                                                 isDark
                                                     ? 'bg-sky-900/50 text-sky-200'
-                                                    : 'bg-[#DAEDFF] text-[#276D9C]',
+                                                    : 'bg-[#DAEDFF] text-[var(--brand)]',
                                             )}
                                         >
                                             {getInitials(selectedMember.firstName, selectedMember.lastName)}

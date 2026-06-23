@@ -146,7 +146,7 @@ export const MessageBubble = ({
         <div
           className={`px-4 py-2.5 rounded-2xl ${
             isOwnMessage
-              ? 'bg-blue-600 text-white rounded-br-md'
+              ? 'bg-primary text-primary-foreground rounded-br-md'
               : 'bg-gray-700 text-gray-100 rounded-bl-md'
           }`}
         >

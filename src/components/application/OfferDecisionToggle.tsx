@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { formatNumberUS, formatRateUS } from "@/lib/utils";
+import { formatNumberUS, formatNumberUSForInput, formatRateUS } from "@/lib/utils";
 import { deriveOfferRepaymentStack } from "@/lib/offerRepaymentCalculations";
 import {
   feesPercentToDollarsFromFunded,
@@ -19,6 +19,7 @@ import {
 } from "@/lib/offerDecisionSync";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
+import { Badge } from "@/components/ui/badge";
 import MyNotes from "./MyNotes";
 import { ApprovedOfferDisplay } from "./ApprovedOfferDisplay";
 
@@ -58,8 +59,8 @@ export interface OfferDecisionToggleProps {
   /** Called whenever local form state changes. */
   onChange?: (next: OfferFormValue) => void;
 
-  /** Called when user confirms Approve & Save. */
-  onApprove?: (value: OfferFormValue) => void | Promise<void>;
+  /** Called when user confirms Approve & Save. Return false to abort the offer save. */
+  onApprove?: (value: OfferFormValue) => void | boolean | Promise<void | boolean>;
   /** Called when user confirms decline with a reason. */
   onDecline?: (reason: string) => void | Promise<void>;
   /** Called when user cancels editing an existing decision. */
@@ -94,6 +95,12 @@ export interface OfferDecisionToggleProps {
     totalLeveragePct: number;
     loading: boolean;
   }) => void;
+  /** When true, Decline / Approve & Save / Edit render above the OFFER card. */
+  actionsAtTop?: boolean;
+  /** When true (default with actionsAtTop), show a Preview mode badge while the offer is locked. */
+  showPreviewBadge?: boolean;
+  /** Fires when an approved offer is locked (preview) vs editable. */
+  onPreviewModeChange?: (isPreview: boolean) => void;
 }
 
 function isSameOfferForm(a: OfferFormValue, b: OfferFormValue): boolean {
@@ -242,6 +249,14 @@ function sanitizeDecimalInput(value: string): string {
   if (parts.length > 2) s = parts[0] + "." + parts.slice(1).join("");
   if (s.indexOf("-", 1) !== -1) s = s.replace(/-/g, "");
   return s;
+}
+
+/** Format stored currency strings for display (comma thousands, two decimals). */
+function formatCurrencyDisplayValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const formatted = formatNumberUS(trimmed);
+  return formatted || trimmed;
 }
 
 function computeFallbackAvgNetCredit(
@@ -400,6 +415,9 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     totalMonthlyFromPositionsOverride,
     totalDailyFromPositionsOverride,
     onSummaryMetricsChange,
+    actionsAtTop = false,
+    showPreviewBadge = actionsAtTop,
+    onPreviewModeChange,
   } = props;
 
   const [localData, setLocalData] = useState<OfferFormValue>(() => ({
@@ -601,8 +619,15 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     !editingApprovedOffer &&
     !forceShowForm;
   const inputsDisabled = !!disabled || offerInputsLocked;
+  /** Approved offer saved and not in edit mode — bank analysis / positions should lock too. */
+  const isPreviewMode =
+    effectiveDecision === "approved" && offerInputsLocked && !disabled;
   /** Preview / read-only contexts (e.g. sheet, operations): show grid layout like approved state, not input boxes. */
   const showReadOnlyOfferGrid = offerInputsLocked || !!disabled;
+
+  useEffect(() => {
+    onPreviewModeChange?.(isPreviewMode);
+  }, [isPreviewMode, onPreviewModeChange]);
 
   const setField = useCallback(
     (field: keyof OfferFormValue, rawValue: string) => {
@@ -1240,6 +1265,13 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     try {
       setIsApproveLoading(true);
 
+      if (onApprove) {
+        const preSaveResult = await onApprove(localData);
+        if (preSaveResult === false) {
+          return;
+        }
+      }
+
       const feesDollarsForDb = feesPercentToDollarsFromFunded(
         localData.offer,
         localData.fees,
@@ -1307,14 +1339,6 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       setEditingApprovedOffer(false);
       offerSnapshotBeforeEditRef.current = null;
 
-      // Optional parent callback
-      if (onApprove) {
-        const maybePromise = onApprove(localData);
-        if (maybePromise && typeof (maybePromise as any).then === "function") {
-          await maybePromise;
-        }
-      }
-
       // Ensure the OFFER form/section remains visible after saving
       setShowApproveForm(true);
 
@@ -1364,6 +1388,106 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       ? formatNumberUS(derivedRepaymentStack.monthlyPayment)
       : "";
 
+  const offerDisplay = formatCurrencyDisplayValue(localData.offer);
+
+  const commitCurrencyField = useCallback(
+    (field: "offer" | "daysWeeks" | "monthlyPayment", rawValue: string) => {
+      const trimmed = rawValue.trim();
+      if (!trimmed) return;
+      const num = parseNum(trimmed);
+      if (!Number.isFinite(num)) return;
+      setField(field, formatNumberUS(num));
+    },
+    [setField],
+  );
+
+  const showActionRow = showFooterActions;
+  const renderDecisionActions = () => {
+    if (!showActionRow) return null;
+
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        {showPreviewBadge && isPreviewMode && (
+          <Badge
+            variant="secondary"
+            className="border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200"
+          >
+            Preview mode
+          </Badge>
+        )}
+        {effectiveDecision === "approved" &&
+        !editingApprovedOffer &&
+        !forceShowForm ? (
+          <>
+            <button
+              type="button"
+              onClick={handleStartEditApprovedOffer}
+              disabled={!!disabled}
+              className={`px-5 py-2 rounded-lg text-sm font-semibold transition-colors border ${
+                disabled
+                  ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500"
+                  : "cursor-pointer border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              }`}
+            >
+              Edit
+            </button>
+            <div
+              role="status"
+              className="px-6 py-2 bg-[#00b377] text-white rounded-lg text-sm font-semibold shadow-md select-none cursor-default"
+            >
+              Approved
+            </div>
+          </>
+        ) : (
+          <>
+            {effectiveDecision === "approved" &&
+              editingApprovedOffer &&
+              !forceShowForm && (
+                <button
+                  type="button"
+                  onClick={handleCancelEditApprovedOffer}
+                  disabled={!!disabled || isApproveLoading}
+                  className={`px-5 py-2 rounded-lg text-sm font-semibold transition-colors border ${
+                    disabled || isApproveLoading
+                      ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500"
+                      : "cursor-pointer border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-[#141517] dark:text-slate-200 dark:hover:bg-slate-800"
+                  }`}
+                >
+                  Cancel
+                </button>
+              )}
+            <button
+              type="button"
+              onClick={handleDeclineClick}
+              disabled={isDeclinedButtonDisabled}
+              className={`px-4 py-2 rounded-md text-sm font-semibold transition-colors ${
+                isDeclinedButtonDisabled
+                  ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                  : "bg-[#ff4d4d] text-white hover:bg-[#e64545] cursor-pointer"
+              }`}
+            >
+              Declined
+            </button>
+            <button
+              type="button"
+              onClick={handleApproveSave}
+              disabled={
+                isApproveLoading || !!disabled || !canApproveOffer
+              }
+              className={`px-6 py-2 rounded-lg text-sm font-semibold shadow-lg transition-all ${
+                (!canApproveOffer && !isApproveLoading) || !!disabled
+                  ? "bg-[#00b377]/50 text-white/90 cursor-not-allowed"
+                  : "bg-[#00b377] text-white cursor-pointer hover:bg-[#009e69] transform hover:-translate-y-0.5"
+              } disabled:opacity-60 disabled:cursor-not-allowed`}
+            >
+              {isApproveLoading ? "Saving..." : "Approve & Save"}
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="relative w-full font-sans text-slate-700 dark:text-slate-200">
       {isOfferDecisionLoading && (
@@ -1385,6 +1509,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
           }
         >
           <div className={showNotesPanel ? "xl:col-span-9 space-y-3" : "space-y-3"}>
+            {actionsAtTop && renderDecisionActions()}
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-md dark:border-slate-700 dark:bg-[#141517]">
               <div className="bg-[#559955bf] px-5 py-3 font-bold text-lg text-white tracking-wider">
                 OFFER
@@ -1401,9 +1526,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         Offer
                       </span>
                       <span className="text-left text-[15px] font-bold tabular-nums text-[#0caa46]">
-                        {localData.offer.trim()
-                          ? `$ ${localData.offer}`
-                          : "—"}
+                        {offerDisplay ? `$ ${offerDisplay}` : "—"}
                       </span>
                     </div>
                     <div className="grid min-h-[56px] grid-cols-[12rem_1fr] items-center gap-x-3 border-b border-[#d8dde3] bg-slate-50 px-4 py-4 dark:border-slate-700 dark:bg-slate-900/40 md:border-r md:[&:nth-child(3n)]:border-r-0">
@@ -1456,7 +1579,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         {perPeriodRepayDisplay
                           ? `$ ${perPeriodRepayDisplay}`
                           : localData.daysWeeks.trim()
-                            ? `$ ${localData.daysWeeks}`
+                            ? `$ ${formatCurrencyDisplayValue(localData.daysWeeks)}`
                             : "—"}
                       </span>
                     </div>
@@ -1468,7 +1591,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                         {monthlyPaymentDisplay
                           ? `$ ${monthlyPaymentDisplay}`
                           : localData.monthlyPayment.trim()
-                            ? `$ ${localData.monthlyPayment}`
+                            ? `$ ${formatCurrencyDisplayValue(localData.monthlyPayment)}`
                             : "—"}
                       </span>
                     </div>
@@ -1500,8 +1623,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                           onChange={(e) =>
                             setField(
                               "offer",
-                              sanitizeDecimalInput(e.target.value),
+                              formatNumberUSForInput(e.target.value),
                             )
+                          }
+                          onBlur={(e) =>
+                            commitCurrencyField("offer", e.target.value)
                           }
                           disabled={inputsDisabled}
                         />
@@ -1597,8 +1723,11 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                           onChange={(e) =>
                             setField(
                               "daysWeeks",
-                              sanitizeDecimalInput(e.target.value),
+                              formatNumberUSForInput(e.target.value),
                             )
+                          }
+                          onBlur={(e) =>
+                            commitCurrencyField("daysWeeks", e.target.value)
                           }
                           disabled={inputsDisabled}
                         />
@@ -1619,7 +1748,13 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                           onChange={(e) =>
                             setField(
                               "monthlyPayment",
-                              sanitizeDecimalInput(e.target.value),
+                              formatNumberUSForInput(e.target.value),
+                            )
+                          }
+                          onBlur={(e) =>
+                            commitCurrencyField(
+                              "monthlyPayment",
+                              e.target.value,
                             )
                           }
                           disabled={inputsDisabled}
@@ -1684,79 +1819,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                 totalDailyFromPositions={totalDailyFromPositions}
                 showLeverageTable={showLeverageTable}
               />
-              {showFooterActions && (
-                <div className="flex flex-wrap items-center gap-3 pt-0.5">
-                  {effectiveDecision === "approved" &&
-                  !editingApprovedOffer &&
-                  !forceShowForm ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={handleStartEditApprovedOffer}
-                        disabled={!!disabled}
-                        className={`px-5 py-2 rounded-lg text-sm font-semibold transition-colors border ${
-                          disabled
-                            ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500"
-                            : "cursor-pointer border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-                        }`}
-                      >
-                        Edit
-                      </button>
-                      <div
-                        role="status"
-                        className="px-6 py-2 bg-[#00b377] text-white rounded-lg text-sm font-semibold shadow-md select-none cursor-default"
-                      >
-                        Approved
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      {effectiveDecision === "approved" &&
-                        editingApprovedOffer &&
-                        !forceShowForm && (
-                          <button
-                            type="button"
-                            onClick={handleCancelEditApprovedOffer}
-                            disabled={!!disabled || isApproveLoading}
-                            className={`px-5 py-2 rounded-lg text-sm font-semibold transition-colors border ${
-                              disabled || isApproveLoading
-                                ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500"
-                                : "cursor-pointer border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-[#141517] dark:text-slate-200 dark:hover:bg-slate-800"
-                            }`}
-                          >
-                            Cancel
-                          </button>
-                        )}
-                      <button
-                        type="button"
-                        onClick={handleDeclineClick}
-                        disabled={isDeclinedButtonDisabled}
-                        className={`px-4 py-2 rounded-md text-sm font-semibold transition-colors ${
-                          isDeclinedButtonDisabled
-                            ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                            : "bg-[#ff4d4d] text-white hover:bg-[#e64545] cursor-pointer"
-                        }`}
-                      >
-                        Declined
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleApproveSave}
-                        disabled={
-                          isApproveLoading || !!disabled || !canApproveOffer
-                        }
-                        className={`px-6 py-2 rounded-lg text-sm font-semibold shadow-lg transition-all ${
-                          (!canApproveOffer && !isApproveLoading) || !!disabled
-                            ? "bg-[#00b377]/50 text-white/90 cursor-not-allowed"
-                            : "bg-[#00b377] text-white cursor-pointer hover:bg-[#009e69] transform hover:-translate-y-0.5"
-                        } disabled:opacity-60 disabled:cursor-not-allowed`}
-                      >
-                        {isApproveLoading ? "Saving..." : "Approve & Save"}
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
+              {!actionsAtTop && renderDecisionActions()}
             </div>
           </div>
           {showNotesPanel && (

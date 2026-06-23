@@ -250,7 +250,7 @@ export const ChatPanel = ({
               >
                 Direct
                 {directUnread > 0 && (
-                  <span className="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-blue-600 text-white text-xs font-semibold flex items-center justify-center">
+                  <span className="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-primary text-primary-foreground text-xs font-semibold flex items-center justify-center">
                     {directUnread > 99 ? '99+' : directUnread}
                   </span>
                 )}
@@ -305,7 +305,7 @@ export const ChatPanel = ({
                             <span className="text-xs text-gray-400 flex items-center gap-2">
                               {(conv.participants?.length ?? 0)} members
                               {unread > 0 && (
-                                <span className="rounded-full bg-blue-600 text-white text-xs px-1.5">
+                                <span className="rounded-full bg-primary text-primary-foreground text-xs px-1.5">
                                   {unread}
                                 </span>
                               )}
@@ -381,7 +381,7 @@ export const ChatPanel = ({
                                 <span className="font-medium text-gray-100 truncate">{name}</span>
                                 <div className="flex items-center gap-2 shrink-0">
                                   {unread > 0 && (
-                                    <span className="rounded-full bg-blue-600 text-white text-xs min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center font-medium">
+                                    <span className="rounded-full bg-primary text-primary-foreground text-xs min-w-[1.25rem] h-5 px-1.5 flex items-center justify-center font-medium">
                                       {unread > 99 ? '99+' : unread}
                                     </span>
                                   )}
@@ -462,7 +462,7 @@ export const ChatPanel = ({
                     <Button
                       onClick={handleCreateGroup}
                       disabled={!groupName.trim() || groupMemberIds.length === 0 || creatingGroup}
-                      className="bg-blue-600 hover:bg-blue-500 text-white"
+                      className="bg-primary hover:bg-primary/90 text-primary-foreground"
                     >
                       {creatingGroup ? 'Creating...' : 'Create'}
                     </Button>

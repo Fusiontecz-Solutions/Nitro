@@ -50,6 +50,22 @@ export const getClients = createAsyncThunk(
     }
 );
 
+// Get Single Client by UUID
+export const getClientById = createAsyncThunk(
+    'client/getById',
+    async (id: string, { rejectWithValue }) => {
+        try {
+            const response = await axiosGet(`/clients/${id}`);
+            return response.data;
+        } catch (error: any) {
+            console.error('Get client by id error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fetch client'
+            );
+        }
+    }
+);
+
 // Get Single Client by clientId
 export const getClientByClientId = createAsyncThunk(
     'client/getByClientId',

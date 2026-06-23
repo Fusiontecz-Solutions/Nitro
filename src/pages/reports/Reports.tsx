@@ -401,7 +401,7 @@ const Reports = () => {
         const { pending, paid } = summary;
 
         return [
-            { name: 'Paid', value: paid, color: '#276D9C' },
+            { name: 'Paid', value: paid, color: 'var(--brand)' },
             { name: 'Pending', value: pending, color: '#7DB3CF' },
         ];
     }, [summary]);
@@ -490,7 +490,7 @@ const Reports = () => {
                         This Month
                     </Button> */}
                     <Button
-                        className="gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                        className="gap-2 bg-[var(--brand)] text-white hover:bg-[var(--brand)]/90 cursor-pointer"
                         onClick={handleExportCsv}
                     >
                         <Download className="size-4" />
@@ -658,7 +658,7 @@ const Reports = () => {
                             <Bar
                                 dataKey="approved"
                                 name="Approved Amount"
-                                fill="#276D9C"
+                                fill="var(--brand)"
                                 radius={[4, 4, 0, 0]}
                             />
                             <Bar
@@ -822,7 +822,7 @@ const Reports = () => {
                                         <td className="py-2 pr-4">
                                             <span
                                                 className={`px-2 py-1 rounded-full text-xs font-medium ${row.status === 'Paid'
-                                                    ? 'bg-[#276D9C]/10 text-[#276D9C]'
+                                                    ? 'bg-[var(--brand)]/10 text-[var(--brand)]'
                                                     : 'bg-yellow-100 text-yellow-700'
                                                     }`}
                                             >

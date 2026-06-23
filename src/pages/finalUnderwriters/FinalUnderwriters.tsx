@@ -197,7 +197,7 @@
 //         <h1 className="text-lg font-semibold">{LABEL_PLURAL}</h1>
 //         <Button
 //           onClick={openAddModal}
-//           className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
+//           className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
 //         >
 //           <UserPlus className="h-4 w-4" />
 //           Add {LABEL}
@@ -233,7 +233,7 @@
 //                   className={`${
 //                     isDark
 //                       ? 'bg-[#1e293b] hover:bg-[#1e293b]'
-//                       : 'bg-[#276D9C] hover:bg-[#276D9C]'
+//                       : 'bg-[var(--brand)] hover:bg-[var(--brand)]'
 //                   } border-b-0`}
 //                 >
 //                   <TableHead className="text-white font-medium text-xs">NAME</TableHead>
@@ -644,7 +644,7 @@ export default function FinalUnderwritersDashboard() {
           </Button>
           <Button
             onClick={openAddModal}
-            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
+            className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
           >
             <UserPlus className="h-4 w-4" />
             New {LABEL_PLURAL}
@@ -758,12 +758,12 @@ export default function FinalUnderwritersDashboard() {
                 <TableRow
                   className={`${isDark
                     ? 'bg-[#1e293b] hover:bg-[#1e293b]'
-                    : 'bg-[#276D9C] hover:bg-[#276D9C]'} border-b-0`}
+                    : 'bg-[var(--brand)] hover:bg-[var(--brand)]'} border-b-0`}
                 >
                   <TableHead className="text-white font-medium text-xs w-[40px] px-3">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 accent-[#276D9C] cursor-pointer"
+                      className="h-4 w-4 rounded border-slate-300 accent-[var(--brand)] cursor-pointer"
                     />
                   </TableHead>
                   <TableHead className="text-white font-medium text-xs">NAME</TableHead>
@@ -793,7 +793,7 @@ export default function FinalUnderwritersDashboard() {
                       <TableCell className="w-[40px] px-3">
                         <input
                           type="checkbox"
-                          className="h-4 w-4 rounded border-slate-300 accent-[#276D9C] cursor-pointer"
+                          className="h-4 w-4 rounded border-slate-300 accent-[var(--brand)] cursor-pointer"
                         />
                       </TableCell>
                       <TableCell className="font-medium text-sm">{name}</TableCell>

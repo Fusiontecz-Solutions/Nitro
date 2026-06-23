@@ -328,7 +328,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                   placeholder="Search name, email, application ID…"
-                  className="h-11 w-full min-w-[220px] max-w-[320px] rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#276D9C]/30 sm:w-[280px]"
+                  className="h-11 w-full min-w-[220px] max-w-[320px] rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/30 sm:w-[280px]"
                 />
               </div>
 
@@ -338,7 +338,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                   onClick={() => setViewMode("list")}
                   className={`inline-flex h-9 w-10 items-center justify-center rounded-lg transition-colors ${
                     viewMode === "list"
-                      ? "bg-[#276D9C] text-white"
+                      ? "bg-[var(--brand)] text-white"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                   aria-label="List view"
@@ -350,7 +350,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                   onClick={() => setViewMode("grid")}
                   className={`inline-flex h-9 w-10 items-center justify-center rounded-lg transition-colors ${
                     viewMode === "grid"
-                      ? "bg-[#276D9C] text-white"
+                      ? "bg-[var(--brand)] text-white"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                   aria-label="Grid view"
@@ -431,7 +431,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                             <button
                               type="button"
                               onClick={() => handleOpen(row)}
-                              className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[#276D9C]"
+                              className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[var(--brand)]"
                             >
                               <Eye size={20} className="opacity-50" />
                             </button>
@@ -493,7 +493,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                         <button
                           type="button"
                           onClick={() => handleOpen(row)}
-                          className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[#276D9C]"
+                          className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[var(--brand)]"
                         >
                           <Eye size={19} className="opacity-50" />
                         </button>
@@ -549,7 +549,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                         onClick={() => setPage(p)}
                         className={`inline-flex h-7 min-w-7 items-center justify-center rounded-md border px-2 text-[11px] font-semibold transition-colors ${
                           safeCurrentPage === p
-                            ? "border-[#276D9C] bg-[#276D9C] text-white"
+                            ? "border-[var(--brand)] bg-[var(--brand)] text-white"
                             : "border-border bg-background text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                         }`}
                         aria-label={`Page ${p}`}

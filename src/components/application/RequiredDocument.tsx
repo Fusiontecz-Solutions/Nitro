@@ -683,7 +683,7 @@ const RequiredDocument = ({
                                                                 type="button"
                                                                 onClick={handleUploadClick}
                                                                 disabled={disableFundingUpload}
-                                                                className="bg-[#5AACEA] hover:bg-[#1565C0] text-white text-sm font-medium px-4 py-2 mb-4 disabled:pointer-events-none disabled:opacity-50"
+                                                                className="bg-[#C07BE0] hover:bg-[#1565C0] text-white text-sm font-medium px-4 py-2 mb-4 disabled:pointer-events-none disabled:opacity-50"
                                                             >
                                                                 <Upload className="w-4 h-4 mr-2" />
                                                                 Upload Document
@@ -1010,7 +1010,7 @@ const RequiredDocument = ({
                                     navigate('/create-position');
                                 }
                             }}
-                            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white w-36 px-10 py-0 text-xs rounded-sm"
+                            className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white w-36 px-10 py-0 text-xs rounded-sm"
                         >
                             Create Position
                         </Button>
@@ -1211,7 +1211,7 @@ const RequiredDocument = ({
                                     navigate('/create-terms-offer');
                                 }
                             }}
-                            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white w-36 px-10 py-0 text-xs rounded-sm"
+                            className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white w-36 px-10 py-0 text-xs rounded-sm"
                         >
                             Create Terms Offer
                         </Button>)

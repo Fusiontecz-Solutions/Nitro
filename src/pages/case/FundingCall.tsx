@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import MyNotes from '@/components/application/MyNotes';
 import RejectApplicationModal from '@/components/application/RejectApplicationModal';
+import { Button } from '@/components/ui/button';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import { createFundingCall, getFundingCalls } from '@/redux/actions/fundingCallActions';
@@ -465,17 +466,15 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
       </div>
 
       <div className="flex justify-end">
-        <button
+        <Button
           type="button"
+          variant="default"
           onClick={handleSave}
           disabled={isBusy}
-          className={cn(
-            'cursor-pointer rounded-full border-none bg-[#1e60a3] px-8 py-3 font-[550] text-white shadow-[0_10px_20px_rgba(30,96,163,0.3)]',
-            'disabled:cursor-not-allowed disabled:opacity-60 dark:shadow-[0_10px_24px_rgba(30,96,163,0.35)]',
-          )}
+          className="min-w-[10rem] px-8 py-3 font-semibold disabled:opacity-60"
         >
           {saving ? 'Saving...' : 'Update Status'}
-        </button>
+        </Button>
       </div>
 
       {isBusy && (
