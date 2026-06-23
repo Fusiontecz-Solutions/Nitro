@@ -50,6 +50,12 @@ export type BoldSignMergeAndSendPayload = {
   applicationId?: string;
   /** CRM contract row — used when linking standalone ACH envelopes to prefill. */
   contractId?: number;
+  /** Documents included in this envelope (Create Contract package picker). */
+  sendPackage?: {
+    includeMainContract?: boolean;
+    includeAddendum?: boolean;
+    includeDisclosure?: boolean;
+  };
   /** When true, backend uses `/v1/template/mergeAndSend` with minimal roles. */
   useLegacyMergeApi?: boolean;
   /** Non-signers who receive a copy when the merged document is sent from BoldSign. */

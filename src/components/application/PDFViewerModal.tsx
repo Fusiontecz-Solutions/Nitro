@@ -155,6 +155,14 @@ import {
 } from "./contractdata/documentTemplateMappingPrefill";
 import { DOCUSIGN_DEFAULT_SIGNER_ROLE } from "./contractdata/docusignTemplateConfig";
 import {
+    contractSendPackageFingerprint,
+    canSendWithoutMainContract,
+    resolveEffectiveSendPackage,
+    validateContractSendPackage,
+    type ContractSendPackageSelection,
+} from "./contractdata/contractSendPackage";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
     CONTRACT_ADDENDUM_DOCUMENT_OPTIONS,
     getPlatformSignerRoleRows,
     isAchAuthorizationLayoutKey,
@@ -343,6 +351,8 @@ interface PDFViewerModalProps {
         supplementalDocumentRefs?: string[];
         /** When false, send supplemental document only (standalone ACH). */
         includeMainContract?: boolean;
+        /** Which documents are included in this envelope. */
+        sendPackage?: ContractSendPackageSelection;
         funderName?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
         /** Current Deal Review values — always applied on each Review & send open. */
@@ -1108,6 +1118,39 @@ const PDFViewerModal = ({
     const [loadingInlinePreview, setLoadingInlinePreview] = useState(false);
     /** `bs:<boldSignTemplateGuid>` | `up:<uploadedFileId>` | `` */
     const [selectedAddendumOption, setSelectedAddendumOption] = useState<string>("");
+    /** Main contract in envelope — default on; addendum/disclosure auto-merge when configured below. */
+    const [includeMainContractInSend, setIncludeMainContractInSend] = useState(true);
+
+    const configuredAddendumLayoutKey = useMemo((): string | null => {
+        const opt = String(selectedAddendumOption || "").trim();
+        if (opt.startsWith("up:")) return null;
+        if (opt.startsWith("lk:")) return opt.slice(3).trim() || null;
+        const fromMapping = String(
+            linkedAddendumMapping?.template?.layoutKey ??
+                linkedAddendumMapping?.template?.templateId ??
+                linkedAddendumMapping?.templateId ??
+                "",
+        ).trim();
+        return isPlatformLayoutKey(fromMapping) ? fromMapping : null;
+    }, [selectedAddendumOption, linkedAddendumMapping]);
+
+    const configuredDisclosureRef = useMemo((): string | null => {
+        if (!linkedDisclosureMapping || !linkedDisclosureMatchesSelectedState) return null;
+        const rowId = String(linkedDisclosureMapping?.template?.id ?? "").trim();
+        return rowId || null;
+    }, [linkedDisclosureMapping, linkedDisclosureMatchesSelectedState]);
+
+    const canSendWithoutContract = useMemo(
+        () => canSendWithoutMainContract(configuredAddendumLayoutKey, configuredDisclosureRef),
+        [configuredAddendumLayoutKey, configuredDisclosureRef],
+    );
+
+    useEffect(() => {
+        if (!canSendWithoutContract) {
+            setIncludeMainContractInSend(true);
+        }
+    }, [canSendWithoutContract]);
+
     // const [selectedPayoffLetterFileId, setSelectedPayoffLetterFileId] = useState<string>("");
     const [activeInfoPanel, setActiveInfoPanel] = useState<InfoPanelId | null>(null);
     const [, setSelectedInfoPanels] = useState<InfoPanelId[]>([]);
@@ -1688,6 +1731,7 @@ const PDFViewerModal = ({
             setContractPrefillLoaded(false);
             setDocumentTemplatePrefillByMappingId({});
             setSelectedAddendumOption("");
+            setIncludeMainContractInSend(true);
             setSessionEnvelopeId(null);
             setDocuSignOpenUrl(null);
             setContractSignerOverrides(null);
@@ -1697,6 +1741,7 @@ const PDFViewerModal = ({
             draftPreparedPrefillFingerprintRef.current = null;
             draftPreparedSignerRolesRef.current = null;
             draftPreparedOwnerCountRef.current = null;
+            draftPreparedPackageFingerprintRef.current = null;
             prefilledPdfCachedForEnvelopeRef.current = null;
             prefilledBoldSignPdfUrlRef.current = null;
             return;
@@ -1895,6 +1940,20 @@ const PDFViewerModal = ({
         templateRoleRowsForSigner,
     ]);
 
+    /** Allow supplemental-only sends when main contract is already out for signature. */
+    const canReviewAndSendCurrentPackage = useMemo(() => {
+        if (!canSendWithoutContract || includeMainContractInSend) {
+            return canReviewAndSendDocuSign;
+        }
+        return Boolean(onPrepareDocuSignDraft) && !contractSignersValidationError;
+    }, [
+        canSendWithoutContract,
+        includeMainContractInSend,
+        canReviewAndSendDocuSign,
+        onPrepareDocuSignDraft,
+        contractSignersValidationError,
+    ]);
+
     const docuSignPdfCacheSuffix = useMemo(
         () => getDocuSignPdfCacheSuffix(resolvedContract, sentAt),
         [resolvedContract, sentAt],
@@ -1913,6 +1972,9 @@ const PDFViewerModal = ({
     const draftPreparedPrefillFingerprintRef = useRef<string | null>(null);
     const draftPreparedSignerRolesRef = useRef<string | null>(null);
     const draftPreparedOwnerCountRef = useRef<number | null>(null);
+    const draftPreparedPackageFingerprintRef = useRef<string | null>(null);
+    const includeMainContractInSendRef = useRef(includeMainContractInSend);
+    includeMainContractInSendRef.current = includeMainContractInSend;
 
     const signerRolesDraftFingerprint = useMemo(
         () => contractSignerOverridesFingerprint(effectiveContractSignerRows),
@@ -1926,6 +1988,7 @@ const PDFViewerModal = ({
         draftPreparedPrefillFingerprintRef.current = null;
         draftPreparedSignerRolesRef.current = null;
         draftPreparedOwnerCountRef.current = null;
+        draftPreparedPackageFingerprintRef.current = null;
     }, []);
 
     const openRecipientEditorFromSummary = useCallback(async () => {
@@ -2192,6 +2255,32 @@ const PDFViewerModal = ({
         const rowId = String(row?.template?.id ?? "").trim();
         return rowId || null;
     }, []);
+
+    const getEffectiveSendPackage = useCallback((): ContractSendPackageSelection => {
+        return resolveEffectiveSendPackage({
+            includeMainContractInSend: includeMainContractInSendRef.current,
+            addendumLayoutKey: resolveAddendumLayoutKeyForDocuSignMerge(),
+            disclosureRef: resolveDisclosureTemplateRefForDocuSignMerge(),
+        });
+    }, [resolveAddendumLayoutKeyForDocuSignMerge, resolveDisclosureTemplateRefForDocuSignMerge]);
+
+    const sendPackageFingerprint = useMemo(
+        () => contractSendPackageFingerprint(getEffectiveSendPackage()),
+        [
+            getEffectiveSendPackage,
+            includeMainContractInSend,
+            selectedAddendumOption,
+            linkedDisclosureMapping,
+            linkedDisclosureMatchesSelectedState,
+            canSendWithoutContract,
+        ],
+    );
+
+    useEffect(() => {
+        const prepared = draftPreparedPackageFingerprintRef.current;
+        if (prepared == null || prepared === sendPackageFingerprint) return;
+        invalidateDocuSignDraftSession();
+    }, [sendPackageFingerprint, invalidateDocuSignDraftSession]);
 
     const primarySignerEmailRef = useRef("");
     primarySignerEmailRef.current = docuSignSignerEmail.email;
@@ -2569,9 +2658,22 @@ const PDFViewerModal = ({
                 }
 
                 const addendumLayoutKey = resolveAddendumLayoutKeyForDocuSignMerge();
+                const disclosureRef = resolveDisclosureTemplateRefForDocuSignMerge();
+                const packageSelection = getEffectiveSendPackage();
+                const packageValidationMsg = validateContractSendPackage(packageSelection, {
+                    addendumLayoutKey,
+                    disclosureRef,
+                });
+                if (packageValidationMsg) {
+                    toast.error(packageValidationMsg);
+                    showDocuSignTabMessage(docuSignTab, "Could not open DocuSign", packageValidationMsg);
+                    return;
+                }
+
                 const funderForDealId = selectedFunder.trim();
                 const contractIdForDeal = effectiveContractId;
                 if (
+                    packageSelection.includeMainContract &&
                     contractIdForDeal != null &&
                     Number.isFinite(contractIdForDeal) &&
                     funderForDealId
@@ -2631,11 +2733,17 @@ const PDFViewerModal = ({
 
                 let envelopeId: string | null = null;
 
-                const disclosureRef = resolveDisclosureTemplateRefForDocuSignMerge();
                 const prepared = await onPrepareDocuSignDraft({
                     ccEmails: toSend,
-                    supplementalLayoutKey: addendumLayoutKey,
-                    supplementalDocumentRefs: disclosureRef ? [disclosureRef] : [],
+                    supplementalLayoutKey: packageSelection.includeAddendum
+                        ? addendumLayoutKey
+                        : null,
+                    supplementalDocumentRefs:
+                        packageSelection.includeDisclosure && disclosureRef
+                            ? [disclosureRef]
+                            : [],
+                    includeMainContract: packageSelection.includeMainContract,
+                    sendPackage: packageSelection,
                     funderName: selectedFunder.trim() || null,
                     signerRoles: signerRolesForSend,
                     prefillFields: prefillFieldsForDraft,
@@ -2646,11 +2754,14 @@ const PDFViewerModal = ({
                 if (envelopeId) {
                     setSessionEnvelopeId(envelopeId);
                     linkedEnvelopeIdRef.current = envelopeId;
-                    draftPreparedAddendumIdRef.current = addendumLayoutKey;
+                    draftPreparedAddendumIdRef.current = packageSelection.includeAddendum
+                        ? addendumLayoutKey
+                        : null;
                     draftPreparedCcRef.current = [...toSend];
                     draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
                     draftPreparedSignerRolesRef.current = signerFingerprintForSend;
                     draftPreparedOwnerCountRef.current = currentOwnerCount;
+                    draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
                 }
 
                 if (!envelopeId) {
@@ -2727,14 +2838,22 @@ const PDFViewerModal = ({
         if (!fileUrl || isSending || docuSignSendInFlightRef.current) return;
         const forceNewEnvelope =
             options?.forceNewEnvelope === true || contractNeedsNewEnvelope;
+        const packageIncludesMainContract =
+            !canSendWithoutContract || includeMainContractInSendRef.current;
         if (forceNewEnvelope) {
-            if (!canResendSignedContract && !canSendMainContract(resolvedContract, sentAt)) {
+            if (
+                packageIncludesMainContract &&
+                !canResendSignedContract &&
+                !canSendMainContract(resolvedContract, sentAt)
+            ) {
                 toast.error("This contract cannot be sent yet.");
                 return;
             }
-        } else if (!canReviewAndSendDocuSign) {
+        } else if (!canReviewAndSendCurrentPackage) {
             toast.error(
-                "This contract is already out for signature. Void it in DocuSign before sending again.",
+                packageIncludesMainContract
+                    ? "This contract is already out for signature. Void it in DocuSign before sending again."
+                    : "Cannot send this document package right now.",
             );
             return;
         }
@@ -3442,8 +3561,11 @@ const PDFViewerModal = ({
 
         const addendumLayoutKey = resolveAddendumLayoutKeyForDocuSignMerge();
         const disclosureRef = resolveDisclosureTemplateRefForDocuSignMerge();
-        const mergedLayoutKeys = addendumLayoutKey ? [addendumLayoutKey] : [];
-        const mergedTemplateIds = disclosureRef ? [disclosureRef] : [];
+        const packageSelection = getEffectiveSendPackage();
+        const mergedLayoutKeys =
+            packageSelection.includeAddendum && addendumLayoutKey ? [addendumLayoutKey] : [];
+        const mergedTemplateIds =
+            packageSelection.includeDisclosure && disclosureRef ? [disclosureRef] : [];
 
         const effectiveOverrides = mergeContractPrefillOverrideLayers(
             contractPrefillOverrides,
@@ -3479,17 +3601,21 @@ const PDFViewerModal = ({
         const savedOverrides =
             mappingId != null ? documentTemplatePrefillByMappingId[mappingId] ?? null : null;
 
-        const disclosureFields = buildExpandedDisclosurePrefillFieldsForMapping({
-            mappingRow: linkedDisclosureMapping,
-            savedOverridesForMapping: savedOverrides,
-            contract: resolvedContract as Record<string, unknown> | null,
-            application: applicationData as unknown as Record<string, unknown> | null,
-            agreementDate: formatDate(new Date()),
-        });
+        const disclosureFields = packageSelection.includeDisclosure
+            ? buildExpandedDisclosurePrefillFieldsForMapping({
+                  mappingRow: linkedDisclosureMapping,
+                  savedOverridesForMapping: savedOverrides,
+                  contract: resolvedContract as Record<string, unknown> | null,
+                  application: applicationData as unknown as Record<string, unknown> | null,
+                  agreementDate: formatDate(new Date()),
+              })
+            : [];
 
         return mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
     }, [
         dealReviewFields,
+        getEffectiveSendPackage,
+        includeMainContractInSend,
         resolveAddendumLayoutKeyForDocuSignMerge,
         resolveDisclosureTemplateRefForDocuSignMerge,
         contractPrefillOverrides,
@@ -5493,6 +5619,46 @@ const PDFViewerModal = ({
                                             })}
                                         </div> */}
 
+                                        {canSendWithoutContract ? (
+                                        <div className="rounded-xl border border-[#276D9C]/20 bg-gradient-to-br from-[#276D9C]/5 to-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:from-slate-900 dark:to-slate-900 dark:ring-slate-700/80">
+                                            <div className="mb-3 flex items-start gap-2.5">
+                                                <div
+                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                    aria-hidden
+                                                >
+                                                    <FileText className="h-4 w-4" />
+                                                </div>
+                                                <div>
+                                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        Send options
+                                                    </h4>
+                                                    <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                        {includeMainContractInSend
+                                                            ? "Main contract is included. Selected addendum and linked state disclosure merge automatically."
+                                                            : "Sending configured addendum and/or state disclosure only (no main contract)."}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2.5 dark:border-slate-600 dark:bg-slate-950">
+                                                <Checkbox
+                                                    checked={includeMainContractInSend}
+                                                    onCheckedChange={(checked) =>
+                                                        setIncludeMainContractInSend(checked === true)
+                                                    }
+                                                    className="mt-0.5"
+                                                />
+                                                <span className="min-w-0">
+                                                    <span className="block text-xs font-medium text-slate-800 dark:text-slate-100">
+                                                        Include main contract agreement
+                                                    </span>
+                                                    <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
+                                                        Uncheck only if you need to send addendum and/or disclosure without the contract.
+                                                    </span>
+                                                </span>
+                                            </label>
+                                        </div>
+                                        ) : null}
+
                                         {/* Addendum document picker */}
                                         <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
@@ -5672,7 +5838,7 @@ const PDFViewerModal = ({
                                                             State disclosure
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                            Linked from the selected state and merged at the bottom of the contract.
+                                                            Linked from the selected state and merged when available.
                                                         </p>
                                                     </div>
                                                 </div>
@@ -7907,7 +8073,7 @@ const PDFViewerModal = ({
                                     {isSending ? "Preparing DocuSign…" : "Resend contract"}
                                 </Button>
                             ) : null}
-                            {canReviewAndSendDocuSign && docuSignOpenUrl ? (
+                            {canReviewAndSendCurrentPackage && docuSignOpenUrl ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -7940,7 +8106,7 @@ const PDFViewerModal = ({
                                     Open DocuSign
                                 </Button>
                             ) : null}
-                            {canReviewAndSendDocuSign && !docuSignOpenUrl ? (
+                            {canReviewAndSendCurrentPackage && !docuSignOpenUrl ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -7954,9 +8120,12 @@ const PDFViewerModal = ({
                                 >
                                     {isSending
                                         ? "Preparing DocuSign…"
-                                        : contractNeedsNewEnvelope
+                                        : contractNeedsNewEnvelope &&
+                                            (includeMainContractInSend || !canSendWithoutContract)
                                           ? "Send contract in DocuSign"
-                                          : "Review & send in DocuSign"}
+                                          : includeMainContractInSend || !canSendWithoutContract
+                                            ? "Review & send in DocuSign"
+                                            : "Review & send documents in DocuSign"}
                                 </Button>
                             ) : null}
                             </div>
