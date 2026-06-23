@@ -6,7 +6,7 @@ function normalizeQueueToken(value: unknown): string {
     return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
 }
 
-/** True when `currentQueue` is the primary Underwriter inbox queue (`Underwriter`). */
+/** True when `currentQueue` is the primary Underwriter inbomx queue (`Underwriter`). */
 export function isApplicationInUnderwriterQueue(currentQueue: string | null | undefined): boolean {
     return normalizeQueueToken(currentQueue ?? '') === 'UNDERWRITER';
 }
