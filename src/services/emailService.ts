@@ -7,6 +7,8 @@ import {
   resolveCrmFrontendBaseUrl,
   resolveDecisionLogicInvitationBaseUrl,
 } from '../utils/crmFrontendUrl';
+import { renderApplicationApprovalEmailHtml } from './emailTemplates/applicationApprovalEmailHtml';
+import { renderOfferUpdatedEmailHtml } from './emailTemplates/offerUpdatedEmailHtml';
 
 /**
  * Inline brand logos used inside transactional email templates.
@@ -574,8 +576,49 @@ export interface ApplicationApprovalEmailParams {
     calculateApprovalUrl?: string;
     /** Optional logo URL above the hero banner (overrides APPROVAL_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
+    /** Frontend-rendered branded HTML; when set it is sent as-is instead of the backend template. */
+    html?: string;
+    /** Overrides the default subject when the frontend template is used. */
+    subject?: string;
     /** SendGrid webhook correlation id (`ocid` custom arg). */
     trackingId?: string;
+}
+
+/**
+ * Placeholders embedded by the frontend approval template. The backend owns the
+ * signed public-portal URL and the resolved ISO recipient / business name, so it
+ * swaps these tokens for real values before sending (mirrors the document-request
+ * `__DOCUMENT_REQUEST_UPLOAD_URL__` flow).
+ */
+export const APPLICATION_APPROVAL_URL_PLACEHOLDER = '__APPLICATION_APPROVAL_URL__';
+export const APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER = '__APPROVAL_CLIENT_NAME__';
+export const APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER = '__APPROVAL_COMPANY_NAME__';
+
+function escapeApprovalEmailValue(value: string): string {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+/** Fills the frontend approval-template placeholders with server-resolved values. */
+export function injectApplicationApprovalEmailValues(
+    html: string,
+    values: { approvalUrl?: string; clientName?: string; companyName?: string },
+): string {
+    let out = String(html || '');
+    const approvalUrl = String(values.approvalUrl || '').trim();
+    if (approvalUrl) {
+        out = out.split(APPLICATION_APPROVAL_URL_PLACEHOLDER).join(approvalUrl);
+    }
+    out = out
+        .split(APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER)
+        .join(escapeApprovalEmailValue(String(values.clientName || '').trim()));
+    out = out
+        .split(APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER)
+        .join(escapeApprovalEmailValue(String(values.companyName || '').trim()));
+    return out;
 }
 
 export const APPROVAL_EMAIL_PDF_FILENAME = 'Application-approved-template.pdf';
@@ -628,75 +671,39 @@ export const buildApplicationApprovalEmailHtml = ({
     clientName,
     companyName,
     calculateApprovalUrl,
-    bannerLogoUrl,
-}: Omit<ApplicationApprovalEmailParams, 'to' | 'viewApplicationUrl'>): string => {
-    const safeClientName = clientName || 'Valued Client';
-    const safeCompanyName = companyName || 'your company';
-    const t = KATAN_EMAIL_THEME;
-
-    return buildKatanCapitalClientEmailHtml({
-        pageTitle: 'Application Approved',
-        heroTitle: 'APPLICATION APPROVED',
-        heroSubtitle: 'Congratulations! Your application has been successfully processed.',
-        bannerLogoUrl: bannerLogoUrl || APPROVAL_BANNER_LOGO_URL,
-        trackerSteps: [
-            { label: 'Application<br/>Submitted', complete: true },
-            { label: 'Underwriting', complete: true },
-            { label: 'Approved', complete: true },
-            { label: 'Contract', complete: false },
-            { label: 'Funding Call', complete: false },
-            { label: 'Funded', complete: false },
-        ],
-        bodyHtml: `
-            <p style="margin: 0 0 15px 0; font-size: 16px; color: ${t.textPrimary};">Hi ${safeClientName}!</p>
-            <p style="font-size: 15px; color: ${t.textMuted}; line-height: 1.5;">
-                We are pleased to inform you that your application for
-                <strong style="color: ${t.purpleDeep};">'${safeCompanyName}'</strong>
-                has been pre-approved for a katan Advance!
-            </p>
-            <p style="font-size: 14px; color: ${t.textMuted}; line-height: 1.5;">
-                Please click the button below to calculate your approvals. You do not need a katan Advance CRM login to use our calculator — everyone on your team will have immediate access via this email.
-            </p>
-            ${buildKatanCapitalCtaButton(calculateApprovalUrl || '#', 'Calculate your Approval')}
-            <h4 style="margin: 30px 0 10px 0; font-size: 15px; color: ${t.textPrimary}; text-decoration: underline;">REQUIRED STIPS FOR FUNDING</h4>
-            <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                    <td width="50%" valign="top" style="font-size: 12px; color: ${t.textPrimary}; padding-right: 10px;">
-                        <strong>Provide with signed contracts:</strong>
-                        <ul style="padding-left: 15px; margin-top: 8px; color: ${t.purpleAmethyst};">
-                            <li><span style="color: ${t.textMuted};">Void Check</span></li>
-                            <li><span style="color: ${t.textMuted};">Driver's License</span></li>
-                        </ul>
-                    </td>
-                    <td width="50%" valign="top" style="font-size: 12px; color: ${t.textPrimary};">
-                        <strong>Abc Company will take care of:</strong>
-                        <ul style="padding-left: 15px; margin-top: 8px; color: ${t.purpleAmethyst};">
-                            <li><span style="color: ${t.textMuted};">Merchant Interview</span></li>
-                            <li><span style="color: ${t.textMuted};">Decision Logic/Bank Login</span></li>
-                            <li><span style="color: ${t.textMuted};">Recent Bank Statements</span></li>
-                        </ul>
-                    </td>
-                </tr>
-            </table>
-            <p style="font-size: 13px; color: ${t.textMuted}; margin-top: 30px; line-height: 1.4;">If you need more information or have any questions, please contact your representative directly.</p>
-        `,
+    viewApplicationUrl,
+}: Omit<ApplicationApprovalEmailParams, 'to' | 'bannerLogoUrl'>): string =>
+    renderApplicationApprovalEmailHtml({
+        client_name: clientName || 'Valued Client',
+        company_name: companyName || 'your company',
+        calculate_approval_url: calculateApprovalUrl || '#',
+        view_application_url: viewApplicationUrl || calculateApprovalUrl || '#',
     });
-};
 
-/** @returns true when SMTP accepted the message; false if disabled, invalid `to`, or send failed */
+export type IsoBrandedEmailSendResult = { sent: boolean; sgMessageId?: string };
+
+function readSendGridMessageId(result: unknown): string | undefined {
+    return typeof (result as { messageId?: string })?.messageId === 'string'
+        ? (result as { messageId: string }).messageId
+        : undefined;
+}
+
+/** @returns send outcome; includes SendGrid message id when tracked delivery succeeds */
 export async function sendApplicationApprovalEmail({
     to,
     clientName,
     companyName,
+    viewApplicationUrl,
     calculateApprovalUrl,
-    bannerLogoUrl,
+    html: clientHtml,
+    subject: clientSubject,
     trackingId,
-}: ApplicationApprovalEmailParams): Promise<boolean> {
+}: ApplicationApprovalEmailParams): Promise<IsoBrandedEmailSendResult> {
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Application approval skipped: empty recipient');
-        return false;
+        return { sent: false };
     }
 
     if (DISABLE_CLIENT_APPLICATION_EMAILS) {
@@ -705,21 +712,23 @@ export async function sendApplicationApprovalEmail({
             '[email] Application approval skipped: DISABLE_CLIENT_APPLICATION_EMAILS=true (set to false to deliver ISO approval template)',
             { to: toTrimmed },
         );
-        return false;
+        return { sent: false };
     }
 
-    const subject = 'Your Application Has Been Approved';
-    const html = buildApplicationApprovalEmailHtml({
-        clientName,
-        companyName,
-        calculateApprovalUrl,
-        bannerLogoUrl,
-    });
+    const subject = String(clientSubject || '').trim() || 'Your Application Has Been Approved';
+    const html =
+        String(clientHtml || '').trim() ||
+        buildApplicationApprovalEmailHtml({
+            clientName,
+            companyName,
+            viewApplicationUrl,
+            calculateApprovalUrl,
+        });
 
     try {
         const attachments = await buildIsoBrandedEmailAttachments(html, APPROVAL_EMAIL_PDF_FILENAME);
         const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
-        await sendMail({
+        const result = await sendMail({
             to: toTrimmed,
             subject,
             html,
@@ -731,11 +740,11 @@ export async function sendApplicationApprovalEmail({
             // eslint-disable-next-line no-console
             console.warn('[email] Application approval sent without PDF attachment (PDF generation failed)');
         }
-        return true;
+        return { sent: true, sgMessageId: readSendGridMessageId(result) };
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Application approval email send failed:', { to: toTrimmed, error });
-        return false;
+        return { sent: false };
     }
 }
 
@@ -1165,6 +1174,10 @@ export interface ApplicationOfferUpdatedEmailParams {
     repaymentAmount?: number;
     /** Optional logo URL above the hero banner (overrides OFFER_UPDATED_BANNER_LOGO_URL). */
     bannerLogoUrl?: string;
+    /** Frontend-rendered branded HTML; when set it is sent as-is instead of the backend template. */
+    html?: string;
+    /** Overrides the default subject when the frontend template is used. */
+    subject?: string;
     /** SendGrid webhook correlation id (`ocid` custom arg). */
     trackingId?: string;
 }
@@ -1173,79 +1186,33 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
     clientName,
     companyName,
     calculateApprovalUrl,
-    applicationNumber,
-    merchantName,
-    merchantEmail,
-    merchantPhone,
-    approvedAmount,
-    factorRate,
-    repaymentAmount,
-    bannerLogoUrl,
-}: Omit<ApplicationOfferUpdatedEmailParams, 'to' | 'viewApplicationUrl'>): string => {
-    const safeClientName = clientName || 'Valued Client';
-    const safeCompanyName = companyName || 'your company';
-    const t = KATAN_EMAIL_THEME;
-    const applicationDetailsBlock = buildKatanOfferDetailsHtml({
-        applicationNumber,
-        companyName: safeCompanyName,
-        merchantName,
-        merchantEmail,
-        merchantPhone,
-        approvedAmount,
-        factorRate,
-        repaymentAmount,
+    viewApplicationUrl,
+}: Omit<
+    ApplicationOfferUpdatedEmailParams,
+    'to' | 'applicationNumber' | 'merchantName' | 'merchantEmail' | 'merchantPhone' | 'approvedAmount' | 'factorRate' | 'repaymentAmount' | 'bannerLogoUrl'
+>): string =>
+    renderOfferUpdatedEmailHtml({
+        client_name: clientName || 'Valued Client',
+        company_name: companyName || 'your company',
+        calculate_approval_url: calculateApprovalUrl || '#',
+        view_application_url: viewApplicationUrl || calculateApprovalUrl || '#',
     });
-
-    return buildKatanCapitalClientEmailHtml({
-        pageTitle: 'Offer Updated',
-        heroTitle: 'OFFER UPDATED',
-        heroSubtitle: 'Your offer values have been updated based on the latest approval mail comment.',
-        bannerLogoUrl: bannerLogoUrl || OFFER_UPDATED_BANNER_LOGO_URL,
-        trackerSteps: [
-            { label: 'Application<br/>Submitted', complete: true },
-            { label: 'Underwriting', complete: true },
-            { label: 'Approved', complete: true },
-            { label: 'Offer Updated', complete: true },
-            { label: 'Final Call', complete: false },
-            { label: 'Funded', complete: false },
-        ],
-        bodyHtml: `
-            <p style="margin: 0 0 15px 0; font-size: 16px; color: ${t.textPrimary};">Hi ${safeClientName}!</p>
-            <p style="font-size: 15px; color: ${t.textMuted}; line-height: 1.5;">
-                Your offer values for
-                <strong style="color: ${t.purpleDeep};">'${safeCompanyName}'</strong>
-                are now updated as mentioned in the last approval mail comment.
-            </p>
-            <p style="font-size: 14px; color: ${t.textMuted}; line-height: 1.5;">
-                Please review the updated offer details and recalculate approval values if needed.
-            </p>
-            ${buildKatanCapitalCtaButton(calculateApprovalUrl || '#', 'Review Updated Offer')}
-            ${applicationDetailsBlock}
-            <p style="font-size: 13px; color: ${t.textMuted}; margin-top: 20px; line-height: 1.4;">If you have questions, please reply to the latest approval mail comment thread or contact your representative.</p>
-        `,
-    });
-};
 
 export async function sendApplicationOfferUpdatedEmail({
     to,
     clientName,
     companyName,
+    viewApplicationUrl,
     calculateApprovalUrl,
-    applicationNumber,
-    merchantName,
-    merchantEmail,
-    merchantPhone,
-    approvedAmount,
-    factorRate,
-    repaymentAmount,
-    bannerLogoUrl,
+    html: clientHtml,
+    subject: clientSubject,
     trackingId,
-}: ApplicationOfferUpdatedEmailParams): Promise<boolean> {
+}: ApplicationOfferUpdatedEmailParams): Promise<IsoBrandedEmailSendResult> {
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Offer update skipped: empty recipient');
-        return false;
+        return { sent: false };
     }
 
     if (DISABLE_CLIENT_APPLICATION_EMAILS) {
@@ -1254,28 +1221,23 @@ export async function sendApplicationOfferUpdatedEmail({
             '[email] Offer update skipped: DISABLE_CLIENT_APPLICATION_EMAILS=true',
             { to: toTrimmed },
         );
-        return false;
+        return { sent: false };
     }
 
-    const subject = 'Your Offer Values Have Been Updated';
-    const html = buildApplicationOfferUpdatedEmailHtml({
-        clientName,
-        companyName,
-        calculateApprovalUrl,
-        applicationNumber,
-        merchantName,
-        merchantEmail,
-        merchantPhone,
-        approvedAmount,
-        factorRate,
-        repaymentAmount,
-        bannerLogoUrl,
-    });
+    const subject = String(clientSubject || '').trim() || 'Your Offer Values Have Been Updated';
+    const html =
+        String(clientHtml || '').trim() ||
+        buildApplicationOfferUpdatedEmailHtml({
+            clientName,
+            companyName,
+            viewApplicationUrl,
+            calculateApprovalUrl,
+        });
 
     try {
         const attachments = await buildIsoBrandedEmailAttachments(html, OFFER_UPDATED_EMAIL_PDF_FILENAME);
         const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
-        await sendMail({
+        const result = await sendMail({
             to: toTrimmed,
             subject,
             html,
@@ -1287,11 +1249,11 @@ export async function sendApplicationOfferUpdatedEmail({
             // eslint-disable-next-line no-console
             console.warn('[email] Offer update sent without PDF attachment (PDF generation failed)');
         }
-        return true;
+        return { sent: true, sgMessageId: readSendGridMessageId(result) };
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Offer update email send failed:', { to: toTrimmed, error });
-        return false;
+        return { sent: false };
     }
 }
 

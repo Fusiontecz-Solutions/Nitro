@@ -160,7 +160,7 @@ const applicationStatePrismaToApi: Record<ApplicationState, string> = {
     [ApplicationStateConst.CONTRACT_GENERATED]: 'Contract_Generated',
     [ApplicationStateConst.CONTRACT_SENT]: 'Contract_Sent',
     [ApplicationStateConst.CONTRACT_CANCELLED]: 'Contract_Cancelled',
-    [ApplicationStateConst.CONTRACTS_OUT]: 'Contract Out',
+    [ApplicationStateConst.CONTRACTS_OUT]: 'Contract Sent',
     [ApplicationStateConst.SIGNED_CONTRACTS]: 'Signed_Contracts',
     [ApplicationStateConst.FUNDING_CALL]: 'Funding Call',
     [ApplicationStateConst.DISBURSMENT]: 'Disbursment',

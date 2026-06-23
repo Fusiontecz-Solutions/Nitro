@@ -6,6 +6,7 @@ import {
 } from './applicationService';
 import {
     buildOperationsStatusFilterWhere,
+    contractGeneratedStrictMatchWhere,
     contractsOutStrictMatchWhere,
     signedContractsStrictMatchWhere,
     resolveOperationsListFilterMode,
@@ -43,6 +44,7 @@ export type OperationsDashboardSummaryPayload = {
     summaryCounts: {
         totalCases: number;
         contractPending: number;
+        contractGenerated: number;
         contractsOut: number;
         signedContracts: number;
         fundingCall: number;
@@ -106,6 +108,9 @@ export async function aggregateOperationsDashboardSummary(
         prisma.application.count({ where: visibilityBase }),
         prisma.application.count({ where: sq('Contract_Pending') }),
         prisma.application.count({
+            where: combineWhere(visibilityBase, contractGeneratedStrictMatchWhere()),
+        }),
+        prisma.application.count({
             where: combineWhere(visibilityBase, contractsOutStrictMatchWhere()),
         }),
         prisma.application.count({
@@ -140,6 +145,7 @@ export async function aggregateOperationsDashboardSummary(
     const [
         totalCases,
         contractPending,
+        contractGenerated,
         contractsOut,
         signedContracts,
         fundingCall,
@@ -166,6 +172,7 @@ export async function aggregateOperationsDashboardSummary(
         summaryCounts: {
             totalCases,
             contractPending,
+            contractGenerated,
             contractsOut,
             signedContracts,
             fundingCall,

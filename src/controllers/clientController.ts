@@ -5,6 +5,14 @@ import {
     agentCanAccessClient,
     mergeClientVisibilityWhere,
 } from '../services/clientAccessService';
+import {
+    buildOwnerCreateData,
+    buildPrimaryOwnerFlatFields,
+    mapClientToApi,
+    normalizeOwnerOnlyInput,
+    normalizeOwnersInput,
+    resolveOwnersForCreate,
+} from '../utils/clientMapper';
 
 const getAuthenticatedUser = (req: Request): AuthenticatedUser | null => {
     const user = req.user;
@@ -21,135 +29,58 @@ const isAgentRole = (role: string | null | undefined): boolean =>
         .toUpperCase()
         .replace(/-/g, '_') === 'AGENT';
 
-// Helper to map Prisma Client record to the Mongo-like shape the frontend expects
-const mapClientToApi = (client: any) => {
-    if (!client) return client;
+const CLIENT_INCLUDE = {
+    createdBy: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+    },
+    assignedTo: {
+        select: { id: true, firstName: true, lastName: true, email: true },
+    },
+    owners: {
+        orderBy: { sortOrder: 'asc' as const },
+    },
+};
 
-    const {
-        id,
-        clientId,
-        status,
-        notes,
-        createdAt,
-        updatedAt,
-        createdBy,
-        assignedTo,
-        businessName,
-        businessEmail,
-        businessNumber,
-        businessWebsite,
-        businessIncorporationDate,
-        businessIncorporationState,
-        businessEntityType,
-        businessEinNumber,
-        businessAnnualRevenue,
-        businessMonthlyRevenue,
-        businessAddress1,
-        businessAddress2,
-        businessCity,
-        businessState,
-        businessZipCode,
-        ownerFirstName,
-        ownerMiddleName,
-        ownerLastName,
-        ownerEmail,
-        ownerMobileNumber,
-        ownerDateOfBirth,
-        ownerSsn,
-        ownerFicoScore,
-        ownerOwnershipStartDate,
-        ownerOwnershipPercentage,
-        ownerAddress1,
-        ownerAddress2,
-        ownerCity,
-        ownerState,
-        ownerZipCode,
-        ...rest
-    } = client;
+const collectOwnerSsns = (owners: ReturnType<typeof normalizeOwnersInput>) =>
+    owners
+        .map((owner) => (owner.ssn ? String(owner.ssn).trim() : ''))
+        .filter(Boolean);
 
-    return {
-        ...rest,
-        _id: id,
-        id, // keep explicit id as well
-        clientId,
-        status,
-        notes,
-        createdAt,
-        updatedAt,
-        business: {
-            name: businessName,
-            email: businessEmail || '',
-            number: businessNumber || '',
-            website: businessWebsite || '',
-            incorporationDate: businessIncorporationDate,
-            incorporationState: businessIncorporationState || '',
-            businessEntityType: businessEntityType || '',
-            einNumber: businessEinNumber || '',
-            annualRevenue: businessAnnualRevenue ?? undefined,
-            monthlyRevenue: businessMonthlyRevenue ?? undefined,
-            address: {
-                address1: businessAddress1 || '',
-                address2: businessAddress2 || '',
-                city: businessCity || '',
-                state: businessState || '',
-                zipCode: businessZipCode || '',
-            },
+const findDuplicateSsnClient = async (ssns: string[], excludeClientId?: string) => {
+    if (!ssns.length) return null;
+
+    const ownerMatch = await prisma.clientOwner.findFirst({
+        where: {
+            ssn: { in: ssns },
+            ...(excludeClientId ? { clientId: { not: excludeClientId } } : {}),
         },
-        owner: {
-            firstName: ownerFirstName,
-            middleName: ownerMiddleName || '',
-            lastName: ownerLastName,
-            email: ownerEmail || '',
-            mobileNumber: ownerMobileNumber || '',
-            dateOfBirth: ownerDateOfBirth,
-            ssn: ownerSsn || '',
-            ficoScore: ownerFicoScore ?? undefined,
-            ownershipStartDate: ownerOwnershipStartDate,
-            ownershipPercentage: ownerOwnershipPercentage ?? undefined,
-            address: {
-                address1: ownerAddress1 || '',
-                address2: ownerAddress2 || '',
-                city: ownerCity || '',
-                state: ownerState || '',
-                zipCode: ownerZipCode || '',
-            },
+        include: { client: { select: { clientId: true } } },
+    });
+
+    if (ownerMatch) return ownerMatch.client;
+
+    return prisma.client.findFirst({
+        where: {
+            ownerSsn: { in: ssns },
+            ...(excludeClientId ? { NOT: { id: excludeClientId } } : {}),
         },
-        createdBy: createdBy
-            ? {
-                _id: createdBy.id,
-                id: createdBy.id,
-                firstName: createdBy.firstName,
-                lastName: createdBy.lastName,
-                email: createdBy.email,
-            }
-            : undefined,
-        assignedTo: assignedTo
-            ? {
-                _id: assignedTo.id,
-                id: assignedTo.id,
-                firstName: assignedTo.firstName,
-                lastName: assignedTo.lastName,
-                email: assignedTo.email,
-            }
-            : undefined,
-    };
+    });
 };
 
 class ClientController {
     // Create a new client
     async create(req: Request, res: Response) {
         try {
-            const { business, owner, notes, assignedTo } = req.body;
+            const { business, notes, assignedTo } = req.body;
+            const owners = resolveOwnersForCreate(req.body);
 
-            // Validate required fields
-            if (!business?.name || !owner?.firstName || !owner?.lastName) {
+            if (!business?.name || !owners.length || !owners[0]?.firstName) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Business name, owner first name, and owner last name are required',
+                    message: 'Business name and at least one owner with first name are required',
                 });
             }
 
-            // Build business address object (handle both flat and nested structures)
             const businessAddress = {
                 address1: business.address?.address1 || '',
                 address2: business.address?.address2 || '',
@@ -163,7 +94,6 @@ class ClientController {
                 email: business.email,
                 number: business.number,
                 website: business.website,
-                // Convert string date (e.g. "2018-09-13") to a JS Date for Prisma
                 incorporationDate: business.incorporationDate
                     ? new Date(business.incorporationDate)
                     : undefined,
@@ -175,54 +105,25 @@ class ClientController {
                 address: businessAddress,
             };
 
-            // Build owner address object (handle both flat and nested structures)
-            const ownerAddress = {
-                address1: owner.address?.address1 || '',
-                address2: owner.address?.address2 || '',
-                city: owner.address?.city || '',
-                state: owner.address?.state || '',
-                zipCode: owner.address?.zipCode || '',
-            };
-
-            const ownerData: any = {
-                firstName: owner.firstName,
-                middleName: owner.middleName,
-                lastName: owner.lastName,
-                email: owner.email,
-                mobileNumber: owner.mobileNumber,
-                // Convert to JS Date for Prisma
-                dateOfBirth: owner.dateOfBirth ? new Date(owner.dateOfBirth) : undefined,
-                ssn: owner.ssn,
-                ficoScore: owner.ficoScore ? Number(owner.ficoScore) : undefined,
-                ownershipStartDate: owner.ownershipStartDate
-                    ? new Date(owner.ownershipStartDate)
-                    : undefined,
-                ownershipPercentage: owner.ownershipPercentage ? Number(owner.ownershipPercentage) : undefined,
-                address: ownerAddress,
-            };
-
-            // Prevent duplicate clients by SSN (ownerSsn)
-            const normalizedSsn = ownerData.ssn ? String(ownerData.ssn).trim() : '';
-            if (normalizedSsn) {
-                const existingClient = await prisma.client.findFirst({
-                    where: {
-                        ownerSsn: normalizedSsn,
-                    },
+            const ownerSsns = collectOwnerSsns(owners);
+            const duplicateClient = await findDuplicateSsnClient(ownerSsns);
+            if (duplicateClient) {
+                console.warn(
+                    'Duplicate client creation attempt detected for SSN. existing clientId:',
+                    duplicateClient.clientId,
+                );
+                return res.status(409).json({
+                    success: false,
+                    message: 'Client already exists with this SSN.',
                 });
-
-                if (existingClient) {
-                    console.warn('Duplicate client creation attempt detected for SSN:', normalizedSsn, 'existing clientId:', existingClient.clientId);
-                    return res.status(409).json({
-                        success: false,
-                        message: 'Client already exists with this SSN.',
-                    });
-                }
             }
 
             const authUser = getAuthenticatedUser(req);
             const effectiveAssignedTo =
                 assignedTo ||
                 (authUser && isAgentRole(authUser.role) ? authUser.id : null);
+
+            const primaryOwnerFields = buildPrimaryOwnerFlatFields(owners[0]);
 
             const client = await prisma.client.create({
                 data: {
@@ -241,25 +142,15 @@ class ClientController {
                     businessCity: businessAddress.city || null,
                     businessState: businessAddress.state || null,
                     businessZipCode: businessAddress.zipCode || null,
-                    ownerFirstName: ownerData.firstName,
-                    ownerMiddleName: ownerData.middleName || null,
-                    ownerLastName: ownerData.lastName,
-                    ownerEmail: ownerData.email || null,
-                    ownerMobileNumber: ownerData.mobileNumber || null,
-                    ownerDateOfBirth: ownerData.dateOfBirth || null,
-                    ownerSsn: ownerData.ssn || null,
-                    ownerFicoScore: ownerData.ficoScore ?? null,
-                    ownerOwnershipStartDate: ownerData.ownershipStartDate || null,
-                    ownerOwnershipPercentage: ownerData.ownershipPercentage ?? null,
-                    ownerAddress1: ownerAddress.address1 || null,
-                    ownerAddress2: ownerAddress.address2 || null,
-                    ownerCity: ownerAddress.city || null,
-                    ownerState: ownerAddress.state || null,
-                    ownerZipCode: ownerAddress.zipCode || null,
+                    ...primaryOwnerFields,
                     notes: notes || null,
                     assignedToId: effectiveAssignedTo || null,
                     createdById: authUser?.id || null,
+                    owners: {
+                        create: owners.map((owner, index) => buildOwnerCreateData(owner, index)),
+                    },
                 },
+                include: CLIENT_INCLUDE,
             });
 
             return res.status(201).json({
@@ -271,7 +162,6 @@ class ClientController {
             console.error('Create client error:', error);
             const code = error?.code;
             if (code === 'P2002') {
-                // Unique constraint violation (e.g. ownerSsn)
                 return res.status(409).json({
                     success: false,
                     message: 'Client already exists with this SSN.',
@@ -302,7 +192,6 @@ class ClientController {
 
             const authUser = getAuthenticatedUser(req);
 
-            // Build where/sort for Prisma
             let where: any = {};
 
             if (status) {
@@ -317,6 +206,17 @@ class ClientController {
                     { ownerFirstName: { contains: searchStr, mode: 'insensitive' } },
                     { ownerLastName: { contains: searchStr, mode: 'insensitive' } },
                     { ownerEmail: { contains: searchStr, mode: 'insensitive' } },
+                    {
+                        owners: {
+                            some: {
+                                OR: [
+                                    { firstName: { contains: searchStr, mode: 'insensitive' } },
+                                    { lastName: { contains: searchStr, mode: 'insensitive' } },
+                                    { email: { contains: searchStr, mode: 'insensitive' } },
+                                ],
+                            },
+                        },
+                    },
                 ];
             }
 
@@ -337,6 +237,9 @@ class ClientController {
                     include: {
                         assignedTo: {
                             select: { id: true, firstName: true, lastName: true, email: true },
+                        },
+                        owners: {
+                            orderBy: { sortOrder: 'asc' },
                         },
                     },
                 }),
@@ -370,14 +273,7 @@ class ClientController {
 
             const client = await prisma.client.findUnique({
                 where: { id },
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+                include: CLIENT_INCLUDE,
             });
 
             if (!client) {
@@ -419,14 +315,7 @@ class ClientController {
 
             const client = await prisma.client.findUnique({
                 where: { clientId: Number(clientId) },
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+                include: CLIENT_INCLUDE,
             });
 
             if (!client) {
@@ -464,7 +353,9 @@ class ClientController {
     async update(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const { business, owner, status, notes, assignedTo } = req.body;
+            const { business, status, notes, assignedTo } = req.body;
+            const owners = normalizeOwnersInput(req.body);
+            const ownerOnly = normalizeOwnerOnlyInput(req.body);
             const authUser = getAuthenticatedUser(req);
 
             const client = await prisma.client.findUnique({ where: { id } });
@@ -489,7 +380,6 @@ class ClientController {
 
             const updateData: any = {};
 
-            // Update business data if provided
             if (business) {
                 if (business.name !== undefined) updateData.businessName = business.name;
                 if (business.email !== undefined) updateData.businessEmail = business.email;
@@ -506,7 +396,6 @@ class ClientController {
                 if (business.annualRevenue !== undefined) updateData.businessAnnualRevenue = Number(business.annualRevenue);
                 if (business.monthlyRevenue !== undefined) updateData.businessMonthlyRevenue = Number(business.monthlyRevenue);
 
-                // Handle address fields
                 if (business.address?.address1 !== undefined) updateData.businessAddress1 = business.address.address1;
                 if (business.address?.address2 !== undefined) updateData.businessAddress2 = business.address.address2;
                 if (business.address?.city !== undefined) updateData.businessCity = business.address.city;
@@ -514,8 +403,40 @@ class ClientController {
                 if (business.address?.zipCode !== undefined) updateData.businessZipCode = business.address.zipCode;
             }
 
-            // Update owner data if provided
-            if (owner) {
+            const applyOwnerSsnGuard = async (owner: { ssn?: string }) => {
+                if (owner.ssn === undefined) return true;
+                const newSsn = String(owner.ssn).trim();
+                if (!newSsn) return true;
+                const existingWithSsn = await findDuplicateSsnClient([newSsn], id);
+                if (!existingWithSsn) return true;
+                return false;
+            };
+
+            if (owners.length > 0) {
+                const ownerSsns = collectOwnerSsns(owners);
+                const duplicateClient = await findDuplicateSsnClient(ownerSsns, id);
+                if (duplicateClient) {
+                    console.warn(
+                        'Duplicate client SSN update attempt detected. existing clientId:',
+                        duplicateClient.clientId,
+                    );
+                    return res.status(409).json({
+                        success: false,
+                        message: 'Client already exists with this SSN.',
+                    });
+                }
+
+                Object.assign(updateData, buildPrimaryOwnerFlatFields(owners[0]));
+            } else if (ownerOnly) {
+                const owner = ownerOnly;
+
+                if (!(await applyOwnerSsnGuard(owner))) {
+                    return res.status(409).json({
+                        success: false,
+                        message: 'Client already exists with this SSN.',
+                    });
+                }
+
                 if (owner.firstName !== undefined) updateData.ownerFirstName = owner.firstName;
                 if (owner.middleName !== undefined) updateData.ownerMiddleName = owner.middleName;
                 if (owner.lastName !== undefined) updateData.ownerLastName = owner.lastName;
@@ -524,36 +445,16 @@ class ClientController {
                 if (owner.dateOfBirth !== undefined) {
                     updateData.ownerDateOfBirth = owner.dateOfBirth ? new Date(owner.dateOfBirth) : null;
                 }
-
-                if (owner.ssn !== undefined) {
-                    const newSsn = String(owner.ssn).trim();
-                    if (newSsn) {
-                        const existingWithSsn = await prisma.client.findFirst({
-                            where: {
-                                ownerSsn: newSsn,
-                                NOT: { id },
-                            },
-                        });
-
-                        if (existingWithSsn) {
-                            console.warn('Duplicate client SSN update attempt detected for SSN:', newSsn, 'existing clientId:', existingWithSsn.clientId);
-                            return res.status(409).json({
-                                success: false,
-                                message: 'Client already exists with this SSN.',
-                            });
-                        }
-                    }
-
-                    updateData.ownerSsn = owner.ssn;
-                }
-
+                if (owner.ssn !== undefined) updateData.ownerSsn = owner.ssn;
                 if (owner.ficoScore !== undefined) updateData.ownerFicoScore = Number(owner.ficoScore);
                 if (owner.ownershipStartDate !== undefined) {
                     updateData.ownerOwnershipStartDate = owner.ownershipStartDate
                         ? new Date(owner.ownershipStartDate)
                         : null;
                 }
-                if (owner.ownershipPercentage !== undefined) updateData.ownerOwnershipPercentage = Number(owner.ownershipPercentage);
+                if (owner.ownershipPercentage !== undefined) {
+                    updateData.ownerOwnershipPercentage = Number(owner.ownershipPercentage);
+                }
 
                 if (owner.address?.address1 !== undefined) updateData.ownerAddress1 = owner.address.address1;
                 if (owner.address?.address2 !== undefined) updateData.ownerAddress2 = owner.address.address2;
@@ -562,22 +463,45 @@ class ClientController {
                 if (owner.address?.zipCode !== undefined) updateData.ownerZipCode = owner.address.zipCode;
             }
 
-            // Update other fields
             if (status !== undefined) updateData.status = status;
             if (notes !== undefined) updateData.notes = notes;
             if (assignedTo !== undefined) updateData.assignedToId = assignedTo;
 
-            const updatedClient = await prisma.client.update({
-                where: { id },
-                data: updateData,
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+            const updatedClient = await prisma.$transaction(async (tx) => {
+                if (owners.length > 0) {
+                    await tx.clientOwner.deleteMany({ where: { clientId: id } });
+                    await tx.clientOwner.createMany({
+                        data: owners.map((owner, index) => ({
+                            clientId: id,
+                            ...buildOwnerCreateData(owner, index),
+                        })),
+                    });
+                } else if (ownerOnly) {
+                    const primaryData = buildOwnerCreateData(ownerOnly, 0);
+                    const existingPrimary = await tx.clientOwner.findFirst({
+                        where: { clientId: id },
+                        orderBy: { sortOrder: 'asc' },
+                    });
+                    if (existingPrimary) {
+                        await tx.clientOwner.update({
+                            where: { id: existingPrimary.id },
+                            data: primaryData,
+                        });
+                    } else {
+                        await tx.clientOwner.create({
+                            data: {
+                                clientId: id,
+                                ...primaryData,
+                            },
+                        });
+                    }
+                }
+
+                return tx.client.update({
+                    where: { id },
+                    data: updateData,
+                    include: CLIENT_INCLUDE,
+                });
             });
 
             return res.status(200).json({
@@ -659,14 +583,7 @@ class ClientController {
             const client = await prisma.client.update({
                 where: { id },
                 data: { status },
-                include: {
-                    createdBy: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                    assignedTo: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
-                    },
-                },
+                include: CLIENT_INCLUDE,
             });
 
             if (!client) {
@@ -693,4 +610,3 @@ class ClientController {
 
 const clientController = new ClientController();
 export default clientController;
-

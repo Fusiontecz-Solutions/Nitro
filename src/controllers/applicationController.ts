@@ -14,6 +14,7 @@ import {
     assertReadyToCreateNewClientFromPdf,
     type AuthenticatedUser,
 } from '../services/applicationService';
+import { mapClientToApi, resolveClientOwners } from '../utils/clientMapper';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import { getApplicationStageAccessForUser } from '../services/applicationStageAccess';
 import {
@@ -51,6 +52,7 @@ import { applyContractCompletedSyncToApplicationRecord } from '../services/contr
 import {
     buildApplicationApprovalEmailHtml,
     buildApplicationOfferUpdatedEmailHtml,
+    injectApplicationApprovalEmailValues,
     sendApplicationApprovalEmail,
     sendApplicationRejectionEmail,
     APPROVAL_EMAIL_PDF_FILENAME,
@@ -61,6 +63,7 @@ import {
     sendUnderwriterNewApplicationEmail,
 } from '../services/emailService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
+import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
 import {
     buildPublicApprovalPortalUrl,
     resolveCrmFrontendBaseUrl,
@@ -296,7 +299,7 @@ const applicationStatePrismaToApi: Record<ApplicationState, string> = {
     [ApplicationState.COMPLETED]: 'Completed',
     [ApplicationState.CANCELLED]: 'Cancelled',
     [ApplicationState.CONTRACT_PENDING]: 'Contract_Pending',
-    [ApplicationState.CONTRACTS_OUT]: 'Contract Out',
+    [ApplicationState.CONTRACTS_OUT]: 'Contract Sent',
     [ApplicationState.SIGNED_CONTRACTS]: 'Signed_Contracts',
     [ApplicationState.FUNDING_CALL]: 'Funding Call',
     [ApplicationState.DISBURSMENT]: 'Disbursment',
@@ -327,12 +330,36 @@ const toPrismaApplicationState = (value: unknown): ApplicationState | undefined 
     );
 };
 
+const normalizeContractSentWorkflowLabel = (value: string): string | null => {
+    const compact = value.trim().replace(/[\s_-]+/g, '').toLowerCase();
+    if (
+        compact === 'contractout' ||
+        compact === 'contractsout' ||
+        compact === 'contractsent' ||
+        value.trim() === 'CONTRACT_SENT' ||
+        value.trim() === 'Contract_Sent'
+    ) {
+        return 'Contract Sent';
+    }
+    return null;
+};
+
 const toApiApplicationState = (value: ApplicationState | string | null | undefined): string | undefined => {
     if (!value) return undefined;
+    const asString = String(value);
+    const contractSentLabel = normalizeContractSentWorkflowLabel(asString);
+    if (contractSentLabel) return contractSentLabel;
     if (value in applicationStatePrismaToApi) {
         return applicationStatePrismaToApi[value as ApplicationState];
     }
-    return String(value);
+    return asString;
+};
+
+const normalizeWorkflowQueueForApi = (queue: string | null | undefined): string | undefined => {
+    if (!queue) return undefined;
+    const trimmed = String(queue).trim();
+    const contractSentLabel = normalizeContractSentWorkflowLabel(trimmed);
+    return contractSentLabel ?? trimmed;
 };
 
 const WORKFLOW_QUEUES = {
@@ -554,6 +581,9 @@ export const mapApplicationToApi = (app: any) => {
             }
             : undefined;
 
+    const owners = client ? resolveClientOwners(client) : [];
+    const primaryOwner = owners[0];
+
     const mappedClient =
         client &&
         ({
@@ -580,7 +610,7 @@ export const mapApplicationToApi = (app: any) => {
                     zipCode: client.businessZipCode || '',
                 },
             },
-            owner: {
+            owner: primaryOwner ?? {
                 firstName: client.ownerFirstName,
                 middleName: client.ownerMiddleName || '',
                 lastName: client.ownerLastName,
@@ -599,6 +629,7 @@ export const mapApplicationToApi = (app: any) => {
                     zipCode: client.ownerZipCode || '',
                 },
             },
+            owners,
         } as any);
 
     // files in Mongo were subdocuments with _id; here we synthesize _id from id
@@ -666,7 +697,7 @@ export const mapApplicationToApi = (app: any) => {
         type,
         loanAmount: loanAmount ?? undefined,
         note,
-        currentQueue,
+        currentQueue: normalizeWorkflowQueueForApi(currentQueue) ?? currentQueue,
         currentState: toWorkflowApiState(currentQueue, currentState),
         /** DB `currentState` before workflow API mapping — use for dashboard buckets matching `/applications/stats`. */
         statsCurrentState: currentState,
@@ -693,59 +724,6 @@ export const mapApplicationToApi = (app: any) => {
             : null,
         isoCommissionPayout,
         files: mappedFiles,
-    };
-};
-
-// Helper to map Prisma Client to the API shape previously returned by Mongoose
-const mapClientToApi = (client: any) => {
-    if (!client) return client;
-
-    return {
-        _id: client.id,
-        id: client.id,
-        clientId: client.clientId,
-        business: {
-            name: client.businessName,
-            email: client.businessEmail || '',
-            number: client.businessNumber || '',
-            website: client.businessWebsite || '',
-            incorporationDate: client.businessIncorporationDate,
-            incorporationState: client.businessIncorporationState || '',
-            businessEntityType: client.businessEntityType || '',
-            einNumber: client.businessEinNumber || '',
-            annualRevenue: client.businessAnnualRevenue ?? undefined,
-            monthlyRevenue: client.businessMonthlyRevenue ?? undefined,
-            address: {
-                address1: client.businessAddress1 || '',
-                address2: client.businessAddress2 || '',
-                city: client.businessCity || '',
-                state: client.businessState || '',
-                zipCode: client.businessZipCode || '',
-            },
-        },
-        owner: {
-            firstName: client.ownerFirstName,
-            middleName: client.ownerMiddleName || '',
-            lastName: client.ownerLastName,
-            email: client.ownerEmail || '',
-            mobileNumber: client.ownerMobileNumber || '',
-            dateOfBirth: client.ownerDateOfBirth,
-            ssn: client.ownerSsn || '',
-            ficoScore: client.ownerFicoScore ?? undefined,
-            ownershipStartDate: client.ownerOwnershipStartDate,
-            ownershipPercentage: client.ownerOwnershipPercentage ?? undefined,
-            address: {
-                address1: client.ownerAddress1 || '',
-                address2: client.ownerAddress2 || '',
-                city: client.ownerCity || '',
-                state: client.ownerState || '',
-                zipCode: client.ownerZipCode || '',
-            },
-        },
-        status: client.status,
-        notes: client.notes || '',
-        createdAt: client.createdAt,
-        updatedAt: client.updatedAt,
     };
 };
 
@@ -2294,7 +2272,13 @@ class ApplicationController {
                 referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
                 salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                client: true,
+                client: {
+                    include: {
+                        owners: {
+                            orderBy: { sortOrder: 'asc' as const },
+                        },
+                    },
+                },
                 iso: true,
                 files: true,
                 claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -5126,10 +5110,17 @@ class ApplicationController {
     // Send approval email to client for a given application (async email, non-blocking)
     async sendApprovalEmail(req: Request, res: Response) {
         try {
-            const { applicationId, resend } = req.body as {
+            const { applicationId, resend, emailHtml: clientEmailHtmlRaw, emailSubject: clientEmailSubjectRaw } = req.body as {
                 applicationId?: string | number;
                 resend?: boolean;
+                /** Frontend-rendered branded approval HTML (backend injects URL / ISO name / business name). */
+                emailHtml?: string;
+                emailSubject?: string;
             };
+            const clientEmailSubject =
+                typeof clientEmailSubjectRaw === 'string' && clientEmailSubjectRaw.trim()
+                    ? clientEmailSubjectRaw.trim()
+                    : undefined;
 
             if (!applicationId) {
                 return res.status(400).json({
@@ -5272,30 +5263,42 @@ class ApplicationController {
                 { to: isoEmailRaw, clientName: isoRecipientName },
             ];
 
-            const emailSubject = resend
-                ? 'Your Offer Values Have Been Updated'
-                : 'Your Application Has Been Approved';
+            const emailSubject =
+                clientEmailSubject ||
+                (resend ? 'Your Offer Values Have Been Updated' : 'Your Application Has Been Approved');
             const approvalPdfFilename = resend
                 ? OFFER_UPDATED_EMAIL_PDF_FILENAME
                 : APPROVAL_EMAIL_PDF_FILENAME;
-            const emailHtml = resend
-                ? buildApplicationOfferUpdatedEmailHtml({
-                    clientName: isoRecipientName,
-                    companyName,
-                    calculateApprovalUrl,
-                    applicationNumber: offerApplicationNumber,
-                    merchantName: merchantFullName,
-                    merchantEmail,
-                    merchantPhone,
-                    approvedAmount: offerApprovedAmount,
-                    factorRate: offerFactorRate,
-                    repaymentAmount: offerRepaymentAmount,
-                })
-                : buildApplicationApprovalEmailHtml({
-                    clientName: isoRecipientName,
-                    companyName,
-                    calculateApprovalUrl,
-                });
+
+            /**
+             * Prefer the frontend-rendered branded template (the approval/update-offer HTML is now
+             * owned by the frontend). Server-only values — the signed public-portal URL, the resolved
+             * ISO recipient name, and the deal business name — are injected here. The backend builders
+             * remain only as a safety fallback when no frontend HTML is supplied.
+             */
+            const frontendEmailHtml =
+                typeof clientEmailHtmlRaw === 'string' && clientEmailHtmlRaw.trim()
+                    ? injectApplicationApprovalEmailValues(clientEmailHtmlRaw.trim(), {
+                        approvalUrl: calculateApprovalUrl,
+                        clientName: isoRecipientName,
+                        companyName,
+                    })
+                    : undefined;
+            const emailHtml =
+                frontendEmailHtml ??
+                (resend
+                    ? buildApplicationOfferUpdatedEmailHtml({
+                        clientName: isoRecipientName,
+                        companyName,
+                        calculateApprovalUrl,
+                        viewApplicationUrl,
+                    })
+                    : buildApplicationApprovalEmailHtml({
+                        clientName: isoRecipientName,
+                        companyName,
+                        calculateApprovalUrl,
+                        viewApplicationUrl,
+                    }));
 
             const trackingId = randomUUID();
             const approvalEmailLogSuffix = resend
@@ -5341,7 +5344,7 @@ class ApplicationController {
 
             const deliveryResults = await Promise.all(
                 recipients.map(async ({ to, clientName }) => {
-                    const ok = resend
+                    const sendResult = resend
                         ? await sendApplicationOfferUpdatedEmail({
                             to,
                             clientName,
@@ -5355,6 +5358,8 @@ class ApplicationController {
                             approvedAmount: offerApprovedAmount,
                             factorRate: offerFactorRate,
                             repaymentAmount: offerRepaymentAmount,
+                            html: emailHtml,
+                            subject: emailSubject,
                             trackingId,
                         })
                         : await sendApplicationApprovalEmail({
@@ -5363,9 +5368,15 @@ class ApplicationController {
                             companyName,
                             viewApplicationUrl,
                             calculateApprovalUrl,
+                            html: emailHtml,
+                            subject: emailSubject,
                             trackingId,
                         });
-                    return { to, ok };
+                    return {
+                        to,
+                        ok: sendResult.sent,
+                        sgMessageId: sendResult.sgMessageId,
+                    };
                 }),
             );
             const anyDelivered = deliveryResults.some((r) => r.ok);
@@ -5400,6 +5411,17 @@ class ApplicationController {
                 });
             } catch (metaErr) {
                 console.error('Failed to update approval email delivery metadata:', metaErr);
+            }
+
+            const deliveredSgMessageId = deliveryResults.find(
+                (r) => r.ok && r.sgMessageId,
+            )?.sgMessageId;
+            if (deliveredSgMessageId) {
+                try {
+                    await storeSgMessageIdOnOutbound(trackingId, deliveredSgMessageId);
+                } catch (metaErr) {
+                    console.error('Failed to store SendGrid message id for approval email:', metaErr);
+                }
             }
 
             return res.status(200).json({

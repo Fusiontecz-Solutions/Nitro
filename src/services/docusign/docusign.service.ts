@@ -2,6 +2,10 @@ import axios, { AxiosInstance } from 'axios';
 import dotenv from 'dotenv';
 import prisma from '../../config/prismaClient';
 import { Prisma } from '@prisma/client';
+import {
+  syncApplicationToContractGenerated,
+  syncApplicationWorkflowFromContractEnvelopeStatus,
+} from '../contractApplicationWorkflowSync';
 import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
 import {
   DOCUSIGN_CLIENT_ID,
@@ -2826,7 +2830,7 @@ export class DocusignService {
     await this.syncApplicationWorkflowOnContractSigning(appId, internalStatus);
   }
 
-  /** Draft envelope ready in DocuSign (review before send) — not yet Contract Out. */
+  /** Draft envelope ready in DocuSign (review before send) — not yet Contract Sent. */
   private async syncApplicationWorkflowOnDraftCreated(applicationId: string) {
     const appId = String(applicationId || '').trim();
     if (!appId) return;
@@ -2863,7 +2867,7 @@ export class DocusignService {
     });
   }
 
-  /** Move deal to Contract Signed when fully signed; keep Contract Out while awaiting signature. */
+  /** Move deal to Contract Sent when envelope is out; Contract Signed when fully signed. */
   private async syncApplicationWorkflowOnContractSigning(
     applicationId: string,
     internalStatus: string,
