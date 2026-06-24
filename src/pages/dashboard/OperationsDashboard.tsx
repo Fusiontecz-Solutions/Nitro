@@ -13,13 +13,11 @@ import {
   FileInput,
   CircleDollarSign,
   Landmark,
-  FileCheck2,
   PhoneCall,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  FileUser
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
@@ -50,7 +48,13 @@ import {
   AreaChart,
   Area,
 } from "recharts";
-import { formatCurrency, formatInt, formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  formatCurrency,
+  formatInt,
+  formatDate as formatDateUtil,
+  getMonthRangeET,
+  getRecentMonthShortLabelsET,
+} from "@/lib/utils";
 import { axiosGet } from "@/redux/axios";
 import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY } from "@/constants/operationsDashboardApplications";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
@@ -211,6 +215,7 @@ export const OperationsDashboard = () => {
     summaryCounts,
     summaryAmounts,
     caseStageCounts,
+    caseStageAmounts,
     summaryLoading,
     summaryRefreshing,
     summaryError,
@@ -270,9 +275,7 @@ export const OperationsDashboard = () => {
   const { data: monthlyTrendRows = [] } = useQuery<MonthlyTrendApiRow[]>({
     queryKey: ["operations-dashboard-monthly-trend", userRole],
     queryFn: async () => {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const { start, end } = getMonthRangeET(5);
       const qs = new URLSearchParams({
         startDate: start.toISOString(),
         endDate: end.toISOString(),
@@ -370,13 +373,6 @@ export const OperationsDashboard = () => {
   const superAdminPipelineCards: SummaryCard[] = useMemo(
     () => [
       {
-        label: "Agent",
-        value: caseStageCounts.Agent ?? 0,
-        helper: "Applications with the agent",
-        icon: <FileUser className="h-8 w-8 text-[#0A78C8]" />,
-        operationsStatus: "Agent",
-      },
-      {
         label: "Underwriter",
         value: caseStageCounts.Underwriter ?? 0,
         helper: "In underwriting review",
@@ -391,10 +387,24 @@ export const OperationsDashboard = () => {
         operationsStatus: "Final Underwriter",
       },
       {
-        label: "Contract",
-        value: summaryCounts.signedContracts ?? 0,
+        label: "Contract Pending",
+        value: caseStageCounts.Contract_Pending ?? summaryCounts.contractPending ?? 0,
+        helper: "Awaiting contract generation",
+        icon: <Clock className="h-6 w-6 text-sky-500" />,
+        operationsStatus: "Contract_Pending",
+      },
+      {
+        label: "Contract Sent",
+        value: caseStageCounts.Contract_Sent ?? summaryCounts.contractsOut ?? 0,
+        helper: "Contracts sent for signature",
+        icon: <FileInput className="h-6 w-6 text-emerald-500" />,
+        operationsStatus: "Contract_Sent",
+      },
+      {
+        label: "Contract Signed",
+        value: caseStageCounts.Contract_Signed ?? summaryCounts.signedContracts ?? 0,
         helper: "Contract signed applications",
-        icon: <FileCheck2 className="h-6 w-6 text-[#F97316]" />,
+        icon: <CheckCircle2 className="h-6 w-6 text-amber-500" />,
         operationsStatus: "Contract_Signed",
       },
       {
@@ -406,21 +416,21 @@ export const OperationsDashboard = () => {
       },
       {
         label: "Funding call",
-        value: caseStageCounts["Funding Call"] ?? 0,
+        value: caseStageCounts["Funding Call"] ?? summaryCounts.fundingCall ?? 0,
         helper: "Funding call queue",
         icon: <PhoneCall className="h-6 w-6 text-[#7C3AED]" />,
         operationsStatus: "Funding Call",
       },
       {
         label: "Disbursement",
-        value: summaryCounts.disbursment,
+        value: caseStageCounts.Disbursment ?? summaryCounts.disbursment ?? 0,
         helper: "Pending disbursement",
         icon: <Landmark className="h-6 w-6 text-sky-600 dark:text-sky-400" />,
         operationsStatus: "Disbursment",
       },
       {
         label: "Funded",
-        value: summaryCounts.funded,
+        value: caseStageCounts.Funded ?? summaryCounts.funded ?? 0,
         helper: "Funded deals",
         icon: <CircleDollarSign className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />,
         operationsStatus: "Funded",
@@ -428,8 +438,11 @@ export const OperationsDashboard = () => {
     ],
     [
       caseStageCounts,
+      summaryCounts.contractPending,
+      summaryCounts.contractsOut,
       summaryCounts.disbursment,
       summaryCounts.funded,
+      summaryCounts.fundingCall,
       summaryCounts.signedContracts,
     ],
   );
@@ -468,26 +481,35 @@ export const OperationsDashboard = () => {
 
   const getSummaryCardAmount = useCallback(
     (card: SummaryCard) => {
-      const helperText = String(card.helper ?? "").trim().toLowerCase();
-      if (helperText !== "total amount") return 0;
       switch (card.operationsStatus) {
+        case "Agent":
+          return caseStageAmounts.Agent ?? 0;
+        case "Underwriter":
+          return caseStageAmounts.Underwriter ?? 0;
+        case "Final Underwriter":
+          return caseStageAmounts["Final Underwriter"] ?? 0;
+        case "Final":
+          return caseStageAmounts.Final ?? 0;
         case "Contract_Pending":
-          return summaryAmounts.contractPending ?? 0;
+          return summaryAmounts.contractPending ?? caseStageAmounts.Contract_Pending ?? 0;
         case "Contract_Out":
-          return summaryAmounts.contractsOut ?? 0;
+        case "Contract_Sent":
+          return summaryAmounts.contractsOut ?? caseStageAmounts.Contract_Sent ?? 0;
         case "Contract_Signed":
-          return summaryAmounts.signedContracts ?? 0;
+          return summaryAmounts.signedContracts ?? caseStageAmounts.Contract_Signed ?? 0;
         case "Funding Call":
-          return summaryAmounts.fundingCall ?? 0;
+          return summaryAmounts.fundingCall ?? caseStageAmounts["Funding Call"] ?? 0;
         case "Disbursment":
-          return summaryAmounts.disbursment ?? 0;
+          return summaryAmounts.disbursment ?? caseStageAmounts.Disbursment ?? 0;
         case "Funded":
-          return summaryAmounts.funded ?? 0;
+          return summaryAmounts.funded ?? caseStageAmounts.Funded ?? 0;
+        case "Declined":
+          return caseStageAmounts.Declined ?? 0;
         default:
           return 0;
       }
     },
-    [summaryAmounts],
+    [caseStageAmounts, summaryAmounts],
   );
 
   const renderSummaryCard = (card: SummaryCard) => {
@@ -558,13 +580,7 @@ export const OperationsDashboard = () => {
   );
 
   const paymentTrend = useMemo<PaymentTrendPoint[]>(() => {
-    const now = new Date();
-    const labels = Array.from({ length: 6 }, (_, i) =>
-      new Date(now.getFullYear(), now.getMonth() - 5 + i, 1).toLocaleString(
-        "en-US",
-        { month: "short" },
-      ),
-    );
+    const labels = getRecentMonthShortLabelsET(6);
     const byName = new Map(
       monthlyTrendRows.map((row) => [String(row.name ?? "").trim(), row]),
     );

@@ -6,7 +6,7 @@ import { axiosGet, axiosPost } from "@/redux/axios";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTimeET } from "@/lib/utils";
 import { normalizeE164 } from "@/voice/useAvochatoVoice";
 
 export type DealSmsContact = {
@@ -54,12 +54,7 @@ function eventTimeMs(ev: AvochatoEvent): number {
 function formatShortTime(ms: number): string {
   if (!ms) return "";
   try {
-    return new Date(ms).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
+    return formatDateTimeET(ms);
   } catch {
     return "";
   }

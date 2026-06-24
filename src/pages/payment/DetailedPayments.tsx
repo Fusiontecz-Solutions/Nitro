@@ -75,7 +75,7 @@ export const DetailedPayments = () => {
             </div>
           </div>
           <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest text-blue-600 justify-end">
-            <button className="underline">SOS Search</button>
+            <button className="underline">NYSF Search</button>
             <button className="underline">Open Corporates</button>
           </div>
         </div>

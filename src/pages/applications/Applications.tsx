@@ -63,7 +63,13 @@ import {
 } from "@/components/ui/dialog";
 import type { user } from "@/redux/slices/authSlice";
 import { useTheme } from "@/context/ThemeContext";
-import { cn, formatCurrency, formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  cn,
+  formatCurrency,
+  formatDate as formatDateUtil,
+  formatDateTimeUS as formatDateTimeUSUtil,
+  getPreviousMonthDateRangeET,
+} from "@/lib/utils";
 import { axiosGet, axiosPostFormData } from "@/redux/axios";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import { getClientByClientId } from "@/redux/actions/clientActions";
@@ -150,24 +156,11 @@ function formatUnderwriterClaimLabel(
 
 const APPLICATIONS_VIEW_MODE_STORAGE_KEY = "applicationsListViewMode";
 
-/** Calendar bounds for the month before “today” (`YYYY-MM-DD`), used for stats “last month” deltas. */
+/** Calendar bounds for the month before “today” in ET (`YYYY-MM-DD`), used for stats “last month” deltas. */
 function getPreviousCalendarMonthDateBoundaries(): { startDate: string; endDate: string } {
-  const now = new Date();
-  let year = now.getFullYear();
-  let monthIndex = now.getMonth() - 1;
-  if (monthIndex < 0) {
-    monthIndex = 11;
-    year -= 1;
-  }
-  const formatYmd = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-  const start = new Date(year, monthIndex, 1);
-  const end = new Date(year, monthIndex + 1, 0);
-  return { startDate: formatYmd(start), endDate: formatYmd(end) };
+  const range = getPreviousMonthDateRangeET();
+  if (!range) return { startDate: "", endDate: "" };
+  return { startDate: range.start, endDate: range.end };
 }
 
 function getApplicationsStatCardIcon(title: string) {
@@ -509,6 +502,10 @@ const Applications = () => {
   // Format date (Month Day, Year)
   const formatDate = useCallback((dateString?: string) => {
     return formatDateUtil(dateString ?? "", "-");
+  }, []);
+
+  const formatDateTime = useCallback((dateString?: string) => {
+    return formatDateTimeUSUtil(dateString ?? "", "-");
   }, []);
 
   // Get client email helper
@@ -983,7 +980,7 @@ const Applications = () => {
         ),
         cell: ({ row }) => (
           <span className="text-foreground">
-            {formatDate(row.original.createdAt)}
+            {formatDateTime(row.original.createdAt)}
           </span>
         ),
       },
@@ -1102,6 +1099,7 @@ const Applications = () => {
     return [selectColumn, ...bodyColumns];
   }, [
     formatDate,
+    formatDateTime,
     getApplicationQueueBadgeClass,
     getApplicationIsoLabel,
     getApplicationBusinessDisplayName,
@@ -2438,7 +2436,7 @@ const Applications = () => {
                         </p>
                         <p>
                           <span className="text-foreground/80">Created: </span>
-                          {formatDate(app.createdAt)}
+                          {formatDateTime(app.createdAt)}
                         </p>
                       </div>
                       <div className="pt-1 border-t border-border/60">

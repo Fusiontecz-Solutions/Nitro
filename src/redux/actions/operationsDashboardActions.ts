@@ -105,6 +105,7 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
       funded: number;
     };
     caseStageCounts: Record<string, number>;
+    caseStageAmounts: Record<string, number>;
     operationsMetricsMode?: string;
   },
   void,
@@ -148,6 +149,22 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
           Contracted: Number(data.caseStageCounts.Contracted) || 0,
           Final: Number(data.caseStageCounts.Final) || 0,
           "Funding Call": Number(data.caseStageCounts["Funding Call"]) || 0,
+          Declined: Number(data.caseStageCounts.Declined) || 0,
+        },
+        caseStageAmounts: {
+          Agent: Number(data.caseStageAmounts?.Agent) || 0,
+          Underwriter: Number(data.caseStageAmounts?.Underwriter) || 0,
+          "Final Underwriter":
+            Number(data.caseStageAmounts?.["Final Underwriter"]) || 0,
+          Contracted: Number(data.caseStageAmounts?.Contracted) || 0,
+          Final: Number(data.caseStageAmounts?.Final) || 0,
+          "Funding Call": Number(data.caseStageAmounts?.["Funding Call"]) || 0,
+          Declined: Number(data.caseStageAmounts?.Declined) || 0,
+          Contract_Pending: Number(data.caseStageAmounts?.Contract_Pending) || 0,
+          Contract_Sent: Number(data.caseStageAmounts?.Contract_Sent) || 0,
+          Contract_Signed: Number(data.caseStageAmounts?.Contract_Signed) || 0,
+          Disbursment: Number(data.caseStageAmounts?.Disbursment) || 0,
+          Funded: Number(data.caseStageAmounts?.Funded) || 0,
         },
         operationsMetricsMode:
           typeof data.operationsMetricsMode === "string"

@@ -32,7 +32,14 @@ const schema = yup.object().shape({
   lastName: yup.string().trim().required('Last name is required'),
   email: yup.string().email('Invalid email').required('Email is required'),
   phone: yup.string().trim().optional(),
-  password: yup.string().min(6, 'Password must be at least 6 characters').required('Password is required'),
+  password: yup
+    .string()
+    .required('Password is required')
+    .min(8, 'Password must be at least 8 characters')
+    .matches(/[A-Z]/, 'Password must include an uppercase letter')
+    .matches(/[a-z]/, 'Password must include a lowercase letter')
+    .matches(/[0-9]/, 'Password must include a number')
+    .matches(/[^A-Za-z0-9]/, 'Password must include a special character'),
   status: yup.string().oneOf(['active', 'inactive']).default('active'),
 });
 
@@ -109,7 +116,9 @@ export default function AddUserModal({
       onClose();
       onSuccess?.();
     } catch (err: any) {
-      toast.error(err?.message ?? 'Failed to create user');
+      const message =
+        typeof err === 'string' ? err : err?.message ?? 'Failed to create user';
+      toast.error(message);
     }
   };
 
@@ -213,7 +222,7 @@ export default function AddUserModal({
                 <Input
                   id="password"
                   type="password"
-                  placeholder="Min 6 characters"
+                  placeholder="Min 8 chars, upper, lower, number, symbol"
                   autoComplete="new-password"
                   disabled={isSubmitting}
                   {...field}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, getPreviousMonthDateRangeET } from "@/lib/utils";
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import {
@@ -554,25 +554,10 @@ export default function FinalUnderwriterApplicationsList() {
     }, [dispatch]);
 
     useEffect(() => {
-        const now = new Date();
-        const currentYear = now.getFullYear();
-        const currentMonthIndex = now.getMonth();
-        let year = currentYear;
-        let monthIndex = currentMonthIndex - 1;
-        if (monthIndex < 0) {
-            monthIndex = 11;
-            year -= 1;
-        }
-        const formatYmd = (d: Date) => {
-            const y = d.getFullYear();
-            const m = String(d.getMonth() + 1).padStart(2, "0");
-            const day = String(d.getDate()).padStart(2, "0");
-            return `${y}-${m}-${day}`;
-        };
-        const start = new Date(year, monthIndex, 1);
-        const end = new Date(year, monthIndex + 1, 0);
-        const startDate = formatYmd(start);
-        const endDate = formatYmd(end);
+        const range = getPreviousMonthDateRangeET();
+        if (!range) return;
+        const startDate = range.start;
+        const endDate = range.end;
 
         const fetchPrevStats = async () => {
             try {

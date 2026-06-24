@@ -11,8 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { updateClient } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
-import { getApplicationById } from "@/redux/actions/applicationActions";
-import { axiosPost } from "@/redux/axios";
+import { getApplicationById, uploadApplicationDocuments } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
 import {
     CheckCircle2,
@@ -146,6 +145,41 @@ type OwnerForm = {
     zipCode: string;
 };
 
+type MandatoryFieldKey =
+    | "businessName"
+    | "businessEmail"
+    | "businessNumber"
+    | "einNumber"
+    | "businessAddress1"
+    | `owner-${number}-ssn`;
+
+const buildFormPlaceholder = () => ({
+    businessName: "",
+    businessEmail: "",
+    businessNumber: "",
+    einNumber: "",
+    businessAddress1: "",
+    businessCity: "",
+    businessState: "",
+    businessZipCode: "",
+});
+
+const getMandatoryFieldErrors = (
+    businessForm: ReturnType<typeof buildFormPlaceholder>,
+    ownerForms: OwnerForm[],
+): Partial<Record<MandatoryFieldKey, string>> => {
+    const errors: Partial<Record<MandatoryFieldKey, string>> = {};
+    if (!businessForm.businessName.trim()) errors.businessName = "Required";
+    if (!businessForm.businessEmail.trim()) errors.businessEmail = "Required";
+    if (!businessForm.businessNumber.trim()) errors.businessNumber = "Required";
+    if (!businessForm.einNumber.trim()) errors.einNumber = "Required";
+    if (!businessForm.businessAddress1.trim()) errors.businessAddress1 = "Required";
+    ownerForms.forEach((owner, index) => {
+        if (!owner.ssn.trim()) errors[`owner-${index}-ssn`] = "Required";
+    });
+    return errors;
+};
+
 const buildOwnerForm = (owner: any): OwnerForm => ({
     firstName: String(owner?.firstName ?? ""),
     lastName: String(owner?.lastName ?? ""),
@@ -162,8 +196,15 @@ const buildOwnerForm = (owner: any): OwnerForm => ({
 const buildUploadedFromFiles = (files: unknown[] | undefined): Record<string, string[]> => {
     const map: Record<string, string[]> = {};
     for (const f of files ?? []) {
-        const file = f as { originalName?: string; documentType?: string; requestedDocumentSlug?: string };
-        const slug = normalizeDocumentSlug(file.documentType || file.requestedDocumentSlug);
+        const file = f as {
+            originalName?: string;
+            documentType?: string;
+            requestedDocumentSlug?: string;
+            type?: string;
+        };
+        const slug = normalizeDocumentSlug(
+            file.requestedDocumentSlug || file.documentType || file.type,
+        );
         if (!slug) continue;
         const name = String(file.originalName || "Uploaded file");
         map[slug] = [...(map[slug] ?? []), name];
@@ -171,12 +212,44 @@ const buildUploadedFromFiles = (files: unknown[] | undefined): Record<string, st
     return map;
 };
 
+const buildUploadedSlotsFromFiles = (files: unknown[] | undefined): Record<string, boolean> => {
+    const slots: Record<string, boolean> = {};
+    for (const [slug, names] of Object.entries(buildUploadedFromFiles(files))) {
+        if (names.length > 0) slots[slug] = true;
+    }
+    return slots;
+};
+
+const mergeUploadedMaps = (
+    fromServer: Record<string, string[]>,
+    local: Record<string, string[]>,
+): Record<string, string[]> => {
+    const merged = { ...fromServer };
+    for (const [slot, names] of Object.entries(local)) {
+        const existing = merged[slot] ?? [];
+        const extra = names.filter((name) => !existing.includes(name));
+        if (extra.length > 0) merged[slot] = [...existing, ...extra];
+        else if (existing.length > 0) merged[slot] = existing;
+        else if (names.length > 0) merged[slot] = names;
+    }
+    return merged;
+};
+
+const mergeUploadedSlots = (
+    fromServer: Record<string, boolean>,
+    local: Record<string, boolean>,
+): Record<string, boolean> => ({ ...local, ...fromServer });
+
 const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, onApprove, approving }: Props) => {
     const dispatch = useDispatch<AppDispatch>();
     const reduxApp = useSelector((s: RootState) => s.applicationDetail.data) as any;
     const app = reduxApp ?? applicationData;
 
-    const clientId = String(app?.client?.id ?? app?.client?._id ?? "");
+    const clientId = String(
+        typeof app?.client === "string"
+            ? app.client
+            : (app?.client?.id ?? app?.client?._id ?? ""),
+    );
     const applicationId = String(app?.id ?? app?._id ?? applicationData?.id ?? applicationData?._id ?? "");
     const business = app?.client?.business ?? {};
     const { owners: resolvedOwnerRecords } = useApplicationClientOwners(open ? app?.client : null);
@@ -185,9 +258,12 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
     const [saving, setSaving] = useState(false);
     const [uploading, setUploading] = useState<string | null>(null);
     const [uploaded, setUploaded] = useState<Record<string, string[]>>({});
+    const [uploadedSlots, setUploadedSlots] = useState<Record<string, boolean>>({});
     const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0);
+    const dialogSessionKeyRef = useRef("");
 
     const buildForm = () => ({
+        ...buildFormPlaceholder(),
         businessName: String(business?.name ?? ""),
         businessEmail: String(business?.email ?? ""),
         businessNumber: String(business?.number ?? ""),
@@ -199,26 +275,34 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
     });
     const [form, setForm] = useState(buildForm);
     const [owners, setOwners] = useState<OwnerForm[]>([buildOwnerForm({})]);
+    const [fieldErrors, setFieldErrors] = useState<Partial<Record<MandatoryFieldKey, string>>>({});
 
     const mapResolvedOwnersToForm = () =>
         resolvedOwnerRecords.length
             ? resolvedOwnerRecords.map(buildOwnerForm)
             : [buildOwnerForm({})];
 
-    // Reset to a clean state whenever the dialog (re)opens or the client loads.
-    // NOTE: we intentionally do NOT depend on `app?.files` here — after an upload
-    // we refetch the application, and reacting to that change would reset the
-    // wizard back to step 0 and clobber the optimistic upload state.
+    // Reset wizard only when the dialog opens for a (new) application — not when
+    // client/files refetch mid-flow (that was clearing upload button state).
     useEffect(() => {
-        if (open) {
-            setStep(0);
-            setForm(buildForm());
-            setOwners(mapResolvedOwnersToForm());
-            setExpandedOwnerIndex(resolvedOwnerRecords.length > 1 ? -1 : 0);
-            setUploaded(buildUploadedFromFiles(app?.files));
+        if (!open) {
+            dialogSessionKeyRef.current = "";
+            return;
         }
+        if (!applicationId) return;
+        if (dialogSessionKeyRef.current === applicationId) return;
+        dialogSessionKeyRef.current = applicationId;
+
+        setStep(0);
+        setForm(buildForm());
+        setOwners(mapResolvedOwnersToForm());
+        setExpandedOwnerIndex(resolvedOwnerRecords.length > 1 ? -1 : 0);
+        const initialUploaded = buildUploadedFromFiles(app?.files);
+        setUploaded(initialUploaded);
+        setUploadedSlots(buildUploadedSlotsFromFiles(app?.files));
+        setFieldErrors({});
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, clientId]);
+    }, [open, applicationId]);
 
     useEffect(() => {
         if (!open) return;
@@ -228,35 +312,53 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, resolvedOwnerRecords]);
 
-    // Keep the uploaded list in sync with the server (e.g. files loaded after the
-    // dialog opened) without disturbing the current step or optimistic updates.
+    // Keep the uploaded list in sync with the server without disturbing step or slots.
     useEffect(() => {
         if (!open) return;
-        setUploaded((prev) => {
-            const fromServer = buildUploadedFromFiles(app?.files);
-            // Merge so an in-flight optimistic entry isn't dropped if the refetch
-            // hasn't reflected it yet.
-            const merged: Record<string, string[]> = { ...fromServer };
-            for (const [slot, names] of Object.entries(prev)) {
-                const existing = merged[slot] ?? [];
-                const extra = names.filter((n) => !existing.includes(n));
-                merged[slot] = [...existing, ...extra];
-            }
-            return merged;
-        });
+        const fromServer = buildUploadedFromFiles(app?.files);
+        const fromServerSlots = buildUploadedSlotsFromFiles(app?.files);
+        setUploaded((prev) => mergeUploadedMaps(fromServer, prev));
+        setUploadedSlots((prev) => mergeUploadedSlots(fromServerSlots, prev));
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [app?.files]);
+    }, [app?.files, open]);
 
-    const set = (k: keyof ReturnType<typeof buildForm>, v: string) => setForm((p) => ({ ...p, [k]: v }));
+    const clearFieldError = (key: MandatoryFieldKey) => {
+        setFieldErrors((prev) => {
+            if (!prev[key]) return prev;
+            const next = { ...prev };
+            delete next[key];
+            return next;
+        });
+    };
 
-    const setOwner = (index: number, k: keyof OwnerForm, v: string) =>
+    const set = (k: keyof ReturnType<typeof buildForm>, v: string) => {
+        setForm((p) => ({ ...p, [k]: v }));
+        clearFieldError(k as MandatoryFieldKey);
+    };
+
+    const setOwner = (index: number, k: keyof OwnerForm, v: string) => {
         setOwners((prev) => prev.map((o, i) => (i === index ? { ...o, [k]: v } : o)));
+        if (k === "ssn") clearFieldError(`owner-${index}-ssn`);
+    };
+
+    const validateMandatoryFields = () => {
+        const errors = getMandatoryFieldErrors(form, owners);
+        setFieldErrors(errors);
+        if (Object.keys(errors).length > 0) {
+            const ownerErrorIndex = owners.findIndex((_, i) => errors[`owner-${i}-ssn`]);
+            if (ownerErrorIndex >= 0) setExpandedOwnerIndex(ownerErrorIndex);
+            toast.error("Business name, email, phone, EIN, address, and owner SSN are required before approving.");
+            return false;
+        }
+        return true;
+    };
 
     const saveCorrections = async () => {
         if (!clientId) {
             toast.info("Merchant details are still loading — please wait a moment.");
             return false;
         }
+        if (!validateMandatoryFields()) return false;
         const hasInvalidDob = owners.some(
             (o) => o.dateOfBirth.trim() && !fromDobDisplay(o.dateOfBirth),
         );
@@ -305,7 +407,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             toast.success("Merchant details updated.");
             return true;
         } catch (e: any) {
-            toast.error(e?.message || String(e) || "Couldn't Verify and .");
+            toast.error(e?.message || String(e) || "Couldn't verify and save.");
             return false;
         } finally {
             dispatch(resetUpdateClient());
@@ -319,21 +421,50 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             toast.info("Application is still loading — please wait a moment.");
             return;
         }
+
+        const fileNames = Array.from(fileList).map((f) => f.name);
         setUploading(slot);
+        setUploadedSlots((prev) => ({ ...prev, [slot]: true }));
+        setUploaded((prev) => ({
+            ...prev,
+            [slot]: [...(prev[slot] ?? []), ...fileNames],
+        }));
+
         try {
-            const fd = new FormData();
-            Array.from(fileList).forEach((f) => fd.append("files", f));
-            // The backend maps `documentType` to the canonical requestedDocumentSlug,
-            // which drives the CRM badge + pinning for key docs.
-            fd.append("documentType", slot);
-            await axiosPost(`/applications/${applicationId}/files`, fd);
-            setUploaded((p) => ({
-                ...p,
-                [slot]: [...(p[slot] ?? []), ...Array.from(fileList).map((f) => f.name)],
+            const response = await dispatch(
+                uploadApplicationDocuments({
+                    id: applicationId,
+                    files: Array.from(fileList),
+                    requestedDocumentSlug: slot,
+                }),
+            ).unwrap();
+            const updatedApp = response?.data ?? response;
+            const fromResponse = buildUploadedFromFiles(updatedApp?.files);
+
+            setUploaded((prev) => mergeUploadedMaps(fromResponse, prev));
+            setUploadedSlots((prev) => ({
+                ...prev,
+                ...buildUploadedSlotsFromFiles(updatedApp?.files),
+                [slot]: true,
             }));
+
             if (applicationId) void dispatch(getApplicationById(applicationId));
             toast.success("Document uploaded.");
         } catch (e: any) {
+            setUploaded((prev) => {
+                const remaining = (prev[slot] ?? []).filter((name) => !fileNames.includes(name));
+                const next = { ...prev };
+                if (remaining.length > 0) next[slot] = remaining;
+                else delete next[slot];
+                return next;
+            });
+            setUploadedSlots((prev) => {
+                const hadBefore = buildUploadedSlotsFromFiles(app?.files)[slot];
+                if (hadBefore) return { ...prev, [slot]: true };
+                const next = { ...prev };
+                delete next[slot];
+                return next;
+            });
             toast.error(e?.response?.data?.message || e?.message || "Upload failed.");
         } finally {
             setUploading(null);
@@ -342,7 +473,17 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
 
     const totalUploaded = Object.values(uploaded).reduce((sum, names) => sum + names.length, 0);
 
+    const handleStep0Next = async () => {
+        const saved = await saveCorrections();
+        if (saved) setStep(1);
+    };
+
     const finalApprove = async () => {
+        const saved = await saveCorrections();
+        if (!saved) {
+            setStep(0);
+            return;
+        }
         await onApprove();
         onOpenChange(false);
     };
@@ -398,13 +539,13 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                 {/* Step 1 — Review details */}
                 {step === 0 && (
                     <div className="space-y-4">
-                        <p className="text-sm text-muted-foreground">Please confirm the merchant's details are correct. Fix anything that's wrong before approving.</p>
+                        <p className="text-sm text-muted-foreground">Please confirm the merchant's details are correct. Fields marked with <span className="text-red-500">*</span> are required before you can approve.</p>
                         <Section title="Business">
-                            <Field label="Business name" value={form.businessName} onChange={(v) => set("businessName", v)} />
-                            <Field label="Business email" value={form.businessEmail} onChange={(v) => set("businessEmail", v)} />
-                            <Field label="Business phone" value={form.businessNumber} onChange={(v) => set("businessNumber", v)} />
-                            <Field label="EIN" value={form.einNumber} onChange={(v) => set("einNumber", v)} />
-                            <Field label="Address" value={form.businessAddress1} onChange={(v) => set("businessAddress1", v)} full />
+                            <Field label="Business name" value={form.businessName} onChange={(v) => set("businessName", v)} required error={fieldErrors.businessName} />
+                            <Field label="Business email" value={form.businessEmail} onChange={(v) => set("businessEmail", v)} required error={fieldErrors.businessEmail} />
+                            <Field label="Business phone" value={form.businessNumber} onChange={(v) => set("businessNumber", v)} required error={fieldErrors.businessNumber} />
+                            <Field label="EIN" value={form.einNumber} onChange={(v) => set("einNumber", v)} required error={fieldErrors.einNumber} />
+                            <Field label="Address" value={form.businessAddress1} onChange={(v) => set("businessAddress1", v)} full required error={fieldErrors.businessAddress1} />
                             <Field label="City" value={form.businessCity} onChange={(v) => set("businessCity", v)} />
                             <Field label="State" value={form.businessState} onChange={(v) => set("businessState", v)} />
                             <Field label="Zip" value={form.businessZipCode} onChange={(v) => set("businessZipCode", v)} />
@@ -435,7 +576,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                                                 <Field label="Last name" value={owner.lastName} onChange={(v) => setOwner(index, "lastName", v)} />
                                                 <Field label="Email" value={owner.email} onChange={(v) => setOwner(index, "email", v)} />
                                                 <Field label="Mobile" value={owner.mobileNumber} onChange={(v) => setOwner(index, "mobileNumber", v)} />
-                                                <Field label="SSN" value={owner.ssn} onChange={(v) => setOwner(index, "ssn", v)} />
+                                                <Field label="SSN" value={owner.ssn} onChange={(v) => setOwner(index, "ssn", v)} required error={fieldErrors[`owner-${index}-ssn`]} />
                                                 <Field
                                                     label="Date of birth"
                                                     value={owner.dateOfBirth}
@@ -460,7 +601,9 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                             <Button variant="outline" onClick={() => void saveCorrections()} disabled={saving}>
                                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck2 className="h-4 w-4" />} Verify and Save
                             </Button>
-                            <Button onClick={() => setStep(1)} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">Next →</Button>
+                            <Button onClick={() => void handleStep0Next()} disabled={saving} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">
+                                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Next →
+                            </Button>
                         </div>
                     </div>
                 )}
@@ -482,6 +625,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                                     slot={doc.slug}
                                     pinned={doc.pinned}
                                     uploaded={uploaded[doc.slug] ?? []}
+                                    isUploaded={Boolean(uploadedSlots[doc.slug]) || (uploaded[doc.slug]?.length ?? 0) > 0}
                                     uploading={uploading}
                                     onPick={uploadFiles}
                                 />
@@ -492,6 +636,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                                 slot={OTHER_DOC_SLOT.slug}
                                 multiple={OTHER_DOC_SLOT.multiple}
                                 uploaded={uploaded[OTHER_DOC_SLOT.slug] ?? []}
+                                isUploaded={Boolean(uploadedSlots[OTHER_DOC_SLOT.slug]) || (uploaded[OTHER_DOC_SLOT.slug]?.length ?? 0) > 0}
                                 uploading={uploading}
                                 onPick={uploadFiles}
                             />
@@ -535,11 +680,43 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     );
 }
 
-function Field({ label, value, onChange, full, type, placeholder, onBlur }: { label: string; value: string; onChange: (v: string) => void; full?: boolean; type?: string; placeholder?: string; onBlur?: () => void }) {
+function Field({
+    label,
+    value,
+    onChange,
+    full,
+    type,
+    placeholder,
+    onBlur,
+    required,
+    error,
+}: {
+    label: string;
+    value: string;
+    onChange: (v: string) => void;
+    full?: boolean;
+    type?: string;
+    placeholder?: string;
+    onBlur?: () => void;
+    required?: boolean;
+    error?: string;
+}) {
     return (
         <div className={full ? "col-span-2" : ""}>
-            <label className="text-[11px] font-medium text-muted-foreground">{label}</label>
-            <Input type={type ?? "text"} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} onBlur={onBlur} className="h-8 mt-0.5 text-sm" />
+            <label className="text-[11px] font-medium text-muted-foreground">
+                {label}
+                {required ? <span className="text-red-500"> *</span> : null}
+            </label>
+            <Input
+                type={type ?? "text"}
+                value={value}
+                placeholder={placeholder}
+                onChange={(e) => onChange(e.target.value)}
+                onBlur={onBlur}
+                aria-invalid={Boolean(error)}
+                className={`h-8 mt-0.5 text-sm ${error ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+            />
+            {error ? <p className="text-[10px] text-red-500 mt-0.5">{error}</p> : null}
         </div>
     );
 }
@@ -567,6 +744,7 @@ function DocRow({
     label,
     slot,
     uploaded,
+    isUploaded,
     uploading,
     multiple,
     pinned,
@@ -576,6 +754,7 @@ function DocRow({
     label: string;
     slot: string;
     uploaded: string[];
+    isUploaded: boolean;
     uploading: string | null;
     multiple?: boolean;
     pinned?: boolean;
@@ -583,7 +762,7 @@ function DocRow({
 }) {
     const ref = useRef<HTMLInputElement>(null);
     const busy = uploading === slot;
-    const hasUpload = uploaded.length > 0;
+    const hasUpload = isUploaded || uploaded.length > 0;
     const buttonLabel = busy ? "Uploading…" : hasUpload ? "Uploaded" : "Upload";
     const buttonDisabled = busy || (hasUpload && !multiple);
 

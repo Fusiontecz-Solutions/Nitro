@@ -73,7 +73,22 @@ import type { TermsOffer } from "@/types/termsOfferTypes";
 import { axiosGet } from "@/redux/axios";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import { getClientByClientId } from "@/redux/actions/clientActions";
-import { formatCurrency, formatInt, formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  formatCurrency,
+  formatInt,
+  formatDate as formatDateUtil,
+  getCurrentMonthDateRangeET,
+  getPreviousMonthDateRangeET,
+  formatYmdET,
+  formatMonthDayET,
+  formatMonthShortET,
+  formatDayET,
+  formatYearMonthET,
+  getWeekRangeET,
+  isWithinYmdRangeET,
+  getPeriodStartET,
+  etDayToUtcBounds,
+} from "@/lib/utils";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
 import {
   CONTRACT_OUT_QUEUE_BADGE_CLASS,
@@ -116,57 +131,23 @@ type CommissionPoint = {
 // ];
 
 const getCurrentMonthDateRange = () => {
-  const now = new Date();
-  const year = now.getFullYear();
-  const monthIndex = now.getMonth(); // 0 = Jan
-
-  const startDateObj = new Date(year, monthIndex, 1);
-  const endDateObj = new Date(year, monthIndex + 1, 0);
-
-  const formatYmd = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-
+  const range = getCurrentMonthDateRangeET();
   return {
-    startDateObj,
-    endDateObj,
-    start: formatYmd(startDateObj), // "YYYY-MM-DD"
-    end: formatYmd(endDateObj), // "YYYY-MM-DD"
+    startDateObj: range.startDateObj,
+    endDateObj: range.endDateObj,
+    start: range.start,
+    end: range.end,
   };
 };
 
 const getPreviousMonthDateRange = (referenceDate?: string) => {
-  const formatYmd = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-
-  const base = referenceDate ? new Date(referenceDate) : new Date();
-  if (isNaN(base.getTime())) {
-    return null;
-  }
-
-  let year = base.getFullYear();
-  let monthIndex = base.getMonth() - 1;
-
-  if (monthIndex < 0) {
-    monthIndex = 11;
-    year -= 1;
-  }
-
-  const startDateObj = new Date(year, monthIndex, 1);
-  const endDateObj = new Date(year, monthIndex + 1, 0);
-
+  const range = getPreviousMonthDateRangeET(referenceDate);
+  if (!range) return null;
   return {
-    startDateObj,
-    endDateObj,
-    start: formatYmd(startDateObj),
-    end: formatYmd(endDateObj),
+    startDateObj: range.startDateObj,
+    endDateObj: range.endDateObj,
+    start: range.start,
+    end: range.end,
   };
 };
 
@@ -326,18 +307,7 @@ function buildPipelineFunnelFromApps(
   pipelineView: "weekly" | "monthly" | "yearly",
 ): { stages: { stage: string; value: number; percentage: number; color: string }[]; conversionText: string } {
   const now = new Date();
-  let periodStart: Date;
-  if (pipelineView === "weekly") {
-    periodStart = new Date(now);
-    periodStart.setDate(now.getDate() - now.getDay());
-    periodStart.setHours(0, 0, 0, 0);
-  } else if (pipelineView === "monthly") {
-    periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    periodStart.setHours(0, 0, 0, 0);
-  } else {
-    periodStart = new Date(now.getFullYear(), 0, 1);
-    periodStart.setHours(0, 0, 0, 0);
-  }
+  const periodStart = getPeriodStartET(pipelineView, now);
 
   let submit = 0;
   let inProgress = 0;
@@ -888,27 +858,7 @@ export default function DashboardPage() {
   const filterByDateRange = useCallback(
     (recordDate: Date | null | undefined) => {
       if (!recordDate || Number.isNaN(recordDate.getTime())) return false;
-
-      const hasStart = !!startDate;
-      const hasEnd = !!endDate;
-
-      // No bounds selected -> allow everything
-      if (!hasStart && !hasEnd) return true;
-
-      const start = hasStart ? new Date(startDate) : null;
-      const end = hasEnd ? new Date(endDate) : null;
-
-      if (start) start.setHours(0, 0, 0, 0);
-      if (end) end.setHours(23, 59, 59, 999);
-
-      // Both start and end: inclusive range
-      if (start && end) return recordDate >= start && recordDate <= end;
-      // Only start
-      if (start && !end) return recordDate >= start;
-      // Only end
-      if (!start && end) return recordDate <= end;
-
-      return true;
+      return isWithinYmdRangeET(recordDate, startDate || null, endDate || null);
     },
     [startDate, endDate],
   );
@@ -979,14 +929,10 @@ export default function DashboardPage() {
       return normalized;
     })();
 
-    const formatYmd = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-        d.getDate(),
-      ).padStart(2, "0")}`;
+    const formatYmd = (d: Date) => formatYmdET(d);
 
     const sameMonth =
-      rangeStart.getFullYear() === rangeEnd.getFullYear() &&
-      rangeStart.getMonth() === rangeEnd.getMonth();
+      formatYearMonthET(rangeStart) === formatYearMonthET(rangeEnd);
 
     if (commissionChartView === "monthly") {
       const d = new Date(rangeStart);
@@ -994,30 +940,25 @@ export default function DashboardPage() {
       while (d <= rangeEnd) {
         const periodKey = formatYmd(d);
         const label = sameMonth
-          ? String(d.getDate())
-          : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          ? formatDayET(d)
+          : formatMonthDayET(d);
         periodData[periodKey] = { name: label, value: 0, dateKey: periodKey };
         d.setDate(d.getDate() + 1);
       }
     } else if (commissionChartView === "weekly") {
       const d = new Date(rangeStart);
-      d.setDate(d.getDate() - d.getDay());
+      const weekRange = getWeekRangeET(d);
+      if (weekRange) {
+        const weekStart = new Date(etDayToUtcBounds(weekRange.startYmd).start);
+        d.setTime(weekStart.getTime());
+      }
       d.setHours(0, 0, 0, 0);
       while (d <= rangeEnd) {
-        const weekStart = new Date(d);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        weekEnd.setHours(23, 59, 59, 999);
-        const periodKey = formatYmd(weekStart);
-        const periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
+        const week = getWeekRangeET(d);
+        if (!week) break;
+        const periodKey = week.startYmd;
         periodData[periodKey] = {
-          name: periodLabel,
+          name: week.label,
           value: 0,
           dateKey: periodKey,
         };
@@ -1029,11 +970,8 @@ export default function DashboardPage() {
       const endMonth = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
       endMonth.setHours(0, 0, 0, 0);
       while (d <= endMonth) {
-        const periodKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-          2,
-          "0",
-        )}`;
-        const periodLabel = d.toLocaleDateString("en-US", { month: "short" });
+        const periodKey = formatYearMonthET(d);
+        const periodLabel = formatMonthShortET(d);
         periodData[periodKey] = {
           name: periodLabel,
           value: 0,
@@ -1052,36 +990,18 @@ export default function DashboardPage() {
       let periodLabel = "";
 
       if (commissionChartView === "monthly") {
-        periodKey = `${created.getFullYear()}-${String(
-          created.getMonth() + 1,
-        ).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
+        periodKey = formatYmdET(created);
         periodLabel = sameMonth
-          ? String(created.getDate())
-          : created.toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-          });
+          ? formatDayET(created)
+          : formatMonthDayET(created);
       } else if (commissionChartView === "weekly") {
-        const weekStart = new Date(created);
-        weekStart.setDate(created.getDate() - created.getDay());
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        periodKey = `${weekStart.getFullYear()}-${String(
-          weekStart.getMonth() + 1,
-        ).padStart(2, "0")}-${String(weekStart.getDate()).padStart(2, "0")}`;
-        periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
+        const week = getWeekRangeET(created);
+        if (!week) return;
+        periodKey = week.startYmd;
+        periodLabel = week.label;
       } else {
-        const monthKey = `${created.getFullYear()}-${String(
-          created.getMonth() + 1,
-        ).padStart(2, "0")}`;
-        periodKey = monthKey;
-        periodLabel = created.toLocaleDateString("en-US", { month: "short" });
+        periodKey = formatYearMonthET(created);
+        periodLabel = formatMonthShortET(created);
       }
 
       if (!periodData[periodKey]) {
@@ -2706,11 +2626,7 @@ export default function DashboardPage() {
                             #{app.applicationId}
                           </TableCell>
                           <TableCell className="text-xs dark:text-white text-slate-600">
-                            {new Date(app.date).toLocaleDateString('en-US', {
-                              month: 'short',
-                              day: 'numeric',
-                              year: 'numeric',
-                            })}
+                            {formatDateUtil(app.date)}
                           </TableCell>
                           <TableCell className="text-xs dark:text-white text-slate-600">
                             {app.status}
@@ -2973,10 +2889,8 @@ export default function DashboardPage() {
                           if (trendView === "monthly" && dateKey) {
                             const d = new Date(dateKey);
                             if (!isNaN(d.getTime())) {
-                              const monthShort = d
-                                .toLocaleDateString("en-US", { month: "short" })
-                                .toUpperCase();
-                              const day = d.getDate();
+                              const monthShort = formatMonthShortET(d).toUpperCase();
+                              const day = formatDayET(d);
                               formattedLabel = `${monthShort}-${day}`;
                             }
                           }
@@ -3182,9 +3096,7 @@ export default function DashboardPage() {
                                 ? new Date(first.createdAt as any)
                                 : null;
                               if (created && !isNaN(created.getTime())) {
-                                const monthShort = created
-                                  .toLocaleDateString("en-US", { month: "short" })
-                                  .toUpperCase();
+                                const monthShort = formatMonthShortET(created).toUpperCase();
                                 displayLabel = `${monthShort}-${label}`;
                               }
                             } else if (typeof label === "string") {
@@ -3539,10 +3451,8 @@ export default function DashboardPage() {
                             if (trendView === "monthly" && dateKey) {
                               const d = new Date(dateKey);
                               if (!isNaN(d.getTime())) {
-                                const monthShort = d
-                                  .toLocaleDateString("en-US", { month: "short" })
-                                  .toUpperCase();
-                                const day = d.getDate();
+                                const monthShort = formatMonthShortET(d).toUpperCase();
+                                const day = formatDayET(d);
                                 formattedLabel = `${monthShort}-${day}`;
                               }
                             }

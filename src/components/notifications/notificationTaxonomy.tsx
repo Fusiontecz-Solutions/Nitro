@@ -18,6 +18,7 @@ import type {
     NotificationCategory,
     NotificationImportance,
 } from "@/redux/slices/notificationSlice";
+import { formatDate, formatMonthDayET, formatTimeET, isTodayET } from "@/lib/utils";
 
 type IconType = ComponentType<LucideProps>;
 
@@ -170,7 +171,7 @@ export function relativeTime(dateString: string): string {
         if (mins < 60) return `${mins}m ago`;
         if (hours < 24) return `${hours}h ago`;
         if (days < 7) return `${days}d ago`;
-        return new Date(dateString).toLocaleDateString();
+        return formatDate(dateString);
     } catch {
         return "";
     }
@@ -180,10 +181,8 @@ export function relativeTime(dateString: string): string {
 export function snoozeUntilLabel(iso?: string | null): string {
     if (!iso) return "";
     const d = new Date(iso);
-    const now = new Date();
-    const sameDay = d.toDateString() === now.toDateString();
-    const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    return sameDay ? `until ${time}` : `until ${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+    const time = formatTimeET(d);
+    return isTodayET(d) ? `until ${time}` : `until ${formatMonthDayET(d)}, ${time}`;
 }
 
 /** Resolve the deep link an "Open" action navigates to. */

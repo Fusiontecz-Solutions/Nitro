@@ -37,38 +37,24 @@ import type { ApplicationStatsData } from '@/redux/actions/applicationActions';
 import { useNavigate } from 'react-router';
 import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  formatDate as formatDateUtil,
+  getCurrentMonthDateRangeET,
+  getPreviousMonthDateRangeET,
+} from "@/lib/utils";
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from '@/utils/formatPhoneNumber';
 
 const ROLE_ID = 'AGENT';
 
 function getCurrentMonthDateRange(): { start: string; end: string } {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const formatYmd = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  return {
-    start: formatYmd(new Date(y, m, 1)),
-    end: formatYmd(new Date(y, m + 1, 0)),
-  };
+  const range = getCurrentMonthDateRangeET();
+  return { start: range.start, end: range.end };
 }
 
 function getPreviousMonthDateRange(referenceDate?: string): { start: string; end: string } | null {
-  const formatYmd = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const base = referenceDate ? new Date(referenceDate) : new Date();
-  if (isNaN(base.getTime())) return null;
-  let year = base.getFullYear();
-  let monthIndex = base.getMonth() - 1;
-  if (monthIndex < 0) {
-    monthIndex = 11;
-    year -= 1;
-  }
-  return {
-    start: formatYmd(new Date(year, monthIndex, 1)),
-    end: formatYmd(new Date(year, monthIndex + 1, 0)),
-  };
+  const range = getPreviousMonthDateRangeET(referenceDate);
+  if (!range) return null;
+  return { start: range.start, end: range.end };
 }
 
 function formatDate(dateStr: string | undefined): string {
