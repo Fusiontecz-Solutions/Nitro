@@ -24,6 +24,7 @@ export type FunderProfile = {
   mainContractLayoutKey: string;
   contractPdfFileName?: string | null;
   allowedStates: string[];
+  excludedStates: string[];
   organization?: string | null;
   legalName?: string | null;
   contactEmail?: string | null;
@@ -57,6 +58,7 @@ export type FunderProfileInput = {
   mainContractLayoutKey?: string;
   contractPdfFileName?: string;
   allowedStates?: string[];
+  excludedStates?: string[];
   organization?: string;
   legalName?: string;
   contactEmail?: string;

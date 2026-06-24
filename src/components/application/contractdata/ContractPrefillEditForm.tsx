@@ -498,9 +498,24 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             id: "ach_portal_refs",
             title: "ACH — Portal & references",
             description:
-                "Reference fields on page 15 are blank for the signer to complete in DocuSign. Portal credentials are not collected on the contract PDF.",
+                "Page 15 fields are completed by the merchant in DocuSign (required). CRM values here are optional notes only and are not sent on the PDF.",
             Icon: Globe,
             groups: [
+                {
+                    heading: "Online banking (merchant completes on page 15)",
+                    keys: [
+                        "achAuthorizationBankPortalWebsite",
+                        "achAuthorizationUsername",
+                        "achAuthorizationPassword",
+                        "achAuthorizationSecurityQuestion1",
+                        "achAuthorizationSecurityAnswer1",
+                        "achAuthorizationSecurityQuestion2",
+                        "achAuthorizationSecurityAnswer2",
+                        "achAuthorizationSecurityQuestion3",
+                        "achAuthorizationSecurityAnswer3",
+                        "achAuthorizationOtherInfomation",
+                    ],
+                },
                 {
                     heading: "Reference 1",
                     keys: [

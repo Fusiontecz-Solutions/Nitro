@@ -88,8 +88,8 @@ export default function FundersSettings() {
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground max-w-2xl">
           Configure funders shown on Create Contract. Link each funder to its DocuSign account,
-          upload a contract PDF (or use the default), and set allowed states when a funder should
-          only appear for certain states.
+          upload a contract PDF (or use the default), set allowed states when a funder should
+          only appear for certain states, or excluded states to hide a funder in specific states only.
         </p>
         <Button
           className="gap-2 bg-[var(--brand)] hover:bg-[var(--brand)]/90 shrink-0"
@@ -149,6 +149,12 @@ export default function FundersSettings() {
                   label="Allowed states"
                   value={
                     row.allowedStates?.length ? row.allowedStates.join(", ") : "All states"
+                  }
+                />
+                <DetailRow
+                  label="Excluded states"
+                  value={
+                    row.excludedStates?.length ? row.excludedStates.join(", ") : "None"
                   }
                 />
               </CardContent>

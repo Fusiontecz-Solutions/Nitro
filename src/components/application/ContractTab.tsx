@@ -119,6 +119,7 @@ import {
 import {
     applyPrimaryGuarantorNamesToPrefillFields,
     applySecondOwnerNameToPrefillFields,
+    clearParty2PrefillFieldPayload,
     resolveOwnerRowFullName,
     collapseDocuSignRolesToSignerSlots,
     resolveActiveOwnerCount,
@@ -1772,6 +1773,10 @@ export default function ContractTab({
                         "",
                 ).trim(),
             });
+            prefillFieldsPayload = clearParty2PrefillFieldPayload(
+                prefillFieldsPayload,
+                ownerCount,
+            );
 
             let mainPrefillForTemplates: Partial<BuildContractPrefillFieldsArgs> | null = null;
             try {

@@ -115,6 +115,7 @@ export default function FunderProfileModal({
   const [form, setForm] = useState<FunderProfileInput>(emptyForm);
 
   const [statesText, setStatesText] = useState("");
+  const [excludedStatesText, setExcludedStatesText] = useState("");
 
   const [contractFile, setContractFile] = useState<File | null>(null);
 
@@ -143,12 +144,14 @@ export default function FunderProfileModal({
       });
 
       setStatesText((initial.allowedStates ?? []).join(", "));
+      setExcludedStatesText((initial.excludedStates ?? []).join(", "));
 
     } else {
 
       setForm(emptyForm);
 
       setStatesText("");
+      setExcludedStatesText("");
 
     }
 
@@ -188,6 +191,16 @@ export default function FunderProfileModal({
 
 
 
+    const excludedStates = excludedStatesText
+
+      .split(/[,;\n]+/)
+
+      .map((s) => s.trim())
+
+      .filter(Boolean);
+
+
+
     const payload: FunderProfileInput = {
 
       name: form.name.trim(),
@@ -195,6 +208,8 @@ export default function FunderProfileModal({
       dealIdPrefix: form.dealIdPrefix?.trim() || undefined,
 
       allowedStates,
+
+      excludedStates,
 
       docusignAccountProfileId: form.docusignAccountProfileId || null,
 
@@ -419,6 +434,40 @@ export default function FunderProfileModal({
                   placeholder="TX, Texas"
 
                 />
+
+                <p className="text-xs text-muted-foreground">
+
+                  Use this when a funder should only appear for specific states (e.g. Alliance Bridge → TX only).
+
+                </p>
+
+              </Field>
+
+              <Field className="sm:col-span-2">
+
+                <Label htmlFor="f-excluded-states">
+
+                  Excluded states (comma-separated; empty = none)
+
+                </Label>
+
+                <Input
+
+                  id="f-excluded-states"
+
+                  value={excludedStatesText}
+
+                  onChange={(e) => setExcludedStatesText(e.target.value)}
+
+                  placeholder="TX, Texas"
+
+                />
+
+                <p className="text-xs text-muted-foreground">
+
+                  Use this to hide a funder in specific states while keeping it available everywhere else.
+
+                </p>
 
               </Field>
 

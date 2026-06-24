@@ -21,8 +21,11 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   if (payload.contractPdfFileName) {
     formData.append("contractPdfFileName", payload.contractPdfFileName);
   }
-  if (payload.allowedStates) {
+  if (payload.allowedStates !== undefined) {
     formData.append("allowedStates", JSON.stringify(payload.allowedStates));
+  }
+  if (payload.excludedStates !== undefined) {
+    formData.append("excludedStates", JSON.stringify(payload.excludedStates));
   }
   if (payload.organization) formData.append("organization", payload.organization);
   if (payload.legalName) formData.append("legalName", payload.legalName);

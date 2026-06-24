@@ -1,10 +1,15 @@
-import { resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
+import { resolveOfferDecisionFeesRaw, resolveOfferFeeAmountForDeal } from "@/lib/offerDecisionFees";
 import {
     parseTerm,
     resolveOfferFactorRate,
     resolveOfferPayback,
 } from "@/lib/offerRepaymentCalculations";
 import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
+import {
+    clearParty2PrefillPartial,
+    isDistinctPartyRow,
+    resolveActiveOwnerCount,
+} from "./contractPartyCounts";
 
 export interface ContractPrefillField {
     id: string;
@@ -835,6 +840,11 @@ function str(v: unknown): string {
     return String(v ?? "").trim();
 }
 
+function isZeroMoneyPrefillValue(value: unknown): boolean {
+    const n = coerceToFiniteNumber(value);
+    return n !== undefined && n === 0;
+}
+
 /** Apply persisted contract rows without wiping application defaults with empty strings. */
 function mergeNonemptyPrefillPartial<T extends Record<string, unknown>>(
     base: Partial<T>,
@@ -1035,22 +1045,110 @@ function getOfferDecisionPrefillContext(
     return { app, contract, odRoot, odEff, terms0 };
 }
 
-function resolveOfferAdvanceDollars(
-    ctx: OfferDecisionPrefillContext,
-    sources?: NetToMerchantPrefillSources,
-): number {
+/** Gross funded offer from OfferDecision / terms — no purchaseAmount / net fallbacks. */
+function readGrossOfferAdvanceFromContext(ctx: OfferDecisionPrefillContext): number | undefined {
     const { odRoot, odEff, terms0, contract } = ctx;
     return (
-        coerceToFiniteNumber(sources?.prefill?.purchaseAmount) ??
-        coerceToFiniteNumber(contract?.purchaseAmount) ??
         coerceToFiniteNumber(odEff?.offer) ??
         coerceToFiniteNumber(odEff?.approvedAmount) ??
         coerceToFiniteNumber(odRoot?.offer) ??
         coerceToFiniteNumber(odRoot?.approvedAmount) ??
         coerceToFiniteNumber(terms0?.approvedAmount) ??
         coerceToFiniteNumber(contract?.approvedAmount) ??
-        0
+        undefined
     );
+}
+
+function readStoredNetToMerchantDollars(sources: NetToMerchantPrefillSources): number | undefined {
+    const contract = sources.contract;
+    return (
+        coerceToFiniteNumber(sources.prefill?.netToMerchant) ??
+        coerceToFiniteNumber(contract?.netToMerchant) ??
+        undefined
+    );
+}
+
+function valueMatchesStoredNet(n: number, sources: NetToMerchantPrefillSources): boolean {
+    const net = readStoredNetToMerchantDollars(sources);
+    return net !== undefined && Math.abs(n - net) < 0.01;
+}
+
+function readPaybackDollarsFromContext(ctx: OfferDecisionPrefillContext): number | undefined {
+    const { odRoot, odEff, terms0, contract } = ctx;
+    const advance = readGrossOfferAdvanceFromContext(ctx) ?? 0;
+    const factorRate = resolveOfferFactorRateFromContext(ctx);
+    const payback = resolveOfferPayback(advance, factorRate, {
+        termsPaybackAmount: coerceToFiniteNumber(terms0?.paybackAmount),
+        offerPaybackAmount:
+            coerceToFiniteNumber(odEff?.paybackAmount) ?? coerceToFiniteNumber(odRoot?.paybackAmount),
+        totalRemit:
+            coerceToFiniteNumber(odEff?.totalRemit) ?? coerceToFiniteNumber(odRoot?.totalRemit),
+    });
+    if (payback > 0) return payback;
+    const legacy =
+        coerceToFiniteNumber(contract?.purchasePrice) ?? coerceToFiniteNumber(contract?.totalAmount);
+    return legacy !== undefined && legacy > 0 ? legacy : undefined;
+}
+
+/** Offer Decision `fees` (dollars) for contract appendix / underwriting fee prefill. */
+function resolvePlatformOfferFeesForPrefill(sources: NetToMerchantPrefillSources): string {
+    const ctx = getOfferDecisionPrefillContext(sources);
+    const { odRoot, odEff, terms0, app, contract } = ctx;
+    const offerRecord =
+        odRoot ??
+        ((contract?.offer as Record<string, unknown> | undefined) ?? null);
+    const feesRaw =
+        resolveOfferDecisionFeesRaw(offerRecord) ??
+        resolveOfferDecisionFeesRaw(odEff ? { fees: odEff.fees } : null) ??
+        terms0?.fees;
+
+    const purchase = resolveOfferAmountDollarsForUnderwritingFees({
+        ...sources,
+        prefill: sources.prefill,
+    });
+
+    if (purchase !== undefined && purchase > 0) {
+        const feeDollars = resolveOfferFeeAmountForDeal({
+            fundedAmount: purchase,
+            factorRate: odEff?.rate ?? odRoot?.rate ?? terms0?.factorRate,
+            feesRaw: feesRaw ?? odEff?.fees ?? odRoot?.fees,
+            termsCommissionPercent: terms0?.commissionPercent,
+            applicationCommissionPercentage: (app as Record<string, unknown> | undefined)
+                ?.commissionPercentage,
+        });
+        if (feeDollars > 0) {
+            return formatOfferDecisionFeesDollarsForPrefill(feeDollars);
+        }
+    }
+
+    const fallbackRaw =
+        feesRaw ??
+        odEff?.fees ??
+        odRoot?.fees ??
+        (contract as Record<string, unknown> | undefined)?.appendixUnderwritingFees;
+    if (fallbackRaw != null && String(fallbackRaw).trim() !== "") {
+        return formatOfferDecisionFeesDollarsForPrefill(fallbackRaw);
+    }
+    return "";
+}
+
+function resolveOfferAdvanceDollars(
+    ctx: OfferDecisionPrefillContext,
+    sources?: NetToMerchantPrefillSources,
+): number {
+    const { contract } = ctx;
+    const fromOffer = readGrossOfferAdvanceFromContext(ctx);
+    if (fromOffer !== undefined && fromOffer > 0) return fromOffer;
+
+    for (const n of [
+        coerceToFiniteNumber(sources?.prefill?.purchaseAmount),
+        coerceToFiniteNumber(contract?.purchaseAmount),
+    ]) {
+        if (n === undefined || !(n > 0)) continue;
+        if (sources && valueMatchesStoredNet(n, sources)) continue;
+        return n;
+    }
+    return 0;
 }
 
 function resolveOfferFactorRateFromContext(ctx: OfferDecisionPrefillContext): number {
@@ -1091,40 +1189,23 @@ export function resolvePaybackAmountDollars(sources: NetToMerchantPrefillSources
 export function resolveOfferAmountDollarsForUnderwritingFees(
     sources: NetToMerchantPrefillSources,
 ): number | undefined {
-    const app = sources.application;
-    const contract = sources.contract;
-    const odRoot =
-        sources.offerDecision ??
-        (contract?.offer as Record<string, unknown> | undefined) ??
-        (app?.offerDecision as Record<string, unknown> | undefined) ??
-        (app?.OfferDecision as Record<string, unknown> | undefined) ??
-        null;
-    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
-    const termsRaw = app?.termsOffers;
-    const terms0 =
-        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
-            ? (termsRaw[0] as Record<string, unknown>)
-            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
-              ? (termsRaw as Record<string, unknown>)
-              : null;
+    const ctx = getOfferDecisionPrefillContext(sources);
+    const gross = readGrossOfferAdvanceFromContext(ctx);
+    if (gross !== undefined && gross > 0) return gross;
 
-    const payback = resolvePaybackAmountDollars(sources);
+    const payback = readPaybackDollarsFromContext(ctx);
+    const contract = sources.contract;
     const prefillOverrides = normalizeContractPrefillOverrides(contract?.contractPrefillOverrides);
     const candidates = [
         coerceToFiniteNumber(sources.prefill?.purchaseAmount),
         coerceToFiniteNumber(prefillOverrides?.purchaseAmount),
         coerceToFiniteNumber(contract?.purchaseAmount),
-        coerceToFiniteNumber(odEff?.offer),
-        coerceToFiniteNumber(odEff?.approvedAmount),
-        coerceToFiniteNumber(odRoot?.offer),
-        coerceToFiniteNumber(odRoot?.approvedAmount),
-        coerceToFiniteNumber(terms0?.approvedAmount),
-        coerceToFiniteNumber(contract?.approvedAmount),
     ];
 
     for (const n of candidates) {
         if (n === undefined || !(n > 0)) continue;
         if (payback !== undefined && Math.abs(n - payback) < 0.01) continue;
+        if (valueMatchesStoredNet(n, sources)) continue;
         return n;
     }
     return undefined;
@@ -1197,50 +1278,18 @@ function applyAppendixUnderwritingFeesAmount(
         ...sources,
         prefill: { ...sources.prefill, ...partial },
     });
-    let raw = str(out.appendixUnderwritingFees);
-    let feesFromOfferDecision = false;
-    if (!raw) {
-        const contract = sources.contract;
-        const odRoot =
-            sources.offerDecision ??
-            (contract?.offer as Record<string, unknown> | undefined) ??
-            null;
-        const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
-        const offer = (contract?.offer ?? null) as Record<string, unknown> | null;
-        raw = str(odEff?.fees ?? offer?.fees ?? odRoot?.fees);
-        feesFromOfferDecision = Boolean(raw);
+    const platformFee = resolvePlatformOfferFeesForPrefill({
+        ...sources,
+        prefill: { ...sources.prefill, ...partial },
+    });
+    if (platformFee) {
+        out.appendixUnderwritingFees = platformFee;
+        return out;
     }
-    if (raw && !feesFromOfferDecision) {
-        out.appendixUnderwritingFees = resolveAppendixUnderwritingFeesDisplay(
-            raw,
-            purchase,
-        );
-    } else if (purchase !== undefined && purchase > 0) {
-        const contract = sources.contract;
-        const odRoot =
-            sources.offerDecision ??
-            (contract?.offer as Record<string, unknown> | undefined) ??
-            null;
-        const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
-        const app = sources.application;
-        const termsRaw = app?.termsOffers;
-        const terms0 =
-            Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
-                ? (termsRaw[0] as Record<string, unknown>)
-                : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
-                  ? (termsRaw as Record<string, unknown>)
-                  : null;
-        const feeDollars = resolveOfferFeeAmountForDeal({
-            fundedAmount: purchase,
-            factorRate:
-                odEff?.rate ?? odRoot?.rate ?? terms0?.factorRate,
-            feesRaw: odEff?.fees ?? odRoot?.fees ?? raw,
-            termsCommissionPercent: terms0?.commissionPercent,
-            applicationCommissionPercentage: app?.commissionPercentage,
-        });
-        out.appendixUnderwritingFees = formatOfferDecisionFeesDollarsForPrefill(
-            feeDollars,
-        );
+    const saved = str(out.appendixUnderwritingFees);
+    if (saved && !isZeroMoneyPrefillValue(saved)) {
+        out.appendixUnderwritingFees =
+            resolveAppendixUnderwritingFeesDisplay(saved, purchase) || saved;
     }
     return out;
 }
@@ -1260,26 +1309,25 @@ export function finalizeContractPrefillMoneyFields(
  * Net to merchant = max(0, advance − fees − refinance) — same as Collections "Net funding".
  */
 export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources): number | undefined {
-    const advance = resolvePurchaseAmountDollars(sources);
-    if (advance === undefined) return undefined;
+    const ctx = getOfferDecisionPrefillContext(sources);
+    let advance = readGrossOfferAdvanceFromContext(ctx);
+    if (advance === undefined || !(advance > 0)) {
+        const contract = sources.contract;
+        for (const n of [
+            coerceToFiniteNumber(sources.prefill?.purchaseAmount),
+            coerceToFiniteNumber(contract?.purchaseAmount),
+        ]) {
+            if (n === undefined || !(n > 0)) continue;
+            if (valueMatchesStoredNet(n, sources)) continue;
+            advance = n;
+            break;
+        }
+    }
+    if (advance === undefined || !(advance > 0)) return undefined;
 
     const app = sources.application;
     const contract = sources.contract;
-    const odRoot =
-        sources.offerDecision ??
-        (contract?.offer as Record<string, unknown> | undefined) ??
-        (app?.offerDecision as Record<string, unknown> | undefined) ??
-        (app?.OfferDecision as Record<string, unknown> | undefined) ??
-        null;
-    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
-
-    const termsRaw = app?.termsOffers;
-    const terms0 =
-        Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
-            ? (termsRaw[0] as Record<string, unknown>)
-            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
-              ? (termsRaw as Record<string, unknown>)
-              : null;
+    const { odRoot, odEff, terms0 } = ctx;
 
     const appendixRaw = contract?.appendixUnderwritingFees;
     const fees =
@@ -2259,6 +2307,12 @@ export function mergeContractPrefillOverrideLayers(
         for (const [key, val] of Object.entries(layer)) {
             if (val === undefined || val === null) continue;
             if (!str(val)) continue;
+            if (
+                (APPENDIX_FEE_OVERRIDE_ALIASES as readonly string[]).includes(key) &&
+                isZeroMoneyPrefillValue(val)
+            ) {
+                continue;
+            }
             (out as Record<string, unknown>)[key] = val;
         }
     }
@@ -2280,10 +2334,16 @@ export function overlaySavedAppendixFeeOnPrefillFields(
         const liveFee = str(
             getLiveOfferPrefillArgs(sources.application ?? null, {
                 offerDecision: sources.offerDecision ?? null,
+                contract: sources.contract ?? null,
             }).appendixUnderwritingFees,
         );
-        if (liveFee) {
-            return fields;
+        if (liveFee && !isZeroMoneyPrefillValue(liveFee)) {
+            const value = normalizePrefillValueForUsFormat("underwriter_fee", liveFee);
+            return fields.map((f) =>
+                DEAL_REVIEW_APPENDIX_FEE_IDS.has(normalizeDealReviewFieldId(f.id))
+                    ? { ...f, value }
+                    : f,
+            );
         }
     }
 
@@ -2583,7 +2643,9 @@ export function applyOwnerRowsToPrefillMerge(
 
     const o2 = rows[1];
     const n2 = ownerFullName(o2?.firstName, o2?.lastName);
-    const hasSecondOwner = Boolean(o2 && (partyEmail(o2) || n2));
+    const hasSecondOwner = Boolean(
+        o2 && isDistinctPartyRow(o1, o2) && (partyEmail(o2) || n2),
+    );
     if (hasSecondOwner) {
         const ssn2 = str(o2?.ssnNumber ?? o2?.ssn);
         const dl2 = str(o2?.driverLicenseNumber ?? o2?.driverLicense);
@@ -2702,7 +2764,7 @@ function guarantorsToPrefillPartial(rows: Record<string, unknown>[] | null | und
         guarantyGuarantor1Ss: g1Ss,
         guarantyGuarantor1DriverLicense: g1Dl,
     };
-    if (g2 && (partyEmail(g2) || g2.firstName || g2.lastName)) {
+    if (g2 && isDistinctPartyRow(g1, g2) && (partyEmail(g2) || g2.firstName || g2.lastName)) {
         const g2Name = ownerFullName(g2?.firstName, g2?.lastName);
         const g2Ss = str(g2?.ssnNumber ?? g2?.ssn);
         const g2Dl = str(g2?.driverLicenseNumber ?? g2?.driverLicense);
@@ -2803,23 +2865,30 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         securityBusinessAddressState: str(row.securityBusinessAddressState),
         securityBusinessAddressZip: str(row.securityBusinessAddressZip),
         securityGuarantor: str(row.securityGuarantor),
-        appendixUnderwritingFees: (() => {
-            const rowRaw = str(row.appendixUnderwritingFees);
-            const offerRaw = str(offer?.fees);
-            const raw = rowRaw || offerRaw;
-            if (!rowRaw && offerRaw) {
-                return formatOfferDecisionFeesDollarsForPrefill(offerRaw);
-            }
-            const prefillOverrides = normalizeContractPrefillOverrides(row.contractPrefillOverrides);
-            return resolveAppendixUnderwritingFeesDisplay(
-                raw,
-                resolveOfferAmountDollarsForUnderwritingFees({
-                    contract: row,
-                    offerDecision: offer,
-                    prefill: prefillOverrides ?? undefined,
-                }),
-            );
-        })(),
+        appendixUnderwritingFees:
+            resolvePlatformOfferFeesForPrefill({
+                contract: row,
+                offerDecision: offer,
+            }) ||
+            (() => {
+                const rowRaw = str(row.appendixUnderwritingFees);
+                const offerRaw = str(resolveOfferDecisionFeesRaw(offer));
+                const raw = rowRaw || offerRaw;
+                if (!rowRaw && offerRaw) {
+                    return formatOfferDecisionFeesDollarsForPrefill(offerRaw);
+                }
+                const prefillOverrides = normalizeContractPrefillOverrides(
+                    row.contractPrefillOverrides,
+                );
+                return resolveAppendixUnderwritingFeesDisplay(
+                    raw,
+                    resolveOfferAmountDollarsForUnderwritingFees({
+                        contract: row,
+                        offerDecision: offer,
+                        prefill: prefillOverrides ?? undefined,
+                    }),
+                );
+            })(),
         appendixClientName: resolvePersonalClientNamePrefill(row, "appendixClientName"),
         guarantyClientName: resolvePersonalClientNamePrefill(row, "guarantyClientName"),
         authorizationApplication: resolveAuthorizationApplicationPrefill(row),
@@ -2910,7 +2979,9 @@ function pickLiveOfferMoneyOverlay(
     const overlay: Partial<BuildContractPrefillFieldsArgs> = {};
     for (const key of LIVE_OFFER_MONEY_PREFILL_KEYS) {
         const value = str((liveOfferArgs as Record<string, unknown>)[key]);
-        if (value) (overlay as Record<string, unknown>)[key] = value;
+        if (value && !isZeroMoneyPrefillValue(value)) {
+            (overlay as Record<string, unknown>)[key] = value;
+        }
     }
     return overlay;
 }
@@ -2972,7 +3043,10 @@ export function applyLiveOfferSyncToPrefillPartial(
 /** Offer / banking fields recomputed from the current OfferDecision (not stale contract scalars). */
 function getLiveOfferPrefillArgs(
     anyApp: unknown,
-    options?: { offerDecision?: Record<string, unknown> | null },
+    options?: {
+        offerDecision?: Record<string, unknown> | null;
+        contract?: Record<string, unknown> | null;
+    },
 ): Partial<BuildContractPrefillFieldsArgs> {
     const app = (anyApp ?? null) as Record<string, unknown> | null;
     const odRoot =
@@ -2991,11 +3065,10 @@ function getLiveOfferPrefillArgs(
 
     const sources: NetToMerchantPrefillSources = {
         application: app ?? undefined,
-        contract: null,
+        contract: options?.contract ?? null,
         offerDecision: odRoot,
     };
 
-    const feesRaw = odEff?.fees ?? odRoot?.fees ?? terms0?.fees;
     const remittance = resolveRemittancePrefillValue(sources);
     const offerAmountNum = resolveOfferAdvanceDollars(
         { app: app ?? undefined, contract: null, odRoot, odEff, terms0 },
@@ -3015,9 +3088,7 @@ function getLiveOfferPrefillArgs(
         frequency: resolveOfferFrequencyLabel(sources),
         remittance,
         netToMerchant: formatNetToMerchantPrefillValue(computeNetToMerchantDollars(sources)),
-        appendixUnderwritingFees: feesRaw
-            ? formatOfferDecisionFeesDollarsForPrefill(feesRaw)
-            : "",
+        appendixUnderwritingFees: resolvePlatformOfferFeesForPrefill(sources),
         achAuthorizationAccountHolderBankTransactionFee: remittance,
         achAuthorizationAccountHolderBankNumberOfTransactions:
             resolveNumberOfPaymentsPrefillValue(sources),
@@ -3341,6 +3412,7 @@ export function getContractPrefillEditDefaultsFromApplication(
     const contractOverrides = contractPrefillOverridesFromRow(rec?.contract ?? null);
     const liveOfferArgs = getLiveOfferPrefillArgs(anyApp, {
         offerDecision: options?.offerDecision ?? null,
+        contract: rec?.contract ?? null,
     });
     const ownerFallback = ownerFullName(resolvedOwners[0]?.firstName, resolvedOwners[0]?.lastName);
     const customerName =
@@ -3403,6 +3475,15 @@ export function getContractPrefillEditDefaultsFromApplication(
     }
 
     syncPartyIdentityPrefillFields(mergedBeforeFees);
+
+    const activeOwnerCount = resolveActiveOwnerCount({
+        owners: resolvedOwners,
+        guarantors: rec?.guarantors ?? null,
+    });
+    clearParty2PrefillPartial(
+        mergedBeforeFees as Record<string, unknown>,
+        activeOwnerCount,
+    );
 
     return applyAppendixUnderwritingFeesAmount(mergedBeforeFees, {
         application: anyApp as Record<string, unknown> | undefined,
@@ -3489,13 +3570,26 @@ export function buildContractPrefillFieldsFromApplication(
     };
     Object.assign(merged, finalizeContractPrefillMoneyFields(merged, moneySources));
     if (Object.keys(savedOverrides).length > 0) {
-        Object.assign(merged, savedOverrides);
+        const patch = { ...savedOverrides } as Record<string, unknown>;
+        for (const key of [
+            ...LIVE_OFFER_MONEY_PREFILL_KEYS,
+            ...APPENDIX_FEE_OVERRIDE_ALIASES,
+        ]) {
+            const patchValue = patch[key];
+            if (!str(patchValue) || isZeroMoneyPrefillValue(patchValue)) {
+                delete patch[key];
+            }
+        }
+        Object.assign(merged, patch);
     }
     if (liveOfferAvailable) {
         Object.assign(
             merged,
             pickLiveOfferMoneyOverlay(
-                getLiveOfferPrefillArgs(anyApp, { offerDecision: options?.offerDecision ?? null }),
+                getLiveOfferPrefillArgs(anyApp, {
+                    offerDecision: options?.offerDecision ?? null,
+                    contract: rec?.contract ?? null,
+                }),
             ),
         );
     }

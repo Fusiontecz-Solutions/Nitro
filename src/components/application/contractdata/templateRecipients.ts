@@ -118,6 +118,29 @@ export type ContractSignerOverrideRow = {
     email: string;
 };
 
+function normalizeSignerEmail(email: string): string {
+    return String(email || "").trim().toLowerCase();
+}
+
+/** Drop duplicate signer slots (same email, or same name when email is blank). */
+export function dedupeContractSignerRows(
+    rows: ContractSignerOverrideRow[],
+): ContractSignerOverrideRow[] {
+    const seen = new Set<string>();
+    const out: ContractSignerOverrideRow[] = [];
+    for (const row of rows) {
+        const email = normalizeSignerEmail(row.email);
+        const name = String(row.name || "").trim().toLowerCase();
+        const key = email || (name ? `name:${name}` : "");
+        if (key) {
+            if (seen.has(key)) continue;
+            seen.add(key);
+        }
+        out.push(row);
+    }
+    return out;
+}
+
 /** Persisted on `Contract.contractPrefillOverrides` (excluded from main prefill form). */
 export const CONTRACT_SIGNER_OVERRIDES_KEY = "contractSignerOverrides";
 
@@ -227,7 +250,7 @@ export function buildSuggestedContractSignerRows(input: {
         });
     }
 
-    return rows;
+    return dedupeContractSignerRows(rows);
 }
 
 export function suggestedRowsToSummaryTemplateRoles(
@@ -275,7 +298,8 @@ export function parseContractSignerOverridesFromPrefill(
             };
         })
         .filter((r): r is ContractSignerOverrideRow => r != null);
-    return parsed.length ? parsed : null;
+    const deduped = dedupeContractSignerRows(parsed);
+    return deduped.length ? deduped : null;
 }
 
 /** Map send/review role payloads to persisted Contract Signers rows. */

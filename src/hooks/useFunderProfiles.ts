@@ -14,6 +14,7 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     mainContractLayoutKey: PLATFORM_LAYOUT_KEYS.contract,
     contractPdfFileName: "Contract.pdf",
     allowedStates: [],
+    excludedStates: [],
     organization: "Katan II",
     sortOrder: 1,
     isActive: true,
@@ -27,6 +28,7 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     mainContractLayoutKey: PLATFORM_LAYOUT_KEYS.contract,
     contractPdfFileName: "Contract.pdf",
     allowedStates: [],
+    excludedStates: [],
     organization: "Katan III",
     sortOrder: 2,
     isActive: true,
@@ -39,6 +41,7 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     mainContractLayoutKey: PLATFORM_LAYOUT_KEYS.allianceBridgeContract,
     contractPdfFileName: "ALLIANCE BRIDGE CAPITAL.pdf",
     allowedStates: ["TX", "tx", "Texas", "texas"],
+    excludedStates: [],
     sortOrder: 3,
     isActive: true,
   },
@@ -63,21 +66,36 @@ export function findFunderProfile(
   );
 }
 
+export function funderAvailableForContractState(
+  funder: Pick<FunderProfile, "allowedStates" | "excludedStates">,
+  state?: string | null,
+): boolean {
+  const normalizedState = String(state ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalizedState) return true;
+
+  const excluded = funder.excludedStates ?? [];
+  if (
+    excluded.length > 0 &&
+    excluded.some((s) => String(s).trim().toLowerCase() === normalizedState)
+  ) {
+    return false;
+  }
+
+  const allowed = funder.allowedStates ?? [];
+  if (!allowed.length) return true;
+  return allowed.some((s) => String(s).trim().toLowerCase() === normalizedState);
+}
+
 export function funderNamesForContractState(
   funders: FunderProfile[],
   state?: string | null,
 ): string[] {
-  const normalizedState = String(state ?? "")
-    .trim()
-    .toLowerCase();
   return funders
     .filter((f) => {
       if (!f.isActive) return false;
-      if (!f.allowedStates?.length) return true;
-      if (!normalizedState) return true;
-      return f.allowedStates.some(
-        (s) => String(s).trim().toLowerCase() === normalizedState,
-      );
+      return funderAvailableForContractState(f, state);
     })
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
     .map((f) => f.name);

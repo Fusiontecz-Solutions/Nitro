@@ -30,15 +30,79 @@ export function ownerRowHasIdentity(row: Record<string, unknown> | undefined): b
 export function countOwnersWithEmail(
     owners?: Record<string, unknown>[] | null,
 ): number {
-    if (!Array.isArray(owners)) return 0;
-    return owners.filter((o) => ownerRowHasIdentity(o)).length;
+    return countDistinctPartiesWithIdentity(owners);
 }
 
 export function countGuarantorsWithEmail(
     guarantors?: Record<string, unknown>[] | null,
 ): number {
-    if (!Array.isArray(guarantors)) return 0;
-    return guarantors.filter((g) => ownerRowHasIdentity(g)).length;
+    return countDistinctPartiesWithIdentity(guarantors);
+}
+
+/** Distinct owners/guarantors by email (or name when email is missing). */
+export function countDistinctPartiesWithIdentity(
+    parties?: Record<string, unknown>[] | null,
+): number {
+    if (!Array.isArray(parties)) return 0;
+    const seen = new Set<string>();
+    const namesLinkedToEmail = new Set<string>();
+    let unnamed = 0;
+    for (const row of parties) {
+        if (!ownerRowHasIdentity(row)) continue;
+        const email = partyEmail(row).toLowerCase();
+        const first = String(
+            row.firstName ?? row.ownerFirstName ?? row.guarantorFirstName ?? "",
+        ).trim();
+        const last = String(
+            row.lastName ?? row.ownerLastName ?? row.guarantorLastName ?? "",
+        ).trim();
+        const name = `${first} ${last}`.trim().toLowerCase();
+        if (email) {
+            seen.add(email);
+            if (name) namesLinkedToEmail.add(name);
+            continue;
+        }
+        if (name) {
+            if (namesLinkedToEmail.has(name)) continue;
+            seen.add(`name:${name}`);
+        } else {
+            unnamed += 1;
+        }
+    }
+    return Math.min(2, seen.size + unnamed);
+}
+
+function partyRowFullName(row: Record<string, unknown> | undefined): string {
+    if (!row) return "";
+    return resolveOwnerRowFullName(row);
+}
+
+/** Stable identity key for deduping owner/guarantor rows (email preferred, else full name). */
+export function partyIdentityKey(row: Record<string, unknown> | undefined): string | null {
+    if (!row || !ownerRowHasIdentity(row)) return null;
+    const email = partyEmail(row).toLowerCase();
+    if (email) return `email:${email}`;
+    const name = partyRowFullName(row).toLowerCase();
+    if (name) return `name:${name}`;
+    return null;
+}
+
+/** True when two CRM rows represent different people (not duplicate owner #1 / #2 slots). */
+export function isDistinctPartyRow(
+    a: Record<string, unknown> | undefined,
+    b: Record<string, unknown> | undefined,
+): boolean {
+    if (!a || !b || !ownerRowHasIdentity(b)) return false;
+    const keyA = partyIdentityKey(a);
+    const keyB = partyIdentityKey(b);
+    if (keyA && keyB) {
+        if (keyA === keyB) return false;
+        const nameA = partyRowFullName(a).toLowerCase();
+        const nameB = partyRowFullName(b).toLowerCase();
+        if (nameA && nameB && nameA === nameB) return false;
+        return true;
+    }
+    return Boolean(keyB && keyA !== keyB);
 }
 
 export function countOwnersFromSignerRoles(
@@ -126,7 +190,8 @@ export function resolveActiveOwnerCount(options: {
     const fromDistinctPartySigners =
         distinctNonClientPartyEmails.size >= 2 ? 2 : distinctNonClientPartyEmails.size;
 
-    return Math.min(
+  const distinctSigners = countDistinctContractSignersWithEmail(roles);
+  const computed = Math.min(
         2,
         Math.max(
             1,
@@ -137,6 +202,9 @@ export function resolveActiveOwnerCount(options: {
             fromDistinctPartySigners,
         ),
     );
+  if (distinctSigners === 1) return 1;
+  if (distinctSigners >= 2) return 2;
+  return computed;
 }
 
 /** Active guarantor count (0–2) from CRM guarantors and/or saved contract signers. */
@@ -251,6 +319,31 @@ const SECOND_PARTY_DL_IDS = [
     "guaranty_owner2_driver_license",
     "guaranty_guarantor2_driver_license",
 ] as const;
+
+const PARTY2_PREFILL_FIELD_IDS = [
+    ...SECOND_OWNER_PREFILL_IDS,
+    "business_name_2",
+    "addendum_dated_principal_owner2_name",
+    "addendum_dated_principal_owner2_date",
+] as const;
+
+function isParty2PrefillFieldId(id: string): boolean {
+    const key = String(id || "").trim().toLowerCase();
+    if (!key) return false;
+    if ((PARTY2_PREFILL_FIELD_IDS as readonly string[]).includes(key)) return true;
+    return /owner2|owner_2|guarantor2|guarantor_2|merchant2|merchant_2|seller_2|business_name_2|appendix_merchant2/.test(
+        key,
+    );
+}
+
+/** Remove owner-2 / guarantor-2 / merchant-2 prefill when only one merchant signer. */
+export function clearParty2PrefillFieldPayload(
+    fields: Array<{ id: string; value: string }>,
+    ownerCount: number,
+): Array<{ id: string; value: string }> {
+    if (ownerCount >= 2) return fields;
+    return fields.filter((f) => !isParty2PrefillFieldId(f.id));
+}
 
 function mirrorEmptyPrefillIds(
     byId: Map<string, { id: string; value: string }>,
@@ -379,6 +472,22 @@ export const GUARANTOR2_PREFILL_FORM_KEYS = [
     "guarantyGuarantor2Ss",
     "guarantyGuarantor2DriverLicense",
 ] as const;
+
+/** Clear camelCase party-2 keys on the prefill partial object. */
+export function clearParty2PrefillPartial(
+    partial: Record<string, unknown>,
+    ownerCount: number,
+): void {
+    if (ownerCount >= 2) return;
+    for (const key of [
+        ...OWNER2_PREFILL_FORM_KEYS,
+        ...GUARANTOR2_PREFILL_FORM_KEYS,
+        "appendixMerchant2Name",
+        "businessName2",
+    ]) {
+        delete partial[key];
+    }
+}
 
 export const GUARANTOR1_PREFILL_FORM_KEYS = [
     "guarantorEmail",

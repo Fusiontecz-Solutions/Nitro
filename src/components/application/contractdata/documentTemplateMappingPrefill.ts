@@ -1297,9 +1297,15 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
     for (const field of disclosureFields) {
         const v = String(field.value ?? "").trim();
         if (!v) continue;
+        // Contract page 1 offer amount must stay gross advance — never overwrite from disclosure net fields.
+        if (field.id === "purchase_amount") continue;
         const existing = byId.get(field.id);
         const existingNum = parsePrefillMoneyForMerge(existing?.value);
         const incomingNum = parsePrefillMoneyForMerge(v);
+        // Main contract origination fee — never replace with disclosure broker fee defaults (0.00).
+        if (field.id === "appendix_underwriting_fees" && incomingNum === 0) {
+            continue;
+        }
         if (
             existingNum !== undefined &&
             existingNum > 0 &&

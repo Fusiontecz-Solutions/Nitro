@@ -175,8 +175,8 @@ import {
     isPlatformLayoutKey,
     supplementalOptionLabel,
 } from "./contractdata/platformDocumentConfig";
-import { useFunderProfiles } from "@/hooks/useFunderProfiles";
-import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
+import { funderAvailableForContractState, useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { clearParty2PrefillFieldPayload, resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
 import {
     buildContractSignerRowsFromOwnerParties,
     fetchFreshOwnerPartiesForContractSigners,
@@ -198,6 +198,7 @@ import {
     getContractSignerValidationMessage,
     mergeContractPrefillWithSignerOverrides,
     parseContractSignerOverridesFromPrefill,
+    dedupeContractSignerRows,
     resolveDocuSignSignerRole,
     suggestedRowsToSummaryTemplateRoles,
     type ContractSignerOverrideRow,
@@ -2216,7 +2217,7 @@ const PDFViewerModal = ({
             resolvedOwnerParties.length,
             activeOwnerCount,
             liveSignerRows.length,
-            editorRows.length,
+            dedupeContractSignerRows(editorRows).length,
             1,
         );
         const merged = mergeContractSignerEditorRows(
@@ -3819,9 +3820,13 @@ const PDFViewerModal = ({
               })
             : [];
 
-        return mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
+        return clearParty2PrefillFieldPayload(
+            mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields),
+            activeOwnerCount,
+        );
     }, [
         dealReviewFields,
+        activeOwnerCount,
         getEffectiveSendPackage,
         includeMainContractInSend,
         resolveAddendumLayoutKeyForDocuSignMerge,
@@ -6005,19 +6010,13 @@ const PDFViewerModal = ({
                                                             setSelectedState(v);
                                                             const picked = pickUsStateForSelect(v);
                                                             const currentFunder = findFunder(selectedFunder);
-                                                            const allowed = currentFunder?.allowedStates ?? [];
-                                                            const pickedNorm = String(picked || "")
-                                                                .trim()
-                                                                .toLowerCase();
                                                             const funderInvalidForState =
                                                                 Boolean(selectedFunder) &&
-                                                                allowed.length > 0 &&
-                                                                pickedNorm &&
-                                                                !allowed.some(
-                                                                    (s) =>
-                                                                        String(s)
-                                                                            .trim()
-                                                                            .toLowerCase() === pickedNorm,
+                                                                Boolean(currentFunder) &&
+                                                                Boolean(pickUsStateForSelect(v)) &&
+                                                                !funderAvailableForContractState(
+                                                                    currentFunder!,
+                                                                    pickUsStateForSelect(v),
                                                                 );
                                                             if (funderInvalidForState) {
                                                                 setSelectedFunder("");
@@ -7446,13 +7445,15 @@ const PDFViewerModal = ({
                                                                 recipientEditorRows.every((r) => !r.email.trim())
                                                             }
                                                             onClick={async () => {
-                                                                const rows = recipientEditorRows
-                                                                    .filter((r) => r.email.trim())
-                                                                    .map((r) => ({
-                                                                        role: resolveDocuSignSignerRole(),
-                                                                        name: r.name.trim(),
-                                                                        email: r.email.trim(),
-                                                                    }));
+                                                                const rows = dedupeContractSignerRows(
+                                                                    recipientEditorRows
+                                                                        .filter((r) => r.email.trim())
+                                                                        .map((r) => ({
+                                                                            role: resolveDocuSignSignerRole(),
+                                                                            name: r.name.trim(),
+                                                                            email: r.email.trim(),
+                                                                        })),
+                                                                );
                                                                 const roles =
                                                                     buildDocuSignRolesFromEditorRows(rows);
                                                                 if (!roles.length) {
