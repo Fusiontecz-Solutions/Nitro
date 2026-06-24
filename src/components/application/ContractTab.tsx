@@ -51,7 +51,7 @@ import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
 import { Ban, FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
-import { resolveMainContractLayoutKey } from "./contractdata/contractFunderConfig";
+import { useFunderProfiles } from "@/hooks/useFunderProfiles";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
 import { mergeContractCcEmailList } from "./boldsignCcList";
@@ -124,6 +124,7 @@ import {
     resolveActiveOwnerCount,
     resolveSecondOwnerSignerName,
 } from "./contractdata/contractPartyCounts";
+import { resolveOwnerRowsForContractPrefill } from "./contractdata/contractSignerOwnersSync";
 import {
     formatCurrency,
     formatCurrencyFull,
@@ -346,6 +347,10 @@ export default function ContractTab({
     const [signedPdfPreviewUrl, setSignedPdfPreviewUrl] = useState<string | null>(null);
     const [signedPdfPreviewName, setSignedPdfPreviewName] = useState("Signed contract.pdf");
     const [fetchedContract, setFetchedContract] = useState<any | null>(null);
+    const contractStateForFunders = String(
+        (fetchedContract as { state?: string | null } | null)?.state ?? "",
+    ).trim();
+    const { resolveLayoutKey } = useFunderProfiles(contractStateForFunders || null);
     const [viewingAchDocument, setViewingAchDocument] = useState(false);
     const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
     const [contractSyncError, setContractSyncError] = useState<string | null>(null);
@@ -1601,9 +1606,12 @@ export default function ContractTab({
                           { singleSignerOnly: false },
                       );
 
-            const ownerRows = Array.isArray(contractOwnerListState.data)
-                ? contractOwnerListState.data
-                : [];
+            const ownerRows = resolveOwnerRowsForContractPrefill(
+                applicationData,
+                Array.isArray(contractOwnerListState.data)
+                    ? contractOwnerListState.data
+                    : [],
+            );
             const guarantorRows = Array.isArray(contractGuarantorListState.data)
                 ? contractGuarantorListState.data
                 : [];
@@ -1819,16 +1827,18 @@ export default function ContractTab({
             });
 
             const contractNumericIdForSend = Number((latestContract as { id?: unknown })?.id);
+            const resolvedFunderName =
+                sendPayload.funderName ??
+                (latestContract as { funderName?: string | null })?.funderName ??
+                null;
             const mainContractLayoutKey =
                 String(sendPayload.mainContractLayoutKey ?? "").trim() ||
-                resolveMainContractLayoutKey(
-                    sendPayload.funderName ??
-                        (latestContract as { funderName?: string | null })?.funderName,
-                );
+                resolveLayoutKey(resolvedFunderName);
             const mergeRequest = {
                 supplementalLayoutKeys,
                 includeMainContract,
                 mainContractLayoutKey,
+                funderName: resolvedFunderName ? String(resolvedFunderName).trim() : undefined,
                 sendPackage: sendPackageSelection,
                 ownerCount,
                 roles,

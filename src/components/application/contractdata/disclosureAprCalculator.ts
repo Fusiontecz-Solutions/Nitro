@@ -10,6 +10,28 @@ import { resolveAppendixUnderwritingFeesDollars, getApplicationPrimaryRecipientN
 
 export type DisclosureCalculatorFrequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly";
 
+/** Live Offer Decision wins over a stale `contract.offer` snapshot. */
+export function mergeLiveOfferDecision(
+    contract: Record<string, unknown> | null | undefined,
+    offerDecision: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+    const contractOffer =
+        contract != null &&
+        typeof contract.offer === "object" &&
+        contract.offer != null &&
+        !Array.isArray(contract.offer)
+            ? (contract.offer as Record<string, unknown>)
+            : null;
+    const live =
+        offerDecision != null && typeof offerDecision === "object" && !Array.isArray(offerDecision)
+            ? offerDecision
+            : null;
+    if (live) {
+        return contractOffer ? { ...contractOffer, ...live } : { ...live };
+    }
+    return contractOffer;
+}
+
 export interface DisclosureCalculatorInputs {
     state: string;
     frequency: DisclosureCalculatorFrequency;
@@ -47,8 +69,33 @@ export interface DisclosureCalculatorResult {
 
 const WEEKS_PER_MONTH = 4.3;
 const BUSINESS_DAYS_PER_WEEK = 5;
+const BUSINESS_DAYS_PER_MONTH = 22;
 /** APR term adjustment for daily deals (12 wk / 60 day). */
 const APR_TERM_DAYS_PER_WEEK = 49 / 12;
+
+/**
+ * Disclosure "estimated term (days)" from payment term + frequency.
+ * Daily: same as payment days. Weekly: payments × 5 business days/week.
+ * Bi-weekly / monthly use the same business-day convention (no state templates yet).
+ */
+export function computeEstimatedTermDays(args: {
+    frequency: DisclosureCalculatorFrequency;
+    numberOfPayments: number;
+    numberOfPaymentDays: number;
+}): number {
+    const payments = Math.max(1, Math.trunc(args.numberOfPayments) || 1);
+
+    if (args.frequency === "Daily") {
+        return Math.max(0, Math.trunc(args.numberOfPaymentDays));
+    }
+    if (args.frequency === "Weekly") {
+        return payments * BUSINESS_DAYS_PER_WEEK;
+    }
+    if (args.frequency === "Bi-Weekly") {
+        return payments * BUSINESS_DAYS_PER_WEEK * 2;
+    }
+    return payments * BUSINESS_DAYS_PER_MONTH;
+}
 
 function parseMoney(value: unknown): number {
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -65,34 +112,36 @@ function averagePositive(values: number[]): number {
 }
 
 function resolveDisclosurePaymentSchedule(input: DisclosureCalculatorInputs): {
-    /** Weeks in term ("Number of payments in weeks" for daily). */
+    /** Approximate weeks in term (derived from payment days for daily deals). */
     numberOfWeeks: number;
     /** Actual count of remittances over the term. */
     actualPaymentCount: number;
 } {
-    const weeksField = Math.max(1, Math.trunc(input.numberOfPayments) || 1);
-    const paymentDays = Math.max(1, Math.trunc(input.numberOfPaymentDays) || 1);
+    const paymentDays = Math.max(
+        1,
+        Math.trunc(input.numberOfPaymentDays) ||
+            Math.trunc(input.numberOfPayments) ||
+            1,
+    );
 
     if (input.frequency === "Daily") {
-        const numberOfWeeks =
-            weeksField > 0
-                ? weeksField
-                : Math.max(1, Math.round(paymentDays / BUSINESS_DAYS_PER_WEEK));
         return {
-            numberOfWeeks,
+            numberOfWeeks: Math.max(1, Math.round(paymentDays / BUSINESS_DAYS_PER_WEEK)),
             actualPaymentCount: paymentDays,
         };
     }
 
+    const paymentsField = Math.max(1, Math.trunc(input.numberOfPayments) || 1);
+
     if (input.frequency === "Weekly") {
-        return { numberOfWeeks: weeksField, actualPaymentCount: weeksField };
+        return { numberOfWeeks: paymentsField, actualPaymentCount: paymentsField };
     }
 
     if (input.frequency === "Bi-Weekly") {
-        return { numberOfWeeks: weeksField * 2, actualPaymentCount: weeksField };
+        return { numberOfWeeks: paymentsField * 2, actualPaymentCount: paymentsField };
     }
 
-    return { numberOfWeeks: weeksField * 4, actualPaymentCount: weeksField };
+    return { numberOfWeeks: paymentsField * 4, actualPaymentCount: paymentsField };
 }
 
 /**
@@ -213,7 +262,11 @@ export function calculateDisclosureMetrics(
         estimatedPayment,
         estimatedMonthlyCost,
         percentOfDailyIncomePurchased,
-        estimatedTermDays: Math.max(0, Math.trunc(input.numberOfPaymentDays)),
+        estimatedTermDays: computeEstimatedTermDays({
+            frequency: input.frequency,
+            numberOfPayments: input.numberOfPayments,
+            numberOfPaymentDays: input.numberOfPaymentDays,
+        }),
         checkValue,
     };
 }
@@ -300,10 +353,7 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     firstPaymentDate?: string;
 }): DisclosureCalculatorInputs {
     const contract = args.contract ?? {};
-    const offer =
-        (contract.offer as Record<string, unknown> | null) ??
-        args.offerDecision ??
-        null;
+    const offer = mergeLiveOfferDecision(contract, args.offerDecision);
 
     const purchasePrice =
         parseMoney(contract.purchaseAmount) ||
@@ -336,21 +386,18 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     let numberOfPaymentDays = numberOfPayments;
 
     if (frequency === "Daily") {
-        const explicitWeeks = numberOfPayments > 0 ? Math.trunc(numberOfPayments) : 0;
         const term = termNum > 0 ? Math.trunc(termNum) : 0;
-        let weeks = explicitWeeks;
-        let days = 0;
+        const explicitCount =
+            parseMoney(offer?.numberOfPayments) > 0
+                ? Math.trunc(parseMoney(offer?.numberOfPayments))
+                : 0;
+        let paymentDays = 0;
 
-        if (term >= 40) {
-            days = term;
-            if (!(weeks > 0)) {
-                weeks = Math.max(1, Math.round(days / BUSINESS_DAYS_PER_WEEK));
-            }
-        } else if (term > 0) {
-            weeks = weeks > 0 ? weeks : term;
-            days = weeks * BUSINESS_DAYS_PER_WEEK;
-        } else if (weeks > 0) {
-            days = weeks * BUSINESS_DAYS_PER_WEEK;
+        // Offer decision `term` is the number of daily payments (same as payment days).
+        if (term > 0) {
+            paymentDays = term;
+        } else if (explicitCount > 0) {
+            paymentDays = explicitCount;
         }
 
         const perPeriod = parseMoney(
@@ -358,17 +405,13 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
         );
         if (payback > 0 && perPeriod > 0) {
             const impliedCount = Math.max(1, Math.round(payback / perPeriod));
-            if (impliedCount >= 20 && impliedCount !== weeks) {
-                days = impliedCount;
-                weeks = Math.max(1, Math.round(days / BUSINESS_DAYS_PER_WEEK));
+            if (impliedCount > 0) {
+                paymentDays = impliedCount;
             }
         }
 
-        numberOfPayments = Math.max(1, weeks || 1);
-        numberOfPaymentDays = Math.max(
-            1,
-            days || numberOfPayments * BUSINESS_DAYS_PER_WEEK,
-        );
+        numberOfPayments = Math.max(1, paymentDays || 1);
+        numberOfPaymentDays = numberOfPayments;
     } else if (frequency === "Weekly") {
         numberOfPaymentDays =
             numberOfPayments > 0 ? numberOfPayments * 7 : termNum > 0 ? termNum * 7 : 0;

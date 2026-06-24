@@ -29,8 +29,10 @@ export type BoldSignMergeAndSendPayload = {
   supplementalLayoutKeys?: string[];
   /** When false, envelope omits the main contract PDF (standalone supplemental send). */
   includeMainContract?: boolean;
-  /** Platform layout key for the main contract PDF (Katan vs Alliance Bridge). */
+  /** Main contract layout key (from funder profile in Settings). */
   mainContractLayoutKey?: string | null;
+  /** Funder name — selects DocuSign account profile when linked. */
+  funderName?: string | null;
   /** @deprecated Use supplementalLayoutKeys — accepts layout keys or legacy CRM row ids. */
   supplementalDocumentRefs?: string[];
   ownerCount?: number;

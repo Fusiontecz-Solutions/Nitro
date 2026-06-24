@@ -228,7 +228,6 @@ const SECOND_OWNER_PREFILL_IDS = [
 ] as const;
 
 const PRIMARY_GUARANTOR_PREFILL_IDS = [
-    "client_name",
     "owner1_guarantor_name",
     "guaranty_owner1_name",
     "guaranty_guarantor1_name",
@@ -236,10 +235,15 @@ const PRIMARY_GUARANTOR_PREFILL_IDS = [
     "security_guarantor",
 ] as const;
 
-const PRIMARY_PARTY_SS_IDS = ["guaranty_owner1_ss", "guaranty_guarantor1_ss"] as const;
+const PRIMARY_PARTY_SS_IDS = [
+    "guaranty_owner1_ss",
+    "guaranty_guarantor1_ss",
+    "guaranty_ss",
+] as const;
 const PRIMARY_PARTY_DL_IDS = [
     "guaranty_owner1_driver_license",
     "guaranty_guarantor1_driver_license",
+    "guaranty_ss_driver_license",
 ] as const;
 
 const SECOND_PARTY_SS_IDS = ["guaranty_owner2_ss", "guaranty_guarantor2_ss"] as const;
@@ -291,6 +295,10 @@ export function applyPrimaryGuarantorNamesToPrefillFields(
     mirrorEmptyPrefillIds(byId, PRIMARY_GUARANTOR_PREFILL_IDS, primaryName);
     mirrorEmptyPrefillIds(byId, PRIMARY_PARTY_SS_IDS, options?.primarySs || "");
     mirrorEmptyPrefillIds(byId, PRIMARY_PARTY_DL_IDS, options?.primaryDriverLicense || "");
+    const personal = String(primaryName || "").trim();
+    if (personal) {
+        byId.set("client_name", { id: "client_name", value: personal });
+    }
     return Array.from(byId.values());
 }
 

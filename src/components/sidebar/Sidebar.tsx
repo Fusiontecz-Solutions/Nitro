@@ -378,7 +378,7 @@ const adminSections: SidebarNavSection[] = [
   },
   {
     title: "SYSTEM",
-    items: [{ label: "Settings", url: "/settings", icon: Settings }],
+    items: [{ label: "Settings", url: "/user-setting", icon: Settings }],
   },
 ];
 

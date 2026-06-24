@@ -1,0 +1,117 @@
+import { axiosDelete, axiosGet, axiosPatch, axiosPatchFormData, axiosPost, axiosPostFormData } from "../axios";
+import type {
+  DocuSignAccountProfile,
+  DocuSignAccountProfileInput,
+  FunderProfile,
+  FunderProfileInput,
+} from "@/types/integrationSettingsTypes";
+
+const DEFAULT_CONTRACT_FILENAME = "Contract.pdf";
+
+function appendFunderFormFields(formData: FormData, payload: FunderProfileInput) {
+  formData.append("name", payload.name);
+  if (payload.displayName) formData.append("displayName", payload.displayName);
+  if (payload.dealIdPrefix) formData.append("dealIdPrefix", payload.dealIdPrefix);
+  if (payload.assignsDealId != null) {
+    formData.append("assignsDealId", String(payload.assignsDealId));
+  }
+  if (payload.mainContractLayoutKey) {
+    formData.append("mainContractLayoutKey", payload.mainContractLayoutKey);
+  }
+  if (payload.contractPdfFileName) {
+    formData.append("contractPdfFileName", payload.contractPdfFileName);
+  }
+  if (payload.allowedStates) {
+    formData.append("allowedStates", JSON.stringify(payload.allowedStates));
+  }
+  if (payload.organization) formData.append("organization", payload.organization);
+  if (payload.legalName) formData.append("legalName", payload.legalName);
+  if (payload.contactEmail) formData.append("contactEmail", payload.contactEmail);
+  if (payload.contactPhone) formData.append("contactPhone", payload.contactPhone);
+  if (payload.addressLine1) formData.append("addressLine1", payload.addressLine1);
+  if (payload.addressCity) formData.append("addressCity", payload.addressCity);
+  if (payload.addressState) formData.append("addressState", payload.addressState);
+  if (payload.addressZip) formData.append("addressZip", payload.addressZip);
+  if (payload.docusignAccountProfileId != null) {
+    formData.append("docusignAccountProfileId", payload.docusignAccountProfileId || "");
+  }
+  if (payload.sortOrder != null) formData.append("sortOrder", String(payload.sortOrder));
+  if (payload.isActive != null) formData.append("isActive", String(payload.isActive));
+}
+
+export async function fetchFunderProfiles(
+  state?: string | null,
+  options?: { activeOnly?: boolean },
+): Promise<FunderProfile[]> {
+  const params: Record<string, string> = {};
+  if (state?.trim()) params.state = state.trim();
+  if (options?.activeOnly === false) params.activeOnly = "false";
+  const res = await axiosGet("/integration-settings/funders", { params });
+  return (res as { data?: { data?: FunderProfile[] } })?.data?.data ?? [];
+}
+
+export async function fetchDocuSignAccountProfiles(): Promise<DocuSignAccountProfile[]> {
+  const res = await axiosGet("/integration-settings/docusign-accounts");
+  return (res as { data?: { data?: DocuSignAccountProfile[] } })?.data?.data ?? [];
+}
+
+export async function fetchDocuSignAccountOptions(): Promise<Array<{ id: string; name: string }>> {
+  const res = await axiosGet("/integration-settings/docusign-accounts/options");
+  return (res as { data?: { data?: Array<{ id: string; name: string }> } })?.data?.data ?? [];
+}
+
+export async function createDocuSignAccountProfile(
+  payload: DocuSignAccountProfileInput,
+): Promise<DocuSignAccountProfile> {
+  const res = await axiosPost("/integration-settings/docusign-accounts", payload);
+  return (res as { data?: { data?: DocuSignAccountProfile } })?.data?.data as DocuSignAccountProfile;
+}
+
+export async function updateDocuSignAccountProfile(
+  id: string,
+  payload: Partial<DocuSignAccountProfileInput>,
+): Promise<DocuSignAccountProfile> {
+  const res = await axiosPatch(`/integration-settings/docusign-accounts/${id}`, payload);
+  return (res as { data?: { data?: DocuSignAccountProfile } })?.data?.data as DocuSignAccountProfile;
+}
+
+export async function deleteDocuSignAccountProfile(id: string): Promise<void> {
+  await axiosDelete(`/integration-settings/docusign-accounts/${id}`);
+}
+
+export async function createFunderProfile(
+  payload: FunderProfileInput,
+  contractFile?: File | null,
+): Promise<FunderProfile> {
+  if (contractFile) {
+    const formData = new FormData();
+    appendFunderFormFields(formData, payload);
+    formData.append("contract", contractFile);
+    const res = await axiosPostFormData("/integration-settings/funders", formData);
+    return (res as { data?: { data?: FunderProfile } })?.data?.data as FunderProfile;
+  }
+  const res = await axiosPost("/integration-settings/funders", payload);
+  return (res as { data?: { data?: FunderProfile } })?.data?.data as FunderProfile;
+}
+
+export async function updateFunderProfile(
+  id: string,
+  payload: Partial<FunderProfileInput>,
+  contractFile?: File | null,
+): Promise<FunderProfile> {
+  if (contractFile) {
+    const formData = new FormData();
+    appendFunderFormFields(formData, payload as FunderProfileInput);
+    formData.append("contract", contractFile);
+    const res = await axiosPatchFormData(`/integration-settings/funders/${id}`, formData);
+    return (res as { data?: { data?: FunderProfile } })?.data?.data as FunderProfile;
+  }
+  const res = await axiosPatch(`/integration-settings/funders/${id}`, payload);
+  return (res as { data?: { data?: FunderProfile } })?.data?.data as FunderProfile;
+}
+
+export { DEFAULT_CONTRACT_FILENAME };
+
+export async function deleteFunderProfile(id: string): Promise<void> {
+  await axiosDelete(`/integration-settings/funders/${id}`);
+}

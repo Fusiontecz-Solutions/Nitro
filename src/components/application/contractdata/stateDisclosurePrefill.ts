@@ -11,6 +11,7 @@ import { buildCaliforniaDisclosurePage3Amounts, resolveCaliforniaEstimatedTermDa
 import {
     buildDisclosureCalculatorInputsFromSources,
     calculateDisclosureMetrics,
+    mergeLiveOfferDecision,
 } from "./disclosureAprCalculator";
 import { buildDailyConnecticutContractPrefillFields, buildConnecticutOptionalReviewFieldDefinitions } from "./daily_connecticut";
 import { buildDailyFloridaContractPrefillFields } from "./Daily_florida";
@@ -564,11 +565,13 @@ function str(v: unknown): string {
 export function buildStateDisclosurePrefillContextFromContract(args: {
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    /** Live offer decision — overrides stale `contract.offer` for frequency, term, payments. */
+    offerDecision?: Record<string, unknown> | null;
     /** Optional override for the signature/disclosure date (e.g., today). */
     agreementDate?: string;
 }): StateDisclosureContext {
     const contract = (args.contract ?? {}) as Record<string, unknown>;
-    const offer = (contract.offer ?? null) as Record<string, unknown> | null;
+    const offer = mergeLiveOfferDecision(contract, args.offerDecision);
 
     const purchaseAmount = coerceFiniteNumber(
         contract.purchaseAmount ?? offer?.offer ?? offer?.approvedAmount ?? contract.approvedAmount,
@@ -707,7 +710,7 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         const calcInputs = buildDisclosureCalculatorInputsFromSources({
             contract: args.contract ?? null,
             application: args.application ?? null,
-            offerDecision: offer,
+            offerDecision: args.offerDecision ?? offer,
             state: String(
                 contract.state ??
                     (contract as Record<string, unknown>).businessAddressState ??

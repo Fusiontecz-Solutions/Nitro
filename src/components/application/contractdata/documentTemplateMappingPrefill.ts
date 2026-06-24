@@ -1,9 +1,12 @@
 import type { BuildContractPrefillFieldsArgs, ContractPrefillField } from "./Contract";
 import {
+    getApplicationPrimaryRecipientName,
     getContractPrefillEditDefaultsFromApplication,
     resolveBalanceTransferMerchantContext,
     resolveNumberOfPaymentsPrefillValue,
+    resolveOfferAmountDollarsForUnderwritingFees,
     resolvePaybackAmountDollars,
+    resolvePersonalClientNamePrefill,
     resolveRemittancePrefillValue,
 } from "./Contract";
 import {
@@ -16,6 +19,8 @@ import {
 } from "./KATAN_BUYOUT_BLANK_ADDENDUM";
 import {
     buildKatanFlexAddendumContractPrefillFields,
+    formatFlexAddendumMoneyDisplay,
+    FLEX_ADDENDUM_MONEY_TAB_IDS,
     type KatanFlexAddendumContractPrefillFields,
 } from "./KATAN_FLEX_ADDENDUM";
 import {
@@ -86,6 +91,40 @@ function str(v: unknown): string {
     return String(v ?? "").trim();
 }
 
+function readPrefillMapValue(
+    byId: Map<string, { id: string; value: string }>,
+    id: string,
+): string {
+    return str(byId.get(id)?.value);
+}
+
+function resolvePersonalClientNameFromPrefillMap(
+    byId: Map<string, { id: string; value: string }>,
+): string {
+    return (
+        readPrefillMapValue(byId, "customer_name") ||
+        readPrefillMapValue(byId, "owner1_guarantor_name") ||
+        readPrefillMapValue(byId, "guaranty_owner1_name") ||
+        readPrefillMapValue(byId, "guaranty_guarantor1_name") ||
+        readPrefillMapValue(byId, "guaranty_client_name") ||
+        ""
+    );
+}
+
+function shouldSkipClientNamePrefillOverwrite(
+    byId: Map<string, { id: string; value: string }>,
+    nextValue: string,
+): boolean {
+    const next = str(nextValue);
+    if (!next) return true;
+    const existing = readPrefillMapValue(byId, "client_name");
+    const legal =
+        readPrefillMapValue(byId, "client_legal_name") ||
+        readPrefillMapValue(byId, "business_legal_name");
+    if (!existing || !legal) return false;
+    return existing !== legal && next === legal;
+}
+
 function normalizeKey(value: string | null | undefined): string {
     return String(value ?? "")
         .trim()
@@ -146,6 +185,7 @@ function resolveDisclosureStateAndFrequency(options: {
 function buildEffectiveContractForTemplatePrefill(options: {
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    offerDecision?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
@@ -184,6 +224,8 @@ function mergeFieldRows(
 ): ContractPrefillField[] {
     const computedById = new Map(computed.map((f) => [f.id, f]));
     const saved = savedForRow ?? {};
+    const formatValue = (id: string, value: string) =>
+        FLEX_ADDENDUM_MONEY_TAB_IDS.has(id) ? formatFlexAddendumMoneyDisplay(value) : value;
     return allDefs.map((def) => {
         const fromSaved = saved[def.id];
         const fromSavedTrim =
@@ -197,14 +239,14 @@ function mergeFieldRows(
                 computedNum !== undefined &&
                 computedNum > 0
             ) {
-                return { id: def.id, label: def.label, value: computedVal };
+                return { id: def.id, label: def.label, value: formatValue(def.id, computedVal) };
             }
-            return { id: def.id, label: def.label, value: fromSavedTrim };
+            return { id: def.id, label: def.label, value: formatValue(def.id, fromSavedTrim) };
         }
         return {
             id: def.id,
             label: def.label,
-            value: computedVal,
+            value: formatValue(def.id, computedVal),
         };
     });
 }
@@ -346,22 +388,66 @@ function buildKatanFlexComputed(
         (app?.OfferDecision as Record<string, unknown> | undefined) ??
         (c.offer as Record<string, unknown> | undefined) ??
         null;
-    const legal = str(c.legalName) || str(c.clientLegalName) || sctx.recipientName;
+    const legal = str(c.legalName) || str(c.clientLegalName) || "";
+    const primaryRecipient = getApplicationPrimaryRecipientName(app);
+    const clientName =
+        resolvePersonalClientNamePrefill(
+            {
+                ...c,
+                customerName:
+                    str(c.customerName) ||
+                    str(c.owner1GuarantorName) ||
+                    primaryRecipient,
+                legalName: legal,
+            },
+            "clientName",
+        ) ||
+        primaryRecipient ||
+        "";
     const agreementDate =
         str(c.agreement_date) ||
         sctx.signatureDate ||
         str(c.agreementDate) ||
         "";
     const addendumDate = str(c.addendum_date) || agreementDate;
-    const dailyPayment =
+    const legacyDailyPayment =
         str(c.daily_payment) ||
         str(c.remittance) ||
         resolveRemittancePrefillValue({ application: app ?? undefined, contract, offerDecision });
+    const offerAmountNum = resolveOfferAmountDollarsForUnderwritingFees({
+        contract,
+        application: app ?? undefined,
+        offerDecision,
+    });
+    const offerAmountStr =
+        offerAmountNum !== undefined && offerAmountNum > 0
+            ? formatFlexAddendumMoneyDisplay(String(offerAmountNum))
+            : str(offerDecision?.offer) || str(c.approvedAmount) || "";
+    const dailyPayment1 =
+        str(c.daily_payment_1) ||
+        str(c.dailyPayment1) ||
+        legacyDailyPayment;
+    const receivablePurchase1 =
+        str(c.receivable_purchase_1) ||
+        str(c.receivablePurchase1) ||
+        str(c.receivable_purchase) ||
+        str(c.receivablePurchase) ||
+        offerAmountStr;
+    const dailyPayment2 =
+        str(c.daily_payment_2) || str(c.dailyPayment2) || dailyPayment1;
+    const receivablePurchase2 =
+        str(c.receivable_purchase_2) ||
+        str(c.receivablePurchase2) ||
+        receivablePurchase1;
     return buildKatanFlexAddendumContractPrefillFields({
         addendumDate,
         agreementDate,
         merchantName: legal,
-        dailyPayment,
+        clientName,
+        dailyPayment1,
+        receivablePurchase1,
+        dailyPayment2,
+        receivablePurchase2,
     });
 }
 
@@ -370,7 +456,11 @@ function dotKatanFlex(): KatanFlexAddendumContractPrefillFields {
         addendumDate: DUMMY,
         agreementDate: DUMMY,
         merchantName: DUMMY,
-        dailyPayment: DUMMY,
+        clientName: DUMMY,
+        dailyPayment1: DUMMY,
+        receivablePurchase1: DUMMY,
+        dailyPayment2: DUMMY,
+        receivablePurchase2: DUMMY,
     };
 }
 
@@ -597,6 +687,7 @@ function isAchFormPrefillEditorContext(options: {
 export function getKatanAchAuthorizationPrefillFieldRowsForEditor(options: {
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    offerDecision?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     savedOverridesForMapping?: Record<string, string> | null;
@@ -612,6 +703,7 @@ export function getKatanAchAuthorizationPrefillFieldRowsForEditor(options: {
     const sctx = buildStateDisclosurePrefillContextFromContract({
         contract: effectiveContract,
         application: options.application ?? null,
+        offerDecision: options.offerDecision ?? null,
         agreementDate: options.agreementDate,
     });
     const all = addendumAllDefs("katan_ach_authorization");
@@ -652,6 +744,7 @@ function tryAddendumPrefillFieldRowsForEditor(options: {
     prefillDocumentKind?: "ach_form" | "addendum" | null;
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    offerDecision?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     savedOverridesForMapping?: Record<string, string> | null;
@@ -674,6 +767,7 @@ function tryAddendumPrefillFieldRowsForEditor(options: {
     const sctx = buildStateDisclosurePrefillContextFromContract({
         contract: effectiveContract,
         application: options.application ?? null,
+        offerDecision: options.offerDecision ?? null,
         agreementDate: options.agreementDate,
     });
     const all = addendumAllDefs(addendum);
@@ -813,6 +907,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     fallbackFrequency?: string | null;
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    offerDecision?: Record<string, unknown> | null;
     agreementDate?: string;
     /** Main contract prefill overrides (excludes per-mapping blob); same source as Deal Review. */
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
@@ -839,6 +934,7 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     const sctx = buildStateDisclosurePrefillContextFromContract({
         contract: effectiveContract,
         application: options.application ?? null,
+        offerDecision: options.offerDecision ?? null,
         agreementDate: options.agreementDate,
     });
 
@@ -886,6 +982,7 @@ export function mergeStateDisclosurePrefillFallback(args: {
     supplementalRefs: string[];
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    offerDecision?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
@@ -907,8 +1004,10 @@ export function mergeStateDisclosurePrefillFallback(args: {
     const { state, frequency } = resolveDisclosureStateAndFrequency({
         fallbackState: str(effectiveContract.state),
         fallbackFrequency: str(
-            (effectiveContract as Record<string, unknown>).disclosureFrequency ??
-                (effectiveContract.offer as Record<string, unknown> | null | undefined)?.frequency,
+            args.offerDecision?.frequency ??
+                (effectiveContract as Record<string, unknown>).disclosureFrequency ??
+                (effectiveContract.offer as Record<string, unknown> | null | undefined)
+                    ?.frequency,
         ),
         contract: effectiveContract,
     });
@@ -919,6 +1018,7 @@ export function mergeStateDisclosurePrefillFallback(args: {
     const sctx = buildStateDisclosurePrefillContextFromContract({
         contract: effectiveContract,
         application: args.application ?? null,
+        offerDecision: args.offerDecision ?? null,
         agreementDate: args.agreementDate,
     });
     const fields = getStateDisclosurePrefillFieldsByStateFrequency({
@@ -951,9 +1051,11 @@ export function mergeStateDisclosurePrefillFallback(args: {
         value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
     });
     const merchant = String(
-        byId.get("client_name")?.value ||
-            byId.get("client_legal_name")?.value ||
+        resolvePersonalClientNameFromPrefillMap(byId) ||
+            byId.get("client_name")?.value ||
+            byId.get("customer_name")?.value ||
             sctx.recipientName ||
+            byId.get("client_legal_name")?.value ||
             "",
     ).trim();
     if (merchant) {
@@ -1110,6 +1212,7 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
     savedOverridesForMapping?: Record<string, string> | null;
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    offerDecision?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
@@ -1130,6 +1233,7 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
         templateFrequency: row.template?.frequency ?? null,
         contract: args.contract ?? null,
         application: args.application ?? null,
+        offerDecision: args.offerDecision ?? null,
         agreementDate: args.agreementDate,
         mainPrefillOverrides: args.mainPrefillOverrides,
         savedOverridesForMapping: args.savedOverridesForMapping ?? null,
@@ -1228,6 +1332,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     contractPrefillOverridesRaw: unknown;
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
+    offerDecision?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
@@ -1259,6 +1364,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             templateFrequency: row.template?.frequency ?? null,
             contract: args.contract ?? null,
             application: args.application ?? null,
+            offerDecision: args.offerDecision ?? null,
             agreementDate: args.agreementDate,
             mainPrefillOverrides: args.mainPrefillOverrides,
             savedOverridesForMapping: perMap ?? null,
@@ -1289,6 +1395,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         for (const [id, value] of Object.entries(fieldsToMerge)) {
             const v = String(value ?? "").trim();
             if (!v) continue;
+            if (id === "client_name" && shouldSkipClientNamePrefillOverwrite(byId, v)) continue;
             byId.set(id, { id, value: v });
         }
     }
@@ -1306,7 +1413,9 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         });
         const merchant = String(
-            byId.get("client_name")?.value ||
+            resolvePersonalClientNameFromPrefillMap(byId) ||
+                byId.get("client_name")?.value ||
+                byId.get("customer_name")?.value ||
                 byId.get("client_legal_name")?.value ||
                 byId.get("business_legal_name")?.value ||
                 "",
@@ -1314,6 +1423,20 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         if (merchant) {
             byId.set("client_name", { id: "client_name", value: merchant });
         }
+    }
+
+    const personalClientName = resolvePersonalClientNameFromPrefillMap(byId);
+    const legalClientName =
+        readPrefillMapValue(byId, "client_legal_name") ||
+        readPrefillMapValue(byId, "business_legal_name");
+    const currentClientName = readPrefillMapValue(byId, "client_name");
+    if (
+        personalClientName &&
+        legalClientName &&
+        currentClientName &&
+        currentClientName === legalClientName
+    ) {
+        byId.set("client_name", { id: "client_name", value: personalClientName });
     }
 
     return Array.from(byId.values());

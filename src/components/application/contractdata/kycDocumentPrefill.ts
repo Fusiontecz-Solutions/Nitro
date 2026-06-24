@@ -51,13 +51,14 @@ function str(v: unknown): string {
     return v == null ? "" : String(v).trim();
 }
 
-function patchIfEmpty<T extends Record<string, unknown>>(
+/** Apply non-empty KYC scan fields onto the first panel row (latest upload wins). */
+function applyKycPanelPatch<T extends Record<string, unknown>>(
     base: T,
     patch: Record<string, unknown>,
 ): T {
     const out = { ...base };
     for (const [key, val] of Object.entries(patch)) {
-        if (str(val) && !str(out[key as keyof T])) {
+        if (str(val)) {
             (out as Record<string, unknown>)[key] = val;
         }
     }
@@ -99,6 +100,49 @@ const VOIDED_CHECK_BANK_PREFILL_KEYS = [
     "securityBusinessAddressZip",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
+/** Driver-license scan fields — always overwrite stale saved values on re-upload. */
+const DRIVER_LICENSE_PREFILL_KEYS = [
+    "customerName",
+    "clientName",
+    "owner1GuarantorName",
+    "guarantyOwner1Name",
+    "guarantyGuarantor1Name",
+    "securityGuarantor",
+    "guarantyOwner1DriverLicense",
+    "guarantyGuarantor1DriverLicense",
+    "guarantySsDriverLicense",
+    "guarantorAddress",
+    "guarantorAddressCity",
+    "guarantorAddressState",
+    "guarantorAddressZip",
+    "businessAddressContract",
+    "businessAddressContractCity",
+    "businessAddressContractState",
+    "businessAddressContractZip",
+    "achAuthorizationAccountHolderName",
+    "achAuthorizationConcentAccountHolderName",
+    "achAuthorizationAccountHolderAddress",
+    "achAuthorizationAccountHolderCity",
+    "achAuthorizationAccountHolderState",
+    "achAuthorizationAccountHolderZip",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+function mergeKycPrefillWithOverwrite(
+    current: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
+    patch: Partial<BuildContractPrefillFieldsArgs>,
+    priorityKeys: readonly (keyof BuildContractPrefillFieldsArgs)[],
+): Partial<BuildContractPrefillFieldsArgs> | null {
+    const base = { ...(current ?? {}) } as Partial<BuildContractPrefillFieldsArgs>;
+    for (const key of priorityKeys) {
+        const val = str(patch[key]);
+        if (val) {
+            (base as Record<string, unknown>)[key] = val;
+        }
+    }
+    const merged = mergeContractPrefillOverrideLayers(base, patch);
+    return Object.keys(merged).length ? merged : null;
+}
+
 export function mergeKycExtractionIntoPrefill(
     current: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
     extraction: KycExtractionResult | null | undefined,
@@ -108,19 +152,10 @@ export function mergeKycExtractionIntoPrefill(
     }
     const patch = extraction.contractPrefill as Partial<BuildContractPrefillFieldsArgs>;
     if (extraction.documentType === "voidedCheck") {
-        const base = { ...(current ?? {}) } as Partial<BuildContractPrefillFieldsArgs>;
-        for (const key of VOIDED_CHECK_BANK_PREFILL_KEYS) {
-            const val = str(patch[key]);
-            if (val) {
-                (base as Record<string, unknown>)[key] = val;
-            }
-        }
-        for (const [key, val] of Object.entries(patch)) {
-            if (str(val)) {
-                (base as Record<string, unknown>)[key] = val;
-            }
-        }
-        return Object.keys(base).length ? base : null;
+        return mergeKycPrefillWithOverwrite(current, patch, VOIDED_CHECK_BANK_PREFILL_KEYS);
+    }
+    if (extraction.documentType === "driverLicense") {
+        return mergeKycPrefillWithOverwrite(current, patch, DRIVER_LICENSE_PREFILL_KEYS);
     }
     const merged = mergeContractPrefillOverrideLayers(current, patch);
     return Object.keys(merged).length ? merged : null;
@@ -139,7 +174,7 @@ export function applyKycPanelsToOwnerEntries<
     if (!patch || !entries.length) return entries;
     const [first, ...rest] = entries;
     return [
-        patchIfEmpty(first, {
+        applyKycPanelPatch(first, {
             ownerFirstName: patch.firstName,
             ownerLastName: patch.lastName,
             ownerAddress: patch.address,
@@ -165,7 +200,7 @@ export function applyKycPanelsToGuarantorEntries<
     if (!patch || !entries.length) return entries;
     const [first, ...rest] = entries;
     return [
-        patchIfEmpty(first, {
+        applyKycPanelPatch(first, {
             guarantorFirstName: patch.firstName,
             guarantorLastName: patch.lastName,
             guarantorAddress: patch.address,
@@ -193,13 +228,7 @@ export function applyKycPanelsToAchEntries<
 >(entries: T[], patch?: KycPanelAchPatch): T[] {
     if (!patch || !entries.length) return entries;
     const [first, ...rest] = entries;
-    const out = { ...first };
-    for (const [key, val] of Object.entries(patch)) {
-        if (str(val)) {
-            (out as Record<string, unknown>)[key] = val;
-        }
-    }
-    return [out, ...rest];
+    return [applyKycPanelPatch(first, patch as unknown as Record<string, unknown>), ...rest];
 }
 
 export function parseKycExtractionsFromUploadResponse(

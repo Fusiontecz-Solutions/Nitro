@@ -1465,6 +1465,78 @@ export function resolveOfferFrequencyLabel(sources: NetToMerchantPrefillSources)
         .join(" ");
 }
 
+/** Normalized disclosure template frequency key (`daily`, `weekly`, …). */
+export function normalizeDisclosureTemplateFrequencyKey(frequency: string): string {
+    const f = String(frequency ?? "")
+        .trim()
+        .toLowerCase();
+    if (f.includes("biweek") || f.includes("bi_week")) return "biweekly";
+    if (f.startsWith("week")) return "weekly";
+    if (f.startsWith("day")) return "daily";
+    if (f.startsWith("month")) return "monthly";
+    return f || "daily";
+}
+
+/**
+ * Resolve deal payment frequency for state disclosure template lookup.
+ * Prefers live Offer Decision over stale `contract.offer` snapshots.
+ */
+export function resolveDealDisclosureFrequencyKey(args: {
+    offerDecision?: Record<string, unknown> | null;
+    contract?: Record<string, unknown> | null;
+    application?: Record<string, unknown> | null;
+    termsOffer?: Record<string, unknown> | null;
+    /** When false, skip stale contract.offer until Offer Decision fetch completes. */
+    offerDecisionLoaded?: boolean;
+}): string {
+    const contract = (args.contract ?? {}) as Record<string, unknown>;
+    const app = (args.application ?? {}) as Record<string, unknown>;
+
+    const liveOd =
+        (args.offerDecision != null && typeof args.offerDecision === "object"
+            ? args.offerDecision
+            : null) ??
+        (app.offerDecision != null && typeof app.offerDecision === "object"
+            ? (app.offerDecision as Record<string, unknown>)
+            : null) ??
+        (app.OfferDecision != null && typeof app.OfferDecision === "object"
+            ? (app.OfferDecision as Record<string, unknown>)
+            : null);
+
+    const termsRaw = app.termsOffers;
+    const terms0 =
+        args.termsOffer ??
+        (Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object"
+            ? (termsRaw[0] as Record<string, unknown>)
+            : termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)
+              ? (termsRaw as Record<string, unknown>)
+              : null);
+
+    const contractOffer =
+        contract.offer != null &&
+        typeof contract.offer === "object" &&
+        !Array.isArray(contract.offer)
+            ? (contract.offer as Record<string, unknown>)
+            : null;
+
+    let raw = "";
+    if (liveOd) {
+        raw = String(liveOd.frequency ?? "").trim();
+    }
+    if (!raw && terms0) {
+        raw = String(terms0.frequency ?? "").trim();
+    }
+    if (!raw && args.offerDecisionLoaded !== false) {
+        raw =
+            String(contractOffer?.frequency ?? "").trim() ||
+            String(contract.remittance ?? "").trim() ||
+            String(contract.disclosureFrequency ?? "").trim();
+    }
+
+    if (!raw) return args.offerDecisionLoaded === false ? "" : "daily";
+    return normalizeDisclosureTemplateFrequencyKey(raw);
+}
+
 function normalizeDealReviewFieldId(id: string): string {
     return String(id ?? "")
         .trim()
@@ -2315,7 +2387,7 @@ export function resolveMerchantBusinessNameForPrefill(
 }
 
 /** Appendix / guaranty / main contract / ACH authorization signatory tabs — owner name, not business legal name. */
-function resolvePersonalClientNamePrefill(
+export function resolvePersonalClientNamePrefill(
     row: Record<string, unknown>,
     field:
         | "clientName"
@@ -2540,6 +2612,73 @@ function ownersToPrefillPartial(rows: Record<string, unknown>[] | null | undefin
     return out;
 }
 
+/** Keep owner 1 / client 1 / guarantor 1 (and owner 2 party) names and IDs aligned on the contract. */
+function syncPartyIdentityPrefillFields(partial: Partial<BuildContractPrefillFieldsArgs>): void {
+    const party1Name =
+        str(partial.owner1GuarantorName) ||
+        str(partial.guarantyOwner1Name) ||
+        str(partial.guarantyGuarantor1Name) ||
+        str(partial.guarantyClientName) ||
+        str(partial.clientName) ||
+        str(partial.customerName) ||
+        str(partial.securityGuarantor);
+    if (party1Name) {
+        partial.owner1GuarantorName = party1Name;
+        partial.guarantyOwner1Name = party1Name;
+        partial.guarantyGuarantor1Name = party1Name;
+        partial.guarantyClientName = party1Name;
+        partial.securityGuarantor = party1Name;
+        partial.clientName = party1Name;
+    }
+
+    const party1Ss =
+        str(partial.guarantyOwner1Ss) ||
+        str(partial.guarantyGuarantor1Ss) ||
+        str(partial.guarantySs);
+    if (party1Ss) {
+        partial.guarantyOwner1Ss = party1Ss;
+        partial.guarantyGuarantor1Ss = party1Ss;
+        partial.guarantySs = party1Ss;
+    }
+
+    const party1Dl =
+        str(partial.guarantyOwner1DriverLicense) ||
+        str(partial.guarantyGuarantor1DriverLicense) ||
+        str(partial.guarantySsDriverLicense);
+    if (party1Dl) {
+        partial.guarantyOwner1DriverLicense = party1Dl;
+        partial.guarantyGuarantor1DriverLicense = party1Dl;
+        partial.guarantySsDriverLicense = party1Dl;
+    }
+
+    const party2Name =
+        str(partial.owner2GuarantorName) ||
+        str(partial.merchant2Name) ||
+        str(partial.guarantyOwner2Name) ||
+        str(partial.guarantyGuarantor2Name);
+    if (party2Name) {
+        partial.owner2GuarantorName = party2Name;
+        partial.merchant2Name = party2Name;
+        partial.guarantyOwner2Name = party2Name;
+        partial.guarantyGuarantor2Name = party2Name;
+    }
+
+    const party2Ss =
+        str(partial.guarantyOwner2Ss) || str(partial.guarantyGuarantor2Ss);
+    if (party2Ss) {
+        partial.guarantyOwner2Ss = party2Ss;
+        partial.guarantyGuarantor2Ss = party2Ss;
+    }
+
+    const party2Dl =
+        str(partial.guarantyOwner2DriverLicense) ||
+        str(partial.guarantyGuarantor2DriverLicense);
+    if (party2Dl) {
+        partial.guarantyOwner2DriverLicense = party2Dl;
+        partial.guarantyGuarantor2DriverLicense = party2Dl;
+    }
+}
+
 function partyEmail(row: Record<string, unknown> | undefined): string {
     return String(row?.email ?? "").trim();
 }
@@ -2599,7 +2738,14 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
     const offer = (row.offer ?? null) as Record<string, unknown> | null;
     const paymentBank = (row.paymentBank ?? null) as Record<string, unknown> | null;
 
-    const purchaseAmount = firstTruncateDecimal(row.purchaseAmount, offer?.offer, row.approvedAmount);
+    const purchaseAmount = (() => {
+        const offerAmountNum = resolveOfferAdvanceDollars(
+            getOfferDecisionPrefillContext({ contract: row, offerDecision: offer }),
+            { contract: row, offerDecision: offer },
+        );
+        if (offerAmountNum > 0) return truncateDecimalPrefill(offerAmountNum);
+        return firstTruncateDecimal(row.approvedAmount, row.purchaseAmount);
+    })();
     const paybackNum = resolvePaybackAmountDollars({ contract: row, offerDecision: offer });
     const purchasePrice =
         paybackNum !== undefined
@@ -3255,6 +3401,8 @@ export function getContractPrefillEditDefaultsFromApplication(
         mergedBeforeFees.achAuthorizationAccountHolderName = merchantBusinessName;
         mergedBeforeFees.achAuthorizationConcentAccountHolderName = merchantBusinessName;
     }
+
+    syncPartyIdentityPrefillFields(mergedBeforeFees);
 
     return applyAppendixUnderwritingFeesAmount(mergedBeforeFees, {
         application: anyApp as Record<string, unknown> | undefined,
