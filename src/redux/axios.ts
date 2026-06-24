@@ -104,3 +104,10 @@ export const axiosPostFormData = (
     config?: AxiosRequestConfig
 ) =>
     axiosInstance.post(url, formData, { timeout: 120000, ...config });
+
+export const axiosPatchFormData = (
+    url: string,
+    formData: FormData,
+    config?: AxiosRequestConfig
+) =>
+    axiosInstance.patch(url, formData, { timeout: 120000, ...config });

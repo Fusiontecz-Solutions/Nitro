@@ -132,3 +132,8 @@ export function resolveEffectiveRole(
   }
   return resolveSessionRole(loginUser);
 }
+
+export function isSuperAdminRole(role?: string | null): boolean {
+  const key = normalizeRoleKey(String(role ?? ""));
+  return key === "SUPER_ADMIN";
+}

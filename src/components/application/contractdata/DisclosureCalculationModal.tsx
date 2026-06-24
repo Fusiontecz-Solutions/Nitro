@@ -100,17 +100,35 @@ export function DisclosureCalculationModal({
 
     const seededForOpenRef = useRef(false);
     const bankRevenuesMergedRef = useRef(false);
+    const lastSeedKeyRef = useRef("");
 
-    /** Seed form once per modal open — avoids reset when bank analysis or parent state updates. */
+    function buildSeedKey(inputs: DisclosureCalculatorInputs): string {
+        return JSON.stringify({
+            frequency: inputs.frequency,
+            numberOfPayments: inputs.numberOfPayments,
+            numberOfPaymentDays: inputs.numberOfPaymentDays,
+            purchasePrice: inputs.purchasePrice,
+            factorRate: inputs.factorRate,
+            originationFee: inputs.originationFee,
+            state: inputs.state,
+        });
+    }
+
+    /** Seed form when modal opens or when deal frequency / payment term changes. */
     useEffect(() => {
         if (!open) {
             seededForOpenRef.current = false;
             bankRevenuesMergedRef.current = false;
+            lastSeedKeyRef.current = "";
             return;
         }
-        if (seededForOpenRef.current || !seedInputs) return;
+        if (!seedInputs) return;
+
+        const seedKey = buildSeedKey(seedInputs);
+        if (seededForOpenRef.current && lastSeedKeyRef.current === seedKey) return;
 
         seededForOpenRef.current = true;
+        lastSeedKeyRef.current = seedKey;
         setForm({ ...seedInputs });
         setPurchasePriceText(formatMoneyFromNumber(seedInputs.purchasePrice));
         setFactorRateText(
@@ -426,54 +444,51 @@ export function DisclosureCalculationModal({
                                     <p className={`${SECTION_LABEL_CLASS} mb-2`}>Payment term</p>
                                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                                         <div className="space-y-1.5">
-                                            <Label className="text-xs">
-                                                {form.frequency === "Daily"
-                                                    ? "Term (weeks)"
-                                                    : "Number of payments"}
-                                            </Label>
+                                            <Label className="text-xs">Number of payments</Label>
                                             <Input
                                                 type="number"
                                                 min={1}
                                                 className={`tabular-nums ${EDITABLE_INPUT_CLASS}`}
-                                                value={String(form.numberOfPayments)}
-                                                onChange={(e) =>
-                                                    updateForm(
-                                                        "numberOfPayments",
-                                                        Math.max(
-                                                            1,
-                                                            Number(e.target.value) || 1,
-                                                        ),
-                                                    )
-                                                }
+                                                value={String(
+                                                    form.frequency === "Daily"
+                                                        ? form.numberOfPaymentDays
+                                                        : form.numberOfPayments,
+                                                )}
+                                                onChange={(e) => {
+                                                    const count = Math.max(
+                                                        1,
+                                                        Number(e.target.value) || 1,
+                                                    );
+                                                    if (form.frequency === "Daily") {
+                                                        setForm((prev) =>
+                                                            prev
+                                                                ? {
+                                                                      ...prev,
+                                                                      numberOfPayments: count,
+                                                                      numberOfPaymentDays: count,
+                                                                  }
+                                                                : prev,
+                                                        );
+                                                    } else {
+                                                        updateForm("numberOfPayments", count);
+                                                    }
+                                                }}
                                             />
                                         </div>
-                                        {form.frequency === "Daily" ? (
-                                            <div className="space-y-1.5">
-                                                <Label className="text-xs">Payment days</Label>
-                                                <Input
-                                                    type="number"
-                                                    min={1}
-                                                    className={`tabular-nums ${EDITABLE_INPUT_CLASS}`}
-                                                    value={String(form.numberOfPaymentDays)}
-                                                    onChange={(e) =>
-                                                        updateForm(
-                                                            "numberOfPaymentDays",
-                                                            Math.max(
-                                                                1,
-                                                                Number(e.target.value) || 1,
-                                                            ),
-                                                        )
-                                                    }
-                                                />
-                                            </div>
-                                        ) : (
+                                        {form.frequency !== "Daily" ? (
                                             <div className="hidden sm:block" aria-hidden />
-                                        )}
+                                        ) : null}
                                     </div>
                                     {form.frequency === "Daily" ? (
                                         <p className="mt-2 text-[11px] text-slate-500">
-                                            Daily deals: payment days are used for estimated payment
-                                            and APR (e.g. 12 weeks ≈ 60 business days).
+                                            Daily deals: number of payments equals payment days and
+                                            estimated term (days) (e.g. term 12 → 12 daily
+                                            payments).
+                                        </p>
+                                    ) : form.frequency === "Weekly" ? (
+                                        <p className="mt-2 text-[11px] text-slate-500">
+                                            Weekly deals: estimated term (days) = number of payments
+                                            × 5 business days per week.
                                         </p>
                                     ) : null}
                                 </div>

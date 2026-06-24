@@ -10,6 +10,7 @@ import {
 } from "@/redux/actions/contractActions";
 import { ownerRowHasIdentity } from "./contractPartyCounts";
 import {
+    dedupeContractSignerRows,
     resolveDocuSignSignerRole,
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
@@ -55,6 +56,25 @@ function mapClientOwnerToParty(row: Record<string, unknown>): OwnerPartyForSigne
     };
 }
 
+function dedupeOwnerParties(parties: OwnerPartyForSigner[]): OwnerPartyForSigner[] {
+    const seen = new Set<string>();
+    const out: OwnerPartyForSigner[] = [];
+    for (const party of parties) {
+        if (!partyHasIdentity(party)) continue;
+        const email = str(party.ownerEmail).toLowerCase();
+        const name = `${str(party.ownerFirstName)} ${str(party.ownerLastName)}`
+            .trim()
+            .toLowerCase();
+        const key = email || (name ? `name:${name}` : "");
+        if (key) {
+            if (seen.has(key)) continue;
+            seen.add(key);
+        }
+        out.push(party);
+    }
+    return out;
+}
+
 function partyHasIdentity(party: OwnerPartyForSigner | undefined): boolean {
     if (!party) return false;
     return ownerRowHasIdentity({
@@ -77,9 +97,11 @@ export function resolveClientOwnerPartiesFromApplication(
 
     const related = client.owners;
     if (Array.isArray(related) && related.length) {
-        return related
-            .map((row) => mapClientOwnerToParty(row as Record<string, unknown>))
-            .filter(partyHasIdentity);
+        return dedupeOwnerParties(
+            related
+                .map((row) => mapClientOwnerToParty(row as Record<string, unknown>))
+                .filter(partyHasIdentity),
+        );
     }
 
     const own = (client.owner ?? {}) as Record<string, unknown>;
@@ -226,31 +248,35 @@ export function resolveOwnerPartiesForContractSigners(
 
     const fromClient = resolveClientOwnerPartiesFromApplication(application);
 
-    if (local.length > 0) return local;
+    if (local.length > 0) return dedupeOwnerParties(local);
 
     if (fromClient.length > 0) {
-        return fromClient.map((clientParty, i) => {
-            const row = mergeOwnerPartyAtIndex(fromContract[i], clientParty);
-            return row ?? clientParty;
-        });
+        return dedupeOwnerParties(
+            fromClient.map((clientParty, i) => {
+                const row = mergeOwnerPartyAtIndex(fromContract[i], clientParty);
+                return row ?? clientParty;
+            }),
+        );
     }
 
-    return fromContract;
+    return dedupeOwnerParties(fromContract);
 }
 
 /** One signer row per application owner (name + email from CRM). */
 export function buildContractSignerRowsFromOwnerParties(
     owners: OwnerPartyForSigner[],
 ): ContractSignerOverrideRow[] {
-    return owners.filter(partyHasIdentity).map((o) => {
-        const name = `${str(o.ownerFirstName)} ${str(o.ownerLastName)}`.trim();
-        const email = str(o.ownerEmail);
-        return {
-            role: resolveDocuSignSignerRole(),
-            name: name || (email ? email.split("@")[0] : ""),
-            email,
-        };
-    });
+    return dedupeContractSignerRows(
+        dedupeOwnerParties(owners).map((o) => {
+            const name = `${str(o.ownerFirstName)} ${str(o.ownerLastName)}`.trim();
+            const email = str(o.ownerEmail);
+            return {
+                role: resolveDocuSignSignerRole(),
+                name: name || (email ? email.split("@")[0] : ""),
+                email,
+            };
+        }),
+    );
 }
 
 /**
@@ -261,25 +287,23 @@ export function reconcileSignerRowsWithFreshOwners(
     saved: ContractSignerOverrideRow[] | null | undefined,
     fresh: ContractSignerOverrideRow[],
 ): ContractSignerOverrideRow[] {
-    if (!fresh.length) return saved?.length ? saved : [];
-    if (!saved?.length) return fresh;
-
-    const count = Math.max(fresh.length, saved.length);
-    const out: ContractSignerOverrideRow[] = [];
-    for (let i = 0; i < count; i++) {
-        const live = fresh[i];
-        const persisted = saved[i];
-        if (live && (str(live.email) || str(live.name))) {
-            out.push({
-                role: resolveDocuSignSignerRole(live.role),
-                name: str(live.name),
-                email: str(live.email),
-            });
-        } else if (persisted) {
-            out.push(persisted);
-        }
+    const freshDeduped = dedupeContractSignerRows(fresh);
+    if (!saved?.length) {
+        return freshDeduped;
     }
-    return out.length ? out : fresh;
+
+    const savedDeduped = dedupeContractSignerRows(saved);
+    const out: ContractSignerOverrideRow[] = [];
+    for (let i = 0; i < savedDeduped.length; i++) {
+        const persisted = savedDeduped[i]!;
+        const live = freshDeduped[i];
+        out.push({
+            role: resolveDocuSignSignerRole(persisted.role || live?.role),
+            name: str(live?.name) || str(persisted.name),
+            email: str(live?.email) || str(persisted.email),
+        });
+    }
+    return out.length ? out : freshDeduped;
 }
 
 /** Refetch application + contract owners; returns latest owner parties for signers. */
@@ -331,14 +355,16 @@ export function mergeContractSignerEditorRows(
     targetCount: number,
     ownerParties?: OwnerPartyForSigner[],
 ): ContractSignerOverrideRow[] {
-    const count = Math.max(1, targetCount, ownerParties?.length ?? 0);
-    const base = currentRows.length ? currentRows : suggestedRows;
+    const dedupedSuggested = dedupeContractSignerRows(suggestedRows);
+    const dedupedOwners = ownerParties ? dedupeOwnerParties(ownerParties) : [];
+    const count = Math.max(1, targetCount);
+    const base = currentRows.length ? currentRows : dedupedSuggested;
     const out = [...base];
 
     while (out.length < count) {
         const idx = out.length;
-        const fromSuggested = suggestedRows[idx];
-        const fromParty = partyRowFromOwner(ownerParties?.[idx]);
+        const fromSuggested = dedupedSuggested[idx];
+        const fromParty = partyRowFromOwner(dedupedOwners[idx]);
         if (fromSuggested?.email || fromSuggested?.name) {
             out.push(fromSuggested);
         } else if (fromParty.email || fromParty.name) {
@@ -353,14 +379,14 @@ export function mergeContractSignerEditorRows(
     }
 
     for (let i = 0; i < out.length; i++) {
-        const party = ownerParties?.[i];
+        const party = dedupedOwners[i];
         if (!party) continue;
         const fill = partyRowFromOwner(party);
         if (!str(out[i]!.name) && fill.name) out[i]!.name = fill.name;
         if (!str(out[i]!.email) && fill.email) out[i]!.email = fill.email;
     }
 
-    return out.slice(0, count);
+    return dedupeContractSignerRows(out.slice(0, count));
 }
 
 function mapApiOwnerToDetail(owner: Record<string, unknown> | OwnerDetail): OwnerDetail {

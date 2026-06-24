@@ -15,6 +15,7 @@ import {
 } from "@/lib/offerDecisionFees";
 import {
   OFFER_DECISION_UPDATED_EVENT,
+  emitOfferDecisionUpdated,
   offerDecisionUpdateMatchesApplication,
 } from "@/lib/offerDecisionSync";
 import { axiosGet, axiosPost } from "@/redux/axios";
@@ -1341,6 +1342,8 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
 
       // Ensure the OFFER form/section remains visible after saving
       setShowApproveForm(true);
+
+      emitOfferDecisionUpdated(applicationId);
 
       toast.success("Offer saved successfully.");
     } catch (error: any) {

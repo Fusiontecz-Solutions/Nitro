@@ -285,8 +285,6 @@ function formatUsdAmount(amount: number): string {
     return amount.toFixed(2);
 }
 
-const BUSINESS_DAYS_PER_WEEK = 5;
-
 /** California page-2 estimated term must be payment days, not term weeks. */
 export function resolveCaliforniaEstimatedTermDays(args: {
     estimatedTermDays?: string;
@@ -300,8 +298,8 @@ export function resolveCaliforniaEstimatedTermDays(args: {
     const frequency = String(args.frequency ?? "")
         .trim()
         .toLowerCase();
-    if (weeks > 0 && weeks < 40 && frequency.startsWith("day")) {
-        return String(weeks * BUSINESS_DAYS_PER_WEEK);
+    if (weeks > 0 && frequency.startsWith("day")) {
+        return String(weeks);
     }
     return "";
 }

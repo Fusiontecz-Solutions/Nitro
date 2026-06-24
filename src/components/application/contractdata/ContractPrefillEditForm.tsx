@@ -126,8 +126,8 @@ const FIELD_LABELS = {
     remittance: "Daily payment",
     frequency: "Frequency",
     netToMerchant: "Net to merchant",
-    clientName: "Name",
-    owner1GuarantorName: "Name",
+    clientName: "Client name (signatures & addenda)",
+    owner1GuarantorName: "Owner 1 / Merchant #1 name",
     merchant2Name: "Name",
     owner2GuarantorName: "Name",
     securityBusinessName: "Business name",
@@ -293,7 +293,8 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "rpa_merchant",
             title: "RPA — Merchant & agreement",
-            description: "Agreement date, legal name, state of inc., DBA, EIN, client / merchant name.",
+            description:
+                "Agreement date, legal name, state of inc., DBA, EIN, and primary owner / client name (synced to Merchant #1 and signature lines on the PDF).",
             Icon: FileText,
             groups: [
                 {
@@ -304,7 +305,6 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                         "legalName",
                         "doingBusinessAs",
                         "federalTaxIdEin",
-                        "clientName",
                     ],
                 },
             ],
@@ -497,11 +497,12 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "ach_portal_refs",
             title: "ACH — Portal & references",
-            description: "Bank portal credentials, security Q&A, other notes, and three references.",
+            description:
+                "Page 15 fields are completed by the merchant in DocuSign (required). CRM values here are optional notes only and are not sent on the PDF.",
             Icon: Globe,
             groups: [
                 {
-                    heading: "Online banking",
+                    heading: "Online banking (merchant completes on page 15)",
                     keys: [
                         "achAuthorizationBankPortalWebsite",
                         "achAuthorizationUsername",
@@ -801,6 +802,9 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "securityGuarantor",
             "exhibitOwnerName",
             "addendumDatedPrincipalOwner",
+            "owner1GuarantorName",
+            "guarantyOwner1Name",
+            "guarantyGuarantor1Name",
         ],
     },
     {
@@ -867,6 +871,8 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "guarantyOwner1Name",
             "guarantyGuarantor1Name",
             "addendumDatedPrincipalOwner1Name",
+            "customerName",
+            "clientName",
         ],
     },
     {
@@ -923,6 +929,7 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
 const OWNER_PARTY_REALTIME_MIRROR_GROUP_IDS = new Set([
     "owner1Name",
     "owner2Name",
+    "clientName",
     "ssn",
     "driverLicense",
     "owner2Ssn",
@@ -1248,6 +1255,7 @@ export function ContractPrefillEditForm({
             documentType: "disclosure",
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
+            offerDecision: offerDecision ?? null,
             agreementDate: agreementDateForDefaults,
             mainPrefillOverrides: mainPrefillOverridesForAddendum,
             savedOverridesForMapping: saved,
@@ -1261,6 +1269,7 @@ export function ContractPrefillEditForm({
         contractDisclosureFrequency,
         resolvedContract,
         applicationData,
+        offerDecision,
         agreementDateForDefaults,
         mainPrefillOverridesForAddendum,
         contractRecords?.bankDetail,
