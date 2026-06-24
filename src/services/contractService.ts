@@ -106,6 +106,7 @@ function resolveContractRemittanceFromOffer(offer: any, termsOffer: any): string
 const OFFER_DECISION_CONTRACT_SELECT = {
   id: true,
   offer: true,
+  fees: true,
   totalRemit: true,
   term: true,
   frequency: true,

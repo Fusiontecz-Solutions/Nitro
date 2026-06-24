@@ -9,7 +9,7 @@ import {
   isFunderContractLayoutKey,
 } from '../utils/funderContractLayout';
 
-function toAllowedStatesJson(
+function toStatesJson(
   states?: string[] | null,
 ): Prisma.InputJsonValue | typeof Prisma.JsonNull {
   if (!states?.length) return Prisma.JsonNull;
@@ -24,6 +24,7 @@ export type FunderProfileInput = {
   mainContractLayoutKey?: string | null;
   contractPdfFileName?: string | null;
   allowedStates?: string[] | null;
+  excludedStates?: string[] | null;
   organization?: string | null;
   legalName?: string | null;
   contactEmail?: string | null;
@@ -43,7 +44,7 @@ function normalizeStateToken(state?: string | null): string {
     .toLowerCase();
 }
 
-function parseAllowedStates(raw: unknown): string[] {
+function parseStateList(raw: unknown): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) {
     return raw.map((s) => normalizeStateToken(String(s))).filter(Boolean);
@@ -51,11 +52,20 @@ function parseAllowedStates(raw: unknown): string[] {
   return [];
 }
 
-function stateMatchesAllowed(state: string | null | undefined, allowed: string[]): boolean {
-  if (!allowed.length) return true;
+export function funderAvailableForState(
+  allowedStates: string[],
+  excludedStates: string[],
+  state?: string | null,
+): boolean {
   const normalized = normalizeStateToken(state);
   if (!normalized) return true;
-  return allowed.some((a) => a === normalized);
+
+  if (excludedStates.length > 0 && excludedStates.some((s) => s === normalized)) {
+    return false;
+  }
+
+  if (!allowedStates.length) return true;
+  return allowedStates.some((s) => s === normalized);
 }
 
 export function serializeFunderProfile(row: Record<string, unknown>) {
@@ -68,7 +78,8 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
     assignsDealId: row.assignsDealId === true,
     mainContractLayoutKey: row.mainContractLayoutKey ?? 'contract',
     contractPdfFileName: row.contractPdfFileName ?? null,
-    allowedStates: parseAllowedStates(row.allowedStates),
+    allowedStates: parseStateList(row.allowedStates),
+    excludedStates: parseStateList(row.excludedStates),
     organization: row.organization ?? null,
     legalName: row.legalName ?? null,
     contactEmail: row.contactEmail ?? null,
@@ -101,8 +112,9 @@ export async function listFunderProfiles(options?: { state?: string | null; acti
   const stateFilter = normalizeStateToken(options?.state);
   const filtered = stateFilter
     ? rows.filter((row) => {
-        const allowed = parseAllowedStates(row.allowedStates);
-        return stateMatchesAllowed(stateFilter, allowed);
+        const allowed = parseStateList(row.allowedStates);
+        const excluded = parseStateList(row.excludedStates);
+        return funderAvailableForState(allowed, excluded, stateFilter);
       })
     : rows;
 
@@ -246,7 +258,8 @@ export async function createFunderProfile(input: FunderProfileInput) {
       assignsDealId: input.assignsDealId === true,
       mainContractLayoutKey: contractDefaults.mainContractLayoutKey,
       contractPdfFileName: contractDefaults.contractPdfFileName,
-      allowedStates: toAllowedStatesJson(input.allowedStates),
+      allowedStates: toStatesJson(input.allowedStates),
+      excludedStates: toStatesJson(input.excludedStates),
       organization: input.organization ? String(input.organization).trim() : null,
       legalName: input.legalName ? String(input.legalName).trim() : null,
       contactEmail: input.contactEmail ? String(input.contactEmail).trim() : null,
@@ -289,7 +302,10 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
       : DEFAULT_FUNDER_CONTRACT_FILENAME;
   }
   if (input.allowedStates !== undefined) {
-    data.allowedStates = toAllowedStatesJson(input.allowedStates);
+    data.allowedStates = toStatesJson(input.allowedStates);
+  }
+  if (input.excludedStates !== undefined) {
+    data.excludedStates = toStatesJson(input.excludedStates);
   }
   if (input.organization !== undefined) {
     data.organization = input.organization ? String(input.organization).trim() : null;

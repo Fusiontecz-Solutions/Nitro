@@ -90,6 +90,7 @@ import {
 import { isDocumentLayoutKey } from './platform-document-registry';
 import { isFunderContractLayoutKey } from '../../utils/funderContractLayout';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
+import { isFillAtSigningTabRef } from './utils/build-envelope-from-layout';
 import {
   findApplicationIdByAchEnvelopeId,
   isStandaloneAchEnvelope,
@@ -1052,6 +1053,15 @@ export class DocusignService {
     const tabId = String(tab.tabId || '').trim();
     if (!tabId) return null;
     if (this.isSignerDataTabLocked(tab)) return null;
+    if (isFillAtSigningTabRef(tab as { tabLabel?: string; name?: string })) {
+      return null;
+    }
+    const required = String(tab.required || '').toLowerCase() === 'true';
+    const optional = String(tab.optional || '').toLowerCase() === 'true';
+    const value = String(tab.value || '').trim();
+    if (required && !optional && !value) {
+      return null;
+    }
 
     const row: Record<string, string> = {
       tabId,
@@ -3610,6 +3620,16 @@ export class DocusignService {
       await this.sleep(autoSend ? 4000 : 5000);
     }
 
+    // Lock prefilled data tabs on drafts too — page-15 ACH fields stay editable via isFillAtSigningTabRef.
+    if (!options.prefillFlattenedInPdf) {
+      await this.lockEnvelopeSignerDataTabsWithRetry(
+        options.client,
+        options.accountId,
+        envelopeId,
+        { attempts: 4, delayMs: 2000 },
+      );
+    }
+
     let ccSynced = 0;
     if (ccEmails.length) {
       let signerEmails: string[] = [];
@@ -4198,6 +4218,10 @@ export class DocusignService {
         `[DocuSign] prefill sync: 0/${result.attempted} tab(s) matched on envelope ${eid}`,
       );
     }
+    await this.lockEnvelopeSignerDataTabsWithRetry(client, accountId, eid, {
+      attempts: 4,
+      delayMs: 1500,
+    });
     return result;
   }
 

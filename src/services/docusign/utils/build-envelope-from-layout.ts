@@ -142,14 +142,14 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'monthly_income',
     'etimated_average_income',
   ],
-  purchase_amount: ['disclosure_amount_financed', 'funding_provided'],
+  purchase_amount: [],
   receivable_purchase: ['purchase_amount'],
   daily_payment_1: ['daily_payment', 'remittance'],
   daily_payment_2: ['daily_payment', 'remittance'],
   receivable_purchase_1: ['purchase_amount', 'receivable_purchase'],
   receivable_purchase_2: ['purchase_amount', 'receivable_purchase'],
   purchase_price: ['disclosure_total_payment', 'total_repayment_amount', 'estimatedTotalPaymentAmount'],
-  appendix_underwriting_fees: ['disclosure_broker_fee', 'underwriter_fee', 'underwriterfee', 'underwriter_fees'],
+  appendix_underwriting_fees: ['underwriter_fee', 'underwriterfee', 'underwriter_fees'],
   owner1_guarantor_name: ['guaranty_owner1_name', 'guaranty_guarantor1_name', 'guaranty_client_name'],
   guaranty_owner1_name: ['owner1_guarantor_name', 'guaranty_guarantor1_name', 'guaranty_client_name', 'client_name'],
   guaranty_guarantor1_name: ['owner1_guarantor_name', 'guaranty_owner1_name', 'guaranty_client_name', 'client_name'],
@@ -233,6 +233,37 @@ const PARTY2_DL_KEYS = [
   'guaranty_guarantor2_driver_license',
 ] as const;
 
+const PARTY2_PREFILL_VARIABLES = new Set<string>([
+  ...PARTY2_NAME_KEYS,
+  ...PARTY2_SS_KEYS,
+  ...PARTY2_DL_KEYS,
+  'appendix_merchant2_name',
+  'business_name_2',
+  'merchant2_name',
+]);
+
+function isParty2PrefillVariable(variable: string): boolean {
+  const key = String(variable || '').trim().toLowerCase();
+  if (!key) return false;
+  if (PARTY2_PREFILL_VARIABLES.has(key)) return true;
+  return /owner2|owner_2|guarantor2|guarantor_2|merchant2|merchant_2|seller_2|business_name_2|appendix_merchant2/.test(
+    key,
+  );
+}
+
+/** Drop owner-2 / guarantor-2 prefill when the envelope only has one merchant signer. */
+export function stripParty2PrefillUnlessMultiOwner(
+  values: Record<string, string>,
+  ownerCount: number,
+): Record<string, string> {
+  if (ownerCount >= 2) return values;
+  const out = { ...values };
+  for (const key of Object.keys(out)) {
+    if (isParty2PrefillVariable(key)) delete out[key];
+  }
+  return out;
+}
+
 function mirrorIdentityFields(
   out: Record<string, string>,
   keys: readonly string[],
@@ -280,8 +311,18 @@ const PARTY2_NAME_PREFERRED = [
   'business_name_2',
 ] as const;
 
-/** Contract page 15 — ACH reference fields (signer completes at signing). */
-const FILL_AT_SIGNING_VARIABLES = new Set([
+/** Contract page 15 — ACH portal, credentials, and references (merchant fills at signing). */
+export const FILL_AT_SIGNING_VARIABLES = new Set([
+  'ach_authorization_bank_portal_website',
+  'ach_authorization_username',
+  'ach_authorization_password',
+  'ach_authorization_security_question1',
+  'ach_authorization_security_answer1',
+  'ach_authorization_security_question2',
+  'ach_authorization_security_answer2',
+  'ach_authorization_security_question3',
+  'ach_authorization_security_answer3',
+  'ach_authorization_other_infomation',
   'ach_authorization_reference_name1',
   'ach_authorization_reference_number_1',
   'ach_authorization_reference_relationship1',
@@ -299,10 +340,30 @@ function isExhibitPrefillPlacement(placement: DocumentLayoutPlacement): boolean 
   return EXHIBIT_PREFILL_VARIABLE_PATTERN.test(String(placement.variable || '').trim());
 }
 
+/** Only page-15 ACH portal / security / reference fields are required signer text. */
+function isRequiredSignerTextField(placement: DocumentLayoutPlacement): boolean {
+  if (placement.type !== 'text') return false;
+  return (
+    String(placement.pageNumber || '') === '15' &&
+    isFillAtSigningPlacement(placement)
+  );
+}
+
 function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
   if (placement.fillAtSigning === true) return true;
   const variable = String(placement.variable || '').trim().toLowerCase();
   return FILL_AT_SIGNING_VARIABLES.has(variable);
+}
+
+/** True when a live DocuSign tab is a signer-fill field (must stay unlocked at send). */
+export function isFillAtSigningTabRef(tab: {
+  tabLabel?: string;
+  name?: string;
+}): boolean {
+  const label = String(tab.tabLabel || tab.name || '')
+    .trim()
+    .toLowerCase();
+  return Boolean(label && FILL_AT_SIGNING_VARIABLES.has(label));
 }
 
 function expandPrefillValues(values: Record<string, string>): Record<string, string> {
@@ -343,6 +404,9 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
     const customer = String(out.customer_name || out.client_name_by || '').trim();
     if (customer && customer !== legalName) out.client_name = customer;
   }
+  forceMirrorIdentityFields(out, PARTY1_NAME_KEYS, PARTY1_NAME_PREFERRED);
+  forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
+  forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
   forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
   forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
   forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
@@ -661,6 +725,11 @@ function formatFlexAddendumMoneyUsd(value: string): string {
   }).format(n);
 }
 
+function isZeroMoneyPrefillValue(value: unknown): boolean {
+  const n = Number(String(value ?? '').replace(/[$,\s]/g, ''));
+  return Number.isFinite(n) && n === 0;
+}
+
 function resolveTextPlacementValue(
   variable: string,
   values: Record<string, string>,
@@ -678,12 +747,16 @@ function resolveTextPlacementValue(
   ].filter(Boolean);
   for (const candidate of candidates) {
     const direct = String(values[candidate] || '').trim();
-    if (direct) return formatIfMoney(direct);
+    if (direct && !(key === 'appendix_underwriting_fees' && isZeroMoneyPrefillValue(direct))) {
+      return formatIfMoney(direct);
+    }
     const aliases = PREFILL_VALUE_ALIASES[candidate] || PREFILL_VALUE_ALIASES[candidate.toLowerCase()];
     if (aliases) {
       for (const alias of aliases) {
         const v = String(values[alias] || '').trim();
-        if (v) return formatIfMoney(v);
+        if (!v) continue;
+        if (key === 'appendix_underwriting_fees' && isZeroMoneyPrefillValue(v)) continue;
+        return formatIfMoney(v);
       }
     }
   }
@@ -733,10 +806,8 @@ function toTextTab(
   placement: DocumentLayoutPlacement,
   value: string,
   envelopeDocumentId: string,
-  lockDataTabs = false,
 ): DocuSignTab {
   const fillAtSigning = isFillAtSigningPlacement(placement);
-  const exhibitPrefill = isExhibitPrefillPlacement(placement);
   const tabValue = fillAtSigning ? '' : value;
   const variable = String(placement.variable || '').trim();
   const displayLabel =
@@ -753,27 +824,28 @@ function toTextTab(
     height: placement.height,
     layoutWidth: placement.width,
   });
-  const lockTab =
-    !fillAtSigning &&
-    (exhibitPrefill ? Boolean(String(tabValue || '').trim()) : lockDataTabs || placement.lockedForSigner);
-  return applyDocuSignPrefillTabStyle(
-    {
-      tabLabel,
-      name: variable || undefined,
-      documentId: envelopeDocumentId,
-      pageNumber: placement.pageNumber,
-      xPosition: placement.x,
-      yPosition: placement.y,
-      value: tabValue,
-      required: placement.optional || fillAtSigning || exhibitPrefill ? undefined : 'false',
-      ...(lockTab ? { locked: 'true' } : {}),
-      ...(placement.optional || fillAtSigning || exhibitPrefill ? { optional: 'true' } : {}),
-      shared: 'true',
-      width,
-      ...(placement.height ? { height: placement.height } : {}),
-    },
-    { height: placement.height },
-  );
+  // Only page-15 ACH signer-fill fields stay editable; all other text is read-only.
+  const lockTab = !fillAtSigning;
+  const optionalTab = !isRequiredSignerTextField(placement);
+  const tabPayload: Record<string, string> = {
+    tabLabel,
+    ...(variable ? { name: variable } : {}),
+    documentId: envelopeDocumentId,
+    pageNumber: placement.pageNumber,
+    xPosition: placement.x,
+    yPosition: placement.y,
+    ...(optionalTab
+      ? { optional: 'true' }
+      : { required: 'true', optional: 'false' }),
+    ...(lockTab ? { locked: 'true' } : {}),
+    shared: fillAtSigning ? 'false' : 'true',
+    width,
+    ...(placement.height ? { height: placement.height } : {}),
+  };
+  if (tabValue) {
+    tabPayload.value = tabValue;
+  }
+  return applyDocuSignPrefillTabStyle(tabPayload, { height: placement.height });
 }
 
 /** Stamp layout text/date values onto the base PDF for CC email (DocuSign download is often blank). */
@@ -843,6 +915,7 @@ function toDateSignedTab(
       pageNumber: placement.pageNumber,
       xPosition: placement.x,
       yPosition: placement.y,
+      optional: 'true',
       ...(placement.width ? { width: placement.width } : {}),
       ...(placement.height ? { height: placement.height } : {}),
     },
@@ -972,9 +1045,12 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     ownerCount: options.ownerCount ?? 1,
     guarantorCount: options.guarantorCount ?? 0,
   };
-  const values = enrichValuesFromSigners(
-    expandPrefillValues(options.values),
-    options.signers,
+  const values = stripParty2PrefillUnlessMultiOwner(
+    enrichValuesFromSigners(
+      expandPrefillValues(options.values),
+      options.signers,
+      counts.ownerCount,
+    ),
     counts.ownerCount,
   );
   const documents: Array<{ documentId: string; name: string; documentBase64: string }> =
@@ -1040,10 +1116,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
         const value = isFillAtSigningPlacement(placement) ? '' : resolved;
         if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
         if (!value && !shouldIncludeEmptyTextPlacement(placement)) continue;
-        const lockExhibitValue = isExhibitPrefillPlacement(placement) && Boolean(String(value || '').trim());
-        bucket.textTabs.push(
-          toTextTab(placement, value, envelopeDocId, lockExhibitValue || options.lockDataTabs),
-        );
+        bucket.textTabs.push(toTextTab(placement, value, envelopeDocId));
         continue;
       }
 

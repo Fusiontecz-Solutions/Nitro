@@ -113,6 +113,8 @@ model FunderProfile {
   contractPdfFileName      String?
   /// State codes/names when this funder appears in dropdown; empty = all states.
   allowedStates            Json?
+  /// State codes/names where this funder is hidden; empty = no exclusions.
+  excludedStates           Json?
   organization             String?
   legalName                String?
   contactEmail             String?

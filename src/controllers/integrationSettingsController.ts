@@ -54,6 +54,7 @@ function parseAllowedStates(raw: unknown): string[] | undefined {
 
 function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInput {
   const allowedStates = parseAllowedStates(body.allowedStates);
+  const excludedStates = parseAllowedStates(body.excludedStates);
   const isActiveRaw = body.isActive;
   const isActive =
     isActiveRaw === undefined || isActiveRaw === null || isActiveRaw === ''
@@ -98,6 +99,9 @@ function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInp
 
   if (allowedStates !== undefined) {
     payload.allowedStates = allowedStates;
+  }
+  if (excludedStates !== undefined) {
+    payload.excludedStates = excludedStates;
   }
 
   return payload;
