@@ -78,9 +78,13 @@ import {
   filterSupplementalRefs,
   resolveSupplementalRefsFromDb,
 } from './utils/platform-layout-envelope';
+import {
+  DOCUMENT_LAYOUT_KEYS,
+  type DocumentLayoutKey,
+} from './layouts/document-layout.registry';
+import { isDocumentLayoutKey } from './platform-document-registry';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
 import {
-  contractHasAchAuthorizationEnvelope,
   findApplicationIdByAchEnvelopeId,
   isStandaloneAchEnvelope,
   linkAchAuthorizationEnvelopeToContract,
@@ -99,8 +103,11 @@ import {
 } from './utils/standalone-package-docusign';
 import {
   archiveMainContractEnvelopeToHistory,
+  isCompletedEnvelopeStatus,
+  resolveArchivedMainContractEnvelopeStatus,
   updateArchivedContractSendHistoryStatus,
 } from './utils/contract-send-history';
+import { syncApplicationOnMainContractResend } from '../contractApplicationWorkflowSync';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
 import { handleContractSigningStatusTransition } from '../contractSigningStatusEffects';
 import { mergeDefaultContractCcEmails } from '../../utils/contractCcDefaults';
@@ -2584,13 +2591,34 @@ export class DocusignService {
     });
     const priorEnvelopeId = String(existingDoc?.envelopeId ?? '').trim();
     if (priorEnvelopeId && priorEnvelopeId !== newEnvelopeId) {
-      const priorIsAch = await contractHasAchAuthorizationEnvelope(priorEnvelopeId);
-      if (!priorIsAch) {
-        await archiveMainContractEnvelopeToHistory(applicationId, {
-          envelopeId: priorEnvelopeId,
-          status: String(existingDoc?.status ?? 'draft'),
-          sentAt: existingDoc?.sentAt,
-          completedAt: existingDoc?.completedAt,
+      const contractRow = await prisma.contract.findUnique({
+        where: { applicationId },
+        select: { id: true, status: true },
+      });
+      const archiveStatus = resolveArchivedMainContractEnvelopeStatus(
+        existingDoc?.status,
+        contractRow?.status,
+      );
+      const priorWasCompleted = isCompletedEnvelopeStatus(
+        existingDoc?.status,
+        contractRow?.status,
+      );
+
+      await archiveMainContractEnvelopeToHistory(applicationId, {
+        envelopeId: priorEnvelopeId,
+        status: archiveStatus,
+        sentAt: existingDoc?.sentAt,
+        completedAt:
+          existingDoc?.completedAt ??
+          (priorWasCompleted ? new Date() : null),
+      });
+
+      if (priorWasCompleted) {
+        await syncApplicationOnMainContractResend(prisma, applicationId, {
+          source: 'docusign.linkEnvelopeToApplication',
+          contractId: contractRow?.id,
+          contractStatusPrevious: String(contractRow?.status ?? ''),
+          contractStatusNew: 'DRAFT',
         });
       }
     }
@@ -2811,8 +2839,36 @@ export class DocusignService {
   private async syncApplicationWorkflowOnDraftCreated(applicationId: string) {
     const appId = String(applicationId || '').trim();
     if (!appId) return;
-    await syncApplicationToContractGenerated(prisma, appId, {
-      source: 'docusign:draft_created',
+
+    const normalizeQueueKey = (queue: string | null | undefined) =>
+      String(queue ?? '')
+        .trim()
+        .replace(/[\s_-]+/g, '')
+        .toLowerCase();
+
+    const app = await prisma.application.findUnique({
+      where: { id: appId },
+      select: { currentQueue: true },
+    });
+    const qKey = normalizeQueueKey(app?.currentQueue);
+    const postDraftQueues = new Set([
+      'contractgenerated',
+      'contractout',
+      'contractsout',
+      'final',
+      'fundingcall',
+      'disbursment',
+      'disbursement',
+      'funded',
+    ]);
+    if (postDraftQueues.has(qKey)) return;
+
+    await prisma.application.updateMany({
+      where: { id: appId },
+      data: {
+        currentQueue: 'Contract Generated',
+        currentState: 'CONTRACT_GENERATED',
+      },
     });
   }
 
@@ -2824,24 +2880,27 @@ export class DocusignService {
     const appId = String(applicationId || '').trim();
     if (!appId) return;
     const status = String(internalStatus || '').trim().toLowerCase();
-    const envelopeStatusByInternal: Record<string, string> = {
-      draft: 'DRAFT',
-      sent: 'SENT',
-      viewed: 'VIEWED',
-      signed: 'SIGNED',
-      completed: 'COMPLETED',
-      declined: 'DECLINED',
-      revoked: 'REVOKED',
-      expired: 'EXPIRED',
-    };
-    const envelopeStatus = envelopeStatusByInternal[status];
-    if (!envelopeStatus) return;
-    await syncApplicationWorkflowFromContractEnvelopeStatus(
-      prisma,
-      appId,
-      envelopeStatus,
-      { source: 'docusign:signing_status' },
-    );
+
+    if (status === 'completed') {
+      await prisma.application.updateMany({
+        where: { id: appId },
+        data: {
+          currentQueue: 'Contract Signed',
+          currentState: 'SIGNED_CONTRACTS',
+        },
+      });
+      return;
+    }
+
+    if (['sent', 'viewed', 'signed'].includes(status)) {
+      await prisma.application.updateMany({
+        where: { id: appId },
+        data: {
+          currentQueue: 'Contract Out',
+          currentState: 'Contract Out',
+        },
+      });
+    }
   }
 
   /** After auto-send: mark linked `Document` row and `Contract.status` as SENT. */
@@ -3652,6 +3711,25 @@ export class DocusignService {
     return resolveSupplementalRefsFromDb(filters);
   }
 
+  private resolveMainContractLayoutKeyOption(
+    layoutKeyRaw?: string | null,
+  ): DocumentLayoutKey | undefined {
+    const key = String(layoutKeyRaw || '').trim();
+    if (!key) return undefined;
+    if (!isDocumentLayoutKey(key)) {
+      throw new BadRequestException(`Unknown main contract layout key "${key}".`);
+    }
+    if (
+      key === DOCUMENT_LAYOUT_KEYS.contract ||
+      key === DOCUMENT_LAYOUT_KEYS.allianceBridgeContract
+    ) {
+      return key;
+    }
+    throw new BadRequestException(
+      `Layout key "${key}" is not allowed as the main contract document.`,
+    );
+  }
+
   private decoratePlatformLayoutEnvelope(
     envelopeDefinition: Record<string, unknown>,
     options: {
@@ -3694,6 +3772,7 @@ export class DocusignService {
     options: {
       supplementalRefs?: string[];
       includeMainContract?: boolean;
+      mainContractLayoutKey?: string;
       redirectUrl?: string;
       title?: string;
       message?: string;
@@ -3732,6 +3811,9 @@ export class DocusignService {
       built = await buildPlatformLayoutEnvelopeDefinition({
         supplementalRefs,
         includeMainContract: options.includeMainContract,
+        mainContractLayoutKey: this.resolveMainContractLayoutKeyOption(
+          options.mainContractLayoutKey,
+        ),
         roles: options.roles,
         prefillFields: options.prefillFields,
         ownerCount: options.ownerCount,
@@ -3874,6 +3956,7 @@ export class DocusignService {
       supplementalLayoutKeys?: string[];
       supplementalDocumentRefs?: string[];
       includeMainContract?: boolean;
+      mainContractLayoutKey?: string;
       contractTemplateFilters?: {
         state?: string | null;
         frequency?: string | null;
@@ -3928,6 +4011,7 @@ export class DocusignService {
     return this.sendEnvelopeFromPlatformLayouts(userId, {
       supplementalRefs,
       includeMainContract: options.includeMainContract,
+      mainContractLayoutKey: options.mainContractLayoutKey,
       roles: options.roles,
       prefillFields: options.prefillFields,
       redirectUrl: options.redirectUrl,

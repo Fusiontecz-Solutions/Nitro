@@ -124,12 +124,14 @@ export function buildPdfCompositeTemplate(options: {
     const tabs = tabsBySignerIndex.get(idx) || {
       textTabs: [],
       dateTabs: [],
+      dateSignedTabs: [],
       signHereTabs: [],
       initialHereTabs: [],
     };
     const hasTabs =
       tabs.textTabs.length +
         tabs.dateTabs.length +
+        tabs.dateSignedTabs.length +
         tabs.signHereTabs.length +
         tabs.initialHereTabs.length >
       0;

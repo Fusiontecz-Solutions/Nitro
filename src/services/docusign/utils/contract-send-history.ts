@@ -12,6 +12,41 @@ export type ContractSendHistoryEntry = {
   archivedAt: string;
 };
 
+const COMPLETED_ENVELOPE_STATUSES = new Set([
+  'completed',
+  'signed',
+  'complete',
+  'done',
+]);
+
+/** Normalize DocuSign document status or Prisma contract status for send-history rows. */
+export function resolveArchivedMainContractEnvelopeStatus(
+  documentStatus: unknown,
+  contractStatus?: unknown,
+): string {
+  const doc = String(documentStatus ?? '')
+    .trim()
+    .toLowerCase();
+  const contract = String(contractStatus ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+
+  if (COMPLETED_ENVELOPE_STATUSES.has(doc) || contract === 'COMPLETED' || contract === 'SIGNED') {
+    return 'completed';
+  }
+  if (doc) return doc;
+  if (contract) return contract.toLowerCase();
+  return 'draft';
+}
+
+export function isCompletedEnvelopeStatus(
+  documentStatus: unknown,
+  contractStatus?: unknown,
+): boolean {
+  return resolveArchivedMainContractEnvelopeStatus(documentStatus, contractStatus) === 'completed';
+}
+
 export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendHistoryEntry[] {
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return [];
   const list = (raw as Record<string, unknown>)[CONTRACT_SEND_HISTORY_KEY];

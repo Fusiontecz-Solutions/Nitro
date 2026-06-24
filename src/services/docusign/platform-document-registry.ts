@@ -23,6 +23,11 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
     name: 'Katan Capital Funding Contract',
     type: 'contract',
   },
+  [DOCUMENT_LAYOUT_KEYS.allianceBridgeContract]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.allianceBridgeContract,
+    name: 'Alliance Bridge Capital Contract',
+    type: 'alliance_bridge_contract',
+  },
   [DOCUMENT_LAYOUT_KEYS.flexAddendum]: {
     layoutKey: DOCUMENT_LAYOUT_KEYS.flexAddendum,
     name: 'Katan Capital Flex Addendum',
