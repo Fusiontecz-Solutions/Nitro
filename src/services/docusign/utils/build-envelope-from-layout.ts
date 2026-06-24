@@ -63,17 +63,13 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   disclosure_date: ['agreement_date', 'signature_date'],
   date_by_which_amount_mustbe_received: ['prepayment_received_by_date'],
   funder_name: ['disclosure_funder_name'],
-  client_legal_name: ['business_legal_name', 'merchant_legal_name', 'business_name_2'],
+  client_legal_name: ['business_legal_name', 'merchant_legal_name'],
   business_name_2: [
     'owner2_guarantor_name',
     'guaranty_owner2_name',
     'guaranty_guarantor2_name',
     'merchant2_name',
     'appendix_merchant2_name',
-    'client_legal_name',
-    'client_name',
-    'business_legal_name',
-    'security_business_name',
   ],
   client_name: [
     'client_name_by',
@@ -146,9 +142,14 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'monthly_income',
     'etimated_average_income',
   ],
-  purchase_amount: ['disclosure_amount_financed', 'funding_provided'],
+  purchase_amount: [],
+  receivable_purchase: ['purchase_amount'],
+  daily_payment_1: ['daily_payment', 'remittance'],
+  daily_payment_2: ['daily_payment', 'remittance'],
+  receivable_purchase_1: ['purchase_amount', 'receivable_purchase'],
+  receivable_purchase_2: ['purchase_amount', 'receivable_purchase'],
   purchase_price: ['disclosure_total_payment', 'total_repayment_amount', 'estimatedTotalPaymentAmount'],
-  appendix_underwriting_fees: ['disclosure_broker_fee', 'underwriter_fee', 'underwriterfee', 'underwriter_fees'],
+  appendix_underwriting_fees: ['underwriter_fee', 'underwriterfee', 'underwriter_fees'],
   owner1_guarantor_name: ['guaranty_owner1_name', 'guaranty_guarantor1_name', 'guaranty_client_name'],
   guaranty_owner1_name: ['owner1_guarantor_name', 'guaranty_guarantor1_name', 'guaranty_client_name', 'client_name'],
   guaranty_guarantor1_name: ['owner1_guarantor_name', 'guaranty_owner1_name', 'guaranty_client_name', 'client_name'],
@@ -156,6 +157,9 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   security_guarantor: ['guaranty_guarantor1_name', 'guaranty_owner1_name', 'owner1_guarantor_name', 'client_name'],
   guaranty_owner1_ss: ['guaranty_guarantor1_ss'],
   guaranty_guarantor1_ss: ['guaranty_owner1_ss'],
+  guaranty_owner1_driver_license: ['guaranty_guarantor1_driver_license', 'guaranty_ss_driver_license'],
+  guaranty_guarantor1_driver_license: ['guaranty_owner1_driver_license'],
+  guaranty_ss_driver_license: ['guaranty_owner1_driver_license', 'guaranty_guarantor1_driver_license'],
   owner2_guarantor_name: ['guaranty_owner2_name', 'guaranty_guarantor2_name', 'merchant2_name'],
   guaranty_owner2_name: ['owner2_guarantor_name', 'guaranty_guarantor2_name', 'merchant2_name'],
   guaranty_guarantor2_name: ['owner2_guarantor_name', 'guaranty_owner2_name', 'merchant2_name'],
@@ -205,8 +209,7 @@ const PARTY2_NAME_KEYS = [
   'seller_2_name',
 ] as const;
 
-const PARTY1_NAME_KEYS = [
-  'client_name',
+const PARTY1_PERSONAL_NAME_KEYS = [
   'owner1_guarantor_name',
   'guaranty_owner1_name',
   'guaranty_guarantor1_name',
@@ -215,10 +218,13 @@ const PARTY1_NAME_KEYS = [
   'seller_1_name',
 ] as const;
 
-const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss'] as const;
+const PARTY1_NAME_KEYS = PARTY1_PERSONAL_NAME_KEYS;
+
+const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss', 'guaranty_ss'] as const;
 const PARTY1_DL_KEYS = [
   'guaranty_owner1_driver_license',
   'guaranty_guarantor1_driver_license',
+  'guaranty_ss_driver_license',
 ] as const;
 
 const PARTY2_SS_KEYS = ['guaranty_owner2_ss', 'guaranty_guarantor2_ss'] as const;
@@ -226,6 +232,37 @@ const PARTY2_DL_KEYS = [
   'guaranty_owner2_driver_license',
   'guaranty_guarantor2_driver_license',
 ] as const;
+
+const PARTY2_PREFILL_VARIABLES = new Set<string>([
+  ...PARTY2_NAME_KEYS,
+  ...PARTY2_SS_KEYS,
+  ...PARTY2_DL_KEYS,
+  'appendix_merchant2_name',
+  'business_name_2',
+  'merchant2_name',
+]);
+
+function isParty2PrefillVariable(variable: string): boolean {
+  const key = String(variable || '').trim().toLowerCase();
+  if (!key) return false;
+  if (PARTY2_PREFILL_VARIABLES.has(key)) return true;
+  return /owner2|owner_2|guarantor2|guarantor_2|merchant2|merchant_2|seller_2|business_name_2|appendix_merchant2/.test(
+    key,
+  );
+}
+
+/** Drop owner-2 / guarantor-2 prefill when the envelope only has one merchant signer. */
+export function stripParty2PrefillUnlessMultiOwner(
+  values: Record<string, string>,
+  ownerCount: number,
+): Record<string, string> {
+  if (ownerCount >= 2) return values;
+  const out = { ...values };
+  for (const key of Object.keys(out)) {
+    if (isParty2PrefillVariable(key)) delete out[key];
+  }
+  return out;
+}
 
 function mirrorIdentityFields(
   out: Record<string, string>,
@@ -238,14 +275,99 @@ function mirrorIdentityFields(
   }
 }
 
+/** Overwrite every key in the group with the best available party identity value. */
+function forceMirrorIdentityFields(
+  out: Record<string, string>,
+  keys: readonly string[],
+  preferredKeys: readonly string[] = keys,
+): void {
+  const value = preferredKeys
+    .concat(keys)
+    .map((k) => String(out[k] || '').trim())
+    .find(Boolean);
+  if (!value) return;
+  for (const k of keys) {
+    out[k] = value;
+  }
+}
+
+const PARTY1_NAME_PREFERRED = [
+  'owner1_guarantor_name',
+  'guaranty_owner1_name',
+  'guaranty_guarantor1_name',
+  'guaranty_client_name',
+  'customer_name',
+  'security_guarantor',
+  'seller_1_name',
+] as const;
+
+const PARTY2_NAME_PREFERRED = [
+  'owner2_guarantor_name',
+  'merchant2_name',
+  'guaranty_owner2_name',
+  'guaranty_guarantor2_name',
+  'appendix_merchant2_name',
+  'seller_2_name',
+  'business_name_2',
+] as const;
+
+/** Contract page 15 — ACH portal, credentials, and references (merchant fills at signing). */
+export const FILL_AT_SIGNING_VARIABLES = new Set([
+  'ach_authorization_bank_portal_website',
+  'ach_authorization_username',
+  'ach_authorization_password',
+  'ach_authorization_security_question1',
+  'ach_authorization_security_answer1',
+  'ach_authorization_security_question2',
+  'ach_authorization_security_answer2',
+  'ach_authorization_security_question3',
+  'ach_authorization_security_answer3',
+  'ach_authorization_other_infomation',
+  'ach_authorization_reference_name1',
+  'ach_authorization_reference_number_1',
+  'ach_authorization_reference_relationship1',
+  'ach_authorization_reference_name2',
+  'ach_authorization_reference_number2',
+  'ach_authorization_reference_relationship2',
+  'ach_authorization_reference_name3',
+  'ach_authorization_reference_number3',
+  'ach_authorization_reference_relationship3',
+]);
+
+const EXHIBIT_PREFILL_VARIABLE_PATTERN = /^(exhibit_a_value_\d+|exhibit_owner_name)$/i;
+
+function isExhibitPrefillPlacement(placement: DocumentLayoutPlacement): boolean {
+  return EXHIBIT_PREFILL_VARIABLE_PATTERN.test(String(placement.variable || '').trim());
+}
+
+/** Only page-15 ACH portal / security / reference fields are required signer text. */
+function isRequiredSignerTextField(placement: DocumentLayoutPlacement): boolean {
+  if (placement.type !== 'text') return false;
+  return (
+    String(placement.pageNumber || '') === '15' &&
+    isFillAtSigningPlacement(placement)
+  );
+}
+
+function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
+  if (placement.fillAtSigning === true) return true;
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return FILL_AT_SIGNING_VARIABLES.has(variable);
+}
+
+/** True when a live DocuSign tab is a signer-fill field (must stay unlocked at send). */
+export function isFillAtSigningTabRef(tab: {
+  tabLabel?: string;
+  name?: string;
+}): boolean {
+  const label = String(tab.tabLabel || tab.name || '')
+    .trim()
+    .toLowerCase();
+  return Boolean(label && FILL_AT_SIGNING_VARIABLES.has(label));
+}
+
 function expandPrefillValues(values: Record<string, string>): Record<string, string> {
   const out = { ...values };
-  mirrorIdentityFields(out, PARTY1_NAME_KEYS);
-  mirrorIdentityFields(out, PARTY1_SS_KEYS);
-  mirrorIdentityFields(out, PARTY1_DL_KEYS);
-  mirrorIdentityFields(out, PARTY2_NAME_KEYS);
-  mirrorIdentityFields(out, PARTY2_SS_KEYS);
-  mirrorIdentityFields(out, PARTY2_DL_KEYS);
   for (const [canonical, aliases] of Object.entries(PREFILL_VALUE_ALIASES)) {
     const v = String(out[canonical] || '').trim();
     if (!v) continue;
@@ -254,11 +376,40 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
     }
   }
   if (!String(out.client_name || '').trim()) {
-    const legal = String(
-      out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+    const personal = String(
+      out.customer_name || out.client_name_by || '',
     ).trim();
-    if (legal) out.client_name = legal;
+    if (personal) {
+      out.client_name = personal;
+    } else {
+      const legal = String(
+        out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+      ).trim();
+      if (legal) out.client_name = legal;
+    }
   }
+  forceMirrorIdentityFields(out, PARTY1_NAME_KEYS, PARTY1_NAME_PREFERRED);
+  forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
+  forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
+  const legalName = String(
+    out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+  ).trim();
+  const personalClientName = PARTY1_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
+    Boolean,
+  );
+  const currentClientName = String(out.client_name || '').trim();
+  if (personalClientName) {
+    out.client_name = personalClientName;
+  } else if (legalName && currentClientName && currentClientName === legalName) {
+    const customer = String(out.customer_name || out.client_name_by || '').trim();
+    if (customer && customer !== legalName) out.client_name = customer;
+  }
+  forceMirrorIdentityFields(out, PARTY1_NAME_KEYS, PARTY1_NAME_PREFERRED);
+  forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
+  forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
+  forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
+  forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
+  forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
   return out;
 }
 
@@ -284,14 +435,14 @@ function enrichValuesFromSigners(
     }
   }
   if (ownerCount >= 2) {
-    const party2FromPrefill = PARTY2_NAME_KEYS.map((k) => String(out[k] || '').trim()).find(
+    const party2FromPrefill = PARTY2_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
       Boolean,
     );
     if (party2FromPrefill) {
-      mirrorIdentityFields(out, PARTY2_NAME_KEYS);
-      mirrorIdentityFields(out, PARTY2_SS_KEYS);
-      mirrorIdentityFields(out, PARTY2_DL_KEYS);
-      const party2Name = PARTY2_NAME_KEYS.map((k) => String(out[k] || '').trim()).find(
+      forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
+      forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
+      forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
+      const party2Name = PARTY2_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
         Boolean,
       );
       if (party2Name) out.business_name_2 = party2Name;
@@ -317,8 +468,34 @@ function enrichValuesFromSigners(
           out[k] = secondaryName;
         }
         out.business_name_2 = secondaryName;
+        forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
       }
     }
+  }
+  forceMirrorIdentityFields(out, PARTY1_NAME_KEYS, PARTY1_NAME_PREFERRED);
+  forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
+  forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
+  const legalAfterSigners = String(
+    out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+  ).trim();
+  const personalAfterSigners = PARTY1_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
+    Boolean,
+  );
+  const currentAfterSigners = String(out.client_name || '').trim();
+  if (personalAfterSigners) {
+    out.client_name = personalAfterSigners;
+  } else if (
+    legalAfterSigners &&
+    currentAfterSigners &&
+    currentAfterSigners === legalAfterSigners
+  ) {
+    const customer = String(out.customer_name || out.client_name_by || '').trim();
+    if (customer && customer !== legalAfterSigners) out.client_name = customer;
+  }
+  if (ownerCount >= 2) {
+    forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
+    forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
+    forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
   }
   return out;
 }
@@ -480,7 +657,6 @@ const PRIMARY_GUARANTOR_NAME_VARIABLES = [
   'guaranty_owner1_name',
   'guaranty_guarantor1_name',
   'guaranty_client_name',
-  'client_name',
   'security_guarantor',
 ] as const;
 
@@ -529,12 +705,41 @@ function expandLayoutsWithOwner2Initials(
   });
 }
 
+const FLEX_ADDENDUM_MONEY_VARIABLES = new Set([
+  'daily_payment_1',
+  'daily_payment_2',
+  'receivable_purchase_1',
+  'receivable_purchase_2',
+]);
+
+function formatFlexAddendumMoneyUsd(value: string): string {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  const n = Number(trimmed.replace(/[$,\s]/g, ''));
+  if (!Number.isFinite(n)) return trimmed;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
+function isZeroMoneyPrefillValue(value: unknown): boolean {
+  const n = Number(String(value ?? '').replace(/[$,\s]/g, ''));
+  return Number.isFinite(n) && n === 0;
+}
+
 function resolveTextPlacementValue(
   variable: string,
   values: Record<string, string>,
 ): string {
   const key = String(variable || '').trim();
   if (!key) return '';
+  const formatIfMoney = (raw: string) =>
+    FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
+      ? formatFlexAddendumMoneyUsd(raw)
+      : raw;
   const candidates = [
     key,
     key.toLowerCase(),
@@ -542,12 +747,16 @@ function resolveTextPlacementValue(
   ].filter(Boolean);
   for (const candidate of candidates) {
     const direct = String(values[candidate] || '').trim();
-    if (direct) return direct;
+    if (direct && !(key === 'appendix_underwriting_fees' && isZeroMoneyPrefillValue(direct))) {
+      return formatIfMoney(direct);
+    }
     const aliases = PREFILL_VALUE_ALIASES[candidate] || PREFILL_VALUE_ALIASES[candidate.toLowerCase()];
     if (aliases) {
       for (const alias of aliases) {
         const v = String(values[alias] || '').trim();
-        if (v) return v;
+        if (!v) continue;
+        if (key === 'appendix_underwriting_fees' && isZeroMoneyPrefillValue(v)) continue;
+        return formatIfMoney(v);
       }
     }
   }
@@ -587,6 +796,7 @@ function placementAllowed(
 
 function shouldIncludeEmptyTextPlacement(placement: DocumentLayoutPlacement): boolean {
   if (placement.type !== 'text') return false;
+  if (isFillAtSigningPlacement(placement)) return true;
   if (placement.lockedForSigner) return true;
   if (placement.optional) return true;
   return false;
@@ -596,8 +806,9 @@ function toTextTab(
   placement: DocumentLayoutPlacement,
   value: string,
   envelopeDocumentId: string,
-  lockDataTabs = false,
 ): DocuSignTab {
+  const fillAtSigning = isFillAtSigningPlacement(placement);
+  const tabValue = fillAtSigning ? '' : value;
   const variable = String(placement.variable || '').trim();
   const displayLabel =
     getPrefillDisplayLabel(variable) ||
@@ -609,28 +820,32 @@ function toTextTab(
     displayLabel ||
     `${variable || 'text'}_${placement.id}`;
   const width = resolveDocuSignPrefillTabWidth({
-    value,
+    value: tabValue,
     height: placement.height,
     layoutWidth: placement.width,
   });
-  return applyDocuSignPrefillTabStyle(
-    {
-      tabLabel,
-      name: variable || undefined,
-      documentId: envelopeDocumentId,
-      pageNumber: placement.pageNumber,
-      xPosition: placement.x,
-      yPosition: placement.y,
-      value,
-      required: placement.optional ? undefined : 'false',
-      ...(lockDataTabs || placement.lockedForSigner ? { locked: 'true' } : {}),
-      ...(placement.optional ? { optional: 'true' } : {}),
-      shared: 'true',
-      width,
-      ...(placement.height ? { height: placement.height } : {}),
-    },
-    { height: placement.height },
-  );
+  // Only page-15 ACH signer-fill fields stay editable; all other text is read-only.
+  const lockTab = !fillAtSigning;
+  const optionalTab = !isRequiredSignerTextField(placement);
+  const tabPayload: Record<string, string> = {
+    tabLabel,
+    ...(variable ? { name: variable } : {}),
+    documentId: envelopeDocumentId,
+    pageNumber: placement.pageNumber,
+    xPosition: placement.x,
+    yPosition: placement.y,
+    ...(optionalTab
+      ? { optional: 'true' }
+      : { required: 'true', optional: 'false' }),
+    ...(lockTab ? { locked: 'true' } : {}),
+    shared: fillAtSigning ? 'false' : 'true',
+    width,
+    ...(placement.height ? { height: placement.height } : {}),
+  };
+  if (tabValue) {
+    tabPayload.value = tabValue;
+  }
+  return applyDocuSignPrefillTabStyle(tabPayload, { height: placement.height });
 }
 
 /** Stamp layout text/date values onto the base PDF for CC email (DocuSign download is often blank). */
@@ -648,6 +863,7 @@ export async function renderFlattenedLayoutPdf(
   for (const placement of layout.placements) {
     if (placement.type !== 'text' && placement.type !== 'date') continue;
     if (!placementAllowed(placement, counts, expanded)) continue;
+    if (isFillAtSigningPlacement(placement)) continue;
     const text = resolveTextPlacementValue(placement.variable || '', expanded);
     if (!text) continue;
 
@@ -699,6 +915,7 @@ function toDateSignedTab(
       pageNumber: placement.pageNumber,
       xPosition: placement.x,
       yPosition: placement.y,
+      optional: 'true',
       ...(placement.width ? { width: placement.width } : {}),
       ...(placement.height ? { height: placement.height } : {}),
     },
@@ -828,9 +1045,12 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     ownerCount: options.ownerCount ?? 1,
     guarantorCount: options.guarantorCount ?? 0,
   };
-  const values = enrichValuesFromSigners(
-    expandPrefillValues(options.values),
-    options.signers,
+  const values = stripParty2PrefillUnlessMultiOwner(
+    enrichValuesFromSigners(
+      expandPrefillValues(options.values),
+      options.signers,
+      counts.ownerCount,
+    ),
     counts.ownerCount,
   );
   const documents: Array<{ documentId: string; name: string; documentBase64: string }> =
@@ -892,9 +1112,11 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
           continue;
         }
         const variable = placement.variable || '';
-        const value = resolveTextPlacementValue(variable, values);
+        const resolved = resolveTextPlacementValue(variable, values);
+        const value = isFillAtSigningPlacement(placement) ? '' : resolved;
+        if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
         if (!value && !shouldIncludeEmptyTextPlacement(placement)) continue;
-        bucket.textTabs.push(toTextTab(placement, value, envelopeDocId, options.lockDataTabs));
+        bucket.textTabs.push(toTextTab(placement, value, envelopeDocId));
         continue;
       }
 
