@@ -12,6 +12,7 @@ import {
   isDocusignAccountIdGuid,
   normalizeDocusignRestBaseUri,
 } from './docusign-client';
+import { normalizePemKey } from './normalize-pem-key';
 
 const JWT_LIFETIME_SEC = 3600;
 const JWT_SCOPES = 'signature impersonation';
@@ -33,10 +34,6 @@ export function isDocusignJwtConfigured(): boolean {
       DOCUSIGN_IMPERSONATED_USER_ID?.trim() &&
       DOCUSIGN_RSA_PRIVATE_KEY?.trim(),
   );
-}
-
-function normalizePemKey(raw: string): string {
-  return raw.replace(/\\n/g, '\n').trim();
 }
 
 function getJwtAudience(): string {

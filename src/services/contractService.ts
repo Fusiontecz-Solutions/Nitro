@@ -466,6 +466,78 @@ class ContractService {
       }
     }
 
+    if (mapped.documentType === 'driverLicense') {
+      if (mapped.panels?.owner) {
+        const owner = mapped.panels.owner;
+        const ownerFirstName = firstNonEmptyString(owner.firstName);
+        const ownerLastName = firstNonEmptyString(owner.lastName);
+        if (ownerFirstName || ownerLastName) {
+          const ownerPayload = {
+            firstName: ownerFirstName || undefined,
+            lastName: ownerLastName || undefined,
+            address: firstNonEmptyString(owner.address) || undefined,
+            city: firstNonEmptyString(owner.city) || undefined,
+            state: firstNonEmptyString(owner.state) || undefined,
+            zip: firstNonEmptyString(owner.zipCode) || undefined,
+          };
+          const existingOwner = await (prisma as any).contractOwner.findFirst({
+            where: { contractId },
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+          });
+          if (existingOwner?.id) {
+            await this.updateContractOwner(existingOwner.id, ownerPayload);
+          } else {
+            await this.createContractOwner({
+              contractId,
+              firstName: ownerFirstName || '—',
+              lastName: ownerLastName || '—',
+              address: ownerPayload.address,
+              city: ownerPayload.city,
+              state: ownerPayload.state,
+              zip: ownerPayload.zip,
+            });
+          }
+        }
+      }
+
+      if (mapped.panels?.guarantor) {
+        const guarantor = mapped.panels.guarantor;
+        const guarantorFirstName = firstNonEmptyString(guarantor.firstName);
+        const guarantorLastName = firstNonEmptyString(guarantor.lastName);
+        if (guarantorFirstName || guarantorLastName) {
+          const guarantorPayload = {
+            firstName: guarantorFirstName || undefined,
+            lastName: guarantorLastName || undefined,
+            address: firstNonEmptyString(guarantor.address) || undefined,
+            city: firstNonEmptyString(guarantor.city) || undefined,
+            state: firstNonEmptyString(guarantor.state) || undefined,
+            zip: firstNonEmptyString(guarantor.zipCode) || undefined,
+            driverLicense: firstNonEmptyString(guarantor.driverLicenseNumber) || undefined,
+          };
+          const existingGuarantor = await (prisma as any).contractGuarantor.findFirst({
+            where: { contractId },
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+          });
+          if (existingGuarantor?.id) {
+            await this.updateContractGuarantor(existingGuarantor.id, guarantorPayload);
+          } else {
+            await this.createContractGuarantor({
+              contractId,
+              firstName: guarantorFirstName || '—',
+              lastName: guarantorLastName || '—',
+              address: guarantorPayload.address,
+              city: guarantorPayload.city,
+              state: guarantorPayload.state,
+              zip: guarantorPayload.zip,
+              driverLicense: guarantorPayload.driverLicense,
+            });
+          }
+        }
+      }
+    }
+
     return mergedContractPrefillOverrides;
   }
 
@@ -2132,8 +2204,18 @@ class ContractService {
   }) {
     const where: any = {};
     if (filters.type) where.type = String(filters.type).trim();
-    if (filters.state) where.state = String(filters.state).trim().toLowerCase();
-    if (filters.frequency) where.frequency = String(filters.frequency).trim().toLowerCase();
+    if (filters.state) {
+      where.state = {
+        equals: String(filters.state).trim(),
+        mode: 'insensitive',
+      };
+    }
+    if (filters.frequency) {
+      where.frequency = {
+        equals: String(filters.frequency).trim(),
+        mode: 'insensitive',
+      };
+    }
 
     return (prisma as any).boldSignTemplate.findMany({
       where,

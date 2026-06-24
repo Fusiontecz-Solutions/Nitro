@@ -9,6 +9,7 @@ import {
   loadPlatformDocumentPdfBase64,
   normalizeSupplementalLayoutKeys,
 } from '../platform-document-registry';
+import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
 import type { DocumentLayout } from './convert-docusign-template-export';
 import {
   buildEnvelopeFromLayouts,
@@ -26,16 +27,39 @@ const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
 export type DocumentLayoutWithBase64 = DocumentLayout & { documentBase64: string };
 
 export async function loadMainContractLayoutPackage(
-  layoutKey: DocumentLayoutKey = DOCUMENT_LAYOUT_KEYS.contract,
+  layoutKey: string = DOCUMENT_LAYOUT_KEYS.contract,
 ): Promise<DocumentLayoutWithBase64> {
-  const layout = getDocumentLayout(layoutKey);
+  const key = String(layoutKey || '').trim() || DOCUMENT_LAYOUT_KEYS.contract;
+
+  if (isFunderContractLayoutKey(key)) {
+    const layout = getDocumentLayout(DOCUMENT_LAYOUT_KEYS.contract);
+    const row = await prisma.boldSignTemplate.findFirst({
+      where: { OR: [{ layoutKey: key }, { templateId: key }] },
+      orderBy: { createdAt: 'desc' },
+      select: { pdfUrl: true, name: true },
+    });
+    const pdfUrl = String(row?.pdfUrl || '').trim();
+    if (!pdfUrl) {
+      throw new Error('No contract PDF uploaded for this funder.');
+    }
+    const documentBase64 = await fetchPdfAsBase64(pdfUrl);
+    return {
+      ...layout,
+      key,
+      name: row?.name || layout.name,
+      documentBase64,
+    };
+  }
+
+  const platformKey = key as DocumentLayoutKey;
+  const layout = getDocumentLayout(platformKey);
   try {
-    const documentBase64 = await loadPlatformDocumentPdfBase64(layoutKey);
+    const documentBase64 = await loadPlatformDocumentPdfBase64(platformKey);
     return { ...layout, documentBase64 };
   } catch {
-    if (layoutKey !== DOCUMENT_LAYOUT_KEYS.contract) {
+    if (platformKey !== DOCUMENT_LAYOUT_KEYS.contract) {
       throw new Error(
-        `No PDF configured for "${layout.name}". Upload to Cloudinary and set BoldSignTemplate.pdfUrl with layoutKey "${layoutKey}".`,
+        `No PDF configured for "${layout.name}". Upload to Cloudinary and set BoldSignTemplate.pdfUrl with layoutKey "${platformKey}".`,
       );
     }
     const latest = await prisma.contractTemplate.findFirst({
@@ -272,8 +296,8 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   supplementalRefs?: string[];
   /** When false, envelope contains only supplemental layouts (e.g. standalone ACH). */
   includeMainContract?: boolean;
-  /** Platform layout key for the main contract PDF (default: Katan contract). */
-  mainContractLayoutKey?: DocumentLayoutKey;
+  /** Platform or funder-specific layout key for the main contract PDF. */
+  mainContractLayoutKey?: string;
   roles: Array<Record<string, unknown>>;
   prefillFields?: Array<{ id: string; value: string }>;
   ownerCount?: number;

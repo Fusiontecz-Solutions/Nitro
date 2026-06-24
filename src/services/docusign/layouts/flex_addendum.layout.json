@@ -23,7 +23,10 @@
     "client_legal_name",
     "client_name",
     "business_name_2",
-    "daily_payment"
+    "daily_payment_1",
+    "daily_payment_2",
+    "receivable_purchase_1",
+    "receivable_purchase_2"
   ],
   "placements": [
     {
@@ -128,7 +131,7 @@
     {
       "id": "p7",
       "type": "text",
-      "variable": "daily_payment",
+      "variable": "daily_payment_1",
       "documentId": "1",
       "pageNumber": "1",
       "x": "226",
@@ -137,12 +140,12 @@
       "height": "16",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "daily_payment"
+      "sourceTabLabel": "daily_payment_1"
     },
     {
       "id": "p8",
       "type": "text",
-      "variable": "daily_payment",
+      "variable": "daily_payment_2",
       "documentId": "1",
       "pageNumber": "1",
       "x": "226",
@@ -151,7 +154,35 @@
       "height": "16",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "daily_payment"
+      "sourceTabLabel": "daily_payment_2"
+    },
+    {
+      "id": "p9",
+      "type": "text",
+      "variable": "receivable_purchase_1",
+      "documentId": "1",
+      "pageNumber": "1",
+      "x": "390",
+      "y": "363",
+      "width": "120",
+      "height": "16",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "receivable_purchase_1"
+    },
+    {
+      "id": "p10",
+      "type": "text",
+      "variable": "receivable_purchase_2",
+      "documentId": "1",
+      "pageNumber": "1",
+      "x": "389",
+      "y": "377",
+      "width": "120",
+      "height": "16",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "receivable_purchase_2"
     }
   ],
   "pdf": {

@@ -335,6 +335,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       guarantorCount,
       contractId,
       sendPackage,
+      funderName,
     } = req.body;
 
     const hasSupplementalLayoutKeys =
@@ -407,6 +408,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
               includeDisclosure: sendPackage.includeDisclosure === true,
             }
           : undefined,
+      funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
     });
 
     return res.json(result);

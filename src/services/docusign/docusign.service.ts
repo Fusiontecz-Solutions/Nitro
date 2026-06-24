@@ -64,6 +64,11 @@ import {
   isDocusignJwtConfigured,
 } from './utils/docusign-jwt';
 import {
+  clearDocusignProfileJwtCache,
+  getDocusignJwtSessionForProfile,
+} from './utils/docusign-profile-jwt';
+import { getFunderWithDocuSignCredentials } from '../funderProfileService';
+import {
   extractCrmApplicationIdFromWebhook,
   extractDocusignConnectEventName,
   extractDocusignEnvelopeId,
@@ -83,6 +88,7 @@ import {
   type DocumentLayoutKey,
 } from './layouts/document-layout.registry';
 import { isDocumentLayoutKey } from './platform-document-registry';
+import { isFunderContractLayoutKey } from '../../utils/funderContractLayout';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
 import {
   findApplicationIdByAchEnvelopeId,
@@ -450,11 +456,57 @@ export class DocusignService {
     };
   }
 
-  private async getAuthContext(userId: string) {
+  private async getJwtAuthContextForFunder(funderName?: string | null) {
+    const name = String(funderName || '').trim();
+    if (!name) return this.getJwtAuthContext();
+
+    const linked = await getFunderWithDocuSignCredentials(name);
+    const profile = linked?.docusignProfile;
+    if (!profile?.id || profile.isActive === false) {
+      return this.getJwtAuthContext();
+    }
+
+    try {
+      const { accessToken, accountId, baseUri } = await getDocusignJwtSessionForProfile(
+        String(profile.id),
+        {
+          integrationKey: profile.integrationKey,
+          impersonatedUserId: profile.impersonatedUserId,
+          rsaPrivateKey: profile.rsaPrivateKey,
+          accountId: profile.accountId,
+          baseUri: profile.baseUri,
+        },
+      );
+      return {
+        user: null as any,
+        accountId,
+        client: this.createRestClient(accessToken, baseUri),
+        docusignProfileId: String(profile.id),
+      };
+    } catch (error: any) {
+      clearDocusignProfileJwtCache(String(profile.id));
+      const detail = error?.response?.data?.error_description || error?.message || String(error);
+      throw new ServiceConfigException(
+        `DocuSign JWT failed for funder "${name}" (profile "${profile.name}"). ${detail}`,
+      );
+    }
+  }
+
+  private async getAuthContext(
+    userId: string,
+    options?: { funderName?: string | null },
+  ) {
     if (resolveDocusignAuthMode() === 'jwt') {
+      const funderName = String(options?.funderName || '').trim();
+      if (funderName) {
+        const linked = await getFunderWithDocuSignCredentials(funderName);
+        if (linked?.docusignProfile?.id && linked.docusignProfile.isActive !== false) {
+          return this.getJwtAuthContextForFunder(funderName);
+        }
+      }
       if (!isDocusignJwtConfigured()) {
         throw new ServiceConfigException(
-          'DocuSign JWT is not configured. Set DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_IMPERSONATED_USER_ID, and DOCUSIGN_RSA_PRIVATE_KEY.',
+          'DocuSign JWT is not configured. Set DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_IMPERSONATED_USER_ID, and DOCUSIGN_RSA_PRIVATE_KEY, or link this funder to a DocuSign account in Settings.',
         );
       }
       return this.getJwtAuthContext();
@@ -3711,11 +3763,25 @@ export class DocusignService {
     return resolveSupplementalRefsFromDb(filters);
   }
 
-  private resolveMainContractLayoutKeyOption(
+  private async resolveMainContractLayoutKeyOption(
     layoutKeyRaw?: string | null,
-  ): DocumentLayoutKey | undefined {
+  ): Promise<string | undefined> {
     const key = String(layoutKeyRaw || '').trim();
     if (!key) return undefined;
+
+    if (isFunderContractLayoutKey(key)) {
+      const row = await prisma.boldSignTemplate.findFirst({
+        where: { OR: [{ layoutKey: key }, { templateId: key }] },
+        select: { pdfUrl: true },
+      });
+      if (!String(row?.pdfUrl || '').trim()) {
+        throw new BadRequestException(
+          `No contract PDF configured for funder layout "${key}". Upload a contract in Settings → Funders.`,
+        );
+      }
+      return key;
+    }
+
     if (!isDocumentLayoutKey(key)) {
       throw new BadRequestException(`Unknown main contract layout key "${key}".`);
     }
@@ -3794,9 +3860,12 @@ export class DocusignService {
         includeAddendum?: boolean;
         includeDisclosure?: boolean;
       };
+      funderName?: string | null;
     },
   ) {
-    const { client, accountId } = await this.getAuthContext(userId);
+    const { client, accountId } = await this.getAuthContext(userId, {
+      funderName: options.funderName,
+    });
 
     const supplementalRefs = options.supplementalRefs || [];
     const standaloneLinkKind = resolveStandaloneLinkKind(
@@ -3808,12 +3877,13 @@ export class DocusignService {
     try {
       const sendImmediately = options.autoSend === true;
       const envelopeSubject = String(options.title || '').trim();
+      const mainContractLayoutKey = await this.resolveMainContractLayoutKeyOption(
+        options.mainContractLayoutKey,
+      );
       built = await buildPlatformLayoutEnvelopeDefinition({
         supplementalRefs,
         includeMainContract: options.includeMainContract,
-        mainContractLayoutKey: this.resolveMainContractLayoutKeyOption(
-          options.mainContractLayoutKey,
-        ),
+        mainContractLayoutKey,
         roles: options.roles,
         prefillFields: options.prefillFields,
         ownerCount: options.ownerCount,
@@ -3983,6 +4053,7 @@ export class DocusignService {
         includeAddendum?: boolean;
         includeDisclosure?: boolean;
       };
+      funderName?: string | null;
     },
   ) {
     if (!options?.roles?.length) {
@@ -4025,6 +4096,7 @@ export class DocusignService {
       reminderSettings: options.reminderSettings,
       contractId: options.contractId,
       sendPackage: options.sendPackage,
+      funderName: options.funderName,
     });
   }
 

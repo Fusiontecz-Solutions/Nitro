@@ -48,6 +48,7 @@ import superAdminPlatformRoutes from './superAdminPlatformRoutes';
 import activityLogRoutes from './activityLogRoutes';
 import sendgridWebhookRoutes from './sendgridWebhookRoutes';
 import mailRoutes from './mailRoutes';
+import integrationSettingsRoutes from './integrationSettingsRoutes';
 
 router.use('/auth', authRoutes);
 router.use('/roles', roleRoutes);
@@ -96,6 +97,7 @@ router.use('/super-admin-platform', superAdminPlatformRoutes);
 router.use('/activity-logs', activityLogRoutes);
 router.use('/sendgrid', sendgridWebhookRoutes);
 router.use('/mail', mailRoutes);
+router.use('/integration-settings', integrationSettingsRoutes);
 
 // router.get('/google/test', async (req, res) => {
 //   try {
