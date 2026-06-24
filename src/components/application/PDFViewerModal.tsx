@@ -169,6 +169,13 @@ import {
     isPlatformLayoutKey,
     supplementalOptionLabel,
 } from "./contractdata/platformDocumentConfig";
+import {
+    contractPreviewNameForLayoutKey,
+    funderOptionsForState,
+    isAllianceBridgeFunder,
+    isTexasContractState,
+    resolveMainContractLayoutKey,
+} from "./contractdata/contractFunderConfig";
 import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
 import {
     buildContractSignerRowsFromOwnerParties,
@@ -349,9 +356,11 @@ interface PDFViewerModalProps {
         supplementalLayoutKey?: string | null;
         /** CRM BoldSignTemplate row ids (e.g. state disclosure) merged after addendum. */
         supplementalDocumentRefs?: string[];
-        /** When false, send supplemental document only (standalone ACH). */
-        includeMainContract?: boolean;
-        /** Which documents are included in this envelope. */
+  /** When false, send supplemental document only (standalone ACH). */
+  includeMainContract?: boolean;
+  /** Platform layout key for the main contract PDF. */
+  mainContractLayoutKey?: string | null;
+  /** Which documents are included in this envelope. */
         sendPackage?: ContractSendPackageSelection;
         funderName?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
@@ -995,15 +1004,55 @@ const PDFViewerModal = ({
         setPdfRightPaneTab(initial);
     }, [isOpen, initialRightPaneTab]);
 
-    /** Includes any saved funder from the contract so the Select can show values not in the default list. */
+    /** Includes state-specific funders (Texas → Alliance Bridge) and any saved value. */
     const funderSelectOptions = useMemo(() => {
-        const base = [...DEFAULT_FUNDER_OPTIONS];
+        const base = funderOptionsForState(selectedState);
         const cur = String(selectedFunder || "").trim();
         if (cur && !base.some((x) => x.toLowerCase() === cur.toLowerCase())) {
             return [...base, cur];
         }
         return base;
-    }, [selectedFunder]);
+    }, [selectedState, selectedFunder]);
+    const [contractPreviewUrl, setContractPreviewUrl] = useState<string | null>(null);
+    const [contractPreviewName, setContractPreviewName] = useState<string>("Contract.pdf");
+    const effectiveContractPreviewUrl = contractPreviewUrl || fileUrl;
+    const effectiveContractPreviewName = contractPreviewName || fileName || "Contract.pdf";
+
+    useEffect(() => {
+        if (!isOpen) {
+            setContractPreviewUrl(null);
+            return;
+        }
+        const layoutKey = resolveMainContractLayoutKey(selectedFunder);
+        let cancelled = false;
+        void (async () => {
+            try {
+                const res = await axiosGet("/contract-templates/latest", {
+                    params: { layoutKey },
+                });
+                const data = (
+                    res as { data?: { data?: { url?: string; originalName?: string } } }
+                )?.data?.data;
+                if (cancelled) return;
+                if (data?.url) {
+                    setContractPreviewUrl(data.url);
+                    setContractPreviewName(
+                        data.originalName || contractPreviewNameForLayoutKey(layoutKey),
+                    );
+                    return;
+                }
+            } catch {
+                /* fall through */
+            }
+            if (!cancelled) {
+                setContractPreviewUrl(fileUrl);
+                setContractPreviewName(fileName || contractPreviewNameForLayoutKey(layoutKey));
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [isOpen, selectedFunder, fileUrl, fileName]);
     /** Canonical contract id for this application (filled after lookup below). */
     const [resolvedContractId, setResolvedContractId] = useState<number | null>(null);
     /** Prefill overrides from `Contract.contractPrefillOverrides` (null = loaded, none stored). */
@@ -2676,7 +2725,8 @@ const PDFViewerModal = ({
                     packageSelection.includeMainContract &&
                     contractIdForDeal != null &&
                     Number.isFinite(contractIdForDeal) &&
-                    funderForDealId
+                    funderForDealId &&
+                    !isAllianceBridgeFunder(funderForDealId)
                 ) {
                     try {
                         const assignResult = await dispatch(
@@ -2745,6 +2795,7 @@ const PDFViewerModal = ({
                     includeMainContract: packageSelection.includeMainContract,
                     sendPackage: packageSelection,
                     funderName: selectedFunder.trim() || null,
+                    mainContractLayoutKey: resolveMainContractLayoutKey(selectedFunder),
                     signerRoles: signerRolesForSend,
                     prefillFields: prefillFieldsForDraft,
                 });
@@ -5102,14 +5153,14 @@ const PDFViewerModal = ({
         void handleSaveCurrentPanel();
     };
 
-    if (!isOpen || !fileUrl) return null;
+    if (!isOpen || !effectiveContractPreviewUrl) return null;
 
     const currentPreviewUrl =
         (activeStep === "documents" || activeStep === "info" || activeStep === "summary") && uploadedPreviewUrl
             ? uploadedPreviewUrl
             : activeStep === "documents" && activePreview && documentUrls[activePreview]
                 ? documentUrls[activePreview]
-                : fileUrl;
+                : effectiveContractPreviewUrl;
 
     return (
         <>
@@ -5120,7 +5171,7 @@ const PDFViewerModal = ({
                     <div className="flex shrink-0 flex-col border-b bg-white px-6 py-3 dark:border-slate-700 dark:bg-slate-900">
                         <div className="mb-4">
                             <DialogTitle className="text-lg font-bold text-slate-900 dark:text-slate-100">
-                                Create Contract — {fileName || "Double A Landscaping & Supply"}
+                                Create Contract — {effectiveContractPreviewName || fileName || "Double A Landscaping & Supply"}
                             </DialogTitle>
                         </div>
 
@@ -5762,6 +5813,19 @@ const PDFViewerModal = ({
                                                             setSelectedState(v);
                                                             const picked = pickUsStateForSelect(v);
                                                             if (
+                                                                selectedFunder &&
+                                                                isAllianceBridgeFunder(selectedFunder) &&
+                                                                !isTexasContractState(picked)
+                                                            ) {
+                                                                setSelectedFunder("");
+                                                                if (effectiveContractId != null) {
+                                                                    void persistContractStateAndFunder({
+                                                                        state: v,
+                                                                        funderName: "",
+                                                                    });
+                                                                }
+                                                            }
+                                                            if (
                                                                 effectiveContractId != null &&
                                                                 picked
                                                             ) {
@@ -5815,7 +5879,11 @@ const PDFViewerModal = ({
                                                         <SelectContent position="popper" className="z-[10100] max-h-72">
                                                             {funderSelectOptions.map((f) => (
                                                                 <SelectItem key={f} value={f}>
-                                                                    {f}
+                                                                    {f === "Katan II"
+                                                                        ? "Katan 2"
+                                                                        : f === "Katan III"
+                                                                          ? "Katan 3"
+                                                                          : f}
                                                                 </SelectItem>
                                                             ))}
                                                         </SelectContent>

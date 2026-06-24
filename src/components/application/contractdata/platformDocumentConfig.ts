@@ -2,6 +2,7 @@
 
 export const PLATFORM_LAYOUT_KEYS = {
     contract: "contract",
+    allianceBridgeContract: "alliance_bridge_contract",
     flexAddendum: "flex_addendum",
     balanceTransfer: "balance_transfer",
     achAuthorization: "ach_authorization",
