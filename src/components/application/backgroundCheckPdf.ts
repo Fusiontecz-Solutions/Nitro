@@ -346,13 +346,6 @@ function buildDataMerchSections(
   return `${summarySection}${merchantSections}`;
 }
 
-function buildDataMerchHtml(
-  datamerch: Omit<DataMerchLookupData, "raw">,
-  searchedAt: string | null | undefined,
-): string {
-  return buildDataMerchSections(datamerch, searchedAt);
-}
-
 function buildBackgroundCheckPdfHtml(
   input: BackgroundCheckPdfInput,
   attachmentPreviews: Record<string, AttachmentPreview | null>,

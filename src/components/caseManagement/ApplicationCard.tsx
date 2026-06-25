@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/card';
 import { BarChart3, Calendar } from 'lucide-react';
 import type { Application } from '@/types/applicationTypes';
 import { useState, useRef } from 'react';
-import { formatCurrency, parseNumberUS } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 
 interface ApplicationCardProps {
@@ -43,21 +43,12 @@ const ApplicationCard = ({ application, onClick }: ApplicationCardProps) => {
         : 'N/A';
 
     // Format amount: prefer OfferDecision offer, then requested loanAmount
-    const resolvedAmount = resolveApplicationDisplayLoanAmount(application);
-    const rawAmount = resolvedAmount ?? null;
+    const rawAmount = resolveApplicationDisplayLoanAmount(application);
 
-    const num =
-        rawAmount == null || rawAmount === ""
-            ? null
-            : typeof rawAmount === "number"
-              ? rawAmount
-              : parseNumberUS(String(rawAmount));
     const amount =
-        rawAmount == null || rawAmount === ""
+        rawAmount == null || Number.isNaN(rawAmount)
             ? "-"
-            : num != null && !Number.isNaN(num)
-              ? formatCurrency(num)
-              : String(rawAmount);
+            : formatCurrency(rawAmount);
 
     // Get priority
     const priority = application.priority || 'Medium';

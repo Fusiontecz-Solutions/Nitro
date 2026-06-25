@@ -49,7 +49,7 @@ async function renderPdfFirstPageDataUrl(blob: Blob): Promise<string> {
   if (!context) {
     throw new Error("Canvas not supported.");
   }
-  await page.render({ canvasContext: context, viewport, canvas }).promise;
+  await page.render({ canvasContext: context, viewport }).promise;
   return canvas.toDataURL("image/png");
 }
 

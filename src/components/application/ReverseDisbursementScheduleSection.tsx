@@ -203,7 +203,9 @@ export default function ReverseDisbursementScheduleSection({
                 <label className="flex items-center gap-2 text-sm">
                     <Checkbox
                         checked={enabled}
-                        onCheckedChange={(checked) => setEnabled(checked === true)}
+                        onCheckedChange={(checked: boolean | "indeterminate") =>
+                            setEnabled(checked === true)
+                        }
                         disabled={readOnly}
                     />
                     <span className={isDark ? "text-gray-200" : "text-[#374151]"}>
