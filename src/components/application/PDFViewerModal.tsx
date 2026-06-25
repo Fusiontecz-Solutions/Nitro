@@ -1119,7 +1119,7 @@ const PDFViewerModal = ({
             try {
                 const res = await axiosGet("/contract-templates/latest", {
                     params: {
-                        layoutKey: resolveLayoutKey(selectedFunder),
+                        layoutKey,
                         funderName: selectedFunder.trim() || undefined,
                     },
                 });

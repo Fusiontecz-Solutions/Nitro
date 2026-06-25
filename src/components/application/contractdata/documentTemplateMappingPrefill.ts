@@ -364,7 +364,6 @@ function buildBalanceTransferComputed(
         recipientName: sctx.recipientName,
         recipientAddress: sctx.recipientAddress,
     });
-    const offer = (c.offer ?? null) as Record<string, unknown> | null;
     const refinanceAmount = resolveRefinanceAmountDollars(c, application);
     const agreementDate =
         formatBalanceTransferLetterDate(sctx.signatureDate) ||
