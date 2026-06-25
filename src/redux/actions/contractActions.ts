@@ -574,7 +574,6 @@ export const deleteContractGuarantor = createAsyncThunk(
     },
 );
 
-// ------------------------- Uploaded Documents -------------------------
 export const uploadContractDocuments = createAsyncThunk(
     "contract/documents/upload",
     async (
@@ -607,6 +606,37 @@ export const uploadContractDocuments = createAsyncThunk(
         } catch (error: any) {
             return rejectWithValue(
                 getErrorMessage(error, "Failed to upload contract documents"),
+            );
+        }
+    },
+);
+
+export const syncKycPrefillToContract = createAsyncThunk(
+    "contract/documents/syncKycPrefill",
+    async (
+        {
+            contractId,
+            extraction,
+        }: {
+            contractId: number | string;
+            extraction: {
+                documentType: "driverLicense" | "voidedCheck";
+                contractPrefill?: Record<string, string>;
+                panels?: Record<string, unknown>;
+                keyData?: Record<string, string>;
+            };
+        },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `${CONTRACT_BASE}/${contractId}/documents/sync-kyc-prefill`,
+                extraction,
+            );
+            return response.data;
+        } catch (error: any) {
+            return rejectWithValue(
+                getErrorMessage(error, "Failed to sync KYC data to contract prefill"),
             );
         }
     },

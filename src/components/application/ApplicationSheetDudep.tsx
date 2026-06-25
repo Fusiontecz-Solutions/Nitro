@@ -6,6 +6,7 @@ import {
   getApplicationDuplicates,
   type DuplicateApplication,
 } from "@/redux/actions/applicationDedupeActions";
+import { clearDedupe } from "@/redux/slices/dedupeSlice";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 
 function duplicateApplicationHref(dup: DuplicateApplication): string | null {
@@ -32,6 +33,7 @@ export default function ApplicationSheetDudep({
 
   useEffect(() => {
     if (!applicationId) return;
+    dispatch(clearDedupe());
     dispatch(getApplicationDuplicates(applicationId));
   }, [applicationId, dispatch]);
 

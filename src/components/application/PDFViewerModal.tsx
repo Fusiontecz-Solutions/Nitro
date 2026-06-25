@@ -71,6 +71,7 @@ import {
     getUploadedContractDocumentById,
     getUploadedContractDocuments,
     uploadContractDocuments,
+    syncKycPrefillToContract,
     updateUploadedContractDocument,
     assignKatanDealIdForContract,
     updateContract,
@@ -107,8 +108,11 @@ import {
     applyKycPanelsToOwnerEntries,
     mergeKycExtractionIntoPrefill,
     parseKycExtractionsFromUploadResponse,
+    finalizeKycExtractionForSync,
+    kycExtractionHasReadableFields,
     type KycExtractionResult,
 } from "./contractdata/kycDocumentPrefill";
+import KycExtractionReviewCard from "./contractdata/KycExtractionReviewCard";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -1203,6 +1207,16 @@ const PDFViewerModal = ({
     >({});
     /** Currently dragged-over row, for drop-zone visual feedback. */
     const [dragOverDocKey, setDragOverDocKey] = useState<RequiredDocumentKey | null>(null);
+    /** Claude KYC extraction awaiting user review before syncing to contract prefill. */
+    const [pendingKycByDocKey, setPendingKycByDocKey] = useState<
+        Partial<
+            Record<
+                RequiredDocumentKey,
+                { extraction: KycExtractionResult; synced: boolean }
+            >
+        >
+    >({});
+    const [syncingKycKey, setSyncingKycKey] = useState<RequiredDocumentKey | null>(null);
     const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
     const [updatingUploadedFileId, setUpdatingUploadedFileId] = useState<string | null>(null);
     const [deletingUploadedFileId, setDeletingUploadedFileId] = useState<string | null>(null);
@@ -3056,7 +3070,7 @@ const PDFViewerModal = ({
      * Apply Claude KYC extraction (driver license / voided check) into contract prefill + info panels.
      */
     const applyKycExtractionToModalState = useCallback(
-        (extraction: KycExtractionResult) => {
+        (extraction: KycExtractionResult, options?: { announce?: boolean }) => {
             if (!extraction || extraction.error) {
                 if (extraction?.error) {
                     toast.warn(`Document scan: ${extraction.error}`);
@@ -3114,11 +3128,9 @@ const PDFViewerModal = ({
 
             invalidateDocuSignDraftSession();
 
-            const hasFields =
-                extraction.contractPrefill &&
-                Object.keys(extraction.contractPrefill).some((k) =>
-                    String(extraction.contractPrefill?.[k] ?? "").trim(),
-                );
+            if (options?.announce === false) return;
+
+            const hasFields = kycExtractionHasReadableFields(extraction);
             if (!hasFields) {
                 toast.warn(
                     `${extraction.documentType === "voidedCheck" ? "Voided check" : "Document"} uploaded, but no readable fields were found.`,
@@ -3132,9 +3144,99 @@ const PDFViewerModal = ({
                     : extraction.documentType === "voidedCheck"
                       ? "Voided check"
                       : "Document";
-            toast.success(`${label} scanned — contract fields updated.`);
+            toast.success(`${label} synced — contract prefill updated.`);
         },
         [invalidateDocuSignDraftSession],
+    );
+
+    const refreshContractAfterKycSync = useCallback(
+        async (contractId: number, documentType: KycExtractionResult["documentType"]) => {
+            const refreshTasks: Promise<unknown>[] = [];
+            if (documentType === "voidedCheck") {
+                refreshTasks.push(dispatch(getAllACH({ contractId })).unwrap());
+            }
+            if (documentType === "driverLicense") {
+                refreshTasks.push(
+                    dispatch(getAllContractOwners({ contractId })).unwrap(),
+                    dispatch(getAllContractGuarantors({ contractId })).unwrap(),
+                );
+            }
+            const refreshed = await dispatch(getByIdContract(contractId)).unwrap();
+            await Promise.all(refreshTasks);
+            const contractData = (refreshed as { data?: unknown })?.data ?? refreshed;
+            if (contractData) {
+                setResolvedContract(contractData);
+                setContractPrefillFromDb(
+                    stripDocumentTemplateBlobFromPrefillOverrides(
+                        (contractData as { contractPrefillOverrides?: unknown })
+                            .contractPrefillOverrides,
+                    ),
+                );
+            }
+        },
+        [dispatch],
+    );
+
+    const handleSyncKycExtraction = useCallback(
+        async (key: RequiredDocumentKey) => {
+            const pending = pendingKycByDocKey[key];
+            if (!pending || pending.synced || effectiveContractId == null) return;
+
+            const finalized = finalizeKycExtractionForSync(pending.extraction);
+            if (!finalized.documentType || finalized.error) return;
+            if (!kycExtractionHasReadableFields(finalized)) {
+                toast.warn("No readable fields to sync. Edit the card or re-upload the document.");
+                return;
+            }
+
+            setSyncingKycKey(key);
+            try {
+                const response = await dispatch(
+                    syncKycPrefillToContract({
+                        contractId: effectiveContractId,
+                        extraction: {
+                            documentType: finalized.documentType,
+                            contractPrefill: finalized.contractPrefill,
+                            panels: finalized.panels as Record<string, unknown>,
+                            keyData: finalized.keyData,
+                        },
+                    }),
+                ).unwrap();
+
+                const syncPayload =
+                    (response as { data?: KycExtractionResult & { mergedContractPrefillOverrides?: Record<string, unknown> } })
+                        ?.data ?? response;
+                const mergedExtraction: KycExtractionResult = {
+                    ...finalized,
+                    mergedContractPrefillOverrides:
+                        (syncPayload as { mergedContractPrefillOverrides?: Record<string, unknown> })
+                            .mergedContractPrefillOverrides,
+                };
+
+                applyKycExtractionToModalState(mergedExtraction);
+                await refreshContractAfterKycSync(effectiveContractId, finalized.documentType);
+
+                setPendingKycByDocKey((prev) => ({
+                    ...prev,
+                    [key]: { extraction: finalized, synced: true },
+                }));
+            } catch (error: unknown) {
+                const msg =
+                    error instanceof Error
+                        ? error.message
+                        : "Failed to sync extracted data to contract prefill.";
+                toast.error(msg);
+            } finally {
+                setSyncingKycKey(null);
+            }
+        },
+        [
+            pendingKycByDocKey,
+            effectiveContractId,
+            dispatch,
+            applyKycExtractionToModalState,
+            refreshContractAfterKycSync,
+        ],
     );
 
     /**
@@ -3198,57 +3300,26 @@ const PDFViewerModal = ({
                 ).unwrap();
 
                 const kycExtractions = parseKycExtractionsFromUploadResponse(uploadResult);
-                for (const extraction of kycExtractions) {
-                    applyKycExtractionToModalState(extraction);
-                }
-
-                const voidedCheckApplied = kycExtractions.some(
+                const extractionForKey = kycExtractions.find(
                     (e) =>
-                        e.documentType === "voidedCheck" &&
-                        !e.error &&
-                        e.contractPrefill &&
-                        Object.keys(e.contractPrefill).length > 0,
+                        e.documentType === key ||
+                        (key === "voidedCheck" && e.documentType === "voidedCheck") ||
+                        (key === "driverLicense" && e.documentType === "driverLicense"),
                 );
-                const driverLicenseApplied = kycExtractions.some(
-                    (e) =>
-                        e.documentType === "driverLicense" &&
-                        !e.error &&
-                        e.contractPrefill &&
-                        Object.keys(e.contractPrefill).length > 0,
-                );
-                if (
-                    effectiveContractId != null &&
-                    (voidedCheckApplied || driverLicenseApplied)
-                ) {
-                    const refreshTasks: Promise<unknown>[] = [];
-                    if (voidedCheckApplied) {
-                        refreshTasks.push(
-                            dispatch(getAllACH({ contractId: effectiveContractId })).unwrap(),
+                if (extractionForKey) {
+                    setPendingKycByDocKey((prev) => ({
+                        ...prev,
+                        [key]: { extraction: { ...extractionForKey }, synced: false },
+                    }));
+                    if (extractionForKey.error) {
+                        toast.warn(`Document scan: ${extractionForKey.error}`);
+                    } else if (kycExtractionHasReadableFields(extractionForKey)) {
+                        toast.info(
+                            `${key === "driverLicense" ? "Driver's license" : "Voided check"} scanned — review extracted data and click Sync to prefill.`,
                         );
-                    }
-                    if (driverLicenseApplied) {
-                        refreshTasks.push(
-                            dispatch(
-                                getAllContractOwners({ contractId: effectiveContractId }),
-                            ).unwrap(),
-                            dispatch(
-                                getAllContractGuarantors({ contractId: effectiveContractId }),
-                            ).unwrap(),
-                        );
-                    }
-                    const refreshed = await dispatch(
-                        getByIdContract(effectiveContractId),
-                    ).unwrap();
-                    await Promise.all(refreshTasks);
-                    const contractData =
-                        (refreshed as { data?: unknown })?.data ?? refreshed;
-                    if (contractData) {
-                        setResolvedContract(contractData);
-                        setContractPrefillFromDb(
-                            stripDocumentTemplateBlobFromPrefillOverrides(
-                                (contractData as { contractPrefillOverrides?: unknown })
-                                    .contractPrefillOverrides,
-                            ),
+                    } else {
+                        toast.warn(
+                            `${key === "driverLicense" ? "Driver's license" : "Voided check"} uploaded, but no readable fields were found.`,
                         );
                     }
                 }
@@ -3300,7 +3371,7 @@ const PDFViewerModal = ({
                 toast.error(msg);
             }
         },
-        [dispatch, effectiveContractId, applyKycExtractionToModalState, businessApplicationId, applicationIdForLookup],
+        [dispatch, effectiveContractId, businessApplicationId, applicationIdForLookup],
     );
 
     const revokeInlinePreviewBlob = useCallback(() => {
@@ -5773,6 +5844,44 @@ const PDFViewerModal = ({
                                                 );
                                             })}
                                         </div>
+
+                                        {(Object.keys(pendingKycByDocKey) as RequiredDocumentKey[]).map(
+                                            (docKey) => {
+                                                const pending = pendingKycByDocKey[docKey];
+                                                if (!pending) return null;
+                                                return (
+                                                    <KycExtractionReviewCard
+                                                        key={`kyc-review-${docKey}`}
+                                                        documentKey={docKey}
+                                                        extraction={pending.extraction}
+                                                        synced={pending.synced}
+                                                        syncing={syncingKycKey === docKey}
+                                                        onChange={(next) =>
+                                                            setPendingKycByDocKey((prev) => ({
+                                                                ...prev,
+                                                                [docKey]: {
+                                                                    ...prev[docKey]!,
+                                                                    extraction: next,
+                                                                    synced: false,
+                                                                },
+                                                            }))
+                                                        }
+                                                        onSync={() => void handleSyncKycExtraction(docKey)}
+                                                        onDismiss={
+                                                            pending.synced
+                                                                ? () =>
+                                                                      setPendingKycByDocKey((prev) => {
+                                                                          const next = { ...prev };
+                                                                          delete next[docKey];
+                                                                          return next;
+                                                                      })
+                                                                : undefined
+                                                        }
+                                                    />
+                                                );
+                                            },
+                                        )}
+
                                         {documentUploadMessage && (
                                             <p className="pt-1 text-xs text-slate-600">{documentUploadMessage}</p>
                                         )}
