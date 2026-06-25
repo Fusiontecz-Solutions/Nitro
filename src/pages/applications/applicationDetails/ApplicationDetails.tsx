@@ -18,6 +18,7 @@ import ContractTab from "@/components/application/ContractTab";
 import ComplianceChecks from "@/components/application/ComplianceChecks";
 import DecisionMakeFinalValues from "@/components/application/DecisionMakeFinalValues";
 import EligibilityAnalysis from "@/components/application/EligibilityAnalysis";
+import BackgroundCheckTab from "@/components/application/BackgroundCheckTab";
 
 import { CasesDashboard } from "@/pages/case/CasesDashboard";
 import { EXTERNAL_LINKS } from "@/config/externalLinks";
@@ -253,6 +254,7 @@ const ApplicationDetails = () => {
         if (isFinalUnderwriter) {
             return [
                 { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
+                { id: "background-check", label: "BACKGROUND CHECK" },
                 { id: "overview", label: "DECISION MAKING" },
             ];
         }
@@ -787,20 +789,15 @@ const ApplicationDetails = () => {
                     </Button>
                 </>
             ) : null}
-            {EXTERNAL_LINKS.map((link, i) => (
+            {EXTERNAL_LINKS.map((link) => (
                 <a
                     key={link.label}
                     href={link.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex flex-col"
+                    className="text-sm font-semibold text-[var(--brand)] underline underline-offset-2"
                 >
-                    <span className="text-sm font-semibold text-[var(--brand)] underline">
-                        {link.label}
-                    </span>
-                    <span className="text-xs text-[#687182]">
-                        {i === 0 ? "Link" : "Link"}
-                    </span>
+                    {link.label}
                 </a>
             ))}
         </div>
@@ -868,7 +865,7 @@ const ApplicationDetails = () => {
                             applicationId={applicationId}
                             onBack={() => navigate(-1)}
                         />
-                        {activeTab !== "eligibility-analysis" ? (
+                        {activeTab !== "eligibility-analysis" && activeTab !== "background-check" ? (
                             <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
                         ) : null}
                         {/* Row 3: Tab content (Decision Making or Contract) */}
@@ -876,6 +873,9 @@ const ApplicationDetails = () => {
                             <>
                                 <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
                                     <EligibilityAnalysis />
+                                </LazyTabContent>
+                                <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <BackgroundCheckTab />
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     {/* Final Underwriter decision-making view (without duplicate ApplicationSummary) */}
@@ -1149,6 +1149,11 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
                                     <EligibilityAnalysis />
+                            </LazyTabContent>
+
+                            <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <ApplicationSummary onBack={() => navigate(-1)} />
+                                    <BackgroundCheckTab />
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="checks" className="mt-6">

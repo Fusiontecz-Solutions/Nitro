@@ -54,6 +54,7 @@ import PDFViewerModal from "./PDFViewerModal";
 import { useFunderProfiles } from "@/hooks/useFunderProfiles";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
+import ReverseDisbursementScheduleSection from "./ReverseDisbursementScheduleSection";
 import { mergeContractCcEmailList } from "./boldsignCcList";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./contractdata/docusignAddendumTemplates";
@@ -2533,6 +2534,18 @@ export default function ContractTab({
                     </div>
                 </div>
             </div>
+
+            <ReverseDisbursementScheduleSection
+                contractId={selectedContractId}
+                fetchedContract={
+                    fetchedContract && typeof fetchedContract === "object"
+                        ? (fetchedContract as Record<string, unknown>)
+                        : null
+                }
+                readOnly={isReadOnly}
+                isDark={isDark}
+                onSaved={reloadFetchedContract}
+            />
 
             {/* Final Calculations - White background */}
             <div

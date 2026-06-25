@@ -42,6 +42,17 @@ export interface UpdateContractData {
     funderName?: string | null;
     /** BoldSign prefill overrides (flat strings); persisted on `Contract.contractPrefillOverrides`. */
     contractPrefillOverrides?: Record<string, unknown> | null;
+    reverseDisbursementEnabled?: boolean;
+    reverseDisbursementSchedule?: {
+        fixedDailyDebit?: string;
+        rows?: Array<{
+            period?: string;
+            netDailysCredit?: string;
+            dailysCreditInclFees?: string;
+            totalPeriodCredits?: string;
+            receivablesPurchased?: string;
+        }>;
+    } | null;
     clientEmail?: string | null;
     clientName?: string | null;
 

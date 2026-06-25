@@ -4,6 +4,7 @@ import { BarChart3, Calendar } from 'lucide-react';
 import type { Application } from '@/types/applicationTypes';
 import { useState, useRef } from 'react';
 import { formatCurrency, parseNumberUS } from "@/lib/utils";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 
 interface ApplicationCardProps {
     application: Application;
@@ -41,12 +42,9 @@ const ApplicationCard = ({ application, onClick }: ApplicationCardProps) => {
         ? `LN-2024-${String(application.applicationId).padStart(3, '0')}`
         : 'N/A';
 
-    // Format amount: prefer requestedAmount, then loanAmount, then fundedAmount
-    const rawAmount =
-        (application as any)?.requestedAmount ??
-        application.loanAmount ??
-        (application as any)?.fundedAmount ??
-        null;
+    // Format amount: prefer OfferDecision offer, then requested loanAmount
+    const resolvedAmount = resolveApplicationDisplayLoanAmount(application);
+    const rawAmount = resolvedAmount ?? null;
 
     const num =
         rawAmount == null || rawAmount === ""

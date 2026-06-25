@@ -1,6 +1,8 @@
 import type { ContractPrefillField } from "./Contract";
 
 const FIELD_IDS = {
+    clientName: ["client_name"],
+    funderName: ["funder_name"],
     totalAmountOfFundProvided: ["total_amount_of_fund_provided"],
     totalAmountFundDisbursed: ["total_amount_fund_disbursed"],
     totalOfPayments: ["total_of_payments"],
@@ -21,6 +23,8 @@ const mapIds = (ids: readonly string[], label: string, value: string): ContractP
 
 /** BoldSign prefill source values for the Daily Kansas state disclosure template. */
 export interface DailyKansasContractPrefillFields {
+    clientName?: string;
+    funderName?: string;
     totalAmountOfFundProvided?: string;
     totalAmountFundDisbursed?: string;
     totalOfPayments?: string;
@@ -38,6 +42,8 @@ export interface DailyKansasContractPrefillFields {
  * (same output shape as `buildContractPrefillFields` in `Contract.ts`).
  */
 export function buildDailyKansasContractPrefillFields({
+    clientName = "",
+    funderName = "",
     totalAmountOfFundProvided = "",
     totalAmountFundDisbursed = "",
     totalOfPayments = "",
@@ -50,6 +56,8 @@ export function buildDailyKansasContractPrefillFields({
     signatureDate = "",
 }: DailyKansasContractPrefillFields = {}): ContractPrefillField[] {
     return [
+        ...mapIds(FIELD_IDS.clientName, "Merchant / recipient name", clientName),
+        ...mapIds(FIELD_IDS.funderName, "Funder / provider name", funderName),
         ...mapIds(
             FIELD_IDS.totalAmountOfFundProvided,
             "Total Amount Of Fund Provided",

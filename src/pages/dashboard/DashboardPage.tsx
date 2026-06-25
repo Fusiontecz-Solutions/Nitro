@@ -98,6 +98,7 @@ import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import {
   buildApplicationsBrowseUrl,
   DASHBOARD_APPLICATION_STATS_BUCKET,
@@ -1911,7 +1912,7 @@ export default function DashboardPage() {
                     latestDashboardApplications.map((app, idx) => {
                       const rowId = getRecentApplicationRowId(app);
                       const queueLabel = getRecentApplicationQueueLabel(app);
-                      const loanAmount = app.loanAmount;
+                      const loanAmount = resolveApplicationDisplayLoanAmount(app);
                       return (
                         <TableRow
                           key={rowId}
@@ -1946,7 +1947,7 @@ export default function DashboardPage() {
                             {loanAmount == null ? (
                               <span>-</span>
                             ) : (
-                              <span>{formatCurrency(Number(loanAmount) || 0)}</span>
+                              <span>{formatCurrency(loanAmount)}</span>
                             )}
                           </TableCell>
                           <TableCell className="px-6 text-[0.85rem] text-foreground">
@@ -1993,7 +1994,7 @@ export default function DashboardPage() {
                   {latestDashboardApplications.map((app) => {
                     const rowId = getRecentApplicationRowId(app);
                     const queueLabel = getRecentApplicationQueueLabel(app);
-                    const loanAmount = app.loanAmount;
+                    const loanAmount = resolveApplicationDisplayLoanAmount(app);
                     return (
                       <div
                         key={rowId}
@@ -2049,7 +2050,7 @@ export default function DashboardPage() {
                             <span className="text-foreground/80">Loan: </span>
                             {loanAmount == null
                               ? "—"
-                              : formatCurrency(Number(loanAmount) || 0)}
+                              : formatCurrency(loanAmount)}
                           </p>
                           <p>
                             <span className="text-foreground/80">Created: </span>

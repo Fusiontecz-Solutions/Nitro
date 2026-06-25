@@ -53,6 +53,7 @@ import {
   DEFAULT_APPLICATIONS_PAGE_SIZE,
 } from "@/lib/applicationsListParams";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 
 const QUEUE_OPTIONS = [
@@ -345,18 +346,18 @@ export default function ApplicationsBrowsePage() {
       },
       {
         id: "loanAmount",
-        accessorFn: (row) => row.loanAmount,
+        accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
         header: () => (
           <div className="flex items-center gap-2">
             <span className="font-medium text-foreground">Loan Amount</span>
           </div>
         ),
         cell: ({ row }) => {
-          const loanAmount = row.original.loanAmount;
+          const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
           if (loanAmount == null) return <span className="text-foreground">-</span>;
           return (
             <span className="text-foreground">
-              {formatCurrency(Number(loanAmount) || 0)}
+              {formatCurrency(loanAmount)}
             </span>
           );
         },

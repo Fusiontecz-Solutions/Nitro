@@ -25,6 +25,7 @@ import { useTheme } from "@/context/ThemeContext";
 import { CONTRACT_OUT_QUEUE_BADGE_CLASS } from "@/lib/contractOutQueueBadge";
 import { CONTRACT_SIGNED_QUEUE_BADGE_CLASS } from "@/lib/contractSignedQueueBadge";
 import { formatCurrency } from "@/lib/utils";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import { toast } from "react-toastify";
 import { formatDate as formatDateUtil } from "@/lib/utils";
 import { isListBlockingLoad } from "@/lib/listLoading";
@@ -199,18 +200,18 @@ const Cases = () => {
       },
       {
         id: "loanAmount",
-        accessorFn: (row) => row.loanAmount,
+        accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
         header: () => (
           <span className="font-medium text-foreground">LOAN AMOUNT</span>
         ),
         cell: ({ row }) => {
-          const loanAmount = row.original.loanAmount;
+          const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
           if (loanAmount == null) {
             return <span className="text-foreground">-</span>;
           }
           return (
             <span className="text-foreground">
-              {formatCurrency(Number(loanAmount) || 0)}
+              {formatCurrency(loanAmount)}
             </span>
           );
         },

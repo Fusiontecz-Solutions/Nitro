@@ -2,7 +2,9 @@ import type { BuildContractPrefillFieldsArgs, ContractPrefillField } from "./Con
 import {
     getApplicationPrimaryRecipientName,
     getContractPrefillEditDefaultsFromApplication,
+    resolveAchAccountHolderNamePrefill,
     resolveBalanceTransferMerchantContext,
+    resolveDisclosureOwnerNamePrefill,
     resolveNumberOfPaymentsPrefillValue,
     resolveOfferAmountDollarsForUnderwritingFees,
     resolvePaybackAmountDollars,
@@ -511,6 +513,8 @@ function dotKatanFlex(): KatanFlexAddendumContractPrefillFields {
         agreementDate: DUMMY,
         merchantName: DUMMY,
         clientName: DUMMY,
+        installmentDay1: "1",
+        installmentDay2: "16",
         dailyPayment1: DUMMY,
         receivablePurchase1: DUMMY,
         dailyPayment2: DUMMY,
@@ -570,6 +574,9 @@ function buildKatanAchComputed(
         ? resolveNumberOfPaymentsPrefillValue(sources)
         : str(c.achAuthorizationAccountHolderBankNumberOfTransactions) ||
           resolveNumberOfPaymentsPrefillValue(sources);
+    const achOwnerName =
+        resolveDisclosureOwnerNamePrefill(c, application) ||
+        resolveAchAccountHolderNamePrefill(c, "achAuthorizationAccountHolderName");
     return buildKatanAchAuthorizationAddendumPrefillFields({
         authorizationClientName: str(c.authorizationClientName),
         authorizationClientBankName: str(c.authorizationClientBankName),
@@ -578,7 +585,7 @@ function buildKatanAchComputed(
         authorizationClientNamePrint: str(c.authorizationClientNamePrint),
         authorizationClientTaxId: str(c.authorizationClientTaxId),
         authorizedBusinessPhone: str(c.authorizedBusinessPhone),
-        achAuthorizationAccountHolderName: str(c.achAuthorizationAccountHolderName),
+        achAuthorizationAccountHolderName: achOwnerName,
         achAuthorizationAccountHolderDba: str(c.achAuthorizationAccountHolderDba),
         achAuthorizationAccountHolderPhone: str(c.achAuthorizationAccountHolderPhone),
         achAuthorizationAccountHolderAddress: str(c.achAuthorizationAccountHolderAddress),
@@ -593,7 +600,9 @@ function buildKatanAchComputed(
         achAuthorizationAccountHolderBankAccountNumber: str(c.achAuthorizationAccountHolderBankAccountNumber),
         achAuthorizationAccountHolderBankTransactionFee: transactionFee,
         achAuthorizationAccountHolderBankNumberOfTransactions: numberOfTransactions,
-        achAuthorizationConcentAccountHolderName: str(c.achAuthorizationConcentAccountHolderName),
+        achAuthorizationConcentAccountHolderName:
+            achOwnerName ||
+            resolveAchAccountHolderNamePrefill(c, "achAuthorizationConcentAccountHolderName"),
     });
 }
 
@@ -1114,6 +1123,11 @@ export function mergeStateDisclosurePrefillFallback(args: {
     ).trim();
     if (merchant) {
         byId.set("client_name", { id: "client_name", value: merchant });
+        byId.set("disclosure_merchant_name", {
+            id: "disclosure_merchant_name",
+            value: merchant,
+        });
+        byId.set("disclosure_name", { id: "disclosure_name", value: merchant });
     }
     return Array.from(byId.values());
 }

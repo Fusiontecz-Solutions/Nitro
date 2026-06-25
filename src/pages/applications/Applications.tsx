@@ -52,7 +52,7 @@ import {
   getFilteredRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { DataTableContent, DataTablePagination } from "@/components/DataTable";
+import { DataTableContent, DataTablePagination, DataTableSortHeader } from "@/components/DataTable";
 import {
   Dialog,
   DialogContent,
@@ -109,6 +109,7 @@ import {
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
 import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
 import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
@@ -280,7 +281,9 @@ const Applications = () => {
   const isBulkDeleteRef = useRef(false);
 
   // TanStack Table state
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: "createdAt", desc: true },
+  ]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = useState({});
@@ -715,18 +718,7 @@ const Applications = () => {
         accessorFn: (row) => getApplicationDealIdDisplay(row),
         enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              DEAL ID
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className=" h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="DEAL ID" />
         ),
         cell: ({ row }) => (
           <span className="font-medium text-foreground">
@@ -737,19 +729,9 @@ const Applications = () => {
       {
         id: "businessName",
         accessorFn: (row) => getApplicationBusinessDisplayName(row),
+        enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              BUSINESS NAME
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className=" h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="BUSINESS NAME" />
         ),
         cell: ({ row }) => (
           <span className="text-foreground">
@@ -844,22 +826,19 @@ const Applications = () => {
       },
       {
         id: "loanAmount",
-        accessorFn: (row) => row.loanAmount,
+        accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
+        enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              Loan Amount
-            </span>
-          </div>
+          <DataTableSortHeader column={column} label="Loan Amount" />
         ),
         cell: ({ row }) => {
-          const loanAmount = row.original.loanAmount;
+          const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
           if (loanAmount == null) {
             return <span className="text-foreground">-</span>;
           }
           return (
             <span className="text-foreground">
-              {formatCurrency(Number(loanAmount) || 0)}
+              {formatCurrency(loanAmount)}
             </span>
           );
         },
@@ -902,20 +881,12 @@ const Applications = () => {
       //     cell: ({ row }) => <span className="text-foreground capitalize">{row.original.type || '-'}</span>,
       // },
       {
-        accessorKey: "status",
+        id: "status",
+        accessorFn: (row) =>
+          row.currentState ?? row.state ?? row.currentQueue ?? row.queue ?? "",
+        enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              Current State
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className="h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="Current State" />
         ),
         cell: ({ row }) => {
           let queueLabel = getApplicationQueueLabel(row.original);
@@ -962,21 +933,11 @@ const Applications = () => {
         },
       },
       {
+        id: "createdAt",
         accessorKey: "createdAt",
         enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              CREATED AT
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className="h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="CREATED AT" />
         ),
         cell: ({ row }) => (
           <span className="text-foreground">
@@ -985,24 +946,15 @@ const Applications = () => {
         ),
       },
       {
-        accessorKey: "lastModifiedAt",
+        id: "lastModifiedAt",
+        accessorKey: "updatedAt",
+        enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              Last Modified Date
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className="h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="Last Modified Date" />
         ),
         cell: ({ row }) => (
           <span className="text-foreground">
-            {formatDate(row.original.createdAt)}
+            {formatDate(row.original.updatedAt ?? row.original.createdAt)}
           </span>
         ),
       },
@@ -1133,6 +1085,7 @@ const Applications = () => {
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
     manualPagination: true,
+    manualSorting: true,
     state: {
       sorting,
       columnFilters,
@@ -1182,6 +1135,7 @@ const Applications = () => {
       statusFilter,
       typeFilter,
       priorityFilter,
+      ...sort,
     });
   }, [
     dashboardStateFilter,
@@ -2336,7 +2290,7 @@ const Applications = () => {
                 {table.getRowModel().rows.map((row) => {
                   const app = row.original;
                   const queueLabel = getApplicationQueueLabel(app);
-                  const loanAmount = app.loanAmount;
+                  const loanAmount = resolveApplicationDisplayLoanAmount(app);
                   return (
                     <div
                       key={row.id}
@@ -2432,7 +2386,7 @@ const Applications = () => {
                           <span className="text-foreground/80">Loan: </span>
                           {loanAmount == null
                             ? "—"
-                            : formatCurrency(Number(loanAmount) || 0)}
+                            : formatCurrency(loanAmount)}
                         </p>
                         <p>
                           <span className="text-foreground/80">Created: </span>

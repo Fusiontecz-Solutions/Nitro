@@ -116,6 +116,8 @@ export function buildApplicationsListParams(options: {
   organizationFilter?: string;
   /** UNDERWRITER: server-side pool / my-claimed (Underwriter queue only). Overrides queue dropdown. */
   underwriterClaim?: "unclaimed" | "mine";
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
   /**
    * When true (operations sidebar: `fromDashboard=operations`), `dashboardStateFilter`
    * drives `operationsStatus`. When false, the pipeline dropdown (`statusFilter`) wins.
@@ -128,6 +130,10 @@ export function buildApplicationsListParams(options: {
     ...APPLICATIONS_LIST_DEFAULT_SORT,
     lite: true,
   };
+  if (options.sortBy) {
+    params.sortBy = options.sortBy;
+    params.sortOrder = options.sortOrder ?? "asc";
+  }
   if (options.searchTerm) {
     params.search = options.searchTerm;
   }
@@ -174,6 +180,8 @@ export function buildApplicationsListParams(options: {
 const TABLE_COLUMN_TO_API_SORT: Record<string, string> = {
   dealId: "dealId",
   businessName: "businessName",
+  email: "email",
+  loanAmount: "loanAmount",
   createdAt: "createdAt",
   lastModifiedAt: "lastModifiedAt",
   status: "status",

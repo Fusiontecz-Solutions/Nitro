@@ -93,6 +93,7 @@ import {
     getApplicationPrimaryRecipientName,
     getSignerRecipientEmailForContract,
     resolveEffectiveDocuSignSignerEmail,
+    resolveDisclosureOwnerNamePrefill,
     parseNoteStructuredSection,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
@@ -3917,12 +3918,8 @@ const PDFViewerModal = ({
             const fieldOverrides = mapDisclosureMetricsToEditorFieldOverrides(args.metrics, {
                 merchantName:
                     args.inputs.merchantName ||
+                    resolveDisclosureOwnerNamePrefill(resolvedContract, applicationData) ||
                     getApplicationPrimaryRecipientName(applicationData) ||
-                    String(
-                        resolvedContract?.legalName ??
-                            resolvedContract?.clientName ??
-                            "",
-                    ).trim() ||
                     undefined,
                 signatureDate: args.inputs.disbursementDate,
                 state: args.inputs.state,

@@ -8,6 +8,7 @@ export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "documents", label: "DOCUMENTS" },
   { id: "decision-making", label: "DECISION MAKING" },
   { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
+  { id: "background-check", label: "BACKGROUND CHECK" },
   { id: "contract", label: "CONTRACT" },
   { id: "final", label: "FINAL" },
   { id: "funding-call", label: "FUNDING CALL" },

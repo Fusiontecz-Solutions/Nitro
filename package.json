@@ -43,6 +43,8 @@
     "date-fns-tz": "^3.2.0",
     "events": "^3.3.0",
     "framer-motion": "^12.30.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "jwt-decode": "^4.0.0",
     "lucide-react": "^0.545.0",
     "pdfjs-dist": "^4.10.38",

@@ -6,7 +6,7 @@ import {
     resolveOfferPayback,
     roundMoney,
 } from "@/lib/offerRepaymentCalculations";
-import { resolveAppendixUnderwritingFeesDollars, getApplicationPrimaryRecipientName } from "./Contract";
+import { resolveAppendixUnderwritingFeesDollars, getApplicationPrimaryRecipientName, resolveDisclosureOwnerNamePrefill } from "./Contract";
 
 export type DisclosureCalculatorFrequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly";
 
@@ -440,13 +440,7 @@ export function buildDisclosureCalculatorInputsFromSources(args: {
     const client = (app.client as Record<string, unknown> | null) ?? null;
     const business = (client?.business as Record<string, unknown> | null) ?? null;
     const merchantName =
-        String(
-            contract.legalName ??
-                contract.clientName ??
-                contract.clientLegalName ??
-                client?.businessName ??
-                "",
-        ).trim() ||
+        resolveDisclosureOwnerNamePrefill(args.contract ?? null, args.application) ||
         getApplicationPrimaryRecipientName(args.application) ||
         undefined;
 
