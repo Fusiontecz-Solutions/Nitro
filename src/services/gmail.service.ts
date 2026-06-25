@@ -9,6 +9,46 @@ import {
 const GMAIL_BASE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const inFlightAutoCreateMessageIds = new Set<string>();
 
+/** Gmail allows ~50 concurrent in-flight requests per mailbox — stay well under that. */
+const GMAIL_MESSAGE_FETCH_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+    if (items.length === 0) return [];
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+
+    const worker = async () => {
+        while (nextIndex < items.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            results[index] = await fn(items[index], index);
+        }
+    };
+
+    const workerCount = Math.min(Math.max(1, concurrency), items.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+}
+
+function isGmailConcurrentLimitError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    const message = String(
+        (error as { response?: { data?: { error?: { message?: string } } } })?.response?.data
+            ?.error?.message ||
+            (error as Error)?.message ||
+            '',
+    ).toLowerCase();
+    return status === 429 || message.includes('too many concurrent requests');
+}
+
+async function sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Gmail API expects repeated query‑params for arrays
  * (e.g. `labelIds=INBOX&labelIds=SENT`, NOT `labelIds[]=INBOX`).
@@ -537,47 +577,55 @@ export async function fetchAllEmails(
             };
         }
 
-        // 2️⃣ Fetch full message details
-        const detailedMessages = await Promise.all(
-            messageIds.map(async (msg) => {
+        // 2️⃣ Fetch full message details (batched — Gmail caps concurrent requests per mailbox)
+        const detailedMessages = await mapWithConcurrency(
+            messageIds,
+            GMAIL_MESSAGE_FETCH_CONCURRENCY,
+            async (msg) => {
+                let attempt = 0;
+                while (attempt < 4) {
+                    try {
+                        const fullMessage = await axios.get(
+                            `${GMAIL_BASE_URL}/messages/${msg.id}`,
+                            {
+                                headers: {
+                                    Authorization: `Bearer ${accessToken}`,
+                                },
+                                params: {
+                                    format: 'metadata',
+                                    metadataHeaders: ['Subject', 'From', 'To', 'Date'],
+                                },
+                                paramsSerializer: gmailParamsSerializer,
+                            },
+                        );
 
-                const fullMessage = await axios.get(
-                    `${GMAIL_BASE_URL}/messages/${msg.id}`,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${accessToken}`,
-                        },
-                        params: {
-                            format: "metadata",
-                            metadataHeaders: [
-                                "Subject",
-                                "From",
-                                "To",
-                                "Date"
-                            ],
-                        },
-                        paramsSerializer: gmailParamsSerializer,
+                        const data = fullMessage.data;
+                        const headers = data.payload.headers;
+
+                        const getHeader = (name: string) =>
+                            headers.find((h: any) => h.name === name)?.value || '';
+
+                        return {
+                            id: data.id,
+                            threadId: data.threadId,
+                            subject: getHeader('Subject'),
+                            from: getHeader('From'),
+                            to: getHeader('To'),
+                            date: getHeader('Date'),
+                            snippet: data.snippet,
+                            labelIds: data.labelIds,
+                            isRead: !data.labelIds?.includes('UNREAD'),
+                        };
+                    } catch (error: any) {
+                        if (!isGmailConcurrentLimitError(error) || attempt >= 3) {
+                            throw error;
+                        }
+                        attempt += 1;
+                        await sleep(250 * 2 ** attempt + Math.floor(Math.random() * 200));
                     }
-                );
-
-                const data = fullMessage.data;
-                const headers = data.payload.headers;
-
-                const getHeader = (name: string) =>
-                    headers.find((h: any) => h.name === name)?.value || "";
-
-                return {
-                    id: data.id,
-                    threadId: data.threadId,
-                    subject: getHeader("Subject"),
-                    from: getHeader("From"),
-                    to: getHeader("To"),
-                    date: getHeader("Date"),
-                    snippet: data.snippet,
-                    labelIds: data.labelIds,
-                    isRead: !data.labelIds?.includes("UNREAD"),
-                };
-            })
+                }
+                throw new Error('Failed to fetch message metadata');
+            },
         );
 
         return {
