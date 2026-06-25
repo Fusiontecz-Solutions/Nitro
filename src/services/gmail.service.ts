@@ -1,10 +1,53 @@
 import axios from 'axios';
 import prisma from '../config/prismaClient';
 import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
+import {
+    hasRecentDuplicatePdfForCreator,
+    readPdfFileDedupeDays,
+} from './pdfFileDedupeService';
 
 const GMAIL_BASE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const inFlightAutoCreateMessageIds = new Set<string>();
-const GMAIL_AUTO_CREATE_DEDUPE_DAYS = 7;
+
+/** Gmail allows ~50 concurrent in-flight requests per mailbox — stay well under that. */
+const GMAIL_MESSAGE_FETCH_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+    if (items.length === 0) return [];
+    const results = new Array<R>(items.length);
+    let nextIndex = 0;
+
+    const worker = async () => {
+        while (nextIndex < items.length) {
+            const index = nextIndex;
+            nextIndex += 1;
+            results[index] = await fn(items[index], index);
+        }
+    };
+
+    const workerCount = Math.min(Math.max(1, concurrency), items.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    return results;
+}
+
+function isGmailConcurrentLimitError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    const message = String(
+        (error as { response?: { data?: { error?: { message?: string } } } })?.response?.data
+            ?.error?.message ||
+            (error as Error)?.message ||
+            '',
+    ).toLowerCase();
+    return status === 429 || message.includes('too many concurrent requests');
+}
+
+async function sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Gmail API expects repeated query‑params for arrays
@@ -144,34 +187,6 @@ function applicationPdfAttachmentFilenameScore(filename: string): number {
 function gmailAttachmentDeclaredSize(part: { body?: { size?: unknown } | null } | null): number {
     const s = Number(part?.body?.size ?? 0);
     return Number.isFinite(s) && s > 0 ? s : 0;
-}
-
-async function hasRecentAutoCreatedDuplicate(params: {
-    userId: string;
-    fileName: string;
-    size: number;
-}): Promise<boolean> {
-    const since = new Date(Date.now() - GMAIL_AUTO_CREATE_DEDUPE_DAYS * 24 * 60 * 60 * 1000);
-    const whereBase = {
-        originalName: params.fileName,
-        application: {
-            createdById: params.userId,
-            createdAt: { gte: since },
-        },
-    } as const;
-
-    const existing = await prisma.applicationFile.findFirst({
-        where:
-            params.size > 0
-                ? {
-                      ...whereBase,
-                      size: params.size,
-                  }
-                : whereBase,
-        select: { id: true, uploadedAt: true, applicationId: true },
-        orderBy: { uploadedAt: 'desc' },
-    });
-    return !!existing;
 }
 
 function readGmailApplicationPdfMinBytes(): number {
@@ -562,47 +577,55 @@ export async function fetchAllEmails(
             };
         }
 
-        // 2️⃣ Fetch full message details
-        const detailedMessages = await Promise.all(
-            messageIds.map(async (msg) => {
+        // 2️⃣ Fetch full message details (batched — Gmail caps concurrent requests per mailbox)
+        const detailedMessages = await mapWithConcurrency(
+            messageIds,
+            GMAIL_MESSAGE_FETCH_CONCURRENCY,
+            async (msg) => {
+                let attempt = 0;
+                while (attempt < 4) {
+                    try {
+                        const fullMessage = await axios.get(
+                            `${GMAIL_BASE_URL}/messages/${msg.id}`,
+                            {
+                                headers: {
+                                    Authorization: `Bearer ${accessToken}`,
+                                },
+                                params: {
+                                    format: 'metadata',
+                                    metadataHeaders: ['Subject', 'From', 'To', 'Date'],
+                                },
+                                paramsSerializer: gmailParamsSerializer,
+                            },
+                        );
 
-                const fullMessage = await axios.get(
-                    `${GMAIL_BASE_URL}/messages/${msg.id}`,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${accessToken}`,
-                        },
-                        params: {
-                            format: "metadata",
-                            metadataHeaders: [
-                                "Subject",
-                                "From",
-                                "To",
-                                "Date"
-                            ],
-                        },
-                        paramsSerializer: gmailParamsSerializer,
+                        const data = fullMessage.data;
+                        const headers = data.payload.headers;
+
+                        const getHeader = (name: string) =>
+                            headers.find((h: any) => h.name === name)?.value || '';
+
+                        return {
+                            id: data.id,
+                            threadId: data.threadId,
+                            subject: getHeader('Subject'),
+                            from: getHeader('From'),
+                            to: getHeader('To'),
+                            date: getHeader('Date'),
+                            snippet: data.snippet,
+                            labelIds: data.labelIds,
+                            isRead: !data.labelIds?.includes('UNREAD'),
+                        };
+                    } catch (error: any) {
+                        if (!isGmailConcurrentLimitError(error) || attempt >= 3) {
+                            throw error;
+                        }
+                        attempt += 1;
+                        await sleep(250 * 2 ** attempt + Math.floor(Math.random() * 200));
                     }
-                );
-
-                const data = fullMessage.data;
-                const headers = data.payload.headers;
-
-                const getHeader = (name: string) =>
-                    headers.find((h: any) => h.name === name)?.value || "";
-
-                return {
-                    id: data.id,
-                    threadId: data.threadId,
-                    subject: getHeader("Subject"),
-                    from: getHeader("From"),
-                    to: getHeader("To"),
-                    date: getHeader("Date"),
-                    snippet: data.snippet,
-                    labelIds: data.labelIds,
-                    isRead: !data.labelIds?.includes("UNREAD"),
-                };
-            })
+                }
+                throw new Error('Failed to fetch message metadata');
+            },
         );
 
         return {
@@ -962,16 +985,18 @@ export async function autoCreateApplicationsFromEmails(
                     }
 
                     const pickedFileName = String(part.filename || '').trim() || 'application.pdf';
-                    const declaredSize = gmailAttachmentDeclaredSize(part);
-                    const isRecentDuplicate = await hasRecentAutoCreatedDuplicate({
-                        userId,
+                    const dedupeDays = readPdfFileDedupeDays();
+                    const isRecentDuplicate = await hasRecentDuplicatePdfForCreator({
+                        createdById: userId,
                         fileName: pickedFileName,
-                        size: declaredSize,
+                        dedupeDays,
                     });
                     if (isRecentDuplicate) {
                         console.log(
-                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${GMAIL_AUTO_CREATE_DEDUPE_DAYS}d (same file): "${pickedFileName}" size=${declaredSize || 'unknown'} -- creating new application anyway`,
+                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${dedupeDays}d (same PDF filename): "${pickedFileName}" — skipping create, marking read`,
                         );
+                        await markMessageAsRead(msg.id, accessToken);
+                        continue;
                     }
 
                     const pdfBuffer = await downloadAttachment(

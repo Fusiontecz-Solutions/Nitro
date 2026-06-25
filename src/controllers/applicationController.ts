@@ -65,6 +65,12 @@ import {
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
 import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
 import {
+    findHistoricalSamePdfFileApplications,
+    findSamePdfFileApplications,
+    pickPrimaryPdfFile,
+    readPdfFileDedupeDays,
+} from '../services/pdfFileDedupeService';
+import {
     buildPublicApprovalPortalUrl,
     resolveCrmFrontendBaseUrl,
 } from '../utils/crmFrontendUrl';
@@ -5983,46 +5989,20 @@ class ApplicationController {
             }
 
             const client = applicationRecord.client as any;
-            const businessName: string | null = client.businessName || null;
             const ein: string | null = client.businessEinNumber || null;
             const ssn: string | null = client.ownerSsn || null;
 
-            const orConditions: Prisma.ClientWhereInput[] = [];
-            if (businessName) {
-                orConditions.push({ businessName });
-            }
-            if (ein) {
-                orConditions.push({ businessEinNumber: ein });
-            }
-            if (ssn) {
-                orConditions.push({ ownerSsn: ssn });
-            }
-
-            if (orConditions.length === 0) {
-                return res.status(200).json({
-                    success: true,
-                    data: [],
-                });
-            }
-
-            const duplicates = await prisma.application.findMany({
-                where: {
-                    id: { not: applicationRecord.id },
-                    client: {
-                        OR: orConditions,
-                    },
-                },
-                include: {
-                    client: true,
-                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                },
-                orderBy: {
-                    createdAt: 'desc',
-                },
-            });
-
             const mapDuplicateRow = (
-                app: (typeof duplicates)[number],
+                app: {
+                    id: string;
+                    applicationId: number;
+                    currentQueue: string | null;
+                    currentState: string | null;
+                    createdAt: Date;
+                    loanAmount: number | null;
+                    client: any;
+                    createdBy: { firstName?: string | null; lastName?: string | null; email?: string | null } | null;
+                },
                 matchWith: string[],
             ) => {
                 const dupClient: any = app.client;
@@ -6054,27 +6034,81 @@ class ApplicationController {
 
             const byId = new Map<string, ReturnType<typeof mapDuplicateRow>>();
 
-            for (const app of duplicates) {
-                const matchWith: string[] = [];
-                const dupClient: any = app.client;
-                if (businessName && dupClient?.businessName && dupClient.businessName === businessName) {
-                    matchWith.push('Business name');
+            const mergeDuplicate = (
+                app: Parameters<typeof mapDuplicateRow>[0],
+                labels: string[],
+            ) => {
+                const existing = byId.get(app.id);
+                if (existing) {
+                    for (const label of labels) {
+                        if (!existing.matchWith.includes(label)) {
+                            existing.matchWith.push(label);
+                        }
+                    }
+                    return;
                 }
-                if (ein && dupClient?.businessEinNumber && dupClient.businessEinNumber === ein) {
-                    matchWith.push('EIN');
-                }
-                if (ssn && dupClient?.ownerSsn && dupClient.ownerSsn === ssn) {
-                    matchWith.push('SSN');
-                }
-                byId.set(app.id, mapDuplicateRow(app, matchWith));
+                byId.set(app.id, mapDuplicateRow(app, [...labels]));
+            };
+
+            // Same CRM client record (prior deals for this merchant).
+            const sameClientApps = await prisma.application.findMany({
+                where: {
+                    id: { not: applicationRecord.id },
+                    clientId: applicationRecord.clientId,
+                },
+                include: {
+                    client: true,
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                },
+                orderBy: { createdAt: 'desc' },
+            });
+            for (const app of sameClientApps) {
+                mergeDuplicate(app, ['Same client']);
             }
 
-            const { findSamePdfFileApplications, pickPrimaryPdfFile, readPdfFileDedupeDays } =
-                await import('../services/pdfFileDedupeService');
+            // Strong cross-client identity (EIN or SSN only — not loose business-name matches).
+            const crossClientOr: Prisma.ClientWhereInput[] = [];
+            if (ein) {
+                crossClientOr.push({ businessEinNumber: ein });
+            }
+            if (ssn) {
+                crossClientOr.push({ ownerSsn: ssn });
+            }
+            if (crossClientOr.length > 0) {
+                const crossClientApps = await prisma.application.findMany({
+                    where: {
+                        id: { not: applicationRecord.id },
+                        clientId: { not: applicationRecord.clientId },
+                        client: { OR: crossClientOr },
+                    },
+                    include: {
+                        client: true,
+                        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    },
+                    orderBy: { createdAt: 'desc' },
+                });
+                for (const app of crossClientApps) {
+                    const dupClient: any = app.client;
+                    const labels: string[] = [];
+                    if (ein && dupClient?.businessEinNumber && dupClient.businessEinNumber === ein) {
+                        labels.push('EIN');
+                    }
+                    if (ssn && dupClient?.ownerSsn && dupClient.ownerSsn === ssn) {
+                        labels.push('SSN');
+                    }
+                    if (labels.length > 0) {
+                        mergeDuplicate(app, labels);
+                    }
+                }
+            }
+
             const pdfSig = pickPrimaryPdfFile(applicationRecord.files);
             const createdById = applicationRecord.createdById;
             if (pdfSig && createdById) {
                 const dedupeDays = readPdfFileDedupeDays();
+                const recentPdfLabel = `Same PDF file (within ${dedupeDays} days)`;
+                const historicalPdfLabel = 'Same PDF file (previous submission)';
+
                 const samePdfApps = await findSamePdfFileApplications({
                     excludeApplicationId: applicationRecord.id,
                     createdById,
@@ -6082,16 +6116,19 @@ class ApplicationController {
                     referenceCreatedAt: applicationRecord.createdAt,
                     dedupeDays,
                 });
-                const pdfMatchLabel = `Same PDF file (within ${dedupeDays} days)`;
                 for (const app of samePdfApps) {
-                    const existing = byId.get(app.id);
-                    if (existing) {
-                        if (!existing.matchWith.includes(pdfMatchLabel)) {
-                            existing.matchWith.push(pdfMatchLabel);
-                        }
-                    } else {
-                        byId.set(app.id, mapDuplicateRow(app, [pdfMatchLabel]));
-                    }
+                    mergeDuplicate(app, [recentPdfLabel]);
+                }
+
+                const historicalPdfApps = await findHistoricalSamePdfFileApplications({
+                    excludeApplicationId: applicationRecord.id,
+                    createdById,
+                    file: pdfSig,
+                    referenceCreatedAt: applicationRecord.createdAt,
+                    dedupeDays,
+                });
+                for (const app of historicalPdfApps) {
+                    mergeDuplicate(app, [historicalPdfLabel]);
                 }
             }
 

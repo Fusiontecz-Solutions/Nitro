@@ -16,6 +16,7 @@ import {
   isKycDocumentType,
   mergeContractPrefillPatch,
   normalizeKycDocumentType,
+  type KycDocumentType,
   type KycExtractionMapped,
 } from './contractKycPrefillMapper';
 import {
@@ -614,17 +615,11 @@ class ContractService {
             kycType,
           );
 
-          const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
-            contractId,
-            mapped,
-          );
-
           kycExtractions.push({
             documentType: kycType,
             keyData: mapped.keyData,
             contractPrefill: mapped.contractPrefill,
             panels: mapped.panels,
-            mergedContractPrefillOverrides,
           });
         } catch (extractErr: unknown) {
           const msg =
@@ -666,6 +661,47 @@ class ContractService {
       file,
       documentType,
     );
+
+    const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
+      contractId,
+      mapped,
+    );
+
+    const updated = await this.getByIdContract(contractId);
+
+    return {
+      documentType,
+      keyData: mapped.keyData,
+      contractPrefill: mapped.contractPrefill,
+      panels: mapped.panels,
+      mergedContractPrefillOverrides,
+      contract: updated,
+    };
+  }
+
+  /**
+   * Apply reviewed KYC extraction (driver license / voided check) to contract prefill + related rows.
+   */
+  async syncKycPrefillToContract(
+    contractId: number,
+    payload: {
+      documentType: KycDocumentType;
+      contractPrefill?: Record<string, string>;
+      panels?: KycExtractionMapped['panels'];
+      keyData?: Record<string, string>;
+    },
+  ) {
+    const documentType = payload.documentType;
+    if (documentType !== 'driverLicense' && documentType !== 'voidedCheck') {
+      throw new Error('documentType must be driverLicense or voidedCheck');
+    }
+
+    const mapped: KycExtractionMapped = {
+      documentType,
+      keyData: payload.keyData ?? {},
+      contractPrefill: payload.contractPrefill ?? {},
+      panels: payload.panels ?? {},
+    };
 
     const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
       contractId,
