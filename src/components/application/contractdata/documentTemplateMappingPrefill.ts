@@ -289,6 +289,9 @@ function stateDisclosureComputed(
 
 function dotBalanceTransfer(): BalanceTransferSheetContractPrefillFields {
     return {
+        dateOfNewSecuredAgreement: DUMMY,
+        dateOfPreviousSecuredAgreement: DUMMY,
+        remainingRtrBalance: DUMMY,
         merchantLegalName: DUMMY,
         businessLegalName: DUMMY,
         dba: DUMMY,
@@ -298,8 +301,57 @@ function dotBalanceTransfer(): BalanceTransferSheetContractPrefillFields {
         businessAddressCity: DUMMY,
         businessAddressState: DUMMY,
         businessAddressZip: DUMMY,
-        purchasePrice: DUMMY,
     };
+}
+
+function formatBalanceTransferLetterDate(value: unknown): string {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(raw)) return raw;
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(raw)) return raw.replace(/\//g, "-");
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+        const y = raw.slice(0, 4);
+        const m = raw.slice(5, 7);
+        const d = raw.slice(8, 10);
+        return `${m}-${d}-${y}`;
+    }
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return raw;
+    const m = String(parsed.getMonth() + 1).padStart(2, "0");
+    const d = String(parsed.getDate()).padStart(2, "0");
+    const y = String(parsed.getFullYear());
+    return `${m}-${d}-${y}`;
+}
+
+function formatBalanceTransferMoney(value: unknown): string {
+    const n = Number(String(value ?? "").replace(/[$,\s]/g, ""));
+    if (!Number.isFinite(n)) return String(value ?? "").trim();
+    return new Intl.NumberFormat("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    }).format(n);
+}
+
+function resolveRefinanceAmountDollars(
+    contract: Record<string, unknown> | null,
+    application: Record<string, unknown> | null,
+): number | null {
+    const c = contract ?? {};
+    const offer = (c.offer ?? null) as Record<string, unknown> | null;
+    const odRoot = application?.offerDecision as Record<string, unknown> | undefined;
+    const candidates = [
+        offer?.refinanceAmount,
+        offer?.RefinanceAmount,
+        odRoot?.refinanceAmount,
+        odRoot?.RefinanceAmount,
+        c.refinanceAmount,
+        c.RefinanceAmount,
+    ];
+    for (const raw of candidates) {
+        const n = Number(String(raw ?? "").replace(/[$,\s]/g, ""));
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    return null;
 }
 
 function buildBalanceTransferComputed(
@@ -313,16 +365,20 @@ function buildBalanceTransferComputed(
         recipientAddress: sctx.recipientAddress,
     });
     const offer = (c.offer ?? null) as Record<string, unknown> | null;
-    const paybackNum = resolvePaybackAmountDollars({
-        contract: c,
-        offerDecision: offer,
-        application,
-    });
-    const purchasePrice =
-        str(c.purchasePrice) ||
-        (paybackNum != null ? String(paybackNum) : "") ||
-        str(offer?.paybackAmount);
+    const refinanceAmount = resolveRefinanceAmountDollars(c, application);
+    const agreementDate =
+        formatBalanceTransferLetterDate(sctx.signatureDate) ||
+        formatBalanceTransferLetterDate(str(c.agreement_date)) ||
+        formatBalanceTransferLetterDate(str(c.agreementDate));
+    const remainingRtr =
+        str(c.remainingRtrBalance) ||
+        str(c.remaining_rtr_balance) ||
+        str(c.remainingRtr) ||
+        (refinanceAmount != null ? formatBalanceTransferMoney(refinanceAmount) : "");
     return buildBalanceTransferSheetContractPrefillFields({
+        dateOfNewSecuredAgreement: agreementDate,
+        dateOfPreviousSecuredAgreement: agreementDate,
+        remainingRtrBalance: remainingRtr,
         merchantLegalName: merchant.clientName,
         businessLegalName: merchant.businessName,
         dba: merchant.clientDba,
@@ -332,7 +388,6 @@ function buildBalanceTransferComputed(
         businessAddressCity: str(c.businessAddressCity),
         businessAddressState: str(c.businessAddressState),
         businessAddressZip: str(c.businessAddressZip),
-        purchasePrice,
     });
 }
 

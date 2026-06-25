@@ -2824,7 +2824,9 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         resolveOfferFrequencyLabel({ contract: row, offerDecision: offer });
 
     const agreementDatePrefill =
-        prefillIsoDate(row.agreementDate) || prefillIsoDate(row.contractDate);
+        prefillIsoDate(row.agreementDate) ||
+        prefillIsoDate(row.contractDate) ||
+        prefillIsoDate(row.createdAt);
     let authorizationDate = prefillIsoDate(row.authorizationClientDate);
     if (!authorizationDate && agreementDatePrefill) authorizationDate = agreementDatePrefill;
 

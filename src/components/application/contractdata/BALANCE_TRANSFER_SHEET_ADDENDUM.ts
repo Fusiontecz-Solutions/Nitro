@@ -11,10 +11,18 @@ export interface BalanceTransferSheetContractPrefillFields {
     clientNameBy?: string;
     dba?: string;
     merchantLegalName?: string;
-    purchasePrice?: string;
+    /** Letter header — date of the new KC secured agreement (MM-DD-YYYY on PDF). */
+    dateOfNewSecuredAgreement?: string;
+    /** Letter header — date of the prior secured agreement being paid off. */
+    dateOfPreviousSecuredAgreement?: string;
+    /** Letter header — remaining RTR / payoff balance on the prior agreement. */
+    remainingRtrBalance?: string;
 }
 
 const FIELD_DEFS: Array<{ id: keyof BalanceTransferSheetContractPrefillFields; label: string }> = [
+    { id: "dateOfNewSecuredAgreement", label: "Date of new secured agreement" },
+    { id: "dateOfPreviousSecuredAgreement", label: "Date of previous secured agreement" },
+    { id: "remainingRtrBalance", label: "Remaining RTR balance" },
     { id: "merchantLegalName", label: "Merchant legal name" },
     { id: "businessLegalName", label: "Business legal name" },
     { id: "dba", label: "DBA" },
@@ -24,17 +32,26 @@ const FIELD_DEFS: Array<{ id: keyof BalanceTransferSheetContractPrefillFields; l
     { id: "businessAddressCity", label: "Business city" },
     { id: "businessAddressState", label: "Business state" },
     { id: "businessAddressZip", label: "Business ZIP" },
-    { id: "purchasePrice", label: "Purchase / payback amount" },
 ];
 
-/** Map CRM field key → DocuSign tab label (same string for this template). */
+/** Map CRM field key → DocuSign tab label (snake_case data labels on the PDF). */
 export const BALANCE_TRANSFER_SHEET_TAB_LABEL_BY_KEY: Record<
     keyof BalanceTransferSheetContractPrefillFields,
     string
-> = Object.fromEntries(FIELD_DEFS.map((f) => [f.id, f.id])) as Record<
-    keyof BalanceTransferSheetContractPrefillFields,
-    string
->;
+> = {
+    dateOfNewSecuredAgreement: "date_of_new_secured_agreement",
+    dateOfPreviousSecuredAgreement: "date_of_previous_secured_agreement",
+    remainingRtrBalance: "remaining_rtr_balance",
+    merchantLegalName: "merchant_legal_name",
+    businessLegalName: "business_legal_name",
+    dba: "dba",
+    clientNameBy: "client_name_by",
+    clientLegalName: "client_legal_name",
+    businessAddress: "business_address",
+    businessAddressCity: "business_address_city",
+    businessAddressState: "business_address_state",
+    businessAddressZip: "business_address_zip",
+};
 
 export function buildBalanceTransferSheetContractPrefillFields(
     values: BalanceTransferSheetContractPrefillFields = {},

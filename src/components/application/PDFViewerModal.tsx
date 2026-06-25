@@ -1118,7 +1118,10 @@ const PDFViewerModal = ({
         void (async () => {
             try {
                 const res = await axiosGet("/contract-templates/latest", {
-                    params: { layoutKey },
+                    params: {
+                        layoutKey: resolveLayoutKey(selectedFunder),
+                        funderName: selectedFunder.trim() || undefined,
+                    },
                 });
                 const data = (
                     res as { data?: { data?: { url?: string; originalName?: string } } }
