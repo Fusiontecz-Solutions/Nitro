@@ -23,6 +23,7 @@ import { DOCUSIGN_COMBINE_PACKAGE_PDF, DOCUSIGN_DEFAULT_ROLE_NAME } from './docu
 import { PLATFORM_SIGNER_SLOTS } from '../platform-document-registry';
 import { isAllianceBridgeFunder } from './resolve-main-contract-layout';
 import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
+import { maybeAppendReverseDisbursementToMainContractLayout } from '../../pdf/reverseDisbursementSchedule.service';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
   process.env.DOCUSIGN_SECONDARY_ROLE_NAME || PLATFORM_SIGNER_SLOTS[1].roleName;
@@ -338,15 +339,23 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   /** Burn prefill into PDF at create (auto-send). Draft review keeps editable tabs. */
   flattenPrefillInPdf?: boolean;
   lockDataTabs?: boolean;
+  /** When set, may append reverse disbursement schedule as last page of main contract PDF. */
+  contractId?: number;
 }) {
   const includeMainContract = options.includeMainContract !== false;
   const layouts: DocumentLayoutWithBase64[] = [];
   if (includeMainContract) {
-    layouts.push(
-      await loadMainContractLayoutPackage(
-        options.mainContractLayoutKey || DOCUMENT_LAYOUT_KEYS.contract,
-      ),
+    let mainLayout = await loadMainContractLayoutPackage(
+      options.mainContractLayoutKey || DOCUMENT_LAYOUT_KEYS.contract,
     );
+    const contractId = Number(options.contractId);
+    if (Number.isFinite(contractId) && contractId > 0) {
+      mainLayout = await maybeAppendReverseDisbursementToMainContractLayout(
+        mainLayout,
+        contractId,
+      );
+    }
+    layouts.push(mainLayout);
   }
   for (const ref of options.supplementalRefs || []) {
     layouts.push(await loadSupplementalLayoutPackage(ref));

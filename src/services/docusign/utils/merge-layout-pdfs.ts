@@ -58,3 +58,30 @@ export async function mergeLayoutPdfsToSingleDocument(
     pageCount: totalPages,
   };
 }
+
+/** Append one or more PDF buffers to an existing base64 PDF (e.g. contract last page). */
+export async function appendPdfBuffersToBase64(
+  mainBase64: string,
+  appendBuffers: Buffer[],
+): Promise<string> {
+  const base64 = String(mainBase64 || '').trim();
+  if (!base64) {
+    throw new Error('Main PDF base64 is required to append pages.');
+  }
+  const { PDFDocument } = await import('pdf-lib');
+  const mainDoc = await PDFDocument.load(Buffer.from(base64, 'base64'));
+
+  for (const buf of appendBuffers) {
+    if (!buf?.length) continue;
+    const src = await PDFDocument.load(buf);
+    const pageCount = src.getPageCount();
+    if (pageCount < 1) continue;
+    const indices = Array.from({ length: pageCount }, (_, i) => i);
+    const copied = await mainDoc.copyPages(src, indices);
+    for (const page of copied) {
+      mainDoc.addPage(page);
+    }
+  }
+
+  return Buffer.from(await mainDoc.save()).toString('base64');
+}

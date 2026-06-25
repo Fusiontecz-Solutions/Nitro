@@ -75,6 +75,7 @@ import {
 } from '../middleware/authMiddleware';
 import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
+import { fetchPaginatedApplicationsForList } from '../services/applicationListSort';
 import {
     createApplicationActivityLog,
     getApplicationActivityLogsForUser,
@@ -1506,18 +1507,6 @@ class ApplicationController {
                 };
             }
 
-            let orderByField: string = 'createdAt';
-            if (
-                sortBy === 'createdAt' ||
-                sortBy === 'applicationId' ||
-                sortBy === 'updatedAt'
-            ) {
-                orderByField = String(sortBy);
-            }
-            const orderBy: Prisma.ApplicationOrderByWithRelationInput = {
-                [orderByField]: sortOrder === 'asc' ? 'asc' : 'desc',
-            };
-
             const listInclude: Prisma.ApplicationInclude = useLitePayload
                 ? {
                     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -1563,6 +1552,9 @@ class ApplicationController {
                     claimedByUnderwriter: {
                         select: { id: true, firstName: true, lastName: true, email: true },
                     },
+                    OfferDecision: {
+                        select: { offer: true },
+                    },
                 }
                 : {
                     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -1600,16 +1592,14 @@ class ApplicationController {
                     },
                 };
 
-            const [apps, total] = await Promise.all([
-                prisma.application.findMany({
-                    where,
-                    orderBy,
-                    skip,
-                    take: limitNum,
-                    include: listInclude,
-                }),
-                prisma.application.count({ where }),
-            ]);
+            const { apps, total } = await fetchPaginatedApplicationsForList(prisma, {
+                where,
+                skip,
+                take: limitNum,
+                sortBy,
+                sortOrder,
+                include: listInclude,
+            });
 
             let collectionBalanceByApplicationId = new Map<
                 string,

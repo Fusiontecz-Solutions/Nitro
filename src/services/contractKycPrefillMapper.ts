@@ -184,9 +184,8 @@ export function mapVoidedCheckKeyDataToPrefill(
     str(keyData.account_holder_name) ||
     str(keyData.member_name) ||
     str(keyData.payee_name);
-  const { legalName, dba } = parseLegalNameAndDba(
-    str(keyData.legal_business_name) || accountHolder,
-  );
+  const legalBusinessRaw = str(keyData.legal_business_name);
+  const { legalName, dba } = parseLegalNameAndDba(legalBusinessRaw || accountHolder);
   const dbaName = str(keyData.dba_name) || dba;
   const bankName = str(keyData.bank_name);
   const routing = routingDigits(
@@ -208,15 +207,18 @@ export function mapVoidedCheckKeyDataToPrefill(
     if (str(val)) contractPrefill[key] = val;
   };
 
-  const holderName = legalName || accountHolder;
-  if (holderName) {
-    set('legalName', holderName);
-    set('authorizationClientName', holderName);
-    set('authorizationClientNamePrint', holderName);
-    set('authorizationApplication', holderName);
-    set('achAuthorizationAccountHolderName', holderName);
-    set('achAuthorizationConcentAccountHolderName', holderName);
-    set('securityBusinessName', holderName);
+  const businessName = legalBusinessRaw ? legalName : '';
+  if (businessName) {
+    set('legalName', businessName);
+    set('authorizationApplication', businessName);
+    set('securityBusinessName', businessName);
+  }
+  if (accountHolder) {
+    set('achAuthorizationAccountHolderName', accountHolder);
+    set('achAuthorizationConcentAccountHolderName', accountHolder);
+  } else if (!businessName && legalName) {
+    set('achAuthorizationAccountHolderName', legalName);
+    set('achAuthorizationConcentAccountHolderName', legalName);
   }
   if (dbaName) {
     set('doingBusinessAs', dbaName);
@@ -272,7 +274,7 @@ export function mapVoidedCheckKeyDataToPrefill(
     panels: {
       ach: {
         bankName,
-        fullNameOnAccount: holderName || accountHolder,
+        fullNameOnAccount: accountHolder,
         accountNumber: account,
         routingNumber: routing,
         dba: dbaName,

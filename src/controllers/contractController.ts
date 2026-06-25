@@ -149,6 +149,8 @@ class ContractController {
         funderName,
         funder,
         contractPrefillOverrides,
+        reverseDisbursementEnabled,
+        reverseDisbursementSchedule,
         ...rest
       } = req.body;
 
@@ -171,6 +173,11 @@ class ContractController {
         state,
         funderName: resolvedFunderName,
         contractPrefillOverrides,
+        reverseDisbursementEnabled:
+          reverseDisbursementEnabled !== undefined
+            ? reverseDisbursementEnabled === true || reverseDisbursementEnabled === 'true'
+            : undefined,
+        reverseDisbursementSchedule,
         ...rest,
       });
 
@@ -1419,6 +1426,44 @@ class ContractController {
     } catch (error: any) {
       console.error('Delete contract template mapping error:', error);
       return res.status(500).json({ success: false, message: error?.message || 'Internal server error' });
+    }
+  }
+
+  async previewReverseDisbursementSchedule(req: Request, res: Response) {
+    try {
+      const contractId = Number(req.params.id);
+      if (!Number.isFinite(contractId) || contractId < 1) {
+        return res.status(400).json({ success: false, message: 'Invalid contract id' });
+      }
+
+      const existing = await contractService.getByIdContract(contractId);
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'Contract not found' });
+      }
+
+      const bodySchedule = req.body?.reverseDisbursementSchedule;
+      const useBody =
+        bodySchedule != null &&
+        typeof bodySchedule === 'object' &&
+        !Array.isArray(bodySchedule);
+
+      const pdfBuffer = await contractService.previewReverseDisbursementSchedulePdf(
+        contractId,
+        useBody ? bodySchedule : undefined,
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        'inline; filename="disbursement-schedule-preview.pdf"',
+      );
+      return res.status(200).send(pdfBuffer);
+    } catch (error: any) {
+      console.error('Preview reverse disbursement schedule error:', error);
+      return res.status(400).json({
+        success: false,
+        message: error?.message || 'Failed to generate disbursement schedule preview',
+      });
     }
   }
 }

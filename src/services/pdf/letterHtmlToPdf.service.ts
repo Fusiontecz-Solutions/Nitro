@@ -35,6 +35,10 @@ const LETTER_PDF_MAX_HEIGHT_MM = (() => {
     return Number.isFinite(n) && n > 0 ? n : 1500;
 })();
 
+/** Standard A4 (matches typical contract PDF pages). */
+const A4_PAGE_WIDTH_MM = 210;
+const A4_PAGE_HEIGHT_MM = 297;
+
 function pxToMm(px: number): number {
     return (px * 25.4) / 96;
 }
@@ -194,6 +198,70 @@ function wrapEmailHtmlForPdf(html: string): string {
     return buildLetterPdfDocument(inner);
 }
 
+function buildA4PdfDocument(innerHtml: string): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style id="a4-pdf-print-shell">
+  @page {
+    size: ${A4_PAGE_WIDTH_MM}mm ${A4_PAGE_HEIGHT_MM}mm;
+    margin: 0;
+    background: #ffffff;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100%;
+    min-height: ${A4_PAGE_HEIGHT_MM}mm;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  .a4-pdf-stage {
+    min-height: ${A4_PAGE_HEIGHT_MM}mm;
+    width: 100%;
+    background: #ffffff !important;
+  }
+  .a4-pdf-root {
+    width: 100%;
+    background: #ffffff !important;
+  }
+  img { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; }
+</style>
+</head>
+<body>
+  <div class="a4-pdf-stage">
+    <div class="a4-pdf-root">${innerHtml}</div>
+  </div>
+</body>
+</html>`;
+}
+
+function wrapHtmlForA4Pdf(html: string): string {
+    const inner = looksLikeFullHtmlDocument(html) ? extractBodyInnerHtml(html) : html.trim();
+    return buildA4PdfDocument(inner);
+}
+
+async function launchLetterPdfBrowser(): Promise<Browser> {
+    return puppeteer.launch({
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--font-render-hinting=none',
+            '--force-color-profile=srgb',
+        ],
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH?.trim() || undefined,
+    });
+}
+
 async function waitForImages(page: Page): Promise<void> {
     await page.evaluate((maxMs: number) => {
         type ImgEl = {
@@ -335,17 +403,7 @@ export async function renderLetterHtmlToPdfBuffer(htmlBody: string): Promise<Buf
     let browser: Browser | undefined;
     const started = Date.now();
     try {
-        browser = await puppeteer.launch({
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--font-render-hinting=none',
-                '--force-color-profile=srgb',
-            ],
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH?.trim() || undefined,
-        });
+        browser = await launchLetterPdfBrowser();
 
         const page = await browser.newPage();
 
@@ -398,6 +456,65 @@ export async function renderLetterHtmlToPdfBuffer(htmlBody: string): Promise<Buf
         return buf;
     } catch (err) {
         console.error(`${LOG_PREFIX} generation failed:`, err);
+        throw err;
+    } finally {
+        if (browser) {
+            await browser.close().catch((closeErr) => {
+                console.error(`${LOG_PREFIX} browser.close failed:`, closeErr);
+            });
+        }
+    }
+}
+
+/**
+ * Renders HTML to a fixed A4 PDF (210×297 mm) — same page size as standard contract pages.
+ * Unlike {@link renderLetterHtmlToPdfBuffer}, page height is not shrunk to content.
+ */
+export async function renderHtmlToA4PdfBuffer(htmlBody: string): Promise<Buffer> {
+    if (!htmlBody || !String(htmlBody).trim()) {
+        throw new Error('HTML body is required for PDF generation');
+    }
+
+    let browser: Browser | undefined;
+    const started = Date.now();
+    try {
+        browser = await launchLetterPdfBrowser();
+        const page = await browser.newPage();
+        await page.emulateMediaType('screen');
+        await page.setViewport({
+            width: mmToCssPx(A4_PAGE_WIDTH_MM),
+            height: mmToCssPx(A4_PAGE_HEIGHT_MM),
+            deviceScaleFactor: 2,
+        });
+
+        const documentHtml = wrapHtmlForA4Pdf(htmlBody);
+        await page.setContent(documentHtml, {
+            waitUntil: 'load',
+            timeout: SET_CONTENT_TIMEOUT_MS,
+        });
+        await waitForImages(page);
+        await waitForFonts(page);
+        await waitForNextPaint(page);
+
+        const pdfUint8 = await page.pdf({
+            format: 'a4',
+            printBackground: true,
+            preferCSSPageSize: true,
+            margin: { top: '0', right: '0', bottom: '0', left: '0' },
+            omitBackground: false,
+            tagged: false,
+        });
+
+        const buf = Buffer.from(pdfUint8);
+        if (!buf.length) {
+            throw new Error('Puppeteer returned an empty PDF buffer');
+        }
+        console.info(
+            `${LOG_PREFIX} generated A4 pdf bytes=${buf.length} elapsedMs=${Date.now() - started}`,
+        );
+        return buf;
+    } catch (err) {
+        console.error(`${LOG_PREFIX} A4 generation failed:`, err);
         throw err;
     } finally {
         if (browser) {

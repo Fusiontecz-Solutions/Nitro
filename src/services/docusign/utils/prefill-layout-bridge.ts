@@ -75,6 +75,8 @@ export const PREFILL_DISPLAY_LABEL_BY_VARIABLE: Record<string, string> = {
   daily_payment: 'Daily payment',
   daily_payment_1: 'Payment amount — 1st installment (Day 1)',
   daily_payment_2: 'Payment amount — 2nd installment (Day 16)',
+  installment_day_1: 'Installment day — 1st payment',
+  installment_day_2: 'Installment day — 2nd payment',
   receivable_purchase: 'Receivable purchase',
   receivable_purchase_1: 'Receivables purchased — 1st installment (Day 1)',
   receivable_purchase_2: 'Receivables purchased — 2nd installment (Day 16)',

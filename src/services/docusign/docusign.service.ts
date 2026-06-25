@@ -3920,6 +3920,7 @@ export class DocusignService {
           : undefined,
         flattenPrefillInPdf: sendImmediately,
         lockDataTabs: sendImmediately,
+        contractId: options.contractId,
       });
     } catch (err: any) {
       throw new BadRequestException(err?.message || String(err));

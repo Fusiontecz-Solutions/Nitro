@@ -56,7 +56,12 @@ class UploadController {
             }
 
             const file = reqFiles.file;
-            const folder = 'ih-crm/documents';
+            const requestedFolder =
+                typeof req.body?.folder === 'string' ? req.body.folder.trim() : '';
+            const allowedFolders = new Set(['ih-crm/documents', 'ih-crm/background-checks']);
+            const folder = allowedFolders.has(requestedFolder)
+                ? requestedFolder
+                : 'ih-crm/documents';
 
             const result = await uploadService.uploadFile(file, folder);
 

@@ -25,6 +25,8 @@
     "business_name_2",
     "daily_payment_1",
     "daily_payment_2",
+    "installment_day_1",
+    "installment_day_2",
     "receivable_purchase_1",
     "receivable_purchase_2"
   ],
@@ -183,6 +185,34 @@
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "receivable_purchase_2"
+    },
+    {
+      "id": "p11",
+      "type": "text",
+      "variable": "installment_day_1",
+      "documentId": "1",
+      "pageNumber": "1",
+      "x": "44",
+      "y": "363",
+      "width": "24",
+      "height": "16",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "installment_day_1"
+    },
+    {
+      "id": "p12",
+      "type": "text",
+      "variable": "installment_day_2",
+      "documentId": "1",
+      "pageNumber": "1",
+      "x": "44",
+      "y": "382",
+      "width": "24",
+      "height": "16",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "installment_day_2"
     }
   ],
   "pdf": {
