@@ -1,10 +1,13 @@
 import axios from 'axios';
 import prisma from '../config/prismaClient';
 import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
+import {
+    hasRecentDuplicatePdfForCreator,
+    readPdfFileDedupeDays,
+} from './pdfFileDedupeService';
 
 const GMAIL_BASE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const inFlightAutoCreateMessageIds = new Set<string>();
-const GMAIL_AUTO_CREATE_DEDUPE_DAYS = 7;
 
 /**
  * Gmail API expects repeated query‑params for arrays
@@ -144,34 +147,6 @@ function applicationPdfAttachmentFilenameScore(filename: string): number {
 function gmailAttachmentDeclaredSize(part: { body?: { size?: unknown } | null } | null): number {
     const s = Number(part?.body?.size ?? 0);
     return Number.isFinite(s) && s > 0 ? s : 0;
-}
-
-async function hasRecentAutoCreatedDuplicate(params: {
-    userId: string;
-    fileName: string;
-    size: number;
-}): Promise<boolean> {
-    const since = new Date(Date.now() - GMAIL_AUTO_CREATE_DEDUPE_DAYS * 24 * 60 * 60 * 1000);
-    const whereBase = {
-        originalName: params.fileName,
-        application: {
-            createdById: params.userId,
-            createdAt: { gte: since },
-        },
-    } as const;
-
-    const existing = await prisma.applicationFile.findFirst({
-        where:
-            params.size > 0
-                ? {
-                      ...whereBase,
-                      size: params.size,
-                  }
-                : whereBase,
-        select: { id: true, uploadedAt: true, applicationId: true },
-        orderBy: { uploadedAt: 'desc' },
-    });
-    return !!existing;
 }
 
 function readGmailApplicationPdfMinBytes(): number {
@@ -962,16 +937,18 @@ export async function autoCreateApplicationsFromEmails(
                     }
 
                     const pickedFileName = String(part.filename || '').trim() || 'application.pdf';
-                    const declaredSize = gmailAttachmentDeclaredSize(part);
-                    const isRecentDuplicate = await hasRecentAutoCreatedDuplicate({
-                        userId,
+                    const dedupeDays = readPdfFileDedupeDays();
+                    const isRecentDuplicate = await hasRecentDuplicatePdfForCreator({
+                        createdById: userId,
                         fileName: pickedFileName,
-                        size: declaredSize,
+                        dedupeDays,
                     });
                     if (isRecentDuplicate) {
                         console.log(
-                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${GMAIL_AUTO_CREATE_DEDUPE_DAYS}d (same file): "${pickedFileName}" size=${declaredSize || 'unknown'} -- creating new application anyway`,
+                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${dedupeDays}d (same PDF filename): "${pickedFileName}" — skipping create, marking read`,
                         );
+                        await markMessageAsRead(msg.id, accessToken);
+                        continue;
                     }
 
                     const pdfBuffer = await downloadAttachment(
