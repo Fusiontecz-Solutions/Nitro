@@ -100,6 +100,12 @@ const CRM_LABEL_TO_FIELD_ID: Record<string, string> = {
   underwriter_fee: 'appendix_underwriting_fees',
   underwriterfees: 'appendix_underwriting_fees',
   underwriter_fees: 'appendix_underwriting_fees',
+  dateofnewsecuredagreement: 'date_of_new_secured_agreement',
+  date_of_new_secured_agreement: 'date_of_new_secured_agreement',
+  dateofprevioussecuredagreement: 'date_of_previous_secured_agreement',
+  date_of_previous_secured_agreement: 'date_of_previous_secured_agreement',
+  remainingrtrbalance: 'remaining_rtr_balance',
+  remaining_rtr_balance: 'remaining_rtr_balance',
 };
 
 /** Normalize CRM / DocuSign field keys for fuzzy matching (snake_case, spaces, case). */

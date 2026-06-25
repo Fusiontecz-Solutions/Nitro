@@ -9,7 +9,7 @@ import {
  * Keys are normalized lowercase unless the layout uses camelCase (e.g. typeOfEntity1).
  */
 export const CRM_ID_TO_LAYOUT_VARIABLE: Record<string, string> = {
-  agreement_date: 'signature_date',
+  agreement_date: 'agreement_date',
   signature_date: 'signature_date',
   signaturedate: 'Signature_date',
   date_by_which_amount_mustbe_received: 'date_by_which_amount_mustbe_received',
@@ -80,6 +80,9 @@ export const PREFILL_DISPLAY_LABEL_BY_VARIABLE: Record<string, string> = {
   receivable_purchase_2: 'Receivables purchased — 2nd installment (Day 16)',
   addendum_date: 'Addendum date',
   agreement_date: 'Agreement date',
+  date_of_new_secured_agreement: 'Date of new secured agreement',
+  date_of_previous_secured_agreement: 'Date of previous secured agreement',
+  remaining_rtr_balance: 'Remaining RTR balance',
   owner1_guarantor_name: 'Owner 1 — Name',
   owner2_guarantor_name: 'Merchant 2 — Name',
   merchant2_name: 'Merchant 2 — Name',

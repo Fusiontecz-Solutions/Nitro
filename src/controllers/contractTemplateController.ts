@@ -1,6 +1,9 @@
 import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import uploadService from '../services/uploadService';
+import { findBoldSignTemplatePdfUrlByExactLayoutKey } from '../services/docusign/platform-document-registry';
+import { resolveMainContractLayoutKeyForSend } from '../services/docusign/utils/resolve-main-contract-layout';
+import { isFunderContractLayoutKey } from '../utils/funderContractLayout';
 
 class ContractTemplateController {
     // Upload a new global contract template (PDF) and persist it
@@ -67,12 +70,28 @@ class ContractTemplateController {
     // Get the most recently uploaded global contract template
     async getLatest(req: Request, res: Response) {
         try {
-            const layoutKey = String(req.query.layoutKey || 'contract').trim() || 'contract';
+            const funderName =
+                typeof req.query.funderName === 'string' ? req.query.funderName.trim() : '';
+            const layoutKeyFromQuery = String(req.query.layoutKey || '').trim();
+            const layoutKey = funderName
+                ? await resolveMainContractLayoutKeyForSend({
+                      mainContractLayoutKey: layoutKeyFromQuery || 'contract',
+                      funderName,
+                  })
+                : layoutKeyFromQuery || 'contract';
+
             const byLayout = await this.resolveContractTemplateByLayoutKey(layoutKey);
             if (byLayout) {
                 return res.status(200).json({
                     success: true,
                     data: byLayout,
+                });
+            }
+
+            if (isFunderContractLayoutKey(layoutKey)) {
+                return res.status(200).json({
+                    success: true,
+                    data: null,
                 });
             }
 
@@ -97,18 +116,19 @@ class ContractTemplateController {
         const key = String(layoutKey || '').trim();
         if (!key) return null;
 
-        const boldSign = await prisma.boldSignTemplate.findFirst({
-            where: {
-                OR: [{ layoutKey: key }, { templateId: key }],
-            },
-            orderBy: { createdAt: 'desc' },
-        });
-        if (boldSign?.pdfUrl) {
+        const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(key);
+        if (pdfUrl) {
+            const boldSign = await prisma.boldSignTemplate.findFirst({
+                where: {
+                    OR: [{ layoutKey: key }, { templateId: key }],
+                },
+                orderBy: { createdAt: 'desc' },
+            });
             return {
-                id: boldSign.id,
-                url: boldSign.pdfUrl,
+                id: boldSign?.id,
+                url: pdfUrl,
                 originalName:
-                    boldSign.name ||
+                    boldSign?.name ||
                     (key === 'alliance_bridge_contract'
                         ? 'ALLIANCE BRIDGE CAPITAL.pdf'
                         : 'Contract.pdf'),

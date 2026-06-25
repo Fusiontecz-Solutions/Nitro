@@ -1,8 +1,6 @@
 import prisma from '../../config/prismaClient';
 import {
-  BOLD_SIGN_TYPE_TO_LAYOUT_KEY,
   DOCUMENT_LAYOUT_KEYS,
-  resolveLayoutKeyFromBoldSignType,
   type DocumentLayoutKey,
 } from './layouts/document-layout.registry';
 
@@ -69,48 +67,34 @@ function isValidRemotePdfUrl(url: string): boolean {
   return /^https?:\/\//i.test(trimmed);
 }
 
-function layoutKeyMatchScore(
-  layoutKey: DocumentLayoutKey,
-  row: { layoutKey: string | null; type: string; pdfUrl: string | null },
-): number {
-  const rowLayoutKey = String(row.layoutKey || '').trim();
-  if (rowLayoutKey === layoutKey) return 4;
-  if (resolveLayoutKeyFromBoldSignType(row.type) === layoutKey) return 2;
-  if (rowLayoutKey && resolveLayoutKeyFromBoldSignType(row.type) === layoutKey) return 3;
-  return 0;
+/**
+ * Resolve pdfUrl by exact layoutKey / templateId only.
+ * Never match by BoldSignTemplate.type — multiple funders share type "contract"
+ * and fuzzy matching can return the wrong funder's PDF (legal/compliance risk).
+ */
+export async function findBoldSignTemplatePdfUrlByExactLayoutKey(
+  layoutKey: string,
+): Promise<string | null> {
+  const key = String(layoutKey || '').trim();
+  if (!key) return null;
+
+  const row = await prisma.boldSignTemplate.findFirst({
+    where: {
+      OR: [{ layoutKey: key }, { templateId: key }],
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { pdfUrl: true },
+  });
+
+  const url = String(row?.pdfUrl || '').trim();
+  return isValidRemotePdfUrl(url) ? url : null;
 }
 
 /** Resolve Cloudinary (or other HTTPS) pdfUrl from BoldSignTemplate for a platform layout key. */
 export async function findBoldSignTemplatePdfUrlForLayout(
   layoutKey: DocumentLayoutKey,
 ): Promise<string | null> {
-  const def = PLATFORM_DOCUMENTS[layoutKey];
-  const typeVariants = new Set<string>([def.type, layoutKey]);
-  for (const [type, key] of Object.entries(BOLD_SIGN_TYPE_TO_LAYOUT_KEY)) {
-    if (key === layoutKey) typeVariants.add(type);
-  }
-
-  const rows = await prisma.boldSignTemplate.findMany({
-    where: {
-      OR: [
-        { layoutKey },
-        { templateId: layoutKey },
-        { type: { in: [...typeVariants] } },
-      ],
-    },
-    orderBy: { createdAt: 'desc' },
-    select: { pdfUrl: true, layoutKey: true, type: true },
-  });
-
-  const ranked = [...rows].sort(
-    (a, b) => layoutKeyMatchScore(layoutKey, b) - layoutKeyMatchScore(layoutKey, a),
-  );
-
-  for (const row of ranked) {
-    const url = String(row.pdfUrl || '').trim();
-    if (isValidRemotePdfUrl(url)) return url;
-  }
-  return null;
+  return findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
 }
 
 async function fetchRemotePdfAsBase64(url: string, documentName: string): Promise<string> {

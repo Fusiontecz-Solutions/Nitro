@@ -124,6 +124,7 @@
     "security_doing_business_as",
     "security_guarantor",
     "security_tax_ein",
+    "agreement_date",
     "signature_date",
     "state_of_inc",
     "typeOfEntity1"
@@ -485,18 +486,17 @@
     },
     {
       "id": "p27",
-      "type": "date",
-      "variable": "signature_date",
-      "slot": "date_p1_108_135",
+      "type": "text",
+      "variable": "agreement_date",
       "documentId": "1",
       "pageNumber": "1",
-      "x": "108",
-      "y": "135",
-      "width": "0",
-      "height": "0",
+      "x": "111",
+      "y": "137",
+      "width": "100",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "Date Signed c82b2bba-e612-4ccc-abe7-188da618fce0"
+      "sourceTabLabel": "agreement_date"
     },
     {
       "id": "p28",

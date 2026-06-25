@@ -55,6 +55,10 @@ export const DOCUSIGN_DEFAULT_ROLE_NAME =
 export const DOCUSIGN_SINGLE_SIGNER_ONLY =
   String(process.env.DOCUSIGN_SINGLE_SIGNER_ONLY || 'true').trim().toLowerCase() !== 'false';
 
+/** When true (default), contract + addendum + disclosure are one PDF in DocuSign. Set to false for separate files. */
+export const DOCUSIGN_COMBINE_PACKAGE_PDF =
+  String(process.env.DOCUSIGN_COMBINE_PACKAGE_PDF || 'true').trim().toLowerCase() !== 'false';
+
 /**
  * When true (default), lock text/number/list/etc. tabs when the envelope is sent so signers
  * can only sign. Draft / Sender View review keeps fields editable until send.

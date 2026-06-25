@@ -83,6 +83,7 @@ import {
   filterSupplementalRefs,
   resolveSupplementalRefsFromDb,
 } from './utils/platform-layout-envelope';
+import { resolveMainContractLayoutKeyForSend } from './utils/resolve-main-contract-layout';
 import {
   DOCUMENT_LAYOUT_KEYS,
   type DocumentLayoutKey,
@@ -3897,8 +3898,12 @@ export class DocusignService {
     try {
       const sendImmediately = options.autoSend === true;
       const envelopeSubject = String(options.title || '').trim();
+      const layoutKeyForSend = await resolveMainContractLayoutKeyForSend({
+        mainContractLayoutKey: options.mainContractLayoutKey,
+        funderName: options.funderName,
+      });
       const mainContractLayoutKey = await this.resolveMainContractLayoutKeyOption(
-        options.mainContractLayoutKey,
+        layoutKeyForSend,
       );
       built = await buildPlatformLayoutEnvelopeDefinition({
         supplementalRefs,

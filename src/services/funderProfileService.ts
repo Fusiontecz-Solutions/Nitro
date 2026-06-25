@@ -8,6 +8,7 @@ import {
   funderContractLayoutKey,
   isFunderContractLayoutKey,
 } from '../utils/funderContractLayout';
+import { isDocumentLayoutKey } from './docusign/platform-document-registry';
 
 function toStatesJson(
   states?: string[] | null,
@@ -175,12 +176,21 @@ export async function getFunderWithDocuSignCredentials(funderName: string) {
 function defaultContractFields(input: FunderProfileInput) {
   const layoutKey = String(input.mainContractLayoutKey || '').trim();
   const fileName = String(input.contractPdfFileName || '').trim();
-  const useCustomLayout = isFunderContractLayoutKey(layoutKey);
+  if (isFunderContractLayoutKey(layoutKey)) {
+    return {
+      mainContractLayoutKey: layoutKey,
+      contractPdfFileName: fileName || DEFAULT_FUNDER_CONTRACT_FILENAME,
+    };
+  }
+  if (isDocumentLayoutKey(layoutKey)) {
+    return {
+      mainContractLayoutKey: layoutKey,
+      contractPdfFileName: fileName || DEFAULT_FUNDER_CONTRACT_FILENAME,
+    };
+  }
 
   return {
-    mainContractLayoutKey: useCustomLayout
-      ? layoutKey
-      : DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY,
+    mainContractLayoutKey: DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY,
     contractPdfFileName: fileName || DEFAULT_FUNDER_CONTRACT_FILENAME,
   };
 }
@@ -292,9 +302,10 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
   if (input.assignsDealId !== undefined) data.assignsDealId = Boolean(input.assignsDealId);
   if (input.mainContractLayoutKey !== undefined) {
     const layoutKey = String(input.mainContractLayoutKey || '').trim();
-    data.mainContractLayoutKey = isFunderContractLayoutKey(layoutKey)
-      ? layoutKey
-      : DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY;
+    data.mainContractLayoutKey =
+      isFunderContractLayoutKey(layoutKey) || isDocumentLayoutKey(layoutKey)
+        ? layoutKey
+        : DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY;
   }
   if (input.contractPdfFileName !== undefined) {
     data.contractPdfFileName = input.contractPdfFileName
