@@ -7,41 +7,10 @@ import { useTheme } from "@/context/ThemeContext";
 import { ChevronLeft } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { formatActionRequired } from "@/lib/formatActionRequired";
+import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
-import type { TermsOffer } from "@/types/termsOfferTypes";
 // import { Button } from "../ui/button";
-
-const toValidNumber = (value: unknown): number | null => {
-    if (value == null || String(value).trim() === "") return null;
-    const num = Number(value);
-    return Number.isFinite(num) ? num : null;
-};
-
-function resolveOfferAmountForSummary(
-    offerDecisionData: unknown,
-    latestTermsOffer: TermsOffer | undefined,
-): number | null {
-    const fromTerms = toValidNumber(latestTermsOffer?.approvedAmount);
-    if (!offerDecisionData || typeof offerDecisionData !== "object") {
-        return fromTerms;
-    }
-    const od = offerDecisionData as Record<string, unknown>;
-    if (String(od.decision ?? "").toLowerCase() === "declined") {
-        return fromTerms;
-    }
-    const inner =
-        od.offer && typeof od.offer === "object" && !Array.isArray(od.offer)
-            ? (od.offer as Record<string, unknown>)
-            : null;
-    return (
-        toValidNumber(od.offer) ??
-        toValidNumber(inner?.offer) ??
-        toValidNumber(inner?.approvedAmount) ??
-        toValidNumber(od.approvedAmount) ??
-        fromTerms
-    );
-}
 
 interface ApplicationSummaryProps {
     isUnderwriter?: boolean;
@@ -102,7 +71,7 @@ const ApplicationSummary = ({
 
     const latestTermsOffer = termsOffers?.[0];
     const offerAmount = showDynamicData
-        ? resolveOfferAmountForSummary(offerDecisionData, latestTermsOffer)
+        ? resolveApplicationOfferAmount(offerDecisionData, latestTermsOffer)
         : null;
 
     const isLoading = fetchLoading;

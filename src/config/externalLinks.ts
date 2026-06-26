@@ -57,7 +57,7 @@ export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
   {
     id: "google",
     title: "Google Search",
-    description: "Open web search for the merchant",
+    description: "Open-web reputation",
     href: ({ businessName, ein }) => {
       const query = [businessName.trim(), ein.trim()].filter(Boolean).join(" ");
       return query

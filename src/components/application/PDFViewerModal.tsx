@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DocumentViewerPanel } from "@/components/documents/DocumentViewerPanel";
 import { flushSync } from "react-dom";
 import {
     AlertCircle,
@@ -118,12 +119,18 @@ import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
 import {
+    buildContractSendTableRows,
     canSendMainContract,
-    canVoidMainContract,
+    canVoidContractSendTableRow,
+    getContractSendTableRowStatusLabel,
+    hasVisibleContractSendTableRows,
     isContractFullySigned,
+    isContractSendTableRowFullySigned,
+    isContractSendTableRowVoided,
     isContractSigningFinished,
     isContractVoidedOrTerminal,
     pickContractEnvelopeDocument,
+    type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS } from "./contractdata/docusignPolling";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
@@ -737,6 +744,28 @@ function formatOfferDecisionCell(label: string, value: unknown): string {
     return formatDisplayValueForUs(label, value);
 }
 
+function sentRowSigningStatusKey(row: ContractSendTableRow | null | undefined): string {
+    if (!row) return "";
+    if (row.rowType === "ach") return String(row.achStatus ?? "DRAFT").toUpperCase();
+    if (row.rowType === "package") return String(row.packageStatus ?? "DRAFT").toUpperCase();
+    const ds = String(row.documentStatus ?? "").trim().toLowerCase();
+    const cs = String(row.contractStatus ?? "").trim().toUpperCase();
+    if (ds === "completed" || cs === "COMPLETED" || cs === "SIGNED") return "COMPLETED";
+    if (ds === "viewed" || ds === "delivered" || cs === "VIEWED") return "VIEWED";
+    if (ds === "sent" || cs === "SENT") return "SENT";
+    if (
+        ds === "revoked" ||
+        ds === "voided" ||
+        cs === "REVOKED" ||
+        cs === "VOIDED" ||
+        cs === "DECLINED" ||
+        cs === "EXPIRED"
+    ) {
+        return cs || "REVOKED";
+    }
+    return cs || "DRAFT";
+}
+
 function formatContractSigningStatusLabel(raw: unknown): string {
     const k = String(raw ?? "").trim().toUpperCase();
     const labels: Record<string, string> = {
@@ -813,13 +842,6 @@ function isContractAlreadySent(
 function envelopeDocStatusIsTerminal(doc: Record<string, unknown> | null | undefined): boolean {
     const s = String(doc?.status ?? "").trim().toLowerCase();
     return ["revoked", "voided", "declined", "expired", "completed"].includes(s);
-}
-
-function canCancelDocuSignContract(
-    contract: Record<string, unknown> | null | undefined,
-    sessionSentAt: Date | null,
-): boolean {
-    return canVoidMainContract(contract, sessionSentAt);
 }
 
 function canReviewAndSendToDocuSign(
@@ -1049,6 +1071,8 @@ const PDFViewerModal = ({
     const [sentAt, setSentAt] = useState<Date | null>(null);
     const [sentStepUnlocked, setSentStepUnlocked] = useState(false);
     const sentStepUnlockedRef = useRef(false);
+    /** Selected row in Sent step when multiple envelopes were sent. */
+    const [selectedSentEnvelopeKey, setSelectedSentEnvelopeKey] = useState<string | null>(null);
     const [sentCcEmails, setSentCcEmails] = useState<string[]>([]);
     /** True only while user clicks Refresh on the Sent-step signing status card. */
     const [signingStatusRefreshing, setSigningStatusRefreshing] = useState(false);
@@ -1218,6 +1242,7 @@ const PDFViewerModal = ({
     >({});
     const [syncingKycKey, setSyncingKycKey] = useState<RequiredDocumentKey | null>(null);
     const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
+    const [uploadedPreviewName, setUploadedPreviewName] = useState<string>("Document");
     const [updatingUploadedFileId, setUpdatingUploadedFileId] = useState<string | null>(null);
     const [deletingUploadedFileId, setDeletingUploadedFileId] = useState<string | null>(null);
     const [openDocumentActionMenuId, setOpenDocumentActionMenuId] = useState<string | null>(null);
@@ -1785,7 +1810,8 @@ const PDFViewerModal = ({
     const showDocuSignContractTab = useMemo(
         () =>
             activeStep === "sent" &&
-            isContractAlreadySent(resolvedContract, sentAt, sentStepUnlocked),
+            (hasVisibleContractSendTableRows(resolvedContract) ||
+                isContractAlreadySent(resolvedContract, sentAt, sentStepUnlocked)),
         [activeStep, resolvedContract, sentAt, sentStepUnlocked],
     );
 
@@ -1919,6 +1945,7 @@ const PDFViewerModal = ({
             setSelectedAddendumOption("");
             setIncludeMainContractInSend(true);
             setSessionEnvelopeId(null);
+            setSelectedSentEnvelopeKey(null);
             setDocuSignOpenUrl(null);
             setContractSignerOverrides(null);
             setShowRecipientEditor(false);
@@ -2072,14 +2099,46 @@ const PDFViewerModal = ({
         return fromContract || null;
     }, [sessionEnvelopeId, resolvedContract]);
 
+    const sentEnvelopeRows = useMemo(
+        () => buildContractSendTableRows(resolvedContract),
+        [resolvedContract],
+    );
+
+    const selectedSentRow = useMemo((): ContractSendTableRow | null => {
+        if (!sentEnvelopeRows.length) return null;
+        if (selectedSentEnvelopeKey) {
+            const found = sentEnvelopeRows.find((row) => row.key === selectedSentEnvelopeKey);
+            if (found) return found;
+        }
+        const sessionEnv = String(sessionEnvelopeId || "").trim();
+        if (sessionEnv) {
+            const bySession = sentEnvelopeRows.find((row) => row.envelopeId === sessionEnv);
+            if (bySession) return bySession;
+        }
+        return sentEnvelopeRows.find((row) => row.isCurrent) ?? sentEnvelopeRows[0];
+    }, [sentEnvelopeRows, selectedSentEnvelopeKey, sessionEnvelopeId]);
+
+    const sentStepPreviewEnvelopeId = useMemo(() => {
+        const fromRow = String(selectedSentRow?.envelopeId ?? "").trim();
+        if (fromRow) return fromRow;
+        return linkedEnvelopeId;
+    }, [selectedSentRow, linkedEnvelopeId]);
+
+    const canOpenSentStepAny = useMemo(
+        () =>
+            sentEnvelopeRows.length > 0 ||
+            isContractAlreadySent(resolvedContract, sentAt, sentStepUnlocked),
+        [sentEnvelopeRows, resolvedContract, sentAt, sentStepUnlocked],
+    );
+
     const sentStepPersistKey = useMemo(
         () => sentStepStorageKey(effectiveContractId, applicationIdForLookup),
         [effectiveContractId, applicationIdForLookup],
     );
 
     const canCancelSentContract = useMemo(
-        () => canCancelDocuSignContract(resolvedContract, sentAt),
-        [resolvedContract, sentAt],
+        () => canVoidContractSendTableRow(resolvedContract, selectedSentRow, sentAt),
+        [resolvedContract, selectedSentRow, sentAt],
     );
     const canReviewAndSendDocuSign = useMemo(
         () => canReviewAndSendToDocuSign(resolvedContract, sentAt, sentStepUnlocked),
@@ -2292,7 +2351,11 @@ const PDFViewerModal = ({
     const linkedDisclosureMappingRef = useRef<ContractDocumentTemplateMappingRow | null>(null);
     const disclosureAutoLinkKeyRef = useRef("");
     const prevContractDisclosureFrequencyRef = useRef("");
+    const selectedSentRowRef = useRef<ContractSendTableRow | null>(null);
+    const sentStepPreviewEnvelopeIdRef = useRef<string | null>(null);
     linkedEnvelopeIdRef.current = linkedEnvelopeId;
+    selectedSentRowRef.current = selectedSentRow;
+    sentStepPreviewEnvelopeIdRef.current = sentStepPreviewEnvelopeId;
     applicationIdForLookupRef.current = applicationIdForLookup;
     ccEmailsRef.current = mergeContractCcEmailList(ccEmails);
     selectedAddendumOptionRef.current = selectedAddendumOption;
@@ -2322,7 +2385,14 @@ const PDFViewerModal = ({
             options?.loadId ??
             (manageLoading ? ++prefilledActiveLoadIdRef.current : prefilledActiveLoadIdRef.current);
         const envelopeId =
-            String(overrideEnvelopeId || linkedEnvelopeIdRef.current || "").trim() || null;
+            String(
+                overrideEnvelopeId ||
+                    (activeStepRef.current === "sent"
+                        ? sentStepPreviewEnvelopeIdRef.current
+                        : null) ||
+                    linkedEnvelopeIdRef.current ||
+                    "",
+            ).trim() || null;
         const appId = applicationIdForLookupRef.current;
 
         if (!envelopeId && !appId) {
@@ -2600,7 +2670,12 @@ const PDFViewerModal = ({
 
     const downloadFilledContractPdf = useCallback(async () => {
         const envelopeId =
-            String(linkedEnvelopeIdRef.current || linkedEnvelopeId || "").trim() || null;
+            String(
+                (activeStep === "sent" ? sentStepPreviewEnvelopeId : null) ||
+                    linkedEnvelopeIdRef.current ||
+                    linkedEnvelopeId ||
+                    "",
+            ).trim() || null;
         const appId = applicationIdForLookupRef.current;
 
         if (!envelopeId && !appId) {
@@ -2643,7 +2718,7 @@ const PDFViewerModal = ({
         } finally {
             setDownloadingFilledContract(false);
         }
-    }, [linkedEnvelopeId, applicationIdForLookup]);
+    }, [activeStep, linkedEnvelopeId, applicationIdForLookup, sentStepPreviewEnvelopeId]);
 
     const persistContractStateAndFunder = useCallback(
         async (patch: { state?: string | null; funderName?: string | null }) => {
@@ -3255,15 +3330,6 @@ const PDFViewerModal = ({
                 return;
             }
 
-            const allowed = ["pdf", "jpg", "jpeg", "png"];
-            const ext = (file.name.split(".").pop() || "").toLowerCase();
-            if (!allowed.includes(ext)) {
-                const msg = "Unsupported file. Please upload a PDF, JPG, or PNG.";
-                setDocumentUploadMessage(msg);
-                toast.error(msg);
-                return;
-            }
-
             const previewUrl = URL.createObjectURL(file);
             setDocumentUrls((u) => {
                 const prevUrl = u[key];
@@ -3408,6 +3474,7 @@ const PDFViewerModal = ({
                     revokeInlinePreviewBlob();
                 }
                 setActivePreview(null);
+                setUploadedPreviewName(fileName);
                 setUploadedPreviewUrl(previewUrl);
                 setPdfRightPaneTab("template");
             } catch (error: any) {
@@ -3447,7 +3514,6 @@ const PDFViewerModal = ({
         if (effectiveContractId == null || !fileId) return;
         const input = document.createElement("input");
         input.type = "file";
-        input.accept = ".pdf,.jpg,.jpeg,.png";
         input.onchange = async (e) => {
             const file = (e.target as HTMLInputElement)?.files?.[0];
             if (!file) return;
@@ -3612,16 +3678,26 @@ const PDFViewerModal = ({
                 if (!c) return;
 
                 const envelopeForSync =
+                    (activeStepRef.current === "sent"
+                        ? sentStepPreviewEnvelopeIdRef.current
+                        : null) ||
                     linkedEnvelopeIdRef.current ||
+                    String(sessionEnvelopeIdRef.current || "").trim() ||
                     String(
                         (c as { application?: { document?: { envelopeId?: string } } })
                             ?.application?.document?.envelopeId ?? "",
                     ).trim() ||
                     null;
-                const alreadySent = isContractAlreadySent(c, sentAtRef.current);
+                const alreadySent =
+                    hasVisibleContractSendTableRows(c) ||
+                    isContractAlreadySent(c, sentAtRef.current);
                 const onSentStep = activeStepRef.current === "sent";
                 const wantsSync = options?.syncDocuSign === true;
-                const signingFinished = isContractSigningFinished(c);
+                const selectedRow = selectedSentRowRef.current;
+                const signingFinished = selectedRow
+                    ? isContractSendTableRowFullySigned(selectedRow) ||
+                      isContractSendTableRowVoided(selectedRow)
+                    : isContractSigningFinished(c);
                 const maySyncDocuSign =
                     wantsSync &&
                     Boolean(envelopeForSync || appId) &&
@@ -3653,7 +3729,7 @@ const PDFViewerModal = ({
                                         : contractId,
                                     force: options?.forceDocuSignSync === true,
                                     silent: Boolean(silent),
-                                    envelopeLabel: "contract",
+                                    envelopeLabel: selectedRow?.label ?? "contract",
                                     ccEmails: ccForSync.length ? ccForSync : undefined,
                                 },
                             );
@@ -3705,12 +3781,26 @@ const PDFViewerModal = ({
                     }
                 }
 
-                const nowSent = isContractAlreadySent(
-                    c,
-                    sentAtRef.current,
-                    sentStepUnlockedRef.current,
-                );
-                const statusUpper = String(c.status ?? "").trim().toUpperCase();
+                const rows = buildContractSendTableRows(c);
+                const sessionEnv = String(sessionEnvelopeIdRef.current || "").trim();
+                const sessionRow = sessionEnv
+                    ? rows.find((row) => row.envelopeId === sessionEnv)
+                    : null;
+                if (sessionRow) {
+                    setSelectedSentEnvelopeKey(sessionRow.key);
+                }
+
+                const nowSent =
+                    rows.length > 0 ||
+                    isContractAlreadySent(
+                        c,
+                        sentAtRef.current,
+                        sentStepUnlockedRef.current,
+                    );
+                const currentStatusLabel = sessionRow
+                    ? getContractSendTableRowStatusLabel(sessionRow)
+                    : formatContractSigningStatusLabel(c.status);
+                const statusUpper = currentStatusLabel.trim().toUpperCase();
                 const prevStatus = prevContractStatusRef.current;
 
                 if (nowSent && !contractWasSentRef.current) {
@@ -3736,28 +3826,63 @@ const PDFViewerModal = ({
                     setPdfRightPaneTabRef.current("docusign");
                     prefilledPdfCachedForEnvelopeRef.current = null;
                     prefilledBoldSignPdfUrlRef.current = null;
-                    void loadPrefilledPdfRef.current(undefined, { maxAttempts: 3 });
+                    void loadPrefilledPdfRef.current(
+                        sessionRow?.envelopeId ?? sentStepPreviewEnvelopeIdRef.current ?? undefined,
+                        { maxAttempts: 3 },
+                    );
                     if (!silent) {
                         toast.success(
-                            "Contract sent in DocuSign. Step 4 shows signing status and the envelope PDF.",
+                            sessionRow && sessionRow.rowType !== "contract"
+                                ? `${sessionRow.label} sent in DocuSign. Step 4 shows signing status and the envelope PDF.`
+                                : "Contract sent in DocuSign. Step 4 shows signing status and the envelope PDF.",
                         );
                     }
+                } else if (
+                    sessionRow &&
+                    sessionRow.rowType !== "contract" &&
+                    getContractSendTableRowStatusLabel(sessionRow) !== "Draft"
+                ) {
+                    if (activeStepRef.current !== "sent") {
+                        setActiveStep("sent");
+                        didSuggestSentTabThisOpenRef.current = true;
+                    }
+                    setPdfRightPaneTabRef.current("docusign");
+                    prefilledPdfCachedForEnvelopeRef.current = null;
+                    prefilledBoldSignPdfUrlRef.current = null;
+                    void loadPrefilledPdfRef.current(sessionRow.envelopeId ?? undefined, {
+                        maxAttempts: 3,
+                    });
+                } else if (sessionRow && activeStepRef.current === "sent") {
+                    prefilledPdfCachedForEnvelopeRef.current = null;
+                    prefilledBoldSignPdfUrlRef.current = null;
+                    void loadPrefilledPdfRef.current(sessionRow.envelopeId ?? undefined, {
+                        maxAttempts: 3,
+                    });
                 }
 
                 if (
-                    statusUpper === "COMPLETED" &&
-                    prevStatus !== "COMPLETED" &&
+                    (statusUpper === "SIGNED" || statusUpper === "COMPLETED") &&
+                    prevStatus !== statusUpper &&
                     activeStepRef.current === "sent"
                 ) {
                     prefilledPdfCachedForEnvelopeRef.current = null;
                     prefilledBoldSignPdfUrlRef.current = null;
-                    void loadPrefilledPdfRef.current(undefined, { maxAttempts: 3 });
-                    if (!silent) {
-                        toast.success("Contract fully signed. PDF updated with signatures.");
+                    void loadPrefilledPdfRef.current(
+                        sessionRow?.envelopeId ?? sentStepPreviewEnvelopeIdRef.current ?? undefined,
+                        { maxAttempts: 3 },
+                    );
+                    if (!silent && statusUpper !== prevStatus) {
+                        toast.success(
+                            sessionRow
+                                ? `${sessionRow.label} fully signed. PDF updated with signatures.`
+                                : "Contract fully signed. PDF updated with signatures.",
+                        );
                     }
                 }
 
-                prevContractStatusRef.current = statusUpper;
+                prevContractStatusRef.current = sessionRow
+                    ? `${sessionRow.key}:${statusUpper}`
+                    : statusUpper;
                 setLastSigningStatusSyncAt(new Date());
             } catch {
                 /* ignore */
@@ -3776,13 +3901,27 @@ const PDFViewerModal = ({
                     syncDocuSign: true,
                     forceDocuSignSync: true,
                 }),
-            shouldStop: () =>
-                isContractSigningFinished(resolvedContractRef.current) ||
-                isContractAlreadySent(
-                    resolvedContractRef.current,
-                    sentAtRef.current,
-                    sentStepUnlockedRef.current,
-                ),
+            shouldStop: () => {
+                const sessionEnv = String(sessionEnvelopeIdRef.current || "").trim();
+                const rows = buildContractSendTableRows(resolvedContractRef.current);
+                if (sessionEnv) {
+                    const row = rows.find((r) => r.envelopeId === sessionEnv);
+                    if (row) {
+                        return (
+                            isContractSendTableRowFullySigned(row) ||
+                            isContractSendTableRowVoided(row)
+                        );
+                    }
+                }
+                return (
+                    isContractSigningFinished(resolvedContractRef.current) ||
+                    isContractAlreadySent(
+                        resolvedContractRef.current,
+                        sentAtRef.current,
+                        sentStepUnlockedRef.current,
+                    )
+                );
+            },
         });
     }, [refreshContractSigningState]);
 
@@ -4070,10 +4209,12 @@ const PDFViewerModal = ({
     );
 
     const handleCancelContract = useCallback(async () => {
-        const envelopeId = String(linkedEnvelopeId || "").trim();
+        const row = selectedSentRowRef.current;
+        const envelopeId = String(row?.envelopeId ?? linkedEnvelopeId ?? "").trim();
         if (!envelopeId || isCancellingContract) return;
+        const voidLabel = row?.label ?? "contract";
         const confirmed = window.confirm(
-            "Void this contract in DocuSign? Signers will no longer be able to sign. You can send a new contract afterward.",
+            `Void "${voidLabel}" in DocuSign? Signers will no longer be able to sign. You can send again afterward.`,
         );
         if (!confirmed) return;
 
@@ -4086,20 +4227,23 @@ const PDFViewerModal = ({
                 }),
             ).unwrap();
 
-            invalidateDocuSignDraftSession();
-            setDocuSignOpenUrl(null);
-            setSentAt(null);
-            sentStepUnlockedRef.current = false;
-            setSentStepUnlocked(false);
-            if (sentStepPersistKey && typeof window !== "undefined") {
-                try {
-                    sessionStorage.removeItem(sentStepPersistKey);
-                } catch {
-                    /* ignore */
+            if (row?.rowType === "contract") {
+                invalidateDocuSignDraftSession();
+                setDocuSignOpenUrl(null);
+                setSentAt(null);
+                sentStepUnlockedRef.current = false;
+                setSentStepUnlocked(false);
+                if (sentStepPersistKey && typeof window !== "undefined") {
+                    try {
+                        sessionStorage.removeItem(sentStepPersistKey);
+                    } catch {
+                        /* ignore */
+                    }
                 }
+                contractWasSentRef.current = false;
+                pendingCcForSentRef.current = [];
             }
-            contractWasSentRef.current = false;
-            pendingCcForSentRef.current = [];
+
             invalidateDocuSignPdfCache();
             setPrefilledBoldSignPdfUrl((prev) => {
                 if (prev) URL.revokeObjectURL(prev);
@@ -4112,18 +4256,14 @@ const PDFViewerModal = ({
                 forceDocuSignSync: true,
             });
 
-            if (activeStepRef.current === "sent") {
-                setActiveStep("summary");
-            }
-
             toast.success(
-                "Contract voided in DocuSign. Use Review & send when you are ready to send again.",
+                `${voidLabel} voided in DocuSign. Use Review & send when you are ready to send again.`,
             );
         } catch (err: unknown) {
             const msg =
                 typeof err === "string"
                     ? err
-                    : String((err as { message?: string })?.message || "Failed to void contract.");
+                    : String((err as { message?: string })?.message || "Failed to void document.");
             toast.error(msg);
         } finally {
             setIsCancellingContract(false);
@@ -4143,12 +4283,24 @@ const PDFViewerModal = ({
         if (pdfRightPaneTab !== "docusign") {
             return;
         }
-        void loadPrefilledPdfFromDocuSign(undefined, { maxAttempts: 3 });
+        void loadPrefilledPdfFromDocuSign(sentStepPreviewEnvelopeId ?? undefined, { maxAttempts: 3 });
     }, [
         invalidateDocuSignPdfCache,
         pdfRightPaneTab,
-        linkedEnvelopeId,
-        sessionEnvelopeId,
+        sentStepPreviewEnvelopeId,
+        loadPrefilledPdfFromDocuSign,
+    ]);
+
+    useEffect(() => {
+        if (!isOpen || activeStep !== "sent" || !selectedSentRow?.envelopeId) return;
+        invalidateDocuSignPdfCache();
+        void loadPrefilledPdfFromDocuSign(selectedSentRow.envelopeId, { maxAttempts: 3 });
+    }, [
+        isOpen,
+        activeStep,
+        selectedSentRow?.envelopeId,
+        selectedSentRow?.key,
+        invalidateDocuSignPdfCache,
         loadPrefilledPdfFromDocuSign,
     ]);
 
@@ -4157,12 +4309,12 @@ const PDFViewerModal = ({
             didSuggestSentTabThisOpenRef.current = false;
             return;
         }
-        if (!isContractAlreadySent(resolvedContract, sentAt, sentStepUnlocked)) return;
+        if (!canOpenSentStepAny) return;
         if (didSuggestSentTabThisOpenRef.current) return;
         if (activeStep !== "documents") return;
         setActiveStep("sent");
         didSuggestSentTabThisOpenRef.current = true;
-    }, [isOpen, activeStep, resolvedContract, sentAt, sentStepUnlocked]);
+    }, [isOpen, activeStep, canOpenSentStepAny]);
 
     useEffect(() => {
         if (!isOpen || !applicationIdForLookup) return;
@@ -5430,6 +5582,15 @@ const PDFViewerModal = ({
                 ? documentUrls[activePreview]
                 : effectiveContractPreviewUrl;
 
+    const currentPreviewFileName =
+        uploadedPreviewUrl && currentPreviewUrl === uploadedPreviewUrl
+            ? uploadedPreviewName
+            : activePreview && documentUrls[activePreview] === currentPreviewUrl
+              ? pendingFileNameByKey[activePreview] || activePreview
+              : effectiveContractPreviewName || fileName || "Contract.pdf";
+
+    const useMultiFormatPreview = currentPreviewUrl !== effectiveContractPreviewUrl;
+
     return (
         <>
             <Dialog open={isOpen} onOpenChange={onClose}>
@@ -5454,11 +5615,7 @@ const PDFViewerModal = ({
                                 const infoGreenActive = onInfo || onSummary || onSent;
                                 const summaryGreenActive = onSummary || onSent;
                                 const sentGreenActive = onSent;
-                                const canOpenSentStep = isContractAlreadySent(
-                                    resolvedContract,
-                                    sentAt,
-                                    sentStepUnlocked,
-                                );
+                                const canOpenSentStep = canOpenSentStepAny;
 
                                 const circleDone = "w-5 h-5 shrink-0 rounded-full border-2 border-[var(--brand)] bg-[var(--brand)]/10 text-[var(--brand)] flex items-center justify-center text-[10px]";
                                 const circleCurrent = "w-5 h-5 shrink-0 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px] font-semibold";
@@ -5740,7 +5897,6 @@ const PDFViewerModal = ({
                                                                 <Input
                                                                     ref={inputRef}
                                                                     type="file"
-                                                                    accept=".pdf,.jpg,.jpeg,.png"
                                                                     onClick={(e) => e.stopPropagation()}
                                                                     onChange={(e) => {
                                                                         onPickFiles(e.target.files);
@@ -7939,6 +8095,49 @@ const PDFViewerModal = ({
 
                                 {activeStep === "sent" && (
                                     <section className="space-y-4">
+                                        {sentEnvelopeRows.length > 0 ? (
+                                            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                                <label
+                                                    htmlFor="sent-envelope-select"
+                                                    className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+                                                >
+                                                    Sent document
+                                                </label>
+                                                <Select
+                                                    value={selectedSentRow?.key ?? ""}
+                                                    onValueChange={(value: string) => {
+                                                        setSelectedSentEnvelopeKey(value);
+                                                        const row = sentEnvelopeRows.find(
+                                                            (item) => item.key === value,
+                                                        );
+                                                        if (row?.envelopeId) {
+                                                            invalidateDocuSignPdfCache();
+                                                            setPdfRightPaneTab("docusign");
+                                                            void loadPrefilledPdfFromDocuSign(
+                                                                row.envelopeId,
+                                                                { maxAttempts: 3 },
+                                                            );
+                                                        }
+                                                    }}
+                                                >
+                                                    <SelectTrigger
+                                                        id="sent-envelope-select"
+                                                        className="h-10 w-full bg-white dark:bg-slate-900"
+                                                    >
+                                                        <SelectValue placeholder="Select a sent document" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {sentEnvelopeRows.map((row) => (
+                                                            <SelectItem key={row.key} value={row.key}>
+                                                                {row.label} —{" "}
+                                                                {getContractSendTableRowStatusLabel(row)}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        ) : null}
+
                                         <div className="overflow-hidden rounded-2xl border border-[var(--brand)]/20 bg-white shadow-sm dark:border-[var(--brand)]/25 dark:bg-slate-950">
                                             <div className="bg-gradient-to-r from-[var(--brand)] to-[#1f83b4] px-5 py-5 text-white">
                                                 <div className="flex items-start gap-3">
@@ -7950,14 +8149,14 @@ const PDFViewerModal = ({
                                                             Sent successfully
                                                         </p>
                                                         <h3 className="mt-1 text-lg font-semibold tracking-tight">
-                                                            {String(resolvedContract?.status ?? "").toUpperCase() ===
-                                                            "COMPLETED"
-                                                                ? "Contract fully signed"
-                                                                : "Contract is on its way for signature"}
+                                                            {selectedSentRow &&
+                                                            isContractSendTableRowFullySigned(selectedSentRow)
+                                                                ? `${selectedSentRow.label} fully signed`
+                                                                : `${selectedSentRow?.label ?? "Document"} is on its way for signature`}
                                                         </h3>
                                                         <p className="mt-1 text-sm leading-relaxed text-white/85">
-                                                            {String(resolvedContract?.status ?? "").toUpperCase() ===
-                                                            "COMPLETED"
+                                                            {selectedSentRow &&
+                                                            isContractSendTableRowFullySigned(selectedSentRow)
                                                                 ? "All signers completed. The PDF on the right includes signatures."
                                                                 : "The DocuSign envelope was sent. Use Refresh to check signing status from DocuSign."}
                                                         </p>
@@ -7972,7 +8171,7 @@ const PDFViewerModal = ({
                                                         Document
                                                     </div>
                                                     <p className="break-words text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                                        {fileName || "Contract PDF"}
+                                                        {selectedSentRow?.label || fileName || "Contract PDF"}
                                                     </p>
                                                 </div>
                                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
@@ -7981,18 +8180,10 @@ const PDFViewerModal = ({
                                                         Sent time
                                                     </div>
                                                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                                        {(() => {
-                                                            if (sentAt) return sentAt.toLocaleString();
-                                                            const doc = pickContractEnvelopeDocument(resolvedContract);
-                                                            const docSentAt = doc?.sentAt as string | undefined;
-                                                            if (docSentAt) return formatDateTimeUS(String(docSentAt), "—");
-                                                            const docUpdatedAt = doc?.updatedAt as string | undefined;
-                                                            if (docUpdatedAt) return formatDateTimeUS(String(docUpdatedAt), "—");
-                                                            if (resolvedContract?.updatedAt) {
-                                                                return formatDateTimeUS(String(resolvedContract.updatedAt), "—");
-                                                            }
-                                                            return "—";
-                                                        })()}
+                                                        {formatDateTimeUS(
+                                                            selectedSentRow?.sentAt as string | undefined,
+                                                            "—",
+                                                        )}
                                                     </p>
                                                 </div>
                                             </div>
@@ -8045,7 +8236,9 @@ const PDFViewerModal = ({
                                                     </div>
                                                     <div>
                                                         <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                                            Contract signing status
+                                                            {selectedSentRow
+                                                                ? `${selectedSentRow.label} signing status`
+                                                                : "Contract signing status"}
                                                         </h3>
                                                         <p className="text-xs text-slate-500 dark:text-slate-400">
                                                             CRM status is updated when DocuSign webhooks are received (viewed, signed,
@@ -8056,7 +8249,7 @@ const PDFViewerModal = ({
 
                                             </div>
                                             {(() => {
-                                                const status = String(resolvedContract?.status ?? "").trim().toUpperCase();
+                                                const status = sentRowSigningStatusKey(selectedSentRow);
                                                 const chain = [
                                                     { key: "SENT", label: "Sent", hint: "Envelope sent" },
                                                     { key: "VIEWED", label: "Viewed", hint: "Signer opened" },
@@ -8070,15 +8263,24 @@ const PDFViewerModal = ({
                                                     SIGNED: 2,
                                                     COMPLETED: 3,
                                                 };
-                                                const terminalStatuses = ["DECLINED", "REVOKED", "EXPIRED"];
+                                                const terminalStatuses = ["DECLINED", "REVOKED", "EXPIRED", "VOIDED"];
                                                 const isTerminal = terminalStatuses.includes(status);
-                                                const activeIndex = isTerminal ? -1 : rank[status] ?? -1;
+                                                const progressStatus =
+                                                    status === "SIGNED" ? "COMPLETED" : status;
+                                                const activeIndex = isTerminal
+                                                    ? -1
+                                                    : rank[progressStatus] ?? -1;
+                                                const statusLabel = selectedSentRow
+                                                    ? getContractSendTableRowStatusLabel(selectedSentRow)
+                                                    : formatContractSigningStatusLabel(
+                                                          resolvedContract?.status,
+                                                      );
 
                                                 return (
                                                     <div className="space-y-3">
                                                         <div className="flex flex-wrap items-center gap-2">
                                                             <span className="inline-flex items-center rounded-full bg-[var(--brand)]/12 px-3 py-1 text-xs font-semibold text-[var(--brand)]">
-                                                                {formatContractSigningStatusLabel(resolvedContract?.status)}
+                                                                {statusLabel}
                                                             </span>
                                                         </div>
                                                         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 dark:border-slate-700 dark:bg-slate-900/60">
@@ -8125,7 +8327,7 @@ const PDFViewerModal = ({
                                                             </div>
                                                             {isTerminal ? (
                                                                 <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-                                                                    Signing flow ended with status: {formatContractSigningStatusLabel(status)}.
+                                                                    Signing flow ended with status: {statusLabel}.
                                                                 </div>
                                                             ) : null}
                                                             {docuSignSyncError ? (
@@ -8285,6 +8487,14 @@ const PDFViewerModal = ({
                                             <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
                                             <span>Loading document preview…</span>
                                         </div>
+                                    ) : useMultiFormatPreview ? (
+                                        <DocumentViewerPanel
+                                            key={`${currentPreviewUrl}-${currentPreviewFileName}`}
+                                            fileUrl={currentPreviewUrl}
+                                            fileName={currentPreviewFileName}
+                                            className="absolute inset-0"
+                                            minHeightClassName="min-h-full"
+                                        />
                                     ) : (
                                         <DirectPdfViewer
                                             key={currentPreviewUrl}
@@ -8422,9 +8632,11 @@ const PDFViewerModal = ({
                                     variant="default"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
                                     onClick={() => void handleCancelContract()}
-                                    disabled={isCancellingContract || !linkedEnvelopeId}
+                                    disabled={isCancellingContract || !selectedSentRow?.envelopeId}
                                 >
-                                    {isCancellingContract ? "Voiding contract…" : "Void Contract"}
+                                    {isCancellingContract
+                                        ? "Voiding…"
+                                        : `Void ${selectedSentRow?.label ?? "document"}`}
                                 </Button>
                             ) : null}
                             {activeStep === "sent" && !canCancelSentContract && !showResendContractButton ? (

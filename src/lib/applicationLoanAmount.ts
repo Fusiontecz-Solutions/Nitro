@@ -1,4 +1,5 @@
 import { resolveOfferDecisionFundedAmount } from "@/lib/offerDecisionFees";
+import type { TermsOffer } from "@/types/termsOfferTypes";
 
 type ApplicationAmountSource = {
   loanAmount?: number | string | null;
@@ -13,6 +14,40 @@ function parseLoanAmount(value: unknown): number | null {
   }
   const n = Number(String(value).replace(/[^0-9.-]+/g, ""));
   return Number.isFinite(n) ? n : null;
+}
+
+function toValidNumber(value: unknown): number | null {
+  if (value == null || String(value).trim() === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+/**
+ * Underwritten offer amount — OfferDecision / terms offer only, never requested loanAmount.
+ */
+export function resolveApplicationOfferAmount(
+  offerDecisionData: unknown,
+  latestTermsOffer?: TermsOffer | { approvedAmount?: unknown } | null,
+): number | null {
+  const fromTerms = toValidNumber(latestTermsOffer?.approvedAmount);
+  if (!offerDecisionData || typeof offerDecisionData !== "object") {
+    return fromTerms;
+  }
+  const od = offerDecisionData as Record<string, unknown>;
+  if (String(od.decision ?? "").toLowerCase() === "declined") {
+    return fromTerms;
+  }
+  const inner =
+    od.offer && typeof od.offer === "object" && !Array.isArray(od.offer)
+      ? (od.offer as Record<string, unknown>)
+      : null;
+  return (
+    toValidNumber(od.offer) ??
+    toValidNumber(inner?.offer) ??
+    toValidNumber(inner?.approvedAmount) ??
+    toValidNumber(od.approvedAmount) ??
+    fromTerms
+  );
 }
 
 /**

@@ -1312,8 +1312,6 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                                             onClick={() => {
                                                 const input = document.createElement("input");
                                                 input.type = "file";
-                                                input.accept =
-                                                    ".pdf,.csv,.xlsx,.xls,.doc,.docx,.jpg,.jpeg,.png";
                                                 input.multiple = true;
                                                 input.onchange = async () => {
                                                     const files = input.files;

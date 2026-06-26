@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSelector } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import { toast } from "react-toastify";
-import type { RootState } from "@/redux/store";
+import type { AppDispatch, RootState } from "@/redux/store";
 import {
   BACKGROUND_CHECK_RESOURCES,
   resolveBackgroundCheckHref,
@@ -10,13 +10,19 @@ import BackgroundCheckItemCard from "@/components/application/BackgroundCheckIte
 import BackgroundCheckSidebar from "@/components/application/BackgroundCheckSidebar";
 import DataMerchPanel from "@/components/application/DataMerchPanel";
 import {
+  backgroundCheckPdfFilename,
   defaultBackgroundCheckLogoUrl,
   downloadBackgroundCheckPdf,
+  fetchBackgroundCheckPdfBlob,
   formatBackgroundCheckEin,
 } from "@/components/application/backgroundCheckPdf";
+import PDFViewerDocsModal from "@/components/application/PDFViewerDocsModal";
 import type { BackgroundCheckFormState } from "@/components/application/backgroundCheckTypes";
+import { normalizeBackgroundCheckStatus } from "@/components/application/backgroundCheckTypes";
 import type { DataMerchLookupData } from "@/redux/actions/datamerch-actions";
-import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
+import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
+import { getTermsOffers } from "@/redux/actions/termsOfferActions";
+import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
 import { formatCurrency } from "@/lib/utils";
 
 const CHECK_IDS = BACKGROUND_CHECK_RESOURCES.map((r) => r.id);
@@ -34,6 +40,7 @@ function normalizeCheckItem(
   const legacy = item as BackgroundCheckFormState[string] & { notesSavedAt?: string };
   return {
     ...item,
+    status: normalizeBackgroundCheckStatus(item.status),
     savedAt: item.savedAt ?? legacy.notesSavedAt,
   };
 }
@@ -90,8 +97,15 @@ function loadDataMerchForExport(
 }
 
 export default function BackgroundCheckTab() {
+  const dispatch = useDispatch<AppDispatch>();
   const applicationData = useSelector(
     (state: RootState) => state.applicationDetail.data as Record<string, unknown> | null,
+  );
+  const { data: offerDecisionData } = useSelector(
+    (state: RootState) => state.offerDecision,
+  );
+  const { data: termsOffers } = useSelector(
+    (state: RootState) => state.termsOffers,
   );
   const loginUser = useSelector(
     (state: RootState) => state.login.data?.user as
@@ -109,6 +123,23 @@ export default function BackgroundCheckTab() {
       ).trim(),
     [applicationData],
   );
+
+  const apiApplicationKey = useMemo(
+    () =>
+      String(
+        applicationData?.applicationId ??
+          applicationData?._id ??
+          applicationId ??
+          "",
+      ).trim(),
+    [applicationData, applicationId],
+  );
+
+  useEffect(() => {
+    if (!apiApplicationKey) return;
+    void dispatch(getOfferDecisionByApplication(apiApplicationKey));
+    void dispatch(getTermsOffers({ application: apiApplicationKey }));
+  }, [apiApplicationKey, dispatch]);
 
   const linkContext = useMemo(() => {
     const client = applicationData?.client as Record<string, unknown> | undefined;
@@ -130,13 +161,20 @@ export default function BackgroundCheckTab() {
     ).trim();
     const owner = client?.owner as Record<string, unknown> | undefined;
     const ownerName = `${owner?.firstName ?? ""} ${owner?.lastName ?? ""}`.trim();
-    const offerAmount = resolveApplicationDisplayLoanAmount(
-      applicationData as Parameters<typeof resolveApplicationDisplayLoanAmount>[0],
+    const ownerSsn = String(owner?.ssn ?? client?.ownerSsn ?? "").trim();
+    const offerDecisionSource =
+      offerDecisionData ??
+      (applicationData?.OfferDecision as Record<string, unknown> | null | undefined) ??
+      (applicationData?.offerDecision as Record<string, unknown> | null | undefined) ??
+      null;
+    const offerAmount = resolveApplicationOfferAmount(
+      offerDecisionSource,
+      termsOffers?.[0],
     );
     const offerAmountLabel =
       offerAmount != null && offerAmount > 0 ? formatCurrency(offerAmount) : "";
-    return { businessName, ein, dealId, ownerName, offerAmountLabel };
-  }, [applicationData]);
+    return { businessName, ein, dealId, ownerName, ownerSsn, offerAmountLabel };
+  }, [applicationData, offerDecisionData, termsOffers]);
 
   const savedByName = useMemo(() => {
     const name = `${loginUser?.firstName ?? ""} ${loginUser?.lastName ?? ""}`.trim();
@@ -147,6 +185,10 @@ export default function BackgroundCheckTab() {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [viewingPdf, setViewingPdf] = useState(false);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [pdfPreviewName, setPdfPreviewName] = useState("Compliance-Report.pdf");
+  const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
 
   useEffect(() => {
     if (!applicationId) {
@@ -223,37 +265,70 @@ export default function BackgroundCheckTab() {
     }, 150);
   }, []);
 
+  const buildPdfInput = useCallback(() => {
+    const datamerchQueryKey = buildDataMerchQueryKey(
+      linkContext.businessName,
+      linkContext.ein,
+    );
+    const datamerchExport = applicationId
+      ? loadDataMerchForExport(applicationId, datamerchQueryKey)
+      : null;
+
+    return {
+      logoUrl: defaultBackgroundCheckLogoUrl(),
+      merchantName: linkContext.businessName,
+      ownerName: linkContext.ownerName,
+      ownerSsn: linkContext.ownerSsn,
+      offerAmount: linkContext.offerAmountLabel,
+      savedByName,
+      ein: linkContext.ein,
+      dealId: linkContext.dealId,
+      checks,
+      savedAt,
+      datamerch: datamerchExport?.result ?? null,
+      datamerchSearchedAt: datamerchExport?.searchedAt ?? null,
+    };
+  }, [applicationId, checks, linkContext, savedAt, savedByName]);
+
   const handleDownloadPdf = useCallback(async () => {
     setDownloadingPdf(true);
     try {
-      const datamerchQueryKey = buildDataMerchQueryKey(
-        linkContext.businessName,
-        linkContext.ein,
-      );
-      const datamerchExport = applicationId
-        ? loadDataMerchForExport(applicationId, datamerchQueryKey)
-        : null;
-
-      await downloadBackgroundCheckPdf({
-        logoUrl: defaultBackgroundCheckLogoUrl(),
-        merchantName: linkContext.businessName,
-        ownerName: linkContext.ownerName,
-        offerAmount: linkContext.offerAmountLabel,
-        savedByName,
-        ein: linkContext.ein,
-        dealId: linkContext.dealId,
-        checks,
-        savedAt,
-        datamerch: datamerchExport?.result ?? null,
-        datamerchSearchedAt: datamerchExport?.searchedAt ?? null,
-      });
+      await downloadBackgroundCheckPdf(buildPdfInput());
       toast.success("Background check PDF downloaded.");
     } catch {
       toast.error("Could not generate the background check PDF.");
     } finally {
       setDownloadingPdf(false);
     }
-  }, [applicationId, checks, linkContext, savedAt, savedByName]);
+  }, [buildPdfInput]);
+
+  const handleViewPdf = useCallback(async () => {
+    setViewingPdf(true);
+    try {
+      const blob = await fetchBackgroundCheckPdfBlob(buildPdfInput());
+      const filename = backgroundCheckPdfFilename(linkContext.businessName);
+      const url = URL.createObjectURL(blob);
+      setPdfPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return url;
+      });
+      setPdfPreviewName(filename);
+      setIsPdfPreviewOpen(true);
+    } catch {
+      toast.error("Could not generate the background check PDF.");
+    } finally {
+      setViewingPdf(false);
+    }
+  }, [buildPdfInput, linkContext.businessName]);
+
+  const handleClosePdfPreview = useCallback(() => {
+    setIsPdfPreviewOpen(false);
+    setPdfPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setPdfPreviewName("Compliance-Report.pdf");
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -299,18 +374,31 @@ export default function BackgroundCheckTab() {
                 description={resource.description}
                 href={resolveBackgroundCheckHref(resource, linkContext)}
                 notes={state.notes}
+                noteImages={state.noteImages ?? []}
                 status={state.status}
+                risk={state.risk}
                 optional={state.optional}
                 attachmentName={state.attachmentName}
                 attachmentUrl={state.attachmentUrl}
                 attachmentPublicId={state.attachmentPublicId}
                 savedAt={state.savedAt}
                 onNotesChange={(notes) => markCheckDirty(resource.id, { notes })}
+                onNoteImageAdd={(image) =>
+                  markCheckDirty(resource.id, {
+                    noteImages: [...(state.noteImages ?? []), image],
+                  })
+                }
+                onNoteImageRemove={(imageId) =>
+                  markCheckDirty(resource.id, {
+                    noteImages: (state.noteImages ?? []).filter((image) => image.id !== imageId),
+                  })
+                }
                 onSaveCheck={() => saveCheck(resource.id)}
                 onLinkOpen={() =>
                   saveCheck(resource.id, { linkOpenedAt: new Date().toISOString() })
                 }
                 onStatusChange={(status) => markCheckDirty(resource.id, { status })}
+                onRiskChange={(risk) => markCheckDirty(resource.id, { risk })}
                 onOptionalToggle={() =>
                   markCheckDirty(resource.id, { optional: !state.optional })
                 }
@@ -343,11 +431,20 @@ export default function BackgroundCheckTab() {
             savedAt={savedAt}
             saving={saving}
             downloadingPdf={downloadingPdf}
+            viewingPdf={viewingPdf}
             onSaveAll={handleSaveAll}
             onDownloadPdf={handleDownloadPdf}
+            onViewPdf={handleViewPdf}
           />
         </div>
       </div>
+
+      <PDFViewerDocsModal
+        isOpen={isPdfPreviewOpen}
+        onClose={handleClosePdfPreview}
+        fileUrl={pdfPreviewUrl}
+        fileName={pdfPreviewName}
+      />
     </div>
   );
 }

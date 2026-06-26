@@ -1,8 +1,12 @@
 import { useMemo } from "react";
-import { Download, Loader2, Save } from "lucide-react";
+import { Download, Eye, Loader2, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { BackgroundCheckFormState, BackgroundCheckStatus } from "./backgroundCheckTypes";
+import type { BackgroundCheckFormState, BackgroundCheckRisk } from "./backgroundCheckTypes";
+import {
+  isBackgroundCheckCompleted,
+  isBackgroundCheckPending,
+} from "./backgroundCheckTypes";
 
 type BackgroundCheckSidebarProps = {
   merchantName: string;
@@ -11,16 +15,18 @@ type BackgroundCheckSidebarProps = {
   savedAt?: string | null;
   saving?: boolean;
   downloadingPdf?: boolean;
+  viewingPdf?: boolean;
   onSaveAll?: () => void;
   onDownloadPdf?: () => void;
+  onViewPdf?: () => void;
 };
 
-function countByStatus(
+function countByRisk(
   checks: BackgroundCheckFormState,
   checkIds: string[],
-  status: BackgroundCheckStatus,
+  risk: BackgroundCheckRisk,
 ): number {
-  return checkIds.filter((id) => checks[id]?.status === status).length;
+  return checkIds.filter((id) => checks[id]?.risk === risk).length;
 }
 
 function CircularProgress({ percent }: { percent: number }) {
@@ -71,27 +77,55 @@ export default function BackgroundCheckSidebar({
   savedAt,
   saving = false,
   downloadingPdf = false,
+  viewingPdf = false,
   onSaveAll,
   onDownloadPdf,
+  onViewPdf,
 }: BackgroundCheckSidebarProps) {
-  const completed = useMemo(
-    () => checkIds.filter((id) => checks[id]?.status != null).length,
+  const completedCount = useMemo(
+    () => checkIds.filter((id) => isBackgroundCheckCompleted(checks[id]?.status)).length,
+    [checkIds, checks],
+  );
+  const pendingCount = useMemo(
+    () => checkIds.filter((id) => isBackgroundCheckPending(checks[id]?.status)).length,
     [checkIds, checks],
   );
   const total = checkIds.length;
-  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+  const percent = total > 0 ? Math.round((completedCount / total) * 100) : 0;
 
-  const passCount = countByStatus(checks, checkIds, "pass");
-  const failCount = countByStatus(checks, checkIds, "fail");
-  const flagCount = countByStatus(checks, checkIds, "flag");
-  const naCount = countByStatus(checks, checkIds, "na");
-
-  const resultRows = [
-    { label: "Pass", count: passCount, color: "bg-[#16A34A]" },
-    { label: "Fail", count: failCount, color: "bg-[#DC2626]" },
-    { label: "Flag", count: flagCount, color: "bg-[#EA580C]" },
-    { label: "N/A", count: naCount, color: "bg-[#9CA3AF]" },
+  const statusRows = [
+    { label: "Completed", count: completedCount, color: "bg-[#16A34A]" },
+    { label: "Pending", count: pendingCount, color: "bg-[#94A3B8]" },
   ];
+
+  const riskRows = [
+    { label: "High", count: countByRisk(checks, checkIds, "high"), color: "bg-[#DC2626]" },
+    { label: "Medium", count: countByRisk(checks, checkIds, "medium"), color: "bg-[#EAB308]" },
+    { label: "Low", count: countByRisk(checks, checkIds, "low"), color: "bg-[#16A34A]" },
+  ];
+
+  const renderBarRows = (
+    rows: Array<{ label: string; count: number; color: string }>,
+  ) =>
+    rows.map((row) => (
+      <div key={row.label} className="flex items-center gap-3">
+        <span className="w-16 text-xs font-medium text-[#374151]">{row.label}</span>
+        <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#E5E7EB]">
+          <div
+            className={cn("h-full rounded-full transition-all", row.color)}
+            style={{
+              width:
+                total > 0
+                  ? `${Math.max((row.count / total) * 100, row.count > 0 ? 12 : 0)}%`
+                  : "0%",
+            }}
+          />
+        </div>
+        <span className="w-4 text-right text-xs font-semibold text-[#111827]">
+          {row.count}
+        </span>
+      </div>
+    ));
 
   return (
     <div className="flex w-full flex-col gap-4">
@@ -104,30 +138,18 @@ export default function BackgroundCheckSidebar({
           {merchantName || "Merchant"}
         </p>
         <p className="mt-1 text-center text-xs text-[#6B7280]">
-          {completed} of {total} complete
+          {completedCount} of {total} complete
         </p>
       </div>
 
       <div className="rounded-md border border-[#E5E7EB] bg-white px-4 py-4 shadow-[0px_4px_20px_0px_#00000005]">
-        <p className="text-xs font-bold tracking-wide text-[#6B7280]">RESULTS</p>
-        <div className="mt-3 space-y-2.5">
-          {resultRows.map((row) => (
-            <div key={row.label} className="flex items-center gap-3">
-              <span className="w-10 text-xs font-medium text-[#374151]">{row.label}</span>
-              <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#E5E7EB]">
-                <div
-                  className={cn("h-full rounded-full transition-all", row.color)}
-                  style={{
-                    width: total > 0 ? `${Math.max((row.count / total) * 100, row.count > 0 ? 12 : 0)}%` : "0%",
-                  }}
-                />
-              </div>
-              <span className="w-4 text-right text-xs font-semibold text-[#111827]">
-                {row.count}
-              </span>
-            </div>
-          ))}
-        </div>
+        <p className="text-xs font-bold tracking-wide text-[#6B7280]">STATUS</p>
+        <div className="mt-3 space-y-2.5">{renderBarRows(statusRows)}</div>
+      </div>
+
+      <div className="rounded-md border border-[#E5E7EB] bg-white px-4 py-4 shadow-[0px_4px_20px_0px_#00000005]">
+        <p className="text-xs font-bold tracking-wide text-[#6B7280]">RISK</p>
+        <div className="mt-3 space-y-2.5">{renderBarRows(riskRows)}</div>
       </div>
 
       <div className="rounded-md border border-[#E5E7EB] bg-white px-4 py-4 shadow-[0px_4px_20px_0px_#00000005]">
@@ -146,7 +168,7 @@ export default function BackgroundCheckSidebar({
           <Button
             type="button"
             className="h-10 w-full bg-gradient-to-r from-[var(--brand)] to-[#6366F1] text-white hover:opacity-95"
-            disabled={saving || downloadingPdf}
+            disabled={saving || downloadingPdf || viewingPdf}
             onClick={onSaveAll}
           >
             {saving ? (
@@ -165,7 +187,26 @@ export default function BackgroundCheckSidebar({
             type="button"
             variant="outline"
             className="h-10 w-full"
-            disabled={saving || downloadingPdf}
+            disabled={saving || downloadingPdf || viewingPdf}
+            onClick={onViewPdf}
+          >
+            {viewingPdf ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                Opening PDF…
+              </>
+            ) : (
+              <>
+                <Eye className="mr-2 h-4 w-4" aria-hidden />
+                View PDF
+              </>
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 w-full"
+            disabled={saving || downloadingPdf || viewingPdf}
             onClick={onDownloadPdf}
           >
             {downloadingPdf ? (

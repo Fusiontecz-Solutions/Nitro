@@ -49,6 +49,23 @@ export function mapInternalEnvelopeStatusToAchCapsule(
     return "DRAFT";
 }
 
+const ACH_CAPSULE_STATUS_RANK: Record<AchAuthorizationDocuSignCapsuleStatus, number> = {
+    DRAFT: 0,
+    SENT: 1,
+    VIEWED: 2,
+    SIGNED: 3,
+    VOIDED: 4,
+};
+
+export function mergeAchAuthorizationCapsuleStatus(
+    prior: AchAuthorizationDocuSignCapsuleStatus,
+    patch?: AchAuthorizationDocuSignCapsuleStatus,
+): AchAuthorizationDocuSignCapsuleStatus {
+    if (!patch) return prior;
+    if (patch === "VOIDED" || prior === "VOIDED") return "VOIDED";
+    return ACH_CAPSULE_STATUS_RANK[patch] >= ACH_CAPSULE_STATUS_RANK[prior] ? patch : prior;
+}
+
 export function parseAchAuthorizationDocuSignFromPrefill(
     raw: unknown,
     options?: { excludeEnvelopeId?: string | null },
@@ -89,7 +106,7 @@ export function mergeAchAuthorizationDocuSignIntoPrefill(
         envelopeId: patch.envelopeId,
         status: "DRAFT" as const,
     };
-    const status = patch.status ?? prior.status;
+    const status = mergeAchAuthorizationCapsuleStatus(prior.status, patch.status);
     const now = new Date().toISOString();
     const meta: AchAuthorizationDocuSignMeta = {
         envelopeId: String(patch.envelopeId || prior.envelopeId).trim(),
