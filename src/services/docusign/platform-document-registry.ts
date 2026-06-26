@@ -57,6 +57,11 @@ export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [
 
 const LAYOUT_KEY_SET = new Set<string>(Object.values(DOCUMENT_LAYOUT_KEYS));
 
+/** Same Cloudinary PDF may be registered under the bundled layout key only. */
+const PDF_LAYOUT_KEY_FALLBACKS: Partial<Record<DocumentLayoutKey, DocumentLayoutKey>> = {
+  [DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone]: DOCUMENT_LAYOUT_KEYS.achAuthorization,
+};
+
 export function isDocumentLayoutKey(value: string): value is DocumentLayoutKey {
   return LAYOUT_KEY_SET.has(String(value || '').trim());
 }
@@ -94,7 +99,32 @@ export async function findBoldSignTemplatePdfUrlByExactLayoutKey(
 export async function findBoldSignTemplatePdfUrlForLayout(
   layoutKey: DocumentLayoutKey,
 ): Promise<string | null> {
-  return findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
+  const direct = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
+  if (direct) return direct;
+
+  const fallbackKey = PDF_LAYOUT_KEY_FALLBACKS[layoutKey];
+  if (fallbackKey) {
+    return findBoldSignTemplatePdfUrlByExactLayoutKey(fallbackKey);
+  }
+
+  return null;
+}
+
+async function findBoldSignTemplateRowForLayout(layoutKey: DocumentLayoutKey) {
+  const keysToTry = [layoutKey, PDF_LAYOUT_KEY_FALLBACKS[layoutKey]].filter(
+    (key): key is DocumentLayoutKey => Boolean(key),
+  );
+
+  for (const key of keysToTry) {
+    const row = await prisma.boldSignTemplate.findFirst({
+      where: { OR: [{ templateId: key }, { layoutKey: key }] },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, layoutKey: true, name: true, type: true },
+    });
+    if (row?.id) return { row, layoutKey: key };
+  }
+
+  return null;
 }
 
 async function fetchRemotePdfAsBase64(url: string, documentName: string): Promise<string> {
@@ -152,23 +182,20 @@ export async function ensurePlatformBoldSignTemplateRow(
 ): Promise<string> {
   const def = PLATFORM_DOCUMENTS[layoutKey];
 
-  const existing = await prisma.boldSignTemplate.findFirst({
-    where: { OR: [{ templateId: layoutKey }, { layoutKey }] },
-    orderBy: { createdAt: 'desc' },
-    select: { id: true, layoutKey: true, name: true, type: true },
-  });
-  if (existing?.id) {
-    const needsSync =
-      existing.layoutKey !== layoutKey ||
-      existing.name !== def.name ||
-      existing.type !== def.type;
-    if (needsSync) {
-      await prisma.boldSignTemplate.update({
-        where: { id: existing.id },
-        data: { layoutKey, name: def.name, type: def.type, templateId: layoutKey },
-      });
+  const resolved = await findBoldSignTemplateRowForLayout(layoutKey);
+  if (resolved?.row?.id) {
+    const { row, layoutKey: matchedKey } = resolved;
+    if (matchedKey === layoutKey) {
+      const needsSync =
+        row.layoutKey !== layoutKey || row.name !== def.name || row.type !== def.type;
+      if (needsSync) {
+        await prisma.boldSignTemplate.update({
+          where: { id: row.id },
+          data: { layoutKey, name: def.name, type: def.type, templateId: layoutKey },
+        });
+      }
     }
-    return existing.id;
+    return row.id;
   }
 
   throw new Error(

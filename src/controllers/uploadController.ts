@@ -14,7 +14,14 @@ const EXT_TO_MIME: Record<string, string> = {
     jpeg: 'image/jpeg',
     gif: 'image/gif',
     webp: 'image/webp',
+    bmp: 'image/bmp',
+    svg: 'image/svg+xml',
     txt: 'text/plain; charset=utf-8',
+    csv: 'text/csv; charset=utf-8',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
 
 function fileExtFromNameOrUrl(name: string, rawUrl: string): string {

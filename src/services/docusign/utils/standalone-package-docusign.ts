@@ -64,6 +64,64 @@ export function mapInternalEnvelopeStatusToPackageCapsule(
   return 'DRAFT';
 }
 
+const PACKAGE_CAPSULE_STATUS_RANK: Record<StandalonePackageDocuSignCapsuleStatus, number> = {
+  DRAFT: 0,
+  SENT: 1,
+  VIEWED: 2,
+  SIGNED: 3,
+  VOIDED: 4,
+};
+
+function mergeStandalonePackageCapsuleStatus(
+  prior: StandalonePackageDocuSignCapsuleStatus,
+  patch?: StandalonePackageDocuSignCapsuleStatus,
+): StandalonePackageDocuSignCapsuleStatus {
+  if (!patch) return prior;
+  if (patch === 'VOIDED' || prior === 'VOIDED') return 'VOIDED';
+  return PACKAGE_CAPSULE_STATUS_RANK[patch] >= PACKAGE_CAPSULE_STATUS_RANK[prior]
+    ? patch
+    : prior;
+}
+
+function contractPrefillReferencesPackageEnvelope(
+  prefill: unknown,
+  envelopeId: string,
+): boolean {
+  const eid = String(envelopeId || '').trim();
+  if (!eid) return false;
+  const current = parseStandalonePackageDocuSignFromPrefill(prefill);
+  if (current?.envelopeId === eid) return true;
+  return parseStandalonePackageSendHistoryFromPrefill(prefill).some(
+    (row) => row.envelopeId === eid,
+  );
+}
+
+function updateStandalonePackageSendHistoryEntryStatus(
+  baseRaw: unknown,
+  envelopeId: string,
+  status: StandalonePackageDocuSignCapsuleStatus,
+): Record<string, unknown> {
+  const base =
+    baseRaw && typeof baseRaw === 'object' && !Array.isArray(baseRaw)
+      ? { ...(baseRaw as Record<string, unknown>) }
+      : {};
+  const prior = parseStandalonePackageSendHistoryFromPrefill(base);
+  const eid = String(envelopeId || '').trim();
+  if (!eid || !prior.length) return base;
+  if (!prior.some((row) => row.envelopeId === eid)) return base;
+  const nextHistory = prior.map((row) => {
+    if (row.envelopeId !== eid) return row;
+    return {
+      ...row,
+      status: mergeStandalonePackageCapsuleStatus(row.status, status),
+    };
+  });
+  return {
+    ...base,
+    [STANDALONE_PACKAGE_SEND_HISTORY_KEY]: nextHistory,
+  };
+}
+
 export function parseStandalonePackageDocuSignFromPrefill(
   raw: unknown,
 ): StandalonePackageDocuSignMeta | null {
@@ -111,7 +169,7 @@ export function mergeStandalonePackageDocuSignIntoPrefill(
     envelopeId: patch.envelopeId,
     status: 'DRAFT' as const,
   };
-  const status = patch.status ?? prior.status;
+  const status = mergeStandalonePackageCapsuleStatus(prior.status, patch.status);
   const now = new Date().toISOString();
   const meta: StandalonePackageDocuSignMeta = {
     envelopeId: String(patch.envelopeId || prior.envelopeId).trim(),
@@ -314,10 +372,8 @@ async function findContractsForPackageEnvelopeUpdate(
       hints.applicationId ?? '',
       hints.contractId,
     );
-    contracts = candidates.filter(
-      (row) =>
-        parseStandalonePackageDocuSignFromPrefill(row.contractPrefillOverrides)?.envelopeId ===
-        eid,
+    contracts = candidates.filter((row) =>
+      contractPrefillReferencesPackageEnvelope(row.contractPrefillOverrides, eid),
     );
   }
   return contracts;
@@ -397,14 +453,20 @@ export async function updateStandalonePackageDocuSignStatus(
       ? mapInternalEnvelopeStatusToPackageCapsule(mergedInternal)
       : incomingCapsule;
 
-    const merged = mergeStandalonePackageDocuSignIntoPrefill(contract.contractPrefillOverrides, {
-      envelopeId: eid,
-      status,
-      updatedAt: now,
-    });
+    let mergedPrefill = contract.contractPrefillOverrides;
+    if (prior?.envelopeId === eid) {
+      mergedPrefill = mergeStandalonePackageDocuSignIntoPrefill(mergedPrefill, {
+        envelopeId: eid,
+        status,
+        updatedAt: now,
+      });
+    } else {
+      mergedPrefill = updateStandalonePackageSendHistoryEntryStatus(mergedPrefill, eid, status);
+    }
+
     await prisma.contract.update({
       where: { id: contract.id },
-      data: { contractPrefillOverrides: merged as Prisma.InputJsonValue },
+      data: { contractPrefillOverrides: mergedPrefill as Prisma.InputJsonValue },
     });
   }
   return true;

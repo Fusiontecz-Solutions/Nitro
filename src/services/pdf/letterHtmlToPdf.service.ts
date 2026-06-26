@@ -38,6 +38,10 @@ const LETTER_PDF_MAX_HEIGHT_MM = (() => {
 /** Standard A4 (matches typical contract PDF pages). */
 const A4_PAGE_WIDTH_MM = 210;
 const A4_PAGE_HEIGHT_MM = 297;
+const A4_PDF_MARGIN_TOP_MM = 12;
+const A4_PDF_MARGIN_RIGHT_MM = 10;
+const A4_PDF_MARGIN_BOTTOM_MM = 14;
+const A4_PDF_MARGIN_LEFT_MM = 10;
 
 function pxToMm(px: number): number {
     return (px * 25.4) / 96;
@@ -207,7 +211,7 @@ function buildA4PdfDocument(innerHtml: string): string {
 <style id="a4-pdf-print-shell">
   @page {
     size: ${A4_PAGE_WIDTH_MM}mm ${A4_PAGE_HEIGHT_MM}mm;
-    margin: 0;
+    margin: ${A4_PDF_MARGIN_TOP_MM}mm ${A4_PDF_MARGIN_RIGHT_MM}mm ${A4_PDF_MARGIN_BOTTOM_MM}mm ${A4_PDF_MARGIN_LEFT_MM}mm;
     background: #ffffff;
   }
   *, *::before, *::after { box-sizing: border-box; }
@@ -215,7 +219,6 @@ function buildA4PdfDocument(innerHtml: string): string {
     margin: 0 !important;
     padding: 0 !important;
     width: 100%;
-    min-height: ${A4_PAGE_HEIGHT_MM}mm;
     background: #ffffff !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
@@ -223,7 +226,6 @@ function buildA4PdfDocument(innerHtml: string): string {
     font-family: Arial, Helvetica, sans-serif;
   }
   .a4-pdf-stage {
-    min-height: ${A4_PAGE_HEIGHT_MM}mm;
     width: 100%;
     background: #ffffff !important;
   }
@@ -480,7 +482,7 @@ export async function renderHtmlToA4PdfBuffer(htmlBody: string): Promise<Buffer>
     try {
         browser = await launchLetterPdfBrowser();
         const page = await browser.newPage();
-        await page.emulateMediaType('screen');
+        await page.emulateMediaType('print');
         await page.setViewport({
             width: mmToCssPx(A4_PAGE_WIDTH_MM),
             height: mmToCssPx(A4_PAGE_HEIGHT_MM),
@@ -500,7 +502,12 @@ export async function renderHtmlToA4PdfBuffer(htmlBody: string): Promise<Buffer>
             format: 'a4',
             printBackground: true,
             preferCSSPageSize: true,
-            margin: { top: '0', right: '0', bottom: '0', left: '0' },
+            margin: {
+                top: `${A4_PDF_MARGIN_TOP_MM}mm`,
+                right: `${A4_PDF_MARGIN_RIGHT_MM}mm`,
+                bottom: `${A4_PDF_MARGIN_BOTTOM_MM}mm`,
+                left: `${A4_PDF_MARGIN_LEFT_MM}mm`,
+            },
             omitBackground: false,
             tagged: false,
         });

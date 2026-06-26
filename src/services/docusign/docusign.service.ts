@@ -2858,6 +2858,11 @@ export class DocusignService {
           return status;
         }
       }
+
+      if (await updateStandalonePackageDocuSignStatus(envelopeId, incomingResolved, achLookup)) {
+        return incomingResolved;
+      }
+
       console.warn('[DocuSign] webhook: no Document row updated for envelope', {
         envelopeId,
         incoming: incomingResolved,
@@ -2867,6 +2872,22 @@ export class DocusignService {
 
     const appId = applicationId || existingDoc?.applicationId || null;
     if (appId) {
+      const mainDoc = await prisma.document.findUnique({
+        where: { applicationId: String(appId) },
+        select: { envelopeId: true },
+      });
+      const mainEid = String(mainDoc?.envelopeId ?? '').trim();
+      const eid = String(envelopeId).trim();
+      if (eid !== mainEid) {
+        if (await updateStandalonePackageDocuSignStatus(eid, incomingResolved, achLookup)) {
+          return incomingResolved;
+        }
+        if (await updateAchAuthorizationDocuSignStatus(eid, incomingResolved, achLookup)) {
+          return incomingResolved;
+        }
+        return status;
+      }
+
       await this.syncContractSigningStatus(String(appId), status);
       if (priorStatus !== status) {
         const documentName =
