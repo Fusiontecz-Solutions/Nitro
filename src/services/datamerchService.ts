@@ -73,49 +73,38 @@ function normalizeBusinessName(raw: string | null | undefined): string | null {
     return name.length > 0 ? name : null;
 }
 
-function stripBusinessSuffix(name: string): string {
-    return name
-        .replace(
-            /\s*,?\s*\b(LLC|L\.L\.C\.|INC|INCORPORATED|CORP|CORPORATION|LTD|CO|COMPANY|LP|LLP)\b\.?\s*$/gi,
-            '',
-        )
+function normalizeForExactNameCompare(raw: string): string {
+    return String(raw ?? '')
         .replace(/\s+/g, ' ')
-        .trim();
+        .trim()
+        .toLowerCase();
 }
 
-/** DataMerch legal-name search uses keywords, not exact full legal names. */
-export function buildNameSearchCandidates(businessName: string): string[] {
-    const base = String(businessName ?? '').trim();
-    if (!base) return [];
+function merchantMatchesEin(merchant: DataMerchMerchant, einDigits: string): boolean {
+    return normalizeEin(merchant.fein) === einDigits;
+}
 
-    const candidates: string[] = [base];
-    const withoutSuffix = stripBusinessSuffix(base);
-    if (withoutSuffix && withoutSuffix !== base) {
-        candidates.push(withoutSuffix);
+function merchantMatchesBusinessName(merchant: DataMerchMerchant, businessName: string): boolean {
+    const target = normalizeForExactNameCompare(businessName);
+    if (!target || !merchant.legalName) return false;
+    return normalizeForExactNameCompare(merchant.legalName) === target;
+}
+
+/** Drop DataMerch partial/keyword hits — keep only exact EIN or legal-name matches. */
+function filterExactMatches(
+    merchants: DataMerchMerchant[],
+    searchType: 'ein' | 'name',
+    searchQuery: string,
+): DataMerchMerchant[] {
+    if (searchType === 'ein') {
+        const einDigits = normalizeEin(searchQuery);
+        if (!einDigits) return [];
+        return merchants.filter((merchant) => merchantMatchesEin(merchant, einDigits));
     }
 
-    const words = withoutSuffix
-        .split(/\s+/)
-        .map((w) => w.trim())
-        .filter((w) => w.length > 2);
-
-    if (words.length >= 3) {
-        candidates.push(words.slice(0, 3).join(' '));
-    }
-    if (words.length >= 2) {
-        candidates.push(words.slice(0, 2).join(' '));
-    }
-    if (words.length >= 1) {
-        candidates.push(words[words.length - 1]);
-    }
-
-    const seen = new Set<string>();
-    return candidates.filter((candidate) => {
-        const key = candidate.toLowerCase();
-        if (!candidate || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
+    const businessName = String(searchQuery ?? '').trim();
+    if (!businessName) return [];
+    return merchants.filter((merchant) => merchantMatchesBusinessName(merchant, businessName));
 }
 
 function parseSessionToken(payload: unknown): string | null {
@@ -292,39 +281,9 @@ function coerceMerchants(payload: unknown): DataMerchMerchant[] {
         .filter((merchant): merchant is DataMerchMerchant => merchant != null);
 }
 
-function merchantKey(merchant: DataMerchMerchant): string {
-    const feinDigits = String(merchant.fein ?? '').replace(/\D/g, '');
-    if (feinDigits) return `fein:${feinDigits}`;
-    return `name:${String(merchant.legalName ?? '').toLowerCase()}`;
-}
-
-function mergeMerchants(existing: DataMerchMerchant[], incoming: DataMerchMerchant[]): DataMerchMerchant[] {
-    const map = new Map<string, DataMerchMerchant>();
-    for (const merchant of [...existing, ...incoming]) {
-        const key = merchantKey(merchant);
-        const prior = map.get(key);
-        if (!prior) {
-            map.set(key, merchant);
-            continue;
-        }
-        const recordKeys = new Set(
-            prior.records.map((r) => `${r.category}|${r.note}|${r.createdAt ?? ''}`),
-        );
-        for (const record of merchant.records) {
-            const recordKey = `${record.category}|${record.note}|${record.createdAt ?? ''}`;
-            if (!recordKeys.has(recordKey)) {
-                prior.records.push(record);
-                recordKeys.add(recordKey);
-            }
-        }
-    }
-    return Array.from(map.values());
-}
-
 export const datamerchService = {
     normalizeEin,
     normalizeBusinessName,
-    buildNameSearchCandidates,
 
     async searchMerchants(query: string): Promise<DataMerchLookupResult> {
         const trimmed = String(query ?? '').trim();
@@ -337,49 +296,16 @@ export const datamerchService = {
         const searchType: 'ein' | 'name' = einDigits ? 'ein' : 'name';
         const encoded = encodeURIComponent(searchQuery);
         const raw = await datamerchGet(`merchants/${encoded}`);
+        const merchants = filterExactMatches(coerceMerchants(raw), searchType, searchQuery);
 
         return {
             searchQuery,
             searchType,
             businessName: searchType === 'name' ? searchQuery : null,
             ein: einDigits,
-            merchants: coerceMerchants(raw),
+            merchants,
             searchAttempts: [searchQuery],
             raw,
-        };
-    },
-
-    async searchMerchantsByNameWithFallback(businessName: string): Promise<DataMerchLookupResult> {
-        const candidates = buildNameSearchCandidates(businessName);
-        if (candidates.length === 0) {
-            throw new ValidationError('A business name is required for DataMerch lookup.');
-        }
-
-        let merged: DataMerchMerchant[] = [];
-        const attempts: string[] = [];
-        let lastRaw: unknown = [];
-        let matchedQuery = candidates[0];
-
-        for (const candidate of candidates) {
-            attempts.push(candidate);
-            const result = await this.searchMerchants(candidate);
-            lastRaw = result.raw;
-            if (result.merchants.length > 0) {
-                matchedQuery = candidate;
-                merged = mergeMerchants(merged, result.merchants);
-                // Stop after first keyword hit — DataMerch returns up to 5 partial matches.
-                break;
-            }
-        }
-
-        return {
-            searchQuery: matchedQuery,
-            searchType: 'name',
-            businessName,
-            ein: null,
-            merchants: merged,
-            searchAttempts: attempts,
-            raw: lastRaw,
         };
     },
 
@@ -421,12 +347,12 @@ export const datamerchService = {
                     return { ...byEin, businessName, ein };
                 }
             } catch {
-                // Fall through to keyword legal-name search.
+                // Fall through to exact legal-name search.
             }
         }
 
         if (businessName) {
-            const byName = await this.searchMerchantsByNameWithFallback(businessName);
+            const byName = await this.searchMerchants(businessName);
             return { ...byName, businessName, ein };
         }
 

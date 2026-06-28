@@ -44,6 +44,8 @@ type CheckItemState = {
   attachmentName?: string;
   attachmentUrl?: string;
   noteImages?: Array<{ id: string; name: string; url: string; publicId?: string }>;
+  judgements?: Array<{ id: string; kind: 'link' | 'image'; url: string; name: string; publicId?: string }>;
+  liens?: Array<{ id: string; kind: 'link' | 'image'; url: string; name: string; publicId?: string }>;
   savedAt?: string;
 };
 
@@ -226,6 +228,51 @@ function formatFindings(
   return '—';
 }
 
+type NyCourtEvidenceItem = NonNullable<CheckItemState['judgements']>[number];
+
+function buildNyCourtEvidenceListHtml(
+  title: string,
+  items: NyCourtEvidenceItem[] | undefined,
+): string {
+  const list = items ?? [];
+  if (list.length === 0) {
+    return `<div style="margin-top:8px;">
+      <div style="font-size:8px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:#94a3b8;margin-bottom:3px;">${esc(title)}</div>
+      <div style="font-size:10px;color:#94a3b8;font-style:italic;">None</div>
+    </div>`;
+  }
+
+  const rows = list
+    .map((item) => {
+      if (item.kind === 'link') {
+        return `<li style="margin:0 0 4px;font-size:10px;">
+          <a href="${esc(item.url)}" style="color:#2563eb;text-decoration:underline;word-break:break-all;">${esc(item.url)}</a>
+        </li>`;
+      }
+      return `<li style="margin:0 0 6px;font-size:10px;">
+        <div style="color:#334155;margin-bottom:3px;">${esc(item.name)}</div>
+        <div style="border:1px solid #e2e8f0;border-radius:6px;padding:6px;background:#fff;">
+          <img src="${esc(item.url)}" alt="${esc(item.name)}" style="display:block;width:100%;max-height:220px;object-fit:contain;object-position:top center;" />
+        </div>
+      </li>`;
+    })
+    .join('');
+
+  return `<div style="margin-top:8px;">
+    <div style="font-size:8px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:#94a3b8;margin-bottom:4px;">${esc(title)}</div>
+    <ul style="margin:0;padding-left:16px;">${rows}</ul>
+  </div>`;
+}
+
+function buildNyCourtEvidenceHtml(state: CheckItemState): string {
+  const judgements = buildNyCourtEvidenceListHtml('Judgements', state.judgements);
+  const liens = buildNyCourtEvidenceListHtml('Liens', state.liens);
+  if ((state.judgements ?? []).length === 0 && (state.liens ?? []).length === 0) {
+    return '';
+  }
+  return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #e8edf3;">${judgements}${liens}</div>`;
+}
+
 function merchantRecords(merchant: DataMerchMerchant): DataMerchRecord[] {
   if (Array.isArray(merchant.records)) return merchant.records;
   if (Array.isArray(merchant.notes)) return merchant.notes;
@@ -376,10 +423,10 @@ function buildDataMerchHtml(
   const matchLine = hasRecords
     ? datamerch.searchType === 'ein'
       ? `Matched using EIN: ${esc(fmtEin(datamerch.searchQuery ?? ''))}`
-      : `Matched using keywords: ${esc(datamerch.searchQuery ?? '')}`
+      : `Matched using business name: ${esc(datamerch.searchQuery ?? '')}`
     : datamerch.searchType === 'ein'
       ? `Searched by EIN ${esc(fmtEin(datamerch.searchQuery ?? ''))}`
-      : `No matches for deal name "${esc(datamerch.businessName ?? datamerch.searchQuery ?? '')}"`;
+      : `No exact match for business name "${esc(datamerch.businessName ?? datamerch.searchQuery ?? '')}"`;
 
   const summaryBg = hasRecords ? '#fffbeb' : '#f0fdf4';
   const summaryBorder = hasRecords ? '#fde68a' : '#bbf7d0';
@@ -626,6 +673,17 @@ function buildHtml(payload: BackgroundCheckReportPayload): string {
         preview,
         dmContent,
         dmFindings,
+      );
+    }
+    if (resource.id === 'nyscef') {
+      const nyExtra = buildNyCourtEvidenceHtml(state);
+      return buildCheckCardHtml(
+        index,
+        resource.title,
+        resource.description,
+        state,
+        preview,
+        nyExtra,
       );
     }
     return buildCheckCardHtml(index, resource.title, resource.description, state, preview);
