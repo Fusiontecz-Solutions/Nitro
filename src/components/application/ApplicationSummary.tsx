@@ -129,7 +129,7 @@ const ApplicationSummary = ({
     }
     const actionRequired = showDynamicData ? formatActionRequired((applicationData as any)?.note) : "--";
     const isUnderwriterApproved = showDynamicData
-        ? isUnderwriterApprovedApplication(applicationData as Record<string, unknown>)
+        ? isUnderwriterApprovedApplication(applicationData)
         : false;
     // Brand gradient is theme- and mode-aware via the --brand-gradient CSS var.
     const gradient = "var(--brand-gradient)";

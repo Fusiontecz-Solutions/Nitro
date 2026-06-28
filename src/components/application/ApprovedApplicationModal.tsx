@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { forwardRef, useEffect, useRef, useState, type ComponentProps } from "react";
 import { useForm, Controller, useWatch } from "react-hook-form";
 import {
     Dialog,
@@ -19,7 +19,6 @@ import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActi
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
 import {
-    cn,
     formatNumberUS,
     formatNumberUSForInput,
     formatRateUS,
