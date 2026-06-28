@@ -32,6 +32,10 @@ model Contract {
   reverseDisbursementSchedule    Json?
   /// BoldSign contract prefill overrides (flat string map); edited in CRM Deal Review prefill form.
   contractPrefillOverrides       Json?
+  /// When true, append a reverse disbursement schedule page to the contract PDF before DocuSign send.
+  reverseDisbursementEnabled     Boolean                           @default(false)
+  /// { fixedDailyDebit?: string, rows: Array<{ period, netDailysCredit, dailysCreditInclFees, totalPeriodCredits, receivablesPurchased }> }
+  reverseDisbursementSchedule    Json?
   appendixClientName             String?
   appendixUnderwritingFees       String?
   authorizationApplication       String?

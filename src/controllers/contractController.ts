@@ -162,6 +162,8 @@ class ContractController {
         funderName,
         funder,
         contractPrefillOverrides,
+        reverseDisbursementEnabled,
+        reverseDisbursementSchedule,
         ...rest
       } = req.body;
 
@@ -184,6 +186,11 @@ class ContractController {
         state,
         funderName: resolvedFunderName,
         contractPrefillOverrides,
+        reverseDisbursementEnabled:
+          reverseDisbursementEnabled !== undefined
+            ? reverseDisbursementEnabled === true || reverseDisbursementEnabled === 'true'
+            : undefined,
+        reverseDisbursementSchedule,
         ...rest,
       });
 
@@ -1206,16 +1213,58 @@ class ContractController {
       });
     } catch (error: any) {
       console.error('Extract KYC document error:', error);
-      const msg = error?.message || 'Internal server error';
       const statusCode =
-        msg === 'Contract not found'
+        error?.message === 'Contract not found'
           ? 404
-          : msg.includes('documentType must be')
+          : error?.message?.includes('documentType')
             ? 400
-            : msg.includes('ANTHROPIC_API_KEY') || msg.includes('required for Claude')
-              ? 503
-              : 500;
-      return res.status(statusCode).json({ success: false, message: msg });
+            : 500;
+      return res.status(statusCode).json({
+        success: false,
+        message: error?.message || 'Internal server error',
+      });
+    }
+  }
+
+  async syncKycPrefill(req: Request, res: Response) {
+    try {
+      const contractId = Number(req.params.id);
+      if (isNaN(contractId)) {
+        return res.status(400).json({ success: false, message: 'Invalid contract id parameter' });
+      }
+
+      const documentType = String(req.body?.documentType || '').trim();
+      if (documentType !== 'driverLicense' && documentType !== 'voidedCheck') {
+        return res.status(400).json({
+          success: false,
+          message: 'documentType must be driverLicense or voidedCheck',
+        });
+      }
+
+      const data = await contractService.syncKycPrefillToContract(contractId, {
+        documentType,
+        contractPrefill:
+          req.body?.contractPrefill && typeof req.body.contractPrefill === 'object'
+            ? req.body.contractPrefill
+            : {},
+        panels:
+          req.body?.panels && typeof req.body.panels === 'object' ? req.body.panels : {},
+        keyData:
+          req.body?.keyData && typeof req.body.keyData === 'object' ? req.body.keyData : {},
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Contract prefill updated from reviewed KYC extraction',
+        data,
+      });
+    } catch (error: any) {
+      console.error('Sync KYC prefill error:', error);
+      const statusCode = error?.message === 'Contract not found' ? 404 : 500;
+      return res.status(statusCode).json({
+        success: false,
+        message: error?.message || 'Internal server error',
+      });
     }
   }
 
@@ -1432,6 +1481,44 @@ class ContractController {
     } catch (error: any) {
       console.error('Delete contract template mapping error:', error);
       return res.status(500).json({ success: false, message: error?.message || 'Internal server error' });
+    }
+  }
+
+  async previewReverseDisbursementSchedule(req: Request, res: Response) {
+    try {
+      const contractId = Number(req.params.id);
+      if (!Number.isFinite(contractId) || contractId < 1) {
+        return res.status(400).json({ success: false, message: 'Invalid contract id' });
+      }
+
+      const existing = await contractService.getByIdContract(contractId);
+      if (!existing) {
+        return res.status(404).json({ success: false, message: 'Contract not found' });
+      }
+
+      const bodySchedule = req.body?.reverseDisbursementSchedule;
+      const useBody =
+        bodySchedule != null &&
+        typeof bodySchedule === 'object' &&
+        !Array.isArray(bodySchedule);
+
+      const pdfBuffer = await contractService.previewReverseDisbursementSchedulePdf(
+        contractId,
+        useBody ? bodySchedule : undefined,
+      );
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        'inline; filename="disbursement-schedule-preview.pdf"',
+      );
+      return res.status(200).send(pdfBuffer);
+    } catch (error: any) {
+      console.error('Preview reverse disbursement schedule error:', error);
+      return res.status(400).json({
+        success: false,
+        message: error?.message || 'Failed to generate disbursement schedule preview',
+      });
     }
   }
 }

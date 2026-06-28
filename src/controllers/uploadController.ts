@@ -14,7 +14,14 @@ const EXT_TO_MIME: Record<string, string> = {
     jpeg: 'image/jpeg',
     gif: 'image/gif',
     webp: 'image/webp',
+    bmp: 'image/bmp',
+    svg: 'image/svg+xml',
     txt: 'text/plain; charset=utf-8',
+    csv: 'text/csv; charset=utf-8',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
 
 function fileExtFromNameOrUrl(name: string, rawUrl: string): string {
@@ -56,7 +63,12 @@ class UploadController {
             }
 
             const file = reqFiles.file;
-            const folder = 'ih-crm/documents';
+            const requestedFolder =
+                typeof req.body?.folder === 'string' ? req.body.folder.trim() : '';
+            const allowedFolders = new Set(['ih-crm/documents', 'ih-crm/background-checks']);
+            const folder = allowedFolders.has(requestedFolder)
+                ? requestedFolder
+                : 'ih-crm/documents';
 
             const result = await uploadService.uploadFile(file, folder);
 

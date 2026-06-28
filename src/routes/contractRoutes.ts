@@ -51,6 +51,7 @@ router.delete('/guarantor/:id', contractController.deleteContractGuarantor.bind(
 
 router.post('/:id/documents/upload', contractController.uploadContractDocuments.bind(contractController));
 router.post('/:id/documents/extract-kyc', contractController.extractKycDocument.bind(contractController));
+router.post('/:id/documents/sync-kyc-prefill', contractController.syncKycPrefill.bind(contractController));
 router.get('/:id/documents', contractController.getUploadedContractDocuments.bind(contractController));
 router.get('/:id/documents/:fileId', contractController.getUploadedContractDocumentById.bind(contractController));
 router.put('/:id/documents/:fileId', contractController.updateUploadedContractDocument.bind(contractController));
@@ -59,6 +60,10 @@ router.post('/:id/document-template-mappings', contractController.createContract
 router.get('/:id/document-template-mappings', contractController.getAllContractDocumentTemplateMappings.bind(contractController));
 router.put('/:id/document-template-mappings/:mappingId', contractController.updateContractDocumentTemplateMapping.bind(contractController));
 router.delete('/:id/document-template-mappings/:mappingId', contractController.deleteContractDocumentTemplateMapping.bind(contractController));
+router.post(
+  '/:id/reverse-disbursement/preview',
+  contractController.previewReverseDisbursementSchedule.bind(contractController),
+);
 router.get('/templates', contractController.getBoldSignTemplates.bind(contractController));
 
 export default router;

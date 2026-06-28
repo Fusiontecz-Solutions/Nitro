@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import axios from 'axios';
 import prisma from '../config/prismaClient';
-import oAuth2Client from '../config/gmail';
+import { getAccessTokenForRefreshToken } from '../config/gmail';
 import {
     fetchRecentPdfEmails,
     // getMessageDetails,
@@ -569,11 +569,7 @@ export async function getGmailLinkedAccount(req: Request, res: Response): Promis
             return;
         }
 
-        oAuth2Client.setCredentials({
-            refresh_token: user.googleRefreshToken,
-        });
-        const accessTokenResponse = await oAuth2Client.getAccessToken();
-        const accessToken = accessTokenResponse?.token;
+        const accessToken = await getAccessTokenForRefreshToken(user.googleRefreshToken, userId);
 
         if (!accessToken) {
             res.status(500).json({

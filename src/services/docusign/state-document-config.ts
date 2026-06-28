@@ -198,8 +198,16 @@ const UTAH_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'frequency', x: '403', y: '559' },
 ];
 
+/** Kansas disclosure page-1 header — daily + weekly share recipient / funder positions. */
+const KANSAS_DISCLOSURE_PAGE1_HEADER_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
+  { tabLabel: 'client_name', x: '246', y: '99' },
+  { tabLabel: 'client_name', x: '247', y: '150' },
+  { tabLabel: 'funder_name', x: '163', y: '201' },
+];
+
 /** Kansas disclosure page-1 coordinates — daily layout. */
 const KANSAS_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
+  ...KANSAS_DISCLOSURE_PAGE1_HEADER_TEXT_TABS,
   { tabLabel: 'total_amount_of_fund_provided', x: '434', y: '103' },
   { tabLabel: 'total_amount_fund_disbursed', x: '435', y: '153' },
   { tabLabel: 'total_of_payments', x: '437', y: '204' },
@@ -210,6 +218,7 @@ const KANSAS_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTab
 
 /** Kansas disclosure page-1 coordinates — weekly layout. */
 const KANSAS_WEEKLY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
+  ...KANSAS_DISCLOSURE_PAGE1_HEADER_TEXT_TABS,
   { tabLabel: 'total_amount_of_fund_provided', x: '434', y: '103' },
   { tabLabel: 'total_amount_fund_disbursed', x: '433', y: '136' },
   { tabLabel: 'total_of_payments', x: '434', y: '172' },

@@ -14,6 +14,14 @@ export type PdfFileSignature = {
     size: number | null;
 };
 
+/** Case-insensitive PDF filename match (Gmail MIME size often differs from Cloudinary bytes). */
+function pdfFileNameWhere(fileName: string): Prisma.ApplicationFileWhereInput {
+    const trimmed = String(fileName || '').trim();
+    return {
+        originalName: { equals: trimmed, mode: 'insensitive' },
+    };
+}
+
 /** Primary PDF attachment stored on the application (Gmail auto-create / upload). */
 export function pickPrimaryPdfFile(
     files: Array<{ originalName?: string | null; size?: number | null }> | null | undefined,
@@ -33,8 +41,36 @@ export function pickPrimaryPdfFile(
 }
 
 /**
- * Other applications with the same PDF filename (+ size when known) from the same creator,
- * within ±dedupeDays of `referenceCreatedAt`. After the window, returns empty (completely new).
+ * Gmail auto-create guard: same PDF filename from the same creator within the last N days.
+ * Filename-only — declared Gmail size and stored Cloudinary bytes often differ.
+ */
+export async function hasRecentDuplicatePdfForCreator(params: {
+    createdById: string;
+    fileName: string;
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const since = new Date(Date.now() - dedupeDays * 24 * 60 * 60 * 1000);
+    const fileName = String(params.fileName || '').trim();
+    if (!fileName || !params.createdById) return false;
+
+    const existing = await prisma.applicationFile.findFirst({
+        where: {
+            ...pdfFileNameWhere(fileName),
+            application: {
+                createdById: params.createdById,
+                createdAt: { gte: since },
+            },
+        },
+        select: { id: true, applicationId: true },
+        orderBy: { uploadedAt: 'desc' },
+    });
+    return !!existing;
+}
+
+/**
+ * Other applications with the same PDF filename from the same creator,
+ * within ±dedupeDays of `referenceCreatedAt`.
  */
 export async function findSamePdfFileApplications(params: {
     excludeApplicationId: string;
@@ -49,17 +85,44 @@ export async function findSamePdfFileApplications(params: {
     const windowStart = new Date(refTime - deltaMs);
     const windowEnd = new Date(refTime + deltaMs);
 
-    const fileWhere: Prisma.ApplicationFileWhereInput = {
-        originalName: params.file.originalName,
-        ...(params.file.size != null && params.file.size > 0 ? { size: params.file.size } : {}),
-    };
-
     return prisma.application.findMany({
         where: {
             id: { not: params.excludeApplicationId },
             createdById: params.createdById,
             createdAt: { gte: windowStart, lte: windowEnd },
-            files: { some: fileWhere },
+            files: { some: pdfFileNameWhere(params.file.originalName) },
+        },
+        include: {
+            client: true,
+            createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+            files: { select: { originalName: true, size: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+    });
+}
+
+/**
+ * Older applications with the same PDF filename (outside the recent dedupe window).
+ * Shown in the dupes panel when a re-submission after the window is treated as a new deal.
+ */
+export async function findHistoricalSamePdfFileApplications(params: {
+    excludeApplicationId: string;
+    createdById: string;
+    file: PdfFileSignature;
+    referenceCreatedAt: Date;
+    dedupeDays?: number;
+}) {
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const windowStart = new Date(
+        params.referenceCreatedAt.getTime() - dedupeDays * 24 * 60 * 60 * 1000,
+    );
+
+    return prisma.application.findMany({
+        where: {
+            id: { not: params.excludeApplicationId },
+            createdById: params.createdById,
+            createdAt: { lt: windowStart },
+            files: { some: pdfFileNameWhere(params.file.originalName) },
         },
         include: {
             client: true,

@@ -8,6 +8,7 @@ import {
   isDocumentLayoutKey,
   loadPlatformDocumentPdfBase64,
   normalizeSupplementalLayoutKeys,
+  findBoldSignTemplatePdfUrlByExactLayoutKey,
 } from '../platform-document-registry';
 import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
 import type { DocumentLayout } from './convert-docusign-template-export';
@@ -18,13 +19,41 @@ import {
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
-import { DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
+import { DOCUSIGN_COMBINE_PACKAGE_PDF, DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
 import { PLATFORM_SIGNER_SLOTS } from '../platform-document-registry';
+import { isAllianceBridgeFunder } from './resolve-main-contract-layout';
+import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
+import { maybeAppendReverseDisbursementToMainContractLayout } from '../../pdf/reverseDisbursementSchedule.service';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
   process.env.DOCUSIGN_SECONDARY_ROLE_NAME || PLATFORM_SIGNER_SLOTS[1].roleName;
 
 export type DocumentLayoutWithBase64 = DocumentLayout & { documentBase64: string };
+
+async function resolveCoordinateLayoutKeyForFunderPdf(
+  funderLayoutKey: string,
+): Promise<DocumentLayoutKey> {
+  const funderId = String(funderLayoutKey || '')
+    .trim()
+    .replace(/^funder_/i, '');
+  if (funderId) {
+    const row = await prisma.funderProfile.findUnique({
+      where: { id: funderId },
+      select: { name: true, displayName: true, mainContractLayoutKey: true },
+    });
+    if (row) {
+      const profileLayout = String(row.mainContractLayoutKey || '').trim();
+      if (
+        profileLayout === DOCUMENT_LAYOUT_KEYS.allianceBridgeContract ||
+        isAllianceBridgeFunder(row.name) ||
+        isAllianceBridgeFunder(row.displayName)
+      ) {
+        return DOCUMENT_LAYOUT_KEYS.allianceBridgeContract;
+      }
+    }
+  }
+  return DOCUMENT_LAYOUT_KEYS.contract;
+}
 
 export async function loadMainContractLayoutPackage(
   layoutKey: string = DOCUMENT_LAYOUT_KEYS.contract,
@@ -32,17 +61,18 @@ export async function loadMainContractLayoutPackage(
   const key = String(layoutKey || '').trim() || DOCUMENT_LAYOUT_KEYS.contract;
 
   if (isFunderContractLayoutKey(key)) {
-    const layout = getDocumentLayout(DOCUMENT_LAYOUT_KEYS.contract);
-    const row = await prisma.boldSignTemplate.findFirst({
-      where: { OR: [{ layoutKey: key }, { templateId: key }] },
-      orderBy: { createdAt: 'desc' },
-      select: { pdfUrl: true, name: true },
-    });
-    const pdfUrl = String(row?.pdfUrl || '').trim();
+    const coordinateKey = await resolveCoordinateLayoutKeyForFunderPdf(key);
+    const layout = getDocumentLayout(coordinateKey);
+    const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(key);
     if (!pdfUrl) {
       throw new Error('No contract PDF uploaded for this funder.');
     }
     const documentBase64 = await fetchPdfAsBase64(pdfUrl);
+    const row = await prisma.boldSignTemplate.findFirst({
+      where: { OR: [{ layoutKey: key }, { templateId: key }] },
+      orderBy: { createdAt: 'desc' },
+      select: { name: true },
+    });
     return {
       ...layout,
       key,
@@ -309,15 +339,23 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   /** Burn prefill into PDF at create (auto-send). Draft review keeps editable tabs. */
   flattenPrefillInPdf?: boolean;
   lockDataTabs?: boolean;
+  /** When set, may append reverse disbursement schedule as last page of main contract PDF. */
+  contractId?: number;
 }) {
   const includeMainContract = options.includeMainContract !== false;
   const layouts: DocumentLayoutWithBase64[] = [];
   if (includeMainContract) {
-    layouts.push(
-      await loadMainContractLayoutPackage(
-        options.mainContractLayoutKey || DOCUMENT_LAYOUT_KEYS.contract,
-      ),
+    let mainLayout = await loadMainContractLayoutPackage(
+      options.mainContractLayoutKey || DOCUMENT_LAYOUT_KEYS.contract,
     );
+    const contractId = Number(options.contractId);
+    if (Number.isFinite(contractId) && contractId > 0) {
+      mainLayout = await maybeAppendReverseDisbursementToMainContractLayout(
+        mainLayout,
+        contractId,
+      );
+    }
+    layouts.push(mainLayout);
   }
   for (const ref of options.supplementalRefs || []) {
     layouts.push(await loadSupplementalLayoutPackage(ref));
@@ -367,6 +405,25 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   const prefillFlattenedInPdf =
     shouldFlatten && layouts.length > 0 && flattenedLayoutCount === layouts.length;
 
+  let mergedDocument: { name: string; documentBase64: string } | undefined;
+  let pageOffsetByLayoutKey: Map<string, number> | undefined;
+  if (DOCUSIGN_COMBINE_PACKAGE_PDF && flattenedLayouts.length > 1) {
+    const merged = await mergeLayoutPdfsToSingleDocument(flattenedLayouts);
+    pageOffsetByLayoutKey = merged.pageOffsetByLayoutKey;
+    const mergedName =
+      String(options.documentName || '').trim() ||
+      flattenedLayouts[0].document.originalFileName ||
+      flattenedLayouts[0].name ||
+      'Contract Package';
+    mergedDocument = {
+      name: mergedName,
+      documentBase64: merged.documentBase64,
+    };
+    console.log(
+      `[DocuSign] combined ${flattenedLayouts.length} layout PDF(s) into one document (${merged.pageCount} pages) for envelope send`,
+    );
+  }
+
   const envelope = buildEnvelopeFromLayouts({
     layouts: flattenedLayouts,
     values,
@@ -376,6 +433,8 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
     primaryDocumentName: options.documentName,
     skipTextDateTabs: prefillFlattenedInPdf,
     lockDataTabs: options.lockDataTabs === true,
+    mergedDocument,
+    pageOffsetByLayoutKey,
   });
 
   const createTimePrefillTabCount = prefillFlattenedInPdf

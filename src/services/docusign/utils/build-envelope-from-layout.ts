@@ -48,6 +48,10 @@ export type BuildEnvelopeFromLayoutOptions = {
   skipTextDateTabs?: boolean;
   /** When true, text/date tabs are created locked (use only when sending immediately). */
   lockDataTabs?: boolean;
+  /** Merged PDF bytes when multiple layouts are combined into one DocuSign document. */
+  mergedDocument?: { name: string; documentBase64: string };
+  /** Page offset per layout key (0-based) inside `mergedDocument`. */
+  pageOffsetByLayoutKey?: Map<string, number>;
 };
 
 export type LayoutPartyCounts = {
@@ -61,6 +65,9 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   signature_date: ['agreement_date', 'Signature_date', 'disclosure_date'],
   Signature_date: ['signature_date', 'agreement_date', 'disclosure_date'],
   disclosure_date: ['agreement_date', 'signature_date'],
+  date_of_new_secured_agreement: ['agreement_date', 'signature_date'],
+  date_of_previous_secured_agreement: ['agreement_date', 'signature_date', 'previous_secured_agreement_date', 'previous_agreement_date'],
+  remaining_rtr_balance: ['refinance_amount', 'remaining_rtr_balance', 'remaining_rtr', 'remainingRtrBalance'],
   date_by_which_amount_mustbe_received: ['prepayment_received_by_date'],
   funder_name: ['disclosure_funder_name'],
   client_legal_name: ['business_legal_name', 'merchant_legal_name'],
@@ -77,6 +84,22 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'owner1_guarantor_name',
     'guaranty_owner1_name',
     'guaranty_guarantor1_name',
+  ],
+  ach_authorization_account_holder_name: [
+    'owner1_guarantor_name',
+    'customer_name',
+    'client_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'guaranty_client_name',
+  ],
+  ach_authorization_concent_account_holder_name: [
+    'owner1_guarantor_name',
+    'customer_name',
+    'client_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'guaranty_client_name',
   ],
   entity_type: ['typeOfEntity1', 'typeofentity1'],
   typeofentity1: ['entity_type', 'typeOfEntity1'],
@@ -763,6 +786,15 @@ function resolveTextPlacementValue(
   return '';
 }
 
+function placementPageOffset(
+  placement: DocumentLayoutPlacement,
+  pageOffset: number,
+): DocumentLayoutPlacement {
+  if (!pageOffset) return placement;
+  const base = Math.max(1, parseInt(String(placement.pageNumber || '1'), 10) || 1);
+  return { ...placement, pageNumber: String(base + pageOffset) };
+}
+
 function placementAllowed(
   placement: DocumentLayoutPlacement,
   counts: LayoutPartyCounts,
@@ -1057,26 +1089,42 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     [];
   /** Map each layout package to envelope document id (1-based merge order). */
   const layoutKeyToEnvelopeDocId = new Map<string, string>();
+  const pageOffsetByLayoutKey = options.pageOffsetByLayoutKey ?? new Map<string, number>();
 
-  options.layouts.forEach((layout, idx) => {
-    const envelopeDocId = String(idx + 1);
-    layoutKeyToEnvelopeDocId.set(layout.key, envelopeDocId);
-    const base64 = (layout as DocumentLayout & { documentBase64?: string })
-      .documentBase64;
-    if (!base64) {
-      throw new Error(
-        `Layout "${layout.key}" is missing documentBase64 on the merged envelope build.`,
-      );
-    }
+  if (options.mergedDocument?.documentBase64) {
+    const mergedName =
+      String(options.mergedDocument.name || '').trim() ||
+      options.primaryDocumentName ||
+      'Contract Package';
     documents.push({
-      documentId: envelopeDocId,
-      name:
-        idx === 0 && options.primaryDocumentName
-          ? options.primaryDocumentName
-          : layout.document.originalFileName || layout.name,
-      documentBase64: base64,
+      documentId: '1',
+      name: mergedName,
+      documentBase64: options.mergedDocument.documentBase64,
     });
-  });
+    for (const layout of options.layouts) {
+      layoutKeyToEnvelopeDocId.set(layout.key, '1');
+    }
+  } else {
+    options.layouts.forEach((layout, idx) => {
+      const envelopeDocId = String(idx + 1);
+      layoutKeyToEnvelopeDocId.set(layout.key, envelopeDocId);
+      const base64 = (layout as DocumentLayout & { documentBase64?: string })
+        .documentBase64;
+      if (!base64) {
+        throw new Error(
+          `Layout "${layout.key}" is missing documentBase64 on the merged envelope build.`,
+        );
+      }
+      documents.push({
+        documentId: envelopeDocId,
+        name:
+          idx === 0 && options.primaryDocumentName
+            ? options.primaryDocumentName
+            : layout.document.originalFileName || layout.name,
+        documentBase64: base64,
+      });
+    });
+  }
 
   const signerTabs = new Map<number, SignerTabBuckets>();
 
@@ -1091,16 +1139,18 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
 
   for (const layout of expandedLayouts) {
     const envelopeDocId = layoutKeyToEnvelopeDocId.get(layout.key) || '1';
+    const pageOffset = pageOffsetByLayoutKey.get(layout.key) ?? 0;
 
     for (const placement of layout.placements) {
       if (!placementAllowed(placement, counts, values)) continue;
 
       const signerIndex = resolvePlacementSignerIndex(placement, options.signers, counts);
+      const tabPlacement = placementPageOffset(placement, pageOffset);
 
       const bucket = ensureSigner(signerIndex);
 
       if (placement.type === 'date') {
-        bucket.dateSignedTabs.push(toDateSignedTab(placement, envelopeDocId));
+        bucket.dateSignedTabs.push(toDateSignedTab(tabPlacement, envelopeDocId));
         continue;
       }
 
@@ -1116,22 +1166,22 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
         const value = isFillAtSigningPlacement(placement) ? '' : resolved;
         if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
         if (!value && !shouldIncludeEmptyTextPlacement(placement)) continue;
-        bucket.textTabs.push(toTextTab(placement, value, envelopeDocId));
+        bucket.textTabs.push(toTextTab(tabPlacement, value, envelopeDocId));
         continue;
       }
 
       if (placement.type === 'signature') {
-        bucket.signHereTabs.push(toSignTab(placement, envelopeDocId));
+        bucket.signHereTabs.push(toSignTab(tabPlacement, envelopeDocId));
         continue;
       }
 
       if (placement.type === 'initial') {
-        bucket.initialHereTabs.push(toSignTab(placement, envelopeDocId));
+        bucket.initialHereTabs.push(toSignTab(tabPlacement, envelopeDocId));
         continue;
       }
 
       if (placement.type === 'attachment') {
-        bucket.signerAttachmentTabs.push(toAttachmentTab(placement, envelopeDocId));
+        bucket.signerAttachmentTabs.push(toAttachmentTab(tabPlacement, envelopeDocId));
       }
     }
   }

@@ -33,7 +33,7 @@
 import type { Request, Response } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
-import oAuth2Client from '../config/gmail';
+import { createOAuth2Client } from '../config/gmail';
 import prisma from '../config/prismaClient';
 
 // ==============================
@@ -45,6 +45,7 @@ export const connectGoogle = async (req: Request, res: Response) => {
     // State is only used for basic presence/CSRF protection (we don't map user from it).
     const state = crypto.randomBytes(16).toString('hex');
 
+    const oAuth2Client = createOAuth2Client();
     const authUrl = oAuth2Client.generateAuthUrl({
       access_type: 'offline',   // 🔥 needed for refresh token
       prompt: 'consent',        // 🔥 force refresh token
@@ -100,7 +101,8 @@ export const googleCallback = async (req: Request, res: Response) => {
       });
     }
 
-    // ✅ Exchange code for tokens
+    // ✅ Exchange code for tokens (isolated client — not shared with token minting)
+    const oAuth2Client = createOAuth2Client();
     const { tokens } = await oAuth2Client.getToken(code);
 
     if (!tokens.access_token) {
