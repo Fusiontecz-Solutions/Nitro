@@ -12,7 +12,7 @@ export type PlatformLayoutKey =
     (typeof PLATFORM_LAYOUT_KEYS)[keyof typeof PLATFORM_LAYOUT_KEYS];
 
 /** Legal funder name on state disclosure forms (not Contract.funderName Katan II / III). */
-export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Katan Capital";
+export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Katan Capital LLC";
 
 /** DocuSign envelope role names — must match backend platform-document-registry slots. */
 export const PLATFORM_PRIMARY_SIGNER_ROLE = "Client";

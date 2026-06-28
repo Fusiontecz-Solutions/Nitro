@@ -15,6 +15,7 @@ export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "decision-making", label: "SCRUBBING" },
   { id: "background-check", label: "BACKGROUND CHECK" },
   { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
+  { id: "background-check", label: "BACKGROUND CHECK" },
   { id: "contract", label: "CONTRACT" },
   FINALS_AND_FUNDING_CALL_TAB,
   { id: "disbursement", label: "DISBURSEMENT" },

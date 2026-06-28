@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { formatCurrency, getPreviousMonthDateRangeET } from "@/lib/utils";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import {
@@ -360,16 +361,16 @@ export default function FinalUnderwriterApplicationsList() {
             },
             {
                 id: "loanAmount",
-                accessorFn: (row) => row.loanAmount,
+                accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
                 header: () => (
                     <div className="flex items-center gap-2">
                         <span className="font-medium text-foreground">Loan Amount</span>
                     </div>
                 ),
                 cell: ({ row }) => {
-                    const loanAmount = row.original.loanAmount;
+                    const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
                     if (loanAmount == null) return <span className="text-foreground">-</span>;
-                    const rounded = Math.round(Number(loanAmount) || 0);
+                    const rounded = Math.round(loanAmount);
                     return <span className="text-foreground">${rounded}</span>;
                 },
             },

@@ -2432,7 +2432,7 @@ function mergePrefillFieldsPreferFirst(...groups: ContractPrefillField[][]): Con
     return Array.from(map.values());
 }
 
-/** Merchant legal / business name for authorization & ACH account-holder tabs (not owner personal name). */
+/** Merchant legal / business name (DBA/legal entity fields — not owner personal name). */
 export function resolveMerchantBusinessNameForPrefill(
     row: Record<string, unknown> | null | undefined,
     clientArgs?: Partial<BuildContractPrefillFieldsArgs>,
@@ -2442,6 +2442,29 @@ export function resolveMerchantBusinessNameForPrefill(
         str(r.legalName) ||
         str(r.securityBusinessName) ||
         str(clientArgs?.legalName) ||
+        ""
+    );
+}
+
+/** Owner / signer personal name for ACH account holder and disclosure merchant fields. */
+export function resolveDisclosureOwnerNamePrefill(
+    contract?: Record<string, unknown> | null,
+    application?: unknown,
+): string {
+    const c = contract ?? {};
+    const appPrefill = getApplicationClientPrefillArgs(application);
+    const primaryOwner = getApplicationPrimaryRecipientName(application);
+    const ownerFromApp =
+        primaryOwner && primaryOwner !== "Signer" ? primaryOwner : "";
+    return (
+        str(c.customerName) ||
+        ownerFromApp ||
+        str(appPrefill.customerName) ||
+        str(c.owner1GuarantorName) ||
+        str(c.exhibitOwnerName) ||
+        str(appPrefill.exhibitOwnerName) ||
+        str(c.clientName) ||
+        str(appPrefill.clientName) ||
         ""
     );
 }
@@ -2463,16 +2486,63 @@ export function resolvePersonalClientNamePrefill(
     return saved || customer;
 }
 
-/** Prefer business name when legacy rows stored owner name in authorization / ACH holder fields. */
-function resolveAuthorizationBusinessNamePrefill(
+/** Prefer owner name when legacy rows stored business legal name in ACH holder fields. */
+export function resolveAchAccountHolderNamePrefill(
     row: Record<string, unknown>,
-    field: "authorizationClientName" | "authorizationClientNamePrint" | "achAuthorizationAccountHolderName" | "achAuthorizationConcentAccountHolderName",
+    field: "achAuthorizationAccountHolderName" | "achAuthorizationConcentAccountHolderName",
 ): string {
-    const business = resolveMerchantBusinessNameForPrefill(row);
+    const owner1 =
+        str(row.owner1GuarantorName) ||
+        str(row.customerName) ||
+        str(row.clientName) ||
+        str(row.guarantyOwner1Name) ||
+        str(row.guarantyGuarantor1Name) ||
+        str(row.guarantyClientName);
     const saved = str(row[field]);
-    const customer = str(row.customerName);
-    if (business && (!saved || (customer && saved === customer))) return business;
-    return saved || business;
+    const businessLike = new Set(
+        [
+            str(row.legalName),
+            str(row.securityBusinessName),
+            str(row.authorizationApplication),
+            str(row.doingBusinessAs),
+            resolveMerchantBusinessNameForPrefill(row),
+        ].filter(Boolean),
+    );
+    if (owner1 && (!saved || businessLike.has(saved))) return owner1;
+    return saved || owner1;
+}
+
+/** ACH account holder tabs use owner 1 personal name, not merchant legal / business name. */
+function applyAchAccountHolderOwnerNamePrefill(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+): void {
+    const owner1 =
+        str(partial.owner1GuarantorName) ||
+        str(partial.guarantyOwner1Name) ||
+        str(partial.guarantyGuarantor1Name) ||
+        str(partial.guarantyClientName) ||
+        str(partial.customerName) ||
+        str(partial.clientName);
+    if (!owner1) return;
+
+    const businessLike = new Set(
+        [
+            str(partial.legalName),
+            str(partial.securityBusinessName),
+            str(partial.authorizationApplication),
+            str(partial.doingBusinessAs),
+            resolveMerchantBusinessNameForPrefill(partial),
+        ].filter(Boolean),
+    );
+
+    const holder = str(partial.achAuthorizationAccountHolderName);
+    const consent = str(partial.achAuthorizationConcentAccountHolderName);
+    if (!holder || businessLike.has(holder)) {
+        partial.achAuthorizationAccountHolderName = owner1;
+    }
+    if (!consent || businessLike.has(consent)) {
+        partial.achAuthorizationConcentAccountHolderName = owner1;
+    }
 }
 
 function exhibitValuesToPrefillPartial(
@@ -2515,13 +2585,13 @@ function stripImpliedPurchasePercentFromOffer(
 
 function achRowToPrefillPartial(
     row: Record<string, unknown> | null | undefined,
-    businessName?: string,
+    ownerName?: string,
 ): Partial<BuildContractPrefillFieldsArgs> {
     if (!row) return {};
-    const merchantName = businessName || str(row.accountHolderName);
+    const accountHolderName = ownerName || str(row.accountHolderName);
     const out: Partial<BuildContractPrefillFieldsArgs> = {
-        achAuthorizationAccountHolderName: merchantName,
-        achAuthorizationConcentAccountHolderName: merchantName,
+        achAuthorizationAccountHolderName: accountHolderName,
+        achAuthorizationConcentAccountHolderName: accountHolderName,
         achAuthorizationConcentAccountHolderDate:
             prefillIsoDate(row.createdAt) || str(row.createdAt),
         achAuthorizationAccountHolderDba: str(row.dba),
@@ -2824,7 +2894,9 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         resolveOfferFrequencyLabel({ contract: row, offerDecision: offer });
 
     const agreementDatePrefill =
-        prefillIsoDate(row.agreementDate) || prefillIsoDate(row.contractDate);
+        prefillIsoDate(row.agreementDate) ||
+        prefillIsoDate(row.contractDate) ||
+        prefillIsoDate(row.createdAt);
     let authorizationDate = prefillIsoDate(row.authorizationClientDate);
     if (!authorizationDate && agreementDatePrefill) authorizationDate = agreementDatePrefill;
 
@@ -2905,11 +2977,11 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         authorizedBusinessPhone: str(row.authorizedBusinessPhone),
         owner1GuarantorName: str(row.owner1GuarantorName),
 
-        achAuthorizationAccountHolderName: resolveAuthorizationBusinessNamePrefill(
+        achAuthorizationAccountHolderName: resolveAchAccountHolderNamePrefill(
             row,
             "achAuthorizationAccountHolderName",
         ),
-        achAuthorizationConcentAccountHolderName: resolveAuthorizationBusinessNamePrefill(
+        achAuthorizationConcentAccountHolderName: resolveAchAccountHolderNamePrefill(
             row,
             "achAuthorizationConcentAccountHolderName",
         ),
@@ -3180,8 +3252,8 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         authorizationApplication: customerName || legalName,
         authorizationClientName: customerName || "",
         authorizationClientNamePrint: customerName || "",
-        achAuthorizationAccountHolderName: legalName || "",
-        achAuthorizationConcentAccountHolderName: legalName || "",
+        achAuthorizationAccountHolderName: ownerName || customerName || "",
+        achAuthorizationConcentAccountHolderName: ownerName || customerName || "",
     };
 }
 
@@ -3396,14 +3468,13 @@ export function getContractPrefillEditDefaultsFromApplication(
     const clientArgs = getApplicationClientPrefillArgs(anyApp);
     const contractPartial = contractRowToPrefillPartial(rec?.contract ?? null);
     const resolvedOwners = resolveOwnerRowsForContractPrefill(anyApp, rec?.owners ?? null);
-    const merchantBusinessName = resolveMerchantBusinessNameForPrefill(
-        rec?.contract ?? null,
-        clientArgs,
-    );
+    const ownerNameForAch =
+        resolveDisclosureOwnerNamePrefill(rec?.contract ?? null, anyApp) ||
+        ownerFullName(resolvedOwners[0]?.firstName, resolvedOwners[0]?.lastName);
     const recordPartial: Partial<BuildContractPrefillFieldsArgs> = {
         ...contractPartial,
         ...exhibitValuesToPrefillPartial(rec?.contract ?? null),
-        ...achRowToPrefillPartial(rec?.ach ?? null, merchantBusinessName),
+        ...achRowToPrefillPartial(rec?.ach ?? null, ownerNameForAch),
         ...addendumRowToPrefillPartial(rec?.addendum ?? null),
         ...guarantorsToPrefillPartial(rec?.guarantors ?? null),
         ...ownersToPrefillPartial(resolvedOwners),
@@ -3469,12 +3540,9 @@ export function getContractPrefillEditDefaultsFromApplication(
     if (!str(mergedBeforeFees.authorizationApplication) && customerName) {
         mergedBeforeFees.authorizationApplication = customerName;
     }
-    if (!str(mergedBeforeFees.achAuthorizationAccountHolderName) && merchantBusinessName) {
-        mergedBeforeFees.achAuthorizationAccountHolderName = merchantBusinessName;
-        mergedBeforeFees.achAuthorizationConcentAccountHolderName = merchantBusinessName;
-    }
 
     syncPartyIdentityPrefillFields(mergedBeforeFees);
+    applyAchAccountHolderOwnerNamePrefill(mergedBeforeFees);
 
     const activeOwnerCount = resolveActiveOwnerCount({
         owners: resolvedOwners,

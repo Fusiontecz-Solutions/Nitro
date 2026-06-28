@@ -80,12 +80,6 @@ export function RequestedDocumentsPanel({
     const handleUpload = useCallback(
         async (doc: DocumentRequestRow, file: File) => {
             const slug = doc.name;
-            const allowed = ["pdf", "jpg", "jpeg", "png"];
-            const ext = (file.name.split(".").pop() || "").toLowerCase();
-            if (!allowed.includes(ext)) {
-                toast.error("Please upload a PDF, JPG, or PNG.");
-                return;
-            }
 
             setUploadingSlug(slug);
             try {
@@ -221,7 +215,6 @@ export function RequestedDocumentsPanel({
                                                 fileInputRefs.current[doc.name] = el;
                                             }}
                                             type="file"
-                                            accept=".pdf,.jpg,.jpeg,.png"
                                             className="hidden"
                                             onChange={(e) => {
                                                 const file = e.target.files?.[0];

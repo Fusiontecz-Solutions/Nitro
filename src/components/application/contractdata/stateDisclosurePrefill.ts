@@ -4,6 +4,7 @@ import {
     getApplicationPrimaryRecipientName,
     resolveAppendixUnderwritingFeesDollars,
     resolveBalanceTransferMerchantContext,
+    resolveDisclosureOwnerNamePrefill,
     resolvePaybackAmountDollars,
 } from "./Contract";
 import { buildDailyCaliforniaContractPrefillFields } from "./daily_california";
@@ -402,6 +403,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     daily_kansas: (ctx) =>
         buildDailyKansasContractPrefillFields({
+            clientName: ctx.recipientName,
+            funderName: ctx.funderName,
             totalAmountOfFundProvided: ctx.fundingProvided,
             totalAmountFundDisbursed: ctx.fundingDisbursed,
             totalOfPayments: ctx.totalRepayment,
@@ -416,6 +419,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     weekly_kansas: (ctx) =>
         buildDailyKansasContractPrefillFields({
+            clientName: ctx.recipientName,
+            funderName: ctx.funderName,
             totalAmountOfFundProvided: ctx.fundingProvided,
             totalAmountFundDisbursed: ctx.fundingDisbursed,
             totalOfPayments: ctx.totalRepayment,
@@ -661,17 +666,21 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
 
     const appPrefill = getApplicationClientPrefillArgs(args.application);
     const merchant = resolveBalanceTransferMerchantContext(contract, args.application);
+    const ownerName = resolveDisclosureOwnerNamePrefill(contract, args.application);
     const customerName =
+        ownerName ||
+        getApplicationPrimaryRecipientName(args.application) ||
+        str(contract.customerName) ||
+        str(appPrefill.customerName) ||
+        merchant.clientName ||
+        str(contract.clientName) ||
+        str(appPrefill.clientName) ||
         merchant.businessName ||
         merchant.clientLegalName ||
         str(contract.legalName) ||
         str(contract.clientLegalName) ||
         str((contract as Record<string, unknown>).client_legal_name) ||
-        str(appPrefill.legalName) ||
-        str(contract.customerName) ||
-        getApplicationPrimaryRecipientName(args.application) ||
-        str(contract.clientName) ||
-        str(appPrefill.clientName);
+        str(appPrefill.legalName);
 
     const businessAddressLine = [
         str(contract.businessAddress),

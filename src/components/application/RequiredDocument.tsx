@@ -676,7 +676,6 @@ const RequiredDocument = ({
                                                                 ref={fileInputRef}
                                                                 onChange={handleFileChange}
                                                                 className="hidden"
-                                                                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
                                                                 disabled={disableFundingUpload}
                                                             />
                                                             <Button

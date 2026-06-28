@@ -1,4 +1,5 @@
 import type { Application } from "@/types/applicationTypes";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 
 /** Default page size for server-paginated application list tables. */
 export const APPLICATIONS_LIST_PAGE_SIZE = 10;
@@ -50,7 +51,8 @@ export function buildApplicationSearchHaystack(app: Application): string {
     app.status ?? "",
     app.salesRepresentative ?? "",
   );
-  if (app.loanAmount != null) parts.push(String(app.loanAmount));
+  const displayLoanAmount = resolveApplicationDisplayLoanAmount(app);
+  if (displayLoanAmount != null) parts.push(String(displayLoanAmount));
   return parts.join(" ").toLowerCase();
 }
 

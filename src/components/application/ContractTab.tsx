@@ -54,6 +54,7 @@ import PDFViewerModal from "./PDFViewerModal";
 import { useFunderProfiles } from "@/hooks/useFunderProfiles";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
+import ReverseDisbursementScheduleSection from "./ReverseDisbursementScheduleSection";
 import { mergeContractCcEmailList } from "./boldsignCcList";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./contractdata/docusignAddendumTemplates";
@@ -68,7 +69,7 @@ import {
 } from "./contractdata/achAuthorizationDocuSign";
 import {
     buildContractSendTableRows,
-    canVoidMainContract,
+    canVoidContractSendTableRow,
     formatAchTableStatusLabel,
     isAchSigningFinished,
     isContractFullySigned,
@@ -105,7 +106,13 @@ import {
     buildPackageEnvelopeEmailSubject,
     type ContractSendPackageSelection,
 } from "./contractdata/contractSendPackage";
-import { mergeStandalonePackageDocuSignIntoPrefill } from "./contractdata/standalonePackageDocuSign";
+import {
+    formatStandalonePackageTableStatusLabel,
+    isStandalonePackageSigningFinished,
+    mergeStandalonePackageDocuSignIntoPrefill,
+    parseStandalonePackageDocuSignFromPrefill,
+    type StandalonePackageDocuSignCapsuleStatus,
+} from "./contractdata/standalonePackageDocuSign";
 import { getPlatformSignerRoleRows } from "./contractdata/platformDocumentConfig";
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
@@ -370,6 +377,7 @@ export default function ContractTab({
     const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
     const [contractSyncError, setContractSyncError] = useState<string | null>(null);
     const [achSyncError, setAchSyncError] = useState<string | null>(null);
+    const [packageSyncError, setPackageSyncError] = useState<string | null>(null);
     const [achViewerOpen, setAchViewerOpen] = useState(false);
     const [achViewerInitialTab, setAchViewerInitialTab] = useState<"template" | "filled">("template");
 
@@ -548,6 +556,19 @@ export default function ContractTab({
         [fetchedContract, mainContractEnvelopeId],
     );
 
+    const standalonePackageDocuSign = useMemo(
+        () =>
+            parseStandalonePackageDocuSignFromPrefill(
+                (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+                { excludeEnvelopeId: mainContractEnvelopeId },
+            ),
+        [fetchedContract, mainContractEnvelopeId],
+    );
+
+    const packageCapsuleStatus: StandalonePackageDocuSignCapsuleStatus =
+        standalonePackageDocuSign?.status ?? "DRAFT";
+
     const achCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus =
         achAuthorizationDocuSign?.status ?? "DRAFT";
 
@@ -562,9 +583,6 @@ export default function ContractTab({
         fetchedContract && typeof fetchedContract === "object"
             ? (fetchedContract as Record<string, unknown>)
             : null;
-
-    const canVoidContract =
-        !isReadOnly && hasGeneratedContract && canVoidMainContract(contractRecordForActions);
 
     const contractSendTableRows = useMemo(
         () =>
@@ -1017,11 +1035,17 @@ export default function ContractTab({
         }
     };
 
-    const handleVoidContract = async () => {
-        const envelopeId = contractEnvelopeId;
-        if (!envelopeId || !canVoidContract || voidingContract) return;
+    const handleVoidSentEnvelopeRow = async (row: ContractSendTableRow) => {
+        const envelopeId = String(row.envelopeId ?? "").trim();
+        if (
+            !envelopeId ||
+            voidingContract ||
+            !canVoidContractSendTableRow(contractRecordForActions, row)
+        ) {
+            return;
+        }
         const confirmed = window.confirm(
-            "Void this contract in DocuSign? Signers will no longer be able to sign. You can send a new contract afterward.",
+            `Void "${row.label}" in DocuSign? Signers will no longer be able to sign this document.`,
         );
         if (!confirmed) return;
 
@@ -1034,15 +1058,13 @@ export default function ContractTab({
                 }),
             ).unwrap();
             await refreshSigningStatusesOnContractTab(false, { force: true });
-            toast.success(
-                "Contract voided in DocuSign. Open View Contract when you are ready to send again.",
-            );
+            toast.success(`${row.label} voided in DocuSign.`);
         } catch (err: unknown) {
             const msg =
                 typeof err === "string"
                     ? err
                     : String(
-                          (err as { message?: string })?.message || "Failed to void contract.",
+                          (err as { message?: string })?.message || "Failed to void document.",
                       );
             toast.error(msg);
         } finally {
@@ -1166,24 +1188,112 @@ export default function ContractTab({
         ],
     );
 
+    const refreshPackageEnvelopeStatus = useCallback(
+        async (silent?: boolean, options?: { force?: boolean }) => {
+            const packageEnvelopeId = String(standalonePackageDocuSign?.envelopeId ?? "").trim();
+            const mainEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
+            if (!packageEnvelopeId || packageEnvelopeId === mainEnvelopeId) {
+                if (!silent) setPackageSyncError(null);
+                return;
+            }
+            if (isStandalonePackageSigningFinished(packageCapsuleStatus)) {
+                if (!silent) setPackageSyncError(null);
+                return;
+            }
+
+            if (!silent) setRefreshingSigningStatus(true);
+            const appId = applicationUuid ? String(applicationUuid) : undefined;
+            try {
+                const result = await syncDocuSignEnvelopeStatus(packageEnvelopeId, {
+                    applicationId: appId,
+                    contractId: selectedContractId,
+                    force: options?.force,
+                    silent,
+                    envelopeLabel: "supplemental documents",
+                });
+                if (result.rateLimited) {
+                    if (!silent) {
+                        setPackageSyncError(
+                            "DocuSign polling limit reached for supplemental documents. Wait a few minutes or rely on webhook updates.",
+                        );
+                    }
+                } else {
+                    setPackageSyncError(null);
+                }
+            } catch (err: unknown) {
+                const msg =
+                    err instanceof Error
+                        ? err.message
+                        : "Could not refresh supplemental document status.";
+                setPackageSyncError(msg);
+                if (!silent) toast.error(msg);
+            } finally {
+                try {
+                    await reloadFetchedContract();
+                } catch {
+                    /* partial sync still useful */
+                }
+                if (!silent) setRefreshingSigningStatus(false);
+            }
+        },
+        [
+            applicationUuid,
+            contractEnvelopeDocument?.envelopeId,
+            packageCapsuleStatus,
+            reloadFetchedContract,
+            selectedContractId,
+            standalonePackageDocuSign?.envelopeId,
+        ],
+    );
+
     const refreshSigningStatusesOnContractTab = useCallback(
         async (silent?: boolean, options?: { force?: boolean }) => {
             await refreshContractEnvelopeStatus(silent, options);
             await refreshAchEnvelopeStatus(silent, options);
+            await refreshPackageEnvelopeStatus(silent, options);
         },
-        [refreshAchEnvelopeStatus, refreshContractEnvelopeStatus],
+        [
+            refreshAchEnvelopeStatus,
+            refreshContractEnvelopeStatus,
+            refreshPackageEnvelopeStatus,
+        ],
     );
 
     const contractFullySignedRef = useRef(contractFullySigned);
     const achCapsuleStatusRef = useRef(achCapsuleStatus);
+    const packageCapsuleStatusRef = useRef(packageCapsuleStatus);
     const contractEnvelopeIdRef = useRef(contractEnvelopeId);
     const achEnvelopeIdRef = useRef(achAuthorizationDocuSign?.envelopeId);
+    const packageEnvelopeIdRef = useRef(standalonePackageDocuSign?.envelopeId);
     contractFullySignedRef.current = contractFullySigned;
     achCapsuleStatusRef.current = achCapsuleStatus;
+    packageCapsuleStatusRef.current = packageCapsuleStatus;
     contractEnvelopeIdRef.current = contractEnvelopeId;
     achEnvelopeIdRef.current = achAuthorizationDocuSign?.envelopeId;
+    packageEnvelopeIdRef.current = standalonePackageDocuSign?.envelopeId;
 
     const senderReturnWatchCleanupRef = useRef<(() => void) | null>(null);
+
+    /** Heal standalone package rows stuck at DRAFT after DocuSign already sent/signed. */
+    useEffect(() => {
+        if (!applicationUuid || !hasGeneratedContract) return;
+        const packageEnvId = String(standalonePackageDocuSign?.envelopeId ?? "").trim();
+        const mainEnvId = mainContractEnvelopeId ?? "";
+        if (
+            packageEnvId &&
+            packageEnvId !== mainEnvId &&
+            packageCapsuleStatus === "DRAFT"
+        ) {
+            void refreshPackageEnvelopeStatus(true, { force: true });
+        }
+    }, [
+        applicationUuid,
+        hasGeneratedContract,
+        mainContractEnvelopeId,
+        packageCapsuleStatus,
+        refreshPackageEnvelopeStatus,
+        standalonePackageDocuSign?.envelopeId,
+    ]);
 
     const beginSenderReturnStatusWatch = useCallback(() => {
         senderReturnWatchCleanupRef.current?.();
@@ -1192,12 +1302,17 @@ export default function ContractTab({
             shouldStop: () => {
                 const mainId = String(contractEnvelopeIdRef.current ?? "").trim();
                 const achId = String(achEnvelopeIdRef.current ?? "").trim();
+                const packageId = String(packageEnvelopeIdRef.current ?? "").trim();
                 const contractPending = Boolean(mainId) && !contractFullySignedRef.current;
                 const achPending =
                     Boolean(achId) &&
                     achId !== mainId &&
                     !isAchSigningFinished(achCapsuleStatusRef.current);
-                return !contractPending && !achPending;
+                const packagePending =
+                    Boolean(packageId) &&
+                    packageId !== mainId &&
+                    !isStandalonePackageSigningFinished(packageCapsuleStatusRef.current);
+                return !contractPending && !achPending && !packagePending;
             },
         });
     }, [refreshSigningStatusesOnContractTab]);
@@ -1955,7 +2070,6 @@ export default function ContractTab({
                             contractPrefillOverrides,
                             {
                                 envelopeId: String(documentId),
-                                status: "DRAFT",
                             },
                         );
                     } else if (!includeMainContract && sendPackageSelection) {
@@ -1967,7 +2081,6 @@ export default function ContractTab({
                             contractPrefillOverrides,
                             {
                                 envelopeId: String(documentId),
-                                status: "DRAFT",
                                 package: {
                                     includeMainContract: sendPackageSelection.includeMainContract,
                                     includeAddendum: sendPackageSelection.includeAddendum,
@@ -2231,30 +2344,45 @@ export default function ContractTab({
 
     const renderContractSendTableRow = (row: ContractSendTableRow) => {
         const isAchRow = row.rowType === "ach";
+        const isPackageRow = row.rowType === "package";
+        const isSupplementalRow = isAchRow || isPackageRow;
         const rowStatusLabel = isAchRow
             ? formatAchTableStatusLabel({
                   envelopeId: row.envelopeId,
                   status: row.achStatus,
               })
-            : formatContractTableStatusLabel(
-                  row.contractStatus,
-                  row.documentStatus,
-                  Boolean(row.envelopeId),
-              );
+            : isPackageRow
+              ? formatStandalonePackageTableStatusLabel(row.packageStatus, row.envelopeId)
+              : formatContractTableStatusLabel(
+                    row.contractStatus,
+                    row.documentStatus,
+                    Boolean(row.envelopeId),
+                );
         const rowCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus = isAchRow
             ? (row.achStatus ?? "DRAFT")
-            : contractStatusToCapsuleStatus(row.contractStatus, row.documentStatus);
+            : isPackageRow
+              ? ((row.packageStatus ?? "DRAFT") as AchAuthorizationDocuSignCapsuleStatus)
+              : contractStatusToCapsuleStatus(row.contractStatus, row.documentStatus);
         const rowFullySigned = isAchRow
             ? row.achStatus === "SIGNED"
-            : isContractFullySigned(row.contractStatus, row.documentStatus);
+            : isPackageRow
+              ? row.packageStatus === "SIGNED"
+              : isContractFullySigned(row.contractStatus, row.documentStatus);
         const rowSentAtDisplay = formatTableSentAt(row.sentAt);
         const rowEnvelopeId = String(row.envelopeId ?? "").trim();
         const rowCanVoid =
-            !isReadOnly && !isAchRow && row.isCurrent && canVoidMainContract(contractRecordForActions);
+            !isReadOnly &&
+            canVoidContractSendTableRow(contractRecordForActions, row);
         const rowIsVoided = isAchRow
             ? row.achStatus === "VOIDED"
-            : isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
-        const rowSyncError = isAchRow ? achSyncError : contractSyncError;
+            : isPackageRow
+              ? row.packageStatus === "VOIDED"
+              : isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
+        const rowSyncError = isAchRow
+            ? achSyncError
+            : isPackageRow
+              ? packageSyncError
+              : contractSyncError;
         const isViewingRow = isAchRow
             ? viewingAchDocument
             : viewingSignedContract &&
@@ -2271,6 +2399,11 @@ export default function ContractTab({
                                 className="h-3.5 w-3.5 shrink-0 text-teal-700 dark:text-teal-300"
                                 aria-hidden
                             />
+                        ) : isPackageRow ? (
+                            <FileText
+                                className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-300"
+                                aria-hidden
+                            />
                         ) : (
                             <FileText
                                 className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] dark:text-[#C07BE0]"
@@ -2281,30 +2414,30 @@ export default function ContractTab({
                     </span>
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isAchRow ? "—" : (fetchedContract?.offer?.term ?? "—")}
+                    {isSupplementalRow ? "—" : (fetchedContract?.offer?.term ?? "—")}
                 </TableCell>
-                <TableCell className={tableCellClass}>{isAchRow ? "—" : "1"}</TableCell>
+                <TableCell className={tableCellClass}>{isSupplementalRow ? "—" : "1"}</TableCell>
                 <TableCell className={tableCellClass}>
-                    {isAchRow ? "—" : formatContractCurrency(fetchedContract?.approvedAmount)}
+                    {isSupplementalRow ? "—" : formatContractCurrency(fetchedContract?.approvedAmount)}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isAchRow
+                    {isSupplementalRow
                         ? "—"
                         : formatContractCurrency(
                               fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit,
                           )}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isAchRow ? "—" : formatContractCurrency(contractTableMetrics.perPeriodPayment)}
+                    {isSupplementalRow ? "—" : formatContractCurrency(contractTableMetrics.perPeriodPayment)}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isAchRow ? "—" : contractTableMetrics.buyRate}
+                    {isSupplementalRow ? "—" : contractTableMetrics.buyRate}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isAchRow ? "—" : contractTableMetrics.upsell}
+                    {isSupplementalRow ? "—" : contractTableMetrics.upsell}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isAchRow ? "—" : contractTableMetrics.factor}
+                    {isSupplementalRow ? "—" : contractTableMetrics.factor}
                 </TableCell>
                 <TableCell>
                     <div className="flex flex-col gap-1">
@@ -2320,7 +2453,7 @@ export default function ContractTab({
                             </span>
                             {rowEnvelopeId ? (
                                 <>
-                                    {rowFullySigned || (isAchRow && rowEnvelopeId) ? (
+                                    {rowFullySigned || (isSupplementalRow && rowEnvelopeId) ? (
                                         <Button
                                             type="button"
                                             variant="ghost"
@@ -2331,7 +2464,9 @@ export default function ContractTab({
                                                           ? handleViewAchDocument()
                                                           : handleViewSignedContract(rowEnvelopeId))
                                                     : void handleViewSignedContract(
-                                                          row.isCurrent ? undefined : rowEnvelopeId,
+                                                          row.isCurrent && !isPackageRow
+                                                              ? undefined
+                                                              : rowEnvelopeId,
                                                       )
                                             }
                                             disabled={isViewingRow}
@@ -2344,7 +2479,11 @@ export default function ContractTab({
                                                     ? rowFullySigned
                                                         ? "View signed ACH form"
                                                         : "View filled ACH form"
-                                                    : "View signed contract"
+                                                    : isPackageRow
+                                                      ? rowFullySigned
+                                                          ? "View signed supplemental documents"
+                                                          : "View supplemental documents"
+                                                      : "View signed contract"
                                             }
                                         >
                                             {isViewingRow ? (
@@ -2367,9 +2506,13 @@ export default function ContractTab({
                                                     ? refreshAchEnvelopeStatus(false, {
                                                           force: true,
                                                       })
-                                                    : refreshContractEnvelopeStatus(false, {
-                                                          force: true,
-                                                      }))
+                                                    : isPackageRow
+                                                      ? refreshPackageEnvelopeStatus(false, {
+                                                            force: true,
+                                                        })
+                                                      : refreshContractEnvelopeStatus(false, {
+                                                            force: true,
+                                                        }))
                                             }
                                             disabled={refreshingSigningStatus}
                                             className={`h-7 w-7 shrink-0 ${isDark
@@ -2379,7 +2522,9 @@ export default function ContractTab({
                                             title={
                                                 isAchRow
                                                     ? "Refresh ACH status"
-                                                    : "Refresh contract status"
+                                                    : isPackageRow
+                                                      ? "Refresh supplemental document status"
+                                                      : "Refresh contract status"
                                             }
                                         >
                                             <RefreshCw
@@ -2393,13 +2538,13 @@ export default function ContractTab({
                                             type="button"
                                             variant="ghost"
                                             size="icon"
-                                            onClick={() => void handleVoidContract()}
+                                            onClick={() => void handleVoidSentEnvelopeRow(row)}
                                             disabled={voidingContract}
                                             className={`h-7 w-7 shrink-0 ${isDark
                                                 ? "text-red-400 hover:bg-red-500/10"
                                                 : "text-red-600 hover:bg-red-50"
                                                 }`}
-                                            title="Void contract"
+                                            title={`Void ${row.label}`}
                                         >
                                             {voidingContract ? (
                                                 <Loader2
@@ -2567,6 +2712,18 @@ export default function ContractTab({
                     </div>
                 </div>
             </div>
+
+            <ReverseDisbursementScheduleSection
+                contractId={selectedContractId}
+                fetchedContract={
+                    fetchedContract && typeof fetchedContract === "object"
+                        ? (fetchedContract as Record<string, unknown>)
+                        : null
+                }
+                readOnly={isReadOnly}
+                isDark={isDark}
+                onSaved={reloadFetchedContract}
+            />
 
             {/* Final Calculations - White background */}
             <div
@@ -2904,8 +3061,8 @@ export default function ContractTab({
                                         className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
                                     >
                                         No DocuSign sends yet. Rows appear here after a
-                                        contract or ACH form is sent from DocuSign (not while
-                                        still in draft).
+                                        contract, addendum, disclosure, or ACH form is sent from
+                                        DocuSign (not while still in draft).
                                     </TableCell>
                                 </TableRow>
                             ) : (

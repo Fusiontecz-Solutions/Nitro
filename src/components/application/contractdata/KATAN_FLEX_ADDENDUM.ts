@@ -26,6 +26,10 @@ export interface KatanFlexAddendumContractPrefillFields {
     agreementDate?: string;
     merchantName?: string;
     clientName?: string;
+    /** Day of month — first installment (default Day 1). */
+    installmentDay1?: string;
+    /** Day of month — second installment (default Day 16). */
+    installmentDay2?: string;
     /** Payment amount — first installment (Day 1). */
     dailyPayment1?: string;
     /** Receivables purchased — first installment (Day 1). */
@@ -42,6 +46,8 @@ const EDITOR_FIELD_DEFS: Array<{ id: keyof KatanFlexAddendumContractPrefillField
         { id: "agreementDate", label: "Agreement date" },
         { id: "merchantName", label: "Merchant legal name" },
         { id: "clientName", label: "Client name" },
+        { id: "installmentDay1", label: "Installment day — 1st payment" },
+        { id: "installmentDay2", label: "Installment day — 2nd payment" },
         { id: "dailyPayment1", label: "Payment amount — 1st installment (Day 1)" },
         { id: "receivablePurchase1", label: "Receivables purchased — 1st installment (Day 1)" },
         { id: "dailyPayment2", label: "Payment amount — 2nd installment (Day 16)" },
@@ -56,6 +62,8 @@ export const FLEX_ADDENDUM_TAB_LABEL_BY_KEY: Record<
     agreementDate: "agreement_date",
     merchantName: "client_legal_name",
     clientName: "client_name",
+    installmentDay1: "installment_day_1",
+    installmentDay2: "installment_day_2",
     dailyPayment1: "daily_payment_1",
     receivablePurchase1: "receivable_purchase_1",
     dailyPayment2: "daily_payment_2",
@@ -65,9 +73,14 @@ export const FLEX_ADDENDUM_TAB_LABEL_BY_KEY: Record<
 export function buildKatanFlexAddendumContractPrefillFields(
     values: KatanFlexAddendumContractPrefillFields = {},
 ): ContractPrefillField[] {
+    const resolved: KatanFlexAddendumContractPrefillFields = {
+        installmentDay1: "1",
+        installmentDay2: "16",
+        ...values,
+    };
     const out: ContractPrefillField[] = [];
     for (const { id, label } of EDITOR_FIELD_DEFS) {
-        const raw = String(values[id] ?? "").trim();
+        const raw = String(resolved[id] ?? "").trim();
         const tabId = FLEX_ADDENDUM_TAB_LABEL_BY_KEY[id];
         const value = FLEX_ADDENDUM_MONEY_TAB_IDS.has(tabId)
             ? formatFlexAddendumMoneyDisplay(raw)

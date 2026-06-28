@@ -22,6 +22,7 @@ import { clearBackgroundCheck } from "@/redux/slices/backgroundCheckSlice";
 import ComplianceChecks from "@/components/application/ComplianceChecks";
 import DecisionMakeFinalValues from "@/components/application/DecisionMakeFinalValues";
 import EligibilityAnalysis from "@/components/application/EligibilityAnalysis";
+import BackgroundCheckTab from "@/components/application/BackgroundCheckTab";
 
 import { CasesDashboard } from "@/pages/case/CasesDashboard";
 import { useDispatch, useSelector } from "react-redux";
@@ -260,6 +261,7 @@ const ApplicationDetails = () => {
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
+                { id: "background-check", label: "BACKGROUND CHECK" },
                 { id: "decision-making", label: "DECISION MAKING" },
             ];
         }
@@ -842,6 +844,9 @@ const ApplicationDetails = () => {
                     />
                     Activity log
                 </Button>
+            {EXTERNAL_LINKS.map((link) => (
+                    className="text-sm font-semibold text-[var(--brand)] underline underline-offset-2"
+                    {link.label}
             </div>
         ) : null;
 
@@ -909,9 +914,12 @@ const ApplicationDetails = () => {
                             applicationId={applicationId}
                             onBack={() => navigate(-1)}
                         />
-                        {/* Row 3: Tab content */}
+                        {activeTab !== "eligibility-analysis" && activeTab !== "background-check" ? (
                         {canRenderTabContent ? (
                             <>
+                                <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <BackgroundCheckTab />
+                                </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
                                     <ApplicationBasicDetails applicationId={applicationId} />
@@ -1206,6 +1214,11 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
                                     <EligibilityAnalysis />
+                            </LazyTabContent>
+
+                            <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <ApplicationSummary onBack={() => navigate(-1)} />
+                                    <BackgroundCheckTab />
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="checks" className="mt-6">

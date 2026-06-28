@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { toast } from 'react-toastify';
-import { getGmailMessageDetails, getGmailAttachments, syncGmail, sendGmailCompose } from '@/redux/actions/gmailActions';
+import { getGmailMessageDetails, getGmailAttachments, syncGmail, sendGmailCompose, fetchGmailConnection } from '@/redux/actions/gmailActions';
 import { parseApplicationPdfForClientPrefill } from '@/redux/actions/applicationActions';
 import { getIsos } from '@/redux/actions/isoActions';
 import type { GmailLabel } from '@/redux/actions/gmailActions';
@@ -192,11 +192,15 @@ const GmailPage = () => {
     loadingList,
     loadingDetail,
     detailError,
-    listError,
+    syncError,
     nextPageToken,
     activeLabel,
     autoCreating,
     sendingEmail,
+    gmailConnected,
+    gmailEmail,
+    connectionLoading,
+    connectionChecked,
   } = useSelector((state: RootState) => state.gmail);
   const { data: loginData } = useSelector((state: RootState) => state.login);
   const userRole =
@@ -278,8 +282,14 @@ const GmailPage = () => {
   }, [messages, searchQuery]);
 
   useEffect(() => {
+    dispatch(fetchGmailConnection());
+  }, [dispatch]);
+
+  useEffect(() => {
+    if (!connectionChecked || connectionLoading) return;
+    if (!gmailConnected) return;
     dispatch(syncGmail({ label: activeLabel }));
-  }, [dispatch, activeLabel]);
+  }, [dispatch, activeLabel, connectionChecked, connectionLoading, gmailConnected]);
 
   const cleanEmailAddress = (email: string): string =>
     email.replace(/[<>]/g, '').trim()
@@ -497,7 +507,9 @@ const GmailPage = () => {
                 Hi, {sessionUser?.firstName?.trim() || accountEmail.split('@')[0] || 'there'}!
               </p>
               <p className="mt-0.5 max-w-[280px] text-xs text-slate-600 dark:text-slate-400">
-                {accountEmail}
+                {gmailConnected && gmailEmail
+                  ? `Connected as ${gmailEmail}`
+                  : accountEmail}
               </p>
               <a
                 href="https://myaccount.google.com/"
@@ -634,31 +646,65 @@ const GmailPage = () => {
                 </div>
               </div>
 
+              {gmailConnected && syncError && messages.length > 0 && (
+                <div className="flex items-center justify-between gap-3 border-b border-amber-200/80 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span className="truncate">Sync failed — showing last loaded mail. {syncError}</span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => dispatch(syncGmail({ label: activeLabel }))}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+
               <div className="flex-1 overflow-y-auto bg-background">
-                {loadingList && messages.length === 0 ? (
+                {connectionLoading && !connectionChecked ? (
+                  <div className="flex items-center justify-center py-16">
+                    <RefreshCw className="h-5 w-5 animate-spin opacity-50 mr-2" />
+                    <span className="text-sm opacity-60">Checking Gmail connection…</span>
+                  </div>
+                ) : connectionChecked && !gmailConnected ? (
+                  <div className="flex flex-col items-center justify-center py-16 px-4 min-h-[min(60vh,420px)]">
+                    <div className="flex flex-col items-center text-center opacity-60">
+                      <Mail className="h-10 w-10 mb-3 opacity-40" />
+                      <span className="text-sm mb-2">Connect Gmail to view your inbox</span>
+                      <span className="text-xs opacity-50 mb-6 max-w-xs">
+                        Sign in with the Google account linked to your CRM email.
+                      </span>
+                    </div>
+                    <GoogleOAuthButton onClick={handleGoogleConnect} className="w-full max-w-sm" />
+                  </div>
+                ) : loadingList && messages.length === 0 ? (
                   <div className="flex items-center justify-center py-16">
                     <RefreshCw className="h-5 w-5 animate-spin opacity-50 mr-2" />
                     <span className="text-sm opacity-60">Loading {activeLabel.toLowerCase()} mails…</span>
                   </div>
-                ) : listError && messages.length === 0 ? (
+                ) : syncError && messages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 px-4 min-h-[min(60vh,420px)]">
                     <div className="flex flex-col items-center text-center opacity-60">
                       <AlertCircle className="h-10 w-10 mb-3 text-red-400" />
-                      <span className="text-sm text-red-500 mb-2">Failed to load {activeLabel.toLowerCase()} mails</span>
-                      <span className="text-xs opacity-50 mb-6 max-w-xs">{listError}</span>
+                      <span className="text-sm text-red-500 mb-2">Sync failed</span>
+                      <span className="text-xs opacity-50 mb-2 max-w-xs">{syncError}</span>
+                      {gmailEmail && (
+                        <span className="text-xs text-muted-foreground mb-6">
+                          Connected as {gmailEmail}
+                        </span>
+                      )}
                     </div>
-                    <div className="flex flex-col items-stretch gap-3 w-full max-w-sm mx-auto">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
-                        onClick={() => dispatch(syncGmail({ label: activeLabel }))}
-                      >
-                        Retry
-                      </Button>
-
-                      <GoogleOAuthButton onClick={handleGoogleConnect} className="w-full" />
-                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full max-w-sm"
+                      onClick={() => dispatch(syncGmail({ label: activeLabel }))}
+                    >
+                      Retry sync
+                    </Button>
                   </div>
                 ) : filteredMessages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 opacity-50">

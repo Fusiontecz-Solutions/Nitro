@@ -4,6 +4,14 @@ import {
     parseAchSendHistoryFromPrefill,
     type AchAuthorizationDocuSignCapsuleStatus,
 } from "./achAuthorizationDocuSign";
+import {
+    formatStandalonePackageSendLabel,
+    formatStandalonePackageTableStatusLabel,
+    parseStandalonePackageDocuSignFromPrefill,
+    parseStandalonePackageSendHistoryFromPrefill,
+    type StandalonePackageDocuSignCapsuleStatus,
+    type StandalonePackageDocuSignMeta,
+} from "./standalonePackageDocuSign";
 
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
@@ -16,7 +24,7 @@ export type ContractSendHistoryEntry = {
     archivedAt: string;
 };
 
-export type ContractSendTableRowKind = "contract" | "ach";
+export type ContractSendTableRowKind = "contract" | "ach" | "package";
 
 export type ContractSendTableRow = {
     rowType: ContractSendTableRowKind;
@@ -29,6 +37,8 @@ export type ContractSendTableRow = {
     isCurrent: boolean;
     /** Present when `rowType === "ach"`. */
     achStatus?: AchAuthorizationDocuSignCapsuleStatus;
+    /** Present when `rowType === "package"`. */
+    packageStatus?: StandalonePackageDocuSignCapsuleStatus;
 };
 
 export function pickContractEnvelopeDocument(
@@ -198,6 +208,92 @@ function isAchRowVisibleInSendTable(
     return Boolean(status && status !== "DRAFT");
 }
 
+function isPackageRowVisibleInSendTable(
+    status: StandalonePackageDocuSignCapsuleStatus | undefined,
+    envelopeId?: string | null,
+): boolean {
+    if (!String(envelopeId ?? "").trim()) return false;
+    return Boolean(status && status !== "DRAFT");
+}
+
+function buildStandalonePackageHistoryLabel(
+    packageMeta: StandalonePackageDocuSignMeta["package"] | undefined,
+    historyCount: number,
+    sendNumber: number,
+): string {
+    const base = formatStandalonePackageSendLabel(packageMeta);
+    if (historyCount <= 1) return `${base} (prior send)`;
+    return `${base} (send ${sendNumber})`;
+}
+
+export function getContractSendTableRowStatusLabel(row: ContractSendTableRow): string {
+    if (row.rowType === "ach") {
+        return formatAchTableStatusLabel({
+            envelopeId: row.envelopeId,
+            status: row.achStatus,
+        });
+    }
+    if (row.rowType === "package") {
+        return formatStandalonePackageTableStatusLabel(row.packageStatus, row.envelopeId);
+    }
+    const ds = String(row.documentStatus ?? "").trim().toLowerCase();
+    const cs = String(row.contractStatus ?? "").trim().toUpperCase();
+    if (ds === "completed" || cs === "COMPLETED" || cs === "SIGNED") return "Signed";
+    if (ds === "viewed" || ds === "delivered" || cs === "VIEWED") return "Viewed";
+    if (ds === "sent" || cs === "SENT") return "Sent";
+    if (ds === "draft" || ds === "created" || cs === "DRAFT") return "Draft";
+    if (
+        ds === "revoked" ||
+        ds === "voided" ||
+        cs === "REVOKED" ||
+        cs === "VOIDED" ||
+        cs === "DECLINED" ||
+        cs === "EXPIRED"
+    ) {
+        return "Voided";
+    }
+    return cs || ds || "Pending";
+}
+
+export function isContractSendTableRowFullySigned(row: ContractSendTableRow): boolean {
+    if (row.rowType === "ach") return row.achStatus === "SIGNED";
+    if (row.rowType === "package") return row.packageStatus === "SIGNED";
+    return isContractFullySigned(row.contractStatus, row.documentStatus);
+}
+
+export function isContractSendTableRowVoided(row: ContractSendTableRow): boolean {
+    if (row.rowType === "ach") return row.achStatus === "VOIDED";
+    if (row.rowType === "package") return row.packageStatus === "VOIDED";
+    return isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
+}
+
+export function canVoidContractSendTableRow(
+    contract: Record<string, unknown> | null | undefined,
+    row: ContractSendTableRow | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    if (!row?.isCurrent || !String(row.envelopeId ?? "").trim()) return false;
+    if (row.rowType === "contract") {
+        return canVoidMainContract(contract, sessionSentAt);
+    }
+    if (row.rowType === "ach") {
+        const status = row.achStatus ?? "DRAFT";
+        return status === "DRAFT" || status === "SENT" || status === "VIEWED";
+    }
+    if (row.rowType === "package") {
+        const status = row.packageStatus ?? "DRAFT";
+        return status === "DRAFT" || status === "SENT" || status === "VIEWED";
+    }
+    return false;
+}
+
+/** True when at least one envelope left DocuSign draft (main, ACH, or standalone package). */
+export function hasVisibleContractSendTableRows(
+    contract: Record<string, unknown> | null | undefined,
+): boolean {
+    return buildContractSendTableRows(contract).length > 0;
+}
+
 export function buildContractSendTableRows(
     contract: Record<string, unknown> | null | undefined,
 ): ContractSendTableRow[] {
@@ -211,11 +307,19 @@ export function buildContractSendTableRows(
     const doc = pickContractEnvelopeDocument(contract);
     const mainEnvelopeId = String(doc?.envelopeId ?? "").trim() || null;
 
-    const achCurrent = parseAchAuthorizationDocuSignFromPrefill(prefill);
+    const achCurrent = parseAchAuthorizationDocuSignFromPrefill(prefill, {
+        excludeEnvelopeId: mainEnvelopeId,
+    });
     const achEnvelopeId = String(achCurrent?.envelopeId ?? "").trim() || null;
+
+    const packageCurrent = parseStandalonePackageDocuSignFromPrefill(prefill, {
+        excludeEnvelopeId: mainEnvelopeId,
+    });
+    const packageEnvelopeId = String(packageCurrent?.envelopeId ?? "").trim() || null;
 
     const contractHistory = parseContractSendHistoryFromPrefill(prefill);
     const achHistory = parseAchSendHistoryFromPrefill(prefill);
+    const packageHistory = parseStandalonePackageSendHistoryFromPrefill(prefill);
 
     const seenEnvelopeIds = new Set<string>();
     const rows: ContractSendTableRow[] = [];
@@ -223,8 +327,11 @@ export function buildContractSendTableRows(
     const mainEnvelopeIsAchOnly = Boolean(
         mainEnvelopeId && achEnvelopeId && mainEnvelopeId === achEnvelopeId,
     );
+    const mainEnvelopeIsPackageOnly = Boolean(
+        mainEnvelopeId && packageEnvelopeId && mainEnvelopeId === packageEnvelopeId,
+    );
 
-    if (mainEnvelopeId && !mainEnvelopeIsAchOnly) {
+    if (mainEnvelopeId && !mainEnvelopeIsAchOnly && !mainEnvelopeIsPackageOnly) {
         if (
             isContractRowVisibleInSendTable(
                 (contract as { status?: unknown }).status,
@@ -285,6 +392,46 @@ export function buildContractSendTableRows(
             });
         }
     }
+
+    if (packageEnvelopeId && !seenEnvelopeIds.has(packageEnvelopeId)) {
+        if (isPackageRowVisibleInSendTable(packageCurrent?.status, packageEnvelopeId)) {
+            seenEnvelopeIds.add(packageEnvelopeId);
+            rows.push({
+                rowType: "package",
+                key: `current-package-${packageEnvelopeId}`,
+                label: formatStandalonePackageSendLabel(packageCurrent?.package),
+                envelopeId: packageEnvelopeId,
+                contractStatus: packageCurrent?.status,
+                documentStatus: packageCurrent?.status,
+                sentAt: packageCurrent?.sentAt ?? packageCurrent?.updatedAt ?? null,
+                isCurrent: true,
+                packageStatus: packageCurrent?.status ?? "DRAFT",
+            });
+        }
+    }
+
+    const packageHistoryNewestFirst = [...packageHistory].reverse();
+    packageHistoryNewestFirst.forEach((entry, index) => {
+        if (seenEnvelopeIds.has(entry.envelopeId)) return;
+        if (!isPackageRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
+        seenEnvelopeIds.add(entry.envelopeId);
+        const sendNumber = packageHistory.length - index;
+        rows.push({
+            rowType: "package",
+            key: `history-package-${entry.envelopeId}`,
+            label: buildStandalonePackageHistoryLabel(
+                entry.package,
+                packageHistory.length,
+                sendNumber,
+            ),
+            envelopeId: entry.envelopeId,
+            contractStatus: entry.status,
+            documentStatus: entry.status,
+            sentAt: entry.sentAt ?? entry.archivedAt ?? null,
+            isCurrent: false,
+            packageStatus: entry.status,
+        });
+    });
 
     const achHistoryNewestFirst = [...achHistory].reverse();
     achHistoryNewestFirst.forEach((entry, index) => {

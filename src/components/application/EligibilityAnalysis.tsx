@@ -308,29 +308,6 @@ export default function EligibilityAnalysis() {
             </Button>
           </div>
         ) : null}
-        {/* <div className="rounded-md border border-[#E5E7EB] p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-[#111827]">Credit Report</h3>
-            <Button
-              size="sm"
-              variant="default"
-              onClick={openCreditReportModal}
-            >
-              Initiate Credit Report
-            </Button>
-          </div>
-          {owners.map((owner) => (
-            <details key={`credit-${owner.id}`} className="rounded-md border border-[#E5E7EB]">
-              <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold uppercase text-[#111827]">
-                {owner.label}
-              </summary>
-              <div className="border-t border-[#E5E7EB] px-3 py-4 text-center text-xs text-[#6B7280]">
-                The credit report has not been processed for this owner yet.
-              </div>
-            </details>
-          ))}
-        </div> */}
-
         <div className="rounded-md border border-[#E5E7EB] p-3 space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-[#111827]">Decision Logic</h3>

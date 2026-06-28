@@ -124,7 +124,6 @@ function writeDealsCache(
     }
 }
 
-const SUPPORTING_DOC_ACCEPT = '.pdf,.png,.jpg,.jpeg,.webp,.doc,.docx'
 
 const PREVIEW_EXT_TO_MIME: Record<string, string> = {
     pdf: 'application/pdf',
@@ -1558,14 +1557,13 @@ export default function BrokerPortal() {
                             type="file"
                             className="sr-only"
                             multiple
-                            accept={SUPPORTING_DOC_ACCEPT}
                             onChange={(e) => {
                                 void uploadIsoPortalDocuments(e.target.files, 'supporting')
                             }}
                         />
                         <p className="text-md font-semibold text-foreground">Supporting documents</p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                            Optional extras—contracts, correspondence, or other files (PDF, images, Word).
+                            Optional extras—contracts, correspondence, or other files.
                         </p>
                         <button
                             type="button"

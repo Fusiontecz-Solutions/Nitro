@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
-import { CheckCircle2, Loader2, UploadCloud } from "lucide-react";
+import { CheckCircle2, Eye, Loader2, UploadCloud } from "lucide-react";
+import PDFViewerDocsModal from "@/components/application/PDFViewerDocsModal";
 import { axiosGet, axiosPostFormData } from "@/redux/axios";
 import { Button } from "@/components/ui/button";
 import { documentRequestDisplayLabel, type DocumentRequestRow } from "@/constants/documentRequestTypes";
@@ -46,6 +47,7 @@ const PublicDocumentRequestPage = () => {
   } | null>(null);
   const [documents, setDocuments] = useState<DocumentRequestRow[]>([]);
   const [uploadingSlug, setUploadingSlug] = useState<string | null>(null);
+  const [previewModal, setPreviewModal] = useState<{ url: string; name: string } | null>(null);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const loadPortal = useCallback(async () => {
@@ -91,12 +93,6 @@ const PublicDocumentRequestPage = () => {
     if (!token) return;
 
     const slug = doc.name;
-    const allowed = ["pdf", "jpg", "jpeg", "png"];
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
-    if (!allowed.includes(ext)) {
-      toast.error("Please upload a PDF, JPG, or PNG.");
-      return;
-    }
 
     setUploadingSlug(slug);
     try {
@@ -253,6 +249,24 @@ const PublicDocumentRequestPage = () => {
                       </div>
 
                       <div className="flex shrink-0 items-center gap-1">
+                        {isReceived && doc.fileUrl ? (
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 shrink-0"
+                            title={`View ${label}`}
+                            aria-label={`View ${label}`}
+                            onClick={() =>
+                              setPreviewModal({
+                                url: String(doc.fileUrl),
+                                name: label,
+                              })
+                            }
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                          </Button>
+                        ) : null}
                         {canUpload ? (
                           <>
                             <input
@@ -260,7 +274,6 @@ const PublicDocumentRequestPage = () => {
                                 fileInputRefs.current[doc.name] = el;
                               }}
                               type="file"
-                              accept=".pdf,.jpg,.jpeg,.png"
                               className="hidden"
                               onChange={(e) => {
                                 const file = e.target.files?.[0];
@@ -303,10 +316,18 @@ const PublicDocumentRequestPage = () => {
           )}
 
           <p className="mt-5 text-xs text-slate-500 dark:text-slate-400">
-            Accepted formats: PDF, JPG, PNG.
+            All common file types are accepted.
           </p>
         </div>
       </div>
+
+      <PDFViewerDocsModal
+        isOpen={previewModal != null}
+        onClose={() => setPreviewModal(null)}
+        fileUrl={previewModal?.url}
+        fileName={previewModal?.name}
+        preferDirectUrl
+      />
     </div>
   );
 };
