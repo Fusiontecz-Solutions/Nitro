@@ -49,6 +49,7 @@ export interface ApplicationNotificationRecord {
 export type StageTransitionAction =
     | 'SEND_TO_UNDERWRITER'
     | 'SEND_TO_FINAL_UNDERWRITER'
+    | 'SEND_FOR_FINAL_APPROVAL'
     | 'APPROVED'
     | 'QUEUE_CHANGED'
     | 'CREATED';
@@ -90,10 +91,10 @@ const STAGE_LABELS: Record<string, string> = {
     agent: 'Agent',
     review: 'Review',
     onhold: 'On Hold',
-    underwriter: 'Underwriter',
+    scrubbing: 'Scrubbing',
     underwriting: 'Underwriting',
     finalreview: 'Final Review',
-    finalunderwriter: 'Final Underwriter',
+    underwriter: 'Underwriter',
     approved: 'Approved',
     declined: 'Declined',
     contracted: 'Contracted',
@@ -228,23 +229,23 @@ async function resolveStageRecipients(
         recipients.push(
             ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'SUPER_ADMIN'])),
         );
-        if (q === 'underwriter' || q === 'underwriting') {
-            recipients.push(...(await findActiveUsersByRoles(['UNDERWRITER'])));
+        if (q === 'scrubbing' || q === 'underwriting') {
+            recipients.push(...(await findActiveUsersByRoles(['SCRUBBING'])));
         }
         return recipients;
     }
 
-    if (transitionAction === 'SEND_TO_UNDERWRITER' || q === 'underwriter' || q === 'underwriting') {
-        recipients.push(...(await findActiveUsersByRoles(['UNDERWRITER'])));
+    if (transitionAction === 'SEND_TO_UNDERWRITER' || q === 'scrubbing' || q === 'underwriting') {
+        recipients.push(...(await findActiveUsersByRoles(['SCRUBBING'])));
         return recipients;
     }
 
     if (
         transitionAction === 'SEND_TO_FINAL_UNDERWRITER' ||
-        q === 'finalunderwriter' ||
+        q === 'underwriter' ||
         q === 'finalreview'
     ) {
-        recipients.push(...(await findActiveUsersByRoles(['FINAL_UNDERWRITER'])));
+        recipients.push(...(await findActiveUsersByRoles(['UNDERWRITER'])));
         return recipients;
     }
 
@@ -273,7 +274,7 @@ async function resolveStageRecipients(
     }
 
     if (q === 'declined') {
-        recipients.push(...(await findActiveUsersByRoles(['UNDERWRITER', 'FINAL_UNDERWRITER'])));
+        recipients.push(...(await findActiveUsersByRoles(['SCRUBBING', 'UNDERWRITER'])));
         pushStakeholders();
         return recipients;
     }
@@ -377,19 +378,32 @@ function buildDefaultCopy(ctx: StageNotificationContext): { title: string; messa
 
     if (ctx.transitionAction === 'SEND_TO_UNDERWRITER') {
         return {
-            title: actor ? `${actor} sent a new application` : 'Application sent to Underwriter',
-            message: `Application${appRef} for ${client} is ready for underwriting review.`,
+            title: actor ? `${actor} sent a new application` : 'Application sent to Scrubbing',
+            message: `Application${appRef} for ${client} is ready for Scrubbing.`,
             type: 'application_update',
             importance: 'high',
         };
     }
 
     if (ctx.transitionAction === 'SEND_TO_FINAL_UNDERWRITER') {
+        const actorRoleNorm = String(ctx.actorRole ?? '')
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, '_');
+        const isScrubberRecommend = actorRoleNorm === 'SCRUBBING';
+        if (isScrubberRecommend) {
+            return {
+                title: 'Scrubber Sent Recommend Request for Approval',
+                message: `Application${appRef} for ${client} has been recommended for approval and is ready for Underwriter review.`,
+                type: 'application_update',
+                importance: 'high',
+            };
+        }
         return {
             title: actor
                 ? `${actor} forwarded an application for final review`
-                : 'Application sent to Final Underwriter',
-            message: `Application${appRef} for ${client} is ready for Final Underwriter review.`,
+                : 'Application sent to Underwriter',
+            message: `Application${appRef} for ${client} is ready for Underwriter review.`,
             type: 'application_update',
             importance: 'high',
         };
@@ -414,6 +428,38 @@ function buildDefaultCopy(ctx: StageNotificationContext): { title: string; messa
         type: declined ? 'application_rejected' : 'application_update',
         importance: declined ? 'urgent' : funded ? 'high' : 'normal',
     };
+}
+
+/** Super Admin assigned an application to a specific Underwriter — single-recipient in-app alert. */
+export async function notifyAdminAssignedApplicationToUnderwriter(args: {
+    application: ApplicationNotificationRecord;
+    recipientId: string;
+    actorId?: string | null;
+    actorName?: string | null;
+}): Promise<void> {
+    const app = args.application;
+    const recipientId = String(args.recipientId || '').trim();
+    if (!app?.id || !recipientId) return;
+
+    const appNum = app.applicationId ?? '';
+    const client = clientNameOf(app);
+    const appRef = appNum ? ` #${appNum}` : '';
+    const actor = String(args.actorName || '').trim();
+
+    await createAndPushNotifications(
+        [{ id: recipientId, email: null, name: '' }],
+        {
+            title: 'Admin Sent a Application To you',
+            message: actor
+                ? `${actor} assigned application${appRef} for ${client} to you.`
+                : `An admin assigned application${appRef} for ${client} to you.`,
+            type: 'application_update',
+            applicationId: app.id,
+            createdById: args.actorId ? String(args.actorId) : null,
+            importance: 'high',
+        },
+        app,
+    );
 }
 
 /** Fire-and-forget wrapper — never throws to callers. */
@@ -504,6 +550,38 @@ export async function notifyApplicationRejected(args: {
             applicationId: app.id,
             createdById: args.actorId ? String(args.actorId) : null,
             importance: 'urgent',
+        },
+        app,
+    );
+}
+
+/** Super Admin completed final funding-call approval — alert Operations to proceed with disbursement. */
+export async function notifyOperationsFundingCallApprovedForDisbursement(args: {
+    application: ApplicationNotificationRecord;
+    actorId?: string | null;
+    actorName?: string | null;
+}): Promise<void> {
+    const app = args.application;
+    if (!app?.id) return;
+
+    const appNum = app.applicationId ?? '';
+    const client = clientNameOf(app);
+    const appRef = appNum ? ` #${appNum}` : '';
+    const actor = String(args.actorName || '').trim();
+
+    const opsUsers = await findActiveUsersByRoles(['OPERATIONS']);
+
+    await createAndPushNotifications(
+        opsUsers,
+        {
+            title: 'Funding call approved — ready for disbursement',
+            message: actor
+                ? `${actor} completed the final funding call approval for application${appRef} (${client}). You can continue with disbursement.`
+                : `Super Admin completed the final funding call approval for application${appRef} (${client}). You can continue with disbursement.`,
+            type: 'application_update',
+            applicationId: app.id,
+            createdById: args.actorId ? String(args.actorId) : null,
+            importance: 'high',
         },
         app,
     );

@@ -6,6 +6,13 @@ export const APP_COMPANY_NAME =
 export const APP_COMPANY_CRM_NAME =
   String(process.env.APP_COMPANY_CRM_NAME || '').trim() || `${APP_COMPANY_NAME} CRM`;
 
+/** Server-resolved client / business name placeholders. */
+export const APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER = '__APPROVAL_CLIENT_NAME__';
+export const APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER = '__APPROVAL_COMPANY_NAME__';
+
+/** Backend replaces this with the signed public approval portal URL before send. */
+export const APPLICATION_APPROVAL_URL_PLACEHOLDER = '__APPLICATION_APPROVAL_URL__';
+
 export const CLIENT_PROVIDED_STIPS = [
   'Void Check',
   "Driver's License",
@@ -42,9 +49,12 @@ export function resolveApplicationApprovalEmailFields(
 ): ApplicationApprovalEmailFields {
   const clientName = String(values.client_name || '').trim() || 'Valued Client';
   const companyName = String(values.company_name || '').trim() || 'your company';
-  const viewApplicationUrl = String(values.view_application_url || '').trim() || '#';
+  const viewApplicationUrl =
+    String(values.view_application_url || '').trim() ||
+    APPLICATION_APPROVAL_URL_PLACEHOLDER;
   const calculateApprovalUrl =
-    String(values.calculate_approval_url || '').trim() || '#';
+    String(values.calculate_approval_url || '').trim() ||
+    APPLICATION_APPROVAL_URL_PLACEHOLDER;
 
   return {
     clientName,

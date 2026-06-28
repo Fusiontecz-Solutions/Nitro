@@ -1,8 +1,8 @@
 import type { Prisma } from '@prisma/client';
 
 export type ApplicationStatsBucketWhereOptions = {
-    /** UNDERWRITER inbox: align `statsBucket` list filters with UW Queue / My scoped stats cards. */
-    uwInbox?: { tab: 'unclaimed' | 'mine'; viewerId: string };
+    /** SCRUBBING / UNDERWRITER inbox: align `statsBucket` list filters with Queue / My scoped stats cards. */
+    uwInbox?: { tab: 'unclaimed' | 'mine'; viewerId: string; stage?: 'scrubbing' | 'underwriter' };
 };
 
 function icEq(
@@ -52,13 +52,18 @@ export function buildApplicationStatsBucketWhere(
             return icEq('currentQueue', 'Declined');
         case 'workflow_pending':
             if (opts?.uwInbox) {
+                const isFinalUw = opts.uwInbox.stage === 'underwriter';
                 const claimPart: Prisma.ApplicationWhereInput =
                     opts.uwInbox.tab === 'unclaimed'
-                        ? { claimedByUnderwriterId: null }
-                        : { claimedByUnderwriterId: opts.uwInbox.viewerId };
+                        ? isFinalUw
+                            ? { assignedUnderwriterId: null }
+                            : { claimedByUnderwriterId: null }
+                        : isFinalUw
+                          ? { assignedUnderwriterId: opts.uwInbox.viewerId }
+                          : { claimedByUnderwriterId: opts.uwInbox.viewerId };
                 return {
                     AND: [
-                        icEq('currentQueue', 'Underwriter'),
+                        icEq('currentQueue', isFinalUw ? 'Underwriter' : 'Scrubbing'),
                         claimPart,
                         {
                             OR: [
@@ -79,13 +84,18 @@ export function buildApplicationStatsBucketWhere(
             };
         case 'workflow_in_progress':
             if (opts?.uwInbox) {
+                const isFinalUw = opts.uwInbox.stage === 'underwriter';
                 const claimPart: Prisma.ApplicationWhereInput =
                     opts.uwInbox.tab === 'unclaimed'
-                        ? { claimedByUnderwriterId: null }
-                        : { claimedByUnderwriterId: opts.uwInbox.viewerId };
+                        ? isFinalUw
+                            ? { assignedUnderwriterId: null }
+                            : { claimedByUnderwriterId: null }
+                        : isFinalUw
+                          ? { assignedUnderwriterId: opts.uwInbox.viewerId }
+                          : { claimedByUnderwriterId: opts.uwInbox.viewerId };
                 return {
                     AND: [
-                        icEq('currentQueue', 'Underwriter'),
+                        icEq('currentQueue', isFinalUw ? 'Underwriter' : 'Scrubbing'),
                         claimPart,
                         {
                             OR: [
@@ -99,7 +109,7 @@ export function buildApplicationStatsBucketWhere(
             }
             return {
                 OR: [
-                    icEq('currentQueue', 'Underwriter'),
+                    icEq('currentQueue', 'Scrubbing'),
                     icEq('currentState', 'IN_PROGRESS'),
                     icEq('currentState', 'In Progress'),
                     icEq('currentState', 'In_Progress'),
@@ -111,13 +121,15 @@ export function buildApplicationStatsBucketWhere(
                     icEq('currentQueue', 'New'),
                     icEq('currentQueue', 'Agent'),
                     icEq('currentQueue', 'Review'),
+                    icEq('currentQueue', 'Underwriting'),
+                    icEq('currentQueue', 'Scrubbing'),
                     icEq('currentQueue', 'Final Review'),
-                    icEq('currentQueue', 'Final Underwriter'),
+                    icEq('currentQueue', 'Underwriter'),
                 ],
             };
         case 'underwriting':
             return {
-                OR: [icEq('currentQueue', 'Underwriting'), icEq('currentQueue', 'Underwriter')],
+                OR: [icEq('currentQueue', 'Underwriting'), icEq('currentQueue', 'Scrubbing')],
             };
         case 'pending_pipeline': {
             const pipelineQueues = [
@@ -131,9 +143,9 @@ export function buildApplicationStatsBucketWhere(
                 'Contracts Out',
                 'Review',
                 'Underwriting',
-                'Underwriter',
+                'Scrubbing',
                 'Final Review',
-                'Final Underwriter',
+                'Underwriter',
                 'Final',
                 'Funding Call',
                 'Disbursement',
@@ -150,7 +162,12 @@ export function buildApplicationStatsBucketWhere(
         case 'approved':
             /** Matches `/applications/stats` approved bucket: `currentState` = Approved only (not CONTRACTS_OUT / Contracted). */
             return {
-                OR: [icEq('currentState', 'Approved'), icEq('currentState', 'APPROVED')],
+                OR: [
+                    icEq('currentState', 'Underwriter Approved'),
+                    icEq('currentState', 'UNDERWRITER_APPROVED'),
+                    icEq('currentState', 'Approved'),
+                    icEq('currentState', 'APPROVED'),
+                ],
             };
         default:
             return undefined;

@@ -55,7 +55,7 @@ const mapMonthToApi = (month: any) => {
   };
 };
 
-// Resolve application by UUID (id) or numeric applicationId — role-independent; same data for Agent and Underwriter
+// Resolve application by UUID (id) or numeric applicationId — role-independent; same data for Agent and Scrubbing
 async function resolveApplicationByAnyId(applicationParam: string): Promise<{ id: string } | null> {
   const s = String(applicationParam).trim();
   if (!s) return null;
@@ -441,7 +441,7 @@ class MonthController {
         });
       }
 
-      // Accept UUID or numeric applicationId — role-independent; Agent and Underwriter see same months (and thus same transactions)
+      // Accept UUID or numeric applicationId — role-independent; Agent and Scrubbing see same months (and thus same transactions)
       const appRecord = await resolveApplicationByAnyId(String(application));
       if (!appRecord) {
         return res.status(404).json({

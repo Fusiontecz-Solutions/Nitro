@@ -1,4 +1,5 @@
 import {
+  APPLICATION_APPROVAL_URL_PLACEHOLDER,
   escapeHtml,
   resolveApplicationApprovalEmailFields,
   type ApplicationApprovalTemplateValues,
@@ -49,7 +50,10 @@ export function renderOfferUpdatedEmailHtml(
   const companyName = escapeHtml(fields.companyName);
   const brandName = escapeHtml(fields.companyNameBrand);
   const crmName = escapeHtml(fields.crmName);
-  const calculateHref = escapeHtml(fields.calculateApprovalUrl);
+  const publicApprovalUrl =
+    String(values.calculate_approval_url || values.view_application_url || '')
+      .trim() || APPLICATION_APPROVAL_URL_PLACEHOLDER;
+  const calculateHref = escapeHtml(publicApprovalUrl);
 
   const logoSrc = escapeHtml(OFFER_UPDATED_EMAIL_LOGO_SRC);
   const footerLogoSrc = escapeHtml(OFFER_UPDATED_EMAIL_FOOTER_LOGO_SRC);

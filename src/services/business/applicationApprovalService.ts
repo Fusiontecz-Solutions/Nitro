@@ -4,10 +4,6 @@ import prisma from '../../config/prismaClient';
 import { createApplicationActivityLog } from '../applicationActivityLogService';
 import type { AuthenticatedUser } from '../applicationService';
 import {
-    APPLICATION_QUEUE_CONTRACT_PENDING,
-    APPLICATION_STATE_CONTRACT_PENDING,
-} from '../contractApplicationWorkflowSync';
-import {
     enqueueApplicationApprovalSideEffects,
     isApplicationApprovalQueueEnabled,
 } from '../../queues/applicationApprovalQueue';
@@ -37,21 +33,17 @@ import {
 export const APPLICATION_APPROVED_QUEUE = 'Approved' as const;
 export const APPLICATION_APPROVED_STATE = 'Approved' as const;
 
-/**
- * When an ISO approves from the public portal, the deal does not stop at the
- * generic "Approved" bucket — it advances straight into the Contract Pending
- * stage so Operations can immediately generate the contract. Internal (non-ISO)
- * approvals keep the legacy Approved/Approved labels.
- */
+/** ISO public-portal approval (`actorType=ISO`). */
 const isIsoApprovalActor = (actorType: string | null | undefined): boolean =>
     String(actorType ?? '').trim().toUpperCase() === 'ISO';
 
+/** All approval transitions persist the legacy Approved/Approved queue labels. */
 const resolveApprovalTarget = (
-    actorType: string | null | undefined
-): { queue: string; state: string } =>
-    isIsoApprovalActor(actorType)
-        ? { queue: APPLICATION_QUEUE_CONTRACT_PENDING, state: APPLICATION_STATE_CONTRACT_PENDING }
-        : { queue: APPLICATION_APPROVED_QUEUE, state: APPLICATION_APPROVED_STATE };
+    _actorType: string | null | undefined
+): { queue: string; state: string } => ({
+    queue: APPLICATION_APPROVED_QUEUE,
+    state: APPLICATION_APPROVED_STATE,
+});
 
 /** Public contract returned to the controller / API. */
 export interface ApproveApplicationResult {
@@ -125,6 +117,8 @@ const includeForApiResponse: Prisma.ApplicationInclude = {
 const POST_APPROVAL_WORKFLOW_TOKENS = new Set<string>([
     'approved',
     'completed',
+    'isoapproved',
+    'approvedbyiso',
     'contractpending',
     'contractgenerated',
     'contractsent',
@@ -149,6 +143,13 @@ const normalizeWorkflowToken = (value: string | null | undefined): string =>
 const isAlreadyApproved = (queue: string | null | undefined, state: string | null | undefined): boolean =>
     POST_APPROVAL_WORKFLOW_TOKENS.has(normalizeWorkflowToken(queue)) ||
     POST_APPROVAL_WORKFLOW_TOKENS.has(normalizeWorkflowToken(state));
+
+const isIsoApprovedStage = (
+    queue: string | null | undefined,
+    state: string | null | undefined
+): boolean =>
+    normalizeWorkflowToken(queue) === 'isoapproved' ||
+    normalizeWorkflowToken(state) === 'isoapproved';
 
 const isContractPendingStage = (
     queue: string | null | undefined,
@@ -262,7 +263,10 @@ async function runApproval(
         // Re-run fan-out idempotently for ISO actors only.
         if (
             current &&
-            isContractPendingStage(current.currentQueue, current.currentState) &&
+            (isIsoApprovedStage(current.currentQueue, current.currentState) ||
+                normalizeWorkflowToken(current.currentQueue) === 'approved' ||
+                normalizeWorkflowToken(current.currentState) === 'approved' ||
+                isContractPendingStage(current.currentQueue, current.currentState)) &&
             isIsoApprovalActor(options.actorType)
         ) {
             dispatchApprovalSideEffects({
@@ -288,9 +292,8 @@ async function runApproval(
     }
 
     /**
-     * Target stage depends on who approved:
-     *   - ISO (public portal)  → Contract Pending (ready for contract generation).
-     *   - Internal CRM actor   → legacy Approved/Approved bucket.
+     * Target stage is always Approved/Approved (legacy queue labels). Pipeline
+     * buckets distinguish ISO vs UW via activity logs and prior workflow stage.
      *
      * Single non-interactive update by primary key to avoid Prisma interactive
      * transaction timeout failures (P2028) under DB latency spikes.

@@ -1,5 +1,6 @@
 ﻿import { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { resolveApplicationWhere } from './applicationService';
 import uploadService from './uploadService';
 import { parseContractLengthDaysFromOfferTerm } from '../utils/deriveFrequencyFromTerm';
 import { ValidationError } from '../utils/errors';
@@ -1249,8 +1250,20 @@ class ContractService {
   }
 
   async getByApplicationIdContract(applicationId: string) {
+    const where = resolveApplicationWhere(applicationId);
+    if (!where) return null;
+
+    const application =
+      'id' in where
+        ? await prisma.application.findUnique({ where: { id: where.id }, select: { id: true } })
+        : await prisma.application.findUnique({
+            where: { applicationId: where.applicationId },
+            select: { id: true },
+          });
+    if (!application) return null;
+
     const row = await (prisma as any).contract.findUnique({
-      where: { applicationId },
+      where: { applicationId: application.id },
       include: {
         client: { select: { id: true, businessName: true, businessEmail: true, ownerFirstName: true, ownerLastName: true } },
         application: {

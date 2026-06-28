@@ -3,12 +3,17 @@ import {
     mergeApplicationVisibilityWhere,
     type AuthenticatedUser,
 } from './applicationService';
+import {
+    AGENT_PIPELINE_QUEUE_STRICT,
+    SCRUBBING_PIPELINE_QUEUE_STRICT,
+    UNDERWRITER_PIPELINE_QUEUE_STRICT,
+} from './operationsStatusFilter';
 
 /** Canonical pipeline buckets keyed by `Application.currentQueue` (human-readable labels). */
 export type QueueMetricsBucketKey =
     | 'Agent'
+    | 'Scrubbing'
     | 'Underwriter'
-    | 'Final Underwriter'
     | 'Contract_Pending'
     | 'Contract_Sent'
     | 'Contract_Signed'
@@ -20,8 +25,8 @@ export type QueueMetricsBucketKey =
 
 export const QUEUE_METRICS_BUCKET_KEYS: QueueMetricsBucketKey[] = [
     'Agent',
+    'Scrubbing',
     'Underwriter',
-    'Final Underwriter',
     'Contract_Pending',
     'Contract_Sent',
     'Contract_Signed',
@@ -59,8 +64,8 @@ const CONTRACT_SIGNED_QUEUES = new Set([
 function emptyBucketRecord(): Record<QueueMetricsBucketKey, number> {
     return {
         Agent: 0,
-        Underwriter: 0,
-        'Final Underwriter': 0,
+        Scrubbing: 0,
+        'Underwriter': 0,
         Contract_Pending: 0,
         Contract_Sent: 0,
         Contract_Signed: 0,
@@ -70,6 +75,73 @@ function emptyBucketRecord(): Record<QueueMetricsBucketKey, number> {
         Funded: 0,
         Declined: 0,
     };
+}
+
+function normalizePipelineToken(value: string | null | undefined): string {
+    return String(value ?? '')
+        .trim()
+        .toUpperCase()
+        .replace(/[\s-]+/g, '_');
+}
+
+function queueInSet(
+    currentQueue: string | null | undefined,
+    values: readonly string[],
+): boolean {
+    const q = String(currentQueue ?? '').trim();
+    if (!q) return false;
+    return values.some((candidate) => candidate === q);
+}
+
+function stateInUnderwriterSet(currentState: string | null | undefined): boolean {
+    const token = normalizePipelineToken(currentState);
+    return (
+        token === 'UNDERWRITER' ||
+        token === 'FINAL_REVIEW' ||
+        token === 'FINAL_UNDERWRITER'
+    );
+}
+
+function stateInScrubbingSet(currentState: string | null | undefined): boolean {
+    const token = normalizePipelineToken(currentState);
+    return (
+        token === 'SCRUBBING' ||
+        token === 'UNDERWRITING' ||
+        token === 'IN_PROGRESS'
+    );
+}
+
+/**
+ * Map stored workflow fields to a dashboard bucket.
+ * Queue wins over state; mirrors `buildOperationsStatusFilterWhere` pipeline matchers.
+ */
+export function classifyApplicationPipelineStage(
+    currentQueue: string | null | undefined,
+    currentState?: string | null | undefined,
+): QueueMetricsBucketKey | null {
+    const fromQueue = classifyApplicationCurrentQueue(currentQueue);
+    if (fromQueue) return fromQueue;
+
+    const queueToken = normalizePipelineToken(currentQueue);
+
+    if (stateInUnderwriterSet(currentState)) {
+        if (
+            queueToken === 'SCRUBBING' ||
+            queueToken === 'UNDERWRITING' ||
+            queueToken === 'REVIEW'
+        ) {
+            return 'Scrubbing';
+        }
+        return 'Underwriter';
+    }
+    if (
+        stateInScrubbingSet(currentState) &&
+        !queueInSet(currentQueue, UNDERWRITER_PIPELINE_QUEUE_STRICT)
+    ) {
+        return 'Scrubbing';
+    }
+
+    return null;
 }
 
 /**
@@ -90,9 +162,9 @@ export function classifyApplicationCurrentQueue(
     if (CONTRACT_SIGNED_QUEUES.has(q)) return 'Contract_Signed';
     if (CONTRACT_SENT_QUEUES.has(q)) return 'Contract_Sent';
     if (CONTRACT_PENDING_QUEUES.has(q)) return 'Contract_Pending';
-    if (q === 'Final Underwriter') return 'Final Underwriter';
-    if (q === 'Underwriter') return 'Underwriter';
-    if (q === 'Agent') return 'Agent';
+    if (queueInSet(q, UNDERWRITER_PIPELINE_QUEUE_STRICT)) return 'Underwriter';
+    if (queueInSet(q, SCRUBBING_PIPELINE_QUEUE_STRICT)) return 'Scrubbing';
+    if (queueInSet(q, AGENT_PIPELINE_QUEUE_STRICT)) return 'Agent';
 
     return null;
 }
@@ -117,7 +189,7 @@ export async function aggregateQueueMetricsByCurrentQueue(
 
     const apps = await prisma.application.findMany({
         where: visibilityBase,
-        select: { id: true, currentQueue: true, loanAmount: true },
+        select: { id: true, currentQueue: true, currentState: true, loanAmount: true },
     });
 
     const counts = emptyBucketRecord();
@@ -139,7 +211,10 @@ export async function aggregateQueueMetricsByCurrentQueue(
     );
 
     for (const app of apps) {
-        const bucket = classifyApplicationCurrentQueue(app.currentQueue);
+        const bucket = classifyApplicationPipelineStage(
+            app.currentQueue,
+            app.currentState,
+        );
         if (!bucket) continue;
 
         counts[bucket] += 1;

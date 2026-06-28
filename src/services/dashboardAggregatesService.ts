@@ -36,9 +36,9 @@ const FUNNEL_IN_PROGRESS_QUEUES = new Set([
     'Agent',
     'Review',
     'Underwriting',
-    'Underwriter',
+    'Scrubbing',
     'Final Review',
-    'Final Underwriter',
+    'Underwriter',
 ]);
 const FUNNEL_WAITING_QUEUES = new Set(['On Hold', 'Waiting for Documents']);
 const FUNNEL_DECISION_QUEUES = new Set([

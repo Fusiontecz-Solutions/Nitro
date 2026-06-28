@@ -272,7 +272,7 @@ class NotificationController {
                 emailSubject,
             } = req.body;
             const currentUserRole = (req as any).user?.role;
-            const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
+            const isFinalUnderwriter = currentUserRole === 'UNDERWRITER';
             const isIsoEmailRequest = Object.prototype.hasOwnProperty.call(req.body, 'isoEmail');
 
             if (!applicationId) {
@@ -379,7 +379,7 @@ class NotificationController {
             if (app.salesRepresentativeId) addIfNotSender(app.salesRepresentativeId);
             if (isFinalUnderwriter) {
                 const underwriters = await prisma.user.findMany({
-                    where: { role: 'UNDERWRITER' },
+                    where: { role: 'SCRUBBING' },
                     select: { id: true },
                 });
                 underwriters.forEach((u) => addIfNotSender(u.id));
@@ -396,7 +396,7 @@ class NotificationController {
                 documentsArray.length > 0
                     ? 'Document Request Required'
                     : isFinalUnderwriter
-                      ? 'Sent Back for Documentation (Final Underwriter)'
+                      ? 'Sent Back for Documentation (Underwriter)'
                       : 'Action Required';
             const notificationMessage =
                 documentsArray.length > 0
@@ -429,7 +429,7 @@ class NotificationController {
             const appUpdateData: { note?: string; currentQueue?: string; currentState?: string } = {};
             if (fullNote) appUpdateData.note = fullNote;
             if (isFinalUnderwriter) {
-                appUpdateData.currentQueue = 'Underwriting';
+                appUpdateData.currentQueue = 'Scrubbing';
                 appUpdateData.currentState = 'In Progress';
             }
 
@@ -611,7 +611,7 @@ class NotificationController {
         }
     }
 
-    /** In-app notifications for all active Final Underwriter users when an application enters their queue. */
+    /** In-app notifications for all active Underwriter users when an application enters their queue. */
     async notifyApplicationSentToFinalUnderwriter(req: Request, res: Response) {
         try {
             const { applicationId, underwriterName } = req.body;
@@ -654,10 +654,10 @@ class NotificationController {
             const senderName =
                 (underwriterName && String(underwriterName).trim()) ||
                 String((req as any).user?.name || '').trim() ||
-                'Underwriter';
+                'Scrubbing';
 
             const finalUnderwriters = await prisma.user.findMany({
-                where: { role: 'FINAL_UNDERWRITER', isActive: true },
+                where: { role: 'UNDERWRITER', isActive: true },
                 select: { id: true },
             });
 
@@ -669,7 +669,7 @@ class NotificationController {
             if (recipients.length === 0) {
                 return res.status(201).json({
                     success: true,
-                    message: 'No Final Underwriter recipients to notify',
+                    message: 'No Underwriter recipients to notify',
                     data: { notified: 0 },
                 });
             }
@@ -678,16 +678,17 @@ class NotificationController {
                 application: application as any,
                 actorId: senderId,
                 actorName: senderName,
+                actorRole: 'SCRUBBING',
                 transitionAction: 'SEND_TO_FINAL_UNDERWRITER',
             });
 
             return res.status(201).json({
                 success: true,
-                message: 'Final Underwriter notified successfully',
+                message: 'Underwriter notified successfully',
                 data: { notified: recipients.length },
             });
         } catch (error: any) {
-            console.error('Notify Final Underwriter error:', error?.message || error, error?.stack);
+            console.error('Notify Underwriter error:', error?.message || error, error?.stack);
             return res.status(500).json({
                 success: false,
                 message: error?.message || 'Internal server error',
@@ -1328,7 +1329,7 @@ class NotificationController {
                     }
                 });
 
-                // General "Sent Back for Documentation" requests (no specific docs - e.g. from Final Underwriter)
+                // General "Sent Back for Documentation" requests (no specific docs - e.g. from Underwriter)
                 if (requestedDocs.length === 0 && notification.message) {
                     generalRequests.push({
                         name: 'Sent Back for Documentation',
@@ -1340,7 +1341,7 @@ class NotificationController {
                 }
             });
 
-            // Convert map to array, then append general requests (Final Underwriter send-back)
+            // Convert map to array, then append general requests (Underwriter send-back)
             const documents = Array.from(documentMap.entries()).map(([name, data]) => ({
                 name,
                 label: data.label,

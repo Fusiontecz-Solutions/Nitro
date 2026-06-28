@@ -93,6 +93,12 @@ router.get('/admin-dashboard-stats', applicationController.getAdminDashboardStat
 // Get application stats (counts and total amounts by queue/state, role-based)
 router.get('/stats', applicationController.getStats.bind(applicationController));
 
+// Underwriter deal-pipeline sidebar counts (scoped to logged-in underwriter)
+router.get(
+    '/underwriter-pipeline-counts',
+    applicationController.getUnderwriterPipelineCounts.bind(applicationController),
+);
+
 // Operations dashboard: single response for all pipeline / queue stat cards (scalable vs N list calls)
 router.get(
     '/operations-dashboard-summary',
@@ -126,6 +132,12 @@ router.get('/by-agent', applicationController.getApplicationsByAgentId.bind(appl
 // Get applications by ISO id
 router.get('/by-iso/:isoId', applicationController.getByIsoId.bind(applicationController));
 
+// Get applications by underwriter id (assigned, approved, or claimed)
+router.get(
+    '/by-underwriter/:underwriterId',
+    applicationController.getByUnderwriterId.bind(applicationController),
+);
+
 // Get application by MongoDB ObjectId
 router.get('/:id', applicationController.getById.bind(applicationController));
 
@@ -147,17 +159,36 @@ router.delete('/:id/files/:fileId', applicationController.removeFile.bind(applic
 // Update application queue
 router.patch('/:id/queue', applicationController.updateQueue.bind(applicationController));
 
-// Underwriter exclusive claim (avoids multiple underwriters working the same deal)
+// Scrubbing exclusive claim (avoids multiple underwriters working the same deal)
 router.post(
-    '/:id/underwriter-claim',
-    requireRoles('UNDERWRITER'),
+    '/:id/scrubbing-claim',
+    requireRoles('SCRUBBING'),
     applicationController.claimUnderwriterDeal.bind(applicationController),
 );
 router.post(
-    '/:id/underwriter-release',
-    // Only Admin can take back a deal from the Underwriter queue.
+    '/:id/underwriter-claim',
+    requireRoles('UNDERWRITER'),
+    applicationController.claimFinalUnderwriterDeal.bind(applicationController),
+);
+router.post(
+    '/:id/scrubbing-release',
+    // Only Admin can take back a deal from the Scrubbing queue.
     requireRoles('ADMIN', 'SUPER_ADMIN'),
     applicationController.releaseUnderwriterDeal.bind(applicationController),
+);
+
+// Super Admin / Scrubbing: assign application to a specific Underwriter (in-app notification)
+router.post(
+    '/:id/assign-underwriter',
+    requireRoles('SUPER_ADMIN', 'SCRUBBING'),
+    applicationController.assignApplicationToUnderwriter.bind(applicationController),
+);
+
+// Super Admin / Operations: send Underwriter Approved deal to the approving Underwriter for final approval
+router.post(
+    '/:id/send-final-underwriter-approval',
+    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    applicationController.sendForFinalUnderwriterApproval.bind(applicationController),
 );
 
 // Update application state

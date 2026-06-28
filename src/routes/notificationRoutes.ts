@@ -10,9 +10,9 @@ router.use(authenticateToken);
 // Send document request notification
 router.post('/document-request', notificationController.sendDocumentRequest.bind(notificationController));
 
-// Underwriter (or other workflow) sent application to Final Underwriter — notify all active Final Underwriters in-app
+// Scrubbing (or other workflow) sent application to Underwriter — notify all active Final Underwriters in-app
 router.post(
-    '/application-sent-to-final-underwriter',
+    '/application-sent-to-final-scrubbing',
     notificationController.notifyApplicationSentToFinalUnderwriter.bind(notificationController),
 );
 

@@ -9,7 +9,7 @@ function parseTermInt(term: unknown): number {
 
 /**
  * Mirror the persisted offer-decision onto the latest terms offer (or create one)
- * so ISO public approval links show the same amounts the underwriter approved.
+ * so ISO public approval links show the same amounts the scrubbing approved.
  */
 export async function syncTermsOfferFromOfferDecision(
     applicationId: string,

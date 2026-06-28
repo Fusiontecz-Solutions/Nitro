@@ -32,8 +32,8 @@ const CRM_INTERNAL_NOTIFY_ROLES = [
     'ADMIN',
     'SUPER_ADMIN',
     'OPERATIONS',
+    'SCRUBBING',
     'UNDERWRITER',
-    'FINAL_UNDERWRITER',
     'ACCOUNTANT',
     'ACCOUNTS',
 ] as const;
@@ -232,7 +232,12 @@ export async function processApplicationApprovalSideEffects(
 
     const currentQueue = String(application.currentQueue ?? '').trim().toLowerCase();
     const currentState = String(application.currentState ?? '').trim().toLowerCase();
-    if (currentQueue !== 'approved' && currentState !== 'approved') {
+    const isApprovedStage =
+        currentQueue === 'approved' ||
+        currentState === 'approved' ||
+        currentQueue === 'iso approved' ||
+        currentState === 'iso approved';
+    if (!isApprovedStage) {
         console.warn('[approvalSideEffects] application no longer Approved — skipping fan-out:', {
             applicationId,
             currentQueue: application.currentQueue,
@@ -295,7 +300,7 @@ export async function processApplicationApprovalSideEffects(
 
         /*
          * ISO-approved branch: ONLY notify Operations users.
-         *   - No fan-out to Final Underwriter / Underwriter / Admin / Accountant.
+         *   - No fan-out to Underwriter / Scrubbing / Admin / Accountant.
          *   - No fan-out to referring agent / sales rep / createdBy.
          * This is the strict requirement when an ISO performs the approval action.
          */
@@ -319,7 +324,7 @@ export async function processApplicationApprovalSideEffects(
             }
         } else {
             /*
-             * Non-ISO actor (Final Underwriter / Admin / etc. approving manually):
+             * Non-ISO actor (Underwriter / Admin / etc. approving manually):
              * keep the existing broader fan-out so other internal staff and the
              * deal’s direct contacts still see the approval.
              */

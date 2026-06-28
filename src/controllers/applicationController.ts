@@ -16,6 +16,11 @@ import {
 } from '../services/applicationService';
 import { mapClientToApi, resolveClientOwners } from '../utils/clientMapper';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import {
+    buildUnderwriterPipelineWhere,
+    countUnderwriterPipelineDeals,
+    normalizeUnderwriterPipelineParam,
+} from '../services/underwriterPipelineFilter';
 import { getApplicationStageAccessForUser } from '../services/applicationStageAccess';
 import {
     aggregateApplicationStats,
@@ -48,9 +53,14 @@ import {
     type ApplicationStatsBucketWhereOptions,
 } from '../services/applicationStatsBucketWhere';
 import { getBalancesForApplicationIds } from '../services/collectionPaymentFinancials';
-import { applyContractCompletedSyncToApplicationRecord } from '../services/contractApplicationWorkflowSync';
+import {
+    applyContractCompletedSyncToApplicationRecord,
+    APPLICATION_QUEUE_APPROVAL_SENT,
+    APPLICATION_STATE_APPROVAL_SENT,
+} from '../services/contractApplicationWorkflowSync';
 import {
     buildApplicationApprovalEmailHtml,
+    buildApplicationApprovedEmailInjectValues,
     buildApplicationOfferUpdatedEmailHtml,
     injectApplicationApprovalEmailValues,
     sendApplicationApprovalEmail,
@@ -69,6 +79,11 @@ import {
     resolveCrmFrontendBaseUrl,
 } from '../utils/crmFrontendUrl';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
+import {
+    CANONICAL_WORKFLOW_QUEUES,
+    normalizeStoredWorkflowQueue,
+    normalizeStoredWorkflowState,
+} from '../utils/workflowQueueStorage';
 import {
     resolveApplicationAttributedUserId,
     resolveTenantUserId,
@@ -104,6 +119,7 @@ import { approveApplication } from '../services/business/applicationApprovalServ
 import {
     scheduleApplicationStageNotification,
     notifyApplicationRejected,
+    notifyAdminAssignedApplicationToUnderwriter,
 } from '../services/applicationStageNotificationService';
 
 type ApplicationState =
@@ -289,6 +305,16 @@ const applicationStateApiToPrisma: Record<string, ApplicationState> = {
 
 /** API input → verbatim `Application.currentState` string (not a Prisma workflow enum). */
 const verbatimApplicationStateByInput: Record<string, string> = {
+    Approved: 'Approved',
+    'Underwriter Approved': 'Underwriter Approved',
+    Underwriter_Approved: 'Underwriter Approved',
+    'Final Approval': 'Final Approval',
+    Final_Approval: 'Final Approval',
+    'Approval Sent': 'Approval Sent',
+    Approval_Sent: 'Approval Sent',
+    'ISO Approved': 'ISO Approved',
+    ISO_Approved: 'ISO Approved',
+    Approved_By_ISO: 'ISO Approved',
     'Contract Out': 'Contract Out',
     Contract_Generated: 'CONTRACT_GENERATED',
     CONTRACT_GENERATED: 'CONTRACT_GENERATED',
@@ -366,15 +392,28 @@ const normalizeWorkflowQueueForApi = (queue: string | null | undefined): string 
     return contractSentLabel ?? trimmed;
 };
 
-const WORKFLOW_QUEUES = {
-    AGENT: 'Agent',
-    UNDERWRITER: 'Underwriter',
-    /** Stored in `Application.currentQueue` (human-readable label used across the app). */
-    FINAL_UNDERWRITER: 'Final Underwriter',
-} as const;
+const WORKFLOW_QUEUES = CANONICAL_WORKFLOW_QUEUES;
 
-/** Stored in `Application.currentState` when a Final Underwriter approves (queue stays Final Underwriter). */
-const FINAL_UNDERWRITER_APPROVED_STATE = 'Approved' as const;
+/** Stored when a Underwriter approves — both queue and state use this label. */
+const FINAL_UNDERWRITER_APPROVED_STATE = 'Underwriter Approved' as const;
+const FINAL_UNDERWRITER_APPROVED_QUEUE = 'Underwriter Approved' as const;
+const FINAL_APPROVAL_QUEUE = 'Final Approval' as const;
+const FINAL_APPROVAL_STATE = 'Final Approval' as const;
+
+/**
+ * Canonical labels persisted on `Application.underwriterAction` so the deal carries
+ * a record of the last action the Underwriter took (surfaced in lists / dashboards).
+ */
+const UNDERWRITER_ACTION_APPROVED = 'Approved By UW' as const;
+const UNDERWRITER_ACTION_DECLINED = 'Decline by UW' as const;
+const UNDERWRITER_ACTION_FINAL_APPROVED = 'Final Approved by UW' as const;
+
+/** Stored when Super Admin / FUW sends the approval email to the linked ISO. */
+const APPROVAL_SENT_STATE = APPLICATION_STATE_APPROVAL_SENT;
+const APPROVAL_SENT_QUEUE = APPLICATION_QUEUE_APPROVAL_SENT;
+
+const isUnderwriterApprovedToken = (value: unknown): boolean =>
+    normalizeQueueToken(value) === 'UNDERWRITER_APPROVED';
 
 const PENDING_QUEUES = [
     'New',
@@ -385,15 +424,20 @@ const PENDING_QUEUES = [
     'Contracts Out',
     'Review',
     'Underwriting',
-    WORKFLOW_QUEUES.UNDERWRITER,
+    WORKFLOW_QUEUES.SCRUBBING,
     'Final Review',
-    WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+    WORKFLOW_QUEUES.UNDERWRITER,
 ];
 
 type WorkflowTransition = {
     queue: string;
-    state?: ApplicationState | typeof FINAL_UNDERWRITER_APPROVED_STATE;
-    action?: 'SEND_TO_UNDERWRITER' | 'SEND_TO_FINAL_UNDERWRITER' | 'APPROVED';
+    state?:
+        | ApplicationState
+        | typeof FINAL_UNDERWRITER_APPROVED_STATE
+        | typeof APPROVAL_SENT_STATE
+        | typeof FINAL_APPROVAL_STATE
+        | 'ISO Approved';
+    action?: 'SEND_TO_UNDERWRITER' | 'SEND_TO_FINAL_UNDERWRITER' | 'SEND_FOR_FINAL_APPROVAL' | 'APPROVED';
 };
 
 const normalizeQueueToken = (value: unknown): string => {
@@ -401,13 +445,13 @@ const normalizeQueueToken = (value: unknown): string => {
     return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
 };
 
-/** Clear exclusive underwriter claim when a deal enters or leaves the Underwriter queue. */
+/** Clear exclusive scrubbing claim when a deal enters or leaves the Scrubbing queue. */
 const patchClearUnderwriterClaimIfQueueChanged = (
     previousQueue: string | null | undefined,
     nextQueue: string | null | undefined,
 ): Pick<Prisma.ApplicationUpdateInput, 'claimedByUnderwriter' | 'claimedAt'> | undefined => {
-    const prevIs = normalizeQueueToken(previousQueue ?? '') === 'UNDERWRITER';
-    const nextIs = normalizeQueueToken(nextQueue ?? '') === 'UNDERWRITER';
+    const prevIs = normalizeQueueToken(previousQueue ?? '') === 'SCRUBBING';
+    const nextIs = normalizeQueueToken(nextQueue ?? '') === 'SCRUBBING';
     if (prevIs === nextIs) return undefined;
     return {
         claimedByUnderwriter: { disconnect: true },
@@ -415,33 +459,134 @@ const patchClearUnderwriterClaimIfQueueChanged = (
     };
 };
 
+const APPLICATION_USER_LITE_SELECT = {
+    id: true,
+    firstName: true,
+    lastName: true,
+    email: true,
+} as const;
+
+const APPLICATION_DETAIL_INCLUDE = {
+    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+    client: {
+        include: {
+            owners: {
+                orderBy: { sortOrder: 'asc' as const },
+            },
+        },
+    },
+    iso: true,
+    files: true,
+    claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+    approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+    assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+} as const satisfies Prisma.ApplicationInclude;
+
+const isUnderwriterApproverRole = (role?: string | null): boolean => {
+    const normalizedRole = String(role || '')
+        .toUpperCase()
+        .replace(/-/g, '_');
+    return normalizedRole === 'UNDERWRITER' || normalizedRole === 'SCRUBBING';
+};
+
+/** Resolve who should be credited as the approving underwriter (not Super Admin / Operations). */
+const resolveUnderwriterApproverId = (
+    authUser: AuthenticatedUser | null | undefined,
+    application: {
+        assignedUnderwriterId?: string | null;
+        claimedByUnderwriterId?: string | null;
+        approvedByUnderwriterId?: string | null;
+    },
+): string | undefined => {
+    const actorId = authUser?.id;
+    if (!actorId) return undefined;
+
+    if (isUnderwriterApproverRole(authUser?.role)) {
+        return actorId;
+    }
+
+    const assignedId = String(application.assignedUnderwriterId ?? '').trim();
+    if (assignedId) return assignedId;
+
+    const claimedId = String(application.claimedByUnderwriterId ?? '').trim();
+    if (claimedId) return claimedId;
+
+    const existingId = String(application.approvedByUnderwriterId ?? '').trim();
+    if (existingId) return undefined;
+
+    return undefined;
+};
+
+/** Record which underwriter approved the deal (queue/state → Underwriter Approved). */
+const patchRecordUnderwriterApproval = (
+    authUser: AuthenticatedUser | null | undefined,
+    application: {
+        assignedUnderwriterId?: string | null;
+        claimedByUnderwriterId?: string | null;
+        approvedByUnderwriterId?: string | null;
+    },
+): Pick<Prisma.ApplicationUpdateInput, 'approvedByUnderwriter' | 'approvedAt' | 'underwriterAction'> | undefined => {
+    const approverId = resolveUnderwriterApproverId(authUser, application);
+    if (!approverId) return undefined;
+    return {
+        approvedByUnderwriter: { connect: { id: approverId } },
+        approvedAt: new Date(),
+        underwriterAction: UNDERWRITER_ACTION_APPROVED,
+    };
+};
+
+const shouldRecordUnderwriterApproval = (
+    queue: string | null | undefined,
+    state?: string | null | undefined,
+): boolean =>
+    isUnderwriterApprovedToken(queue) ||
+    isUnderwriterApprovedToken(state) ||
+    (typeof state === 'string' && state.trim().toLowerCase() === 'approved');
+
 const resolveWorkflowQueueTransition = (targetQueue: string, actorRole?: string | null): WorkflowTransition => {
     const normalizedQueue = normalizeQueueToken(targetQueue);
     const normalizedRole = normalizeQueueToken(actorRole || '');
 
-    const isUnderwriterTarget = normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'UNDERWRITER';
+    const isUnderwriterTarget = normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'SCRUBBING';
     if (isUnderwriterTarget) {
         return {
-            queue: WORKFLOW_QUEUES.UNDERWRITER,
+            queue: WORKFLOW_QUEUES.SCRUBBING,
             state: ApplicationState.IN_PROGRESS,
             action: 'SEND_TO_UNDERWRITER',
         };
     }
 
-    const isFinalUnderwriterTarget = normalizedQueue === 'FINAL_REVIEW' || normalizedQueue === 'FINAL_UNDERWRITER';
+    const isFinalUnderwriterTarget = normalizedQueue === 'FINAL_REVIEW' || normalizedQueue === 'UNDERWRITER';
     if (isFinalUnderwriterTarget) {
         return {
-            queue: WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+            queue: WORKFLOW_QUEUES.UNDERWRITER,
             state: ApplicationState.IN_PROGRESS,
             action: 'SEND_TO_FINAL_UNDERWRITER',
         };
     }
 
-    const isFinalUnderwriterActor =
-        normalizedRole === 'FINAL_UNDERWRITER' || normalizedRole === 'FINALUNDERWRITER';
-    if (normalizedQueue === 'APPROVED' && isFinalUnderwriterActor) {
+    if (normalizedQueue === 'FINAL_APPROVAL') {
         return {
-            queue: WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+            queue: FINAL_APPROVAL_QUEUE,
+            state: FINAL_APPROVAL_STATE,
+            action: 'SEND_FOR_FINAL_APPROVAL',
+        };
+    }
+
+    const isFinalUnderwriterActor =
+        normalizedRole === 'UNDERWRITER' ||
+        normalizedRole === 'FINALUNDERWRITER' ||
+        normalizedRole === 'SUPER_ADMIN' ||
+        normalizedRole === 'ADMIN' ||
+        normalizedRole === 'OPERATIONS';
+    if (
+        (normalizedQueue === 'APPROVED' || normalizedQueue === 'UNDERWRITER_APPROVED') &&
+        isFinalUnderwriterActor
+    ) {
+        return {
+            queue: FINAL_UNDERWRITER_APPROVED_QUEUE,
             state: FINAL_UNDERWRITER_APPROVED_STATE,
             action: 'APPROVED',
         };
@@ -468,6 +613,25 @@ const resolveWorkflowQueueTransition = (targetQueue: string, actorRole?: string 
         return { queue: 'Funded', state: ApplicationState.FUNDED };
     }
 
+    if (normalizedQueue === 'APPROVAL_SENT') {
+        return { queue: APPROVAL_SENT_QUEUE, state: APPROVAL_SENT_STATE };
+    }
+    if (normalizedQueue === 'ISO_APPROVED' || normalizedQueue === 'APPROVED_BY_ISO') {
+        return { queue: 'ISO Approved', state: 'ISO Approved' };
+    }
+
+    if (normalizedQueue === 'UNDERWRITER_APPROVED') {
+        return {
+            queue: FINAL_UNDERWRITER_APPROVED_QUEUE,
+            state: FINAL_UNDERWRITER_APPROVED_STATE,
+            action: 'APPROVED',
+        };
+    }
+
+    if (normalizedQueue === 'CONTRACT_PENDING' || normalizedQueue === 'CONTRACTPENDING') {
+        return { queue: 'Contract Pending', state: ApplicationState.CONTRACT_PENDING };
+    }
+
     return { queue: targetQueue };
 };
 
@@ -483,6 +647,25 @@ const toWorkflowApiState = (queue: string | null | undefined, state: Application
     if (normalizedQueue === 'DISBURSEMENT') return 'DISBURSEMENT';
     if (normalizedQueue === 'FUNDED') return 'FUNDED';
 
+    if (normalizedQueue === 'UNDERWRITER_APPROVED') {
+        if (normalizeQueueToken(rawState) === 'FINAL_APPROVAL') {
+            return FINAL_APPROVAL_STATE;
+        }
+        return FINAL_UNDERWRITER_APPROVED_STATE;
+    }
+
+    if (normalizedQueue === 'FINAL_APPROVAL') {
+        return FINAL_APPROVAL_STATE;
+    }
+
+    if (normalizedQueue === 'APPROVAL_SENT') {
+        return APPROVAL_SENT_STATE;
+    }
+
+    if (normalizedQueue === 'ISO_APPROVED' || normalizedQueue === 'APPROVED_BY_ISO') {
+        return 'ISO Approved';
+    }
+
     if (normalizedQueue === 'APPROVED') {
         if (state === ApplicationState.COMPLETED) return mappedState;
         return 'Approved';
@@ -490,13 +673,19 @@ const toWorkflowApiState = (queue: string | null | undefined, state: Application
 
     if (normalizedQueue === 'AGENT' || normalizedQueue === 'NEW') return 'Pending';
 
-    if (normalizedQueue === 'UNDERWRITER' || normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'REVIEW') {
+    if (normalizedQueue === 'SCRUBBING' || normalizedQueue === 'UNDERWRITING' || normalizedQueue === 'REVIEW') {
         return 'In Progress';
     }
 
-    if (normalizedQueue === 'FINAL_UNDERWRITER' || normalizedQueue === 'FINAL_REVIEW') {
+    if (normalizedQueue === 'UNDERWRITER' || normalizedQueue === 'FINAL_REVIEW') {
         const stateLower = typeof state === 'string' ? state.trim().toLowerCase() : '';
-        if (state === ApplicationState.COMPLETED || stateLower === 'approved') return 'Approved';
+        if (
+            state === ApplicationState.COMPLETED ||
+            stateLower === 'approved' ||
+            isUnderwriterApprovedToken(state)
+        ) {
+            return FINAL_UNDERWRITER_APPROVED_STATE;
+        }
         return 'In Progress';
     }
 
@@ -533,8 +722,8 @@ const normalizeWorkflowQueueKeyForDisbursement = (queue: string | null | undefin
 
 const QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT = new Set([
     'agent',
+    'scrubbing',
     'underwriter',
-    'finalunderwriter',
     'contracted',
     'contractout',
     'contractsout',
@@ -570,6 +759,11 @@ export const mapApplicationToApi = (app: any) => {
         claimedByUnderwriterId,
         claimedAt,
         claimedByUnderwriter,
+        approvedByUnderwriterId,
+        approvedAt,
+        approvedByUnderwriter,
+        assignedUnderwriterId,
+        assignedUnderwriter,
         ...rest
     } = app;
 
@@ -718,6 +912,16 @@ export const mapApplicationToApi = (app: any) => {
                     ? String(claimedAt)
                     : undefined,
         claimedByUnderwriter: mapUserLite(claimedByUnderwriter),
+        approvedByUnderwriterId: approvedByUnderwriterId ?? undefined,
+        approvedAt:
+            approvedAt instanceof Date
+                ? approvedAt.toISOString()
+                : approvedAt
+                    ? String(approvedAt)
+                    : undefined,
+        approvedByUnderwriter: mapUserLite(approvedByUnderwriter),
+        assignedUnderwriterId: assignedUnderwriterId ?? undefined,
+        assignedUnderwriter: mapUserLite(assignedUnderwriter),
         client: mappedClient,
         iso: iso
             ? {
@@ -752,14 +956,14 @@ const blockIfUnderwriterUnclaimedDeal = (
     return true;
 };
 
-/** PUT body only sets `isoId` — allowed on overview without an underwriter claim. */
+/** PUT body only sets `isoId` — allowed on overview without an scrubbing claim. */
 const isApplicationIsoLinkOnlyBody = (body: Record<string, unknown>): boolean => {
     const keys = Object.keys(body ?? {}).filter((k) => body[k] !== undefined);
     return keys.length === 1 && keys[0] === 'isoId';
 };
 
 /**
- * Returns 403 when a workflow role (Agent/Underwriter/Final Underwriter) tries to
+ * Returns 403 when a workflow role (Agent/Scrubbing/Underwriter) tries to
  * mutate an application that has advanced past their stage. Non-workflow roles
  * (Operations/Admin/Super Admin/Accountant/etc.) always pass through.
  *
@@ -1319,6 +1523,9 @@ class ApplicationController {
                         .trim()
                         .toLowerCase()
                     : '';
+            const underwriterPipelineParam = normalizeUnderwriterPipelineParam(
+                req.query.underwriterPipeline,
+            );
             const authRoleUpper = authUser?.role
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
@@ -1412,6 +1619,19 @@ class ApplicationController {
                 let uwBucketOpts: ApplicationStatsBucketWhereOptions | undefined;
                 if (
                     (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
+                    authRoleUpper === 'SCRUBBING' &&
+                    authUser?.id
+                ) {
+                    uwBucketOpts = {
+                        uwInbox: {
+                            tab: uwClaimNorm as 'mine' | 'unclaimed',
+                            viewerId: authUser.id,
+                            stage: 'scrubbing',
+                        },
+                    };
+                }
+                if (
+                    (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
                     authRoleUpper === 'UNDERWRITER' &&
                     authUser?.id
                 ) {
@@ -1419,6 +1639,7 @@ class ApplicationController {
                         uwInbox: {
                             tab: uwClaimNorm as 'mine' | 'unclaimed',
                             viewerId: authUser.id,
+                            stage: 'underwriter',
                         },
                     };
                 }
@@ -1483,8 +1704,28 @@ class ApplicationController {
             }
 
             if (
-                (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
+                underwriterPipelineParam &&
                 authRoleUpper === 'UNDERWRITER' &&
+                authUser?.id
+            ) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                where = {
+                    ...where,
+                    AND: [
+                        ...existingAnd,
+                        buildUnderwriterPipelineWhere(
+                            underwriterPipelineParam,
+                            authUser.id,
+                        ),
+                    ],
+                };
+            } else if (
+                (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
+                authRoleUpper === 'SCRUBBING' &&
                 authUser?.id
             ) {
                 const existingAnd = where.AND
@@ -1500,8 +1741,75 @@ class ApplicationController {
                     ...where,
                     AND: [
                         ...existingAnd,
+                        { currentQueue: WORKFLOW_QUEUES.SCRUBBING },
+                        claimFilter,
+                    ],
+                };
+            } else if (
+                (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
+                authRoleUpper === 'UNDERWRITER' &&
+                authUser?.id
+            ) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                const claimFilter: Prisma.ApplicationWhereInput =
+                    uwClaimNorm === 'unclaimed'
+                        ? { assignedUnderwriterId: null }
+                        : { assignedUnderwriterId: authUser.id };
+                where = {
+                    ...where,
+                    AND: [
+                        ...existingAnd,
                         { currentQueue: WORKFLOW_QUEUES.UNDERWRITER },
                         claimFilter,
+                    ],
+                };
+            }
+
+            if (
+                authRoleUpper === 'UNDERWRITER' &&
+                authUser?.id &&
+                !underwriterPipelineParam
+            ) {
+                const existingAnd = where.AND
+                    ? Array.isArray(where.AND)
+                        ? where.AND
+                        : [where.AND]
+                    : [];
+                where = {
+                    ...where,
+                    AND: [
+                        ...existingAnd,
+                        {
+                            OR: [
+                                {
+                                    NOT: {
+                                        currentQueue: {
+                                            equals: FINAL_APPROVAL_QUEUE,
+                                            mode: 'insensitive',
+                                        },
+                                    },
+                                },
+                                { assignedUnderwriterId: authUser.id },
+                                {
+                                    AND: [
+                                        { assignedUnderwriterId: null },
+                                        { approvedByUnderwriterId: authUser.id },
+                                    ],
+                                },
+                            ],
+                        },
+                        // A deal assigned to a specific Underwriter is private to them.
+                        // Unassigned deals stay visible to every Underwriter (legacy behavior).
+                        {
+                            OR: [
+                                { assignedUnderwriterId: null },
+                                { assignedUnderwriterId: authUser.id },
+                            ],
+                        },
                     ],
                 };
             }
@@ -1561,7 +1869,21 @@ class ApplicationController {
                     },
                     iso: { select: { id: true, name: true, email: true, phone: true } },
                     claimedByUnderwriter: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    assignedUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    approvedByUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    termsOffers: {
+                        orderBy: { updatedAt: 'desc' },
+                        take: 1,
+                        select: { approvedAmount: true },
+                    },
+                    OfferDecision: {
+                        select: { offer: true, decision: true },
                     },
                 }
                 : {
@@ -1571,7 +1893,13 @@ class ApplicationController {
                     client: true,
                     iso: true,
                     claimedByUnderwriter: {
-                        select: { id: true, firstName: true, lastName: true, email: true },
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    assignedUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
+                    },
+                    approvedByUnderwriter: {
+                        select: APPLICATION_USER_LITE_SELECT,
                     },
                     isoApplicationPayouts: true,
                     termsOffers: {
@@ -1677,7 +2005,7 @@ class ApplicationController {
      * Get applications by agent ID (referringAgentId).
      * - Frontend may send agentId in query (e.g. ?agentId=uuid).
      * - If logged-in user is AGENT: agentId is ignored and only their own applications are returned.
-     * - If logged-in user is ADMIN/UNDERWRITER/FINAL_UNDERWRITER/ACCOUNTANT: applications for the given agentId are returned.
+     * - If logged-in user is ADMIN/SCRUBBING/UNDERWRITER/ACCOUNTANT: applications for the given agentId are returned.
      */
     async getApplicationsByAgentId(req: Request, res: Response) {
         try {
@@ -1806,10 +2134,10 @@ class ApplicationController {
                     .trim()
                     .toUpperCase()
                     .replace(/-/g, '_');
-                if (roleUpper !== 'UNDERWRITER') {
+                if (roleUpper !== 'SCRUBBING' && roleUpper !== 'UNDERWRITER') {
                     return res.status(403).json({
                         success: false,
-                        message: 'underwriterClaim stats are only available for the Underwriter role',
+                        message: 'underwriterClaim stats are only available for the Scrubbing or Underwriter role',
                     });
                 }
                 if (!authUser?.id) {
@@ -1855,6 +2183,42 @@ class ApplicationController {
             });
         } catch (error) {
             console.error('Get application stats error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Underwriter sidebar: per-pipeline deal counts scoped to the logged-in underwriter. */
+    async getUnderwriterPipelineCounts(req: Request, res: Response) {
+        try {
+            const authUser = getAuthenticatedUser(req);
+            if (!authUser?.id) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Unauthorized',
+                });
+            }
+            const roleUpper = String(authUser.role ?? '')
+                .trim()
+                .toUpperCase()
+                .replace(/-/g, '_');
+            if (roleUpper !== 'UNDERWRITER') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Underwriter pipeline counts are only available for the Underwriter role',
+                });
+            }
+
+            const counts = await countUnderwriterPipelineDeals(prisma, authUser.id);
+            res.set('Cache-Control', 'private, max-age=5');
+            return res.status(200).json({
+                success: true,
+                data: counts,
+            });
+        } catch (error) {
+            console.error('Get underwriter pipeline counts error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',
@@ -2002,8 +2366,8 @@ class ApplicationController {
             ] = await Promise.all([
                 prisma.user.count(),
                 prisma.user.count({ where: { role: 'AGENT' } }),
+                prisma.user.count({ where: { role: 'SCRUBBING' } }),
                 prisma.user.count({ where: { role: 'UNDERWRITER' } }),
-                prisma.user.count({ where: { role: 'FINAL_UNDERWRITER' } }),
                 prisma.user.count({ where: { role: 'OPERATIONS' } }),
                 prisma.user.count({ where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] } } }),
                 prisma.client.count(),
@@ -2152,9 +2516,9 @@ class ApplicationController {
                     WORKFLOW_QUEUES.AGENT,
                     'Review',
                     'Underwriting',
-                    WORKFLOW_QUEUES.UNDERWRITER,
+                    WORKFLOW_QUEUES.SCRUBBING,
                     'Final Review',
-                    WORKFLOW_QUEUES.FINAL_UNDERWRITER,
+                    WORKFLOW_QUEUES.UNDERWRITER,
                 ];
                 const waitingQueues = ['On Hold', 'Waiting for Documents'];
                 const decisionQueues = ['Approved', 'Declined', 'Contracted', 'Contract Out', 'Contracts Out'];
@@ -2280,21 +2644,7 @@ class ApplicationController {
                 });
             }
 
-            const applicationInclude = {
-                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-                client: {
-                    include: {
-                        owners: {
-                            orderBy: { sortOrder: 'asc' as const },
-                        },
-                    },
-                },
-                iso: true,
-                files: true,
-                claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
-            } as const;
+            const applicationInclude = APPLICATION_DETAIL_INCLUDE;
 
             // OPERATIONS / SUPER_ADMIN can fetch any application directly, bypassing visibility filters
             if (authUser?.role === 'OPERATIONS' || authUser?.role === 'SUPER_ADMIN') {
@@ -2381,13 +2731,7 @@ class ApplicationController {
 
                 const applicationRecord = await prisma.application.findUnique({
                     where: { applicationId: numericId },
-                    include: {
-                        referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                        client: true,
-                        iso: true,
-                        files: true,
-                    },
+                    include: APPLICATION_DETAIL_INCLUDE,
                 });
 
                 if (!applicationRecord) {
@@ -2413,13 +2757,7 @@ class ApplicationController {
             const { application: applicationRecord, forbidden } = await getApplicationForUser(
                 { applicationId: Number(applicationId) },
                 authUser,
-                {
-                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
-                    client: true,
-                    iso: true,
-                    files: true,
-                }
+                APPLICATION_DETAIL_INCLUDE,
             );
 
             if (forbidden) {
@@ -2552,6 +2890,9 @@ class ApplicationController {
                 status,
                 isoId,
                 commissionPercentage,
+                underwriterCommissionPercentage,
+                commissionAmount,
+                underwriterCommissionAmount,
                 category,
             } = req.body;
             const authUser = getAuthenticatedUser(req);
@@ -2603,13 +2944,13 @@ class ApplicationController {
                         message: 'Client not found',
                     });
                 }
-                data.clientId = clientRecord.id;
+                data.client = { connect: { id: clientRecord.id } };
             }
 
             if (isoId !== undefined) {
                 const trimmedIsoId = String(isoId ?? '').trim();
                 if (!trimmedIsoId) {
-                    data.isoId = null;
+                    data.iso = { disconnect: true };
                     data.commissionPercentage = 0;
                 } else {
                     const isoRecord = await (prisma as any).iso.findUnique({
@@ -2622,7 +2963,7 @@ class ApplicationController {
                             message: 'ISO not found',
                         });
                     }
-                    data.isoId = trimmedIsoId;
+                    data.iso = { connect: { id: trimmedIsoId } };
                     data.commissionPercentage = Number(isoRecord.commissionPercentage ?? 0);
                 }
             }
@@ -2652,11 +2993,13 @@ class ApplicationController {
                         }
                     }
                 } else {
-                    data.currentQueue = currentQueue;
+                    const normalizedQueue =
+                        normalizeStoredWorkflowQueue(String(currentQueue)) ?? String(currentQueue);
+                    data.currentQueue = normalizedQueue;
                     if (currentState === undefined) {
-                        if (currentQueue === 'Final') {
+                        if (normalizedQueue === 'Final') {
                             data.currentState = ApplicationState.FINAL;
-                        } else if (currentQueue === 'Funding Call') {
+                        } else if (normalizedQueue === 'Funding Call') {
                             data.currentState = ApplicationState.FUNDING_CALL;
                         }
                     }
@@ -2664,13 +3007,18 @@ class ApplicationController {
             }
             if (currentState !== undefined) {
                 const trimmedState = String(currentState).trim();
-                const queueForState =
+                const queueForStateRaw =
                     currentQueue !== undefined ? String(currentQueue) : String(application.currentQueue || '');
-                const stateIsApproved = trimmedState.toLowerCase() === 'approved';
+                const queueForState =
+                    normalizeStoredWorkflowQueue(queueForStateRaw) ?? queueForStateRaw;
+                const stateIsApproved =
+                    trimmedState.toLowerCase() === 'approved' ||
+                    isUnderwriterApprovedToken(trimmedState);
                 const queueIsFinalUw =
-                    normalizeQueueToken(queueForState) === 'FINAL_UNDERWRITER';
+                    normalizeQueueToken(queueForState) === 'UNDERWRITER';
                 if (stateIsApproved && queueIsFinalUw) {
                     data.currentState = FINAL_UNDERWRITER_APPROVED_STATE;
+                    data.currentQueue = FINAL_UNDERWRITER_APPROVED_QUEUE;
                 } else if (verbatimApplicationStateByInput[trimmedState] !== undefined) {
                     data.currentState = verbatimApplicationStateByInput[trimmedState];
                 } else {
@@ -2692,28 +3040,28 @@ class ApplicationController {
                 const st = String(status).trim().toLowerCase();
                 if (st === 'approved') {
                     const canFuApprove = [
-                        'FINAL_UNDERWRITER',
+                        'UNDERWRITER',
                         'SUPER_ADMIN',
                         'ADMIN',
                         'OPERATIONS',
                     ].includes(roleUpper);
                     if (canFuApprove) {
-                        data.currentQueue = WORKFLOW_QUEUES.FINAL_UNDERWRITER;
+                        data.currentQueue = FINAL_UNDERWRITER_APPROVED_QUEUE;
                         data.currentState = FINAL_UNDERWRITER_APPROVED_STATE;
                     }
-                } else if (st === 'sent to final underwriter') {
+                } else if (st === 'sent to final scrubbing' || st === 'sent to underwriter') {
                     const canSendToFu = [
                         'AGENT',
-                        'UNDERWRITER',
+                        'SCRUBBING',
                         'ADMIN',
                         'SUPER_ADMIN',
                         'OPERATIONS',
-                        'FINAL_UNDERWRITER',
+                        'UNDERWRITER',
                         'ACCOUNTANT',
                         'ACCOUNTS',
                     ].includes(roleUpper);
                     if (canSendToFu) {
-                        data.currentQueue = WORKFLOW_QUEUES.FINAL_UNDERWRITER;
+                        data.currentQueue = WORKFLOW_QUEUES.UNDERWRITER;
                         data.currentState = ApplicationState.IN_PROGRESS;
                     }
                 }
@@ -2738,6 +3086,64 @@ class ApplicationController {
                     });
                 }
                 data.commissionPercentage = raw;
+            }
+
+            if (underwriterCommissionPercentage !== undefined) {
+                const raw =
+                    typeof underwriterCommissionPercentage === 'number'
+                        ? underwriterCommissionPercentage
+                        : parseFloat(
+                              String(underwriterCommissionPercentage).replace(/[^0-9.-]+/g, ''),
+                          );
+                if (Number.isNaN(raw) || raw < 0 || raw > 100) {
+                    return res.status(400).json({
+                        success: false,
+                        message:
+                            'underwriterCommissionPercentage must be a number between 0 and 100',
+                    });
+                }
+                data.underwriterCommissionPercentage = raw;
+            }
+
+            if (commissionAmount !== undefined) {
+                const commissionAmountNum =
+                    commissionAmount === '' || commissionAmount === null
+                        ? null
+                        : typeof commissionAmount === 'number'
+                          ? commissionAmount
+                          : parseFloat(String(commissionAmount).replace(/[^0-9.-]+/g, ''));
+                if (
+                    commissionAmountNum !== null &&
+                    (Number.isNaN(commissionAmountNum) || commissionAmountNum < 0)
+                ) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'commissionAmount must be a non-negative number',
+                    });
+                }
+                data.commissionAmount = commissionAmountNum;
+            }
+
+            if (underwriterCommissionAmount !== undefined) {
+                const underwriterCommissionAmountNum =
+                    underwriterCommissionAmount === '' || underwriterCommissionAmount === null
+                        ? null
+                        : typeof underwriterCommissionAmount === 'number'
+                          ? underwriterCommissionAmount
+                          : parseFloat(
+                                String(underwriterCommissionAmount).replace(/[^0-9.-]+/g, ''),
+                            );
+                if (
+                    underwriterCommissionAmountNum !== null &&
+                    (Number.isNaN(underwriterCommissionAmountNum) ||
+                        underwriterCommissionAmountNum < 0)
+                ) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'underwriterCommissionAmount must be a non-negative number',
+                    });
+                }
+                data.underwriterCommissionAmount = underwriterCommissionAmountNum;
             }
 
             if (category !== undefined) {
@@ -2779,11 +3185,27 @@ class ApplicationController {
                 }
             }
 
+            const authUserForUpdate = getAuthenticatedUser(req);
+            const resolvedNextQueue =
+                data.currentQueue !== undefined
+                    ? String(data.currentQueue)
+                    : String(application.currentQueue || '');
+            const resolvedNextState =
+                data.currentState !== undefined
+                    ? String(data.currentState)
+                    : String(application.currentState || '');
+            if (shouldRecordUnderwriterApproval(resolvedNextQueue, resolvedNextState)) {
+                Object.assign(
+                    data,
+                    patchRecordUnderwriterApproval(authUserForUpdate, application),
+                );
+            }
+
             const previousQueue = application.currentQueue;
             const previousState = application.currentState;
+            const statusNorm = status !== undefined ? String(status).trim().toLowerCase() : '';
             const statusSentToFu =
-                status !== undefined &&
-                String(status).trim().toLowerCase() === 'sent to final underwriter';
+                statusNorm === 'sent to final scrubbing' || statusNorm === 'sent to underwriter';
 
             const updatedRecord = await prisma.application.update({
                 where: whereClause,
@@ -2795,7 +3217,8 @@ class ApplicationController {
                     client: true,
                     iso: true,
                     files: true,
-                    claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
                 },
             });
 
@@ -2844,10 +3267,17 @@ class ApplicationController {
                 'New',
                 'Review',
                 'Underwriting',
-                'Underwriter',
+                'Scrubbing',
                 'Final Review',
                 'Final Underwriter',
+                'Underwriter',
+                'Underwriter Approved',
+                'Final Approval',
+                'Approval Sent',
+                'ISO Approved',
                 'Approved',
+                'Contract Pending',
+                'Contract_Pending',
                 'Declined',
                 'On Hold',
                 'Contracted',
@@ -2908,6 +3338,30 @@ class ApplicationController {
             if (claimClear) {
                 Object.assign(updateData, claimClear);
             }
+            if (
+                transition.action === 'APPROVED' ||
+                shouldRecordUnderwriterApproval(transition.queue, transition.state)
+            ) {
+                Object.assign(
+                    updateData,
+                    patchRecordUnderwriterApproval(authUser, existingApplication),
+                );
+            }
+
+            // Final approval: Underwriter signs off the deal out of the Final Approval
+            // stage and into Contract Pending. Persist the action for the deal record.
+            const movingToContractPending =
+                normalizeQueueToken(transition.queue) === 'CONTRACT_PENDING';
+            const previousWasFinalApproval =
+                normalizeQueueToken(previousQueue) === 'FINAL_APPROVAL' ||
+                normalizeQueueToken(existingApplication.currentState) === 'FINAL_APPROVAL';
+            if (
+                movingToContractPending &&
+                previousWasFinalApproval &&
+                isUnderwriterApproverRole(authUser?.role)
+            ) {
+                updateData.underwriterAction = UNDERWRITER_ACTION_FINAL_APPROVED;
+            }
 
             const applicationRecord = await prisma.application.update({
                 where: whereClause,
@@ -2919,7 +3373,8 @@ class ApplicationController {
                     client: true,
                     iso: true,
                     files: true,
-                    claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
                 },
             });
 
@@ -2948,10 +3403,10 @@ class ApplicationController {
 
                 if (transition.action === 'SEND_TO_UNDERWRITER' && roleUpper === 'AGENT') {
                     actionType = 'SEND_TO_UNDERWRITER';
-                    description = `${roleLabel} ${actorName}`.trim() + ' sent the application to Underwriter.';
-                } else if (transition.action === 'SEND_TO_FINAL_UNDERWRITER' && roleUpper === 'UNDERWRITER') {
+                    description = `${roleLabel} ${actorName}`.trim() + ' sent the application to Scrubbing.';
+                } else if (transition.action === 'SEND_TO_FINAL_UNDERWRITER' && roleUpper === 'SCRUBBING') {
                     actionType = 'SEND_TO_FINAL_UNDERWRITER';
-                    description = `${roleLabel} ${actorName}`.trim() + ' forwarded the application to Final Underwriter.';
+                    description = `${roleLabel} ${actorName}`.trim() + ' sent a recommend request for approval.';
                 } else if (transition.action === 'APPROVED') {
                     actionType = 'APPROVED';
                     description = `${roleLabel} ${actorName}`.trim() + ' approved the application.';
@@ -2987,10 +3442,10 @@ class ApplicationController {
                     transitionAction: transition.action ?? 'QUEUE_CHANGED',
                 });
 
-                // Best-effort email when Agent sends to Underwriter (unchanged behaviour)
+                // Best-effort email when Agent sends to Scrubbing (unchanged behaviour)
                 const upperQueue = normalizeQueueToken(applicationRecord.currentQueue);
                 const roleUpper = String(authUserForNotif?.role || '').toUpperCase();
-                if (upperQueue === 'UNDERWRITER' && roleUpper === 'AGENT') {
+                if (upperQueue === 'SCRUBBING' && roleUpper === 'AGENT') {
                     const attributedSenderId = await resolveApplicationAttributedUserId(
                         req,
                         applicationRecord,
@@ -3005,7 +3460,7 @@ class ApplicationController {
                     const appIdNumber = (applicationRecord as any)?.applicationId ?? '';
 
                     const underwriters = await prisma.user.findMany({
-                        where: { role: 'UNDERWRITER', isActive: true },
+                        where: { role: 'SCRUBBING', isActive: true },
                         select: { id: true, email: true, firstName: true, lastName: true },
                     });
 
@@ -3069,7 +3524,7 @@ class ApplicationController {
             const { id } = req.params;
             const authUser = getAuthenticatedUser(req);
             const roleUpper = authUser?.role ? String(authUser.role).toUpperCase().replace(/-/g, '_') : '';
-            if (roleUpper !== 'UNDERWRITER') {
+            if (roleUpper !== 'SCRUBBING') {
                 return res.status(403).json({
                     success: false,
                     message: 'Only underwriters can claim deals',
@@ -3091,7 +3546,8 @@ class ApplicationController {
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
                 client: true,
                 iso: true,
-                claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
             };
 
             const { application, forbidden } = await getApplicationForUser(whereClause, authUser, claimInclude);
@@ -3103,10 +3559,10 @@ class ApplicationController {
                 return res.status(404).json({ success: false, message: 'Application not found' });
             }
 
-            if (normalizeQueueToken(application.currentQueue) !== 'UNDERWRITER') {
+            if (normalizeQueueToken(application.currentQueue) !== 'SCRUBBING') {
                 return res.status(400).json({
                     success: false,
-                    message: 'Only applications in the Underwriter queue can be claimed',
+                    message: 'Only applications in the Scrubbing queue can be claimed',
                 });
             }
 
@@ -3125,7 +3581,7 @@ class ApplicationController {
             const updated = await prisma.application.updateMany({
                 where: {
                     id: application.id,
-                    currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
                     claimedByUnderwriterId: null,
                 },
                 data: {
@@ -3148,7 +3604,134 @@ class ApplicationController {
                 }
                 return res.status(409).json({
                     success: false,
-                    message: 'This deal was claimed by another underwriter',
+                    message: 'This deal was claimed by another scrubbing',
+                });
+            }
+
+            const refreshed = await prisma.application.findUnique({
+                where: { id: application.id },
+                include: claimInclude,
+            });
+            if (!refreshed) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            try {
+                const actorName = String((req as any).user?.name || '').trim() || 'Scrubbing';
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'UNDERWRITER_CLAIMED',
+                    actionDescription: `${actorName} claimed this deal for underwriting.`,
+                    previousStatus: `${application.currentQueue} / ${application.currentState}`,
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: { claimedByUnderwriterId: userId },
+                });
+            } catch (logErr) {
+                console.error('Failed to log scrubbing claim:', logErr);
+            }
+
+            return res.status(200).json({
+                success: true,
+                message: 'Deal claimed',
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Claim scrubbing deal error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    async claimFinalUnderwriterDeal(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role ? String(authUser.role).toUpperCase().replace(/-/g, '_') : '';
+            if (roleUpper !== 'UNDERWRITER') {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only underwriters can claim deals',
+                });
+            }
+            const userId = authUser?.id;
+            if (!userId) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const claimInclude: Prisma.ApplicationInclude = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, claimInclude);
+
+            if (forbidden) {
+                return res.status(403).json({ success: false, message: 'Forbidden' });
+            }
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            if (normalizeQueueToken(application.currentQueue) !== 'UNDERWRITER') {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Only applications in the Underwriter queue can be claimed',
+                });
+            }
+
+            const appRow = application as typeof application & {
+                assignedUnderwriterId?: string | null;
+            };
+
+            if (appRow.assignedUnderwriterId && appRow.assignedUnderwriterId === userId) {
+                return res.status(200).json({
+                    success: true,
+                    message: 'Already claimed',
+                    data: mapApplicationToApi(application),
+                });
+            }
+
+            const updated = await prisma.application.updateMany({
+                where: {
+                    id: application.id,
+                    currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
+                    assignedUnderwriterId: null,
+                },
+                data: {
+                    assignedUnderwriterId: userId,
+                },
+            });
+
+            if (updated.count === 0) {
+                const refreshedLost = await prisma.application.findUnique({
+                    where: { id: application.id },
+                    include: claimInclude,
+                });
+                if (refreshedLost?.assignedUnderwriterId === userId) {
+                    return res.status(200).json({
+                        success: true,
+                        message: 'Already claimed',
+                        data: mapApplicationToApi(refreshedLost),
+                    });
+                }
+                return res.status(409).json({
+                    success: false,
+                    message: 'This application was claimed by another underwriter',
                 });
             }
 
@@ -3167,18 +3750,20 @@ class ApplicationController {
                     user: authUser,
                     req,
                     actionType: 'UNDERWRITER_CLAIMED',
-                    actionDescription: `${actorName} claimed this deal for underwriting.`,
+                    actionDescription: `${actorName} claimed this application for review.`,
                     previousStatus: `${application.currentQueue} / ${application.currentState}`,
                     currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
-                    metadata: { claimedByUnderwriterId: userId },
+                    metadata: { assignedUnderwriterId: userId },
                 });
             } catch (logErr) {
                 console.error('Failed to log underwriter claim:', logErr);
             }
 
+            invalidateAllApplicationStatsCache();
+
             return res.status(200).json({
                 success: true,
-                message: 'Deal claimed',
+                message: 'Application claimed',
                 data: mapApplicationToApi(refreshed),
             });
         } catch (error) {
@@ -3201,7 +3786,7 @@ class ApplicationController {
             if (!allowedRoles.has(roleUpper)) {
                 return res.status(403).json({
                     success: false,
-                    message: 'Only admin can take back a deal from Underwriter',
+                    message: 'Only admin can take back a deal from Scrubbing',
                 });
             }
             const userId = authUser?.id;
@@ -3220,7 +3805,8 @@ class ApplicationController {
                 createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
                 client: true,
                 iso: true,
-                claimedByUnderwriter: { select: { id: true, firstName: true, lastName: true, email: true } },
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
             };
 
             const { application, forbidden } = await getApplicationForUser(whereClause, authUser, claimInclude);
@@ -3232,10 +3818,10 @@ class ApplicationController {
                 return res.status(404).json({ success: false, message: 'Application not found' });
             }
 
-            if (normalizeQueueToken(application.currentQueue) !== 'UNDERWRITER') {
+            if (normalizeQueueToken(application.currentQueue) !== 'SCRUBBING') {
                 return res.status(400).json({
                     success: false,
-                    message: 'Only applications in the Underwriter queue can be released to the queue',
+                    message: 'Only applications in the Scrubbing queue can be released to the queue',
                 });
             }
 
@@ -3246,14 +3832,14 @@ class ApplicationController {
             if (!claimedByUnderwriterId) {
                 return res.status(400).json({
                     success: false,
-                    message: 'This deal is not currently claimed by an underwriter',
+                    message: 'This deal is not currently claimed by an scrubbing',
                 });
             }
 
             await prisma.application.updateMany({
                 where: {
                     id: application.id,
-                    currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
                     claimedByUnderwriterId,
                 },
                 data: {
@@ -3271,18 +3857,18 @@ class ApplicationController {
             }
 
             try {
-                const actorName = String((req as any).user?.name || '').trim() || 'Underwriter';
+                const actorName = String((req as any).user?.name || '').trim() || 'Scrubbing';
                 await createApplicationActivityLog({
                     applicationId: refreshed.id,
                     user: authUser,
                     req,
                     actionType: 'UNDERWRITER_RELEASED',
-                    actionDescription: `${actorName} returned this deal to the underwriter queue.`,
+                    actionDescription: `${actorName} returned this deal to the scrubbing queue.`,
                     previousStatus: `${application.currentQueue} / ${application.currentState}`,
                     currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
                 });
             } catch (logErr) {
-                console.error('Failed to log underwriter release:', logErr);
+                console.error('Failed to log scrubbing release:', logErr);
             }
 
             return res.status(200).json({
@@ -3291,7 +3877,269 @@ class ApplicationController {
                 data: mapApplicationToApi(refreshed),
             });
         } catch (error) {
-            console.error('Release underwriter deal error:', error);
+            console.error('Release scrubbing deal error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Super Admin / Scrubbing: assign application to a specific Underwriter and notify them in-app. */
+    async assignApplicationToUnderwriter(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const { underwriterId } = req.body ?? {};
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            const canAssign =
+                roleUpper === 'SUPER_ADMIN' ||
+                roleUpper === 'SUPERADMIN' ||
+                roleUpper === 'SCRUBBING';
+            if (!canAssign) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You are not allowed to assign applications to an Underwriter',
+                });
+            }
+            const actorId = authUser?.id;
+            if (!actorId) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+            const targetUnderwriterId = String(underwriterId ?? '').trim();
+            if (!targetUnderwriterId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Underwriter is required',
+                });
+            }
+
+            const targetUser = await prisma.user.findFirst({
+                where: {
+                    id: targetUnderwriterId,
+                    role: 'UNDERWRITER',
+                    isActive: true,
+                },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            });
+            if (!targetUser) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Selected Underwriter was not found or is inactive',
+                });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const include = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            } satisfies Prisma.ApplicationInclude;
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, include);
+
+            if (forbidden) {
+                return res.status(403).json({ success: false, message: 'Forbidden' });
+            }
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            const previousQueue = application.currentQueue;
+            const previousState = application.currentState;
+            const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+            const targetName =
+                `${targetUser.firstName || ''} ${targetUser.lastName || ''}`.trim() ||
+                targetUser.email ||
+                'Underwriter';
+
+            const refreshed = await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    currentQueue: WORKFLOW_QUEUES.UNDERWRITER,
+                    currentState: 'Sent to Underwriter',
+                    assignedUnderwriter: { connect: { id: targetUnderwriterId } },
+                },
+                include,
+            });
+
+            try {
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'QUEUE_CHANGED',
+                    actionDescription: `${actorName} assigned application to Underwriter ${targetName}.`,
+                    previousStatus: `${previousQueue} / ${previousState}`,
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: { assignedUnderwriterId: targetUnderwriterId },
+                });
+            } catch (logErr) {
+                console.error('Failed to log underwriter assignment:', logErr);
+            }
+
+            try {
+                await notifyAdminAssignedApplicationToUnderwriter({
+                    application: refreshed as any,
+                    recipientId: targetUnderwriterId,
+                    actorId: String(actorId),
+                    actorName,
+                });
+            } catch (notifErr) {
+                console.error('Failed to notify assigned Underwriter:', notifErr);
+            }
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: 'Application assigned to Underwriter',
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Assign application to Underwriter error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Super Admin / Operations: send an Underwriter Approved deal back to the approving underwriter for final approval. */
+    async sendForFinalUnderwriterApproval(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            if (
+                roleUpper !== 'SUPER_ADMIN' &&
+                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'OPERATIONS'
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        'Only Super Admin or Operations can send applications for final Underwriter approval',
+                });
+            }
+            const actorId = authUser?.id;
+            if (!actorId) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const include = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            } satisfies Prisma.ApplicationInclude;
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, include);
+
+            if (forbidden) {
+                return res.status(403).json({ success: false, message: 'Forbidden' });
+            }
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            const approvingUnderwriterId = String(application.approvedByUnderwriterId ?? '').trim();
+            if (!approvingUnderwriterId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'This application has no recorded approving Underwriter yet.',
+                });
+            }
+
+            const targetUser = await prisma.user.findFirst({
+                where: {
+                    id: approvingUnderwriterId,
+                    role: 'UNDERWRITER',
+                    isActive: true,
+                },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            });
+            if (!targetUser) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'The approving Underwriter was not found or is inactive',
+                });
+            }
+
+            const previousQueue = application.currentQueue;
+            const previousState = application.currentState;
+            const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+            const targetName =
+                `${targetUser.firstName || ''} ${targetUser.lastName || ''}`.trim() ||
+                targetUser.email ||
+                'Underwriter';
+
+            const refreshed = await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    currentQueue: FINAL_APPROVAL_QUEUE,
+                    currentState: FINAL_APPROVAL_STATE,
+                    assignedUnderwriter: { connect: { id: approvingUnderwriterId } },
+                },
+                include,
+            });
+
+            try {
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'QUEUE_CHANGED',
+                    actionDescription: `${actorName} sent application to ${targetName} for final Underwriter approval.`,
+                    previousStatus: `${previousQueue} / ${previousState}`,
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: { assignedUnderwriterId: approvingUnderwriterId },
+                });
+            } catch (logErr) {
+                console.error('Failed to log final Underwriter approval send:', logErr);
+            }
+
+            try {
+                await notifyAdminAssignedApplicationToUnderwriter({
+                    application: refreshed as any,
+                    recipientId: approvingUnderwriterId,
+                    actorId: String(actorId),
+                    actorName,
+                });
+            } catch (notifErr) {
+                console.error('Failed to notify approving Underwriter:', notifErr);
+            }
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: `Application sent to ${targetName} for final approval`,
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Send for final Underwriter approval error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',
@@ -3511,7 +4359,7 @@ class ApplicationController {
             const { reason, additionalComments, emailHtml, emailSubject } = req.body;
             const authUser = getAuthenticatedUser(req);
             const currentUserRole = authUser?.role;
-            const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
+            const isFinalUnderwriter = currentUserRole === 'UNDERWRITER';
 
             if (!reason || reason.trim() === '') {
                 return res.status(400).json({
@@ -3556,13 +4404,19 @@ class ApplicationController {
             const previousQueue = existingApplication.currentQueue;
             const previousState = existingApplication.currentState;
 
+            const declineUpdateData: Prisma.ApplicationUpdateInput = {
+                currentQueue: 'Declined',
+                currentState: ApplicationState.CANCELLED,
+                note: fullNote,
+            };
+            // Record the Underwriter's decline action on the deal record.
+            if (isUnderwriterApproverRole(currentUserRole)) {
+                declineUpdateData.underwriterAction = UNDERWRITER_ACTION_DECLINED;
+            }
+
             const applicationRecord = await prisma.application.update({
                 where: whereClause,
-                data: {
-                    currentQueue: 'Declined',
-                    currentState: ApplicationState.CANCELLED,
-                    note: fullNote,
-                },
+                data: declineUpdateData,
                 include: {
                     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
                     salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -3582,7 +4436,7 @@ class ApplicationController {
                 });
             }
 
-            // Send notification to Agent and Underwriters (when Final Underwriter rejects)
+            // Send notification to Agent and Underwriters (when Underwriter rejects)
             try {
                 const appRecord = applicationRecord as any;
                 const attributedCreatedById = await resolveApplicationAttributedUserId(
@@ -3599,7 +4453,7 @@ class ApplicationController {
                 if (appRecord.salesRepresentativeId) addIfNotSender(appRecord.salesRepresentativeId);
                 if (isFinalUnderwriter) {
                     const underwriters = await prisma.user.findMany({
-                        where: { role: 'UNDERWRITER' },
+                        where: { role: 'SCRUBBING' },
                         select: { id: true },
                     });
                     underwriters.forEach((u) => addIfNotSender(u.id));
@@ -4235,8 +5089,8 @@ class ApplicationController {
             }
 
             const pdfRoleUpper = String((req as any).user?.role || '').toUpperCase();
-            // Same as Gmail PDF auto-create (`createClientAndApplicationFromPDFBuffer`): always land in Underwriter.
-            const pdfAgentCreationQueue = WORKFLOW_QUEUES.UNDERWRITER;
+            // Same as Gmail PDF auto-create (`createClientAndApplicationFromPDFBuffer`): always land in Scrubbing.
+            const pdfAgentCreationQueue = WORKFLOW_QUEUES.SCRUBBING;
             const pdfAgentCreationState = ApplicationState.IN_PROGRESS;
             const requestedApplicationTypeRaw = (req as any).body?.applicationType;
             const requestedIsoIdRaw = (req as any).body?.isoId;
@@ -5177,6 +6031,21 @@ class ApplicationController {
                             approvedAmount: true,
                             factorRate: true,
                             paybackAmount: true,
+                            termLength: true,
+                            frequency: true,
+                            paymentAmount: true,
+                        },
+                    },
+                    OfferDecision: {
+                        select: {
+                            term: true,
+                            frequency: true,
+                            repayPerPeriod: true,
+                            monthlyPayment: true,
+                            offer: true,
+                            rate: true,
+                            totalRemit: true,
+                            fees: true,
                         },
                     },
                 }
@@ -5234,13 +6103,26 @@ class ApplicationController {
                 `${client?.ownerFirstName || ''} ${client?.ownerLastName || ''}`.trim() || undefined;
             const { merchantEmail, merchantPhone } = resolveMerchantContactForOfferEmail(client);
             const latestTermsOffer = (application as any).termsOffers?.[0] ?? null;
-            const offerApprovedAmount =
-                latestTermsOffer?.approvedAmount != null ? Number(latestTermsOffer.approvedAmount) : undefined;
-            const offerFactorRate =
-                latestTermsOffer?.factorRate != null ? Number(latestTermsOffer.factorRate) : undefined;
-            const offerRepaymentAmount =
-                latestTermsOffer?.paybackAmount != null ? Number(latestTermsOffer.paybackAmount) : undefined;
+            const offerDecision = (application as any).OfferDecision ?? null;
             const offerApplicationNumber = (application as any).applicationId ?? undefined;
+            const offerApprovedAmount =
+                latestTermsOffer?.approvedAmount != null
+                    ? Number(latestTermsOffer.approvedAmount)
+                    : offerDecision?.offer != null
+                      ? Number(offerDecision.offer)
+                      : undefined;
+            const offerFactorRate =
+                latestTermsOffer?.factorRate != null
+                    ? Number(latestTermsOffer.factorRate)
+                    : offerDecision?.rate != null
+                      ? Number(offerDecision.rate)
+                      : undefined;
+            const offerRepaymentAmount =
+                latestTermsOffer?.paybackAmount != null
+                    ? Number(latestTermsOffer.paybackAmount)
+                    : offerDecision?.totalRemit != null
+                      ? Number(offerDecision.totalRemit)
+                      : undefined;
 
             if (!isoEmailRaw) {
                 return res.status(400).json({
@@ -5450,6 +6332,21 @@ class ApplicationController {
                 } catch (metaErr) {
                     console.error('Failed to store SendGrid message id for approval email:', metaErr);
                 }
+            }
+
+            try {
+                await prisma.application.update({
+                    where: { id: fallbackId },
+                    data: {
+                        currentQueue: APPROVAL_SENT_QUEUE,
+                        currentState: APPROVAL_SENT_STATE,
+                    },
+                });
+            } catch (stageErr) {
+                console.error(
+                    'Send approval email: failed to set application to Approval Sent:',
+                    stageErr,
+                );
             }
 
             return res.status(200).json({
@@ -5963,7 +6860,7 @@ class ApplicationController {
             const authUser = getAuthenticatedUser(req);
 
             const role = String(authUser?.role || '').toUpperCase().replace(/-/g, '_');
-            const allowedRoles = ['UNDERWRITER', 'FINAL_UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
+            const allowedRoles = ['SCRUBBING', 'UNDERWRITER', 'ADMIN', 'SUPER_ADMIN'];
             if (!allowedRoles.includes(role)) {
                 return res.status(403).json({
                     success: false,
@@ -6311,6 +7208,78 @@ class ApplicationController {
         });
     }
 
+    // Get applications by underwriter id (assigned, approved, or claimed)
+    async getByUnderwriterId(req: Request, res: Response) {
+        try {
+            const rawUnderwriterId = req.params.underwriterId || req.query.underwriterId;
+            const underwriterId = String(rawUnderwriterId ?? '').trim();
+            if (!underwriterId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'underwriterId is required',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const where: Prisma.ApplicationWhereInput = {
+                OR: [
+                    { assignedUnderwriterId: underwriterId },
+                    { approvedByUnderwriterId: underwriterId },
+                    { claimedByUnderwriterId: underwriterId },
+                ],
+            };
+            const visibilityAwareWhere = mergeApplicationVisibilityWhere(where, authUser);
+
+            const applications = await (prisma as any).application.findMany({
+                where: visibilityAwareWhere,
+                orderBy: { createdAt: 'desc' },
+                include: {
+                    referringAgent: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    salesRepresentative: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    assignedUnderwriter: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    approvedByUnderwriter: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    claimedByUnderwriter: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    client: true,
+                    iso: true,
+                    termsOffers: {
+                        orderBy: { updatedAt: 'desc' },
+                        take: 1,
+                        select: { approvedAmount: true, factorRate: true, paybackAmount: true },
+                    },
+                    OfferDecision: {
+                        select: {
+                            offer: true,
+                            decision: true,
+                            rate: true,
+                        },
+                    },
+                },
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: applications.map(mapApplicationToApi),
+            });
+        } catch (error) {
+            console.error('Get applications by underwriter id error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
     // Get applications by ISO id
     async getByIsoId(req: Request, res: Response) {
         try {
@@ -6368,7 +7337,7 @@ class ApplicationController {
      * Approve an application (idempotent webhook-style endpoint).
      *
      * Trigger surfaces:
-     *   1. Authenticated CRM user (Final Underwriter / Admin / Operations…) clicks Approve.
+     *   1. Authenticated CRM user (Underwriter / Admin / Operations…) clicks Approve.
      *   2. ISO clicks Approve from the public approval portal — the portal first
      *      mints a short-lived JWT (see PublicApprovalController.createApprovalSession)
      *      that flows through `authenticateToken` and lands here with

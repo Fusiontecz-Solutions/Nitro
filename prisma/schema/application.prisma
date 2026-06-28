@@ -23,6 +23,8 @@ model User {
   googleRefreshToken         String?
   accessTokens               AccessToken[]
   underwriterClaimedApps     Application[]                 @relation("ApplicationClaimedByUnderwriter")
+  underwriterApprovedApps    Application[]                 @relation("ApplicationApprovedByUnderwriter")
+  underwriterAssignedApps    Application[]                 @relation("ApplicationAssignedUnderwriter")
   createdApplications        Application[]                 @relation("ApplicationCreatedBy")
   referringApplications      Application[]                 @relation("ApplicationReferringAgent")
   salesApplications          Application[]                 @relation("ApplicationSalesRep")
@@ -209,16 +211,26 @@ model Application {
   updatedAt                DateTime                      @updatedAt
   currentState             String                        @default("Draft")
   isoId                    String?                       @db.Uuid
-  commissionPercentage     Float                         @default(0)
-  commissionAmount         Float?
+  commissionPercentage             Float                         @default(0)
+  /// Per-deal underwriter commission rate (0–100), distinct from ISO `commissionPercentage`.
+  underwriterCommissionPercentage  Float                         @default(0)
+  commissionAmount                 Float?
+  underwriterCommissionAmount      Float?
   dealDisplayName          String?
   dealId                   String?
   status                   String?
   claimedByUnderwriterId   String?                       @db.Uuid
   claimedAt                DateTime?
+  approvedByUnderwriterId  String?                       @db.Uuid
+  approvedAt               DateTime?
+  /// Last action an Underwriter performed on this deal: "Approved By UW", "Decline by UW", "Final Approved by UW".
+  underwriterAction        String?
+  assignedUnderwriterId    String?                       @db.Uuid
   category                 String?
   organization             String?
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
+  approvedByUnderwriter    User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
+  assignedUnderwriter      User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])
   client                   Client                        @relation(fields: [clientId], references: [id])
   createdBy                User?                         @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
   iso                      Iso?                          @relation(fields: [isoId], references: [id])
@@ -235,6 +247,7 @@ model Application {
   comments                 Comment[]
   complianceChecks         ComplianceCheck[]
   contract                 Contract?
+  backgroundCheck          BackgroundCheck?
   conversations            Conversation[]
   disclosures              Disclosure?
   document                 Document?
@@ -268,6 +281,9 @@ model Application {
   @@index([createdById])
   @@index([claimedByUnderwriterId])
   @@index([currentQueue, claimedByUnderwriterId])
+  @@index([approvedByUnderwriterId])
+  @@index([assignedUnderwriterId])
+  @@index([currentQueue, assignedUnderwriterId])
   @@index([category])
 }
 
@@ -468,6 +484,8 @@ model Notification {
   createdById                String?      @db.Uuid
   createdAt                  DateTime     @default(now())
   updatedAt                  DateTime     @updatedAt
+  // Triage state (see notificationCategory.ts). `category` is system-derived
+  // (MCA stage); `bucket`/`importance`/`snoozedUntil`/`isArchived` are user-set.
   category                   String       @default("system")
   bucket                     String       @default("inbox")
   importance                 String       @default("normal")
@@ -908,6 +926,10 @@ model Iso {
   documents            Json                    @default("[]")
   /// When the ISO accepted the portal agreement (persisted; replaces localStorage-only flow).
   agreementAcceptedAt  DateTime?
+  /// Lifecycle status: active | inactive | suspended
+  status               String                  @default("active") @db.VarChar(16)
+  /// Assigned commission tier (see IsoTier). Null = legacy/flat commissionPercentage.
+  tierId               String?                 @db.Uuid
   applications         Application[]
   applicationPayouts   IsoApplicationPayout[]
   commissionSchedules  IsoCommissionSchedule[]
@@ -982,8 +1004,8 @@ enum PaymentMailLogStatus {
 
 enum Role {
   AGENT
+  SCRUBBING
   UNDERWRITER
-  FINAL_UNDERWRITER
   ACCOUNTANT
   ADMIN
   OPERATIONS

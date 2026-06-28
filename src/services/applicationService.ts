@@ -9,6 +9,7 @@ import { extractPdfPlainTextForParsing } from './pdfIngestionService';
 import { normalizeOcrTextForParsing } from './ocrFieldExtraction';
 import { logExtractedBusinessDataCsv } from './csvConverter';
 import { scheduleApplicationStageNotification } from './applicationStageNotificationService';
+import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
 
 export type UserRole = Role;
 
@@ -34,8 +35,8 @@ function normalizeRole(role: string | UserRole | null | undefined): UserRole | n
     const normalized = String(role).trim().toUpperCase().replace(/-/g, '_');
     const valid: UserRole[] = [
         'AGENT',
+        'SCRUBBING',
         'UNDERWRITER',
-        'FINAL_UNDERWRITER',
         'ACCOUNTANT',
         'ACCOUNTS',
         'ADMIN',
@@ -64,36 +65,111 @@ export function buildAgentApplicationVisibilitySql(
     return Prisma.sql`(${Prisma.raw(`${prefix}"referringAgentId"`)} = ${userId} OR ${Prisma.raw(`${prefix}"createdById"`)} = ${userId})`;
 }
 
-/** Scope list queries: agents see only their deals; other roles unchanged. */
+/** Underwriter list/count visibility — mirrors GET /applications underwriter scoping. */
+export function buildUnderwriterApplicationVisibilityWhere(
+    userId: string,
+): PrismaTypes.ApplicationWhereInput {
+    return {
+        AND: [
+            {
+                OR: [
+                    {
+                        NOT: {
+                            currentQueue: {
+                                equals: 'Final Approval',
+                                mode: 'insensitive',
+                            },
+                        },
+                    },
+                    { assignedUnderwriterId: userId },
+                    {
+                        AND: [
+                            { assignedUnderwriterId: null },
+                            { approvedByUnderwriterId: userId },
+                        ],
+                    },
+                ],
+            },
+            {
+                OR: [
+                    { assignedUnderwriterId: null },
+                    { assignedUnderwriterId: userId },
+                ],
+            },
+        ],
+    };
+}
+
+/** Scope list queries: agents see only their deals; underwriters see assigned / final-approval rows. */
 export function mergeApplicationVisibilityWhere(
     base: PrismaTypes.ApplicationWhereInput,
     user: AuthenticatedUser | null | undefined
 ): PrismaTypes.ApplicationWhereInput {
-    if (!user?.id || normalizeRole(user.role) !== 'AGENT') {
+    if (!user?.id) {
         return base;
     }
 
-    const agentFilter = buildAgentApplicationVisibilityWhere(user.id);
+    const role = normalizeRole(user.role);
     const existingAnd = base.AND
         ? Array.isArray(base.AND)
             ? base.AND
             : [base.AND]
         : [];
 
-    return {
-        ...base,
-        AND: [...existingAnd, agentFilter],
-    };
+    if (role === 'AGENT') {
+        return {
+            ...base,
+            AND: [...existingAnd, buildAgentApplicationVisibilityWhere(user.id)],
+        };
+    }
+
+    if (role === 'UNDERWRITER') {
+        return {
+            ...base,
+            AND: [...existingAnd, buildUnderwriterApplicationVisibilityWhere(user.id)],
+        };
+    }
+
+    return base;
 }
+
+const isFinalApprovalQueue = (queue: string | null | undefined): boolean =>
+    String(queue ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '') === 'finalapproval';
 
 /** Detail access: agents only on own deals; other CRM roles unchanged. */
 export function canUserAccessApplication(
-    application: Pick<Application, 'referringAgentId' | 'createdById'>,
+    application: Pick<
+        Application,
+        | 'referringAgentId'
+        | 'createdById'
+        | 'currentQueue'
+        | 'approvedByUnderwriterId'
+        | 'assignedUnderwriterId'
+    > & { assignedUnderwriterId?: string | null },
     user: AuthenticatedUser | null | undefined
 ): boolean {
     if (!user) return false;
     const role = normalizeRole(user.role);
     if (!role) return false;
+    if (role === 'UNDERWRITER') {
+        // A deal assigned to a specific Underwriter is private to them.
+        if (
+            application.assignedUnderwriterId &&
+            application.assignedUnderwriterId !== user.id
+        ) {
+            return false;
+        }
+        if (isFinalApprovalQueue(application.currentQueue)) {
+            const assignedId = String(application.assignedUnderwriterId ?? '').trim();
+            if (assignedId) {
+                return assignedId === user.id;
+            }
+            return application.approvedByUnderwriterId === user.id;
+        }
+    }
     if (role !== 'AGENT') return true;
     return (
         application.referringAgentId === user.id ||
@@ -293,8 +369,8 @@ export function assertReadyToCreateNewClientFromPdf(parsedData: unknown, clientR
  * but decoupled from Express (Request/Response) so it can be reused by
  * the Gmail auto-import flow or any other caller.
  */
-const PDF_EMAIL_AUTO_CREATE_QUEUE = 'Underwriter';
-/** Route PDF-created applications directly to underwriter review queue. */
+const PDF_EMAIL_AUTO_CREATE_QUEUE = 'Scrubbing';
+/** Route PDF-created applications directly to scrubbing review queue. */
 const PDF_EMAIL_AUTO_CREATE_STATE = 'IN_PROGRESS';
 
 const applicationWithFilesInclude = {
@@ -408,7 +484,7 @@ export async function createClientAndApplicationFromPDFBuffer(
 
         // Client already exists → create application only
         const createdApplication = await prisma.application.create({
-            data: {
+            data: applicationCreateUncheckedData({
                 priority: 'High',
                 type: 'New',
                 salesRepresentativeId: userId,
@@ -420,7 +496,7 @@ export async function createClientAndApplicationFromPDFBuffer(
                 createdById: userId,
                 currentQueue: agentCreationQueue,
                 currentState: agentCreationState,
-            },
+            }),
             include: applicationWithFilesInclude,
         });
 
@@ -502,7 +578,7 @@ export async function createClientAndApplicationFromPDFBuffer(
         });
 
         const newApplication = await tx.application.create({
-            data: {
+            data: applicationCreateUncheckedData({
                 priority: 'High',
                 type: 'New',
                 salesRepresentativeId: userId,
@@ -514,7 +590,7 @@ export async function createClientAndApplicationFromPDFBuffer(
                 createdById: userId,
                 currentQueue: agentCreationQueue,
                 currentState: agentCreationState,
-            },
+            }),
             include: applicationWithFilesInclude,
         });
 

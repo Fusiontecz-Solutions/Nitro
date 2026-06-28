@@ -2,6 +2,14 @@ import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
 import { scheduleApplicationStageNotification } from './applicationStageNotificationService';
 
+/** Super Admin / FUW sent the branded approval email to the linked ISO. */
+export const APPLICATION_QUEUE_APPROVAL_SENT = 'Approval Sent';
+export const APPLICATION_STATE_APPROVAL_SENT = 'Approval Sent';
+
+/** ISO approved via the public portal — awaiting contract generation. */
+export const APPLICATION_QUEUE_ISO_APPROVED = 'ISO Approved';
+export const APPLICATION_STATE_ISO_APPROVED = 'ISO Approved';
+
 /** Approved deal awaiting contract generation. */
 export const APPLICATION_QUEUE_CONTRACT_PENDING = 'Contract Pending';
 export const APPLICATION_STATE_CONTRACT_PENDING = 'Contract_Pending';

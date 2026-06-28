@@ -2,10 +2,6 @@ import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from '../services/applicationService';
 import {
-    agentCanAccessClient,
-    mergeClientVisibilityWhere,
-} from '../services/clientAccessService';
-import {
     buildOwnerCreateData,
     buildPrimaryOwnerFlatFields,
     mapClientToApi,
@@ -174,7 +170,7 @@ class ClientController {
         }
     }
 
-    // Get all clients with pagination and filters
+    // Get all clients with pagination and filters (all authenticated roles see the full list)
     async getAll(req: Request, res: Response) {
         try {
             const {
@@ -189,8 +185,6 @@ class ClientController {
             const pageNum = Number(page);
             const limitNum = Number(limit);
             const skip = (pageNum - 1) * limitNum;
-
-            const authUser = getAuthenticatedUser(req);
 
             let where: any = {};
 
@@ -219,8 +213,6 @@ class ClientController {
                     },
                 ];
             }
-
-            where = mergeClientVisibilityWhere(where, authUser);
 
             let orderByField: string = 'createdAt';
             if (sortBy === 'createdAt' || sortBy === 'clientId') {
@@ -269,7 +261,6 @@ class ClientController {
     async getById(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const authUser = getAuthenticatedUser(req);
 
             const client = await prisma.client.findUnique({
                 where: { id },
@@ -277,17 +268,6 @@ class ClientController {
             });
 
             if (!client) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Client not found',
-                });
-            }
-
-            if (
-                authUser &&
-                isAgentRole(authUser.role) &&
-                !(await agentCanAccessClient(client.id, authUser.id))
-            ) {
                 return res.status(404).json({
                     success: false,
                     message: 'Client not found',
@@ -311,7 +291,6 @@ class ClientController {
     async getByClientId(req: Request, res: Response) {
         try {
             const { clientId } = req.params;
-            const authUser = getAuthenticatedUser(req);
 
             const client = await prisma.client.findUnique({
                 where: { clientId: Number(clientId) },
@@ -319,17 +298,6 @@ class ClientController {
             });
 
             if (!client) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Client not found',
-                });
-            }
-
-            if (
-                authUser &&
-                isAgentRole(authUser.role) &&
-                !(await agentCanAccessClient(client.id, authUser.id))
-            ) {
                 return res.status(404).json({
                     success: false,
                     message: 'Client not found',
@@ -356,22 +324,10 @@ class ClientController {
             const { business, status, notes, assignedTo } = req.body;
             const owners = normalizeOwnersInput(req.body);
             const ownerOnly = normalizeOwnerOnlyInput(req.body);
-            const authUser = getAuthenticatedUser(req);
 
             const client = await prisma.client.findUnique({ where: { id } });
 
             if (!client) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Client not found',
-                });
-            }
-
-            if (
-                authUser &&
-                isAgentRole(authUser.role) &&
-                !(await agentCanAccessClient(client.id, authUser.id))
-            ) {
                 return res.status(404).json({
                     success: false,
                     message: 'Client not found',
@@ -522,17 +478,6 @@ class ClientController {
     async delete(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const authUser = getAuthenticatedUser(req);
-
-            if (authUser && isAgentRole(authUser.role)) {
-                const allowed = await agentCanAccessClient(id, authUser.id);
-                if (!allowed) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'Client not found',
-                    });
-                }
-            }
 
             const client = await prisma.client.delete({ where: { id } });
 
@@ -561,23 +506,12 @@ class ClientController {
         try {
             const { id } = req.params;
             const { status } = req.body;
-            const authUser = getAuthenticatedUser(req);
 
             if (!status || !['Active', 'Inactive', 'Pending', 'Archived'].includes(status)) {
                 return res.status(400).json({
                     success: false,
                     message: 'Valid status is required (Active, Inactive, Pending, Archived)',
                 });
-            }
-
-            if (authUser && isAgentRole(authUser.role)) {
-                const allowed = await agentCanAccessClient(id, authUser.id);
-                if (!allowed) {
-                    return res.status(404).json({
-                        success: false,
-                        message: 'Client not found',
-                    });
-                }
             }
 
             const client = await prisma.client.update({

@@ -4,7 +4,7 @@ import type { Request, Response, NextFunction } from 'express';
  * Generic role-based middleware.
  *
  * Usage:
- *   router.get('/path', authenticateToken, requireRoles('ADMIN', 'UNDERWRITER'), handler);
+ *   router.get('/path', authenticateToken, requireRoles('ADMIN', 'SCRUBBING'), handler);
  */
 export function requireRoles(...allowedRoles: string[]) {
     const allowed = new Set(allowedRoles);

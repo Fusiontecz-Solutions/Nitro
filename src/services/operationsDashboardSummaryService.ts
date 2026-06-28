@@ -26,6 +26,21 @@ function combineWhere(
     return { AND: [base, extra] };
 }
 
+async function countApplicationsForPipelineStage(
+    authUser: AuthenticatedUser | null,
+    operationsStatus: string,
+): Promise<number> {
+    const visibilityBase = mergeApplicationVisibilityWhere(
+        authUser ? {} : { id: '00000000-0000-0000-0000-000000000000' },
+        authUser,
+    );
+    const mode = resolveOperationsListFilterMode(authUser?.role ?? null);
+    const stageWhere = buildOperationsStatusFilterWhere(operationsStatus, mode);
+    return prisma.application.count({
+        where: combineWhere(visibilityBase, stageWhere),
+    });
+}
+
 function viewerMode(authUser: AuthenticatedUser | null): OperationsStatusFilterMode {
     return resolveOperationsListFilterMode(authUser?.role ?? null);
 }
@@ -90,6 +105,26 @@ export async function aggregateOperationsDashboardSummary(
     const queueMetrics = await aggregateQueueMetricsByCurrentQueue(authUser);
     const { counts, amounts, totalCases } = queueMetrics;
 
+    const [
+        agentCount,
+        scrubbingCount,
+        underwriterCount,
+        approvedByUwCount,
+        approvalSentCount,
+        approvedByIsoCount,
+        finalApprovalCount,
+        finalCount,
+    ] = await Promise.all([
+        countApplicationsForPipelineStage(authUser, 'Agent'),
+        countApplicationsForPipelineStage(authUser, 'Scrubbing'),
+        countApplicationsForPipelineStage(authUser, 'Underwriter'),
+        countApplicationsForPipelineStage(authUser, 'Approved_By_UW'),
+        countApplicationsForPipelineStage(authUser, 'Approval_Sent'),
+        countApplicationsForPipelineStage(authUser, 'Approved_By_ISO'),
+        countApplicationsForPipelineStage(authUser, 'Final_Approval'),
+        countApplicationsForPipelineStage(authUser, 'Final'),
+    ]);
+
     const contractPending = counts.Contract_Pending;
     const contractsOut = counts.Contract_Sent;
     const signedContracts = counts.Contract_Signed;
@@ -117,14 +152,18 @@ export async function aggregateOperationsDashboardSummary(
             funded: amounts.Funded,
         },
         caseStageCounts: {
-            Agent: counts.Agent,
-            Underwriter: counts.Underwriter,
-            'Final Underwriter': counts['Final Underwriter'],
+            Agent: agentCount,
+            Scrubbing: scrubbingCount,
+            'Underwriter': underwriterCount,
+            Approved_By_UW: approvedByUwCount,
+            Approval_Sent: approvalSentCount,
+            Approved_By_ISO: approvedByIsoCount,
+            Final_Approval: finalApprovalCount,
             Contracted: signedContracts,
             'Contract_Pending': contractPending,
             Contract_Sent: contractsOut,
             Contract_Signed: signedContracts,
-            Final: counts.Final,
+            Final: finalCount,
             'Funding Call': fundingCall,
             Disbursment: disbursment,
             Funded: funded,
@@ -132,8 +171,8 @@ export async function aggregateOperationsDashboardSummary(
         },
         caseStageAmounts: {
             Agent: amounts.Agent,
-            Underwriter: amounts.Underwriter,
-            'Final Underwriter': amounts['Final Underwriter'],
+            Scrubbing: amounts.Scrubbing,
+            'Underwriter': amounts['Underwriter'],
             Contracted: amounts.Contract_Signed,
             'Contract_Pending': amounts.Contract_Pending,
             Contract_Sent: amounts.Contract_Sent,

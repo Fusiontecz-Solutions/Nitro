@@ -127,6 +127,9 @@ export async function replaceSchedulePaymentTracking(
       referringAgentId: true,
       createdById: true,
       salesRepresentativeId: true,
+      currentQueue: true,
+      approvedByUnderwriterId: true,
+      assignedUnderwriterId: true,
     },
   });
 
@@ -233,7 +236,7 @@ export async function listSchedulePaymentTracking(
 ) {
   const application = await prisma.application.findUnique({
     where: { id: applicationId },
-    select: { id: true, referringAgentId: true, createdById: true },
+    select: { id: true, referringAgentId: true, createdById: true, currentQueue: true, approvedByUnderwriterId: true, assignedUnderwriterId: true },
   });
 
   if (!application) {
@@ -281,7 +284,7 @@ export async function listSchedulePaymentTrackingWithMatch(
 
   const application = await prisma.application.findUnique({
     where: { id: applicationId },
-    select: { id: true, dealId: true, referringAgentId: true, createdById: true },
+    select: { id: true, dealId: true, referringAgentId: true, createdById: true, currentQueue: true, approvedByUnderwriterId: true, assignedUnderwriterId: true },
   });
 
   if (!application) {

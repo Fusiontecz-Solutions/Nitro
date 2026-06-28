@@ -28,6 +28,8 @@ model Contract {
   status                         ContractStatus                    @default(DRAFT)
   funderName                     String?
   state                          String?
+  reverseDisbursementEnabled     Boolean                           @default(false)
+  reverseDisbursementSchedule    Json?
   /// BoldSign contract prefill overrides (flat string map); edited in CRM Deal Review prefill form.
   contractPrefillOverrides       Json?
   appendixClientName             String?

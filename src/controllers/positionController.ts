@@ -129,7 +129,7 @@ class PositionController {
         });
       }
 
-      // Accept application as UUID or numeric applicationId so Underwriter-created positions link correctly
+      // Accept application as UUID or numeric applicationId so Scrubbing-created positions link correctly
       const applicationExists = await this.resolveApplicationByAnyId(String(application));
       if (!applicationExists) {
         return res.status(404).json({
@@ -215,7 +215,7 @@ class PositionController {
     }
   }
 
-  // Resolve application by UUID (id) or numeric applicationId — role-independent; returns same application for Agent and Underwriter
+  // Resolve application by UUID (id) or numeric applicationId — role-independent; returns same application for Agent and Scrubbing
   private async resolveApplicationByAnyId(applicationParam: string): Promise<{ id: string } | null> {
     const s = String(applicationParam).trim();
     if (!s) return null;

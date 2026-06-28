@@ -1,6 +1,10 @@
 import fs from 'fs';
 import path from 'path';
-import sendMail, { isOutboundSmtpConfigured, sendSendGridMail } from '../config/nodemailer';
+import sendMail, {
+    getSendGridMailFrom,
+    isOutboundSmtpConfigured,
+    sendSendGridMail,
+} from '../config/nodemailer';
 import prisma from '../config/prismaClient';
 import { resolveEmailBrandDisplayName } from '../constants/emailBrand';
 import {
@@ -8,6 +12,7 @@ import {
   resolveDecisionLogicInvitationBaseUrl,
 } from '../utils/crmFrontendUrl';
 import { renderApplicationApprovalEmailHtml } from './emailTemplates/applicationApprovalEmailHtml';
+import { renderApplicationApprovedEmailHtml } from './emailTemplates/applicationApprovedEmailHtml';
 import { renderOfferUpdatedEmailHtml } from './emailTemplates/offerUpdatedEmailHtml';
 
 /**
@@ -310,24 +315,57 @@ function looksLikeEmail(value: unknown): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
+function pickFirstValidEmail(...candidates: unknown[]): string | undefined {
+    for (const candidate of candidates) {
+        const value = String(candidate ?? '').trim();
+        if (looksLikeEmail(value)) return value;
+    }
+    return undefined;
+}
+
+export type ResolveMerchantContactOptions = {
+    /** Caller-resolved linked client email (e.g. Funding Call UI from application detail). */
+    explicitClientEmail?: string | null;
+    /** Persisted contract signer email — highest priority when set. */
+    contractClientEmail?: string | null;
+};
+
 /**
  * CRM client rows sometimes store a phone number in `ownerEmail` (OCR / manual entry).
  * Prefer a real email address and keep phone-only values out of the Owner Email row.
+ * Also checks linked `ClientOwner` rows when flat client columns are empty or invalid.
+ * Order: explicit caller email → owner flat → ClientOwner rows → contract signer → business inbox.
  */
-export function resolveMerchantContactForOfferEmail(client: {
-    ownerEmail?: string | null;
-    businessEmail?: string | null;
-    ownerMobileNumber?: string | null;
-    businessNumber?: string | null;
-} | null | undefined): { merchantEmail?: string; merchantPhone?: string } {
+export function resolveMerchantContactForOfferEmail(
+    client: {
+        ownerEmail?: string | null;
+        businessEmail?: string | null;
+        ownerMobileNumber?: string | null;
+        businessNumber?: string | null;
+        owners?: Array<{ email?: string | null; sortOrder?: number | null }> | null;
+    } | null
+    | undefined,
+    options?: ResolveMerchantContactOptions,
+): { merchantEmail?: string; merchantPhone?: string } {
     const ownerEmailRaw = String(client?.ownerEmail ?? '').trim();
     const businessEmailRaw = String(client?.businessEmail ?? '').trim();
     const ownerMobileRaw = String(client?.ownerMobileNumber ?? '').trim();
     const businessPhoneRaw = String(client?.businessNumber ?? '').trim();
 
-    let merchantEmail: string | undefined;
-    if (looksLikeEmail(ownerEmailRaw)) merchantEmail = ownerEmailRaw;
-    else if (looksLikeEmail(businessEmailRaw)) merchantEmail = businessEmailRaw;
+    const ownerRelationEmails = Array.isArray(client?.owners)
+        ? [...client.owners]
+              .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+              .map((owner) => String(owner?.email ?? '').trim())
+              .filter(Boolean)
+        : [];
+
+    const merchantEmail = pickFirstValidEmail(
+        options?.explicitClientEmail,
+        ownerEmailRaw,
+        ...ownerRelationEmails,
+        options?.contractClientEmail,
+        businessEmailRaw,
+    );
 
     const phoneCandidates = [ownerMobileRaw, businessPhoneRaw];
     if (ownerEmailRaw && !looksLikeEmail(ownerEmailRaw)) phoneCandidates.push(ownerEmailRaw);
@@ -468,7 +506,7 @@ function buildKatanCapitalClientEmailHtml({
 
 /**
  * When true, application status templates (client/ISO recipient flows) are not sent (no `sendMail`).
- * Internal emails (e.g. welcome, underwriter notifications) are unaffected.
+ * Internal emails (e.g. welcome, scrubbing notifications) are unaffected.
  *
  * ISO email delivery policy: only `sendApplicationApprovalEmail` and `sendApplicationOfferUpdatedEmail`
  * should target the linked ISO address. Step templates (submitted, underwriting complete, funded, etc.)
@@ -582,6 +620,18 @@ export interface ApplicationApprovalEmailParams {
     subject?: string;
     /** SendGrid webhook correlation id (`ocid` custom arg). */
     trackingId?: string;
+    /** Resolved offer terms injected into frontend HTML placeholders. */
+    offerInjectValues?: Pick<
+        ApplicationApprovalEmailInjectValues,
+        | 'requestAmount'
+        | 'approvedAmount'
+        | 'factorRate'
+        | 'paybackAmount'
+        | 'term'
+        | 'repay'
+        | 'monthlyRepayment'
+        | 'achFrequency'
+    >;
 }
 
 /**
@@ -594,6 +644,34 @@ export const APPLICATION_APPROVAL_URL_PLACEHOLDER = '__APPLICATION_APPROVAL_URL_
 export const APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER = '__APPROVAL_CLIENT_NAME__';
 export const APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER = '__APPROVAL_COMPANY_NAME__';
 
+export const APPLICATION_APPROVED_REQUEST_AMOUNT_PLACEHOLDER =
+    '__APPROVAL_REQUEST_AMOUNT__';
+export const APPLICATION_APPROVED_APPROVED_AMOUNT_PLACEHOLDER =
+    '__APPROVAL_APPROVED_AMOUNT__';
+export const APPLICATION_APPROVED_FACTOR_RATE_PLACEHOLDER = '__APPROVAL_FACTOR_RATE__';
+export const APPLICATION_APPROVED_PAYBACK_AMOUNT_PLACEHOLDER =
+    '__APPROVAL_PAYBACK_AMOUNT__';
+export const APPLICATION_APPROVED_TERM_PLACEHOLDER = '__APPROVAL_TERM__';
+export const APPLICATION_APPROVED_REPAY_PLACEHOLDER = '__APPROVAL_REPAY__';
+export const APPLICATION_APPROVED_MONTHLY_REPAYMENT_PLACEHOLDER =
+    '__APPROVAL_MONTHLY_REPAYMENT__';
+export const APPLICATION_APPROVED_ACH_FREQUENCY_PLACEHOLDER =
+    '__APPROVAL_ACH_FREQUENCY__';
+
+export type ApplicationApprovalEmailInjectValues = {
+    approvalUrl?: string;
+    clientName?: string;
+    companyName?: string;
+    requestAmount?: string;
+    approvedAmount?: string;
+    factorRate?: string;
+    paybackAmount?: string;
+    term?: string;
+    repay?: string;
+    monthlyRepayment?: string;
+    achFrequency?: string;
+};
+
 function escapeApprovalEmailValue(value: string): string {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -605,20 +683,69 @@ function escapeApprovalEmailValue(value: string): string {
 /** Fills the frontend approval-template placeholders with server-resolved values. */
 export function injectApplicationApprovalEmailValues(
     html: string,
-    values: { approvalUrl?: string; clientName?: string; companyName?: string },
+    values: ApplicationApprovalEmailInjectValues,
 ): string {
     let out = String(html || '');
     const approvalUrl = String(values.approvalUrl || '').trim();
     if (approvalUrl) {
         out = out.split(APPLICATION_APPROVAL_URL_PLACEHOLDER).join(approvalUrl);
     }
-    out = out
-        .split(APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER)
-        .join(escapeApprovalEmailValue(String(values.clientName || '').trim()));
-    out = out
-        .split(APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER)
-        .join(escapeApprovalEmailValue(String(values.companyName || '').trim()));
+    const replaceText = (placeholder: string, raw: string | undefined) => {
+        const text = String(raw ?? '').trim() || '—';
+        out = out.split(placeholder).join(escapeApprovalEmailValue(text));
+    };
+    replaceText(APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER, values.clientName);
+    replaceText(APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER, values.companyName);
+    replaceText(APPLICATION_APPROVED_REQUEST_AMOUNT_PLACEHOLDER, values.requestAmount);
+    replaceText(APPLICATION_APPROVED_APPROVED_AMOUNT_PLACEHOLDER, values.approvedAmount);
+    replaceText(APPLICATION_APPROVED_FACTOR_RATE_PLACEHOLDER, values.factorRate);
+    replaceText(APPLICATION_APPROVED_PAYBACK_AMOUNT_PLACEHOLDER, values.paybackAmount);
+    replaceText(APPLICATION_APPROVED_TERM_PLACEHOLDER, values.term);
+    replaceText(APPLICATION_APPROVED_REPAY_PLACEHOLDER, values.repay);
+    replaceText(
+        APPLICATION_APPROVED_MONTHLY_REPAYMENT_PLACEHOLDER,
+        values.monthlyRepayment,
+    );
+    replaceText(APPLICATION_APPROVED_ACH_FREQUENCY_PLACEHOLDER, values.achFrequency);
     return out;
+}
+
+export function buildApplicationApprovedEmailInjectValues(input: {
+    requestAmount?: number | null;
+    approvedAmount?: number | null;
+    factorRate?: number | null;
+    paybackAmount?: number | null;
+    term?: string | number | null;
+    repay?: number | null;
+    monthlyRepayment?: number | null;
+    achFrequency?: string | null;
+}): Pick<
+    ApplicationApprovalEmailInjectValues,
+    | 'requestAmount'
+    | 'approvedAmount'
+    | 'factorRate'
+    | 'paybackAmount'
+    | 'term'
+    | 'repay'
+    | 'monthlyRepayment'
+    | 'achFrequency'
+> {
+    const termRaw = input.term;
+    const termText =
+        termRaw == null || String(termRaw).trim() === ''
+            ? undefined
+            : String(termRaw).replace(/\s*payments?/i, '').trim();
+
+    return {
+        requestAmount: formatOfferEmailCurrency(input.requestAmount),
+        approvedAmount: formatOfferEmailCurrency(input.approvedAmount),
+        factorRate: formatOfferEmailFactorRate(input.factorRate),
+        paybackAmount: formatOfferEmailCurrency(input.paybackAmount),
+        term: termText,
+        repay: formatOfferEmailCurrency(input.repay),
+        monthlyRepayment: formatOfferEmailCurrency(input.monthlyRepayment),
+        achFrequency: String(input.achFrequency || '').trim() || undefined,
+    };
 }
 
 export const APPROVAL_EMAIL_PDF_FILENAME = 'Application-approved-template.pdf';
@@ -676,8 +803,26 @@ export const buildApplicationApprovalEmailHtml = ({
     renderApplicationApprovalEmailHtml({
         client_name: clientName || 'Valued Client',
         company_name: companyName || 'your company',
-        calculate_approval_url: calculateApprovalUrl || '#',
-        view_application_url: viewApplicationUrl || calculateApprovalUrl || '#',
+        calculate_approval_url: calculateApprovalUrl || APPLICATION_APPROVAL_URL_PLACEHOLDER,
+        view_application_url:
+            viewApplicationUrl || calculateApprovalUrl || APPLICATION_APPROVAL_URL_PLACEHOLDER,
+    });
+
+export const buildApplicationApprovedEmailHtml = ({
+    clientName,
+    companyName,
+}: Pick<ApplicationApprovalEmailParams, 'clientName' | 'companyName'>): string =>
+    renderApplicationApprovedEmailHtml({
+        client_name: clientName || APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+        company_name: companyName || APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+        request_amount: APPLICATION_APPROVED_REQUEST_AMOUNT_PLACEHOLDER,
+        approved_amount: APPLICATION_APPROVED_APPROVED_AMOUNT_PLACEHOLDER,
+        factor_rate: APPLICATION_APPROVED_FACTOR_RATE_PLACEHOLDER,
+        payback_amount: APPLICATION_APPROVED_PAYBACK_AMOUNT_PLACEHOLDER,
+        term: APPLICATION_APPROVED_TERM_PLACEHOLDER,
+        repay: APPLICATION_APPROVED_REPAY_PLACEHOLDER,
+        monthly_repayment: APPLICATION_APPROVED_MONTHLY_REPAYMENT_PLACEHOLDER,
+        ach_frequency: APPLICATION_APPROVED_ACH_FREQUENCY_PLACEHOLDER,
     });
 
 export type IsoBrandedEmailSendResult = { sent: boolean; sgMessageId?: string };
@@ -698,6 +843,7 @@ export async function sendApplicationApprovalEmail({
     html: clientHtml,
     subject: clientSubject,
     trackingId,
+    offerInjectValues,
 }: ApplicationApprovalEmailParams): Promise<IsoBrandedEmailSendResult> {
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
@@ -716,26 +862,53 @@ export async function sendApplicationApprovalEmail({
     }
 
     const subject = String(clientSubject || '').trim() || 'Your Application Has Been Approved';
-    const html =
+    const rawHtml =
         String(clientHtml || '').trim() ||
-        buildApplicationApprovalEmailHtml({
-            clientName,
-            companyName,
-            viewApplicationUrl,
-            calculateApprovalUrl,
-        });
+        (offerInjectValues
+            ? buildApplicationApprovedEmailHtml({ clientName, companyName })
+            : buildApplicationApprovalEmailHtml({
+                  clientName,
+                  companyName,
+                  viewApplicationUrl,
+                  calculateApprovalUrl,
+              }));
+    const html = injectApplicationApprovalEmailValues(rawHtml, {
+        approvalUrl: calculateApprovalUrl,
+        clientName,
+        companyName,
+        ...offerInjectValues,
+    });
+
+    const trackingIdTrimmed = String(trackingId || '').trim();
+    const usesApprovedOfferTemplate =
+        Boolean(offerInjectValues) || html.includes('Approved Offer Details');
 
     try {
         const attachments = await buildIsoBrandedEmailAttachments(html, APPROVAL_EMAIL_PDF_FILENAME);
         const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
-        const result = await sendMail({
+        const mailOptions = {
             to: toTrimmed,
             subject,
             html,
             attachments,
-            trackingId,
-            categories: ['approval'],
-        });
+            trackingId: trackingIdTrimmed || undefined,
+            categories: trackingIdTrimmed
+                ? [usesApprovedOfferTemplate ? 'application-approved' : 'approval']
+                : undefined,
+        };
+        const result = trackingIdTrimmed
+            ? await sendSendGridMail({
+                  ...mailOptions,
+                  from: getSendGridMailFrom(),
+              })
+            : await sendMail(mailOptions);
+        if (!trackingIdTrimmed) {
+            // eslint-disable-next-line no-console
+            console.warn(
+                '[email] Application approval sent without trackingId — SendGrid webhook delivery status will not be recorded',
+                { to: toTrimmed },
+            );
+        }
         if (!hasPdf) {
             // eslint-disable-next-line no-console
             console.warn('[email] Application approval sent without PDF attachment (PDF generation failed)');
@@ -1194,8 +1367,9 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
     renderOfferUpdatedEmailHtml({
         client_name: clientName || 'Valued Client',
         company_name: companyName || 'your company',
-        calculate_approval_url: calculateApprovalUrl || '#',
-        view_application_url: viewApplicationUrl || calculateApprovalUrl || '#',
+        calculate_approval_url: calculateApprovalUrl || APPLICATION_APPROVAL_URL_PLACEHOLDER,
+        view_application_url:
+            viewApplicationUrl || calculateApprovalUrl || APPLICATION_APPROVAL_URL_PLACEHOLDER,
     });
 
 export async function sendApplicationOfferUpdatedEmail({
@@ -1225,7 +1399,7 @@ export async function sendApplicationOfferUpdatedEmail({
     }
 
     const subject = String(clientSubject || '').trim() || 'Your Offer Values Have Been Updated';
-    const html =
+    const rawHtml =
         String(clientHtml || '').trim() ||
         buildApplicationOfferUpdatedEmailHtml({
             clientName,
@@ -1233,6 +1407,11 @@ export async function sendApplicationOfferUpdatedEmail({
             viewApplicationUrl,
             calculateApprovalUrl,
         });
+    const html = injectApplicationApprovalEmailValues(rawHtml, {
+        approvalUrl: calculateApprovalUrl,
+        clientName,
+        companyName,
+    });
 
     try {
         const attachments = await buildIsoBrandedEmailAttachments(html, OFFER_UPDATED_EMAIL_PDF_FILENAME);
@@ -1708,7 +1887,7 @@ export async function sendApplicationSentToUnderwritingClientEmail({
     }
 }
 
-/** Client email when an Underwriter forwards the application to Final Underwriter (initial underwriting complete). */
+/** Client email when an Scrubbing forwards the application to Underwriter (initial underwriting complete). */
 export interface ApplicationUnderwritingCompletedClientEmailParams {
     to: string;
     clientName?: string;
@@ -1821,7 +2000,7 @@ export const buildApplicationUnderwritingCompletedClientEmailHtml = ({
                                         ${statusButtonBlock}
 
                                         <p style="font-size: 13px; color: #777; margin-top: 20px; line-height: 1.4;">
-                                            Our team will reach out shortly if further clarification is required. You can also leave a direct comment for the underwriter below.
+                                            Our team will reach out shortly if further clarification is required. You can also leave a direct comment for the scrubbing below.
                                         </p>
                                         
                                         <table border="0" cellpadding="0" cellspacing="0" style="margin-top: 10px;">
@@ -1936,7 +2115,7 @@ export async function sendUnderwriterNewApplicationEmail({
         await sendMail(to, subject, html);
     } catch (error) {
         // eslint-disable-next-line no-console
-        console.error('Underwriter new application email send failed:', error);
+        console.error('Scrubbing new application email send failed:', error);
     }
 }
 

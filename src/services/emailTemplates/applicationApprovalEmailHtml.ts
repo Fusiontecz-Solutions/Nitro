@@ -70,7 +70,7 @@ function renderStipColumn(title: string, itemsHtml: string): string {
 </table>`;
 }
 
-/** Gmail / Outlook-safe HTML for the ISO application-approval email. */
+/** Gmail / Outlook-safe HTML for the ISO pre-approval email — calculator link and stips only. */
 export function renderApplicationApprovalEmailHtml(
   values: ApplicationApprovalTemplateValues,
 ): string {
@@ -161,7 +161,7 @@ export function renderApplicationApprovalEmailHtml(
                 </tr>
 
                 <tr>
-                  <td style="padding:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#6b7280;">
+                  <td style="padding:0 0 20px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#6b7280;">
                     We are pleased to inform you that your application for <strong style="color:#1f2937;font-weight:bold;">&apos;${companyName}&apos;</strong> has been pre-approved by <strong style="color:#1f2937;font-weight:bold;">${brandName}!</strong>
                   </td>
                 </tr>

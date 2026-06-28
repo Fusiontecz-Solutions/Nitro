@@ -21,7 +21,10 @@ const PAYMENT_MAIL_ACTIONS = new Set([
 function isApprovalEmailLog(log: LogWithUser, meta: Record<string, unknown>): boolean {
   return (
     log.actionType === 'APPROVED' &&
-    (Boolean(meta.emailSentTo) || meta.template === 'approval' || meta.template === 'offer-updated')
+    (Boolean(meta.emailSentTo) ||
+      meta.template === 'approval' ||
+      meta.template === 'application-approved' ||
+      meta.template === 'offer-updated')
   );
 }
 
@@ -63,7 +66,7 @@ export function mapApplicationActivityLogEntry(log: LogWithUser) {
     templateName: (meta.templateName ??
       (meta.template === 'offer-updated'
         ? 'Update offer template'
-        : meta.template === 'approval'
+        : meta.template === 'approval' || meta.template === 'application-approved'
           ? 'Application approved template'
           : null)) as string | null,
     subject: meta.subject as string | null,

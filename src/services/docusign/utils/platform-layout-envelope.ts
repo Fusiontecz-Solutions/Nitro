@@ -67,7 +67,7 @@ export async function loadMainContractLayoutPackage(
     });
     if (!latest?.url) {
       throw new Error(
-        'No contract PDF configured. Upload a contract PDF from the Final Underwriter dashboard or set BoldSignTemplate.pdfUrl for layoutKey "contract".',
+        'No contract PDF configured. Upload a contract PDF from the Underwriter dashboard or set BoldSignTemplate.pdfUrl for layoutKey "contract".',
       );
     }
     const documentBase64 = await fetchPdfAsBase64(latest.url);

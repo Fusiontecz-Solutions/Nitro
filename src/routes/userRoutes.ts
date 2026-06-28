@@ -25,8 +25,8 @@ router.put('/:id', userController.update.bind(userController));
 // Toggle user active status
 router.patch('/:id/toggle-active', userController.toggleActive.bind(userController));
 
-// Delete user
-router.delete('/:id', userController.delete.bind(userController));
+// Delete user (Admin only)
+router.delete('/:id', requireAdmin, userController.delete.bind(userController));
 
 // Impersonate user
 router.post('/impersonate', userController.impersonateUser.bind(userController));
