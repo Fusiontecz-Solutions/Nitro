@@ -47,7 +47,7 @@ export default function ApplicationSheetDudep({
   if (isForbidden) {
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Dupes view is only visible to Underwriters and Admins.
+        Dupes view is only visible to Scrubbing and Admins.
       </div>
     );
   }

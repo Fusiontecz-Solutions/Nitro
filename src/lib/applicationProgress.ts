@@ -10,13 +10,13 @@
  */
 
 export type ApplicationProgressStageKey =
+  | "SCRUBBING"
   | "UNDERWRITER"
-  | "FINAL_UNDERWRITER"
   | "APPROVED"
+  | "FINAL_APPROVAL"
   | "CONTRACT_GENERATED"
   | "CONTRACT_SIGNED"
-  | "FINAL"
-  | "FUNDING_CALL"
+  | "FINAL_AND_FUNDING"
   | "DISBURSEMENT"
   | "FUNDED";
 
@@ -29,9 +29,14 @@ export interface ApplicationProgressStage {
 
 /** Ordered lifecycle. Index === progress position. */
 export const APPLICATION_PROGRESS_STAGES: ApplicationProgressStage[] = [
-  { key: "UNDERWRITER", label: "Underwriting", description: "Under review by an underwriter" },
-  { key: "FINAL_UNDERWRITER", label: "Final Underwriter", description: "Final underwriter review" },
-  { key: "APPROVED", label: "Approved", description: "Approved and ready for contract" },
+  { key: "SCRUBBING", label: "Scrubbing", description: "Under review during scrubbing" },
+  { key: "UNDERWRITER", label: "Underwriter", description: "Underwriter review" },
+  { key: "APPROVED", label: "Approved", description: "Approved pending final sign-off" },
+  {
+    key: "FINAL_APPROVAL",
+    label: "Final Approval",
+    description: "Awaiting underwriter final approval",
+  },
   {
     key: "CONTRACT_GENERATED",
     label: "Contract Generated",
@@ -42,8 +47,11 @@ export const APPLICATION_PROGRESS_STAGES: ApplicationProgressStage[] = [
     label: "Contract Signed",
     description: "Contract has been signed",
   },
-  { key: "FINAL", label: "Final", description: "Final review before funding call" },
-  { key: "FUNDING_CALL", label: "Funding Call", description: "Funding call in progress" },
+  {
+    key: "FINAL_AND_FUNDING",
+    label: "Final & Funding",
+    description: "Final review and funding call",
+  },
   { key: "DISBURSEMENT", label: "Disbursement", description: "Funds being disbursed" },
   { key: "FUNDED", label: "Funded", description: "Deal funded and complete" },
 ];
@@ -78,26 +86,34 @@ const NEGATIVE_TOKENS = new Set([
 /** Maps a normalized queue/state/status token to its lifecycle index. */
 const TOKEN_TO_INDEX: Record<string, number> = {
   // Intake / agent (no separate Agent step on the bar — earliest visible stage is Underwriting)
-  "": STAGE_INDEX_BY_KEY.UNDERWRITER,
-  new: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  agent: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  onhold: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  review: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  draft: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  pending: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  submitted: STAGE_INDEX_BY_KEY.UNDERWRITER,
+  "": STAGE_INDEX_BY_KEY.SCRUBBING,
+  new: STAGE_INDEX_BY_KEY.SCRUBBING,
+  agent: STAGE_INDEX_BY_KEY.SCRUBBING,
+  onhold: STAGE_INDEX_BY_KEY.SCRUBBING,
+  review: STAGE_INDEX_BY_KEY.SCRUBBING,
+  draft: STAGE_INDEX_BY_KEY.SCRUBBING,
+  pending: STAGE_INDEX_BY_KEY.SCRUBBING,
+  submitted: STAGE_INDEX_BY_KEY.SCRUBBING,
 
-  // Underwriter
+  // Scrubbing
+  scrubbing: STAGE_INDEX_BY_KEY.SCRUBBING,
+  underwriting: STAGE_INDEX_BY_KEY.SCRUBBING,
+  inprogress: STAGE_INDEX_BY_KEY.SCRUBBING,
+
+  // Final scrubbing
   underwriter: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  underwriting: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  inprogress: STAGE_INDEX_BY_KEY.UNDERWRITER,
+  finalreview: STAGE_INDEX_BY_KEY.UNDERWRITER,
 
-  // Final underwriter
-  finalunderwriter: STAGE_INDEX_BY_KEY.FINAL_UNDERWRITER,
-  finalreview: STAGE_INDEX_BY_KEY.FINAL_UNDERWRITER,
-
-  // Approved
+  // Approved (incl. UW sign-off before ISO outreach)
   approved: STAGE_INDEX_BY_KEY.APPROVED,
+  underwriterapproved: STAGE_INDEX_BY_KEY.APPROVED,
+  approvedbyuw: STAGE_INDEX_BY_KEY.APPROVED,
+  approvalsent: STAGE_INDEX_BY_KEY.APPROVED,
+  isoapproved: STAGE_INDEX_BY_KEY.APPROVED,
+  approvedbyiso: STAGE_INDEX_BY_KEY.APPROVED,
+
+  // Final approval (underwriter second sign-off before contract)
+  finalapproval: STAGE_INDEX_BY_KEY.FINAL_APPROVAL,
 
   // Contract generated (pending, sent, out, etc.)
   contracted: STAGE_INDEX_BY_KEY.CONTRACT_GENERATED,
@@ -111,11 +127,10 @@ const TOKEN_TO_INDEX: Record<string, number> = {
   contractsigned: STAGE_INDEX_BY_KEY.CONTRACT_SIGNED,
   signedcontracts: STAGE_INDEX_BY_KEY.CONTRACT_SIGNED,
 
-  // Final (ops bucket — distinct from Final Underwriter)
-  final: STAGE_INDEX_BY_KEY.FINAL,
-
-  // Funding call
-  fundingcall: STAGE_INDEX_BY_KEY.FUNDING_CALL,
+  // Final & funding call (merged ops bucket)
+  final: STAGE_INDEX_BY_KEY.FINAL_AND_FUNDING,
+  fundingcall: STAGE_INDEX_BY_KEY.FINAL_AND_FUNDING,
+  finalsandfundingcall: STAGE_INDEX_BY_KEY.FINAL_AND_FUNDING,
 
   // Disbursement
   disbursment: STAGE_INDEX_BY_KEY.DISBURSEMENT,

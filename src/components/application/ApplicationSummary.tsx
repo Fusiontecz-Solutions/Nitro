@@ -7,6 +7,8 @@ import { useTheme } from "@/context/ThemeContext";
 import { ChevronLeft } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { formatActionRequired } from "@/lib/formatActionRequired";
+import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel";
+import ApprovedByUnderwriterBadge from "./ApprovedByUnderwriterBadge";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import type { TermsOffer } from "@/types/termsOfferTypes";
@@ -126,7 +128,9 @@ const ApplicationSummary = ({
         }
     }
     const actionRequired = showDynamicData ? formatActionRequired((applicationData as any)?.note) : "--";
-
+    const isUnderwriterApproved = showDynamicData
+        ? isUnderwriterApprovedApplication(applicationData as Record<string, unknown>)
+        : false;
     // Brand gradient is theme- and mode-aware via the --brand-gradient CSS var.
     const gradient = "var(--brand-gradient)";
 
@@ -243,6 +247,16 @@ const ApplicationSummary = ({
                     <h2 className="text-white text-2xl font-[700] font-roboto uppercase tracking-wide">
                         Application Summary
                     </h2>
+                    {isUnderwriterApproved ? (
+                        <ApprovedByUnderwriterBadge
+                            app={
+                                (applicationData ?? {}) as Parameters<
+                                    typeof ApprovedByUnderwriterBadge
+                                >[0]["app"]
+                            }
+                            fallback="—"
+                        />
+                    ) : null}
                 </div>
                 <div className={innerPanelClass}>
                     {standardFiveColumns}

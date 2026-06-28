@@ -2,8 +2,8 @@ import { normalizeRoleKey } from "@/lib/sessionRole";
 
 /** Roles that may edit offer values, bank analysis, and positions on the Decision Making tab. */
 const DECISION_MAKING_EDITOR_ROLES = new Set([
+  "SCRUBBING",
   "UNDERWRITER",
-  "FINAL_UNDERWRITER",
   "OPERATIONS",
   "SUPER_ADMIN",
   "SUPERADMIN",

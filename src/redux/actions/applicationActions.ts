@@ -148,6 +148,27 @@ export const claimUnderwriterDeal = createAsyncThunk(
     async ({ applicationId }: { applicationId: string }, { dispatch, rejectWithValue }) => {
         try {
             await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/scrubbing-claim`,
+                {},
+            );
+            await invalidateApplicationsListCache();
+            return true;
+        } catch (error: any) {
+            console.error('Claim scrubbing deal error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to claim deal',
+            );
+        }
+    },
+);
+
+export const claimFinalUnderwriterDeal = createAsyncThunk(
+    'application/claimFinalUnderwriterDeal',
+    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
+        try {
+            await axiosPost(
                 `/applications/${encodeURIComponent(applicationId)}/underwriter-claim`,
                 {},
             );
@@ -158,7 +179,7 @@ export const claimUnderwriterDeal = createAsyncThunk(
             return rejectWithValue(
                 error.response?.data?.message ||
                     error?.message ||
-                    'Failed to claim deal',
+                    'Failed to claim application',
             );
         }
     },
@@ -169,17 +190,65 @@ export const releaseUnderwriterDeal = createAsyncThunk(
     async ({ applicationId }: { applicationId: string }, { dispatch, rejectWithValue }) => {
         try {
             await axiosPost(
-                `/applications/${encodeURIComponent(applicationId)}/underwriter-release`,
+                `/applications/${encodeURIComponent(applicationId)}/scrubbing-release`,
                 {},
             );
             await invalidateApplicationsListCache();
             return true;
         } catch (error: any) {
-            console.error('Release underwriter deal error:', error);
+            console.error('Release scrubbing deal error:', error);
             return rejectWithValue(
                 error.response?.data?.message ||
                     error?.message ||
                     'Failed to release claim',
+            );
+        }
+    },
+);
+
+export const assignApplicationToUnderwriter = createAsyncThunk(
+    'application/assignUnderwriter',
+    async (
+        {
+            applicationId,
+            underwriterId,
+        }: { applicationId: string; underwriterId: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/assign-underwriter`,
+                { underwriterId },
+            );
+            await invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Assign application to Underwriter error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to assign application to Underwriter',
+            );
+        }
+    },
+);
+
+export const sendApplicationForFinalUnderwriterApproval = createAsyncThunk(
+    'application/sendFinalUnderwriterApproval',
+    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/send-final-underwriter-approval`,
+                {},
+            );
+            await invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Send for final Underwriter approval error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to send application for final Underwriter approval',
             );
         }
     },
@@ -202,11 +271,11 @@ export interface ApplicationStatsData {
     underwriting: ApplicationStatsBucket;
     /** Agent queue / Pending state — backend `/applications/stats`. */
     workflowPending?: ApplicationStatsBucket;
-    /** Underwriter queue / In Progress state — backend `/applications/stats`. */
+    /** Scrubbing queue / In Progress state — backend `/applications/stats`. */
     workflowInProgress?: ApplicationStatsBucket;
     /** All applications in stats scope once each (dashboard “Total Deals Picked”). */
     totalDealsPicked?: ApplicationStatsBucket;
-    /** Apps in the viewer’s primary queue: Agent / Underwriter / Final Underwriter. */
+    /** Apps in the viewer’s primary queue: Agent / Scrubbing / Underwriter. */
     roleQueueAssigned?: ApplicationStatsBucket;
 }
 
@@ -395,6 +464,38 @@ export const getApplicationsByIsoId = createAsyncThunk(
             );
         }
     }
+);
+
+// Get applications by underwriter id
+export const getApplicationsByUnderwriterId = createAsyncThunk(
+    'application/getByUnderwriterId',
+    async (
+        args: string | { underwriterId: string; search?: string; currentQueue?: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const underwriterId = typeof args === 'string' ? args : args.underwriterId;
+            const search = typeof args === 'string' ? '' : (args.search ?? '');
+            const currentQueue = typeof args === 'string' ? '' : (args.currentQueue ?? '');
+            const queryParams = new URLSearchParams();
+            if (search.trim()) {
+                queryParams.append('search', search.trim());
+            }
+            if (currentQueue.trim()) {
+                queryParams.append('currentQueue', currentQueue.trim());
+            }
+            const query = queryParams.toString();
+            const response = await axiosGet(
+                `/applications/by-underwriter/${underwriterId}${query ? `?${query}` : ''}`,
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Get applications by underwriter id error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fetch applications by underwriter',
+            );
+        }
+    },
 );
 
 export type SaveSchedulePaymentTrackingPayload = {

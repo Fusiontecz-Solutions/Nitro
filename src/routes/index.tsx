@@ -234,9 +234,8 @@ const Routes: RouteObject[] = [
             { path: 'deals', element: <Deals /> },
             { path: 'deals/create', element: <CreateDeal /> },
             { path: 'agents', element: <Agents /> },
-            { path: 'underwriters', element: <Underwriters /> },
-            // { path: 'underwriters/final', element: <UnderwritersFinal /> },
-            { path: 'final-underwriters', element: <FinalUnderwriters /> },
+            { path: 'scrubbing', element: <Underwriters /> },
+            { path: 'underwriters', element: <FinalUnderwriters /> },
             { path: 'syndicators', element: <Navigate to="/syndicators/dashboard" replace /> },
             {
                 path: 'syndicators/dashboard',

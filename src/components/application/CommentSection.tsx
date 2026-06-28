@@ -459,7 +459,7 @@ const CommentSection = ({
 
     const totalVisibleComments = filteredComments.length;
 
-    /** Underwriter view shows Required Document Status beside Comments — narrow compose column. */
+    /** Scrubbing view shows Required Document Status beside Comments — narrow compose column. */
     const stackCommentActionsRow = Boolean(isUnderwriter && !publicMode);
 
     const renderCommentThread = (comment: Comment, depth: number) => {

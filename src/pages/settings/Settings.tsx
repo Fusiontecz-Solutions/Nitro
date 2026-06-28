@@ -13,28 +13,31 @@ import { selectUsersByRole, selectUsersLoadingByRole } from '@/redux/selectors/s
 import type { AppDispatch, RootState } from '@/redux/store';
 import { isSuperAdminRole, resolveEffectiveRole } from '@/lib/sessionRole';
 import Agent from './Agent';
-import FINALUNDERWRITER from './FINALUNDERWRITER';
 import UNDERWRITER from './UNDERWRITER';
+import SCRUBBING from './SCRUBBING';
 import Syndicators from './Syndicators';
 import Accounts from './Accounts';
+import Operations from './Operations';
 import AddUserModal from './AddUserModal';
 
 const FALLBACK_ROLES = [
   { id: "AGENT", roleName: "Agent", name: "Agent" },
-  { id: "UNDERWRITER", roleName: "Underwriters", name: "Underwriters" },
+  { id: "SCRUBBING", roleName: "Scrubbing", name: "Scrubbing" },
   {
-    id: "FINAL_UNDERWRITER",
-    roleName: "Final Underwriters",
-    name: "Final Underwriters",
+    id: "UNDERWRITER",
+    roleName: "Underwriters",
+    name: "Underwriters",
   },
+  { id: "OPERATIONS", roleName: "Operations", name: "Operations" },
   { id: "SYNDICATORS", roleName: "Syndicators", name: "Syndicators" },
   { id: "ACCOUNTS", roleName: "Accounts", name: "Accounts" },
 ];
 
 const ROLE_ID_TO_COMPONENT: Record<string, React.ComponentType<{ users: any[]; loading: boolean; error: string | null }>> = {
   AGENT: Agent,
+  SCRUBBING: SCRUBBING,
   UNDERWRITER: UNDERWRITER,
-  FINAL_UNDERWRITER: FINALUNDERWRITER,
+  OPERATIONS: Operations,
   SYNDICATORS: Syndicators,
   SYNDICATOR: Syndicators,
   ACCOUNTS: Accounts,

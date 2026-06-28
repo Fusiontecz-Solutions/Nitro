@@ -143,7 +143,7 @@ export default function ApplicationDetailsSheet({
       ""
   )
   const roleUpper = String(userRole || "").replace(/-/g, "_").toUpperCase()
-  const canSeeDedupe = ["UNDERWRITER", "FINAL_UNDERWRITER", "ADMIN", "SUPER_ADMIN"].includes(
+  const canSeeDedupe = ["SCRUBBING", "UNDERWRITER", "ADMIN", "SUPER_ADMIN"].includes(
     roleUpper
   )
   const isOperationsRole = roleUpper === "OPERATIONS"

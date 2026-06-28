@@ -62,6 +62,13 @@ export interface Application {
         };
     };
     loanAmount?: number | null;
+    /** Latest terms offer (list/detail when backend includes relations). */
+    termsOffers?: { approvedAmount?: number | string | null }[];
+    /** Offer decision snapshot (list/detail when backend includes relations). */
+    OfferDecision?: {
+        offer?: number | string | Record<string, unknown> | null;
+        decision?: string | null;
+    } | null;
     /** Per-row import / Excel deal name when distinct from client business name (e.g. "… #2"). */
     dealDisplayName?: string | null;
     note?: string;
@@ -70,14 +77,17 @@ export interface Application {
     status?: 'Pending' | 'Approved' | 'Rejected' | 'Funded';
     queue?: string;
     state?: string;
-    currentQueue?: 'New' | 'Agent' | 'Review' | 'Underwriting' | 'Final Review' | 'Approved' | 'Declined' | 'On Hold' | 'Contracted' | 'Contract Out' | 'Contracts Out';
+    currentQueue?: 'New' | 'Agent' | 'Review' | 'Scrubbing' | 'Underwriter' | 'Underwriting' | 'Final Review' | 'Final Approval' | 'Approved' | 'Declined' | 'On Hold' | 'Contracted' | 'Contract Out' | 'Contracts Out';
     currentState?: 'Draft' | 'Pending' | 'Submitted' | 'In Progress' | 'Completed' | 'Cancelled' | 'Contract Out' | 'Contracts Out';
     /** Raw DB state (Prisma) when present — `currentState` is workflow-mapped and can collapse funded vs approved. */
     statsCurrentState?: string;
     /** Application-level commission rate (0–100), persisted on the application record. */
     commissionPercentage?: number;
+    /** Per-deal underwriter commission rate (0–100), distinct from ISO commission. */
+    underwriterCommissionPercentage?: number;
     /** Per-deal commission dollars (e.g. bulk import); used with advance/fees for “already net” style metrics. */
     commissionAmount?: number | null;
+    underwriterCommissionAmount?: number | null;
     /** Set on `GET /applications?statsBucket=funded`: collection payback/repaid/balance (same logic as `/collection-payments/balances`). */
     collectionPaybackAmount?: number | null;
     collectionSumOfRepaid?: number | null;
@@ -89,6 +99,13 @@ export interface Application {
     claimedByUnderwriterId?: string | null;
     claimedAt?: string | null;
     claimedByUnderwriter?: ApplicationUserLite | null;
+    assignedUnderwriterId?: string | null;
+    assignedUnderwriter?: ApplicationUserLite | null;
+    approvedByUnderwriterId?: string | null;
+    approvedAt?: string | null;
+    approvedByUnderwriter?: ApplicationUserLite | null;
+    /** Last action the Underwriter took: "Approved By UW", "Decline by UW", "Final Approved by UW". */
+    underwriterAction?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"). */
     category?: string | null;
     createdAt?: string;
@@ -131,8 +148,11 @@ export interface UpdateApplicationPayload {
     underwriterApproval?: boolean;
     approvedAt?: string;
     commissionPercentage?: number;
+    underwriterCommissionPercentage?: number;
     /** Dollar commission stored on the application row (`Application.commissionAmount`). */
     commissionAmount?: number | null;
+    /** Dollar underwriter commission stored on the application row. */
+    underwriterCommissionAmount?: number | null;
     /** Links the deal to an ISO; backend validates and syncs commission from the ISO record. */
     isoId?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"); pass null/"" to clear. */
@@ -193,8 +213,10 @@ export interface GetApplicationsParams {
     sortOrder?: 'asc' | 'desc';
     /** When true, backend returns list-optimized payload (smaller includes, faster response). */
     lite?: boolean;
-    /** UNDERWRITER only: narrow list to pool vs my claimed deals (combined with Underwriter queue). */
+    /** SCRUBBING / UNDERWRITER: narrow list to pool vs my claimed deals. */
     underwriterClaim?: 'unclaimed' | 'mine';
+    /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
+    underwriterPipeline?: string;
     /** Organization filter for list table (e.g. "Katan II", "Katan III"). */
     organization?: string;
 }

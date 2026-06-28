@@ -228,7 +228,7 @@ const companyWillHandle = [
 interface RequiredDocumentProps {
     isBankAnalysis?: boolean;
     isDecisionMaking?: boolean;
-    /** e.g. deal pipeline Agent/Underwriter — omit Bank Total summary above documents */
+    /** e.g. deal pipeline Agent/Scrubbing — omit Bank Total summary above documents */
     hideBankTotal?: boolean;
     /** e.g. deal pipeline any stage — omit Required Documents for funding card (checklist, upload, uploaded list) */
     hideFundingDocuments?: boolean;
@@ -238,7 +238,7 @@ interface RequiredDocumentProps {
     readOnly?: boolean;
     /**
      * When false, user can still see the upload area but cannot submit files
-     * (e.g. final underwriter / operations on decision-making — only super admin + underwriter upload here).
+     * (e.g. final scrubbing / operations on decision-making — only super admin + scrubbing upload here).
      */
     disableFundingUpload?: boolean;
 }
@@ -310,7 +310,7 @@ const RequiredDocument = ({
         }
     }, [applicationData?._id, applicationData?.documentChecklistChecked]);
 
-    // Fetch positions, terms offers, months by application (UUID or numeric applicationId) — role-independent; same data for Agent and Underwriter
+    // Fetch positions, terms offers, months by application (UUID or numeric applicationId) — role-independent; same data for Agent and Scrubbing
     const applicationIdentifier = applicationData?._id ?? applicationId;
     const scopedPositionsForBankTotal = useMemo(() => {
         if (!applicationIdentifier) return [];
@@ -355,7 +355,7 @@ const RequiredDocument = ({
         }
     }, [applicationIdentifier, dispatch]);
 
-    // Fetch transactions for each month when months data is available — role-independent; Agent and Underwriter see same transactions for the same applicationId
+    // Fetch transactions for each month when months data is available — role-independent; Agent and Scrubbing see same transactions for the same applicationId
     useEffect(() => {
         if (publicMode) return;
         if (monthsData && Array.isArray(monthsData) && monthsData.length > 0) {
@@ -462,7 +462,7 @@ const RequiredDocument = ({
     // }, [bankAnalysisData]);
 
     // const userRole = user?.role || localStorage.getItem('role') || ''
-    // const isUnderwriterRole = userRole === 'UNDERWRITER' || userRole === 'FINAL_UNDERWRITER'
+    // const isUnderwriterRole = userRole === 'SCRUBBING' || userRole === 'UNDERWRITER'
 
     const onSubmit = async (data: UploadFormData) => {
         if (disableFundingUpload) return;
@@ -704,7 +704,7 @@ const RequiredDocument = ({
 
                                                 {disableFundingUpload && (
                                                     <p className="text-xs text-muted-foreground mt-2">
-                                                        Upload is available to Super Admin, Underwriter, and Final Underwriter only.
+                                                        Upload is available to Super Admin, Scrubbing, and Underwriter only.
                                                     </p>
                                                 )}
 

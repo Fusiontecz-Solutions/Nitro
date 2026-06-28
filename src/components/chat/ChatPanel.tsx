@@ -16,8 +16,8 @@ import { Input } from '@/components/ui/input';
 const roleLabel = (role: string): string => {
   const labels: Record<string, string> = {
     AGENT: 'Agent',
+    SCRUBBING: 'Scrubbing',
     UNDERWRITER: 'Underwriter',
-    FINAL_UNDERWRITER: 'Final Underwriter',
     ACCOUNTANT: 'Accountant',
     ADMIN: 'Admin',
     SUPER_ADMIN: 'Super Admin',

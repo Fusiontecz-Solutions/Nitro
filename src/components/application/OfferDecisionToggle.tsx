@@ -89,7 +89,7 @@ export interface OfferDecisionToggleProps {
   totalMonthlyFromPositionsOverride?: number;
   totalDailyFromPositionsOverride?: number;
 
-  /** Emits computed summary metrics for the Final Underwriter header. */
+  /** Emits computed summary metrics for the Underwriter header. */
   onSummaryMetricsChange?: (payload: {
     activePositions: number;
     existingLeveragePct: number;
@@ -102,6 +102,8 @@ export interface OfferDecisionToggleProps {
   showPreviewBadge?: boolean;
   /** Fires when an approved offer is locked (preview) vs editable. */
   onPreviewModeChange?: (isPreview: boolean) => void;
+  /** Optional slot rendered directly above the OFFER card (below top actions when actionsAtTop). */
+  aboveOffer?: React.ReactNode;
 }
 
 function isSameOfferForm(a: OfferFormValue, b: OfferFormValue): boolean {
@@ -419,6 +421,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     actionsAtTop = false,
     showPreviewBadge = actionsAtTop,
     onPreviewModeChange,
+    aboveOffer,
   } = props;
 
   const [localData, setLocalData] = useState<OfferFormValue>(() => ({
@@ -440,6 +443,8 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
   /** Snapshot of offer fields when opening edit on an already-approved offer (for Cancel). */
   const offerSnapshotBeforeEditRef = useRef<OfferFormValue | null>(null);
   const editingApprovedOfferRef = useRef(false);
+  /** Skip redundant reload when this instance just saved (emitOfferDecisionUpdated echoes back). */
+  const skipNextOfferDecisionReloadRef = useRef(false);
 
   const lastChangedFieldRef = useRef<
     | "offer"
@@ -591,6 +596,10 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     const onOfferDecisionUpdated = (event: Event) => {
       const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
       if (!offerDecisionUpdateMatchesApplication(detail?.applicationId, applicationId)) {
+        return;
+      }
+      if (skipNextOfferDecisionReloadRef.current) {
+        skipNextOfferDecisionReloadRef.current = false;
         return;
       }
       if (editingApprovedOfferRef.current) return;
@@ -1343,6 +1352,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
       // Ensure the OFFER form/section remains visible after saving
       setShowApproveForm(true);
 
+      skipNextOfferDecisionReloadRef.current = true;
       emitOfferDecisionUpdated(applicationId);
 
       toast.success("Offer saved successfully.");
@@ -1513,6 +1523,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         >
           <div className={showNotesPanel ? "xl:col-span-9 space-y-3" : "space-y-3"}>
             {actionsAtTop && renderDecisionActions()}
+            {aboveOffer}
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-md dark:border-slate-700 dark:bg-[#141517]">
               <div className="bg-[#559955bf] px-5 py-3 font-bold text-lg text-white tracking-wider">
                 OFFER

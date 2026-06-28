@@ -2,48 +2,57 @@ import type { OperationsApplicationsListStatus } from "@/constants/operationsDas
 
 export type PipelineTab = { id: string; label: string };
 
-/** Full pipeline for Super Admin — Decision Making (not a separate Bank Analysis tab) plus Final + Funding Call between Contract and Disbursement. */
+/** Combined Final + Funding Call stage (sidebar bucket and application-details tab). */
+export const FINALS_AND_FUNDING_CALL_TAB: PipelineTab = {
+  id: "finals-and-funding-call",
+  label: "FINALS & FUNDING CALL",
+};
+
+/** Full pipeline for Super Admin — Scrubbing (not a separate Bank Analysis tab) plus Finals & Funding Call between Contract and Disbursement. */
 export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
-  { id: "decision-making", label: "DECISION MAKING" },
+  { id: "decision-making", label: "SCRUBBING" },
+  { id: "background-check", label: "BACKGROUND CHECK" },
   { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
   { id: "contract", label: "CONTRACT" },
-  { id: "final", label: "FINAL" },
-  { id: "funding-call", label: "FUNDING CALL" },
+  FINALS_AND_FUNDING_CALL_TAB,
   { id: "disbursement", label: "DISBURSEMENT" },
 ];
 
 /**
- * Operations pipeline: same flow but **no** Final or Funding Call tabs.
- * Dashboard buckets named Final / Funding Call still resolve to the full Operations strip
- * (overview → disbursement) via `getOperationsTabsForDashboardEntry`.
+ * Operations pipeline: same flow with the merged Finals & Funding Call tab
+ * between Contract and Disbursement.
  */
 export const OPERATIONS_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
   { id: "decision-making", label: "DECISION MAKING" },
+  { id: "background-check", label: "BACKGROUND CHECK" },
+  { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
   { id: "contract", label: "CONTRACT" },
+  FINALS_AND_FUNDING_CALL_TAB,
   { id: "disbursement", label: "DISBURSEMENT" },
 ];
 
 const TAB_INDEX = {
   contract: OPERATIONS_PIPELINE_TABS.findIndex((t) => t.id === "contract"),
-  final: OPERATIONS_PIPELINE_TABS.findIndex((t) => t.id === "final"),
-  fundingCall: OPERATIONS_PIPELINE_TABS.findIndex((t) => t.id === "funding-call"),
+  finalsAndFundingCall: OPERATIONS_PIPELINE_TABS.findIndex(
+    (t) => t.id === "finals-and-funding-call",
+  ),
 } as const;
 
 /**
  * Visible pipeline tabs for **Operations** from `?operationsStatus=…`
  * (dashboard card, sidebar, or inferred stage when opening from “all” cases).
  *
- * Uses {@link OPERATIONS_PIPELINE_TABS} (no Final / Funding Call tab IDs).
+ * Uses {@link OPERATIONS_PIPELINE_TABS} (includes merged Finals & Funding Call tab).
  *
  * - Agent → OVERVIEW, DOCUMENTS
- * - Underwriter → through CONTRACT (first four tabs)
- * - Final Underwriter → DECISION MAKING, CONTRACT
+ * - Scrubbing → through CONTRACT (overview → eligibility analysis)
+ * - Underwriter → DECISION MAKING, BACKGROUND CHECK, ELIGIBILITY ANALYSIS, CONTRACT
  * - Contract pending / … → through CONTRACT
- * - Final / Funding Call buckets → full Operations strip (those tabs are not shown individually)
+ * - Final / Funding Call / Finals & Funding Call → through merged tab
  * - Funded / Disbursment → full strip
  * - No / unknown status → full Operations strip
  */
@@ -59,11 +68,15 @@ export function getOperationsTabsForDashboardEntry(
   switch (status) {
     case "Agent":
       return full.slice(0, 2);
+    case "Scrubbing": {
+      const end = TAB_INDEX.contract;
+      return end >= 0 ? full.slice(0, end + 1) : [...full];
+    }
     case "Underwriter":
-      return full.slice(0, 4);
-    case "Final Underwriter":
       return [
         { id: "decision-making", label: "DECISION MAKING" },
+        { id: "background-check", label: "BACKGROUND CHECK" },
+        { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
         { id: "contract", label: "CONTRACT" },
       ];
     case "Contract_Pending":
@@ -78,15 +91,12 @@ export function getOperationsTabsForDashboardEntry(
       const end = TAB_INDEX.contract;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
     }
-    case "Final": {
-      const end = TAB_INDEX.final;
+    case "Final":
+    case "Funding Call":
+    case "Finals_And_Funding_Call": {
+      const end = TAB_INDEX.finalsAndFundingCall;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
     }
-    case "Funding Call": {
-      const end = TAB_INDEX.fundingCall;
-      return end >= 0 ? full.slice(0, end + 1) : [...full];
-    }
-    case "Finals_And_Funding_Call":
     case "Funded":
     case "Disbursment":
     case "Declined":
@@ -106,9 +116,9 @@ export function getOperationsPipelineStageTabId(
   switch (status) {
     case "Agent":
       return "documents";
-    case "Underwriter":
+    case "Scrubbing":
       return "decision-making";
-    case "Final Underwriter":
+    case "Underwriter":
       return "decision-making";
     case "Contract_Pending":
     case "Contract_Generated":
@@ -121,11 +131,9 @@ export function getOperationsPipelineStageTabId(
     case "Signed_Contracts":
       return "contract";
     case "Final":
-      return "final";
     case "Funding Call":
-      return "funding-call";
     case "Finals_And_Funding_Call":
-      return "funding-call";
+      return "finals-and-funding-call";
     case "Funded":
     case "Disbursment":
       return "disbursement";

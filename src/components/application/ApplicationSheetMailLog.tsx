@@ -157,13 +157,14 @@ function resolveMailLogHeading(row: MailLogRow): string {
   const isIsoApprovalEmail =
     row.activityLog?.actionType === 'APPROVED' ||
     templateKey === 'approval' ||
+    templateKey === 'application-approved' ||
     templateKey === 'offer-updated';
 
   if (isIsoApprovalEmail) {
     if (templateKey === 'offer-updated' || meta.resend === true) {
       return 'Update offer template';
     }
-    if (templateKey === 'approval') {
+    if (templateKey === 'approval' || templateKey === 'application-approved') {
       return 'Application approved template';
     }
     if (row.templateName?.trim()) {

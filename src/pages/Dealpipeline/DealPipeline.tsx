@@ -49,8 +49,8 @@ import { isListBlockingLoad } from "@/lib/listLoading";
 
 type PipelineStage =
   | "agent"
-  | "underwriter"
-  | "final-underwriter"
+  | "scrubbing"
+  | "final-scrubbing"
   | "doc-request-contract"
   | "final"
   | "funding-call";
@@ -77,8 +77,8 @@ type PipelineDeal = {
 
 const STAGE_CONFIG: Array<{ value: PipelineStage; label: string }> = [
   { value: "agent", label: "AGENT" },
-  { value: "underwriter", label: "UNDERWRITER" },
-  { value: "final-underwriter", label: "FINAL UNDERWRITER" },
+  { value: "scrubbing", label: "SCRUBBING" },
+  { value: "final-scrubbing", label: "UNDERWRITER" },
   { value: "doc-request-contract", label: "CONTRACT" },
   { value: "final", label: "FINAL" },
   { value: "funding-call", label: "FUNDING CALL" },
@@ -90,8 +90,8 @@ const STAGE_CONFIG: Array<{ value: PipelineStage; label: string }> = [
  */
 const STAGE_OPERATIONS_STATUS: Record<PipelineStage, string> = {
   agent: "Agent",
-  underwriter: "Underwriter",
-  "final-underwriter": "Final Underwriter",
+  scrubbing: "Scrubbing",
+  "final-scrubbing": "Underwriter",
   "doc-request-contract": "Contracted",
   final: "Final",
   "funding-call": "Funding Call",
@@ -100,8 +100,8 @@ const STAGE_OPERATIONS_STATUS: Record<PipelineStage, string> = {
 /** Label to display in CURRENT STATE for non-contract pipeline stages (uniform stage badge). */
 const STAGE_DISPLAY_STATE: Record<PipelineStage, string> = {
   agent: "Agent",
-  underwriter: "Underwriter",
-  "final-underwriter": "Final Underwriter",
+  scrubbing: "Scrubbing",
+  "final-scrubbing": "Underwriter",
   "doc-request-contract": "Contract",
   final: "Final",
   "funding-call": "Funding Call",
@@ -244,10 +244,10 @@ function getDealStateBadgeClass(stateLabel: string): string {
   if (n === "declined") return "bg-red-100 text-red-700";
   if (
     n === "underwriting" ||
-    n === "underwriter" ||
+    n === "scrubbing" ||
     n === "review" ||
     n === "final review" ||
-    n === "final underwriter" ||
+    n === "final scrubbing" ||
     n === "final" ||
     n === "funding call" ||
     n === "agent"

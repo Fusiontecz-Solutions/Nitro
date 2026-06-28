@@ -42,6 +42,23 @@ interface IncomingNotificationEvent {
     };
 }
 
+/**
+ * Stage-routing alerts (scrubber / agent / admin hand-offs) belong in the
+ * inbox and sidebar badge only — no corner toast pop-up.
+ * "Application sent to Scrubbing" and "Application sent to Underwriter" still toast.
+ */
+function isInboxOnlyWorkflowNotification(title: string): boolean {
+    const t = String(title || "").trim();
+    if (!t) return false;
+
+    return [
+        /^Scrubber Sent/i,
+        /^Admin Sent/i,
+        /sent a new application/i,
+        /forwarded an application for final review/i,
+    ].some((pattern) => pattern.test(t));
+}
+
 const RealtimeNotificationsListener = () => {
     const { socket } = useSocket();
     const dispatch = useDispatch<AppDispatch>();
@@ -126,7 +143,19 @@ const RealtimeNotificationsListener = () => {
                 return;
             }
 
-            // Generic application_approved push (FUW / underwriter / agent).
+            // Skip the toast for the user's own "You created application" push —
+            // the create flow already shows an explicit success toast, so a
+            // second toast here would be a duplicate. The notification is still
+            // reconciled into the inbox/badge above.
+            const isSelfCreated = /^you created application/i.test(
+                String(incoming.title || "").trim(),
+            );
+            if (isSelfCreated) return;
+
+            // Workflow hand-offs (scrubber / agent / underwriter sent) — inbox only.
+            if (isInboxOnlyWorkflowNotification(String(incoming.title || ""))) return;
+
+            // Generic application_approved push (FUW / scrubbing / agent).
             toast.info(`${incoming.title}`, {
                 autoClose: 4000,
                 onClick: () => {

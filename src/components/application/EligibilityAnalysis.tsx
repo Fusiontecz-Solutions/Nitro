@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useParams } from "react-router";
 import { Loader2 } from "lucide-react";
 import { toast } from "react-toastify";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,15 @@ import {
   fetchDecisionLogicReport,
   initiateDecisionLogic,
 } from "@/redux/actions/decision-logic-actions";
+import {
+  getApplicationById,
+  sendApplicationForFinalUnderwriterApproval,
+} from "@/redux/actions/applicationActions";
+import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
+import {
+  formatApprovedByUnderwriterLabel,
+  isIsoApprovedApplication,
+} from "@/lib/underwriterApprovalLabel";
 import type { AppDispatch, RootState } from "@/redux/store";
 import type { BankDetail } from "@/types/bankDetailTypes";
 
@@ -71,14 +81,17 @@ function normalizeBanks(rawBanks: BankDetail[]): BankRow[] {
 }
 
 export default function EligibilityAnalysis() {
+  const { applicationId: paramApplicationId } = useParams<{ applicationId: string }>();
   const dispatch = useDispatch<AppDispatch>();
   const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
+  const loginUser = useSelector((state: RootState) => state.login.data?.user);
   const bankDetailRows = useSelector(
     (state: RootState) => (state.bankDetails.data ?? []) as BankDetail[]
   );
   const [isDecisionLogicModalOpen, setIsDecisionLogicModalOpen] = useState(false);
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string>("");
   const [isSubmittingDecisionLogic, setIsSubmittingDecisionLogic] = useState(false);
+  const [isSendingFinalApproval, setIsSendingFinalApproval] = useState(false);
   const [dlReportLoading, setDlReportLoading] = useState(false);
   const [dlReportError, setDlReportError] = useState("");
   const [dlReportRow, setDlReportRow] = useState<Record<string, unknown> | null>(null);
@@ -116,6 +129,23 @@ export default function EligibilityAnalysis() {
       })),
     [bankOptions]
   );
+  const roleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
+  const canSendFinalUnderwriterApproval =
+    roleKey === "SUPER_ADMIN" || roleKey === "OPERATIONS";
+  const isIsoApproved = isIsoApprovedApplication(applicationData);
+  const approvingUnderwriterId = String(applicationData?.approvedByUnderwriterId ?? "").trim();
+  const currentQueueNorm = String(applicationData?.currentQueue ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+  const isFinalApprovalStage = currentQueueNorm === "finalapproval";
+  const approvingUnderwriterName = formatApprovedByUnderwriterLabel(
+    (applicationData ?? {}) as Parameters<typeof formatApprovedByUnderwriterLabel>[0],
+  );
+  const showSendFinalApprovalButton =
+    canSendFinalUnderwriterApproval &&
+    isIsoApproved &&
+    Boolean(approvingUnderwriterId);
 
   useEffect(() => {
     if (!applicationRecordId) return;
@@ -199,9 +229,85 @@ export default function EligibilityAnalysis() {
     }
   };
 
+  const handleSendForFinalUnderwriterApproval = async () => {
+    if (!applicationRecordId) {
+      toast.error("Missing application id. Please reload and try again.");
+      return;
+    }
+    if (!approvingUnderwriterId) {
+      toast.error("No approving Underwriter is recorded for this application.");
+      return;
+    }
+    setIsSendingFinalApproval(true);
+    const toastId = toast.loading("Sending to Underwriter for final approval...");
+    try {
+      await dispatch(
+        sendApplicationForFinalUnderwriterApproval({
+          applicationId: applicationRecordId,
+        }),
+      ).unwrap();
+      await dispatch(getApplicationById(paramApplicationId ?? applicationRecordId));
+      toast.update(toastId, {
+        render: approvingUnderwriterName
+          ? `Application sent to ${approvingUnderwriterName} for final approval.`
+          : "Application sent to the approving Underwriter for final approval.",
+        type: "success",
+        isLoading: false,
+        autoClose: 3000,
+      });
+    } catch (err) {
+      console.error("Failed to send for final Underwriter approval:", err);
+      toast.update(toastId, {
+        render:
+          typeof err === "string"
+            ? err
+            : "Failed to send application for final Underwriter approval. Please try again.",
+        type: "error",
+        isLoading: false,
+        autoClose: 4000,
+      });
+    } finally {
+      setIsSendingFinalApproval(false);
+    }
+  };
+
   return (
     <section >
       <div className="space-y-5">
+        {showSendFinalApprovalButton ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-[#111827]">
+                Final Underwriter approval
+              </p>
+              <p className="mt-0.5 text-xs text-[#6B7280]">
+                {isFinalApprovalStage
+                  ? `Already sent to ${approvingUnderwriterName ?? "the approving Underwriter"} for final approval.`
+                  : approvingUnderwriterName
+                    ? `Send this deal back to ${approvingUnderwriterName} only — not to another Underwriter.`
+                    : "Send this deal to the Underwriter who approved it for final approval."}
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              disabled={isSendingFinalApproval || isFinalApprovalStage}
+              onClick={() => void handleSendForFinalUnderwriterApproval()}
+            >
+              {isSendingFinalApproval ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+                  Sending…
+                </>
+              ) : isFinalApprovalStage ? (
+                "Sent for final approval"
+              ) : (
+                "Send UNDERWRITER for final Approval"
+              )}
+            </Button>
+          </div>
+        ) : null}
         {/* <div className="rounded-md border border-[#E5E7EB] p-3 space-y-2">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-[#111827]">Credit Report</h3>

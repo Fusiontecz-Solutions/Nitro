@@ -28,7 +28,7 @@ import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
   claimUnderwriterDeal,
-  getApplications,
+  claimFinalUnderwriterDeal,
   getApplicationStats,
   deleteApplication,
   extractBusinessDetails,
@@ -82,6 +82,7 @@ import {
 } from "@/constants/operationsDashboardApplications";
 import {
   buildApplicationsBrowseUrl,
+  buildUnderwriterPipelineApplicationsUrl,
   statCardTitleToApplicationsQuery,
 } from "@/constants/dashboardApplicationsNavigation";
 import {
@@ -91,13 +92,20 @@ import {
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 import {
   parseApplicationsListRouteFilters,
+  parseUnderwriterClaimFromSearch,
+  parseUnderwriterPipelineFromSearch,
   buildApplicationsListParams,
   applicationsListSortFromTable,
   APPLICATIONS_LIST_DEFAULT_SORT,
 } from "@/lib/applicationsListParams";
+import { underwriterPipelineTitle } from "@/constants/underwriterPipeline";
+import { invalidateUnderwriterPipelineCounts } from "@/lib/underwriterPipelineCounts";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
+import { getOperationsPipelineStageTabId } from "@/constants/operationsPipelineTabs";
+import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashboardActions";
+import { shouldPrefetchOpsDashboardSummary } from "@/lib/shellPrefetchRoutes";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
 import { formatDealPipelineCurrentStateLabel } from "@/lib/dealPipelineCurrentState";
 import {
@@ -116,6 +124,7 @@ import {
   normalizeRoleKey,
   resolveEffectiveRole,
 } from "@/lib/sessionRole";
+import { getApplicationApprovedAmount } from "@/lib/applicationOfferAmount";
 
 /** List/table: imported `dealId` when set, otherwise business `applicationId`. */
 function getApplicationDealIdDisplay(app: Application): string {
@@ -125,32 +134,27 @@ function getApplicationDealIdDisplay(app: Application): string {
   return "-";
 }
 
-/** Populated from `GET /applications` include `claimedByUnderwriter` (name/email). */
-function formatUnderwriterClaimLabel(
-  app: Application,
-  viewerUserId?: string | null,
+function formatApplicationUserDisplayName(
+  user: Application["claimedByUnderwriter"],
 ): string {
-  const claimer = app.claimedByUnderwriter;
-  if (!app.claimedByUnderwriterId && !claimer) return "—";
-  const claimUuid =
-    app.claimedByUnderwriterId ??
-    (typeof claimer === "object" && claimer
-      ? String(claimer.id ?? claimer._id ?? "")
-      : "");
-  if (
-    viewerUserId &&
-    claimUuid &&
-    String(viewerUserId) === String(claimUuid)
-  ) {
-    return "You";
-  }
-  if (claimer && typeof claimer === "object") {
-    const fn = (claimer.firstName ?? "").trim();
-    const ln = (claimer.lastName ?? "").trim();
-    const full = [fn, ln].filter(Boolean).join(" ");
-    if (full) return full;
-    if (claimer.email?.trim()) return claimer.email.trim();
-  }
+  if (!user || typeof user !== "object") return "";
+  const fn = (user.firstName ?? "").trim();
+  const ln = (user.lastName ?? "").trim();
+  const full = [fn, ln].filter(Boolean).join(" ");
+  if (full) return full;
+  if (user.email?.trim()) return user.email.trim();
+  return "";
+}
+
+function formatScrubberClaimLabel(app: Application): string {
+  const name = formatApplicationUserDisplayName(app.claimedByUnderwriter);
+  if (app.claimedByUnderwriterId || name) return name || "—";
+  return "—";
+}
+
+function formatUnderwriterClaimLabel(app: Application): string {
+  const name = formatApplicationUserDisplayName(app.assignedUnderwriter);
+  if (app.assignedUnderwriterId || name) return name || "—";
   return "—";
 }
 
@@ -186,6 +190,14 @@ const Applications = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const sessionRoleKey = normalizeRoleKey(localStorage.getItem("role") || "");
+  const loginData = useSelector((state: RootState) => state.login.data);
+  const loginUser = loginData?.user;
+  const effectiveRoleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
+  /** Super Admin / Operations only — scrubbers and underwriters must not see colleagues' claims. */
+  const showClaimedByColumn =
+    effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS";
+  /** Super Admin / Operations — show approved offer amount alongside request amount. */
+  const showApprovedAmountColumn = showClaimedByColumn;
 
   const getApplicationClientId = useCallback((application: Application): string | null => {
     const client = application?.client;
@@ -221,8 +233,16 @@ const Applications = () => {
   const isOperationsDashboardView =
     new URLSearchParams(location.search).get("fromDashboard") === "operations";
 
+  const underwriterPipelineFilter = parseUnderwriterPipelineFromSearch(
+    location.search,
+  );
+  const showUnderwriterPipelineView =
+    sessionRoleKey === "UNDERWRITER" && Boolean(underwriterPipelineFilter);
+
   const showUwDealPoolUi =
-    sessionRoleKey === "UNDERWRITER" && !isOperationsDashboardView;
+    (sessionRoleKey === "SCRUBBING" || sessionRoleKey === "UNDERWRITER") &&
+    !isOperationsDashboardView &&
+    !showUnderwriterPipelineView;
 
   // Local state (URL-derived defaults avoid a blank frame before the first list fetch)
   const [searchTerm, setSearchTerm] = useState("");
@@ -236,12 +256,11 @@ const Applications = () => {
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(true);
-  /** Primary underwriter inbox: unclaimed pool vs deals you claimed (Underwriter queue only). */
+  /** Primary scrubbing inbox: unclaimed pool vs deals you claimed (Scrubbing queue only). */
   const [underwriterPoolTab, setUnderwriterPoolTab] = useState<"queue" | "my">(
-    "queue",
+    () =>
+      parseUnderwriterClaimFromSearch(location.search) === "mine" ? "my" : "queue",
   );
-  /** Underwriters should not see which colleague claimed a deal (admin/ops visibility only). */
-  const showClaimedByColumn = sessionRoleKey !== "UNDERWRITER";
   const [claimBusyAppId, setClaimBusyAppId] = useState<string | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [isExtractingPDF, setIsExtractingPDF] = useState(false);
@@ -294,7 +313,7 @@ const Applications = () => {
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<string[]>([]);
   const [prevMonthStats, setPrevMonthStats] =
     useState<ApplicationStatsData | null>(null);
-  /** Stats scoped to Queue / My deals (Underwriter inbox only); avoids overwriting global Redux stats. */
+  /** Stats scoped to Queue / My deals (Scrubbing inbox only); avoids overwriting global Redux stats. */
   const [uwDealPoolStats, setUwDealPoolStats] =
     useState<ApplicationStatsData | null>(null);
   const [uwDealPoolPrevStats, setUwDealPoolPrevStats] =
@@ -338,9 +357,6 @@ const Applications = () => {
     error: deleteError,
   } = useSelector((state: RootState) => state.deleteApplication);
 
-  const loginData = useSelector((state: RootState) => state.login.data);
-  const loginUser = loginData?.user;
-  const currentUserIdForClaim = loginUser?._id ?? "";
 
   const fetchUwDealPoolStats = useCallback(
     async (signal?: AbortSignal) => {
@@ -383,7 +399,7 @@ const Applications = () => {
     const ac = new AbortController();
     void fetchUwDealPoolStats(ac.signal).catch((err: unknown) => {
       if (ac.signal.aborted) return;
-      console.error("Failed to fetch underwriter pool application stats", err);
+      console.error("Failed to fetch scrubbing pool application stats", err);
       setUwDealPoolStats(null);
       setUwDealPoolPrevStats(null);
     });
@@ -527,11 +543,10 @@ const Applications = () => {
   const getApplicationQueueLabel = useCallback((application: Application): string => {
     const stRaw = application.currentState ?? application.state;
     const stStr = String(stRaw ?? "").trim();
-    /** "Final Underwriter-Approved" badge only when state explicitly includes approved (not from queue alone). */
-    const hasApprovedInCurrentState = /\bapproved\b/i.test(stStr);
-
-    if (hasApprovedInCurrentState) {
-      return "Final Underwriter-Approved";
+    const stateCompact = stStr.replace(/[\s_-]+/g, "").toLowerCase();
+    /** Underwriter Approved stage only — not generic Approved / ISO Approved. */
+    if (stateCompact === "underwriterapproved") {
+      return "Underwriter-Approved";
     }
 
     const q = application.currentQueue || application.queue;
@@ -569,10 +584,12 @@ const Applications = () => {
       return raw;
     }
 
-    /** Use `currentQueue` only — do not fall back to `currentState` (Pending / In Progress). */
+    /** Use queue + state so approval/contract stages match sidebar buckets. */
     const pipelineLabel = formatDealPipelineCurrentStateLabel({
       currentQueue: raw,
       queue: raw,
+      currentState: application.currentState ?? application.state,
+      state: application.currentState ?? application.state,
     });
     return pipelineLabel === "—" ? raw : pipelineLabel;
   }, []);
@@ -584,7 +601,7 @@ const Applications = () => {
       return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
     }
     const n = queueLabel.toLowerCase();
-    if (n === "final underwriter-approved") {
+    if (n === "final scrubbing-approved") {
       return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
     }
     if (n === "funded" || n === "disbursement") {
@@ -598,10 +615,11 @@ const Applications = () => {
     }
     if (
       n === "underwriting" ||
+      n === "scrubbing" ||
       n === "underwriter" ||
       n === "review" ||
       n === "final review" ||
-      n === "final underwriter" ||
+      n === "final scrubbing" ||
       n === "final" ||
       n === "funding call"
     ) {
@@ -613,36 +631,8 @@ const Applications = () => {
     return "bg-yellow-100 text-yellow-700";
   }, []);
 
-  const handleUwClaimDeal = useCallback(
-    async (app: Application) => {
-      const id = app._id ?? (app as { id?: string }).id;
-      if (!id) return;
-      try {
-        setClaimBusyAppId(String(id));
-        await dispatch(claimUnderwriterDeal({ applicationId: String(id) })).unwrap();
-        toast.success("Deal claimed");
-        if (showUwDealPoolUi) {
-          void fetchUwDealPoolStats().catch((err: unknown) => {
-            console.error("Failed to refresh underwriter pool stats after claim", err);
-          });
-        }
-      } catch (e: unknown) {
-        const msg =
-          typeof e === "string"
-            ? e
-            : (e as { payload?: string })?.payload ||
-              (e as { message?: string })?.message ||
-              "Could not claim this deal";
-        toast.error(msg);
-      } finally {
-        setClaimBusyAppId(null);
-      }
-    },
-    [dispatch, fetchUwDealPoolStats, showUwDealPoolUi],
-  );
-
   const handleNavigateToApplication = useCallback(
-    (app: Application) => {
+    (app: Application, options?: { tab?: string }) => {
       const role = (localStorage.getItem("role") || "").toUpperCase();
       const usePipelineTabs =
         role === "OPERATIONS" ||
@@ -660,11 +650,66 @@ const Applications = () => {
         qs.set("operationsStatus", dashboardStateFilter);
       }
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      navigate(`/application-details/${id}${suffix}`, {
+      let tab = options?.tab;
+      if (
+        !tab &&
+        usePipelineTabs &&
+        dashboardStateFilter &&
+        dashboardStateFilter !== OPERATIONS_APPLICATIONS_LIST_ALL_QUERY &&
+        dashboardStateFilter.toLowerCase() !== "all"
+      ) {
+        const normalizedStatus =
+          normalizeOperationsDashboardStatusParam(dashboardStateFilter);
+        if (normalizedStatus) {
+          tab = getOperationsPipelineStageTabId(normalizedStatus);
+        }
+      }
+      const tabSegment = tab ? `/${tab}` : "";
+      navigate(`/application-details/${id}${tabSegment}${suffix}`, {
         state: { applicationPreview: app },
       });
     },
     [dashboardStateFilter, navigate],
+  );
+
+  const handleUwClaimDeal = useCallback(
+    async (app: Application) => {
+      const id = app._id ?? (app as { id?: string }).id;
+      if (!id) return;
+      const isFinalUnderwriterRole = sessionRoleKey === "UNDERWRITER";
+      try {
+        setClaimBusyAppId(String(id));
+        if (isFinalUnderwriterRole) {
+          await dispatch(claimFinalUnderwriterDeal({ applicationId: String(id) })).unwrap();
+        } else {
+          await dispatch(claimUnderwriterDeal({ applicationId: String(id) })).unwrap();
+        }
+        toast.success(isFinalUnderwriterRole ? "Application claimed" : "Deal claimed");
+        if (showUwDealPoolUi) {
+          void fetchUwDealPoolStats().catch((err: unknown) => {
+            console.error("Failed to refresh deal pool stats after claim", err);
+          });
+        }
+        handleNavigateToApplication(app, { tab: "decision-making" });
+      } catch (e: unknown) {
+        const msg =
+          typeof e === "string"
+            ? e
+            : (e as { payload?: string })?.payload ||
+              (e as { message?: string })?.message ||
+              "Could not claim this deal";
+        toast.error(msg);
+      } finally {
+        setClaimBusyAppId(null);
+      }
+    },
+    [
+      dispatch,
+      fetchUwDealPoolStats,
+      handleNavigateToApplication,
+      sessionRoleKey,
+      showUwDealPoolUi,
+    ],
   );
 
   const handlePrefetchApplicationDetail = useCallback((app: Application) => {
@@ -826,29 +871,77 @@ const Applications = () => {
         enableSorting: false,
         enableHiding: false,
       },
-      {
-        id: "iso",
-        accessorFn: (row) => getApplicationIsoLabel(row),
-        header: () => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              ISO
-            </span>
-          </div>
-        ),
-        cell: ({ row }) => (
-          <span className="text-foreground">
-            {getApplicationIsoLabel(row.original)}
-          </span>
-        ),
-      },
+      ...(sessionRoleKey === "UNDERWRITER" || sessionRoleKey === "SCRUBBING"
+        ? []
+        : ([
+          {
+            id: "iso",
+            accessorFn: (row) => getApplicationIsoLabel(row),
+            header: () => (
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-foreground uppercase tracking-wide">
+                  ISO
+                </span>
+              </div>
+            ),
+            cell: ({ row }) => (
+              <span className="text-foreground">
+                {getApplicationIsoLabel(row.original)}
+              </span>
+            ),
+          },
+        ] satisfies ColumnDef<Application>[])),
+      ...(showClaimedByColumn
+        ? ([
+          {
+            id: "claimedByScrubber",
+            header: () => (
+              <span className="font-medium text-foreground tracking-wide whitespace-nowrap">
+                 Scrubber
+              </span>
+            ),
+            cell: ({ row }) => {
+              const label = formatScrubberClaimLabel(row.original);
+              return (
+                <span
+                  className="text-foreground text-sm whitespace-nowrap"
+                  title={label}
+                >
+                  {label}
+                </span>
+              );
+            },
+            enableSorting: false,
+          },
+          {
+            id: "claimedByUnderwriter",
+            header: () => (
+              <span className="font-medium text-foreground tracking-wide whitespace-nowrap">
+                Underwriter
+              </span>
+            ),
+            cell: ({ row }) => {
+              const label = formatUnderwriterClaimLabel(row.original);
+              return (
+                <span
+                  className="text-foreground text-sm whitespace-nowrap"
+                  title={label}
+                >
+                  {label}
+                </span>
+              );
+            },
+            enableSorting: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       {
         id: "loanAmount",
         accessorFn: (row) => row.loanAmount,
         header: ({ column }) => (
           <div className="flex items-center gap-2">
             <span className="font-medium text-foreground uppercase tracking-wide">
-              Loan Amount
+              Request Amount
             </span>
           </div>
         ),
@@ -864,6 +957,32 @@ const Applications = () => {
           );
         },
       },
+      ...(showApprovedAmountColumn
+        ? ([
+          {
+            id: "approvedAmount",
+            accessorFn: (row) => getApplicationApprovedAmount(row),
+            header: () => (
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-foreground uppercase tracking-wide">
+                  Approved Amount
+                </span>
+              </div>
+            ),
+            cell: ({ row }) => {
+              const approvedAmount = getApplicationApprovedAmount(row.original);
+              if (approvedAmount == null) {
+                return <span className="text-foreground">-</span>;
+              }
+              return (
+                <span className="text-foreground">
+                  {formatCurrency(approvedAmount)}
+                </span>
+              );
+            },
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       // {
       //     accessorKey: 'priority',
       //     header: ({ column }) => (
@@ -1006,27 +1125,6 @@ const Applications = () => {
           </span>
         ),
       },
-      ...(showClaimedByColumn
-        ? ([
-          {
-            id: "claimedByUnderwriter",
-            header: () => (
-              <span className="font-medium text-foreground uppercase tracking-wide">
-                CLAIMED BY
-              </span>
-            ),
-            cell: ({ row }) => (
-              <span className="text-foreground text-sm max-w-[10rem] truncate">
-                {formatUnderwriterClaimLabel(
-                  row.original,
-                  currentUserIdForClaim,
-                )}
-              </span>
-            ),
-            enableSorting: false,
-          },
-        ] satisfies ColumnDef<Application>[])
-        : []),
       ...(showUwDealPoolUi && underwriterPoolTab === "queue"
         ? ([
           {
@@ -1110,10 +1208,11 @@ const Applications = () => {
     handleToggleApplicationProgress,
     showUwDealPoolUi,
     showClaimedByColumn,
+    showApprovedAmountColumn,
     underwriterPoolTab,
-    currentUserIdForClaim,
     claimBusyAppId,
     handleUwClaimDeal,
+    sessionRoleKey,
   ]);
 
   const totalItems = apiPagination?.total ?? applications?.length ?? 0;
@@ -1162,6 +1261,17 @@ const Applications = () => {
 
   const listRequestParamsForKey = useMemo((): GetApplicationsParams => {
     const sort = applicationsListSortFromTable(sorting);
+    if (showUnderwriterPipelineView && underwriterPipelineFilter) {
+      return buildApplicationsListParams({
+        pageIndex: pagination.pageIndex,
+        pageSize: pagination.pageSize,
+        searchTerm: debouncedSearchTerm,
+        dashboardStateFilter: "",
+        statusFilter: "all",
+        underwriterPipeline: underwriterPipelineFilter,
+        ...sort,
+      });
+    }
     if (showUwDealPoolUi) {
       return buildApplicationsListParams({
         pageIndex: pagination.pageIndex,
@@ -1189,6 +1299,8 @@ const Applications = () => {
     typeFilter,
     priorityFilter,
     showUwDealPoolUi,
+    showUnderwriterPipelineView,
+    underwriterPipelineFilter,
     underwriterPoolTab,
     pagination.pageIndex,
     pagination.pageSize,
@@ -1213,6 +1325,24 @@ const Applications = () => {
   const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
   });
+
+  /** Keep sidebar pipeline badges aligned when stage filters change. */
+  useEffect(() => {
+    if (!isListFilterInitialized || !applicationsListQuery.isSuccess) return;
+    if (sessionRoleKey === "UNDERWRITER") {
+      invalidateUnderwriterPipelineCounts();
+    }
+    if (!shouldPrefetchOpsDashboardSummary(sessionRoleKey)) return;
+    void dispatch(fetchOperationsDashboardSummary());
+  }, [
+    applicationsListQuery.isSuccess,
+    dispatch,
+    isListFilterInitialized,
+    listFetchParams.operationsStatus,
+    listFetchParams.statsBucket,
+    listFetchParams.currentQueue,
+    sessionRoleKey,
+  ]);
 
   const fetchApplications = useCallback(async () => {
     await applicationsListQuery.refetch();
@@ -1251,6 +1381,35 @@ const Applications = () => {
   // Initialize list filter from dashboard query params
   useEffect(() => {
     const query = new URLSearchParams(location.search);
+    const uwPipeline = parseUnderwriterPipelineFromSearch(location.search);
+    if (uwPipeline) {
+      setDashboardStateFilter("");
+      setStatusFilter("all");
+
+      if (pagination.pageIndex !== 0) {
+        setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+        return;
+      }
+
+      setIsListFilterInitialized(true);
+      return;
+    }
+
+    const uwClaim = query.get("underwriterClaim");
+    if (uwClaim === "unclaimed" || uwClaim === "mine") {
+      setUnderwriterPoolTab(uwClaim === "mine" ? "my" : "queue");
+      setDashboardStateFilter("");
+      setStatusFilter("all");
+
+      if (pagination.pageIndex !== 0) {
+        setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+        return;
+      }
+
+      setIsListFilterInitialized(true);
+      return;
+    }
+
     const operationsStatusFromQuery =
       query.get("operationsStatus") || query.get("currentState");
     const fromDashboard = query.get("fromDashboard");
@@ -1322,7 +1481,7 @@ const Applications = () => {
       dispatch(getApplicationStats());
       if (showUwDealPoolUi) {
         void fetchUwDealPoolStats().catch((err: unknown) => {
-          console.error("Failed to refresh underwriter pool stats after delete", err);
+          console.error("Failed to refresh scrubbing pool stats after delete", err);
         });
       }
     } catch (err: unknown) {
@@ -1365,7 +1524,7 @@ const Applications = () => {
       if (showUwDealPoolUi) {
         void fetchUwDealPoolStats().catch((err: unknown) => {
           console.error(
-            "Failed to refresh underwriter pool stats after delete",
+            "Failed to refresh scrubbing pool stats after delete",
             err,
           );
         });
@@ -1439,7 +1598,7 @@ const Applications = () => {
   const canCreateNewApplication =
     roleKey === "AGENT" || isSuperAdmin;
   const isUnderwriterRole =
-    roleKey === "UNDERWRITER" || roleKey === "FINAL_UNDERWRITER";
+    roleKey === "SCRUBBING" || roleKey === "UNDERWRITER";
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
@@ -1688,8 +1847,8 @@ const Applications = () => {
       let q: { statsBucket?: string; currentQueue?: string };
 
       if (title === "Total Application Assigned") {
-        if (roleKey === "FINAL_UNDERWRITER") {
-          q = { currentQueue: "Final Underwriter" };
+        if (roleKey === "UNDERWRITER") {
+          q = { currentQueue: "Underwriter" };
         } else {
           q = {};
         }
@@ -1892,7 +2051,13 @@ const Applications = () => {
             }`}
         >
           <h1 className="text-[1.3rem] font-semibold text-foreground uppercase">
-            {showUwDealPoolUi ? "Underwriter applications" : "All Applications"}
+            {showUnderwriterPipelineView && underwriterPipelineFilter
+              ? underwriterPipelineTitle(underwriterPipelineFilter)
+              : showUwDealPoolUi
+              ? sessionRoleKey === "UNDERWRITER"
+                ? "Underwriter applications"
+                : "Scrubbing applications"
+              : "All Applications"}
           </h1>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
@@ -2016,26 +2181,16 @@ const Applications = () => {
                     | undefined;
                   if (cachedBrowse) {
                     dispatch(hydrateApplicationsListFromCache(cachedBrowse));
-                  } else if (applications?.length) {
-                    dispatch(
-                      hydrateApplicationsListFromCache({
-                        data: applications,
-                        pagination: apiPagination,
-                      }),
-                    );
+                  } else {
+                    prefetchApplicationsList(browseParams);
                   }
-                  dispatch(
-                    getApplications(browseParams),
+                  navigate(
+                    buildApplicationsBrowseUrl({
+                      statsBucket: q.statsBucket,
+                      currentQueue: q.currentQueue,
+                      underwriterClaim: q.underwriterClaim,
+                    }),
                   );
-                  window.setTimeout(() => {
-                    navigate(
-                      buildApplicationsBrowseUrl({
-                        statsBucket: q.statsBucket,
-                        currentQueue: q.currentQueue,
-                        underwriterClaim: q.underwriterClaim,
-                      }),
-                    );
-                  }, 90);
                 }}
                 onMouseEnter={() => prefetchBrowseFromStatCard(c.title)}
                 onFocus={() => prefetchBrowseFromStatCard(c.title)}
@@ -2091,7 +2246,11 @@ const Applications = () => {
             <div
               className="flex rounded-md border border-border overflow-hidden bg-muted/40 dark:bg-muted/25 shrink-0 p-0.5 gap-0.5"
               role="tablist"
-              aria-label="Underwriter deal pool"
+              aria-label={
+                sessionRoleKey === "UNDERWRITER"
+                  ? "Underwriter deal pool"
+                  : "Scrubbing deal pool"
+              }
             >
               <Button
                 type="button"
@@ -2104,6 +2263,12 @@ const Applications = () => {
                 onClick={() => {
                   setUnderwriterPoolTab("queue");
                   setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                  navigate(
+                    buildUnderwriterPipelineApplicationsUrl({
+                      underwriterClaim: "unclaimed",
+                    }),
+                    { replace: true },
+                  );
                 }}
                 aria-pressed={underwriterPoolTab === "queue"}
               >
@@ -2120,6 +2285,12 @@ const Applications = () => {
                 onClick={() => {
                   setUnderwriterPoolTab("my");
                   setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                  navigate(
+                    buildUnderwriterPipelineApplicationsUrl({
+                      underwriterClaim: "mine",
+                    }),
+                    { replace: true },
+                  );
                 }}
                 aria-pressed={underwriterPoolTab === "my"}
               >
@@ -2337,6 +2508,9 @@ const Applications = () => {
                   const app = row.original;
                   const queueLabel = getApplicationQueueLabel(app);
                   const loanAmount = app.loanAmount;
+                  const approvedAmount = showApprovedAmountColumn
+                    ? getApplicationApprovedAmount(app)
+                    : null;
                   return (
                     <div
                       key={row.id}
@@ -2410,30 +2584,45 @@ const Applications = () => {
                           {getApplicationIsoLabel(app)}
                         </p>
                         {showClaimedByColumn && (
-                          <p
-                            className="truncate"
-                            title={formatUnderwriterClaimLabel(
-                              app,
-                              currentUserIdForClaim,
-                            )}
-                          >
-                            <span className="text-foreground/80">
-                              Claimed by:{" "}
-                            </span>
-                            <span className="text-foreground">
-                              {formatUnderwriterClaimLabel(
-                                app,
-                                currentUserIdForClaim,
-                              )}
-                            </span>
-                          </p>
+                          <>
+                            <p
+                              className="truncate"
+                              title={formatScrubberClaimLabel(app)}
+                            >
+                              <span className="text-foreground/80">
+                                 Scrubber:{" "}
+                              </span>
+                              <span className="text-foreground">
+                                {formatScrubberClaimLabel(app)}
+                              </span>
+                            </p>
+                            <p
+                              className="truncate"
+                              title={formatUnderwriterClaimLabel(app)}
+                            >
+                              <span className="text-foreground/80">
+                                UW:{" "}
+                              </span>
+                              <span className="text-foreground">
+                                {formatUnderwriterClaimLabel(app)}
+                              </span>
+                            </p>
+                          </>
                         )}
                         <p>
-                          <span className="text-foreground/80">Loan: </span>
+                          <span className="text-foreground/80">Request: </span>
                           {loanAmount == null
                             ? "—"
                             : formatCurrency(Number(loanAmount) || 0)}
                         </p>
+                        {showApprovedAmountColumn && (
+                          <p>
+                            <span className="text-foreground/80">Approved: </span>
+                            {approvedAmount == null
+                              ? "—"
+                              : formatCurrency(approvedAmount)}
+                          </p>
+                        )}
                         <p>
                           <span className="text-foreground/80">Created: </span>
                           {formatDateTime(app.createdAt)}

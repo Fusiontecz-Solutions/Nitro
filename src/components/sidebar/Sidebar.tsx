@@ -13,7 +13,6 @@ import HighlightOff from "@mui/icons-material/HighlightOff";
 import FactCheck from "@mui/icons-material/FactCheck";
 import Article from "@mui/icons-material/Article";
 import CheckCircle from "@mui/icons-material/CheckCircle";
-import Phone from "@mui/icons-material/Phone";
 import Payments from "@mui/icons-material/Payments";
 import Paid from "@mui/icons-material/Paid";
 import AccountBalance from "@mui/icons-material/AccountBalance";
@@ -46,32 +45,54 @@ import { clearVoiceMicSessionFlags } from "@/voice/microphoneWarmup";
 import { toast } from "react-toastify";
 import { APP_SHORT_ICON_SRC, APP_SHORT_ICON_DARK_SRC ,resolveAppLogoSrc } from "@/constants/appLogo";
 import { useTheme } from "@/context/ThemeContext";
-import { useMemo, type ComponentType } from "react";
+import { useMemo, useEffect, useState, type ComponentType } from "react";
 import type { Notification } from "@/redux/slices/notificationSlice";
 import {
   normalizeRoleKey,
   resolveEffectiveRole,
 } from "@/lib/sessionRole";
-import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
+import {
+  buildOperationsPipelineApplicationsUrl,
+  buildUnderwriterPipelineApplicationsUrl,
+} from "@/constants/dashboardApplicationsNavigation";
+import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY } from "@/constants/operationsDashboardApplications";
 import { operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
 import {
   getPipelineCountBadgeClass,
   resolveApplicationsPipelineCount,
 } from "@/lib/applicationsPipelineFilter";
+import {
+  getSidebarPipelineActionHint,
+  resolveSidebarPipelineActionAccent,
+} from "@/lib/sidebarPipelineActionBadge";
+import { SidebarPipelineActionBadge } from "@/components/sidebar/SidebarPipelineActionBadge";
 import { cn } from "@/lib/utils";
 import { clearCrmCacheOnLogout } from "@/lib/crmCache";
 import { clearApplicationDetail } from "@/redux/slices/applicationSlice";
+import {
+  UNDERWRITER_PIPELINE_FILTERS,
+  normalizeUnderwriterPipelineParam,
+  type UnderwriterPipelineCounts,
+} from "@/constants/underwriterPipeline";
+import {
+  fetchUnderwriterPipelineCounts,
+  registerUnderwriterPipelineCountsInvalidator,
+} from "@/lib/underwriterPipelineCounts";
 // import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt';
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import PersonIcon from '@mui/icons-material/Person';
+import VerifiedUser from "@mui/icons-material/VerifiedUser";
 type SidebarNavIcon = ComponentType<SvgIconProps>;
 
 type PipelineAccent =
+  | "approved-by-uw"
+  | "approval-sent"
+  | "approved-by-iso"
   | "contract-pending"
   | "contract-sent"
   | "contract-signed"
   | "final"
-  | "funding-call"
+  | "finals-and-funding-call"
   | "disbursement"
   | "funded"
   | "rejected";
@@ -88,6 +109,12 @@ type SidebarNavItem = {
   icon: SidebarNavIcon;
   /** When set, links to `/applications``fromDashboard=operations` and this `operationsStatus`. */
   operationsStatus?: string;
+  /** Underwriter deal-pool inbox tab (`/applications?underwriterClaim=`). */
+  underwriterClaim?: "unclaimed" | "mine";
+  /** Underwriter sidebar pipeline (`/applications?underwriterPipeline=`). */
+  underwriterPipeline?: string;
+  /** Underwriter count badge when the link URL differs from the count bucket. */
+  underwriterPipelineCount?: string;
   /** Nested contract workflow links shown under a parent row. */
   children?: SidebarNavChildItem[];
   /** Accent + count badge for top-level deal-pipeline rows. */
@@ -149,11 +176,74 @@ function isOperationsPipelineItemActive(
   operationsStatus: string | undefined,
 ): boolean {
   if (!operationsStatus) return false;
+  const currentStatus = searchParams.get("operationsStatus");
+  if (
+    operationsStatus === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY &&
+    pathname === "/applications" &&
+    searchParams.get("fromDashboard") === "operations" &&
+    (!currentStatus ||
+      currentStatus.toLowerCase() === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY)
+  ) {
+    return true;
+  }
+  if (
+    operationsStatus === "Finals_And_Funding_Call" &&
+    (currentStatus === "Finals_And_Funding_Call" ||
+      currentStatus === "Final" ||
+      currentStatus === "Funding Call")
+  ) {
+    return (
+      pathname === "/applications" &&
+      searchParams.get("fromDashboard") === "operations"
+    );
+  }
   return (
     pathname === "/applications" &&
     searchParams.get("fromDashboard") === "operations" &&
-    searchParams.get("operationsStatus") === operationsStatus
+    currentStatus === operationsStatus
   );
+}
+
+function isUnderwriterClaimPipelineItemActive(
+  pathname: string,
+  searchParams: URLSearchParams,
+  underwriterClaim: "unclaimed" | "mine" | undefined,
+): boolean {
+  if (!underwriterClaim) return false;
+  return (
+    pathname === "/applications" &&
+    !searchParams.get("fromDashboard") &&
+    !searchParams.get("underwriterPipeline") &&
+    searchParams.get("underwriterClaim") === underwriterClaim
+  );
+}
+
+function isUnderwriterPipelineItemActive(
+  pathname: string,
+  searchParams: URLSearchParams,
+  underwriterPipeline: string | undefined,
+): boolean {
+  if (!underwriterPipeline) return false;
+  const current = normalizeUnderwriterPipelineParam(
+    searchParams.get("underwriterPipeline"),
+  );
+  const expected = normalizeUnderwriterPipelineParam(underwriterPipeline);
+  return (
+    pathname === "/applications" &&
+    !searchParams.get("fromDashboard") &&
+    Boolean(current) &&
+    current === expected
+  );
+}
+
+function resolveUnderwriterSidebarPipelineCount(
+  underwriterPipeline: string | undefined,
+  counts: UnderwriterPipelineCounts | null,
+): number | null {
+  if (!underwriterPipeline || !counts) return null;
+  const key = normalizeUnderwriterPipelineParam(underwriterPipeline);
+  if (!key) return null;
+  return counts[key] ?? null;
 }
 
 const agentSections: SidebarNavSection[] = [
@@ -186,35 +276,46 @@ const agentSections: SidebarNavSection[] = [
   },
 ];
 
-const finalUnderwriterSections: SidebarNavSection[] = [
-  {
-    title: "",
-    items: [
-      { label: "Dashboard", url: "/", icon: Dashboard },
-      { label: "Notifications", url: "/notifications", icon: Notifications },
-      { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
-    ],
-  },
-  {
-    title: "COMMUNICATIONS",
-    items: [{ label: "Team Chat", url: "/team-chat", icon: Chat }],
-  },
-  {
-    title: "ACCOUNT",
-    items: [{ label: "Settings", url: "/user-setting", icon: Settings }],
-  },
-];
-
 const dealPipelineSection: SidebarNavSection = {
   title: "DEAL PIPELINE",
   items: [
     { label: "Applications", url: "/applications", icon: InsertDriveFileIcon },
-    { label: "Underwriter", url: "/applications", operationsStatus: "Underwriter", icon: ContentPasteSearchIcon },
+    { label: "Scrubbing", url: "/applications", operationsStatus: "Scrubbing", icon: ContentPasteSearchIcon },
     {
-      label: "Final Underwriter",
+      label: "Underwriter",
       url: "/applications",
-      operationsStatus: "Final Underwriter",
+      operationsStatus: "Underwriter",
       icon: FactCheck,
+    },
+    {
+      label: operationsDashboardStatusTitle("Final_Approval"),
+      url: "/applications",
+      operationsStatus: "Final_Approval",
+      icon: VerifiedUser,
+      pipelineAccent: "final",
+    },
+    {
+      label: "Approve",
+      url: "/applications",
+      operationsStatus: "Approved",
+      icon: VerifiedUser,
+      children: [
+        {
+          label: operationsDashboardStatusTitle("Approved_By_UW"),
+          operationsStatus: "Approved_By_UW",
+          pipelineAccent: "approved-by-uw",
+        },
+        {
+          label: operationsDashboardStatusTitle("Approval_Sent"),
+          operationsStatus: "Approval_Sent",
+          pipelineAccent: "approval-sent",
+        },
+        {
+          label: operationsDashboardStatusTitle("Approved_By_ISO"),
+          operationsStatus: "Approved_By_ISO",
+          pipelineAccent: "approved-by-iso",
+        },
+      ],
     },
     {
       label: "Contract",
@@ -240,18 +341,11 @@ const dealPipelineSection: SidebarNavSection = {
       ],
     },
     {
-      label: "Final",
+      label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
       url: "/applications",
-      operationsStatus: "Final",
+      operationsStatus: "Finals_And_Funding_Call",
       icon: CheckCircle,
-      pipelineAccent: "final",
-    },
-    {
-      label: "Funding Call",
-      url: "/applications",
-      operationsStatus: "Funding Call",
-      icon: Phone,
-      pipelineAccent: "funding-call",
+      pipelineAccent: "finals-and-funding-call",
     },
     {
       label: "Disbursement",
@@ -261,9 +355,74 @@ const dealPipelineSection: SidebarNavSection = {
       pipelineAccent: "disbursement",
     },
     { label: "Funded", url: "/applications", operationsStatus: "Funded", icon: Paid, pipelineAccent: "funded" },
-    { label: "Rejected", url: "/applications", operationsStatus: "Declined", icon: HighlightOff, pipelineAccent: "rejected" },
+    { label: "Decline", url: "/applications", operationsStatus: "Declined", icon: HighlightOff, pipelineAccent: "rejected" },
   ],
 };
+
+const underwriterDealPipelineSection: SidebarNavSection = {
+  title: "DEAL PIPELINE",
+  items: [
+    {
+      label: "Applications",
+      url: "/applications",
+      icon: InsertDriveFileIcon,
+      underwriterPipelineCount: UNDERWRITER_PIPELINE_FILTERS.UNCLAIMED,
+    },
+    {
+      label: "Claimed Applications",
+      url: "/applications",
+      icon: ContentPasteSearchIcon,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.CLAIMED,
+    },
+    {
+      label: "Approved",
+      url: "/applications",
+      icon: VerifiedUser,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.APPROVED_BY_UW,
+      pipelineAccent: "approved-by-uw",
+    },
+    {
+      label: "Decline",
+      url: "/applications",
+      icon: HighlightOff,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.DECLINED_BY_UW,
+      pipelineAccent: "rejected",
+    },
+    {
+      label: "Admin Sent for final Approval",
+      url: "/applications",
+      icon: FactCheck,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.FINAL_APPROVAL,
+      pipelineAccent: "final",
+    },
+    {
+      label: "Final Approved",
+      url: "/applications",
+      icon: CheckCircle,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.FINAL_APPROVED_BY_UW,
+      pipelineAccent: "contract-pending",
+    },
+  ],
+};
+
+const finalUnderwriterSections: SidebarNavSection[] = [
+  {
+    title: "",
+    items: [
+      { label: "Dashboard", url: "/", icon: Dashboard },
+      { label: "Notifications", url: "/notifications", icon: Notifications },
+    ],
+  },
+  underwriterDealPipelineSection,
+  {
+    title: "COMMUNICATIONS",
+    items: [{ label: "Team Chat", url: "/team-chat", icon: Chat }],
+  },
+  {
+    title: "ACCOUNT",
+    items: [{ label: "Settings", url: "/user-setting", icon: Settings }],
+  },
+];
 
 const operationsSections: SidebarNavSection[] = [
   {
@@ -358,8 +517,8 @@ const adminSections: SidebarNavSection[] = [
       { label: "Agents", url: "/agents", icon: PersonIcon },
       { label: "Clients", url: "/clients", icon: People },
       { label: "Syndicators", url: "/syndicators/dashboard", icon: SyndicatorsSidebarIcon },
-      { label: "Underwriters", url: "/underwriters", icon: ContentPasteSearchIcon },
-      { label: "Final Underwriters", url: "/final-underwriters", icon: People },
+      { label: "Scrubbing", url: "/scrubbing", icon: ContentPasteSearchIcon },
+      { label: "Underwriters", url: "/underwriters", icon: People },
     ],
   },
   {
@@ -396,8 +555,8 @@ const superAdminSections: SidebarNavSection[] = [
     title: "MANAGEMENT",
     items: [
       { label: "Agents", url: "/agents", icon: PersonIcon },
-      { label: "Underwriters", url: "/underwriters", icon: ContentPasteSearchIcon },
-      { label: "Final Underwriters", url: "/final-underwriters", icon: People },
+      { label: "Scrubbing", url: "/scrubbing", icon: ContentPasteSearchIcon },
+      { label: "Underwriters", url: "/underwriters", icon: People },
       { label: "Syndicators", url: "/syndicators/dashboard", icon: SyndicatorsSidebarIcon },
     ],
   },
@@ -436,9 +595,9 @@ function getRoleSections(role: string): SidebarNavSection[] {
       return syndicatorSections;
     case "OPERATIONS":
       return operationsSections;
-    case "FINAL_UNDERWRITER":
-      return finalUnderwriterSections;
     case "UNDERWRITER":
+      return finalUnderwriterSections;
+    case "SCRUBBING":
       return uwSections;
     case "ACCOUNTS":
       return accountsSections;
@@ -471,6 +630,37 @@ const Sidebar = () => {
   const userRole = resolveEffectiveRole(data?.user);
   const normalizedRole = normalizeRoleKey(userRole);
   const dispatch: AppDispatch = useDispatch();
+  const [underwriterPipelineCounts, setUnderwriterPipelineCounts] =
+    useState<UnderwriterPipelineCounts | null>(null);
+
+  useEffect(() => {
+    if (normalizedRole !== "UNDERWRITER") {
+      setUnderwriterPipelineCounts(null);
+      registerUnderwriterPipelineCountsInvalidator(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadCounts = () => {
+      void fetchUnderwriterPipelineCounts().then((data) => {
+        if (!cancelled && data) {
+          setUnderwriterPipelineCounts(data);
+        }
+      });
+    };
+
+    loadCounts();
+    registerUnderwriterPipelineCountsInvalidator(loadCounts);
+
+    const onFocus = () => loadCounts();
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      cancelled = true;
+      registerUnderwriterPipelineCountsInvalidator(null);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [normalizedRole, pathname]);
 
   const unreadNotificationCount = useMemo(
     () =>
@@ -572,10 +762,17 @@ const Sidebar = () => {
                 <SidebarMenu className="flex flex-col items-stretch gap-0.5 group-data-[collapsible=icon]:items-center">
                   {section.items.map((item) => {
                     const pipelineStatus = item.operationsStatus;
+                    const underwriterClaim = item.underwriterClaim;
+                    const underwriterPipeline = item.underwriterPipeline;
+                    const underwriterPipelineCountKey =
+                      item.underwriterPipelineCount ?? underwriterPipeline;
                     const childItems = item.children ?? [];
                     const hasChildren = childItems.length > 0;
-                    const to =
-                      pipelineStatus != null && pipelineStatus !== ""
+                    const to = underwriterPipeline
+                      ? buildUnderwriterPipelineApplicationsUrl({ underwriterPipeline })
+                      : underwriterClaim
+                      ? buildUnderwriterPipelineApplicationsUrl({ underwriterClaim })
+                      : pipelineStatus != null && pipelineStatus !== ""
                         ? buildOperationsPipelineApplicationsUrl(pipelineStatus)
                         : item.url;
                     const isOperationsPipelineView =
@@ -598,20 +795,35 @@ const Sidebar = () => {
                           searchParams,
                           pipelineStatus,
                         )
-                      : pipelineStatus != null && pipelineStatus !== ""
-                        ? isOperationsPipelineItemActive(
+                      : underwriterPipeline
+                        ? isUnderwriterPipelineItemActive(
                             pathname,
                             searchParams,
-                            pipelineStatus,
+                            underwriterPipeline,
                           )
-                        : !item.url || item.url === ""
-                          ? false
-                          : item.url === "/applications"
-                            ? pathname === "/applications" && !isOperationsPipelineView
-                            : item.url === "/"
-                              ? pathname === "/"
-                              : pathname === item.url ||
-                                pathname.startsWith(`${item.url}/`);
+                        : underwriterClaim
+                        ? isUnderwriterClaimPipelineItemActive(
+                            pathname,
+                            searchParams,
+                            underwriterClaim,
+                          )
+                        : pipelineStatus != null && pipelineStatus !== ""
+                          ? isOperationsPipelineItemActive(
+                              pathname,
+                              searchParams,
+                              pipelineStatus,
+                            )
+                          : !item.url || item.url === ""
+                            ? false
+                            : item.url === "/applications"
+                              ? pathname === "/applications" &&
+                                !isOperationsPipelineView &&
+                                !searchParams.get("underwriterClaim") &&
+                                !searchParams.get("underwriterPipeline")
+                              : item.url === "/"
+                                ? pathname === "/"
+                                : pathname === item.url ||
+                                  pathname.startsWith(`${item.url}/`);
                     const isNotificationsLink = item.url === "/notifications";
                     const showUnreadBadge =
                       isNotificationsLink && unreadNotificationCount > 0;
@@ -665,6 +877,12 @@ const Sidebar = () => {
                               const showChildCount =
                                 childCount != null && childCount > 0;
                               const childCountLabel = String(childCount ?? "");
+                              const actionHint = getSidebarPipelineActionHint(
+                                child.operationsStatus,
+                              );
+                              const actionAccent = resolveSidebarPipelineActionAccent(
+                                child.operationsStatus,
+                              );
 
                               return (
                                 <SidebarMenuSubItem key={child.label}>
@@ -672,25 +890,35 @@ const Sidebar = () => {
                                     asChild
                                     isActive={childActive}
                                     size="md"
-                                    className={subNavButtonClass}
+                                    className={cn(
+                                      subNavButtonClass,
+                                      actionHint && "py-2",
+                                    )}
                                   >
                                     <Link
                                       to={childTo}
-                                      className="flex w-full items-center justify-between gap-2"
+                                      className="flex w-full min-w-0 flex-col gap-1.5"
                                     >
-                                      <span className="min-w-0 flex-1 whitespace-nowrap text-sm">
-                                        {child.label}
-                                      </span>
-                                      {showChildCount ? (
-                                        <span
-                                          className={cn(
-                                            "shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none tabular-nums",
-                                            getPipelineCountBadgeClass(),
-                                          )}
-                                          aria-label={`${childCount} applications in ${child.label}`}
-                                        >
-                                          {childCountLabel}
+                                      <span className="flex w-full items-center justify-between gap-2">
+                                        <span className="min-w-0 flex-1 whitespace-nowrap text-sm">
+                                          {child.label}
                                         </span>
+                                        {showChildCount ? (
+                                          <span
+                                            className={cn(
+                                              "shrink-0 rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none tabular-nums",
+                                              getPipelineCountBadgeClass(),
+                                            )}
+                                            aria-label={`${childCount} applications in ${child.label}`}
+                                          >
+                                            {childCountLabel}
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                      {actionHint && actionAccent ? (
+                                        <SidebarPipelineActionBadge accent={actionAccent}>
+                                          {actionHint}
+                                        </SidebarPipelineActionBadge>
                                       ) : null}
                                     </Link>
                                   </SidebarMenuSubButton>
@@ -703,15 +931,20 @@ const Sidebar = () => {
                     }
 
                     const isPipelineItem =
-                      pipelineStatus != null && pipelineStatus !== "";
-                    const pipelineCount = resolveApplicationsPipelineCount(
-                      pipelineStatus,
-                      operationsSummaryCounts,
-                      operationsCaseStageCounts,
-                      rejectedApplicationCount,
-                    );
-                    const showPipelineCount =
-                      pipelineCount != null && pipelineCount > 0;
+                      (pipelineStatus != null && pipelineStatus !== "") ||
+                      Boolean(underwriterPipelineCountKey);
+                    const pipelineCount = underwriterPipelineCountKey
+                      ? resolveUnderwriterSidebarPipelineCount(
+                          underwriterPipelineCountKey,
+                          underwriterPipelineCounts,
+                        )
+                      : resolveApplicationsPipelineCount(
+                          pipelineStatus,
+                          operationsSummaryCounts,
+                          operationsCaseStageCounts,
+                          rejectedApplicationCount,
+                        );
+                    const showPipelineCount = pipelineCount != null;
                     const pipelineCountLabel = String(pipelineCount ?? "");
 
                     return (

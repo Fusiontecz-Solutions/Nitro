@@ -13,13 +13,13 @@ import ChecksAndDecision from "@/components/application/ChecksAndDecision";
 import DecisionMakeFinalValues from "@/components/application/DecisionMakeFinalValues";
 
 /** Pipeline list stages where deal detail should omit bank/offer/leverage/positions UI */
-const EARLY_PIPELINE_STAGES = new Set(["agent", "underwriter"]);
+const EARLY_PIPELINE_STAGES = new Set(["agent", "scrubbing"]);
 
 /** All deal-pipeline tab values (must match `PipelineStage` / `fromStage` in DealPipeline). */
 const DEAL_PIPELINE_STAGES = new Set([
   "agent",
-  "underwriter",
-  "final-underwriter",
+  "scrubbing",
+  "final-scrubbing",
   "doc-request-contract",
   "final",
   "funding-call",

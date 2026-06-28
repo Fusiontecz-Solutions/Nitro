@@ -7,8 +7,8 @@ const roleLabel = (role: string | undefined): string => {
   if (!role) return '';
   const labels: Record<string, string> = {
     AGENT: 'Agent',
+    SCRUBBING: 'Scrubbing',
     UNDERWRITER: 'Underwriter',
-    FINAL_UNDERWRITER: 'Final Underwriter',
     ACCOUNTANT: 'Accountant',
     ADMIN: 'Admin',
     SUPER_ADMIN: 'Super Admin',

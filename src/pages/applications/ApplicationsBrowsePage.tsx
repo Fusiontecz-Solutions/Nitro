@@ -53,12 +53,13 @@ import {
   DEFAULT_APPLICATIONS_PAGE_SIZE,
 } from "@/lib/applicationsListParams";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
+import { formatDealPipelineCurrentStateLabel } from "@/lib/dealPipelineCurrentState";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 
 const QUEUE_OPTIONS = [
   { label: "Agent", value: "Agent" },
+  { label: "Scrubbing", value: "Scrubbing" },
   { label: "Underwriter", value: "Underwriter" },
-  { label: "Final Underwriter", value: "Final Underwriter" },
   { label: "Contract Out", value: "Contract Out" },
   { label: "Contract Signed", value: "Contract_Signed" },
   { label: "Final", value: "Final" },
@@ -81,7 +82,7 @@ const STATS_BUCKET_TITLE_MAP: Record<string, string> = {
 /**
  * Table-only applications list (filter + search + grid + pagination).
  * Used when opening a dashboard stat card; query: statsBucket, currentQueue,
- * underwriterClaim (UNDERWRITER pool), viewOnly.
+ * underwriterClaim (SCRUBBING pool), viewOnly.
  */
 export default function ApplicationsBrowsePage() {
   const dispatch = useDispatch<AppDispatch>();
@@ -182,19 +183,27 @@ export default function ApplicationsBrowsePage() {
     return "-";
   }, []);
 
-  /** Same pipeline label rules as `Applications.tsx` (approved in currentState → "Final Underwriter-Approved"). */
+  /** Same pipeline label rules as `Applications.tsx`. */
   const getApplicationQueueLabel = useCallback((application: Application): string => {
     const stRaw = application.currentState ?? application.state;
     const stStr = String(stRaw ?? "").trim();
-    const hasApprovedInCurrentState = /\bapproved\b/i.test(stStr);
-
-    if (hasApprovedInCurrentState) {
-      return "Final Underwriter-Approved";
+    const stateCompact = stStr.replace(/[\s_-]+/g, "").toLowerCase();
+    if (stateCompact === "underwriterapproved") {
+      return "Underwriter-Approved";
     }
 
     const q = application.currentQueue || application.queue;
     if (q == null || String(q).trim() === "") return "-";
     const raw = String(q).trim();
+
+    const pipelineLabel = formatDealPipelineCurrentStateLabel({
+      currentQueue: raw,
+      queue: raw,
+      currentState: application.currentState ?? application.state,
+      state: application.currentState ?? application.state,
+    });
+    if (pipelineLabel !== "—") return pipelineLabel;
+
     if (raw.toLowerCase() !== "new") return raw;
 
     const creator = application.createdBy as
@@ -233,7 +242,7 @@ export default function ApplicationsBrowsePage() {
       return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
     }
     const n = queueLabel.toLowerCase();
-    if (n === "final underwriter-approved") {
+    if (n === "final scrubbing-approved") {
       return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
     }
     if (n === "funded" || n === "disbursement") {
@@ -247,10 +256,11 @@ export default function ApplicationsBrowsePage() {
     }
     if (
       n === "underwriting" ||
+      n === "scrubbing" ||
       n === "underwriter" ||
       n === "review" ||
       n === "final review" ||
-      n === "final underwriter" ||
+      n === "final scrubbing" ||
       n === "final" ||
       n === "funding call"
     ) {

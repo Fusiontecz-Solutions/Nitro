@@ -83,7 +83,26 @@ export const clientsSlice = createSlice({
             .addCase(getClients.fulfilled, (state, action) => {
                 state.loading = false;
                 state.data = action.payload.data || action.payload;
-                state.pagination = action.payload.pagination || null;
+                const rawPagination = action.payload.pagination;
+                if (rawPagination) {
+                    state.pagination = {
+                        total:
+                            rawPagination.totalItems ??
+                            rawPagination.total ??
+                            0,
+                        page:
+                            rawPagination.currentPage ??
+                            rawPagination.page ??
+                            1,
+                        limit:
+                            rawPagination.itemsPerPage ??
+                            rawPagination.limit ??
+                            10,
+                        totalPages: rawPagination.totalPages ?? 1,
+                    };
+                } else {
+                    state.pagination = null;
+                }
                 state.error = null;
             })
             .addCase(getClients.rejected, (state, action) => {

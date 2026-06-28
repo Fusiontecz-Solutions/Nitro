@@ -40,7 +40,7 @@ interface DecodedToken {
     exp?: number;
 }
 
-const FINAL_UNDERWRITER_ROLE = 'FINAL_UNDERWRITER';
+const FINAL_UNDERWRITER_ROLE = 'UNDERWRITER';
 
 const allowedPathsForUnderwriter = (pathname: string): boolean => {
     if (pathname === '/') return true;

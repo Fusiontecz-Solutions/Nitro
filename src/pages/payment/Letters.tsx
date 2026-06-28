@@ -507,6 +507,8 @@ function buildDefaultValues(
     recipient_address_line1: recipientAddress1,
     recipient_address_line2: recipientAddress2,
     account_number: merchantAccountRef,
+    account_name: business?.name?.trim() ?? "",
+    funding_amount: loan ? formatCurrency(loan) : "",
     salutation_name: salutationName,
     good_through_date: goodThroughDate,
     payment_company_name: DEFAULT_PAYOFF_WIRE_DETAILS.bank_name,
@@ -515,7 +517,7 @@ function buildDefaultValues(
     payment_routing_number: DEFAULT_PAYOFF_WIRE_DETAILS.routing_number,
     payment_account_number: DEFAULT_PAYOFF_WIRE_DETAILS.account_number,
     sender_name: senderName,
-    account_status: "Zero Balance",
+    account_status: "Paid in Full",
   };
 }
 

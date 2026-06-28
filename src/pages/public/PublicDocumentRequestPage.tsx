@@ -296,7 +296,7 @@ const PublicDocumentRequestPage = () => {
 
               {uploadableDocs.length === 0 && pendingCount > 0 ? (
                 <p className="mt-4 text-sm text-slate-500">
-                  Contact your underwriter if you need guidance on what to upload.
+                  Contact your scrubbing if you need guidance on what to upload.
                 </p>
               ) : null}
             </>

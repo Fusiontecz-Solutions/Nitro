@@ -8,6 +8,11 @@ function compactKey(value: string): string {
   return normalizeQueueBadgeLabel(value).replace(/\s+/g, "");
 }
 
+import {
+  isFinalUnderwriterWorkflowQueue,
+  isScrubbingWorkflowQueue,
+} from "@/lib/applicationWorkflowState";
+
 /**
  * Deal pipeline CURRENT STATE column — never show generic "Contracted";
  * use Contract Sent vs Contract Signed from queue/state (matches Cases list).
@@ -23,6 +28,21 @@ export function formatDealPipelineCurrentStateLabel(app: {
 
   const queueCompact = compactKey(queue);
   const stateCompact = compactKey(state);
+
+  if (
+    queueCompact === "approvalsent" ||
+    stateCompact === "approvalsent"
+  ) {
+    return "Approval Sent";
+  }
+
+  if (
+    queueCompact === "isoapproved" ||
+    stateCompact === "isoapproved" ||
+    (queueCompact === "approved" && stateCompact === "approved")
+  ) {
+    return "Approved By ISO";
+  }
 
   if (
     queueCompact === "contractpending" ||
@@ -80,6 +100,12 @@ export function formatDealPipelineCurrentStateLabel(app: {
   const raw = state || queue;
   if (!raw) return "—";
   if (compactKey(raw) === "contracted") return "Contract Sent";
+  if (isFinalUnderwriterWorkflowQueue(queue) || isFinalUnderwriterWorkflowQueue(state)) {
+    return "Underwriter";
+  }
+  if (isScrubbingWorkflowQueue(queue) || isScrubbingWorkflowQueue(state)) {
+    return "Scrubbing";
+  }
 
   return raw;
 }

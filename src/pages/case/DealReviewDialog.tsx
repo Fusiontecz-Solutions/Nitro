@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import DealReviewPaymentSchedule from "./DealReviewPaymentSchedule";
+import { DisbursementCommissionSection } from "./DisbursementCommissionSection";
 
 import {
   Dialog,
@@ -603,6 +604,10 @@ export default function DealReviewDialog({
   const appNumericId = (applicationData as { applicationId?: number } | null)
     ?.applicationId;
 
+  const advanceForCommission = form.advance > 0
+    ? form.advance
+    : toValidNumber(appRecord?.loanAmount) ?? 0;
+
   const loanAmountFallback = toValidNumber(appRecord?.loanAmount) ?? 0;
   const hasOfferData =
     dealView != null ||
@@ -880,7 +885,7 @@ export default function DealReviewDialog({
                   Review deal details
                 </DialogTitle>
                 <p className="text-sm text-slate-500 mt-1 dark:text-slate-400">
-                  Verify the offer, fees, and commission before disbursing funds.
+                  Verify the offer and fees before disbursing funds.
                 </p>
               </div>
             </div>
@@ -906,6 +911,15 @@ export default function DealReviewDialog({
               form={form}
               onFieldChange={handleFieldChange}
               onTermCommit={handleTermCommit}
+            />
+          </section>
+
+          <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm ring-1 ring-slate-900/[0.03] dark:border-slate-800 dark:bg-[#1A1B1F]/60 dark:ring-white/[0.04]">
+            <DisbursementCommissionSection
+              variant="embedded"
+              applicationRecordId={applicationRecordId ?? null}
+              refetchApplicationId={applicationId ?? null}
+              offerAmountOverride={advanceForCommission}
             />
           </section>
 
@@ -961,7 +975,8 @@ export default function DealReviewDialog({
                 type="button"
                 onClick={() => void handleSave()}
                 disabled={saving}
-                className="cursor-pointer rounded-lg h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
+                variant="default"
+                className="cursor-pointer rounded-lg h-10 px-4 font-semibold shadow-sm"
               >
                 {saving ? (
                   <span className="inline-flex items-center gap-2">
@@ -990,9 +1005,10 @@ export default function DealReviewDialog({
               {canScheduleDisbursement ? (
                 <Button
                   type="button"
+                  variant="default"
                   onClick={() => void handleConfirmDisbursement()}
                   disabled={confirming || saving}
-                  className="cursor-pointer rounded-lg h-10 px-5 bg-[#1e60a3] hover:bg-[#184c80] text-white font-semibold shadow-md shadow-blue-900/15"
+                  className="cursor-pointer rounded-lg h-10 px-5 font-semibold shadow-sm"
                 >
                   {confirming ? (
                     <span className="inline-flex items-center gap-2">
@@ -1204,13 +1220,6 @@ function OfferFieldsGrid({
         editable={editMode}
         onChange={(v) => onFieldChange("feesAmount", v)}
         display={formatCurrency(form.feesAmount)}
-      />
-      <EditableMoneyField
-        label="Commission"
-        value={form.commissionAmount}
-        editable={editMode}
-        onChange={(v) => onFieldChange("commissionAmount", v)}
-        display={formatCurrency(form.commissionAmount)}
       />
     </div>
   );

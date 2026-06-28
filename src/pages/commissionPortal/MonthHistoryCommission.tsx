@@ -64,9 +64,14 @@ import {
     dealCommissionStatusClassName,
     dealCommissionStatusLabel,
     getApplicationIsoId,
+    getApplicationUnderwriterId,
     getCommissionForApplication,
     mapApplicationToHistoryRow,
 } from './commissionHistoryShared'
+import { CommissionRecipientToggle } from './CommissionRecipientToggle'
+import { fetchUsersByRole } from '@/redux/actions/settingsUserActions'
+import { selectUsersByRole } from '@/redux/selectors/settingsUsersSelectors'
+import type { CommissionRecipientType } from './commissionRecipientShared'
 
 /** Map typographic dashes to ASCII so CSV survives Excel’s default (non‑UTF‑8) import. */
 function sanitizeCsvText(value: string): string {
@@ -173,8 +178,14 @@ export default function MonthHistoryCommission() {
     const applicationsError = useSelector((state: RootState) => state.applications.error)
     const fundedDeals = useSelector((state: RootState) => state.commissionRequest.fundedDeals)
     const isoList = useSelector((state: RootState) => state.iso.list)
+    const underwriters = useSelector((state: RootState) =>
+        selectUsersByRole(state, 'UNDERWRITER'),
+    )
 
+    const [commissionRecipient, setCommissionRecipient] =
+        useState<CommissionRecipientType>('iso')
     const [selectedIsoId, setSelectedIsoId] = useState('all')
+    const [selectedUnderwriterId, setSelectedUnderwriterId] = useState('all')
     const [selectedMonthKey, setSelectedMonthKey] = useState('all')
     const [monthMenuOpen, setMonthMenuOpen] = useState(false)
     const [pickerYear, setPickerYear] = useState(() => new Date().getFullYear())
@@ -208,31 +219,50 @@ export default function MonthHistoryCommission() {
         void dispatch(getIsos())
     }, [dispatch])
 
+    useEffect(() => {
+        void dispatch(fetchUsersByRole('UNDERWRITER'))
+    }, [dispatch])
+
     const commissionLookup = useMemo(
         () => buildCommissionLookupByApplication(fundedDeals),
         [fundedDeals],
     )
 
-    const isoFilteredApps = useMemo(() => {
+    const recipientFilteredApps = useMemo(() => {
         const base = filterApplicationsBySearchQuery(applications, tableSearchInput)
-        if (selectedIsoId === 'all') return base
+        if (commissionRecipient === 'iso') {
+            if (selectedIsoId === 'all') return base
+            return base.filter((app) => {
+                const iid = getApplicationIsoId(app)
+                if (selectedIsoId === '__none__') return iid == null
+                return iid === selectedIsoId
+            })
+        }
+        if (selectedUnderwriterId === 'all') return base
         return base.filter((app) => {
-            const iid = getApplicationIsoId(app)
-            if (selectedIsoId === '__none__') return iid == null
-            return iid === selectedIsoId
+            const uid = getApplicationUnderwriterId(app)
+            if (selectedUnderwriterId === '__none__') return uid == null
+            return uid === selectedUnderwriterId
         })
-    }, [applications, selectedIsoId, tableSearchInput])
+    }, [
+        applications,
+        commissionRecipient,
+        selectedIsoId,
+        selectedUnderwriterId,
+        tableSearchInput,
+    ])
 
     const dealRows = useMemo(
         () =>
-            isoFilteredApps.map((app, idx) =>
+            recipientFilteredApps.map((app, idx) =>
                 mapApplicationToHistoryRow(
                     app,
                     idx,
                     getCommissionForApplication(app, commissionLookup),
+                    commissionRecipient,
                 ),
             ),
-        [isoFilteredApps, commissionLookup],
+        [recipientFilteredApps, commissionLookup, commissionRecipient],
     )
 
     const monthFilteredRows = useMemo(() => {
@@ -249,7 +279,7 @@ export default function MonthHistoryCommission() {
 
     useEffect(() => {
         setTablePage(1)
-    }, [tableSearchInput, selectedIsoId, selectedMonthKey, selectedStatus])
+    }, [tableSearchInput, selectedIsoId, selectedUnderwriterId, selectedMonthKey, selectedStatus, commissionRecipient])
 
     const tableTotalPages = Math.max(1, Math.ceil(statusFilteredRows.length / TABLE_PAGE_SIZE) || 1)
     const safeTablePage = Math.min(tablePage, tableTotalPages)
@@ -278,12 +308,44 @@ export default function MonthHistoryCommission() {
         return withIds
     }, [isoList, applications])
 
+    const underwriterOptions = useMemo(() => {
+        const rows = underwriters
+            .map((uw) => {
+                const id = String(uw._id ?? (uw as { id?: string }).id ?? '').trim()
+                if (!id) return null
+                const name =
+                    [uw.firstName, uw.lastName].filter(Boolean).join(' ').trim() ||
+                    uw.email ||
+                    'Unnamed underwriter'
+                return { underwriterId: id, underwriterName: name }
+            })
+            .filter((r): r is { underwriterId: string; underwriterName: string } => r !== null)
+        rows.sort((a, b) => a.underwriterName.localeCompare(b.underwriterName))
+        let noUwCount = 0
+        for (const app of applications) {
+            if (!getApplicationUnderwriterId(app)) noUwCount += 1
+        }
+        if (noUwCount > 0) {
+            rows.unshift({ underwriterId: '__none__', underwriterName: 'No underwriter' })
+        }
+        return rows
+    }, [underwriters, applications])
+
     useEffect(() => {
+        if (commissionRecipient !== 'iso') return
         if (selectedIsoId === 'all' || selectedIsoId === '__none__') return
         if (!isoOptions.some((o) => o.isoId === selectedIsoId)) {
             setSelectedIsoId('all')
         }
-    }, [isoOptions, selectedIsoId])
+    }, [commissionRecipient, isoOptions, selectedIsoId])
+
+    useEffect(() => {
+        if (commissionRecipient !== 'underwriter') return
+        if (selectedUnderwriterId === 'all' || selectedUnderwriterId === '__none__') return
+        if (!underwriterOptions.some((o) => o.underwriterId === selectedUnderwriterId)) {
+            setSelectedUnderwriterId('all')
+        }
+    }, [commissionRecipient, underwriterOptions, selectedUnderwriterId])
 
     const listBlocking =
         applicationsLoading && applications.length === 0 && !applicationsRefreshing
@@ -300,6 +362,7 @@ export default function MonthHistoryCommission() {
             if (tableSearchInput.trim()) return 'search' as const
             if (
                 selectedIsoId !== 'all' ||
+                selectedUnderwriterId !== 'all' ||
                 selectedMonthKey !== 'all' ||
                 selectedStatus !== 'all'
             )
@@ -314,6 +377,7 @@ export default function MonthHistoryCommission() {
         statusFilteredRows.length,
         tableSearchInput,
         selectedIsoId,
+        selectedUnderwriterId,
         selectedMonthKey,
         selectedStatus,
     ])
@@ -408,6 +472,14 @@ export default function MonthHistoryCommission() {
                 )}
             >
                 <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center lg:flex-nowrap lg:gap-3">
+                    <CommissionRecipientToggle
+                        value={commissionRecipient}
+                        onChange={(next) => {
+                            setCommissionRecipient(next)
+                            setSelectedIsoId('all')
+                            setSelectedUnderwriterId('all')
+                        }}
+                    />
                     <div className="relative min-w-[12rem] flex-1 lg:min-w-[10rem] lg:max-w-md">
                         <Search
                             className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
@@ -422,19 +494,38 @@ export default function MonthHistoryCommission() {
                             aria-label="Search applications"
                         />
                     </div>
-                    <Select value={selectedIsoId} onValueChange={setSelectedIsoId}>
-                        <SelectTrigger className={selectToolbarClass(isDark)}>
-                            <SelectValue placeholder="All ISOs" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="all">All ISOs</SelectItem>
-                            {isoOptions.map((iso) => (
-                                <SelectItem key={iso.isoId} value={iso.isoId}>
-                                    {iso.isoName}
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
+                    {commissionRecipient === 'iso' ? (
+                        <Select value={selectedIsoId} onValueChange={setSelectedIsoId}>
+                            <SelectTrigger className={selectToolbarClass(isDark)}>
+                                <SelectValue placeholder="All ISOs" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All ISOs</SelectItem>
+                                {isoOptions.map((iso) => (
+                                    <SelectItem key={iso.isoId} value={iso.isoId}>
+                                        {iso.isoName}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    ) : (
+                        <Select
+                            value={selectedUnderwriterId}
+                            onValueChange={setSelectedUnderwriterId}
+                        >
+                            <SelectTrigger className={selectToolbarClass(isDark)}>
+                                <SelectValue placeholder="All underwriters" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="all">All underwriters</SelectItem>
+                                {underwriterOptions.map((uw) => (
+                                    <SelectItem key={uw.underwriterId} value={uw.underwriterId}>
+                                        {uw.underwriterName}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    )}
                     <DropdownMenu
                         open={monthMenuOpen}
                         onOpenChange={(open: boolean) => {
@@ -595,10 +686,14 @@ export default function MonthHistoryCommission() {
                             <TableHead className={thCommission}>Deal ID</TableHead>
                             <TableHead className={thCommission}>Business Name</TableHead>
                             <TableHead className={thCommission}>Month</TableHead>
-                            <TableHead className={thCommission}>ISO</TableHead>
+                            <TableHead className={thCommission}>
+                                {commissionRecipient === 'underwriter' ? 'Underwriter' : 'ISO'}
+                            </TableHead>
                             <TableHead className={thCommission}>Funded Amount</TableHead>
                             <TableHead className={cn(thCommission, 'min-w-[9rem]')}>
-                                App commission %
+                                {commissionRecipient === 'underwriter'
+                                    ? 'Underwriter commission %'
+                                    : 'App commission %'}
                             </TableHead>
                             <TableHead className={thCommission}>Net Commission</TableHead>
                             <TableHead className={thCommission}>Status</TableHead>

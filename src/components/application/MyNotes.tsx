@@ -18,9 +18,20 @@ interface MyNotesProps {
     notes?: Note[];
     onNoteAdd?: (note: Note) => void;
     onNoteDelete?: (noteId: string) => void;
+    /** Tighter layout for embedded panels (e.g. Funding Call). */
+    compact?: boolean;
+    /** Extra vertical space when embedded in compact panels. */
+    tall?: boolean;
 }
 
-const MyNotes = ({ applicationId: applicationIdProp, notes: externalNotes, onNoteAdd, onNoteDelete }: MyNotesProps) => {
+const MyNotes = ({
+    applicationId: applicationIdProp,
+    notes: externalNotes,
+    onNoteAdd,
+    onNoteDelete,
+    compact = false,
+    tall = false,
+}: MyNotesProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const { applicationId: applicationIdFromRoute } = useParams<{ applicationId?: string }>();
     const { resolvedTheme } = useTheme();
@@ -211,25 +222,27 @@ const MyNotes = ({ applicationId: applicationIdProp, notes: externalNotes, onNot
     };
 
     return (
-        <Card className={`gap-2 w-full border shadow-[0px_4px_20px_0px_#00000005] p-0 rounded-b-md pb-3 h-[500px] flex flex-col ${
+        <Card className={`gap-2 w-full border shadow-[0px_4px_20px_0px_#00000005] p-0 rounded-b-md flex flex-col ${
+            compact ? (tall ? 'h-[420px] pb-2' : 'h-auto pb-2') : 'pb-3 h-[500px]'
+        } ${
             isDark ? 'bg-[#141517] border-[#374151]' : 'border-[#FDFDFD]'
         }`}>
-            <CardHeader className={`px-4 py-2 ${
+            <CardHeader className={`${compact ? 'px-3 py-1.5' : 'px-4 py-2'} ${
                 isDark ? 'bg-[#2A2B2F]' : 'bg-[#F9FAFD]'
             }`}>
                 <CardTitle
-                    className={`text-base font-semibold uppercase tracking-wide ${
+                    className={`${compact ? 'text-sm' : 'text-base'} font-semibold uppercase tracking-wide ${
                         isDark ? 'text-white' : 'text-[#374151]'
                     }`}
                 >
                     My Notes
                 </CardTitle>
             </CardHeader>
-            <CardContent className="px-4 pb-4 flex-1 min-h-0 flex flex-col">
+            <CardContent className={`${compact ? 'px-3 pb-2' : 'px-4 pb-4'} flex-1 min-h-0 flex flex-col`}>
                 {/* Add Notes Section */}
-                <div className="space-y-4">
+                <div className={compact ? 'space-y-2' : 'space-y-4'}>
                     <p
-                        className={`text-sm font-semibold uppercase tracking-wide ${
+                        className={`${compact ? 'text-xs' : 'text-sm'} font-semibold uppercase tracking-wide ${
                             isDark ? 'text-white' : 'text-[#374151]'
                         }`}
                     >
@@ -239,13 +252,15 @@ const MyNotes = ({ applicationId: applicationIdProp, notes: externalNotes, onNot
                         value={newNote}
                         onChange={(e) => setNewNote(e.target.value)}
                         placeholder="Write your notes here.."
-                        className={`min-h-[120px] resize-none rounded-sm text-sm outline-none focus:ring-2 focus:ring-[var(--brand)]/20 ${
+                        className={`${compact ? (tall ? 'min-h-[140px]' : 'min-h-[72px]') : 'min-h-[120px]'} resize-none rounded-sm text-sm outline-none focus:ring-2 focus:ring-[var(--brand)]/20 ${
                             isDark ? 'bg-[#141517] border-[#374151] text-white' : 'border-border'
                         }`}
                     />
                     <Button
                         onClick={handlePostComment}
-                        className="bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white w-36 px-10 py-0 text-xs font-semibold uppercase tracking-wide rounded-sm"
+                        className={`bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white text-xs font-semibold uppercase tracking-wide rounded-sm ${
+                            compact ? 'h-8 w-28 px-4' : 'w-36 px-10 py-0'
+                        }`}
                         disabled={createLoading || !applicationId}
                     >
                         {createLoading ? (
@@ -296,15 +311,15 @@ const MyNotes = ({ applicationId: applicationIdProp, notes: externalNotes, onNot
                         border: 2px solid rgba(20, 21, 23, 0.7);
                     }
                 `}</style>
-                <div className="notes-scroll space-y-3 mt-6 flex-1 min-h-0 overflow-y-auto pr-2">
+                <div className={`notes-scroll space-y-2 ${compact ? (tall ? 'mt-2 max-h-[260px]' : 'mt-2 max-h-[180px]') : 'mt-6 flex-1'} min-h-0 overflow-y-auto pr-2`}>
                     {notesLoading ? (
-                        <div className="text-center py-8">
+                        <div className={`text-center ${compact ? 'py-3' : 'py-8'}`}>
                             <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
                             <p className={`text-sm mt-2 ${isDark ? 'text-white' : 'text-gray-500'}`}>Loading notes...</p>
                         </div>
                     ) : notes.length === 0 ? (
-                        <div className={`text-center py-8 ${isDark ? 'text-white' : 'text-gray-500'}`}>
-                            <p className="text-sm">No notes yet. Add your first note above!</p>
+                        <div className={`text-center ${compact ? 'py-2' : 'py-8'} ${isDark ? 'text-white' : 'text-gray-500'}`}>
+                            <p className="text-xs">No notes yet. Add your first note above!</p>
                         </div>
                     ) : (
                         notes.map((note) => {

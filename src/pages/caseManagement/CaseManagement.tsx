@@ -103,7 +103,7 @@ const CaseManagement = () => {
         if (queue === 'On Hold') return 'In Progress';
         if (queue === 'Contracted' || queue === 'Contract Sent' || queue === 'Contract Out' || queue === 'Contracts Out')
             return 'Contracted';
-        if (queue === 'Underwriting' || queue === 'Review' || queue === 'Final Review') return 'In Progress';
+        if (queue === 'Scrubbing' || queue === 'Underwriter' || queue === 'Underwriting' || queue === 'Review' || queue === 'Final Review') return 'In Progress';
         if (queue === 'New') return 'Pending';
         
         // Fallback to state if queue doesn't match

@@ -378,6 +378,28 @@ body {
   height: 0;
 }
 
+/* Sidebar pipeline action badges — subtle bob only */
+@keyframes sidebar-action-badge-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-1.5px);
+  }
+}
+
+.sidebar-pipeline-action-badge {
+  animation: sidebar-action-badge-bob 2.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-pipeline-action-badge {
+    animation: none;
+  }
+}
+
 .scrollbar-hide::-webkit-scrollbar-button {
   display: none;
   width: 0;

@@ -220,8 +220,8 @@ const ADMIN_USER_COLOR_CONFIG = [
   { key: 'agents' as const, label: 'Agents', color: '#A8CFF5' },
   { key: 'clients' as const, label: 'Clients', color: '#DAEDFF' },
   { key: 'syndicators' as const, label: 'Syndicators', color: '#78BCFD' },
-  { key: 'underwriters' as const, label: 'Underwriters', color: '#39CAFF' },
-  { key: 'finalUnderwriters' as const, label: 'Final Underwriters', color: '#74C5FF' },
+  { key: 'underwriters' as const, label: 'Scrubbing', color: '#39CAFF' },
+  { key: 'finalUnderwriters' as const, label: 'Underwriters', color: '#74C5FF' },
 ]
 
 const DASHBOARD_RECENT_APPLICATIONS_LIMIT = 5;
@@ -284,9 +284,9 @@ const FUNNEL_IN_PROGRESS_QUEUES_LC = new Set([
   "agent",
   "review",
   "underwriting",
-  "underwriter",
+  "scrubbing",
   "final review",
-  "final underwriter",
+  "final scrubbing",
 ]);
 const FUNNEL_WAITING_QUEUES_LC = new Set(["on hold", "waiting for documents"]);
 const FUNNEL_DECISION_QUEUES_LC = new Set(["approved", "declined", "contracted"]);
@@ -555,13 +555,13 @@ export default function DashboardPage() {
           (typeof window !== "undefined"
             ? localStorage.getItem("role") || ""
             : "");
-        if (role === "FINAL_UNDERWRITER") {
-          navigate(
-            buildApplicationsBrowseUrl({ currentQueue: "Final Underwriter" }),
-          );
-        } else if (role === "UNDERWRITER") {
+        if (role === "UNDERWRITER") {
           navigate(
             buildApplicationsBrowseUrl({ currentQueue: "Underwriter" }),
+          );
+        } else if (role === "SCRUBBING") {
+          navigate(
+            buildApplicationsBrowseUrl({ currentQueue: "Scrubbing" }),
           );
         } else if (role === "AGENT") {
           navigate(buildApplicationsBrowseUrl({ currentQueue: "Agent" }));
@@ -627,10 +627,10 @@ export default function DashboardPage() {
       setDashboardRoleAppsTotal(0);
       return;
     }
-  /** Underwriters filter by queue; agents need all own deals (incl. sent to Underwriter = "In Progress"). */
+  /** Underwriters filter by queue; agents need all own deals (incl. sent to Scrubbing = "In Progress"). */
     const queueByRole: Partial<Record<string, string>> = {
+      SCRUBBING: "Scrubbing",
       UNDERWRITER: "Underwriter",
-      FINAL_UNDERWRITER: "Final Underwriter",
     };
     const queueFilter = queueByRole[roleKey];
     if (roleKey !== "AGENT" && !queueFilter) {
@@ -1104,7 +1104,7 @@ export default function DashboardPage() {
     ];
   }, [statsForDashboardCards, prevMonthStats, formatMoney]);
 
-  /** Backend `/applications/stats`: Agent queue ↔ Pending, Underwriter queue ↔ In Progress. */
+  /** Backend `/applications/stats`: Agent queue ↔ Pending, Scrubbing queue ↔ In Progress. */
   const workflowStateCards = useMemo(() => {
     const s = statsForDashboardCards;
     const prev = prevMonthStats;
@@ -1308,8 +1308,8 @@ export default function DashboardPage() {
         .replace(/[^a-z0-9]/g, "");
 
     const roleQueueMap: Record<string, string> = {
+      SCRUBBING: "scrubbing",
       UNDERWRITER: "underwriter",
-      FINAL_UNDERWRITER: "finalunderwriter",
     };
 
     const dashboardRole =
@@ -1409,10 +1409,10 @@ export default function DashboardPage() {
     }
     if (
       n === "underwriting" ||
-      n === "underwriter" ||
+      n === "scrubbing" ||
       n === "review" ||
       n === "final review" ||
-      n === "final underwriter" ||
+      n === "final scrubbing" ||
       n === "final" ||
       n === "funding call"
     ) {
@@ -1525,20 +1525,20 @@ export default function DashboardPage() {
     }
   }, [data, loading]);
 
-  // Get user role - available roles: 'AGENT', 'UNDERWRITER', 'FINAL_UNDERWRITER', 'ACCOUNTANT', 'ADMIN'
+  // Get user role - available roles: 'AGENT', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ADMIN'
   const userRole = user?.role || localStorage.getItem("role") || "";
 
-  // UNDERWRITER and FINAL_UNDERWRITER see the same underwriter dashboard
+  // SCRUBBING and UNDERWRITER see the same scrubbing dashboard
   const showUnderwriterDashboard =
-    userRole === "UNDERWRITER" || userRole === "FINAL_UNDERWRITER";
+    userRole === "SCRUBBING" || userRole === "UNDERWRITER";
   const isAdmin = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN'
   const isSyndicator = userRole === 'SYNDICATOR'
 
   const showPipelineWorkflowCards =
     !isAdmin &&
     (userRole === "AGENT" ||
-      userRole === "UNDERWRITER" ||
-      userRole === "FINAL_UNDERWRITER");
+      userRole === "SCRUBBING" ||
+      userRole === "UNDERWRITER");
 
   // Admin dashboard stats (users, application buckets, recent applications)
   const [adminStats, setAdminStats] = useState<AdminDashboardStats | null>(null)
@@ -3157,7 +3157,7 @@ export default function DashboardPage() {
                   {/* <span className="text-foreground">Dashboard</span> */}
                 </h1>
                 <div className="flex items-center gap-3">
-                  {userRole !== "FINAL_UNDERWRITER" && (
+                  {userRole !== "UNDERWRITER" && (
                     <Button
                       variant="outline"
                       className="h-9 gap-2 bg-[var(--brand)] hover:bg-[var(--brand)]/90 text-white hover:text-white border-[var(--brand)]"
@@ -3237,7 +3237,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Underwriter/Final Underwriter: keep first 5 KPI cards in one row (agent-style layout). */}
+              {/* Scrubbing/Underwriter: keep first 5 KPI cards in one row (agent-style layout). */}
               <section className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
                 {underwriterStats.slice(0, 5).map((c, i) => (
                   <div
@@ -3267,7 +3267,7 @@ export default function DashboardPage() {
                 ))}
               </section>
 
-              {/* Underwriter/Final Underwriter: render remaining cards on the next row. */}
+              {/* Scrubbing/Underwriter: render remaining cards on the next row. */}
               {(underwriterStats.length > 5 ||
                 (showPipelineWorkflowCards && showUnderwriterDashboard)) && (
                   <section className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">

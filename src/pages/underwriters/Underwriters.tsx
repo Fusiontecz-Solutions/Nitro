@@ -72,9 +72,9 @@ import { useNavigate } from "react-router";
 import { formatDate as formatDateUtil } from "@/lib/utils";
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from "@/utils/formatPhoneNumber";
 
-const ROLE_ID = "UNDERWRITER";
-const LABEL = "Underwriter";
-const LABEL_PLURAL = "Underwriters";
+const ROLE_ID = "SCRUBBING";
+const LABEL = "Scrubbing";
+const LABEL_PLURAL = "Scrubbing";
 
 function formatDate(dateStr: string | undefined): string {
   return formatDateUtil(dateStr ?? "", "—");
@@ -153,7 +153,7 @@ export default function UnderwritersDashboard() {
       localStorage.setItem("user", JSON.stringify(user));
       localStorage.setItem("role", user.role);
 
-      toast.success("Logged in as Underwriter");
+      toast.success("Logged in as Scrubbing");
 
       navigate("/");
     } catch (error: any) {
@@ -188,11 +188,11 @@ export default function UnderwritersDashboard() {
         }),
       ).unwrap();
 
-      toast.success("Underwriter created successfully");
+      toast.success("Scrubbing created successfully");
       setAddModalOpen(false);
       dispatch(fetchUsersByRole(ROLE_ID));
     } catch (err: any) {
-      toast.error(err?.message ?? "Failed to create underwriter");
+      toast.error(err?.message ?? "Failed to create scrubbing");
     } finally {
       setFormSubmitting(false);
     }
@@ -223,11 +223,11 @@ export default function UnderwritersDashboard() {
         }),
       ).unwrap();
 
-      toast.success("Underwriter updated successfully");
+      toast.success("Scrubbing updated successfully");
       setEditUser(null);
       dispatch(fetchUsersByRole(ROLE_ID));
     } catch (err: any) {
-      toast.error(err?.message ?? "Failed to update underwriter");
+      toast.error(err?.message ?? "Failed to update scrubbing");
     } finally {
       setFormSubmitting(false);
     }
@@ -247,11 +247,11 @@ export default function UnderwritersDashboard() {
         }),
       ).unwrap();
 
-      toast.success("Underwriter deleted");
+      toast.success("Scrubbing deleted");
       setDeleteConfirm(null);
       dispatch(fetchUsersByRole(ROLE_ID));
     } catch (err: any) {
-      toast.error(err?.message ?? "Failed to delete underwriter");
+      toast.error(err?.message ?? "Failed to delete scrubbing");
     } finally {
       setFormSubmitting(false);
     }
@@ -561,13 +561,13 @@ export default function UnderwritersDashboard() {
           <span className="opacity-60">
             {filtered.length}{" "}
             {filtered.length === 1
-              ? "underwriter"
-              : "underwriters"}
+              ? "scrubbing user"
+              : "scrubbing users"}
           </span>
         </div>
       </section>
 
-      {/* Add Underwriter Modal */}
+      {/* Add Scrubbing Modal */}
       <Dialog
         open={addModalOpen}
         onOpenChange={(o: boolean) => !o && setAddModalOpen(false)}
@@ -629,7 +629,7 @@ export default function UnderwritersDashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Underwriter Modal */}
+      {/* Edit Scrubbing Modal */}
       <Dialog
         open={!!editUser}
         onOpenChange={(o: boolean) => !o && setEditUser(null)}
@@ -682,7 +682,7 @@ export default function UnderwritersDashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Underwriter Modal */}
+      {/* Delete Scrubbing Modal */}
       <Dialog
         open={!!deleteConfirm}
         onOpenChange={(o: boolean) => !o && setDeleteConfirm(null)}

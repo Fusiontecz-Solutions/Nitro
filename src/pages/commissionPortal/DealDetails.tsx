@@ -13,12 +13,22 @@ import { formatCurrency } from "@/lib/utils";
 import { axiosGet } from "@/redux/axios";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
-  getApplications,
-  getApplicationsByIsoId,
-  updateApplication,
+    getApplications,
+    getApplicationsByIsoId,
+    getApplicationsByUnderwriterId,
+    updateApplication,
 } from "@/redux/actions/applicationActions";
-import { clearIsoApplications } from "@/redux/slices/applicationSlice";
+import { fetchUsersByRole } from "@/redux/actions/settingsUserActions";
+import { clearIsoApplications, clearUnderwriterApplications } from "@/redux/slices/applicationSlice";
+import { selectUsersByRole } from "@/redux/selectors/settingsUsersSelectors";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
+import { CommissionRecipientToggle } from "./CommissionRecipientToggle";
+import {
+    type CommissionRecipientType,
+    commissionPctPayloadField,
+    getStoredCommissionPctForRecipient,
+    getUnderwriterNameFromApplication,
+} from "./commissionRecipientShared";
 
 type DealStatus = "APPROVED" | "PAID" | "PROCESSING" | "CLAWBACK";
 
@@ -110,6 +120,7 @@ function mapApplicationToDealRow(
   app: unknown,
   isoName: string,
   rowIndex: number,
+  recipientType: CommissionRecipientType = "iso",
 ): DealRow {
   const r = app as Record<string, unknown>;
   const offerDecisionRaw = r?.OfferDecision as Record<string, unknown> | undefined;
@@ -149,7 +160,7 @@ function mapApplicationToDealRow(
     toNum(r?.commissionAmount) ??
     0;
 
-  const storedPctRaw = toNum(r?.commissionPercentage);
+  const storedPctRaw = getStoredCommissionPctForRecipient(r, recipientType);
   const derivedPct =
     fundedAmount > 0 && commissionAmount !== 0
       ? Math.round((commissionAmount / fundedAmount) * 10000) / 100
@@ -361,8 +372,8 @@ function getApplicationPutId(app: unknown): string | null {
 const queueFilterOptions = [
   "All",
   "Agent",
+  "Scrubbing",
   "Underwriter",
-  "Final Underwriter",
   "Contract",
   "Final",
   "Funding call",
@@ -394,8 +405,28 @@ export default function DealDetails() {
   const isoApplicationsError = useSelector(
     (state: RootState) => state.isoApplications.error,
   );
+  const underwriterApplications = useSelector(
+    (state: RootState) => state.underwriterApplications.data || [],
+  );
+  const underwriterApplicationsLoading = useSelector(
+    (state: RootState) => state.underwriterApplications.loading,
+  );
+  const underwriterApplicationsError = useSelector(
+    (state: RootState) => state.underwriterApplications.error,
+  );
+  const underwriters = useSelector((state: RootState) =>
+    selectUsersByRole(state, "UNDERWRITER"),
+  );
 
+  /** Filters the deal list by ISO vs underwriter attribution (not per-deal commission editing). */
+  const [listFilterRecipient, setListFilterRecipient] =
+    useState<CommissionRecipientType>("iso");
+  /** Per-deal ISO vs underwriter commission view on the selected deal card. */
+  const [dealRecipientById, setDealRecipientById] = useState<
+    Record<string, CommissionRecipientType>
+  >({});
   const [selectedIsoId, setSelectedIsoId] = useState<string>("all");
+  const [selectedUnderwriterId, setSelectedUnderwriterId] = useState<string>("all");
   const [deals, setDeals] = useState<DealRow[]>([]);
   const [selectedId, setSelectedId] = useState<string>("");
   const [commissionDraft, setCommissionDraft] = useState("");
@@ -410,11 +441,18 @@ export default function DealDetails() {
   const [selectedQueueFilter, setSelectedQueueFilter] = useState<string>("All");
   const [isoSearch, setIsoSearch] = useState("");
   const [isoDropdownOpen, setIsoDropdownOpen] = useState(false);
+  const [underwriterSearch, setUnderwriterSearch] = useState("");
+  const [underwriterDropdownOpen, setUnderwriterDropdownOpen] = useState(false);
   const [selectedOfferDecisionData, setSelectedOfferDecisionData] = useState<
     Record<string, unknown> | null
   >(null);
   const [isOfferDecisionLoading, setIsOfferDecisionLoading] = useState(false);
   const isoDropdownRef = useRef<HTMLDivElement | null>(null);
+  const underwriterDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    void dispatch(fetchUsersByRole("UNDERWRITER"));
+  }, [dispatch]);
 
   const isoAgentOptions = useMemo(
     () =>
@@ -434,30 +472,85 @@ export default function DealDetails() {
   const selectedIsoName =
     isoAgentOptions.find((x) => x.id === selectedIsoId)?.name || "—";
 
+  const underwriterOptions = useMemo(
+    () =>
+      underwriters
+        .map((uw) => {
+          const id = uw._id ?? (uw as { id?: string }).id;
+          if (!id) return null;
+          const name =
+            [uw.firstName, uw.lastName].filter(Boolean).join(" ").trim() ||
+            uw.email ||
+            "Unnamed underwriter";
+          return { id: String(id), name };
+        })
+        .filter((uw): uw is { id: string; name: string } => uw !== null)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [underwriters],
+  );
+
+  const selectedUnderwriterName =
+    underwriterOptions.find((x) => x.id === selectedUnderwriterId)?.name || "—";
+
   const filteredIsoOptions = useMemo(() => {
     const q = isoSearch.trim().toLowerCase();
     if (!q) return isoAgentOptions;
     return isoAgentOptions.filter((iso) => iso.name.toLowerCase().includes(q));
   }, [isoAgentOptions, isoSearch]);
 
+  const filteredUnderwriterOptions = useMemo(() => {
+    const q = underwriterSearch.trim().toLowerCase();
+    if (!q) return underwriterOptions;
+    return underwriterOptions.filter((uw) =>
+      uw.name.toLowerCase().includes(q),
+    );
+  }, [underwriterOptions, underwriterSearch]);
+
+  const selectedRecipientId =
+    listFilterRecipient === "iso" ? selectedIsoId : selectedUnderwriterId;
+
   const sourceApplications =
-    selectedIsoId === "all" ? allApplications : isoApplications;
+    selectedRecipientId === "all"
+      ? allApplications
+      : listFilterRecipient === "iso"
+        ? isoApplications
+        : underwriterApplications;
   const isListLoading =
-    selectedIsoId === "all" ? allApplicationsLoading : isoApplicationsLoading;
+    selectedRecipientId === "all"
+      ? allApplicationsLoading
+      : listFilterRecipient === "iso"
+        ? isoApplicationsLoading
+        : underwriterApplicationsLoading;
   const listError =
-    selectedIsoId === "all" ? allApplicationsError : isoApplicationsError;
+    selectedRecipientId === "all"
+      ? allApplicationsError
+      : listFilterRecipient === "iso"
+        ? isoApplicationsError
+        : underwriterApplicationsError;
 
   const mappedDeals = useMemo(() => {
     return sourceApplications.map((app, index) =>
       mapApplicationToDealRow(
         app,
-        selectedIsoId === "all"
-          ? getIsoNameFromApplication(app)
-          : selectedIsoName,
+        listFilterRecipient === "iso"
+          ? selectedIsoId === "all"
+            ? getIsoNameFromApplication(app)
+            : selectedIsoName
+          : selectedUnderwriterId === "all"
+            ? getUnderwriterNameFromApplication(app)
+            : selectedUnderwriterName,
         index,
+        "iso",
       ),
     );
-  }, [sourceApplications, selectedIsoId, selectedIsoName]);
+  }, [
+    sourceApplications,
+    selectedIsoId,
+    selectedIsoName,
+    selectedUnderwriterId,
+    selectedUnderwriterName,
+    listFilterRecipient,
+  ]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -467,8 +560,33 @@ export default function DealDetails() {
   }, [dealSearch]);
 
   useEffect(() => {
-    if (selectedIsoId === "all") {
-      dispatch(clearIsoApplications());
+    if (listFilterRecipient === "iso") {
+      if (selectedIsoId === "all") {
+        dispatch(clearIsoApplications());
+        const listParams: GetApplicationsParams = {
+          page: 1,
+          limit: 1000,
+          search: debouncedDealSearch || undefined,
+          currentQueue:
+            selectedQueueFilter !== "All" ? selectedQueueFilter : undefined,
+          skipListCache: true,
+        };
+        dispatch(getApplications(listParams));
+        return;
+      }
+      dispatch(
+        getApplicationsByIsoId({
+          isoId: selectedIsoId,
+          search: debouncedDealSearch,
+          currentQueue:
+            selectedQueueFilter !== "All" ? selectedQueueFilter : undefined,
+        }),
+      );
+      return;
+    }
+
+    if (selectedUnderwriterId === "all") {
+      dispatch(clearUnderwriterApplications());
       const listParams: GetApplicationsParams = {
         page: 1,
         limit: 1000,
@@ -481,14 +599,21 @@ export default function DealDetails() {
       return;
     }
     dispatch(
-      getApplicationsByIsoId({
-        isoId: selectedIsoId,
+      getApplicationsByUnderwriterId({
+        underwriterId: selectedUnderwriterId,
         search: debouncedDealSearch,
         currentQueue:
           selectedQueueFilter !== "All" ? selectedQueueFilter : undefined,
       }),
     );
-  }, [debouncedDealSearch, dispatch, selectedIsoId, selectedQueueFilter]);
+  }, [
+    listFilterRecipient,
+    debouncedDealSearch,
+    dispatch,
+    selectedIsoId,
+    selectedUnderwriterId,
+    selectedQueueFilter,
+  ]);
 
   useLayoutEffect(() => {
     if (isListLoading) {
@@ -504,9 +629,17 @@ export default function DealDetails() {
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (!isoDropdownRef.current) return;
-      if (!isoDropdownRef.current.contains(event.target as Node)) {
+      if (
+        isoDropdownRef.current &&
+        !isoDropdownRef.current.contains(event.target as Node)
+      ) {
         setIsoDropdownOpen(false);
+      }
+      if (
+        underwriterDropdownRef.current &&
+        !underwriterDropdownRef.current.contains(event.target as Node)
+      ) {
+        setUnderwriterDropdownOpen(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -514,7 +647,7 @@ export default function DealDetails() {
   }, []);
 
   useEffect(() => {
-    if (selectedIsoId === "all") return;
+    if (selectedRecipientId === "all") return;
     if (deals.length === 0) {
       setSelectedId("");
       return;
@@ -522,7 +655,7 @@ export default function DealDetails() {
     if (!deals.some((deal) => deal.id === selectedId)) {
       setSelectedId(deals[0].id);
     }
-  }, [deals, selectedId, selectedIsoId]);
+  }, [deals, selectedId, selectedRecipientId]);
 
   const selectedDeal = useMemo(() => {
     if (!deals.length) return null;
@@ -541,20 +674,52 @@ export default function DealDetails() {
     );
   }, [selectedDeal, sourceApplications]);
 
+  const selectedDealRecipient: CommissionRecipientType = selectedId
+    ? (dealRecipientById[selectedId] ?? "iso")
+    : "iso";
+
+  const selectedDealCommissionView = useMemo(() => {
+    if (!selectedDeal || !selectedApplication) return selectedDeal;
+    const remapped = mapApplicationToDealRow(
+      selectedApplication,
+      selectedDeal.iso,
+      0,
+      selectedDealRecipient,
+    );
+    return {
+      ...remapped,
+      id: selectedDeal.id,
+      dealId: selectedDeal.dealId,
+      applicationNumber: selectedDeal.applicationNumber,
+    };
+  }, [selectedDeal, selectedApplication, selectedDealRecipient]);
+
+  const displayedDealForCommission = useMemo(() => {
+    if (!selectedDealCommissionView) return null;
+    if (commissionDraft === "" || commissionDraft === "-") {
+      return selectedDealCommissionView;
+    }
+    const n = parseFloat(commissionDraft);
+    if (Number.isNaN(n)) return selectedDealCommissionView;
+    return applyCommissionRate(selectedDealCommissionView, n);
+  }, [selectedDealCommissionView, commissionDraft]);
+
   useEffect(() => {
-    const d = deals.find((x) => x.id === selectedId);
+    const d = selectedDealCommissionView;
     const pct = d?.baseRatePct ?? null;
     const draftStr = pct != null ? String(pct) : "";
+    const selectionKey = `${selectedId}:${selectedDealRecipient}`;
 
-    if (commissionSelectionKeyRef.current !== selectedId) {
-      commissionSelectionKeyRef.current = selectedId;
+    if (commissionSelectionKeyRef.current !== selectionKey) {
+      commissionSelectionKeyRef.current = selectionKey;
       setCommissionDraft(draftStr);
       setCommissionBaselinePct(pct);
+    } else if (d && d.baseRatePct != null) {
+      setCommissionDraft(String(d.baseRatePct));
     } else {
-      if (d && d.baseRatePct != null) setCommissionDraft(String(d.baseRatePct));
-      else setCommissionDraft("");
+      setCommissionDraft("");
     }
-  }, [selectedId, deals]);
+  }, [selectedId, selectedDealRecipient, selectedDealCommissionView]);
 
   useEffect(() => {
     const loadOfferDecision = async () => {
@@ -610,7 +775,8 @@ export default function DealDetails() {
   }, [selectedApplication]);
 
   const breakdown = useMemo(() => {
-    if (!selectedDeal) {
+    const dealForBreakdown = displayedDealForCommission ?? selectedDealCommissionView;
+    if (!dealForBreakdown) {
       return {
         baseLabel: "",
         baseAmount: 0,
@@ -620,18 +786,18 @@ export default function DealDetails() {
       };
     }
     const baseInfo = parseFundedForFormula(
-      selectedDeal.fundedAmount,
-      selectedDeal.baseRatePct,
-      selectedDeal.base,
+      dealForBreakdown.fundedAmount,
+      dealForBreakdown.baseRatePct,
+      dealForBreakdown.base,
     );
     return {
       baseLabel: baseInfo.line,
-      baseAmount: selectedDeal.base,
-      upsell: selectedDeal.upsell,
-      fees: selectedDeal.fees,
-      net: selectedDeal.net,
+      baseAmount: dealForBreakdown.base,
+      upsell: dealForBreakdown.upsell,
+      fees: dealForBreakdown.fees,
+      net: dealForBreakdown.net,
     };
-  }, [selectedDeal]);
+  }, [displayedDealForCommission, selectedDealCommissionView]);
 
   const netPositive = selectedDeal ? breakdown.net >= 0 : true;
   const initial = selectedDeal
@@ -652,10 +818,15 @@ export default function DealDetails() {
         ["EIN", selectedDeal.ein],
         ["Agent", selectedDeal.agent],
         ["Industry", selectedDeal.industry],
-        ["ISO", selectedDeal.iso],
+        [
+          selectedDealRecipient === "underwriter" ? "Underwriter" : "ISO",
+          selectedDealRecipient === "underwriter"
+            ? getUnderwriterNameFromApplication(selectedApplication)
+            : selectedDeal.iso,
+        ],
       ] as [string, string, boolean?][],
     };
-  }, [selectedDeal]);
+  }, [selectedDeal, selectedApplication, selectedDealRecipient]);
 
   const fundingCardData = useMemo(() => {
     if (!selectedDeal) {
@@ -753,7 +924,7 @@ export default function DealDetails() {
   }, [commissionDraft, commissionBaselinePct]);
 
   const handleSaveCommission = async () => {
-    if (!selectedDeal || !selectedApplication) return;
+    if (!selectedDeal || !selectedApplication || !selectedDealCommissionView) return;
     if (commissionDraft === "" || commissionDraft === "-") {
       toast.error("Enter a commission rate.");
       return;
@@ -776,8 +947,7 @@ export default function DealDetails() {
       toast.error("Could not resolve application id.");
       return;
     }
-    const updated = applyCommissionRate(selectedDeal, n);
-    setDeals((prev) => prev.map((d) => (d.id === selectedId ? updated : d)));
+    const updated = applyCommissionRate(selectedDealCommissionView, n);
     if (updated.baseRatePct != null)
       setCommissionDraft(String(updated.baseRatePct));
 
@@ -795,22 +965,33 @@ export default function DealDetails() {
       currentQueue:
         selectedQueueFilter !== "All" ? selectedQueueFilter : undefined,
     } as const;
+    const listParamsUnderwriter = {
+      underwriterId: selectedUnderwriterId,
+      search: debouncedDealSearch,
+      currentQueue:
+        selectedQueueFilter !== "All" ? selectedQueueFilter : undefined,
+    } as const;
+    const pctField = commissionPctPayloadField(selectedDealRecipient);
 
     setSavingCommission(true);
     try {
       await dispatch(
         updateApplication({
           id: putId,
-          data: { commissionPercentage: updated.baseRatePct ?? n },
+          data: { [pctField]: updated.baseRatePct ?? n },
         }),
       ).unwrap();
-      if (selectedIsoId === "all") {
+      if (selectedRecipientId === "all") {
         await dispatch(getApplications(listParamsAll)).unwrap();
-      } else {
+      } else if (listFilterRecipient === "iso") {
         await dispatch(getApplicationsByIsoId(listParamsIso)).unwrap();
+      } else {
+        await dispatch(getApplicationsByUnderwriterId(listParamsUnderwriter)).unwrap();
       }
       setCommissionBaselinePct(updated.baseRatePct ?? n);
-      toast.success("Commission rate saved.");
+      toast.success(
+        `${selectedDealRecipient === "underwriter" ? "Underwriter" : "ISO"} commission rate saved.`,
+      );
     } catch (err: unknown) {
       const msg =
         typeof err === "string"
@@ -818,10 +999,12 @@ export default function DealDetails() {
           : "Failed to save commission rate.";
       toast.error(msg);
       try {
-        if (selectedIsoId === "all") {
+        if (selectedRecipientId === "all") {
           await dispatch(getApplications(listParamsAll)).unwrap();
-        } else {
+        } else if (listFilterRecipient === "iso") {
           await dispatch(getApplicationsByIsoId(listParamsIso)).unwrap();
+        } else {
+          await dispatch(getApplicationsByUnderwriterId(listParamsUnderwriter)).unwrap();
         }
       } catch {
         /* ignore re-fetch errors */
@@ -854,73 +1037,161 @@ export default function DealDetails() {
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
             <div className="flex min-w-[220px] flex-col gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Filter by ISO
+                Show deals for
               </span>
-              <div className="relative" ref={isoDropdownRef}>
-                <button
-                  type="button"
-                  onClick={() => setIsoDropdownOpen((prev) => !prev)}
-                  className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-sm text-foreground"
-                >
-                  <span className="truncate">
-                    {selectedIsoId === "all" ? "All ISOs" : selectedIsoName}
-                  </span>
-                  <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </button>
-                {isoDropdownOpen && (
-                  <div className="absolute z-20 mt-2 w-full rounded-md border border-input bg-background p-2 shadow-lg">
-                    <div className="relative mb-2">
-                      <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                      <input
-                        type="text"
-                        value={isoSearch}
-                        onChange={(e) => setIsoSearch(e.target.value)}
-                        placeholder="Search ISO..."
-                        className="h-8 w-full rounded-md border border-input bg-background pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-[var(--brand)]/25"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedIsoId("all");
-                        setIsoDropdownOpen(false);
-                      }}
-                      className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedIsoId === "all"
-                        ? "bg-[var(--brand)]/10 text-[var(--brand)]"
-                        : "text-foreground hover:bg-muted"
-                        }`}
-                    >
-                      All ISOs
-                    </button>
-                    <div className="max-h-44 overflow-y-auto">
-                      {filteredIsoOptions.length > 0 ? (
-                        filteredIsoOptions.map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedIsoId(item.id);
-                              setDealSearch("");
-                              setIsoDropdownOpen(false);
-                            }}
-                            className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedIsoId === item.id
-                              ? "bg-[var(--brand)]/10 text-[var(--brand)]"
-                              : "text-foreground hover:bg-muted"
-                              }`}
-                          >
-                            {item.name}
-                          </button>
-                        ))
-                      ) : (
-                        <p className="px-2 py-2 text-xs text-muted-foreground">
-                          No ISO found.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <CommissionRecipientToggle
+                value={listFilterRecipient}
+                onChange={(next) => {
+                  setListFilterRecipient(next);
+                  setSelectedIsoId("all");
+                  setSelectedUnderwriterId("all");
+                  setDealSearch("");
+                }}
+              />
             </div>
+            {listFilterRecipient === "iso" ? (
+              <div className="flex min-w-[220px] flex-col gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Filter by ISO
+                </span>
+                <div className="relative" ref={isoDropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsoDropdownOpen((prev) => !prev)}
+                    className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                  >
+                    <span className="truncate">
+                      {selectedIsoId === "all" ? "All ISOs" : selectedIsoName}
+                    </span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </button>
+                  {isoDropdownOpen && (
+                    <div className="absolute z-20 mt-2 w-full rounded-md border border-input bg-background p-2 shadow-lg">
+                      <div className="relative mb-2">
+                        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                          type="text"
+                          value={isoSearch}
+                          onChange={(e) => setIsoSearch(e.target.value)}
+                          placeholder="Search ISO..."
+                          className="h-8 w-full rounded-md border border-input bg-background pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-[var(--brand)]/25"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedIsoId("all");
+                          setIsoDropdownOpen(false);
+                        }}
+                        className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedIsoId === "all"
+                          ? "bg-[var(--brand)]/10 text-[var(--brand)]"
+                          : "text-foreground hover:bg-muted"
+                          }`}
+                      >
+                        All ISOs
+                      </button>
+                      <div className="max-h-44 overflow-y-auto">
+                        {filteredIsoOptions.length > 0 ? (
+                          filteredIsoOptions.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedIsoId(item.id);
+                                setDealSearch("");
+                                setIsoDropdownOpen(false);
+                              }}
+                              className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedIsoId === item.id
+                                ? "bg-[var(--brand)]/10 text-[var(--brand)]"
+                                : "text-foreground hover:bg-muted"
+                                }`}
+                            >
+                              {item.name}
+                            </button>
+                          ))
+                        ) : (
+                          <p className="px-2 py-2 text-xs text-muted-foreground">
+                            No ISO found.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-w-[220px] flex-col gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Filter by underwriter
+                </span>
+                <div className="relative" ref={underwriterDropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setUnderwriterDropdownOpen((prev) => !prev)}
+                    className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                  >
+                    <span className="truncate">
+                      {selectedUnderwriterId === "all"
+                        ? "All underwriters"
+                        : selectedUnderwriterName}
+                    </span>
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </button>
+                  {underwriterDropdownOpen && (
+                    <div className="absolute z-20 mt-2 w-full rounded-md border border-input bg-background p-2 shadow-lg">
+                      <div className="relative mb-2">
+                        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <input
+                          type="text"
+                          value={underwriterSearch}
+                          onChange={(e) => setUnderwriterSearch(e.target.value)}
+                          placeholder="Search underwriter..."
+                          className="h-8 w-full rounded-md border border-input bg-background pl-7 pr-2 text-xs outline-none focus:ring-2 focus:ring-[var(--brand)]/25"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedUnderwriterId("all");
+                          setUnderwriterDropdownOpen(false);
+                        }}
+                        className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedUnderwriterId === "all"
+                          ? "bg-[var(--brand)]/10 text-[var(--brand)]"
+                          : "text-foreground hover:bg-muted"
+                          }`}
+                      >
+                        All underwriters
+                      </button>
+                      <div className="max-h-44 overflow-y-auto">
+                        {filteredUnderwriterOptions.length > 0 ? (
+                          filteredUnderwriterOptions.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedUnderwriterId(item.id);
+                                setDealSearch("");
+                                setUnderwriterDropdownOpen(false);
+                              }}
+                              className={`mb-1 block w-full rounded px-2 py-1.5 text-left text-xs ${selectedUnderwriterId === item.id
+                                ? "bg-[var(--brand)]/10 text-[var(--brand)]"
+                                : "text-foreground hover:bg-muted"
+                                }`}
+                            >
+                              {item.name}
+                            </button>
+                          ))
+                        ) : (
+                          <p className="px-2 py-2 text-xs text-muted-foreground">
+                            No underwriter found.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="flex min-w-[220px] flex-col gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 Search deal
@@ -1127,12 +1398,26 @@ export default function DealDetails() {
                             </span>
                           </div>
                         )}
-                        <div className="w-full min-w-0 max-w-md">
+                        <div className="w-full min-w-0 max-w-md space-y-3">
+                          <div className="flex flex-col gap-2">
+                            <span className="text-[11px] font-medium text-muted-foreground">
+                              Commission for this deal
+                            </span>
+                            <CommissionRecipientToggle
+                              value={selectedDealRecipient}
+                              onChange={(next) => {
+                                setDealRecipientById((prev) => ({
+                                  ...prev,
+                                  [selectedId]: next,
+                                }));
+                              }}
+                            />
+                          </div>
                           <label
                             htmlFor={`commission-rate-${selectedDeal.id}`}
                             className="mb-1.5 block text-[11px] font-medium text-muted-foreground"
                           >
-                            Commission rate
+                            Commission rate ({selectedDealRecipient === "underwriter" ? "underwriter" : "ISO"})
                           </label>
                           <div
                             className="flex h-11 w-full items-stretch overflow-hidden rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-[var(--brand)]/40"
@@ -1152,24 +1437,9 @@ export default function DealDetails() {
                               step={0.01}
                               placeholder="0"
                               value={commissionDraft}
-                              onChange={(e) => {
-                                const next = e.target.value;
-                                setCommissionDraft(next);
-                                if (next === "" || next === "-") return;
-                                const n = parseFloat(next);
-                                if (Number.isNaN(n)) return;
-                                setDeals((prev) =>
-                                  prev.map((d) =>
-                                    d.id === selectedId
-                                      ? applyCommissionRate(d, n)
-                                      : d,
-                                  ),
-                                );
-                              }}
+                              onChange={(e) => setCommissionDraft(e.target.value)}
                               onBlur={() => {
-                                const d = deals.find(
-                                  (x) => x.id === selectedId,
-                                );
+                                const d = displayedDealForCommission ?? selectedDealCommissionView;
                                 if (d?.baseRatePct != null)
                                   setCommissionDraft(String(d.baseRatePct));
                               }}

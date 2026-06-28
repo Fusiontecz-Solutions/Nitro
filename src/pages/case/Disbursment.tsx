@@ -12,7 +12,10 @@ import {
   sendFundedEmail,
 } from "@/redux/actions/applicationActions";
 import { clearBankDetails } from "@/redux/slices/bankDetailSlice";
+import { getFundingCalls } from "@/redux/actions/fundingCallActions";
+import { canOpenDisbursementTab } from "@/constants/operationsDashboardApplications";
 import { toast } from "react-toastify";
+import { Button } from "@/components/ui/button";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
 import DealReviewDialog, {
   type DealReviewConfirmContext,
@@ -24,18 +27,15 @@ const normalizeWorkflowQueueKey = (queue: string | null | undefined) =>
     .replace(/[\s_-]+/g, "")
     .toLowerCase();
 
-const QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT = new Set([
-  "agent",
-  "underwriter",
-  "finalunderwriter",
-  "contracted",
-  "final",
-  "fundingcall",
-]);
+const resolveWorkflowQueue = (queue: string | null | undefined) => {
+  const trimmed = String(queue ?? "").trim();
+  return trimmed || null;
+};
 
-const shouldSetApplicationQueueToDisbursement = (
-  currentQueue: string | null | undefined
-) => QUEUES_THAT_CAN_MOVE_TO_DISBURSEMENT.has(normalizeWorkflowQueueKey(currentQueue));
+const isDisbursementWorkflowStage = (value: string | null | undefined) => {
+  const key = normalizeWorkflowQueueKey(value);
+  return key === "disbursement" || key === "disbursment";
+};
 
 type DisbursementProps = {
   /** Application id used for bank-details API (often resolved from loaded detail). */
@@ -78,13 +78,19 @@ export const Disbursement = ({
   const { data: applicationDetailData } = useSelector(
     (state: RootState) => state.applicationDetail
   );
+  const { data: fundingCallsForApp } = useSelector(
+    (state: RootState) => state.fundingCalls,
+  );
 
   const effectiveQueue =
-    currentQueue ??
-    ((applicationDetailData as { currentQueue?: string; queue?: string } | null)
-      ?.currentQueue ||
-      (applicationDetailData as { queue?: string } | null)?.queue ||
-      null);
+    resolveWorkflowQueue(currentQueue) ??
+    resolveWorkflowQueue(
+      (applicationDetailData as { currentQueue?: string } | null)?.currentQueue,
+    ) ??
+    resolveWorkflowQueue(
+      (applicationDetailData as { queue?: string } | null)?.queue,
+    ) ??
+    null;
 
   const effectiveRecordId =
     applicationRecordId ??
@@ -95,9 +101,45 @@ export const Disbursement = ({
     () => normalizeWorkflowQueueKey(effectiveQueue),
     [effectiveQueue]
   );
+
+  const explicitStatus =
+    (applicationDetailData as { status?: string } | null)?.status ?? null;
+  const currentState =
+    (applicationDetailData as { currentState?: string } | null)?.currentState ??
+    null;
+
   const isApplicationFunded = effectiveQueueKey === "funded";
-  const isAtDisbursementQueue =
-    effectiveQueueKey === "disbursement" || effectiveQueueKey === "disbursment";
+  const isAtDisbursementQueue = useMemo(
+    () =>
+      isDisbursementWorkflowStage(effectiveQueue) ||
+      isDisbursementWorkflowStage(currentState) ||
+      isDisbursementWorkflowStage(explicitStatus),
+    [effectiveQueue, currentState, explicitStatus],
+  );
+
+  const latestFundingCallStatus = useMemo(() => {
+    const rows = fundingCallsForApp;
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    return (rows[0] as { callStatus?: string })?.callStatus ?? null;
+  }, [fundingCallsForApp]);
+
+  const disbursementTabUnlocked = useMemo(
+    () =>
+      canOpenDisbursementTab(effectiveQueue, {
+        explicitStatus,
+        currentState,
+        latestFundingCallStatus,
+      }),
+    [effectiveQueue, explicitStatus, currentState, latestFundingCallStatus],
+  );
+
+  const canConfirmDisbursement =
+    disbursementTabUnlocked && !isApplicationFunded;
+
+  useEffect(() => {
+    if (!applicationId) return;
+    void dispatch(getFundingCalls({ application: String(applicationId) }));
+  }, [applicationId, dispatch]);
 
   useEffect(() => {
     if (isApplicationFunded) {
@@ -163,13 +205,8 @@ export const Disbursement = ({
   const handleConfirmDisbursement = async (
     schedule?: DealReviewConfirmContext,
   ) => {
-    if (isAtDisbursementQueue) {
-      setShowDealReviewDialog(false);
-      toast.info("Disbursement is already confirmed. Use Mark as funded to continue.");
-      return;
-    }
-
     if (!effectiveRecordId) {
+      setShowDealReviewDialog(false);
       toast.error("Application record is not loaded.");
       return;
     }
@@ -179,7 +216,8 @@ export const Disbursement = ({
       return;
     }
 
-    if (!shouldSetApplicationQueueToDisbursement(effectiveQueue)) {
+    if (!disbursementTabUnlocked) {
+      setShowDealReviewDialog(false);
       toast.error("This application cannot be moved to disbursement from its current stage.");
       return;
     }
@@ -187,6 +225,8 @@ export const Disbursement = ({
     const dealId =
       (applicationDetailData as { dealId?: string | null } | null)?.dealId ??
       null;
+
+    const alreadyAtDisbursement = isAtDisbursementQueue;
 
     try {
       setQueueUpdatePending(true);
@@ -201,21 +241,29 @@ export const Disbursement = ({
           },
         }),
       ).unwrap();
-      await dispatch(
-        updateApplication({
-          id: effectiveRecordId,
-          data: {
-            currentQueue: "Disbursement",
-            currentState: "Disbursement",
-          },
-        })
-      ).unwrap();
+
+      if (!alreadyAtDisbursement) {
+        await dispatch(
+          updateApplication({
+            id: effectiveRecordId,
+            data: {
+              currentQueue: "Disbursement",
+              currentState: "Disbursement",
+            },
+          })
+        ).unwrap();
+      }
+
       const refetchAppId = summaryApplicationId ?? applicationId;
       if (refetchAppId) {
         void dispatch(getApplicationByApplicationId(String(refetchAppId)));
       }
       setShowDealReviewDialog(false);
-      toast.success("Disbursement confirmed. You can now mark the application as funded.");
+      toast.success(
+        alreadyAtDisbursement
+          ? "Disbursement schedule saved. You can now mark the application as funded."
+          : "Disbursement confirmed. You can now mark the application as funded.",
+      );
     } catch (err: unknown) {
       const message =
         typeof err === "string"
@@ -406,15 +454,17 @@ export const Disbursement = ({
 
           {/* Actions */}
           <div className="mt-8 flex flex-wrap justify-end gap-3">
-            <button
+            <Button
               type="button"
-              className="px-4 py-2.5 text-xs font-semibold text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+              variant="outline"
+              className="cursor-pointer rounded-lg h-10 px-4 text-xs font-semibold md:text-sm"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="px-4 py-2.5 text-xs cursor-pointer md:text-sm font-semibold text-emerald-800 border border-emerald-200 bg-emerald-50 rounded-md hover:bg-emerald-100 transition-colors disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-900/50 dark:disabled:hover:bg-emerald-950/40"
+              variant="outline"
+              className="cursor-pointer rounded-lg h-10 px-4 text-xs font-semibold md:text-sm text-emerald-800 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 hover:text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200 dark:hover:bg-emerald-900/50 disabled:opacity-60"
               disabled={
                 !effectiveRecordId ||
                 !isAtDisbursementQueue ||
@@ -430,27 +480,27 @@ export const Disbursement = ({
               onClick={() => void handleMarkAsFunded()}
             >
               {markFundedPending ? "Marking…" : "Mark as funded"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="px-6 md:px-8 py-2.5 bg-[#1e60a3] text-white cursor-pointer rounded-md text-xs md:text-sm font-semibold shadow-sm hover:bg-[#184c80] transition-colors disabled:cursor-not-allowed disabled:opacity-60 dark:shadow-black/30"
+              variant="default"
+              className="cursor-pointer rounded-lg h-10 px-6 md:px-8 text-xs font-semibold md:text-sm disabled:opacity-60"
               disabled={
-                !hasBankAccounts ||
-                showLoading ||
+                !canConfirmDisbursement ||
                 queueUpdatePending ||
-                markFundedPending ||
-                isApplicationFunded ||
-                isAtDisbursementQueue
+                markFundedPending
               }
               title={
-                isAtDisbursementQueue
-                  ? "Disbursement already confirmed"
-                  : undefined
+                !disbursementTabUnlocked
+                  ? "Complete funding call approval first"
+                  : isApplicationFunded
+                    ? "Application is already funded"
+                    : undefined
               }
               onClick={handleOpenConfirmDisbursement}
             >
               {queueUpdatePending ? "Updating…" : "Confirm Disbursement"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

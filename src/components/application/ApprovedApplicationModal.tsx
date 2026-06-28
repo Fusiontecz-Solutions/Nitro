@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, type ComponentProps } from "react";
+import { forwardRef, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { useForm, Controller, useWatch } from "react-hook-form";
 import {
     Dialog,
@@ -14,12 +14,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useTheme } from "@/context/ThemeContext";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { updateApplicationQueue, updateApplication, sendApprovalEmail } from "@/redux/actions/applicationActions";
+import { updateApplicationQueue, updateApplication, sendApprovalEmail, getApplicationById } from "@/redux/actions/applicationActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
-import { notifyFinalUnderwriterOnAssignment } from "@/redux/actions/notificationActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
 import {
+    cn,
     formatNumberUS,
     formatNumberUSForInput,
     formatRateUS,
@@ -39,9 +39,9 @@ import ComplianceChecksQuestionnaire, {
 import AgentDealIsoTag from "./AgentDealIsoTag";
 import {
     APPLICATION_APPROVAL_EMAIL_SUBJECT,
+    APPLICATION_APPROVAL_URL_PLACEHOLDER,
     APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
     APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
-    APPLICATION_APPROVAL_URL_PLACEHOLDER,
     OFFER_UPDATED_EMAIL_SUBJECT,
     renderApplicationApprovalEmailHtml,
     renderOfferUpdatedEmailHtml,
@@ -300,18 +300,22 @@ function ReadOnlyDetailField({
     );
 }
 
-interface ApprovedApplicationModalProps {
+export interface ApprovedApplicationModalProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    /** When true, show ISO approval-mail CTA (Final Underwriter or Super Admin). */
+    /** Plain SCRUBBING scrubbing flow — recommend for approval wording. */
+    isPlainUnderwriter?: boolean;
+    /** When true, show ISO approval-mail CTA (Underwriter or Super Admin). */
     isFinalUnderwriter?: boolean;
+    /** UNDERWRITER role: review/edit offer terms, then mark as Underwriter Approved. */
+    isUnderwriterDirectApprove?: boolean;
     /** When true, show compliance checks in the right column (Super Admin approval flow). */
     showComplianceChecks?: boolean;
-    /** Called when FINAL_UNDERWRITER clicks Proceed to Generate Contract */
+    /** Called when UNDERWRITER clicks Proceed to Generate Contract */
     onProceedToContract?: () => void;
     /** When true, send the "offer updated" resend template to ISO. */
     resendApprovalEmail?: boolean;
-    /** Called after offer-decision is saved (e.g. Final Underwriter refresh for resend-mail state). */
+    /** Called after offer-decision is saved (e.g. Underwriter refresh for resend-mail state). */
     onOfferUpdated?: () => void;
 }
 
@@ -396,10 +400,14 @@ const UsRateInput = forwardRef<HTMLInputElement, UsNumberInputProps>(
     },
 );
 
+const UNDERWRITER_APPROVED_STAGE = "Underwriter Approved";
+
 const ApprovedApplicationModal = ({
     open,
     onOpenChange,
+    isPlainUnderwriter,
     isFinalUnderwriter,
+    isUnderwriterDirectApprove,
     showComplianceChecks: showComplianceChecksProp,
     onProceedToContract,
     resendApprovalEmail,
@@ -407,7 +415,6 @@ const ApprovedApplicationModal = ({
 }: ApprovedApplicationModalProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const { data: applicationData } = useSelector((state: RootState) => state.applicationDetail);
-    const { data: loginData } = useSelector((state: RootState) => state.login);
 
     const { control, handleSubmit, formState: { errors }, reset, setValue, getValues } = useForm<ApprovalFormValues>({
         mode: "onSubmit",
@@ -435,12 +442,6 @@ const ApprovedApplicationModal = ({
         (applicationData as any)?.id ??
         null;
 
-    const currentUser = (loginData as any)?.user;
-    const underwriterName =
-        currentUser && (currentUser.firstName || currentUser.lastName)
-            ? `${currentUser.firstName || ""} ${currentUser.lastName || ""}`.trim()
-            : "Underwriter";
-
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isUpdatingOffer, setIsUpdatingOffer] = useState(false);
     const [offerDecisionLoading, setOfferDecisionLoading] = useState(false);
@@ -465,7 +466,8 @@ const ApprovedApplicationModal = ({
         (applicationId != null ? String(applicationId) : null);
 
     const showComplianceChecks =
-        showComplianceChecksProp ?? !isFinalUnderwriter;
+        showComplianceChecksProp ??
+        (!isFinalUnderwriter && !isUnderwriterDirectApprove);
     const useWideApprovalLayout = showComplianceChecks;
 
     const loadOfferDecision = async () => {
@@ -558,101 +560,104 @@ const ApprovedApplicationModal = ({
         setIsEditMode(false);
     };
 
-    const handleUpdateOffer = handleSubmit(async (data) => {
+    const persistOfferDecisionFromForm = async (data: ApprovalFormValues) => {
         if (!applicationId) {
-            toast.error("Missing application id. Please reload and try again.");
-            return;
+            throw new Error("Missing application id. Please reload and try again.");
         }
+
+        const feesDollars = feesPercentToDollarsFromFunded(
+            data.approvedAmount,
+            ORIGINATION_FEE_FIXED,
+        );
+
+        const offerNum = parseNumberUS(data.approvedAmount);
+        const rateNum = parseNumberUS(data.factorRate);
+        const termStr = parseTermFromTenure(data.tenure) ?? "";
+        const repaymentStack =
+            offerNum > 0 && rateNum > 0 && termStr
+                ? deriveOfferRepaymentStack({
+                      advance: offerNum,
+                      factorRate: rateNum,
+                      term: termStr,
+                      frequency: data.achFrequency || "Daily",
+                  })
+                : null;
+
+        const derivedForSave = deriveCalculatedFieldsFromDrivers({
+            approvedAmount: data.approvedAmount,
+            factorRate: data.factorRate,
+            tenure: data.tenure,
+            achFrequency: data.achFrequency,
+        });
+
+        const paybackSaved =
+            repaymentStack?.payback ??
+            (parseNumberUS(derivedForSave?.paybackAmount ?? data.paybackAmount) ||
+                null);
+
+        const saveRes = await axiosPost("/offer-decisions", {
+            applicationId,
+            decision: persistedDecision,
+            position: offerPreserveRef.current.position,
+            ourRemit: offerPreserveRef.current.ourRemit,
+            offer: offerNum > 0 ? offerNum : null,
+            rate: rateNum > 0 ? rateNum : null,
+            term: termStr || null,
+            frequency: data.achFrequency || null,
+            fees: feesDollars,
+            totalRemit: paybackSaved,
+            repayPerPeriod:
+                repaymentStack && repaymentStack.perPeriodPayment > 0
+                    ? repaymentStack.perPeriodPayment
+                    : null,
+            monthlyPayment:
+                repaymentStack && repaymentStack.monthlyPayment > 0
+                    ? repaymentStack.monthlyPayment
+                    : null,
+        });
+
+        const saved = (saveRes?.data && saveRes.data.data) || null;
+        if (saved) {
+            offerPreserveRef.current = {
+                position:
+                    saved.position != null && String(saved.position).trim() !== ""
+                        ? String(saved.position)
+                        : offerPreserveRef.current.position,
+                ourRemit: (() => {
+                    const n = parseNumberUS(saved.ourRemit);
+                    return Number.isFinite(n) ? n : offerPreserveRef.current.ourRemit;
+                })(),
+            };
+        }
+
+        emitOfferDecisionUpdated(applicationId);
+        await dispatch(getOfferDecisionByApplication(String(applicationId))).unwrap();
+        onOfferUpdated?.();
+
+        const refreshedDerived =
+            derivedForSave ??
+            (repaymentStack ? stackToCalculatedFormFields(repaymentStack) : null);
+
+        const refreshed = {
+            ...data,
+            paybackAmount: refreshedDerived?.paybackAmount ?? data.paybackAmount,
+            repay: refreshedDerived?.repay ?? data.repay,
+            monthlyRepayment:
+                refreshedDerived?.monthlyRepayment ?? data.monthlyRepayment,
+            originationFee: ORIGINATION_FEE_FIXED,
+        };
+        reset(refreshed);
+        editSnapshotRef.current = refreshed;
+        setIsEditMode(false);
+
+        return refreshed;
+    };
+
+    const handleUpdateOffer = handleSubmit(async (data) => {
         setIsUpdatingOffer(true);
         const toastId = toast.loading("Updating offer details...");
         try {
-            const feesDollars = feesPercentToDollarsFromFunded(
-                data.approvedAmount,
-                ORIGINATION_FEE_FIXED,
-            );
-
-            const offerNum = parseNumberUS(data.approvedAmount);
-            const rateNum = parseNumberUS(data.factorRate);
-            const termStr = parseTermFromTenure(data.tenure) ?? "";
-            const repaymentStack =
-                offerNum > 0 && rateNum > 0 && termStr
-                    ? deriveOfferRepaymentStack({
-                          advance: offerNum,
-                          factorRate: rateNum,
-                          term: termStr,
-                          frequency: data.achFrequency || "Daily",
-                      })
-                    : null;
-
-            const derivedForSave = deriveCalculatedFieldsFromDrivers({
-                approvedAmount: data.approvedAmount,
-                factorRate: data.factorRate,
-                tenure: data.tenure,
-                achFrequency: data.achFrequency,
-            });
-
-            const paybackSaved =
-                repaymentStack?.payback ??
-                (parseNumberUS(derivedForSave?.paybackAmount ?? data.paybackAmount) ||
-                    null);
-
-            const saveRes = await axiosPost("/offer-decisions", {
-                applicationId,
-                decision: persistedDecision,
-                position: offerPreserveRef.current.position,
-                ourRemit: offerPreserveRef.current.ourRemit,
-                offer: offerNum > 0 ? offerNum : null,
-                rate: rateNum > 0 ? rateNum : null,
-                term: termStr || null,
-                frequency: data.achFrequency || null,
-                fees: feesDollars,
-                totalRemit: paybackSaved,
-                repayPerPeriod:
-                    repaymentStack && repaymentStack.perPeriodPayment > 0
-                        ? repaymentStack.perPeriodPayment
-                        : null,
-                monthlyPayment:
-                    repaymentStack && repaymentStack.monthlyPayment > 0
-                        ? repaymentStack.monthlyPayment
-                        : null,
-            });
-
-            const saved = (saveRes?.data && saveRes.data.data) || null;
-            if (saved) {
-                offerPreserveRef.current = {
-                    position:
-                        saved.position != null && String(saved.position).trim() !== ""
-                            ? String(saved.position)
-                            : offerPreserveRef.current.position,
-                    ourRemit: (() => {
-                        const n = parseNumberUS(saved.ourRemit);
-                        return Number.isFinite(n) ? n : offerPreserveRef.current.ourRemit;
-                    })(),
-                };
-            }
-
-            emitOfferDecisionUpdated(applicationId);
-            await dispatch(getOfferDecisionByApplication(String(applicationId))).unwrap();
-            onOfferUpdated?.();
-
-            const refreshedDerived =
-                derivedForSave ??
-                (repaymentStack
-                    ? stackToCalculatedFormFields(repaymentStack)
-                    : null);
-
-            const refreshed = {
-                ...data,
-                paybackAmount: refreshedDerived?.paybackAmount ?? data.paybackAmount,
-                repay: refreshedDerived?.repay ?? data.repay,
-                monthlyRepayment:
-                    refreshedDerived?.monthlyRepayment ?? data.monthlyRepayment,
-                originationFee: ORIGINATION_FEE_FIXED,
-            };
-            reset(refreshed);
-            editSnapshotRef.current = refreshed;
-            setIsEditMode(false);
-
+            await persistOfferDecisionFromForm(data);
             toast.update(toastId, {
                 render: "Offer details updated successfully.",
                 type: "success",
@@ -672,6 +677,42 @@ const ApprovedApplicationModal = ({
         }
     });
 
+    const handleUnderwriterDirectApprove = handleSubmit(async (data) => {
+        if (!applicationUuid) {
+            toast.error("Missing application id. Please reload and try again.");
+            return;
+        }
+        setIsSubmitting(true);
+        const toastId = toast.loading("Approving application...");
+        try {
+            await persistOfferDecisionFromForm(data);
+            await dispatch(
+                updateApplicationQueue({
+                    id: applicationUuid,
+                    data: { currentQueue: UNDERWRITER_APPROVED_STAGE },
+                }),
+            ).unwrap();
+            await dispatch(getApplicationById(String(applicationId ?? applicationUuid)));
+            toast.update(toastId, {
+                render: "Application set to Underwriter Approved.",
+                type: "success",
+                isLoading: false,
+                autoClose: 3000,
+            });
+            onOpenChange(false);
+        } catch (err) {
+            console.error("Failed to approve application:", err);
+            toast.update(toastId, {
+                render: "Failed to approve application. Please try again.",
+                type: "error",
+                isLoading: false,
+                autoClose: 4000,
+            });
+        } finally {
+            setIsSubmitting(false);
+        }
+    });
+
     const onSubmit = async (data: ApprovalFormValues) => {
         if (!applicationUuid || !applicationId) {
             console.error("No application ID available");
@@ -685,44 +726,48 @@ const ApprovedApplicationModal = ({
             return;
         }
         setIsSubmitting(true);
-        const toastId = toast.loading("Sending application to Final Underwriter...");
+        const toastId = toast.loading(
+            isPlainUnderwriter
+                ? "Sending recommend request for approval..."
+                : "Sending application to Underwriter...",
+        );
         try {
-            await dispatch(updateApplicationQueue({
-                id: applicationUuid,
-                data: { currentQueue: "Final Underwriter" },
-            })).unwrap();
-            await dispatch(updateApplication({
-                id: applicationUuid,
-                data: {
-                    status: "Sent to Final Underwriter",
-                    underwriterApproval: true,
-                    approvedAt: new Date().toISOString(),
-                },
-            })).unwrap();
-
-            // Trigger in-app + email notification for Final Underwriter
-            try {
+            if (isPlainUnderwriter) {
                 await dispatch(
-                    notifyFinalUnderwriterOnAssignment({
-                        applicationId,
-                        underwriterName,
-                    })
+                    updateApplicationQueue({
+                        id: applicationUuid,
+                        data: { currentQueue: "Underwriter" },
+                    }),
                 ).unwrap();
-            } catch (notifyError) {
-                console.error("Failed to notify Final Underwriter:", notifyError);
+                await dispatch(getApplicationById(String(applicationId ?? applicationUuid)));
+            } else {
+                await dispatch(updateApplicationQueue({
+                    id: applicationUuid,
+                    data: { currentQueue: "Underwriter" },
+                })).unwrap();
+                await dispatch(updateApplication({
+                    id: applicationUuid,
+                    data: {
+                        status: "Sent to Underwriter",
+                        underwriterApproval: true,
+                        approvedAt: new Date().toISOString(),
+                    },
+                })).unwrap();
             }
 
             toast.update(toastId, {
-                render: "Application has been sent to Final Underwriter and they have been notified.",
+                render: isPlainUnderwriter
+                    ? "Recommend request sent. Underwriters can claim this application from their queue."
+                    : "Application has been sent to Underwriter and they have been notified.",
                 type: "success",
                 isLoading: false,
                 autoClose: 3000,
             });
             onOpenChange(false);
         } catch (err) {
-            console.error("Failed to send to Final Underwriter:", err);
+            console.error("Failed to send to Underwriter:", err);
             toast.update(toastId, {
-                render: "Failed to send application to Final Underwriter. Please try again.",
+                render: "Failed to send application to Underwriter. Please try again.",
                 type: "error",
                 isLoading: false,
                 autoClose: 4000,
@@ -784,18 +829,46 @@ const ApprovedApplicationModal = ({
             >
                 <DialogHeader>
                     <DialogTitle className={`text-xl font-semibold ${isDark ? 'text-gray-200' : 'text-black'}`}>
-                        {isFinalUnderwriter ? "Approved Application" : "Send application to Final-underwriter"}
+                        {isUnderwriterDirectApprove
+                            ? "Approve Application"
+                            : isFinalUnderwriter
+                              ? "Approved Application"
+                              : isPlainUnderwriter
+                                ? "Recommend for approval"
+                                : "Send application to Final-scrubbing"}
                     </DialogTitle>
                     <DialogDescription className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                        {isFinalUnderwriter
-                            ? showComplianceChecks
-                                ? "Review loan terms, complete compliance checks, then send the approval email to the ISO."
-                                : "Review loan terms, update the offer if needed, then send the approval email to the ISO."
-                            : "Review loan terms, complete compliance checks, then send this application to the Final Underwriter."}
+                        {isUnderwriterDirectApprove
+                            ? "Review loan terms, update the offer if needed, then approve this application."
+                            : isFinalUnderwriter
+                              ? showComplianceChecks
+                                  ? "Review loan terms, complete compliance checks, then send the approval email to the ISO."
+                                  : "Review loan terms, update the offer if needed, then send the approval email to the ISO."
+                              : isPlainUnderwriter
+                                ? "Review loan terms, complete compliance checks, then send this application to the Underwriter queue for review."
+                                : "Review loan terms, complete compliance checks, then send this application to the Underwriter."}
                     </DialogDescription>
                 </DialogHeader>
 
                 <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+                    {isPlainUnderwriter ? (
+                        <div
+                            className={`rounded-lg border p-4 ${
+                                isDark
+                                    ? "border-gray-700 bg-[#262827]"
+                                    : "border-gray-200 bg-[#F9FAFD]"
+                            }`}
+                        >
+                            <p
+                                className={`text-sm ${
+                                    isDark ? "text-gray-300" : "text-[#374151]"
+                                }`}
+                            >
+                                This application will be added to the Underwriter queue. Any
+                                underwriter can claim it before making a decision.
+                            </p>
+                        </div>
+                    ) : null}
                     {isFinalUnderwriter ? (
                         <AgentDealIsoTag
                             applicationId={
@@ -1207,7 +1280,24 @@ const ApprovedApplicationModal = ({
                     >
                         Cancel
                     </Button>
-                    {isFinalUnderwriter ? (
+                    {isUnderwriterDirectApprove ? (
+                        <Button
+                            type="button"
+                            onClick={() => void handleUnderwriterDirectApprove()}
+                            disabled={
+                                offerDecisionLoading ||
+                                isSubmitting ||
+                                isUpdatingOffer
+                            }
+                            className="bg-green-600 hover:bg-green-700 text-white px-6"
+                        >
+                            {offerDecisionLoading || isSubmitting
+                                ? "Approving…"
+                                : isUpdatingOffer
+                                  ? "Updating…"
+                                  : "Approve Application"}
+                        </Button>
+                    ) : isFinalUnderwriter ? (
                         <Button
                             type="button"
                             onClick={async () => {
@@ -1255,6 +1345,13 @@ const ApprovedApplicationModal = ({
                                                     : APPLICATION_APPROVAL_EMAIL_SUBJECT,
                                             })
                                         ).unwrap();
+                                        if (applicationId ?? applicationUuid) {
+                                            await dispatch(
+                                                getApplicationById(
+                                                    String(applicationId ?? applicationUuid),
+                                                ),
+                                            );
+                                        }
                                         toast.update(toastId, {
                                             render: resendApprovalEmail
                                                 ? "Updated offer email sent to the linked ISO when that ISO has an email on file."
@@ -1334,7 +1431,9 @@ const ApprovedApplicationModal = ({
                                     ? "Loading…"
                                     : !checksProgress.allComplete
                                       ? `Complete checks (${checksProgress.completed}/${checksProgress.total})`
-                                      : "Send to Final-Underwriter"}
+                                      : isPlainUnderwriter
+                                        ? "Send recommend request"
+                                        : "Send to Final-Scrubbing"}
                         </Button>
                     )}
                 </div>

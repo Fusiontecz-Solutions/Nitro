@@ -4,8 +4,20 @@
  */
 export const OPERATIONS_APPLICATIONS_LIST_ALL_QUERY = "all";
 
+/** Approval workflow substages (between Underwriter and Contract). */
+export const OPERATIONS_APPROVAL_PIPELINE_STATUSES = [
+  "Approved_By_UW",
+  "Approval_Sent",
+  "Approved_By_ISO",
+] as const;
+
+export type OperationsApprovalPipelineStatus =
+  (typeof OPERATIONS_APPROVAL_PIPELINE_STATUSES)[number];
+
 /** Backend `operationsStatus` values used by Operations dashboard stat cards and `/applications` filtering. */
 export const OPERATIONS_DASHBOARD_APPLICATION_STATUSES = [
+  ...OPERATIONS_APPROVAL_PIPELINE_STATUSES,
+  "Approved",
   "Contract_Pending",
   "Contract_Generated",
   "Contract_Sent",
@@ -27,8 +39,9 @@ export type OperationsDashboardApplicationStatus =
 /** Deal-pipeline queue stages (aligned with Deal Pipeline `/applications?operationsStatus=`). */
 export const OPERATIONS_PIPELINE_QUEUE_STATUSES = [
   "Agent",
+  "Scrubbing",
   "Underwriter",
-  "Final Underwriter",
+  "Final_Approval",
   "Final",
 ] as const;
 
@@ -45,6 +58,10 @@ export type OperationsApplicationsListStatus =
   (typeof OPERATIONS_APPLICATIONS_LIST_STATUSES)[number];
 
 const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
+  Approved_By_UW: "Approved By UW",
+  Approval_Sent: "Approval Sent",
+  Approved_By_ISO: "Approved By ISO",
+  Approved: "Approved",
   Contract_Pending: "Contract Pending",
   Contract_Generated: "Contract Generated",
   Contract_Sent: "Contract Sent",
@@ -59,8 +76,9 @@ const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Funded: "Funded",
   Declined: "Rejected",
   Agent: "Agent",
-  Underwriter: "Underwriter",
-  "Final Underwriter": "Final Underwriter",
+  Scrubbing: "Scrubbing",
+  "Underwriter": "Underwriter",
+  Final_Approval: "Final Approval",
   Final: "Final",
 };
 
@@ -72,8 +90,13 @@ export const OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS = new Set<
   OperationsApplicationsListStatus
 >([
   "Agent",
+  "Scrubbing",
   "Underwriter",
-  "Final Underwriter",
+  "Final_Approval",
+  "Approved_By_UW",
+  "Approval_Sent",
+  "Approved_By_ISO",
+  "Approved",
   "Contract_Pending",
   "Contract_Generated",
   "Contract_Sent",
@@ -118,8 +141,13 @@ export function normalizeOperationsDashboardStatusParam(
     declined: "Declined",
     rejected: "Declined",
     agent: "Agent",
+    scrubbing: "Scrubbing",
     underwriter: "Underwriter",
-    final_underwriter: "Final Underwriter",
+    final_approval: "Final_Approval",
+    approved_by_uw: "Approved_By_UW",
+    approval_sent: "Approval_Sent",
+    approved_by_iso: "Approved_By_ISO",
+    approved: "Approved",
     final: "Final",
   };
   const mapped = map[key];
@@ -160,14 +188,27 @@ export function inferOperationsListStatusFromApplication(
   if (q === "fundingcall" || (q.includes("funding") && q.includes("call"))) {
     return "Funding Call";
   }
-  if (q === "final" && !q.includes("underwriter")) return "Final";
-  if (q === "finalunderwriter" || q === "finalreview") return "Final Underwriter";
+  if (q === "final" && !q.includes("scrubbing")) return "Final";
+  if (q === "underwriter" || q === "finalreview") return "Underwriter";
+  if (q === "finalapproval" || state === "finalapproval") return "Final_Approval";
+  if (q === "underwriterapproved" && state === "underwriterapproved") {
+    return "Approved_By_UW";
+  }
+  if (q === "approvalsent" || state === "approvalsent") {
+    return "Approval_Sent";
+  }
+  if (q === "isoapproved" || state === "isoapproved") {
+    return "Approved_By_ISO";
+  }
+  if (q === "approved" && state === "approved") {
+    return "Approved_By_ISO";
+  }
   if (
-    q === "underwriter" ||
+    q === "scrubbing" ||
     q === "underwriting" ||
     q === "review"
   ) {
-    return "Underwriter";
+    return "Scrubbing";
   }
   if (q === "contractgenerated") {
     return "Contract_Generated";

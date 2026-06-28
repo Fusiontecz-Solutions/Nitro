@@ -2,6 +2,7 @@ import {
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
 } from "@/constants/operationsDashboardApplications";
+import { normalizeUnderwriterPipelineParam } from "@/constants/underwriterPipeline";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
 import type { SortingState } from "@tanstack/react-table";
 
@@ -83,6 +84,23 @@ export const APPLICATIONS_LIST_DEFAULT_SORT: Pick<
   sortOrder: "desc",
 };
 
+/** URL → underwriter sidebar pipeline (`/applications?underwriterPipeline=`). */
+export function parseUnderwriterPipelineFromSearch(
+  search: string,
+): ReturnType<typeof normalizeUnderwriterPipelineParam> {
+  const raw = new URLSearchParams(search).get("underwriterPipeline");
+  return normalizeUnderwriterPipelineParam(raw);
+}
+
+/** URL → underwriter deal-pool tab (`/applications?underwriterClaim=`). */
+export function parseUnderwriterClaimFromSearch(
+  search: string,
+): "unclaimed" | "mine" | undefined {
+  const raw = new URLSearchParams(search).get("underwriterClaim")?.trim().toLowerCase();
+  if (raw === "unclaimed" || raw === "mine") return raw;
+  return undefined;
+}
+
 /** URL → list filters (operations dashboard drill-down). */
 export function parseApplicationsListRouteFilters(search: string): {
   dashboardStateFilter: string;
@@ -114,8 +132,10 @@ export function buildApplicationsListParams(options: {
   priorityFilter?: string;
   /** `all` or organization value (Katan II, Katan III). */
   organizationFilter?: string;
-  /** UNDERWRITER: server-side pool / my-claimed (Underwriter queue only). Overrides queue dropdown. */
-  underwriterClaim?: "unclaimed" | "mine";
+    /** SCRUBBING / UNDERWRITER: narrow list to pool vs my claimed deals. Overrides queue dropdown. */
+    underwriterClaim?: "unclaimed" | "mine";
+    /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
+    underwriterPipeline?: string;
   /**
    * When true (operations sidebar: `fromDashboard=operations`), `dashboardStateFilter`
    * drives `operationsStatus`. When false, the pipeline dropdown (`statusFilter`) wins.
@@ -139,6 +159,10 @@ export function buildApplicationsListParams(options: {
   }
   if (options.organizationFilter && options.organizationFilter !== "all") {
     params.organization = options.organizationFilter;
+  }
+  if (options.underwriterPipeline) {
+    params.underwriterPipeline = options.underwriterPipeline;
+    return params;
   }
   if (options.underwriterClaim) {
     params.underwriterClaim = options.underwriterClaim;
@@ -202,12 +226,16 @@ export function buildInitialApplicationsListParamsFromSearch(
     parseApplicationsListRouteFilters(urlSearch);
   const useDashboardStageFilter =
     query.get("fromDashboard") === "operations";
+  const underwriterClaim = parseUnderwriterClaimFromSearch(urlSearch);
+  const underwriterPipeline = parseUnderwriterPipelineFromSearch(urlSearch);
   return buildApplicationsListParams({
     pageIndex: 0,
     pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
     searchTerm: "",
     dashboardStateFilter,
     statusFilter,
+    underwriterClaim,
+    underwriterPipeline,
     useDashboardStageFilter,
   });
 }

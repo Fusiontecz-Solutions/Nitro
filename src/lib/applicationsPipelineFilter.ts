@@ -4,10 +4,10 @@ import ContentPasteSearchIcon from "@mui/icons-material/ContentPasteSearch";
 import FactCheck from "@mui/icons-material/FactCheck";
 import Article from "@mui/icons-material/Article";
 import CheckCircle from "@mui/icons-material/CheckCircle";
-import Phone from "@mui/icons-material/Phone";
 import AccountBalance from "@mui/icons-material/AccountBalance";
 import Paid from "@mui/icons-material/Paid";
 import HighlightOff from "@mui/icons-material/HighlightOff";
+import VerifiedUser from "@mui/icons-material/VerifiedUser";
 import { operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
 
 export type ApplicationsPipelineFilterIcon = ComponentType<SvgIconProps>;
@@ -30,16 +30,35 @@ export type ApplicationsPipelineFilterItem = {
 export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[] =
   [
     {
-      label: "Underwriter",
-      filterValue: "Underwriter",
+      label: "Scrubbing",
+      filterValue: "Scrubbing",
       icon: ContentPasteSearchIcon,
       showCount: false,
     },
     {
-      label: "Final Underwriter",
-      filterValue: "Final Underwriter",
+      label: "Underwriter",
+      filterValue: "Underwriter",
       icon: FactCheck,
       showCount: false,
+    },
+    {
+      label: "Approve",
+      filterValue: "Approved",
+      icon: VerifiedUser,
+      children: [
+        {
+          label: operationsDashboardStatusTitle("Approved_By_UW"),
+          filterValue: "Approved_By_UW",
+        },
+        {
+          label: operationsDashboardStatusTitle("Approval_Sent"),
+          filterValue: "Approval_Sent",
+        },
+        {
+          label: operationsDashboardStatusTitle("Approved_By_ISO"),
+          filterValue: "Approved_By_ISO",
+        },
+      ],
     },
     {
       label: "Contract",
@@ -61,15 +80,9 @@ export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[
       ],
     },
     {
-      label: "Final",
-      filterValue: "Final",
+      label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
+      filterValue: "Finals_And_Funding_Call",
       icon: CheckCircle,
-      showCount: true,
-    },
-    {
-      label: "Funding Call",
-      filterValue: "Funding Call",
-      icon: Phone,
       showCount: true,
     },
     {
@@ -96,8 +109,20 @@ export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[
 export const APPLICATIONS_STATUS_FILTER_OPTIONS: ApplicationsPipelineFilterChild[] =
   [
     // { label: "Agent", filterValue: "Agent" },
+    { label: "Scrubbing", filterValue: "Scrubbing" },
     { label: "Underwriter", filterValue: "Underwriter" },
-    { label: "Final Underwriter", filterValue: "Final Underwriter" },
+    {
+      label: operationsDashboardStatusTitle("Approved_By_UW"),
+      filterValue: "Approved_By_UW",
+    },
+    {
+      label: operationsDashboardStatusTitle("Approval_Sent"),
+      filterValue: "Approval_Sent",
+    },
+    {
+      label: operationsDashboardStatusTitle("Approved_By_ISO"),
+      filterValue: "Approved_By_ISO",
+    },
     {
       label: operationsDashboardStatusTitle("Contract_Pending"),
       filterValue: "Contract_Pending",
@@ -110,8 +135,10 @@ export const APPLICATIONS_STATUS_FILTER_OPTIONS: ApplicationsPipelineFilterChild
       label: operationsDashboardStatusTitle("Contract_Signed"),
       filterValue: "Contract_Signed",
     },
-    { label: "Final", filterValue: "Final" },
-    { label: "Funding call", filterValue: "Funding Call" },
+    {
+      label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
+      filterValue: "Finals_And_Funding_Call",
+    },
     { label: "Disbursement", filterValue: "Disbursment" },
     { label: "Funded", filterValue: "Funded" },
     { label: "Rejected", filterValue: "Declined" },
@@ -146,6 +173,20 @@ export function isApplicationsPipelineFilterActive(
       statusFilter === "Contract_Signed"
     );
   }
+  if (filterValue === "Approved") {
+    return (
+      statusFilter === "Approved_By_UW" ||
+      statusFilter === "Approval_Sent" ||
+      statusFilter === "Approved_By_ISO"
+    );
+  }
+  if (filterValue === "Finals_And_Funding_Call") {
+    return (
+      statusFilter === "Finals_And_Funding_Call" ||
+      statusFilter === "Final" ||
+      statusFilter === "Funding Call"
+    );
+  }
   return false;
 }
 
@@ -168,10 +209,18 @@ export function resolveApplicationsPipelineCount(
 ): number | null {
   if (!filterValue) return null;
   switch (filterValue) {
+    case "Scrubbing":
+      return caseStageCounts.Scrubbing ?? 0;
     case "Underwriter":
-      return caseStageCounts.Underwriter ?? 0;
-    case "Final Underwriter":
-      return caseStageCounts["Final Underwriter"] ?? 0;
+      return caseStageCounts["Underwriter"] ?? 0;
+    case "Final_Approval":
+      return caseStageCounts.Final_Approval ?? 0;
+    case "Approved_By_UW":
+      return caseStageCounts.Approved_By_UW ?? 0;
+    case "Approval_Sent":
+      return caseStageCounts.Approval_Sent ?? 0;
+    case "Approved_By_ISO":
+      return caseStageCounts.Approved_By_ISO ?? 0;
     case "Contract_Pending":
       return summaryCounts.contractPending;
     case "Contract_Sent":

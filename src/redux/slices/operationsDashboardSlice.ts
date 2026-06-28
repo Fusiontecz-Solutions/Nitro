@@ -29,8 +29,12 @@ const defaultSummaryAmounts = {
 
 const defaultCaseStageCounts: Record<string, number> = {
   Agent: 0,
-  Underwriter: 0,
-  "Final Underwriter": 0,
+  Scrubbing: 0,
+  "Underwriter": 0,
+  Final_Approval: 0,
+  Approved_By_UW: 0,
+  Approval_Sent: 0,
+  Approved_By_ISO: 0,
   Contracted: 0,
   Final: 0,
   "Funding Call": 0,
@@ -39,8 +43,8 @@ const defaultCaseStageCounts: Record<string, number> = {
 
 const defaultCaseStageAmounts: Record<string, number> = {
   Agent: 0,
-  Underwriter: 0,
-  "Final Underwriter": 0,
+  Scrubbing: 0,
+  "Underwriter": 0,
   Contracted: 0,
   Final: 0,
   "Funding Call": 0,

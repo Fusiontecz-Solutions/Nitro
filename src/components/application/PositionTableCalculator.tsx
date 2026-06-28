@@ -913,6 +913,9 @@ export default function PositionTableCalculator({
       ? positions
       : createPlaceholderRows(),
   );
+  /** Tracks whether this table has ever shown real position data for the current application. */
+  const hadMeaningfulRowsRef = useRef(false);
+  const rowsApplicationRef = useRef("");
   const [isSavingRowIndex, setIsSavingRowIndex] = useState<number | null>(null);
   const [isDeletingRowIndex, setIsDeletingRowIndex] = useState<number | null>(null);
   const [hasUserAddedRow, setHasUserAddedRow] = useState(false);
@@ -927,7 +930,17 @@ export default function PositionTableCalculator({
   // Reset the "user added" guard when we switch to a different application.
   useEffect(() => {
     setHasUserAddedRow(false);
-  }, [effectiveApplicationId]);
+    if (rowsApplicationRef.current !== normalizedEffectiveApplicationId) {
+      rowsApplicationRef.current = normalizedEffectiveApplicationId;
+      hadMeaningfulRowsRef.current = false;
+    }
+  }, [normalizedEffectiveApplicationId]);
+
+  useEffect(() => {
+    if (rows.some(rowHasMeaningfulData)) {
+      hadMeaningfulRowsRef.current = true;
+    }
+  }, [rows]);
 
   // Derive scoped positions from Redux when an application id is provided
   const positionsFromStore: IPosition[] = useMemo(() => {
@@ -998,7 +1011,7 @@ export default function PositionTableCalculator({
     dispatch(getPositions({ application: effectiveApplicationId }));
   }, [effectiveApplicationId, positions, positionsFromStore, dispatch]);
 
-  // When positions (prop or store) are loaded/updated from API, seed local rows once.
+  // When positions (prop or store) are loaded/updated from API, seed or refresh local rows.
   // Note: we intentionally exclude avgBankNetCredit from deps to avoid an update loop,
   // since avgBankNetCredit is derived from rows that are set inside this effect.
   useEffect(() => {
@@ -1011,14 +1024,25 @@ export default function PositionTableCalculator({
       // When real positions are coming from the server, treat it as "not user-created placeholders".
       setHasUserAddedRow(false);
       setRows((prev) => {
-        // If all rows are still empty placeholders, replace with incoming positions
-        const hasRealData = prev.some((row) => {
-          return Object.values(row).some((v) => v != null && String(v).trim() !== "");
-        });
-        if (hasRealData) return prev;
-        return source.map((p, i) =>
-          recalcRow(p, { index: i, allRows: source, avgBankNetCredit }),
-        );
+        const prevHasRealData = prev.some(rowHasMeaningfulData);
+        if (!prevHasRealData) {
+          return source.map((p, i) =>
+            recalcRow(p, { index: i, allRows: source, avgBankNetCredit }),
+          );
+        }
+
+        // After Approve & Save / refetch: refresh locked rows from the server without blanking first.
+        const meaningful = prev.filter(rowHasMeaningfulData);
+        const allLockedSaved =
+          meaningful.length > 0 &&
+          meaningful.every((row) => row.isLocked && row._id);
+        if (allLockedSaved) {
+          return source.map((p, i) =>
+            recalcRow(p, { index: i, allRows: source, avgBankNetCredit }),
+          );
+        }
+
+        return prev;
       });
     }
   }, [positions, positionsFromStore]);
@@ -1037,11 +1061,12 @@ export default function PositionTableCalculator({
 
     // Don't override rows if the user is actively adding data or has typed into any row
     // (hasUserAddedRow is only set by "Create Position", not by editing default placeholders).
+    if (positionsState.loading && hadMeaningfulRowsRef.current) return;
+
     if (!positionsState.loading && !hasUserAddedRow) {
       setRows((prev) => {
-        const hasRealData = prev.some((row) =>
-          Object.values(row).some((v) => v != null && String(v).trim() !== ""),
-        );
+        const hasRealData =
+          prev.some(rowHasMeaningfulData) || hadMeaningfulRowsRef.current;
         if (hasRealData) return prev;
         return createPlaceholderRows();
       });

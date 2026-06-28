@@ -22,6 +22,11 @@ export {
 } from "./ApplicationApprovalEmail";
 export { renderApplicationApprovalEmailHtml } from "./applicationApprovalEmailHtml";
 export {
+  default as ApplicationApprovedEmail,
+  APPLICATION_APPROVED_EMAIL_VARIABLES,
+} from "./ApplicationApprovedEmail";
+export { renderApplicationApprovedEmailHtml } from "./applicationApprovedEmailHtml";
+export {
   default as ApplicationRejectionEmail,
   APPLICATION_REJECTION_EMAIL_VARIABLES,
 } from "./ApplicationRejectionEmail";
@@ -43,7 +48,23 @@ export {
   APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
   APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
   resolveApplicationApprovalEmailFields,
+  buildApplicationApprovalEmailServerPlaceholderValues,
 } from "./applicationApprovalEmailShared";
+export {
+  APPLICATION_APPROVED_EMAIL_SUBJECT,
+  APPLICATION_APPROVED_CLIENT_NAME_PLACEHOLDER,
+  APPLICATION_APPROVED_COMPANY_NAME_PLACEHOLDER,
+  APPLICATION_APPROVED_REQUEST_AMOUNT_PLACEHOLDER,
+  APPLICATION_APPROVED_APPROVED_AMOUNT_PLACEHOLDER,
+  APPLICATION_APPROVED_FACTOR_RATE_PLACEHOLDER,
+  APPLICATION_APPROVED_PAYBACK_AMOUNT_PLACEHOLDER,
+  APPLICATION_APPROVED_TERM_PLACEHOLDER,
+  APPLICATION_APPROVED_REPAY_PLACEHOLDER,
+  APPLICATION_APPROVED_MONTHLY_REPAYMENT_PLACEHOLDER,
+  APPLICATION_APPROVED_ACH_FREQUENCY_PLACEHOLDER,
+  resolveApplicationApprovedEmailFields,
+  buildApplicationApprovedEmailServerPlaceholderValues,
+} from "./applicationApprovedEmailShared";
 export {
   APPLICATION_REJECTION_EMAIL_SUBJECT,
   resolveApplicationRejectionEmailFields,

@@ -1,6 +1,4 @@
 import { memo } from 'react';
-import { useDispatch } from 'react-redux';
-import { Trash2 } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -10,28 +8,25 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { User } from '@/types/userTypes';
-import type { AppDispatch } from '@/redux/store';
-import { deleteUser } from '@/redux/actions/settingsUserActions';
 import { formatDate as formatDateUtil } from "@/lib/utils";
-
+import DeleteUserButton from './DeleteUserButton';
 function formatDate(dateStr: string | undefined): string {
   return formatDateUtil(dateStr ?? "", "—");
 }
 
-interface FinalUnderwriterProps {
+interface UnderwriterProps {
   users: User[];
   loading: boolean;
   error: string | null;
 }
 
-function FINALUNDERWRITER({ users, loading, error }: FinalUnderwriterProps) {
-  const dispatch = useDispatch<AppDispatch>();
+function SCRUBBING({ users, loading, error }: UnderwriterProps) {
   const list = users ?? [];
 
   if (loading) {
     return (
       <div className="rounded-lg border border-border bg-card p-6 text-center text-muted-foreground">
-        Loading final underwriters...
+        Loading scrubbing users...
       </div>
     );
   }
@@ -45,7 +40,7 @@ function FINALUNDERWRITER({ users, loading, error }: FinalUnderwriterProps) {
   if (!list.length) {
     return (
       <div className="rounded-lg border border-border bg-card p-6 text-center text-muted-foreground">
-        No final underwriters found.
+        No scrubbing users found.
       </div>
     );
   }
@@ -66,7 +61,7 @@ function FINALUNDERWRITER({ users, loading, error }: FinalUnderwriterProps) {
           {list.map((user) => {
             const id = user._id ?? (user as { id?: string }).id;
             const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || '—';
-            const roleId = user.role || 'FINAL_UNDERWRITER';
+            const roleId = user.role || 'SCRUBBING';
             return (
               <TableRow key={id ?? ''} className="border-b border-border">
                 <TableCell className="font-medium text-foreground">{name}</TableCell>
@@ -74,23 +69,7 @@ function FINALUNDERWRITER({ users, loading, error }: FinalUnderwriterProps) {
                 <TableCell className="text-muted-foreground">{user.phone ?? '—'}</TableCell>
                 <TableCell className="text-muted-foreground">{formatDate(user.createdAt)}</TableCell>
                 <TableCell className="text-left">
-                  <button
-                    type="button"
-                    className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/5 transition-colors"
-                    onClick={() => {
-                      if (!id) return;
-                      dispatch(
-                        deleteUser({
-                          roleId,
-                          userId: id,
-                          user,
-                        })
-                      );
-                    }}
-                  >
-                    <Trash2 className="h-3 w-3 mr-1" />
-                    Delete
-                  </button>
+                  <DeleteUserButton user={user} roleId={roleId} />
                 </TableCell>
               </TableRow>
             );
@@ -101,4 +80,4 @@ function FINALUNDERWRITER({ users, loading, error }: FinalUnderwriterProps) {
   );
 }
 
-export default memo(FINALUNDERWRITER);
+export default memo(SCRUBBING);

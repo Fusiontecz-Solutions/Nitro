@@ -77,6 +77,55 @@ function applicationUpdateRouteId(app: unknown): string {
     return "";
 }
 
+/** True when at least one calculator row has user-entered / saved field values. */
+function positionsHaveMeaningfulData(arr: unknown): boolean {
+    if (!Array.isArray(arr) || arr.length === 0) return false;
+    return arr.some((row) => {
+        if (!row || typeof row !== "object") return false;
+        const r = row as Record<string, unknown>;
+        for (const key of [
+            "lender",
+            "installment",
+            "amountFunded",
+            "totalRepayments",
+            "monthlyMcaPmts",
+            "mcaRemit",
+            "startingDate",
+        ]) {
+            const v = r[key];
+            if (v != null && String(v).trim() !== "") return true;
+        }
+        const status = String(r.status ?? "").trim().toUpperCase();
+        if (status && status !== "SELECT") return true;
+        const frequency = String(r.frequency ?? "").trim();
+        if (frequency && frequency !== "Select") return true;
+        return false;
+    });
+}
+
+/** Two scope keys refer to the same application when their id tokens overlap. */
+function sameApplicationScope(prev: string | null, next: string | null): boolean {
+    if (!prev || !next) return prev === next;
+    const prevIds = new Set(prev.split("|"));
+    for (const id of next.split("|")) {
+        if (prevIds.has(id)) return true;
+    }
+    return false;
+}
+
+function buildApplicationScopeKey(
+    app: unknown,
+    fallbackId: string | number | null | undefined,
+): string | null {
+    const a = app as Record<string, unknown> | null;
+    const ids = new Set<string>();
+    for (const v of [a?._id, a?.id, a?.applicationId, fallbackId]) {
+        if (v != null && String(v).trim() !== "") ids.add(String(v).trim());
+    }
+    if (ids.size === 0) return null;
+    return Array.from(ids).sort().join("|");
+}
+
 /** Stable JSON signature for Redux-derived positions so we do not reset livePositions on referential churn. */
 function positionsForBankSeedSignature(arr: Array<Record<string, unknown>>): string {
     return JSON.stringify(
@@ -279,20 +328,41 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
     const defaultMonthCreatedRef = useRef<boolean>(false);
     const lastPositionsSeedSigRef = useRef<string>("");
     const lastSeededAppRef = useRef<string | null>(null);
+    const livePositionsRef = useRef<any[]>([]);
+    const lastFetchedApplicationScopeRef = useRef<string | null>(null);
+
+    const applicationScopeKey = useMemo(
+        () => buildApplicationScopeKey(applicationData, resolvedApplicationId),
+        [applicationData, resolvedApplicationId],
+    );
 
     // Fetch bank details, months, and positions for this application only (application-scoped)
     useEffect(() => {
-        if (!resolvedApplicationId) {
-            dispatch(clearPositions());
-            setOfferDecisionState(null);
+        if (!resolvedApplicationId || !applicationScopeKey) {
+            if (!resolvedApplicationId) {
+                dispatch(clearPositions());
+                setOfferDecisionState(null);
+            }
+            lastFetchedApplicationScopeRef.current = null;
             return;
         }
-        // Clear stale positions from another application before fetch and then fetch for this application only
-        dispatch(clearPositions());
+        // Only clear stale Redux positions when navigating to a different application —
+        // not when the same deal is addressable by another id shape (applicationId vs _id).
+        if (
+            !sameApplicationScope(
+                lastFetchedApplicationScopeRef.current,
+                applicationScopeKey,
+            )
+        ) {
+            if (lastFetchedApplicationScopeRef.current != null) {
+                dispatch(clearPositions());
+            }
+            lastFetchedApplicationScopeRef.current = applicationScopeKey;
+        }
         dispatch(getBankDetails({ application: resolvedApplicationId as string }));
         dispatch(getMonths({ application: resolvedApplicationId as string }));
         dispatch(getPositions({ application: resolvedApplicationId as string }));
-    }, [resolvedApplicationId, dispatch]);
+    }, [resolvedApplicationId, applicationScopeKey, dispatch]);
 
     // Load persisted offer decision so holdings visibility survives refresh/reopen.
     useEffect(() => {
@@ -567,6 +637,18 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
         });
     }, [scopedPositions]);
 
+    /** Prefer in-table edits over an empty Redux snapshot while positions refetch after save. */
+    const positionsForCalculator = useMemo(() => {
+        if (positionsHaveMeaningfulData(livePositions)) {
+            return livePositions;
+        }
+        return calculatorPositions;
+    }, [livePositions, calculatorPositions]);
+
+    useEffect(() => {
+        livePositionsRef.current = livePositions;
+    }, [livePositions]);
+
     useEffect(() => {
         if (!resolvedApplicationId) {
             setLivePositions([]);
@@ -588,6 +670,15 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
 
         if (sig === lastPositionsSeedSigRef.current) return;
         lastPositionsSeedSigRef.current = sig;
+
+        // Keep showing the last known rows while Redux is briefly empty during refetch.
+        if (
+            !positionsHaveMeaningfulData(calculatorPositions) &&
+            positionsHaveMeaningfulData(livePositionsRef.current)
+        ) {
+            return;
+        }
+
         setLivePositions(calculatorPositions as any[]);
     }, [resolvedApplicationId, calculatorPositions]);
 
@@ -1445,7 +1536,7 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                     <div className="flex min-w-0 w-full flex-col gap-4">
                         <PositionTableCalculator
                             applicationId={resolvedApplicationId || undefined}
-                            positions={calculatorPositions as any}
+                            positions={positionsForCalculator as any}
                             avgBankNetCredit={bankNetCreditAvg ?? undefined}
                             onMetricsChange={setPositionTableMetrics}
                             onRowsChange={handleRowsChange}

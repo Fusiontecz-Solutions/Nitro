@@ -2,7 +2,7 @@
  * Stage-aware role access for applications.
  *
  * Workflow:
- *   Agent  →  Underwriter  →  Final Underwriter  →  (Post-final / Funded / etc.)
+ *   Agent  →  Scrubbing  →  Underwriter  →  (Post-final / Funded / etc.)
  *
  * Rule:
  *   When an application moves to the next stage, the previous-stage role can
@@ -18,8 +18,8 @@ export type ApplicationStageMode = "edit" | "preview";
 /** Coarse pipeline buckets for queue/state strings. `null` = stage unknown / new draft. */
 export type ApplicationStageKey =
   | "AGENT"
+  | "SCRUBBING"
   | "UNDERWRITER"
-  | "FINAL_UNDERWRITER"
   | "POST_FINAL";
 
 export interface ApplicationStageAccess {
@@ -60,13 +60,16 @@ const AGENT_STAGE_TOKENS = new Set([
 ]);
 
 const UNDERWRITER_STAGE_TOKENS = new Set([
-  "underwriter",
+  "scrubbing",
   "underwriting",
 ]);
 
 const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
-  "finalunderwriter",
+  "underwriter",
   "finalreview",
+  "finalscrubbing",
+  "underwriterapproved",
+  "finalapproval",
 ]);
 
 const POST_FINAL_STAGE_TOKENS = new Set([
@@ -89,8 +92,8 @@ const POST_FINAL_STAGE_TOKENS = new Set([
 
 const STAGE_FRIENDLY_LABEL: Record<ApplicationStageKey, string> = {
   AGENT: "Agent",
+  SCRUBBING: "Scrubbing",
   UNDERWRITER: "Underwriter",
-  FINAL_UNDERWRITER: "Final Underwriter",
   POST_FINAL: "Operations",
 };
 
@@ -102,11 +105,11 @@ export function getApplicationPipelineStageKey(
   const queueToken = normalizeToken(currentQueue);
   const stateToken = normalizeToken(currentState);
 
-  // Queue drives stage. FU keeps queue "Final Underwriter" with state "Approved" after
+  // Queue drives stage. FU keeps queue "Underwriter" with state "Approved" after
   // sending approval mail (and while resending after ISO comments) — still FU-owned.
   if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return "POST_FINAL";
-  if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "FINAL_UNDERWRITER";
-  if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "UNDERWRITER";
+  if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "UNDERWRITER";
+  if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "SCRUBBING";
   if (AGENT_STAGE_TOKENS.has(queueToken)) return "AGENT";
 
   // Some imports use `currentState` for the deal stage (e.g. "FINAL").
@@ -117,15 +120,15 @@ export function getApplicationPipelineStageKey(
 
 const STAGE_ORDER: Record<ApplicationStageKey, number> = {
   AGENT: 0,
-  UNDERWRITER: 1,
-  FINAL_UNDERWRITER: 2,
+  SCRUBBING: 1,
+  UNDERWRITER: 2,
   POST_FINAL: 3,
 };
 
 const ROLE_OWNED_STAGE: Record<string, ApplicationStageKey> = {
   AGENT: "AGENT",
+  SCRUBBING: "SCRUBBING",
   UNDERWRITER: "UNDERWRITER",
-  FINAL_UNDERWRITER: "FINAL_UNDERWRITER",
 };
 
 /**

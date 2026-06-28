@@ -14,7 +14,9 @@ function isOpsOrSuperAdminRole(normalizedRole: string): boolean {
 export function shouldPrefetchOpsDashboardSummary(
   normalizedRole: string,
 ): boolean {
-  return isOpsOrSuperAdminRole(normalizedRole);
+  return (
+    isOpsOrSuperAdminRole(normalizedRole) || normalizedRole === "UNDERWRITER"
+  );
 }
 
 export function isOpsDashboardWarmRoute(

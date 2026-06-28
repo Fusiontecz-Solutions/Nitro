@@ -54,19 +54,19 @@ export const sendDocumentRequest = createAsyncThunk(
     }
 );
 
-// Notify Final Underwriter when an application is sent from Underwriter
+// Notify Underwriter when an application is sent from Scrubbing
 export const notifyFinalUnderwriterOnAssignment = createAsyncThunk(
     'notification/notifyFinalUnderwriterOnAssignment',
     async (data: NotifyFinalUnderwriterPayload, { rejectWithValue }) => {
         try {
-            const response = await axiosPost('/notifications/application-sent-to-final-underwriter', data);
+            const response = await axiosPost('/notifications/application-sent-to-final-scrubbing', data);
             return response.data;
         } catch (error: any) {
             const message =
                 error.response?.data?.message ||
                 error.message ||
-                'Failed to notify Final Underwriter';
-            console.error('Notify Final Underwriter error:', message, error.response?.data);
+                'Failed to notify Underwriter';
+            console.error('Notify Underwriter error:', message, error.response?.data);
             return rejectWithValue(message);
         }
     }

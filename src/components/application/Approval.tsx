@@ -123,7 +123,7 @@ const CustomSlider = ({ value, onChange, min, max, step = 1, disabled = false }:
     );
 };
 
-// Circular Progress Ring – shows current form values (dynamic from underwriter data)
+// Circular Progress Ring – shows current form values (dynamic from scrubbing data)
 interface CircularProgressProps {
     advanceAmount: number;
     term: number;
@@ -383,7 +383,7 @@ const Approval = ({
         POST_APPROVAL_TOKENS.has(effectiveStateToken);
     const isApproved = currentlyApproved || locallyApproved;
 
-    // Fetch underwriter terms offers for this application (skip when preloaded or in read-only mode)
+    // Fetch scrubbing terms offers for this application (skip when preloaded or in read-only mode)
     useEffect(() => {
         if (readOnly) return;
         if (!applicationId) return;
@@ -782,7 +782,7 @@ const Approval = ({
                     </div>
                 </div>
 
-                {/* Right Column - Buy Rate Summary (dynamic from underwriter terms offer + form) */}
+                {/* Right Column - Buy Rate Summary (dynamic from scrubbing terms offer + form) */}
                 <div className="lg:col-span-1">
                     <Card className="border border-gray-200 shadow-sm sticky top-4">
                         <CardHeader className="pb-2">

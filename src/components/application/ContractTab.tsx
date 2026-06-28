@@ -146,6 +146,10 @@ import {
     resolveOfferFactorRate,
     resolveOfferPayback,
 } from "@/lib/offerRepaymentCalculations";
+import {
+    isApplicationUuid,
+    resolvePrismaApplicationUuid,
+} from "@/lib/paymentDealApplicationId";
 
 function formatContractCurrency(value: number | string | null | undefined) {
     return formatCurrency(value, { fallback: "—" });
@@ -295,6 +299,21 @@ export default function ContractTab({
         (state: RootState) => state.offerDecision,
     );
     const { data: loginData } = useSelector((state: RootState) => state.login);
+    const backgroundCheckStatus = useSelector(
+        (state: RootState) => state.backgroundCheck.data?.status,
+    );
+    const backgroundCheckBlocksContract = Boolean(
+        backgroundCheckStatus && backgroundCheckStatus !== "APPROVED",
+    );
+    const userRoleRaw =
+        (loginData as any)?.user?.role ||
+        (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
+        "";
+    const roleKey = String(userRoleRaw || "").replace(/-/g, "_").toUpperCase();
+    const isSuperAdmin = roleKey === "SUPER_ADMIN";
+    const backgroundCheckContractBlockMessage = isSuperAdmin
+        ? "Background check must be approved before a contract can be created. Complete it on the Background Check tab."
+        : "Background check must be approved by a Super Admin before a contract can be created.";
     const { data: bankDetailsList } = useSelector(
         (state: RootState) => state.bankDetails,
     );
@@ -307,11 +326,6 @@ export default function ContractTab({
     );
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === "dark";
-    const userRoleRaw =
-        (loginData as any)?.user?.role ||
-        (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
-        "";
-    const roleKey = String(userRoleRaw || "").replace(/-/g, "_").toUpperCase();
     const applicationTypeRaw = (applicationData as any)?.type || "";
     const isBypassApplication =
         String(applicationTypeRaw || "").trim().toUpperCase() === "BYPASS";
@@ -363,8 +377,15 @@ export default function ContractTab({
         applicationId ??
         (applicationData as { _id?: string; id?: string })?.id ??
         (applicationData as { _id?: string })?._id;
-    const applicationUuid =
-        (applicationData as any)?._id ?? (applicationData as any)?.id ?? appId;
+    const applicationUuid = useMemo(() => {
+        const fromData = resolvePrismaApplicationUuid(
+            applicationData as { id?: unknown; _id?: unknown } | null,
+        );
+        if (fromData) return fromData;
+        const routeId = applicationId?.trim();
+        if (routeId && isApplicationUuid(routeId)) return routeId;
+        return null;
+    }, [applicationData, applicationId]);
     useEffect(() => {
         const termsApplicationKey = applicationUuid ?? appId;
         if (termsApplicationKey) {
@@ -824,7 +845,7 @@ export default function ContractTab({
     ]);
 
     useEffect(() => {
-        // Load system-wide contract template (uploaded by Final Underwriter dashboard)
+        // Load system-wide contract template (uploaded by Underwriter dashboard)
         const fetchTemplate = async () => {
             try {
                 const response = await axiosGet("/contract-templates/latest");
@@ -1341,8 +1362,13 @@ export default function ContractTab({
 
         if (!globalTemplateUrl || !applicationUuid) {
             toast.error(
-                "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
+                "No contract template uploaded. Please upload it from the Underwriter dashboard.",
             );
+            return;
+        }
+
+        if (backgroundCheckBlocksContract) {
+            toast.error(backgroundCheckContractBlockMessage);
             return;
         }
 
@@ -1531,7 +1557,7 @@ export default function ContractTab({
         const includeMainContract = sendPayload.includeMainContract !== false;
         if (includeMainContract && (!globalTemplateUrl || !applicationUuid)) {
             failDocuSignEnvelope(
-                "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
+                "No contract template uploaded. Please upload it from the Underwriter dashboard.",
             );
         }
         if (!applicationUuid) {
@@ -2493,7 +2519,15 @@ export default function ContractTab({
                             type="button"
                             variant="default"
                             onClick={handleGenerateContract}
-                            disabled={creatingEnvelope}
+                            disabled={
+                                creatingEnvelope ||
+                                (!isReadOnly && !hasGeneratedContract && backgroundCheckBlocksContract)
+                            }
+                            title={
+                                !isReadOnly && !hasGeneratedContract && backgroundCheckBlocksContract
+                                    ? backgroundCheckContractBlockMessage
+                                    : undefined
+                            }
                             className="h-10 px-6 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
 
 

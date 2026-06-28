@@ -1,13 +1,66 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import MyNotes from '@/components/application/MyNotes';
 import RejectApplicationModal from '@/components/application/RejectApplicationModal';
+import RequestMissingDocumentsModal from '@/components/application/RequestMissingDocumentsModal';
 import { Button } from '@/components/ui/button';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
-import { createFundingCall, getFundingCalls } from '@/redux/actions/fundingCallActions';
+import {
+  approveFundingCallForDisbursement,
+  createFundingCall,
+  getFundingCalls,
+} from '@/redux/actions/fundingCallActions';
 import { resetCreateFundingCall } from '@/redux/slices/fundingCallSlice';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
+import { useTheme } from '@/context/ThemeContext';
+import { normalizeRoleKey, resolveEffectiveRole } from '@/lib/sessionRole';
+import { normalizeFundingCallStatus } from '@/constants/operationsDashboardApplications';
+import {
+  APPLICATION_APPROVED_EMAIL_SUBJECT,
+  buildApplicationApprovedEmailServerPlaceholderValues,
+  renderApplicationApprovedEmailHtml,
+} from '@/pages/templates';
+
+const looksLikeEmail = (value: unknown): boolean => {
+  const s = String(value ?? '').trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+};
+
+/** Prefer business owner email over the generic business inbox for client-facing approval mail. */
+const resolveLinkedClientEmail = (application: unknown): string => {
+  const client = (application as { client?: unknown } | null)?.client;
+  if (!client || typeof client !== 'object') return '';
+
+  const nested = client as {
+    ownerEmail?: string | null;
+    business?: { email?: string | null };
+    owner?: { email?: string | null };
+    owners?: Array<{ email?: string | null; sortOrder?: number | null }>;
+  };
+
+  const primaryOwnerEmail = String(nested.owner?.email ?? '').trim();
+  if (looksLikeEmail(primaryOwnerEmail)) return primaryOwnerEmail;
+
+  const ownerRows = Array.isArray(nested.owners)
+    ? [...nested.owners].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+    : [];
+  for (const owner of ownerRows) {
+    const email = String(owner?.email ?? '').trim();
+    if (looksLikeEmail(email)) return email;
+  }
+
+  const flatOwnerEmail = String(nested.ownerEmail ?? '').trim();
+  if (looksLikeEmail(flatOwnerEmail)) return flatOwnerEmail;
+
+  const businessEmail = String(nested.business?.email ?? '').trim();
+  if (looksLikeEmail(businessEmail)) return businessEmail;
+
+  return '';
+};
+
+const decisionButtonBase =
+  'rounded-md text-white h-auto min-h-[4.5rem] py-3.5 px-3 box-border cursor-pointer flex flex-col gap-1 items-center justify-center text-center w-full overflow-hidden transition-colors outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#276D9C] disabled:opacity-50 disabled:cursor-not-allowed';
 
 type FundingCallProps = {
   applicationId?: string;
@@ -25,6 +78,8 @@ interface CallFormState {
 }
 
 export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: FundingCallProps) => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
   const dispatch = useDispatch<AppDispatch>();
   const { loading: saving, success, error } = useSelector(
     (state: RootState) => state.createFundingCall,
@@ -32,6 +87,32 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const { data: existingCalls, loading: fetchingExistingCalls } = useSelector(
     (state: RootState) => state.fundingCalls,
   );
+  const loginUser = useSelector((state: RootState) => state.login?.data?.user);
+  const applicationDetail = useSelector((state: RootState) => state.applicationDetail.data);
+
+  const linkedClientEmail = useMemo(
+    () => resolveLinkedClientEmail(applicationDetail),
+    [applicationDetail],
+  );
+
+  const roleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
+  const isSuperAdmin = roleKey === 'SUPER_ADMIN';
+
+  const applicationQueue = useMemo(() => {
+    const data = applicationDetail as { currentQueue?: string; queue?: string } | null;
+    return data?.currentQueue ?? data?.queue ?? '';
+  }, [applicationDetail]);
+
+  const normalizeQueueKey = (value: string | null | undefined) =>
+    String(value ?? '')
+      .trim()
+      .replace(/[\s_-]+/g, '')
+      .toLowerCase();
+
+  const isAtDisbursementQueue = useMemo(() => {
+    const q = normalizeQueueKey(applicationQueue);
+    return q === 'disbursement' || q === 'disbursment';
+  }, [applicationQueue]);
 
   const [form, setForm] = useState<CallFormState>({
     callStatus: '',
@@ -50,11 +131,39 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [documentsModalOpen, setDocumentsModalOpen] = useState(false);
+  const [approveForDisbursementPending, setApproveForDisbursementPending] = useState(false);
+  const [disbursementApproved, setDisbursementApproved] = useState(false);
+  const [disbursementEmailSent, setDisbursementEmailSent] = useState<boolean | null>(null);
+  const [disbursementEmailSkippedReason, setDisbursementEmailSkippedReason] = useState<string | null>(
+    null,
+  );
   const calendarRef = useRef<HTMLDivElement | null>(null);
 
   const options = ["Call Done", "Not Reachable", "Call Back Later", "Rejected", "Interested"];
 
-  const isBusy = saving || fetchingExistingCalls;
+  const isBusy = saving || fetchingExistingCalls || approveForDisbursementPending;
+
+  const latestFromCalls = useMemo(() => {
+    if (!existingCalls?.length) return '';
+    return (existingCalls[0] as { callStatus?: string })?.callStatus ?? '';
+  }, [existingCalls]);
+
+  const isApprovedForDisbursement = useMemo(() => {
+    if (disbursementApproved || isAtDisbursementQueue) return true;
+    const status = form.callStatus || latestFromCalls;
+    return normalizeFundingCallStatus(status) === 'approvedfordisbursement';
+  }, [disbursementApproved, isAtDisbursementQueue, form.callStatus, latestFromCalls]);
+
+  useEffect(() => {
+    const status = form.callStatus || latestFromCalls;
+    if (
+      isAtDisbursementQueue ||
+      normalizeFundingCallStatus(status) === 'approvedfordisbursement'
+    ) {
+      setDisbursementApproved(true);
+    }
+  }, [isAtDisbursementQueue, form.callStatus, latestFromCalls]);
 
   useEffect(() => {
     if (isBusy) setShowSuccess(false);
@@ -193,17 +302,98 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     submitFundingCall(form);
   };
 
+  const isApproveActionComplete = isApprovedForDisbursement && disbursementEmailSent === true;
+
+  const handleApproveForDisbursement = useCallback(async () => {
+    if (!applicationId) {
+      toast.error('Application ID is missing for this funding call.');
+      return;
+    }
+    if (isApproveActionComplete) return;
+
+    const approvalEmailHtml = renderApplicationApprovedEmailHtml(
+      buildApplicationApprovedEmailServerPlaceholderValues(),
+    );
+
+    setApproveForDisbursementPending(true);
+    const toastId = toast.loading('Approving application for disbursement...');
+
+    try {
+      const result = await dispatch(
+        approveFundingCallForDisbursement({
+          application: applicationId,
+          clientEmail: linkedClientEmail || undefined,
+          emailHtml: approvalEmailHtml,
+          emailSubject: APPLICATION_APPROVED_EMAIL_SUBJECT,
+        }),
+      ).unwrap();
+
+      setDisbursementApproved(true);
+      setForm((prev) => ({
+        ...prev,
+        callStatus: 'Approved for Disbursement',
+        applicationStatus: 'Approved for Disbursement',
+      }));
+      onCallStatusChange?.('Approved for Disbursement');
+
+      if (applicationId) {
+        void dispatch(getFundingCalls({ application: applicationId }));
+      }
+
+      const emailSent = Boolean(result?.emailSent);
+      const skippedReason =
+        typeof result?.emailSkippedReason === 'string' ? result.emailSkippedReason : null;
+
+      setDisbursementEmailSent(emailSent);
+      setDisbursementEmailSkippedReason(emailSent ? null : skippedReason);
+
+      toast.update(toastId, {
+        render: emailSent
+          ? 'Application approved for disbursement. Client emailed and Operations notified.'
+          : skippedReason ||
+            result?.message ||
+            'Application approved for disbursement. Operations has been notified.',
+        type: emailSent ? 'success' : 'warning',
+        isLoading: false,
+        autoClose: 5000,
+      });
+
+      onSaved?.();
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string'
+          ? err
+          : (err as { message?: string })?.message ||
+            'Failed to approve application for disbursement.';
+      toast.update(toastId, {
+        render: message,
+        type: 'error',
+        isLoading: false,
+        autoClose: 5000,
+      });
+    } finally {
+      setApproveForDisbursementPending(false);
+    }
+  }, [
+    applicationId,
+    dispatch,
+    isApproveActionComplete,
+    linkedClientEmail,
+    onCallStatusChange,
+    onSaved,
+  ]);
+
   return (
     <div
       className={cn(
-        'relative mx-auto rounded-[18px] border border-slate-200/80 bg-gradient-to-br from-white to-[#f4f7fb] p-6 pb-5 font-sans shadow-[0_18px_35px_rgba(15,23,42,0.1),0_2px_6px_rgba(15,23,42,0.06)]',
-        'dark:border-slate-700 dark:from-[#1c1d21] dark:to-[#141517] dark:shadow-[0_18px_35px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.25)]',
+        'relative mx-auto rounded-lg border border-slate-200/80 bg-white p-4 font-sans shadow-sm',
+        'dark:border-slate-700 dark:bg-[#1c1d21] dark:shadow-black/20',
       )}
     >
       {(fetchingExistingCalls || saving) && (
         <div
           className={cn(
-            'mb-4 flex items-center gap-2.5 rounded-xl border px-3 py-3 text-[13px]',
+            'mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs',
             fetchingExistingCalls
               ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/45 dark:text-blue-200'
               : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
@@ -214,30 +404,10 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
         </div>
       )}
 
-      {/* Header Section */}
-      <div className="mb-5 flex items-center justify-between">
-        <div>
-          <h2 className="m-0 text-[22px] font-bold text-slate-900 dark:text-slate-100">Funding Call</h2>
-          <p className="mt-1 text-[13px] text-slate-500 dark:text-slate-400">
-            Capture the latest call outcome.
-          </p>
-        </div>
-        {applicationId && (
-          <div
-            className={cn(
-              'rounded-full border border-blue-200/80 bg-blue-500/10 px-2.5 py-1 text-[11px] font-semibold text-blue-700',
-              'dark:border-blue-800/60 dark:bg-blue-500/15 dark:text-blue-300',
-            )}
-          >
-            ID: {applicationId}
-          </div>
-        )}
-      </div>
-
       {showSuccess && (
         <div
           className={cn(
-            'mb-4 flex items-center gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-[13px] text-emerald-800',
+            'mb-2 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800',
             'dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
           )}
         >
@@ -248,10 +418,10 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
         </div>
       )}
 
-      <div className="mb-4 grid grid-cols-1 gap-[18px] md:grid-cols-2">
-        {/* CUSTOM DROPDOWN */}
-        <div className="flex flex-col gap-1.5" ref={dropdownRef}>
-          <label className="text-[13px] font-medium text-slate-900 dark:text-slate-100">
+      {/* Header + Call Status */}
+      <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="order-2 flex w-full flex-col gap-1 lg:order-1 lg:w-1/2 lg:shrink-0" ref={dropdownRef}>
+          <label className="text-xs font-medium text-slate-900 dark:text-slate-100">
             Call Status <span className="text-red-500">*</span>
           </label>
 
@@ -264,8 +434,8 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
               }}
               disabled={isBusy}
               className={cn(
-                'flex w-full cursor-pointer items-center justify-between rounded-xl border bg-white px-4 py-2.5 text-left text-sm shadow-sm',
-                'dark:bg-slate-900 dark:text-slate-100 dark:shadow-black/20',
+                'flex w-full cursor-pointer items-center justify-between rounded-lg border bg-white px-3 py-2 text-left text-sm',
+                'dark:bg-slate-900 dark:text-slate-100',
                 errors.callStatus
                   ? 'border-red-500 dark:border-red-500'
                   : 'border-slate-300 dark:border-slate-600',
@@ -273,7 +443,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                 isBusy && 'cursor-not-allowed opacity-60',
               )}
             >
-              {form.callStatus || "Select call status"}
+              {form.callStatus || 'Select call status'}
               <span
                 className="text-[10px] transition-transform duration-200"
                 style={{ transform: isDropdownOpen ? 'rotate(180deg)' : 'rotate(0)' }}
@@ -285,7 +455,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
             {isDropdownOpen && (
               <div
                 className={cn(
-                  'absolute left-0 right-0 top-[110%] z-50 overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-lg',
+                  'absolute left-0 right-0 top-[calc(100%+4px)] z-50 overflow-hidden rounded-lg border border-slate-200 bg-white p-1 shadow-lg',
                   'dark:border-slate-600 dark:bg-slate-900 dark:shadow-black/40',
                 )}
               >
@@ -302,7 +472,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                       }
                     }}
                     className={cn(
-                      'cursor-pointer rounded-lg px-3 py-2.5 text-[13px] transition-colors',
+                      'cursor-pointer rounded-md px-3 py-2 text-xs transition-colors',
                       form.callStatus === opt
                         ? 'bg-blue-50 font-semibold text-blue-900 dark:bg-blue-950/50 dark:text-blue-200'
                         : 'font-normal text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800',
@@ -315,16 +485,35 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
             )}
           </div>
           {errors.callStatus && (
-            <span className="text-xs text-red-700 dark:text-red-400">Call status is required</span>
+            <span className="text-[11px] text-red-700 dark:text-red-400">Call status is required</span>
           )}
+        </div>
+
+        <div className="order-1 min-w-0 lg:order-2 lg:ml-auto lg:w-1/2 lg:text-right">
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+            <h2 className="m-0 text-lg font-bold text-slate-900 dark:text-slate-100">Funding Call</h2>
+            {applicationId && (
+              <div
+                className={cn(
+                  'rounded-full border border-blue-200/80 bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-700',
+                  'dark:border-blue-800/60 dark:bg-blue-500/15 dark:text-blue-300',
+                )}
+              >
+                ID: {applicationId}
+              </div>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            Capture the latest call outcome.
+          </p>
         </div>
       </div>
 
       {/* Follow-up Date */}
       {form.callStatus === 'Call Back Later' && (
-        <div className="relative mb-4 max-w-[260px]" ref={calendarRef}>
+        <div className="relative mb-3 max-w-[220px]" ref={calendarRef}>
           <label
-            className="mb-1.5 block text-[13px] font-medium text-slate-900 dark:text-slate-100"
+            className="mb-1 block text-xs font-medium text-slate-900 dark:text-slate-100"
           >
             Next Follow-up Date
           </label>
@@ -341,7 +530,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
               }}
               disabled={isBusy}
               className={cn(
-                'w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-3 pr-9 text-[13px] text-slate-900 placeholder:text-slate-400',
+                'w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-9 text-xs text-slate-900 placeholder:text-slate-400',
                 'dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500',
                 isBusy && 'cursor-not-allowed opacity-60',
               )}
@@ -458,29 +647,131 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
 
       <div
         className={cn(
-          'mb-4 mt-1 rounded-[14px] border border-dashed border-slate-300/80 bg-slate-900/[0.02] p-3',
-          'dark:border-slate-600 dark:bg-slate-950/40',
+          'w-full',
+          isSuperAdmin && 'flex flex-row items-stretch gap-4',
         )}
       >
-        <MyNotes applicationId={applicationId} />
+        <div className={cn('flex min-w-0 flex-col', isSuperAdmin && 'flex-[7]')}>
+          <MyNotes applicationId={applicationId} compact tall />
+        </div>
+
+        {isSuperAdmin && (
+          <div className="flex min-w-0 flex-[3] flex-col">
+            <div
+              className={cn(
+                'flex h-[420px] w-full flex-col gap-4 overflow-hidden rounded-lg border border-[#FDFDFD] pt-0 shadow-[0px_4px_20px_0px_#00000005]',
+                isDark ? 'border-white bg-card' : 'bg-white',
+              )}
+            >
+              <h2
+                className={cn(
+                  'w-full px-6 py-2 font-roboto text-base font-semibold',
+                  isDark ? 'bg-card text-gray-200' : 'bg-[#F9FAFD] text-[#374151]',
+                )}
+              >
+                Approve for Disbursement
+              </h2>
+
+              {isApprovedForDisbursement && (
+                <div
+                  className={cn(
+                    'mx-4 flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs',
+                    disbursementEmailSent === false
+                      ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
+                  )}
+                >
+                  <span>{disbursementEmailSent === false ? '!' : '✓'}</span>
+                  {disbursementEmailSent === true
+                    ? 'Approved — client emailed and Operations notified.'
+                    : disbursementEmailSent === false
+                      ? disbursementEmailSkippedReason ||
+                        'Approved — Operations notified, but the client email could not be sent. Retry below or add a client email on the application.'
+                      : 'Approved — Operations notified.'}
+                </div>
+              )}
+
+              <div className="flex flex-1 flex-col justify-center gap-5 px-4 pb-4">
+                <button
+                  type="button"
+                  onClick={() => void handleApproveForDisbursement()}
+                  disabled={isBusy || isApproveActionComplete}
+                  className={cn(
+                    decisionButtonBase,
+                    'bg-[#16A34A] shadow-md shadow-green-700/25 hover:bg-green-700',
+                  )}
+                >
+                  <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                    {approveForDisbursementPending
+                      ? 'Approving…'
+                      : isApproveActionComplete
+                        ? 'Approved for Disbursement'
+                        : isApprovedForDisbursement
+                          ? 'Resend approval email'
+                          : 'Approve Application'}
+                  </span>
+                  <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                    {isApprovedForDisbursement && disbursementEmailSent === false
+                      ? 'Retry sending the approval email to the client'
+                      : 'Send approval email to client and notify Operations'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDocumentsModalOpen(true)}
+                  disabled={isBusy}
+                  className={cn(
+                    decisionButtonBase,
+                    'bg-[#EAA95A] hover:bg-[#EAA95A]/90',
+                  )}
+                >
+                  <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                    Send back for documents
+                  </span>
+                  <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                    Request additional documents
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRejectModalOpen(true)}
+                  disabled={isBusy}
+                  className={cn(
+                    decisionButtonBase,
+                    'bg-[#DC331D] hover:bg-[#DC331D]/90',
+                  )}
+                >
+                  <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                    Decline
+                  </span>
+                  <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                    Decline this application
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="flex justify-end">
+      <div className="mt-3 flex justify-end">
         <Button
           type="button"
           variant="default"
           onClick={handleSave}
           disabled={isBusy}
-          className="min-w-[10rem] px-8 py-3 font-semibold disabled:opacity-60"
+          className="min-w-[9rem] px-6 py-2 text-sm font-semibold disabled:opacity-60"
         >
-          {saving ? 'Saving...' : 'Update Status'}
+          {saving ? 'Saving...' : 'Send for Disbursement'}
         </Button>
       </div>
 
       {isBusy && (
         <div
           aria-hidden="true"
-          className="pointer-events-auto absolute inset-0 z-[999] rounded-[18px] bg-transparent"
+          className="pointer-events-auto absolute inset-0 z-[999] rounded-lg bg-transparent"
         />
       )}
 
@@ -489,6 +780,14 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
         onOpenChange={setRejectModalOpen}
         onAfterReject={handleAfterReject}
         confirmLoading={saving}
+      />
+
+      <RequestMissingDocumentsModal
+        open={documentsModalOpen}
+        onOpenChange={setDocumentsModalOpen}
+        onSuccess={() => {
+          toast.success('Document request sent.');
+        }}
       />
     </div>
   );

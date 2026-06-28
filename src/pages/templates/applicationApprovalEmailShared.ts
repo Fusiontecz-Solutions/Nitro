@@ -51,6 +51,18 @@ export type ApplicationApprovalEmailFields = {
   crmName: string;
 };
 
+export function buildApplicationApprovalEmailServerPlaceholderValues(): Record<
+  string,
+  string
+> {
+  return {
+    client_name: APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+    company_name: APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+    calculate_approval_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+    view_application_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+  };
+}
+
 export function resolveApplicationApprovalEmailFields(
   values: Record<string, string | undefined>,
 ): ApplicationApprovalEmailFields {
@@ -59,9 +71,11 @@ export function resolveApplicationApprovalEmailFields(
   const companyName =
     String(values.company_name || "").trim() || "your company";
   const viewApplicationUrl =
-    String(values.view_application_url || "").trim() || "#";
+    String(values.view_application_url || "").trim() ||
+    APPLICATION_APPROVAL_URL_PLACEHOLDER;
   const calculateApprovalUrl =
-    String(values.calculate_approval_url || "").trim() || "#";
+    String(values.calculate_approval_url || "").trim() ||
+    APPLICATION_APPROVAL_URL_PLACEHOLDER;
 
   return {
     clientName,

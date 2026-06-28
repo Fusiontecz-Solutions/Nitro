@@ -118,7 +118,7 @@ const Cases = () => {
     }
     if (queue === "Declined") return "Declined";
     if (queue === "On Hold") return "Pending";
-    if (queue === "Underwriting" || queue === "Review" || queue === "Final Review")
+    if (queue === "Scrubbing" || queue === "Underwriter" || queue === "Underwriting" || queue === "Review" || queue === "Final Review")
       return "In Progress";
     if (queue === "New") return "Pending";
 

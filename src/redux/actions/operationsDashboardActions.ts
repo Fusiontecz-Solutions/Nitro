@@ -144,8 +144,12 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         },
         caseStageCounts: {
           Agent: Number(data.caseStageCounts.Agent) || 0,
-          Underwriter: Number(data.caseStageCounts.Underwriter) || 0,
-          "Final Underwriter": Number(data.caseStageCounts["Final Underwriter"]) || 0,
+          Scrubbing: Number(data.caseStageCounts.Scrubbing) || 0,
+          "Underwriter": Number(data.caseStageCounts["Underwriter"]) || 0,
+          Final_Approval: Number(data.caseStageCounts.Final_Approval) || 0,
+          Approved_By_UW: Number(data.caseStageCounts.Approved_By_UW) || 0,
+          Approval_Sent: Number(data.caseStageCounts.Approval_Sent) || 0,
+          Approved_By_ISO: Number(data.caseStageCounts.Approved_By_ISO) || 0,
           Contracted: Number(data.caseStageCounts.Contracted) || 0,
           Final: Number(data.caseStageCounts.Final) || 0,
           "Funding Call": Number(data.caseStageCounts["Funding Call"]) || 0,
@@ -153,9 +157,9 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         },
         caseStageAmounts: {
           Agent: Number(data.caseStageAmounts?.Agent) || 0,
-          Underwriter: Number(data.caseStageAmounts?.Underwriter) || 0,
-          "Final Underwriter":
-            Number(data.caseStageAmounts?.["Final Underwriter"]) || 0,
+          Scrubbing: Number(data.caseStageAmounts?.Scrubbing) || 0,
+          "Underwriter":
+            Number(data.caseStageAmounts?.["Underwriter"]) || 0,
           Contracted: Number(data.caseStageAmounts?.Contracted) || 0,
           Final: Number(data.caseStageAmounts?.Final) || 0,
           "Funding Call": Number(data.caseStageAmounts?.["Funding Call"]) || 0,

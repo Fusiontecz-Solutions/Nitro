@@ -14,6 +14,7 @@ import {
     applicationDetailSlice,
     clientApplicationsSlice,
     isoApplicationsSlice,
+    underwriterApplicationsSlice,
     updateApplicationSlice,
     rejectApplicationSlice,
     deleteApplicationSlice,
@@ -81,11 +82,11 @@ import {
 } from './slices/complianceCheckSlice';
 import {
     notificationsSlice,
+    notificationSummarySlice,
     sendDocumentRequestSlice,
     markAsReadSlice,
     markAllAsReadSlice,
-    documentRequestsSlice,
-    notificationSummarySlice,
+    documentRequestsSlice
 } from './slices/notificationSlice';
 import chatReducer from '@/redux/slices/chatSlice';
 import teamChatReducer from './slices/teamChatSlice';
@@ -145,6 +146,9 @@ import {
     deleteUploadedContractDocumentSlice,
 } from './slices/contractSlice';
 import isoReducer from './slices/isoSlice';
+import commissionProfileReducer from './slices/commissionProfileSlice';
+import isoOnboardingReducer from './slices/isoOnboardingSlice';
+import backgroundCheckReducer from './slices/backgroundCheckSlice';
 import { paymentDashboardSessionCacheMiddleware } from './middleware/paymentDashboardSessionCacheMiddleware';
 import { hydratePaymentDashboardFromSession } from '@/lib/hydratePaymentDashboardStore';
 
@@ -166,6 +170,7 @@ export const store = configureStore({
         applicationDetail: applicationDetailSlice.reducer,
         clientApplications: clientApplicationsSlice.reducer,
         isoApplications: isoApplicationsSlice.reducer,
+        underwriterApplications: underwriterApplicationsSlice.reducer,
         updateApplication: updateApplicationSlice.reducer,
         rejectApplication: rejectApplicationSlice.reducer,
         deleteApplication: deleteApplicationSlice.reducer,
@@ -225,11 +230,11 @@ export const store = configureStore({
         createOrUpdateComplianceCheck: createOrUpdateComplianceCheckSlice.reducer,
         // Notification reducers
         notifications: notificationsSlice.reducer,
+        notificationSummary: notificationSummarySlice.reducer,
         sendDocumentRequest: sendDocumentRequestSlice.reducer,
         markNotificationAsRead: markAsReadSlice.reducer,
         markAllNotificationsAsRead: markAllAsReadSlice.reducer,
         documentRequests: documentRequestsSlice.reducer,
-        notificationSummary: notificationSummarySlice.reducer,
         // Chat reducer
         chat: chatReducer,
         teamChat: teamChatReducer,
@@ -293,6 +298,9 @@ export const store = configureStore({
         operationsApplications: operationsApplicationsSlice.reducer,
         operationsDashboard: operationsDashboardSlice.reducer,
         iso: isoReducer,
+        commissionProfile: commissionProfileReducer,
+        isoOnboarding: isoOnboardingReducer,
+        backgroundCheck: backgroundCheckReducer,
     },
     middleware: (getDefaultMiddleware) =>
         getDefaultMiddleware({

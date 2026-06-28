@@ -19,6 +19,10 @@ import ApplicationApprovalEmail, {
   APPLICATION_APPROVAL_EMAIL_VARIABLES,
 } from "./ApplicationApprovalEmail";
 import { renderApplicationApprovalEmailHtml } from "./applicationApprovalEmailHtml";
+import ApplicationApprovedEmail, {
+  APPLICATION_APPROVED_EMAIL_VARIABLES,
+} from "./ApplicationApprovedEmail";
+import { renderApplicationApprovedEmailHtml } from "./applicationApprovedEmailHtml";
 import ApplicationRejectionEmail, {
   APPLICATION_REJECTION_EMAIL_VARIABLES,
 } from "./ApplicationRejectionEmail";
@@ -64,6 +68,15 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
       "ISO pre-approval notification with calculator link and funding stips.",
     variables: APPLICATION_APPROVAL_EMAIL_VARIABLES,
     Component: ApplicationApprovalEmail,
+  },
+  {
+    id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}application-approved-email`,
+    name: "Application approved email",
+    category: "email",
+    description:
+      "Client approval notification with full offer terms inline (sent to the application client email only).",
+    variables: APPLICATION_APPROVED_EMAIL_VARIABLES,
+    Component: ApplicationApprovedEmail,
   },
   {
     id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}offer-updated-email`,
@@ -123,6 +136,9 @@ export function renderBuiltinReactTemplateHtml(
   }
   if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}application-approval-email`) {
     return renderApplicationApprovalEmailHtml(values as TemplateValues);
+  }
+  if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}application-approved-email`) {
+    return renderApplicationApprovedEmailHtml(values as TemplateValues);
   }
   if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}offer-updated-email`) {
     return renderOfferUpdatedEmailHtml(values as TemplateValues);

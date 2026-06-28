@@ -17,7 +17,7 @@ export interface User {
   firstName: string;
   lastName: string;
   email: string;
-  role: "AGENT" | "ADMIN" | "UNDERWRITER" | "FINAL_UNDERWRITER" | string;
+  role: "AGENT" | "ADMIN" | "SCRUBBING" | "UNDERWRITER" | string;
 }
 
 export interface Application {

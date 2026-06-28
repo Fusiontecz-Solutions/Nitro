@@ -9,7 +9,6 @@ import {
   LayoutGrid,
   LayoutList,
   Loader2,
-  Check,
   FileInput,
   CircleDollarSign,
   Landmark,
@@ -56,7 +55,7 @@ import {
   getRecentMonthShortLabelsET,
 } from "@/lib/utils";
 import { axiosGet } from "@/redux/axios";
-import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY } from "@/constants/operationsDashboardApplications";
+import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY, operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import type { Application } from "@/types/applicationTypes";
@@ -95,11 +94,10 @@ type PaymentTrendPoint = {
 
 const caseStageStatuses = [
   { label: "AGENT", value: "Agent" },
+  { label: "SCRUBBING", value: "Scrubbing" },
   { label: "UNDERWRITER", value: "Underwriter" },
-  { label: "FINAL UNDERWRITER", value: "Final Underwriter" },
   { label: "Contract Signed", value: "Contract Signed" },
-  { label: "FINAL", value: "Final" },
-  { label: "FUNDING CALL", value: "Funding Call" },
+  { label: "FINALS & FUNDING CALL", value: "Finals_And_Funding_Call" },
 ] as const;
 
 type MonthlyTrendApiRow = {
@@ -128,10 +126,10 @@ const getRecentCaseQueueBadgeClass = (queueLabel: string) => {
   }
   if (
     n === "underwriting" ||
-    n === "underwriter" ||
+    n === "scrubbing" ||
     n === "review" ||
     n === "final review" ||
-    n === "final underwriter" ||
+    n === "final scrubbing" ||
     n === "final" ||
     n === "funding call"
   ) {
@@ -335,11 +333,13 @@ export const OperationsDashboard = () => {
         operationsStatus: "Contract_Signed",
       },
       {
-        label: "Funding Call",
-        value: summaryCounts.fundingCall,
+        label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
+        value:
+          summaryCounts.fundingCall +
+          (caseStageCounts.Final ?? 0),
         helper: "Total Amount",
-      icon: <PhoneCall className="w-6 h-6 text-red-500" />,
-        operationsStatus: "Funding Call",
+        icon: <PhoneCall className="w-6 h-6 text-red-500" />,
+        operationsStatus: "Finals_And_Funding_Call",
       },
       {
         label: "Disbursment",
@@ -356,7 +356,7 @@ export const OperationsDashboard = () => {
         operationsStatus: "Funded",
       },
     ],
-    [summaryCounts],
+    [summaryCounts, caseStageCounts.Final],
   );
 
   /** Ops works post-signature only — hide Contract Pending / Contract Out queue cards. */
@@ -373,18 +373,18 @@ export const OperationsDashboard = () => {
   const superAdminPipelineCards: SummaryCard[] = useMemo(
     () => [
       {
-        label: "Underwriter",
-        value: caseStageCounts.Underwriter ?? 0,
+        label: "Scrubbing",
+        value: caseStageCounts.Scrubbing ?? 0,
         helper: "In underwriting review",
         icon: <Search className="h-6 w-6 text-[var(--brand)]" />,
-        operationsStatus: "Underwriter",
+        operationsStatus: "Scrubbing",
       },
       {
-        label: "Final Underwriter",
-        value: caseStageCounts["Final Underwriter"] ?? 0,
+        label: "Underwriter",
+        value: caseStageCounts["Underwriter"] ?? 0,
         helper: "Final underwriting stage",
         icon: <ShieldCheck className="h-6 w-6 text-[#1E88E5]" />,
-        operationsStatus: "Final Underwriter",
+        operationsStatus: "Underwriter",
       },
       {
         label: "Contract Pending",
@@ -408,18 +408,13 @@ export const OperationsDashboard = () => {
         operationsStatus: "Contract_Signed",
       },
       {
-        label: "Final",
-        value: caseStageCounts.Final ?? 0,
-        helper: "Final stage before funding",
-        icon: <Check className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />,
-        operationsStatus: "Final",
-      },
-      {
-        label: "Funding call",
-        value: caseStageCounts["Funding Call"] ?? summaryCounts.fundingCall ?? 0,
-        helper: "Funding call queue",
+        label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
+        value:
+          (caseStageCounts.Final ?? 0) +
+          (caseStageCounts["Funding Call"] ?? summaryCounts.fundingCall ?? 0),
+        helper: "Final review and funding call queue",
         icon: <PhoneCall className="h-6 w-6 text-[#7C3AED]" />,
-        operationsStatus: "Funding Call",
+        operationsStatus: "Finals_And_Funding_Call",
       },
       {
         label: "Disbursement",
@@ -484,12 +479,17 @@ export const OperationsDashboard = () => {
       switch (card.operationsStatus) {
         case "Agent":
           return caseStageAmounts.Agent ?? 0;
+        case "Scrubbing":
+          return caseStageAmounts.Scrubbing ?? 0;
         case "Underwriter":
-          return caseStageAmounts.Underwriter ?? 0;
-        case "Final Underwriter":
-          return caseStageAmounts["Final Underwriter"] ?? 0;
+          return caseStageAmounts["Underwriter"] ?? 0;
         case "Final":
           return caseStageAmounts.Final ?? 0;
+        case "Finals_And_Funding_Call":
+          return (
+            (caseStageAmounts.Final ?? 0) +
+            (summaryAmounts.fundingCall ?? caseStageAmounts["Funding Call"] ?? 0)
+          );
         case "Contract_Pending":
           return summaryAmounts.contractPending ?? caseStageAmounts.Contract_Pending ?? 0;
         case "Contract_Out":
@@ -560,11 +560,18 @@ export const OperationsDashboard = () => {
         const useSignedForContractBar =
           (isSuperAdmin || isOperationsUser) &&
           status.value === "Contract Signed";
+        const mergedFinalsAndFundingCall =
+          status.value === "Finals_And_Funding_Call"
+            ? (caseStageCounts.Final ?? 0) +
+              (caseStageCounts["Funding Call"] ?? 0)
+            : null;
         return {
           label: status.label,
           cases: useSignedForContractBar
             ? summaryCounts.signedContracts ?? 0
-            : (caseStageCounts[status.value] ?? 0),
+            : mergedFinalsAndFundingCall != null
+              ? mergedFinalsAndFundingCall
+              : (caseStageCounts[status.value] ?? 0),
         };
       }),
     [

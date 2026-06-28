@@ -186,6 +186,10 @@ import {
     syncContractSignerRowsToCrm,
 } from "./contractdata/contractSignerOwnersSync";
 import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
+import {
+    isApplicationUuid,
+    resolvePrismaApplicationUuid,
+} from "@/lib/paymentDealApplicationId";
 import { resolveDocuSignSenderReturnUrl } from "./contractdata/resolveDocuSignSenderReturnUrl";
 import {
     getTemplateRoleEmailFromRow,
@@ -1030,7 +1034,7 @@ const PDFViewerModal = ({
     ).toUpperCase();
     const canRequestDocumentsFromContract =
         Boolean(onPrepareDocuSignDraft) &&
-        ["UNDERWRITER", "FINAL_UNDERWRITER", "SUPER_ADMIN", "OPERATIONS"].includes(userRole);
+        ["SCRUBBING", "UNDERWRITER", "SUPER_ADMIN", "OPERATIONS"].includes(userRole);
     const [requestDocumentsModalOpen, setRequestDocumentsModalOpen] = useState(false);
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccEmailDraft, setCcEmailDraft] = useState("");
@@ -1659,10 +1663,13 @@ const PDFViewerModal = ({
     });
 
     const applicationIdForLookup = useMemo(() => {
+        const fromData = resolvePrismaApplicationUuid(
+            applicationData as { id?: unknown; _id?: unknown } | undefined,
+        );
+        if (fromData) return fromData;
         const fromProp = applicationId?.trim();
-        if (fromProp) return fromProp;
-        const d = applicationData as { _id?: string; id?: string } | undefined;
-        return String(d?._id ?? d?.id ?? "").trim() || null;
+        if (fromProp && isApplicationUuid(fromProp)) return fromProp;
+        return null;
     }, [applicationId, applicationData]);
 
     const businessApplicationId = useMemo(() => {

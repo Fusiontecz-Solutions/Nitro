@@ -46,9 +46,9 @@ const schema = yup.object().shape({
 interface AddUserModalProps {
   open: boolean;
   onClose: () => void;
-  /** Role id (e.g. AGENT, UNDERWRITER). Used for API and Redux byRole. */
+  /** Role id (e.g. AGENT, SCRUBBING). Used for API and Redux byRole. */
   role: string;
-  /** Display name for the role (e.g. "Agent", "Underwriter"). */
+  /** Display name for the role (e.g. "Agent", "Scrubbing"). */
   roleName?: string;
   onSuccess?: () => void;
   /** When true, request includes `createSyndicatorProfile: true` on create-user (optional; syndicator profiles are created by default). */

@@ -254,7 +254,7 @@ const ComplianceChecksQuestionnaire = ({
                           /\b\w/g,
                           (l) => l.toUpperCase(),
                       )
-                    : "Underwriter";
+                    : "Scrubbing";
 
             const question = questions.find(
                 (q) => q.id === questionId || q.question === questionId,

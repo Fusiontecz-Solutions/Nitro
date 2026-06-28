@@ -32,8 +32,8 @@
 // import type { AppDispatch, RootState } from '@/redux/store';
 // import type { User } from '@/types/userTypes';
 
-// const ROLE_ID = 'FINAL_UNDERWRITER';
-// const LABEL = 'Final Underwriter';
+// const ROLE_ID = 'UNDERWRITER';
+// const LABEL = 'Underwriter';
 // const LABEL_PLURAL = 'Final Underwriters';
 
 // function formatDate(dateStr: string | undefined): string {
@@ -438,10 +438,9 @@ import { useNavigate } from 'react-router';
 import { formatDate as formatDateUtil } from "@/lib/utils";
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from '@/utils/formatPhoneNumber';
 
-const ROLE_ID = 'FINAL_UNDERWRITER';
-const LABEL = 'Final Underwriter';
-// const LABEL_PLURAL = 'Final Underwriters';
-const LABEL_PLURAL = 'Final Underwriters';
+const ROLE_ID = 'UNDERWRITER';
+const LABEL = 'Underwriter';
+const LABEL_PLURAL = 'Underwriters';
 
 function formatDate(dateStr: string | undefined): string {
   return formatDateUtil(dateStr ?? "", "—");
@@ -518,7 +517,7 @@ export default function FinalUnderwritersDashboard() {
       localStorage.setItem("user", JSON.stringify(user));
       localStorage.setItem("role", user.role);
 
-      toast.success("Logged in as Final Underwriter");
+      toast.success("Logged in as Underwriter");
 
       navigate("/");
 
@@ -865,7 +864,7 @@ export default function FinalUnderwritersDashboard() {
         </div>
       </section>
 
-      {/* Add Final Underwriter Modal */}
+      {/* Add Underwriter Modal */}
       <Dialog
         open={addModalOpen}
         onOpenChange={(o: boolean) => !o && setAddModalOpen(false)}
@@ -927,7 +926,7 @@ export default function FinalUnderwritersDashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Final Underwriter Modal */}
+      {/* Edit Underwriter Modal */}
       <Dialog
         open={!!editUser}
         onOpenChange={(o: boolean) => !o && setEditUser(null)}

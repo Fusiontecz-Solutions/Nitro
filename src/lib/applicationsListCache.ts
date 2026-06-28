@@ -9,6 +9,8 @@ import {
   idbGetAllInNamespace,
   idbSet,
 } from "@/lib/persistentCache/idbStore";
+import { invalidateApplicationsListQueries } from "@/lib/applicationsListQuerySync";
+import { invalidateUnderwriterPipelineCounts } from "@/lib/underwriterPipelineCounts";
 
 const TTL_MS = 60_000;
 const MAX_ENTRIES = 40;
@@ -82,6 +84,7 @@ export function applicationsListParamsCacheKey(
     sortOrder: params.sortOrder ?? "",
     lite: params.lite ? "1" : "",
     underwriterClaim: params.underwriterClaim ?? "",
+    underwriterPipeline: params.underwriterPipeline ?? "",
   };
   return JSON.stringify(p);
 }
@@ -112,6 +115,9 @@ export function buildApplicationsListUrl(
   if (params.lite) queryParams.append("lite", "1");
   if (params.underwriterClaim) {
     queryParams.append("underwriterClaim", params.underwriterClaim);
+  }
+  if (params.underwriterPipeline) {
+    queryParams.append("underwriterPipeline", params.underwriterPipeline);
   }
   const q = queryParams.toString();
   return `/applications${q ? `?${q}` : ""}`;
@@ -180,6 +186,8 @@ export function coalesceApplicationsListFetch(
 export function invalidateApplicationsListCache() {
   cache.clear();
   void idbClearNamespace(IDB_NAMESPACE);
+  invalidateApplicationsListQueries();
+  invalidateUnderwriterPipelineCounts();
 }
 
 /**

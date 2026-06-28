@@ -27,14 +27,24 @@ export const ZERO_BALANCE_LETTER_VARIABLES: TemplateVariable[] = [
     placeholder: "1234567890",
   },
   {
+    key: "account_name",
+    label: "Account Name (Business Name)",
+    placeholder: "Acme LLC",
+  },
+  {
     key: "salutation_name",
     label: "Salutation Name",
     placeholder: "John Doe",
   },
   {
+    key: "funding_amount",
+    label: "Funding Amount",
+    placeholder: "$50,000.00",
+  },
+  {
     key: "account_status",
     label: "Account Status",
-    placeholder: "Zero Balance",
+    placeholder: "Paid in Full",
   },
   { key: "sender_name", label: "Sender Name", placeholder: "Your Name" },
 ];
@@ -54,6 +64,7 @@ export default function ZeroBalanceLetter({ values }: TemplateComponentProps) {
   const recipientName = pick(values, v.recipient_name);
   const recipientAddress1 = pick(values, v.recipient_address_line1);
   const recipientAddress2 = pick(values, v.recipient_address_line2);
+  const accountName = pick(values, v.account_name);
   const salutationName = pick(values, v.salutation_name);
   const accountStatus = pick(values, v.account_status);
 
@@ -84,7 +95,7 @@ export default function ZeroBalanceLetter({ values }: TemplateComponentProps) {
               {recipientAddress2}
             </div>
             <p style={{ margin: "0 0 20px", fontWeight: "bold", color: "#132238" }}>
-              Re: Account Ending in ****
+              Re: {accountName}
             </p>
             <p style={{ margin: "0 0 14px" }}>Dear {salutationName},</p>
             <p style={{ margin: "0 0 24px", color: "#4a5568", textAlign: "justify" }}>
