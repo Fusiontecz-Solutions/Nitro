@@ -43,6 +43,7 @@ type BackgroundCheckItemCardProps = {
   onOptionalToggle?: () => void;
   onAttachmentSelect?: (attachment: BackgroundCheckAttachment) => void;
   onAttachmentRemove?: () => void;
+  belowNotes?: ReactNode;
   children?: ReactNode;
 };
 
@@ -69,6 +70,7 @@ export default function BackgroundCheckItemCard({
   onOptionalToggle,
   onAttachmentSelect,
   onAttachmentRemove,
+  belowNotes,
   children,
 }: BackgroundCheckItemCardProps) {
   const fileInputId = useId();
@@ -439,6 +441,8 @@ export default function BackgroundCheckItemCard({
           </div>
         </div>
       ) : null}
+
+      {belowNotes}
 
       {isSaved ? (
         <p className="mt-1 text-[10px] text-[#6B7280]">

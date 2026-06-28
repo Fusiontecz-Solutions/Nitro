@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Download, Eye, Loader2 } from "lucide-react";
 import { useDispatch, useSelector } from "react-redux";
 import { toast } from "react-toastify";
+import { Button } from "@/components/ui/button";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
   BACKGROUND_CHECK_RESOURCES,
@@ -8,6 +10,7 @@ import {
 } from "@/config/externalLinks";
 import BackgroundCheckItemCard from "@/components/application/BackgroundCheckItemCard";
 import BackgroundCheckSidebar from "@/components/application/BackgroundCheckSidebar";
+import NyCourtEvidenceSections from "@/components/application/NyCourtEvidenceSections";
 import DataMerchPanel from "@/components/application/DataMerchPanel";
 import {
   backgroundCheckPdfFilename,
@@ -354,11 +357,53 @@ export default function BackgroundCheckTab() {
               .join(" · ")}
           </p>
         </div>
-        {savedAt ? (
-          <span className="rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs font-semibold text-green-700">
-            Saved
-          </span>
-        ) : null}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {savedAt ? (
+            <span className="rounded-full border border-green-200 bg-green-50 px-3 py-1 text-xs font-semibold text-green-700">
+              Saved
+            </span>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9"
+            disabled={saving || downloadingPdf || viewingPdf}
+            onClick={() => void handleViewPdf()}
+          >
+            {viewingPdf ? (
+              <>
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden />
+                Opening…
+              </>
+            ) : (
+              <>
+                <Eye className="mr-1.5 h-4 w-4" aria-hidden />
+                View PDF
+              </>
+            )}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9"
+            disabled={saving || downloadingPdf || viewingPdf}
+            onClick={() => void handleDownloadPdf()}
+          >
+            {downloadingPdf ? (
+              <>
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden />
+                Preparing…
+              </>
+            ) : (
+              <>
+                <Download className="mr-1.5 h-4 w-4" aria-hidden />
+                Download PDF
+              </>
+            )}
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start">
@@ -366,6 +411,7 @@ export default function BackgroundCheckTab() {
           {BACKGROUND_CHECK_RESOURCES.map((resource) => {
             const state = checks[resource.id] ?? { notes: "", optional: false };
             const isDataMerch = resource.isApi === true;
+            const isNyCourt = resource.id === "nyscef";
 
             return (
               <BackgroundCheckItemCard
@@ -416,6 +462,18 @@ export default function BackgroundCheckTab() {
                     attachmentPublicId: undefined,
                   })
                 }
+                belowNotes={
+                  isNyCourt ? (
+                    <NyCourtEvidenceSections
+                      judgements={state.judgements ?? []}
+                      liens={state.liens ?? []}
+                      onJudgementsChange={(judgements) =>
+                        markCheckDirty(resource.id, { judgements })
+                      }
+                      onLiensChange={(liens) => markCheckDirty(resource.id, { liens })}
+                    />
+                  ) : undefined
+                }
               >
                 {isDataMerch ? <DataMerchPanel manualSearch embedded /> : null}
               </BackgroundCheckItemCard>
@@ -444,6 +502,7 @@ export default function BackgroundCheckTab() {
         onClose={handleClosePdfPreview}
         fileUrl={pdfPreviewUrl}
         fileName={pdfPreviewName}
+        showPrintButton
       />
     </div>
   );

@@ -420,14 +420,6 @@ export default function DataMerchPanel({
     });
   };
 
-  const usedKeywordFallback = useMemo(() => {
-    if (!result?.businessName || !result.searchQuery) return false;
-    return (
-      result.searchType === "name" &&
-      result.businessName.trim().toLowerCase() !== result.searchQuery.trim().toLowerCase()
-    );
-  }, [result]);
-
   const totalRecords = useMemo(
     () =>
       (result?.merchants ?? []).reduce(
@@ -538,11 +530,10 @@ export default function DataMerchPanel({
                   </p>
                   {resultsExpanded ? (
                     <p className="mt-0.5">
-                      Matched using {result.searchType === "ein" ? "EIN" : "keywords"}:{" "}
+                      Matched using {result.searchType === "ein" ? "EIN" : "business name"}:{" "}
                       {result.searchType === "ein"
                         ? formatEinDisplay(result.searchQuery)
                         : result.searchQuery}
-                      {usedKeywordFallback ? <> (deal name: {result.businessName})</> : null}
                     </p>
                   ) : (
                     <p className="mt-0.5 opacity-80">Click to expand results</p>
@@ -555,10 +546,7 @@ export default function DataMerchPanel({
                     <p className="mt-0.5">
                       {result.searchType === "ein"
                         ? `Searched by EIN ${formatEinDisplay(result.searchQuery)}`
-                        : `No matches for deal name "${result.businessName ?? result.searchQuery}"`}
-                      {result.searchAttempts && result.searchAttempts.length > 1 ? (
-                        <> (also tried: {result.searchAttempts.slice(1).join(", ")})</>
-                      ) : null}
+                        : `No exact match for business name "${result.businessName ?? result.searchQuery}"`}
                     </p>
                   ) : (
                     <p className="mt-0.5 opacity-80">Click to expand details</p>

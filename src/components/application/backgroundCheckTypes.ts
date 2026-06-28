@@ -15,6 +15,15 @@ export type BackgroundCheckNoteImage = {
   publicId?: string;
 };
 
+/** Screenshot upload or external link attached to NY Court judgements / liens. */
+export type BackgroundCheckEvidenceItem = {
+  id: string;
+  kind: "link" | "image";
+  url: string;
+  name: string;
+  publicId?: string;
+};
+
 export type BackgroundCheckItemState = {
   notes: string;
   status?: BackgroundCheckStatus;
@@ -24,6 +33,10 @@ export type BackgroundCheckItemState = {
   attachmentUrl?: string;
   attachmentPublicId?: string;
   noteImages?: BackgroundCheckNoteImage[];
+  /** NY Court — civil judgment evidence (screenshots or links). */
+  judgements?: BackgroundCheckEvidenceItem[];
+  /** NY Court — lien evidence (screenshots or links). */
+  liens?: BackgroundCheckEvidenceItem[];
   savedAt?: string;
   linkOpenedAt?: string;
 };
@@ -45,15 +58,11 @@ export function normalizeBackgroundCheckStatus(
   return undefined;
 }
 
-export function isBackgroundCheckCompleted(
-  status?: string | null,
-): boolean {
+export function isBackgroundCheckCompleted(status?: string | null): boolean {
   return normalizeBackgroundCheckStatus(status) === "completed";
 }
 
-export function isBackgroundCheckPending(
-  status?: string | null,
-): boolean {
+export function isBackgroundCheckPending(status?: string | null): boolean {
   const normalized = normalizeBackgroundCheckStatus(status);
   return normalized == null || normalized === "pending";
 }

@@ -8,7 +8,7 @@ import {
   isBackgroundCheckPending,
 } from "./backgroundCheckTypes";
 
-type BackgroundCheckSidebarProps = {
+export type BackgroundCheckSidebarProps = {
   merchantName: string;
   checkIds: string[];
   checks: BackgroundCheckFormState;
