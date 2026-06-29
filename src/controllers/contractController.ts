@@ -1,6 +1,5 @@
 ﻿import type { Request, Response } from 'express';
 import contractService from '../services/contractService';
-import backgroundCheckService from '../services/backgroundCheckService';
 
 class ContractController {
   async createContract(req: Request, res: Response) {
@@ -28,18 +27,6 @@ class ContractController {
           success: false,
           message: 'Provide applicationId, or explicitly provide offerId + createdById',
         });
-      }
-
-      // Gate: a contract can only be created once the deal's background check is Approved.
-      if (applicationId) {
-        const eligible = await backgroundCheckService.isContractEligible(String(applicationId));
-        if (!eligible) {
-          return res.status(403).json({
-            success: false,
-            code: 'BACKGROUND_CHECK_NOT_APPROVED',
-            message: 'Background check must be approved before a contract can be created.',
-          });
-        }
       }
 
       const data = await contractService.createContract({
