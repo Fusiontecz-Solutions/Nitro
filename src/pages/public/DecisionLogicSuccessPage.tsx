@@ -15,7 +15,7 @@ export default function DecisionLogicSuccessPage() {
   const [searchParams] = useSearchParams();
   const businessOwnerId = useMemo(
     () => Number(searchParams.get("businessOwnerId") ?? 0),
-    [searchParams]
+    [searchParams],
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -81,4 +81,3 @@ export default function DecisionLogicSuccessPage() {
     </div>
   );
 }
-
