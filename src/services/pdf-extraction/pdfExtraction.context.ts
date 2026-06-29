@@ -45,24 +45,19 @@ function createClaudeService(): PdfExtractionServiceLike {
   return new ClaudePdfExtractionService(buildEnvConfigService() as ConfigService);
 }
 
-/** Claude by default; set PDF_EXTRACTION_PROVIDER=documentai only if you use Google Document AI. */
-export function getPdfExtractionService(): PdfExtractionServiceLike {
-  if (singleton) {
-    return singleton;
-  }
-
-  let service: PdfExtractionServiceLike;
+function buildPdfExtractionService(): PdfExtractionServiceLike {
   if (readProvider() === 'documentai') {
-    // Optional — not used unless explicitly enabled in env.
+    // Optional — only when PDF_EXTRACTION_PROVIDER=documentai
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { DocumentAiPdfExtractionService } = require('../document-ai/documentAiPdfExtraction.service');
-    service = new DocumentAiPdfExtractionService();
-  } else {
-    service = createClaudeService();
+    return new DocumentAiPdfExtractionService();
   }
+  return createClaudeService();
+}
 
-  singleton = service;
-  return service;
+/** Claude by default; set PDF_EXTRACTION_PROVIDER=documentai only if you use Google Document AI. */
+export function getPdfExtractionService(): PdfExtractionServiceLike {
+  return (singleton ??= buildPdfExtractionService());
 }
 
 /** Always returns Claude extraction (ignores PDF_EXTRACTION_PROVIDER). */
