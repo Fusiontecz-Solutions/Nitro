@@ -306,21 +306,11 @@ export default function ContractTab({
         (state: RootState) => state.offerDecision,
     );
     const { data: loginData } = useSelector((state: RootState) => state.login);
-    const backgroundCheckStatus = useSelector(
-        (state: RootState) => state.backgroundCheck.data?.status,
-    );
-    const backgroundCheckBlocksContract = Boolean(
-        backgroundCheckStatus && backgroundCheckStatus !== "APPROVED",
-    );
     const userRoleRaw =
         (loginData as any)?.user?.role ||
         (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
         "";
     const roleKey = String(userRoleRaw || "").replace(/-/g, "_").toUpperCase();
-    const isSuperAdmin = roleKey === "SUPER_ADMIN";
-    const backgroundCheckContractBlockMessage = isSuperAdmin
-        ? "Background check must be approved before a contract can be created. Complete it on the Background Check tab."
-        : "Background check must be approved by a Super Admin before a contract can be created.";
     const { data: bankDetailsList } = useSelector(
         (state: RootState) => state.bankDetails,
     );
@@ -1479,11 +1469,6 @@ export default function ContractTab({
             toast.error(
                 "No contract template uploaded. Please upload it from the Underwriter dashboard.",
             );
-            return;
-        }
-
-        if (backgroundCheckBlocksContract) {
-            toast.error(backgroundCheckContractBlockMessage);
             return;
         }
 
@@ -2664,15 +2649,7 @@ export default function ContractTab({
                             type="button"
                             variant="default"
                             onClick={handleGenerateContract}
-                            disabled={
-                                creatingEnvelope ||
-                                (!isReadOnly && !hasGeneratedContract && backgroundCheckBlocksContract)
-                            }
-                            title={
-                                !isReadOnly && !hasGeneratedContract && backgroundCheckBlocksContract
-                                    ? backgroundCheckContractBlockMessage
-                                    : undefined
-                            }
+                            disabled={creatingEnvelope}
                             className="h-10 px-6 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
 
 

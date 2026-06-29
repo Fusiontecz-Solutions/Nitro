@@ -75,7 +75,11 @@ const resolveUserLiteId = (user?: ApplicationUserLite | null): string => {
     return String(user.id ?? user._id ?? "").trim();
 };
 
-/** Prefer the deal's assigned/claimed underwriter when approval was recorded by an admin actor. */
+/**
+ * Resolve the underwriter to credit on the deal. Always prefer the deal's
+ * assigned/claimed underwriter over whoever recorded the approval (which can be
+ * a scrubber/admin acting on the underwriter's behalf).
+ */
 export function resolveApprovingUnderwriter(
     app: UnderwriterApprovalAppFields,
 ): { id: string; user?: ApplicationUserLite | null } | null {
@@ -89,20 +93,14 @@ export function resolveApprovingUnderwriter(
         app.claimedByUnderwriterId ?? resolveUserLiteId(app.claimedByUnderwriter) ?? "",
     ).trim();
 
-    if (assignedId && approvedId && assignedId !== approvedId) {
-        return { id: assignedId, user: app.assignedUnderwriter };
-    }
-    if (claimedId && approvedId && claimedId !== approvedId) {
-        return { id: claimedId, user: app.claimedByUnderwriter };
-    }
-    if (approvedId) {
-        return { id: approvedId, user: app.approvedByUnderwriter };
-    }
     if (assignedId) {
         return { id: assignedId, user: app.assignedUnderwriter };
     }
     if (claimedId) {
         return { id: claimedId, user: app.claimedByUnderwriter };
+    }
+    if (approvedId) {
+        return { id: approvedId, user: app.approvedByUnderwriter };
     }
     return null;
 }

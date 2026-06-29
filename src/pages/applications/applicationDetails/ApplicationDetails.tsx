@@ -15,8 +15,6 @@ import BankAnalysis from "@/components/application/BankAnalysis";
 import ChecksAndDecision from "@/components/application/ChecksAndDecision";
 import SendApplicationToUnderwriter from "@/components/application/SendApplicationToUnderwriter";
 import ContractTab from "@/components/application/ContractTab";
-import { getBackgroundCheck } from "@/redux/actions/backgroundCheckActions";
-import { clearBackgroundCheck } from "@/redux/slices/backgroundCheckSlice";
 import ComplianceChecks from "@/components/application/ComplianceChecks";
 import DecisionMakeFinalValues from "@/components/application/DecisionMakeFinalValues";
 import EligibilityAnalysis from "@/components/application/EligibilityAnalysis";
@@ -65,7 +63,7 @@ import { useTabAccess } from "@/hooks/useTabAccess.ts";
 import FinalUnderwriterApplicationSummary from "@/components/application/FinalUnderwriterApplicationSummary";
 import ApplicationSheetActivityLog from "@/components/application/ApplicationSheetActivityLog";
 import ApplicationSheetMailLog from "@/components/application/ApplicationSheetMailLog";
-import { ChevronLeft, ChevronRight, ScrollText, Mail, ShieldAlert } from "lucide-react";
+import { ChevronLeft, ChevronRight, ScrollText, Mail } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
@@ -98,7 +96,6 @@ const ApplicationDetails = () => {
         data: applicationData,
         error: applicationDetailError,
     } = useSelector((state: RootState) => state.applicationDetail);
-    const backgroundCheckStatus = useSelector((state: RootState) => state.backgroundCheck.data?.status);
     const applicationsListRows = useSelector(
         (state: RootState) => state.applications.data,
     );
@@ -144,9 +141,6 @@ const ApplicationDetails = () => {
     const userRole = resolveEffectiveRole(user);
     const roleKey = normalizeRoleKey(userRole);
     const isSuperAdmin = roleKey === "SUPER_ADMIN";
-    const backgroundCheckContractGateMessage = isSuperAdmin
-        ? "The background check must be Approved before a contract can be created or sent. Complete it on the Background Check tab."
-        : "The background check must be approved by a Super Admin before a contract can be created or sent.";
     const isUnderwriter = roleKey === 'SCRUBBING' || roleKey === 'UNDERWRITER';
     const isPlainUnderwriter = roleKey === 'SCRUBBING';
     const isFinalUnderwriter = roleKey === 'UNDERWRITER';
@@ -743,16 +737,6 @@ const ApplicationDetails = () => {
         }
     }, [applicationId, applicationsListRows, dispatch, location.state]);
 
-    // Prefetch background-check status so the Contract tab banner works before opening that tab.
-    useEffect(() => {
-        const appId = applicationUuid != null ? String(applicationUuid) : "";
-        if (!appId) return;
-        void dispatch(getBackgroundCheck(appId));
-        return () => {
-            dispatch(clearBackgroundCheck());
-        };
-    }, [applicationUuid, dispatch]);
-
     const handleSendToUnderwriter = async () => {
         if (!queueUpdateApplicationRef) {
             toast.error("Application ID is missing. Please refresh the page and try again.");
@@ -951,12 +935,6 @@ const ApplicationDetails = () => {
                                     </div>
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
-                                    {backgroundCheckStatus && backgroundCheckStatus !== "APPROVED" ? (
-                                        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-300">
-                                            <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" />
-                                            <span>{backgroundCheckContractGateMessage}</span>
-                                        </div>
-                                    ) : null}
                                     <ContractTab readOnly />
                                 </LazyTabContent>
                             </>
@@ -1125,12 +1103,6 @@ const ApplicationDetails = () => {
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
-                                    {backgroundCheckStatus && backgroundCheckStatus !== "APPROVED" ? (
-                                        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-300">
-                                            <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" />
-                                            <span>{backgroundCheckContractGateMessage}</span>
-                                        </div>
-                                    ) : null}
                                     <ContractTab readOnly={isAgent || isViewOnlyBrowse} />
                             </LazyTabContent>
 
