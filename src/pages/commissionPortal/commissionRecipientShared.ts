@@ -42,20 +42,61 @@ export function getStoredCommissionPctForRecipient(
     recipient: CommissionRecipientType,
 ): number | null {
     const r = app as Record<string, unknown>;
-    const key =
-        recipient === 'underwriter'
-            ? 'underwriterCommissionPercentage'
-            : 'commissionPercentage';
-    const raw = r?.[key];
-    if (raw == null || raw === '') return null;
-    const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/[^0-9.-]+/g, ''));
+    if (recipient === 'underwriter') {
+        const raw = r?.underwriterCommissionPercentage;
+        if (raw == null || raw === '') return null;
+        const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/[^0-9.-]+/g, ''));
+        return Number.isFinite(n) ? n : null;
+    }
+    const brokerRaw = r?.brokerCommissionPercentage;
+    if (brokerRaw != null && brokerRaw !== '') {
+        const n =
+            typeof brokerRaw === 'number'
+                ? brokerRaw
+                : Number(String(brokerRaw).replace(/[^0-9.-]+/g, ''));
+        if (Number.isFinite(n)) return n;
+    }
+    const legacyRaw = r?.commissionPercentage;
+    if (legacyRaw == null || legacyRaw === '') return null;
+    const n =
+        typeof legacyRaw === 'number'
+            ? legacyRaw
+            : Number(String(legacyRaw).replace(/[^0-9.-]+/g, ''));
+    return Number.isFinite(n) ? n : null;
+}
+
+export function getStoredCommissionAmountForRecipient(
+    app: unknown,
+    recipient: CommissionRecipientType,
+): number | null {
+    const r = app as Record<string, unknown>;
+    if (recipient === 'underwriter') {
+        const raw = r?.underwriterCommissionAmount;
+        if (raw == null || raw === '') return null;
+        const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/[^0-9.-]+/g, ''));
+        return Number.isFinite(n) ? n : null;
+    }
+    const brokerRaw = r?.brokerCommissionAmount;
+    if (brokerRaw != null && brokerRaw !== '') {
+        const n =
+            typeof brokerRaw === 'number'
+                ? brokerRaw
+                : Number(String(brokerRaw).replace(/[^0-9.-]+/g, ''));
+        if (Number.isFinite(n)) return n;
+    }
+    const legacyRaw = r?.commissionAmount;
+    if (legacyRaw == null || legacyRaw === '') return null;
+    const n =
+        typeof legacyRaw === 'number'
+            ? legacyRaw
+            : Number(String(legacyRaw).replace(/[^0-9.-]+/g, ''));
     return Number.isFinite(n) ? n : null;
 }
 
 export function commissionPctPayloadField(
     recipient: CommissionRecipientType,
-): 'commissionPercentage' | 'underwriterCommissionPercentage' {
+): 'brokerCommissionPercentage' | 'underwriterCommissionPercentage' {
     return recipient === 'underwriter'
         ? 'underwriterCommissionPercentage'
-        : 'commissionPercentage';
+        : 'brokerCommissionPercentage';
 }

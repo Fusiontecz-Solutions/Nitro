@@ -45,11 +45,9 @@ import type { Application, GetApplicationsParams } from "@/types/applicationType
 import {
   type ColumnDef,
   type SortingState,
-  type ColumnFiltersState,
   type VisibilityState,
   type PaginationState,
   getCoreRowModel,
-  getFilteredRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import { DataTableContent, DataTablePagination, DataTableSortHeader } from "@/components/DataTable";
@@ -107,6 +105,13 @@ import { shouldPrefetchOpsDashboardSummary } from "@/lib/shellPrefetchRoutes";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
 import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
 import {
+  formatScrubberClaimLabel,
+  formatUnderwriterClaimLabel,
+  canViewApplicationClaimAssignments,
+  canViewApplicationApprovedAmount,
+  mapUsersToClaimFilterOptions,
+} from "@/lib/applicationClaimLabel";
+import {
   downloadFailedBulkUploadRows,
   type BulkImportRowError,
 } from "@/lib/bulkUploadErrors";
@@ -119,6 +124,8 @@ import { resolveApplicationRequestAmount } from "@/lib/applicationLoanAmount";
 import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
 import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
 import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
+import { ApplicationClaimUserFilterDropdown } from "@/components/application/ApplicationClaimUserFilterDropdown";
+import { fetchUsersByRole } from "@/redux/actions/settingsUserActions";
 import {
   normalizeRoleKey,
   resolveEffectiveRole,
@@ -131,30 +138,6 @@ function getApplicationDealIdDisplay(app: Application): string {
   if (raw) return raw;
   if (app.applicationId != null) return String(app.applicationId);
   return "-";
-}
-
-function formatApplicationUserDisplayName(
-  user: Application["claimedByUnderwriter"],
-): string {
-  if (!user || typeof user !== "object") return "";
-  const fn = (user.firstName ?? "").trim();
-  const ln = (user.lastName ?? "").trim();
-  const full = [fn, ln].filter(Boolean).join(" ");
-  if (full) return full;
-  if (user.email?.trim()) return user.email.trim();
-  return "";
-}
-
-function formatScrubberClaimLabel(app: Application): string {
-  const name = formatApplicationUserDisplayName(app.claimedByUnderwriter);
-  if (app.claimedByUnderwriterId || name) return name || "—";
-  return "—";
-}
-
-function formatUnderwriterClaimLabel(app: Application): string {
-  const name = formatApplicationUserDisplayName(app.assignedUnderwriter);
-  if (app.assignedUnderwriterId || name) return name || "—";
-  return "—";
 }
 
 const APPLICATIONS_VIEW_MODE_STORAGE_KEY = "applicationsListViewMode";
@@ -192,11 +175,30 @@ const Applications = () => {
   const loginData = useSelector((state: RootState) => state.login.data);
   const loginUser = loginData?.user;
   const effectiveRoleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
-  /** Super Admin / Operations only — scrubbers and underwriters must not see colleagues' claims. */
-  const showClaimedByColumn =
-    effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS";
-  /** Super Admin / Operations — show approved offer amount alongside request amount. */
-  const showApprovedAmountColumn = showClaimedByColumn;
+  /** Super Admin / Operations — scrubbers and underwriters must not see colleagues' claims. */
+  const showClaimedByColumn = canViewApplicationClaimAssignments(effectiveRoleKey);
+  /** Ops/admin + Scrubbing/Underwriter — show approved offer amount alongside request amount. */
+  const showApprovedAmountColumn = canViewApplicationApprovedAmount(effectiveRoleKey);
+  const scrubbers = useSelector(
+    (state: RootState) => state.settingsUsers.byRole.SCRUBBING?.list ?? [],
+  );
+  const underwriters = useSelector(
+    (state: RootState) => state.settingsUsers.byRole.UNDERWRITER?.list ?? [],
+  );
+  const scrubberFilterOptions = useMemo(
+    () => mapUsersToClaimFilterOptions(scrubbers),
+    [scrubbers],
+  );
+  const underwriterFilterOptions = useMemo(
+    () => mapUsersToClaimFilterOptions(underwriters),
+    [underwriters],
+  );
+
+  useEffect(() => {
+    if (!showClaimedByColumn) return;
+    void dispatch(fetchUsersByRole("SCRUBBING"));
+    void dispatch(fetchUsersByRole("UNDERWRITER"));
+  }, [dispatch, showClaimedByColumn]);
 
   const getApplicationClientId = useCallback((application: Application): string | null => {
     const client = application?.client;
@@ -251,6 +253,8 @@ const Applications = () => {
   );
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [scrubberFilter, setScrubberFilter] = useState<string>("all");
+  const [underwriterFilter, setUnderwriterFilter] = useState<string>("all");
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
@@ -301,7 +305,6 @@ const Applications = () => {
   const [sorting, setSorting] = useState<SortingState>([
     { id: "createdAt", desc: true },
   ]);
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = useState({});
   const [expandedProgressRowId, setExpandedProgressRowId] = useState<
@@ -525,12 +528,6 @@ const Applications = () => {
     return formatDateTimeUSUtil(dateString ?? "", "-");
   }, []);
 
-  // Get client email helper
-  const getClientEmail = useCallback((client: Application["client"]) => {
-    if (typeof client === "string") return "-";
-    return client?.business?.email || client?.owner?.email || "-";
-  }, []);
-
   const getApplicationIsoLabel = useCallback((application: Application): string => {
     const iso = application.iso;
     if (!iso || typeof iso !== "object") return "-";
@@ -677,6 +674,7 @@ const Applications = () => {
   const columns: ColumnDef<Application>[] = useMemo(() => {
     const selectColumn: ColumnDef<Application> = {
       id: "select",
+      size: 48,
       header: ({ table }) => (
         <input
           type="checkbox"
@@ -708,6 +706,7 @@ const Applications = () => {
     const bodyColumns: ColumnDef<Application>[] = [
       {
         id: "dealId",
+        size: 100,
         accessorFn: (row) => getApplicationDealIdDisplay(row),
         enableSorting: true,
         header: ({ column }) => (
@@ -721,42 +720,21 @@ const Applications = () => {
       },
       {
         id: "businessName",
+        size: 260,
         accessorFn: (row) => getApplicationBusinessDisplayName(row),
         enableSorting: true,
         header: ({ column }) => (
           <DataTableSortHeader column={column} label="BUSINESS NAME" />
         ),
         cell: ({ row }) => (
-          <span className="text-foreground">
+          <span className="block truncate text-foreground" title={getApplicationBusinessDisplayName(row.original)}>
             {getApplicationBusinessDisplayName(row.original)}
           </span>
         ),
       },
       {
-        id: "email",
-        accessorFn: (row) => getClientEmail(row.client),
-        header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              EMAIL
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className=" h-3 w-3" />
-                    </Button> */}
-          </div>
-        ),
-        cell: ({ row }) => (
-          <span className="text-foreground">
-            {getClientEmail(row.original.client)}
-          </span>
-        ),
-      },
-      {
         id: "seeProgress",
+        size: 100,
         header: () => (
           <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
             Progress
@@ -806,13 +784,12 @@ const Applications = () => {
         : ([
           {
             id: "iso",
+            size: 150,
             accessorFn: (row) => getApplicationIsoLabel(row),
             header: () => (
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-foreground uppercase tracking-wide">
-                  ISO
-                </span>
-              </div>
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                ISO
+              </span>
             ),
             cell: ({ row }) => (
               <span className="text-foreground">
@@ -825,16 +802,17 @@ const Applications = () => {
         ? ([
           {
             id: "claimedByScrubber",
+            size: 180,
             header: () => (
-              <span className="font-medium text-foreground tracking-wide whitespace-nowrap">
-                 Scrubber
+              <span className="font-medium text-foreground tracking-wide">
+                  Scrubber
               </span>
             ),
             cell: ({ row }) => {
               const label = formatScrubberClaimLabel(row.original);
               return (
                 <span
-                  className="text-foreground text-sm whitespace-nowrap"
+                  className="block truncate text-foreground text-sm"
                   title={label}
                 >
                   {label}
@@ -845,16 +823,17 @@ const Applications = () => {
           },
           {
             id: "claimedByUnderwriter",
+            size: 180,
             header: () => (
-              <span className="font-medium text-foreground tracking-wide whitespace-nowrap">
-                Underwriter
+              <span className="font-medium text-foreground tracking-wide">
+                  Underwriter
               </span>
             ),
             cell: ({ row }) => {
               const label = formatUnderwriterClaimLabel(row.original);
               return (
                 <span
-                  className="text-foreground text-sm whitespace-nowrap"
+                  className="block truncate text-foreground text-sm"
                   title={label}
                 >
                   {label}
@@ -867,6 +846,7 @@ const Applications = () => {
         : []),
       {
         id: "loanAmount",
+        size: 160,
         accessorFn: (row) => resolveApplicationRequestAmount(row),
         enableSorting: true,
         header: ({ column }) => (
@@ -888,13 +868,12 @@ const Applications = () => {
         ? ([
           {
             id: "approvedAmount",
+            size: 170,
             accessorFn: (row) => getApplicationApprovedAmount(row),
             header: () => (
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-foreground uppercase tracking-wide">
-                  Approved Amount
-                </span>
-              </div>
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                Approved Amount
+              </span>
             ),
             cell: ({ row }) => {
               const approvedAmount = getApplicationApprovedAmount(row.original);
@@ -949,6 +928,7 @@ const Applications = () => {
       // },
       {
         id: "status",
+        size: 170,
         accessorFn: (row) =>
           getApplicationSummaryStatusLabel(row),
         enableSorting: true,
@@ -969,6 +949,7 @@ const Applications = () => {
       },
       {
         id: "createdAt",
+        size: 170,
         accessorKey: "createdAt",
         enableSorting: true,
         header: ({ column }) => (
@@ -982,6 +963,7 @@ const Applications = () => {
       },
       {
         id: "lastModifiedAt",
+        size: 170,
         accessorKey: "updatedAt",
         enableSorting: true,
         header: ({ column }) => (
@@ -997,6 +979,7 @@ const Applications = () => {
         ? ([
           {
             id: "uwClaim",
+            size: 110,
             header: () => (
               <span className="font-medium text-foreground uppercase tracking-wide">
                 CLAIM
@@ -1009,7 +992,7 @@ const Applications = () => {
               const busy = claimBusyAppId === String(appUuid);
               return (
                 <div
-                  className="flex justify-end"
+                  className="flex justify-start"
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => e.stopPropagation()}
                 >
@@ -1037,6 +1020,7 @@ const Applications = () => {
         : []),
       {
         id: "view",
+        size: 90,
         header: () => (
           <span className="font-medium text-foreground uppercase tracking-wide">
             VIEW
@@ -1069,7 +1053,6 @@ const Applications = () => {
     getApplicationQueueBadgeClass,
     getApplicationIsoLabel,
     getApplicationBusinessDisplayName,
-    getClientEmail,
     getApplicationQueueLabel,
     handleOpenApplicationDetails,
     expandedProgressRowId,
@@ -1093,17 +1076,15 @@ const Applications = () => {
     columns,
     pageCount,
     onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
     manualPagination: true,
     manualSorting: true,
+    manualFiltering: true,
     state: {
       sorting,
-      columnFilters,
       columnVisibility,
       rowSelection,
       pagination,
@@ -1161,6 +1142,9 @@ const Applications = () => {
       statusFilter,
       typeFilter,
       priorityFilter,
+      scrubberFilter: showClaimedByColumn ? scrubberFilter : "all",
+      underwriterFilter: showClaimedByColumn ? underwriterFilter : "all",
+      useDashboardStageFilter: isOperationsDashboardView,
       ...sort,
     });
   }, [
@@ -1168,6 +1152,10 @@ const Applications = () => {
     statusFilter,
     typeFilter,
     priorityFilter,
+    scrubberFilter,
+    underwriterFilter,
+    showClaimedByColumn,
+    isOperationsDashboardView,
     showUwDealPoolUi,
     showUnderwriterPipelineView,
     underwriterPipelineFilter,
@@ -1415,7 +1403,7 @@ const Applications = () => {
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [searchTerm, typeFilter, priorityFilter]);
+  }, [searchTerm, typeFilter, priorityFilter, scrubberFilter, underwriterFilter]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
@@ -2099,7 +2087,7 @@ const Applications = () => {
       )}
 
       <div className="relative z-10 mt-4 flex flex-col lg:flex-row items-stretch lg:items-center gap-3 justify-between">
-        <div className="flex items-center gap-3 w-full lg:max-w-[680px]">
+        <div className="flex flex-wrap items-center gap-3 w-full lg:flex-1 lg:min-w-0">
           {showOperationsFilterBack && (
             <Button
               type="button"
@@ -2191,7 +2179,29 @@ const Applications = () => {
               setPagination((prev) => ({ ...prev, pageIndex: 0 }));
             }}
           />
-          <div className="relative min-w-[12rem] flex-1">
+          {showClaimedByColumn ? (
+            <>
+              <ApplicationClaimUserFilterDropdown
+                allLabel="All scrubbers"
+                value={scrubberFilter}
+                options={scrubberFilterOptions}
+                onChange={(next) => {
+                  setScrubberFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              <ApplicationClaimUserFilterDropdown
+                allLabel="All underwriters"
+                value={underwriterFilter}
+                options={underwriterFilterOptions}
+                onChange={(next) => {
+                  setUnderwriterFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+            </>
+          ) : null}
+          <div className="relative min-w-[12rem] flex-1 max-w-xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
               placeholder="Search by Deal ID, Name, Email, ISO..."
@@ -2303,6 +2313,7 @@ const Applications = () => {
             <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable] min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
               <DataTableContent
                 table={table}
+                fixedLayout
                 loading={loading && !(applications?.length)}
                 loadingMessage="Loading applications..."
                 emptyMessage={
@@ -2446,9 +2457,6 @@ const Applications = () => {
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground space-y-1">
-                        <p className="truncate" title={getClientEmail(app.client)}>
-                          {getClientEmail(app.client)}
-                        </p>
                         <p className="truncate" title={getApplicationIsoLabel(app)}>
                           <span className="text-foreground/80">ISO: </span>
                           {getApplicationIsoLabel(app)}
@@ -2460,7 +2468,7 @@ const Applications = () => {
                               title={formatScrubberClaimLabel(app)}
                             >
                               <span className="text-foreground/80">
-                                 Scrubber:{" "}
+                               Scrubber:{" "}
                               </span>
                               <span className="text-foreground">
                                 {formatScrubberClaimLabel(app)}
@@ -2471,7 +2479,7 @@ const Applications = () => {
                               title={formatUnderwriterClaimLabel(app)}
                             >
                               <span className="text-foreground/80">
-                                UW:{" "}
+                                  Underwriter:{" "}
                               </span>
                               <span className="text-foreground">
                                 {formatUnderwriterClaimLabel(app)}
@@ -2507,7 +2515,7 @@ const Applications = () => {
                       </div>
                       {showUwDealPoolUi && underwriterPoolTab === "queue" ? (
                         <div
-                          className="pt-2 flex justify-end gap-2"
+                          className="pt-2 flex justify-start gap-2"
                           onClick={(e) => e.stopPropagation()}
                           onKeyDown={(e) => e.stopPropagation()}
                         >

@@ -85,6 +85,8 @@ export function applicationsListParamsCacheKey(
     lite: params.lite ? "1" : "",
     underwriterClaim: params.underwriterClaim ?? "",
     underwriterPipeline: params.underwriterPipeline ?? "",
+    claimedByUnderwriterId: params.claimedByUnderwriterId ?? "",
+    assignedUnderwriterId: params.assignedUnderwriterId ?? "",
   };
   return JSON.stringify(p);
 }
@@ -118,6 +120,12 @@ export function buildApplicationsListUrl(
   }
   if (params.underwriterPipeline) {
     queryParams.append("underwriterPipeline", params.underwriterPipeline);
+  }
+  if (params.claimedByUnderwriterId) {
+    queryParams.append("claimedByUnderwriterId", params.claimedByUnderwriterId);
+  }
+  if (params.assignedUnderwriterId) {
+    queryParams.append("assignedUnderwriterId", params.assignedUnderwriterId);
   }
   const q = queryParams.toString();
   return `/applications${q ? `?${q}` : ""}`;

@@ -389,7 +389,7 @@ const underwriterDealPipelineSection: SidebarNavSection = {
       pipelineAccent: "rejected",
     },
     {
-      label: "Admin Sent for final Approval",
+      label: "Admin Sent for Approval",
       url: "/applications",
       icon: FactCheck,
       underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.FINAL_APPROVAL,
@@ -970,7 +970,10 @@ const Sidebar = () => {
                         >
                           <Link
                             to={to}
-                            className="flex w-full min-w-0 items-center gap-2 group-data-[collapsible=icon]:w-auto group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0"
+                            className={cn(
+                              "flex w-full min-w-0 gap-2 group-data-[collapsible=icon]:w-auto group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0",
+                              isPipelineItem ? "items-start" : "items-center",
+                            )}
                           >
                             <span className="relative shrink-0">
                               <NavIcon icon={item.icon} />
@@ -998,8 +1001,8 @@ const Sidebar = () => {
                                 ) : null}
                               </span>
                             ) : isPipelineItem ? (
-                              <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                                <span className="min-w-0 flex-1 whitespace-nowrap text-sm">
+                              <span className="flex min-w-0 flex-1 items-start justify-between gap-2">
+                                <span className="min-w-0 flex-1 text-sm leading-snug">
                                   {item.label}
                                 </span>
                                 {showPipelineCount ? (

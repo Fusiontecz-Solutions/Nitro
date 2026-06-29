@@ -26,6 +26,7 @@ import { CommissionRecipientToggle } from "./CommissionRecipientToggle";
 import {
     type CommissionRecipientType,
     commissionPctPayloadField,
+    getStoredCommissionAmountForRecipient,
     getStoredCommissionPctForRecipient,
     getUnderwriterNameFromApplication,
 } from "./commissionRecipientShared";
@@ -155,9 +156,10 @@ function mapApplicationToDealRow(
   const offerAmount = fundedAmount;
 
   const commissionAmount =
+    getStoredCommissionAmountForRecipient(r, recipientType) ??
     toNum(sourceOfferDecision?.commissionAmount) ??
     toNum(sourceOfferDecision?.commission) ??
-    toNum(r?.commissionAmount) ??
+    (recipientType === "underwriter" ? null : toNum(r?.commissionAmount)) ??
     0;
 
   const storedPctRaw = getStoredCommissionPctForRecipient(r, recipientType);

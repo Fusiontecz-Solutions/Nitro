@@ -119,6 +119,38 @@ export function parseApplicationsListRouteFilters(search: string): {
   return { dashboardStateFilter: "", statusFilter: "all" };
 }
 
+/** Apply search, type, priority, organization, and claim-assignment filters (always sent to the API). */
+function applyCommonApplicationsListFilters(
+  params: GetApplicationsParams,
+  options: {
+    searchTerm: string;
+    typeFilter?: string;
+    priorityFilter?: string;
+    organizationFilter?: string;
+    scrubberFilter?: string;
+    underwriterFilter?: string;
+  },
+): void {
+  if (options.searchTerm) {
+    params.search = options.searchTerm;
+  }
+  if (options.typeFilter && options.typeFilter !== "all") {
+    params.type = options.typeFilter;
+  }
+  if (options.priorityFilter && options.priorityFilter !== "all") {
+    params.priority = options.priorityFilter;
+  }
+  if (options.organizationFilter && options.organizationFilter !== "all") {
+    params.organization = options.organizationFilter;
+  }
+  if (options.scrubberFilter && options.scrubberFilter !== "all") {
+    params.claimedByUnderwriterId = options.scrubberFilter;
+  }
+  if (options.underwriterFilter && options.underwriterFilter !== "all") {
+    params.assignedUnderwriterId = options.underwriterFilter;
+  }
+}
+
 /** Same rules as `Applications` / `getApplications` list (operations vs queue dropdown). */
 export function buildApplicationsListParams(options: {
   pageIndex: number;
@@ -136,6 +168,10 @@ export function buildApplicationsListParams(options: {
     underwriterClaim?: "unclaimed" | "mine";
     /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
     underwriterPipeline?: string;
+  /** SUPER_ADMIN / OPERATIONS: scrubbing-stage claim user id. */
+  scrubberFilter?: string;
+  /** SUPER_ADMIN / OPERATIONS: assigned underwriter user id. */
+  underwriterFilter?: string;
   sortBy?: string;
   sortOrder?: "asc" | "desc";
   /**
@@ -154,18 +190,7 @@ export function buildApplicationsListParams(options: {
     params.sortBy = options.sortBy;
     params.sortOrder = options.sortOrder ?? "asc";
   }
-  if (options.searchTerm) {
-    params.search = options.searchTerm;
-  }
-  if (options.typeFilter && options.typeFilter !== "all") {
-    params.type = options.typeFilter;
-  }
-  if (options.priorityFilter && options.priorityFilter !== "all") {
-    params.priority = options.priorityFilter;
-  }
-  if (options.organizationFilter && options.organizationFilter !== "all") {
-    params.organization = options.organizationFilter;
-  }
+  applyCommonApplicationsListFilters(params, options);
   if (options.underwriterPipeline) {
     params.underwriterPipeline = options.underwriterPipeline;
     return params;

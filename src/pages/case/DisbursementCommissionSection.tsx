@@ -35,11 +35,48 @@ function toValidNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function resolveStoredIsoAmount(
+  app: Record<string, unknown> | null | undefined,
+): number | null {
+  return toValidNumber(app?.commissionAmount);
+}
+
+function resolveStoredIsoPercent(
+  app: Record<string, unknown> | null | undefined,
+  amount: number | null,
+  offer: number | null,
+): number | null {
+  const fromDb = toValidNumber(app?.commissionPercentage);
+  if (fromDb != null) return fromDb;
+  return computeCommissionPercent(amount, offer);
+}
+
+function resolveStoredBrokerAmount(
+  app: Record<string, unknown> | null | undefined,
+): number | null {
+  return toValidNumber(app?.brokerCommissionAmount);
+}
+
+function resolveStoredBrokerPercent(
+  app: Record<string, unknown> | null | undefined,
+  amount: number | null,
+  offer: number | null,
+): number | null {
+  const fromBroker = toValidNumber(app?.brokerCommissionPercentage);
+  if (fromBroker != null) return fromBroker;
+  return computeCommissionPercent(amount, offer);
+}
+
 function getIsoDisplayName(app: Record<string, unknown> | null | undefined): string {
   if (!app) return "—";
   const iso = app.iso as Record<string, unknown> | undefined;
   if (iso?.name && String(iso.name).trim()) return String(iso.name).trim();
   if (app.isoName && String(app.isoName).trim()) return String(app.isoName).trim();
+  return "—";
+}
+
+function getBrokerDisplayName(app: Record<string, unknown> | null | undefined): string {
+  if (!app) return "—";
 
   const agent = app.referringAgent;
   if (agent && typeof agent === "object") {
@@ -50,6 +87,16 @@ function getIsoDisplayName(app: Record<string, unknown> | null | undefined): str
     if (a.email && String(a.email).trim()) return String(a.email).trim();
   }
   if (typeof agent === "string" && agent.trim()) return agent.trim();
+
+  const salesRep = app.salesRepresentative;
+  if (salesRep && typeof salesRep === "object") {
+    const s = salesRep as Record<string, unknown>;
+    const full = [s.firstName, s.lastName].filter(Boolean).join(" ").trim();
+    if (full) return full;
+    if (s.name && String(s.name).trim()) return String(s.name).trim();
+    if (s.email && String(s.email).trim()) return String(s.email).trim();
+  }
+  if (typeof salesRep === "string" && salesRep.trim()) return salesRep.trim();
   return "—";
 }
 
@@ -295,6 +342,7 @@ export function DisbursementCommissionSection({
   const appRecord = applicationDetail as Record<string, unknown> | null;
 
   const isoName = useMemo(() => getIsoDisplayName(appRecord), [appRecord]);
+  const brokerName = useMemo(() => getBrokerDisplayName(appRecord), [appRecord]);
   const underwriterName = useMemo(
     () => getApprovingUnderwriterName(appRecord),
     [appRecord],
@@ -310,18 +358,26 @@ export function DisbursementCommissionSection({
       : resolvedOfferAmount;
 
   const storedIsoAmount = useMemo(
-    () => toValidNumber(appRecord?.commissionAmount),
+    () => resolveStoredIsoAmount(appRecord),
+    [appRecord],
+  );
+  const storedBrokerAmount = useMemo(
+    () => resolveStoredBrokerAmount(appRecord),
     [appRecord],
   );
   const storedUnderwriterAmount = useMemo(
     () => toValidNumber(appRecord?.underwriterCommissionAmount),
     [appRecord],
   );
-  const storedIsoPercent = useMemo(() => {
-    const fromDb = toValidNumber(appRecord?.commissionPercentage);
-    if (fromDb != null) return fromDb;
-    return computeCommissionPercent(storedIsoAmount, offerAmount);
-  }, [appRecord, storedIsoAmount, offerAmount]);
+  const storedIsoPercent = useMemo(
+    () => resolveStoredIsoPercent(appRecord, storedIsoAmount, offerAmount),
+    [appRecord, storedIsoAmount, offerAmount],
+  );
+  const storedBrokerPercent = useMemo(
+    () =>
+      resolveStoredBrokerPercent(appRecord, storedBrokerAmount, offerAmount),
+    [appRecord, storedBrokerAmount, offerAmount],
+  );
   const storedUnderwriterPercent = useMemo(() => {
     const fromDb = toValidNumber(appRecord?.underwriterCommissionPercentage);
     if (fromDb != null) return fromDb;
@@ -329,12 +385,16 @@ export function DisbursementCommissionSection({
   }, [appRecord, storedUnderwriterAmount, offerAmount]);
 
   const [isoAmountDraft, setIsoAmountDraft] = useState("");
+  const [brokerAmountDraft, setBrokerAmountDraft] = useState("");
   const [underwriterAmountDraft, setUnderwriterAmountDraft] = useState("");
   const [isoPercentDraft, setIsoPercentDraft] = useState("");
+  const [brokerPercentDraft, setBrokerPercentDraft] = useState("");
   const [underwriterPercentDraft, setUnderwriterPercentDraft] = useState("");
   const [isoBaseline, setIsoBaseline] = useState<number | null>(null);
+  const [brokerBaseline, setBrokerBaseline] = useState<number | null>(null);
   const [underwriterBaseline, setUnderwriterBaseline] = useState<number | null>(null);
   const [isoPercentBaseline, setIsoPercentBaseline] = useState<number | null>(null);
+  const [brokerPercentBaseline, setBrokerPercentBaseline] = useState<number | null>(null);
   const [underwriterPercentBaseline, setUnderwriterPercentBaseline] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -343,14 +403,20 @@ export function DisbursementCommissionSection({
     setIsoBaseline(storedIsoAmount);
     setIsoPercentDraft(formatPercentDraft(storedIsoPercent));
     setIsoPercentBaseline(storedIsoPercent);
+    setBrokerAmountDraft(formatAmountDraft(storedBrokerAmount));
+    setBrokerBaseline(storedBrokerAmount);
+    setBrokerPercentDraft(formatPercentDraft(storedBrokerPercent));
+    setBrokerPercentBaseline(storedBrokerPercent);
     setUnderwriterAmountDraft(formatAmountDraft(storedUnderwriterAmount));
     setUnderwriterBaseline(storedUnderwriterAmount);
     setUnderwriterPercentDraft(formatPercentDraft(storedUnderwriterPercent));
     setUnderwriterPercentBaseline(storedUnderwriterPercent);
   }, [
     storedIsoAmount,
+    storedBrokerAmount,
     storedUnderwriterAmount,
     storedIsoPercent,
+    storedBrokerPercent,
     storedUnderwriterPercent,
     applicationRecordId,
   ]);
@@ -358,6 +424,10 @@ export function DisbursementCommissionSection({
   const draftIsoAmount = useMemo(
     () => parseAmountDraft(isoAmountDraft),
     [isoAmountDraft],
+  );
+  const draftBrokerAmount = useMemo(
+    () => parseAmountDraft(brokerAmountDraft),
+    [brokerAmountDraft],
   );
   const draftUnderwriterAmount = useMemo(
     () => parseAmountDraft(underwriterAmountDraft),
@@ -368,6 +438,10 @@ export function DisbursementCommissionSection({
     () => parsePercentDraft(isoPercentDraft),
     [isoPercentDraft],
   );
+  const draftBrokerPercent = useMemo(
+    () => parsePercentDraft(brokerPercentDraft),
+    [brokerPercentDraft],
+  );
   const draftUnderwriterPercent = useMemo(
     () => parsePercentDraft(underwriterPercentDraft),
     [underwriterPercentDraft],
@@ -376,6 +450,10 @@ export function DisbursementCommissionSection({
   const isoPercent = useMemo(
     () => draftIsoPercent ?? computeCommissionPercent(draftIsoAmount, offerAmount),
     [draftIsoPercent, draftIsoAmount, offerAmount],
+  );
+  const brokerPercent = useMemo(
+    () => draftBrokerPercent ?? computeCommissionPercent(draftBrokerAmount, offerAmount),
+    [draftBrokerPercent, draftBrokerAmount, offerAmount],
   );
   const underwriterPercent = useMemo(
     () =>
@@ -405,6 +483,30 @@ export function DisbursementCommissionSection({
     }
     if (!rawPercent.trim()) {
       setIsoAmountDraft("");
+    }
+  };
+
+  const syncBrokerFromAmount = (rawAmount: string) => {
+    setBrokerAmountDraft(rawAmount);
+    const amount = parseAmountDraft(rawAmount);
+    if (amount != null && offerAmount != null && offerAmount > 0) {
+      setBrokerPercentDraft(formatPercentDraft(computeCommissionPercent(amount, offerAmount)));
+      return;
+    }
+    if (!rawAmount.trim()) {
+      setBrokerPercentDraft("");
+    }
+  };
+
+  const syncBrokerFromPercent = (rawPercent: string) => {
+    setBrokerPercentDraft(rawPercent);
+    const percent = parsePercentDraft(rawPercent);
+    if (percent != null && offerAmount != null && offerAmount > 0) {
+      setBrokerAmountDraft(formatAmountDraft(amountFromPercent(percent, offerAmount)));
+      return;
+    }
+    if (!rawPercent.trim()) {
+      setBrokerAmountDraft("");
     }
   };
 
@@ -454,29 +556,39 @@ export function DisbursementCommissionSection({
   const amountsChanged = useMemo(() => {
     return (
       valueChanged(draftIsoAmount, isoBaseline) ||
+      valueChanged(draftBrokerAmount, brokerBaseline) ||
       valueChanged(draftUnderwriterAmount, underwriterBaseline) ||
       valueChanged(draftIsoPercent, isoPercentBaseline) ||
+      valueChanged(draftBrokerPercent, brokerPercentBaseline) ||
       valueChanged(draftUnderwriterPercent, underwriterPercentBaseline)
     );
   }, [
     draftIsoAmount,
+    draftBrokerAmount,
     draftUnderwriterAmount,
     draftIsoPercent,
+    draftBrokerPercent,
     draftUnderwriterPercent,
     isoBaseline,
+    brokerBaseline,
     underwriterBaseline,
     isoPercentBaseline,
+    brokerPercentBaseline,
     underwriterPercentBaseline,
   ]);
 
   const canSave = useMemo(() => {
     if (isoAmountDraft.trim() && draftIsoAmount == null) return false;
+    if (brokerAmountDraft.trim() && draftBrokerAmount == null) return false;
     if (underwriterAmountDraft.trim() && draftUnderwriterAmount == null) return false;
     if (isoPercentDraft.trim() && draftIsoPercent == null) return false;
+    if (brokerPercentDraft.trim() && draftBrokerPercent == null) return false;
     if (underwriterPercentDraft.trim() && draftUnderwriterPercent == null) return false;
     if (draftIsoAmount != null && draftIsoAmount < 0) return false;
+    if (draftBrokerAmount != null && draftBrokerAmount < 0) return false;
     if (draftUnderwriterAmount != null && draftUnderwriterAmount < 0) return false;
     if (draftIsoPercent != null && (draftIsoPercent < 0 || draftIsoPercent > 100)) return false;
+    if (draftBrokerPercent != null && (draftBrokerPercent < 0 || draftBrokerPercent > 100)) return false;
     if (
       draftUnderwriterPercent != null &&
       (draftUnderwriterPercent < 0 || draftUnderwriterPercent > 100)
@@ -486,12 +598,16 @@ export function DisbursementCommissionSection({
     return amountsChanged;
   }, [
     isoAmountDraft,
+    brokerAmountDraft,
     underwriterAmountDraft,
     isoPercentDraft,
+    brokerPercentDraft,
     underwriterPercentDraft,
     draftIsoAmount,
+    draftBrokerAmount,
     draftUnderwriterAmount,
     draftIsoPercent,
+    draftBrokerPercent,
     draftUnderwriterPercent,
     amountsChanged,
   ]);
@@ -505,12 +621,20 @@ export function DisbursementCommissionSection({
       toast.error("Enter a valid ISO commission amount.");
       return;
     }
+    if (brokerAmountDraft.trim() && draftBrokerAmount == null) {
+      toast.error("Enter a valid broker commission amount.");
+      return;
+    }
     if (underwriterAmountDraft.trim() && draftUnderwriterAmount == null) {
       toast.error("Enter a valid underwriter commission amount.");
       return;
     }
     if (draftIsoAmount != null && draftIsoAmount < 0) {
       toast.error("ISO commission amount cannot be negative.");
+      return;
+    }
+    if (draftBrokerAmount != null && draftBrokerAmount < 0) {
+      toast.error("Broker commission amount cannot be negative.");
       return;
     }
     if (draftUnderwriterAmount != null && draftUnderwriterAmount < 0) {
@@ -522,12 +646,20 @@ export function DisbursementCommissionSection({
       toast.error("Enter a valid ISO commission percent.");
       return;
     }
+    if (brokerPercentDraft.trim() && draftBrokerPercent == null) {
+      toast.error("Enter a valid broker commission percent.");
+      return;
+    }
     if (underwriterPercentDraft.trim() && draftUnderwriterPercent == null) {
       toast.error("Enter a valid underwriter commission percent.");
       return;
     }
     if (draftIsoPercent != null && (draftIsoPercent < 0 || draftIsoPercent > 100)) {
       toast.error("ISO commission percent must be between 0 and 100.");
+      return;
+    }
+    if (draftBrokerPercent != null && (draftBrokerPercent < 0 || draftBrokerPercent > 100)) {
+      toast.error("Broker commission percent must be between 0 and 100.");
       return;
     }
     if (
@@ -543,6 +675,11 @@ export function DisbursementCommissionSection({
       (draftIsoPercent != null && offerAmount != null && offerAmount > 0
         ? amountFromPercent(draftIsoPercent, offerAmount)
         : null);
+    const resolvedBrokerAmount =
+      draftBrokerAmount ??
+      (draftBrokerPercent != null && offerAmount != null && offerAmount > 0
+        ? amountFromPercent(draftBrokerPercent, offerAmount)
+        : null);
     const resolvedUnderwriterAmount =
       draftUnderwriterAmount ??
       (draftUnderwriterPercent != null && offerAmount != null && offerAmount > 0
@@ -551,6 +688,9 @@ export function DisbursementCommissionSection({
     const resolvedIsoPercent =
       draftIsoPercent ??
       computeCommissionPercent(resolvedIsoAmount, offerAmount);
+    const resolvedBrokerPercent =
+      draftBrokerPercent ??
+      computeCommissionPercent(resolvedBrokerAmount, offerAmount);
     const resolvedUnderwriterPercent =
       draftUnderwriterPercent ??
       computeCommissionPercent(resolvedUnderwriterAmount, offerAmount);
@@ -559,11 +699,17 @@ export function DisbursementCommissionSection({
     if (valueChanged(resolvedIsoAmount, isoBaseline)) {
       payload.commissionAmount = resolvedIsoAmount ?? null;
     }
+    if (valueChanged(resolvedBrokerAmount, brokerBaseline)) {
+      payload.brokerCommissionAmount = resolvedBrokerAmount ?? null;
+    }
     if (valueChanged(resolvedUnderwriterAmount, underwriterBaseline)) {
       payload.underwriterCommissionAmount = resolvedUnderwriterAmount ?? null;
     }
     if (valueChanged(resolvedIsoPercent, isoPercentBaseline)) {
       payload.commissionPercentage = resolvedIsoPercent ?? undefined;
+    }
+    if (valueChanged(resolvedBrokerPercent, brokerPercentBaseline)) {
+      payload.brokerCommissionPercentage = resolvedBrokerPercent ?? undefined;
     }
     if (valueChanged(resolvedUnderwriterPercent, underwriterPercentBaseline)) {
       payload.underwriterCommissionPercentage =
@@ -585,17 +731,25 @@ export function DisbursementCommissionSection({
       ).unwrap();
 
       setIsoBaseline(resolvedIsoAmount);
+      setBrokerBaseline(resolvedBrokerAmount);
       setUnderwriterBaseline(resolvedUnderwriterAmount);
       setIsoPercentBaseline(resolvedIsoPercent);
+      setBrokerPercentBaseline(resolvedBrokerPercent);
       setUnderwriterPercentBaseline(resolvedUnderwriterPercent);
       if (resolvedIsoAmount != null) {
         setIsoAmountDraft(formatNumberUS(resolvedIsoAmount));
+      }
+      if (resolvedBrokerAmount != null) {
+        setBrokerAmountDraft(formatNumberUS(resolvedBrokerAmount));
       }
       if (resolvedUnderwriterAmount != null) {
         setUnderwriterAmountDraft(formatNumberUS(resolvedUnderwriterAmount));
       }
       if (resolvedIsoPercent != null) {
         setIsoPercentDraft(formatPercentDraft(resolvedIsoPercent));
+      }
+      if (resolvedBrokerPercent != null) {
+        setBrokerPercentDraft(formatPercentDraft(resolvedBrokerPercent));
       }
       if (resolvedUnderwriterPercent != null) {
         setUnderwriterPercentDraft(formatPercentDraft(resolvedUnderwriterPercent));
@@ -622,6 +776,11 @@ export function DisbursementCommissionSection({
     (draftIsoPercent != null && offerAmount != null && offerAmount > 0
       ? amountFromPercent(draftIsoPercent, offerAmount)
       : storedIsoAmount);
+  const effectiveBrokerAmount =
+    draftBrokerAmount ??
+    (draftBrokerPercent != null && offerAmount != null && offerAmount > 0
+      ? amountFromPercent(draftBrokerPercent, offerAmount)
+      : storedBrokerAmount);
   const effectiveUnderwriterAmount =
     draftUnderwriterAmount ??
     (draftUnderwriterPercent != null && offerAmount != null && offerAmount > 0
@@ -629,7 +788,9 @@ export function DisbursementCommissionSection({
       : storedUnderwriterAmount);
 
   const totalCommission =
-    (effectiveIsoAmount ?? 0) + (effectiveUnderwriterAmount ?? 0);
+    (effectiveIsoAmount ?? 0) +
+    (effectiveBrokerAmount ?? 0) +
+    (effectiveUnderwriterAmount ?? 0);
   const totalPercent = computeCommissionPercent(totalCommission, offerAmount);
 
   if (!canEditCommission) {
@@ -638,12 +799,18 @@ export function DisbursementCommissionSection({
     return (
       <>
         <CommissionSectionHeading title="Commission on Deal" />
-        <div className="grid grid-cols-1 gap-4 px-4 py-5 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 px-4 py-5 sm:grid-cols-2 lg:grid-cols-3">
           <CommissionReadOnlyParty
             role="ISO"
             name={isoName}
             amount={storedIsoAmount}
             percent={storedIsoPercent ?? computeCommissionPercent(storedIsoAmount, offerAmount)}
+          />
+          <CommissionReadOnlyParty
+            role="Broker"
+            name={brokerName}
+            amount={storedBrokerAmount}
+            percent={storedBrokerPercent ?? computeCommissionPercent(storedBrokerAmount, offerAmount)}
           />
           <CommissionReadOnlyParty
             role="Underwriter"
@@ -692,8 +859,8 @@ export function DisbursementCommissionSection({
       <div
         className={
           variant === "embedded"
-            ? "grid grid-cols-1 gap-6 px-4 py-5 sm:grid-cols-2"
-            : "grid grid-cols-1 gap-6 sm:grid-cols-2 md:gap-8"
+            ? "grid grid-cols-1 gap-6 px-4 py-5 md:grid-cols-3"
+            : "grid grid-cols-1 gap-6 md:grid-cols-3 md:gap-8"
         }
       >
         <div className="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
@@ -745,6 +912,68 @@ export function DisbursementCommissionSection({
                       ·{" "}
                       <span className="font-bold text-slate-700 dark:text-slate-200">
                         {formatCurrency(draftIsoAmount)}
+                      </span>
+                    </>
+                  ) : null}
+                </>
+              ) : (
+                "Enter percent or amount"
+              )
+            ) : (
+              "Offer amount unavailable"
+            )}
+          </p>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
+          <label className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300">
+            Broker
+          </label>
+          <div className="w-full border border-slate-200 rounded-md py-2.5 px-3 text-sm font-medium bg-white text-slate-700 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200">
+            {brokerName}
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <label
+                htmlFor="disbursement-broker-commission-percent"
+                className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300"
+              >
+                Percent
+              </label>
+              <PercentInput
+                id="disbursement-broker-commission-percent"
+                value={brokerPercentDraft}
+                onChange={syncBrokerFromPercent}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label
+                htmlFor="disbursement-broker-commission-amount"
+                className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300"
+              >
+                Amount
+              </label>
+              <CurrencyAmountInput
+                id="disbursement-broker-commission-amount"
+                value={brokerAmountDraft}
+                onChange={syncBrokerFromAmount}
+              />
+            </div>
+          </div>
+          <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            {offerAmount != null && offerAmount > 0 ? (
+              brokerPercent != null ? (
+                <>
+                  <span className="font-bold text-[#1e60a3] dark:text-sky-400">
+                    {formatPercentLabel(brokerPercent)}
+                  </span>{" "}
+                  of offer amount
+                  {draftBrokerAmount != null ? (
+                    <>
+                      {" "}
+                      ·{" "}
+                      <span className="font-bold text-slate-700 dark:text-slate-200">
+                        {formatCurrency(draftBrokerAmount)}
                       </span>
                     </>
                   ) : null}
@@ -874,7 +1103,7 @@ export function DisbursementCommissionSection({
         <CommissionSectionHeading title="Commission on Deal" />
         <div className="space-y-4 px-4 pb-2 pt-4">
           <p className="text-[11px] text-slate-500 dark:text-slate-400">
-            Set ISO and underwriter commission by percent or amount before confirming disbursement.
+            Set ISO, broker, and underwriter commission by percent or amount before confirming disbursement.
           </p>
           {offerAmountBadge}
         </div>
@@ -895,7 +1124,7 @@ export function DisbursementCommissionSection({
           </span>
         </div>
         <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-          Set ISO and underwriter commission amounts for this application before disbursement.
+          Set ISO, broker, and underwriter commission amounts for this application before disbursement.
         </p>
         <div className="mt-3">{offerAmountBadge}</div>
       </div>

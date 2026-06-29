@@ -85,9 +85,12 @@ export interface Application {
     commissionPercentage?: number;
     /** Per-deal underwriter commission rate (0–100), distinct from ISO commission. */
     underwriterCommissionPercentage?: number;
+    /** Per-deal broker commission rate (0–100), set at disbursement. */
+    brokerCommissionPercentage?: number;
     /** Per-deal commission dollars (e.g. bulk import); used with advance/fees for “already net” style metrics. */
     commissionAmount?: number | null;
     underwriterCommissionAmount?: number | null;
+    brokerCommissionAmount?: number | null;
     /** Set on `GET /applications?statsBucket=funded`: collection payback/repaid/balance (same logic as `/collection-payments/balances`). */
     collectionPaybackAmount?: number | null;
     collectionSumOfRepaid?: number | null;
@@ -149,10 +152,13 @@ export interface UpdateApplicationPayload {
     approvedAt?: string;
     commissionPercentage?: number;
     underwriterCommissionPercentage?: number;
+    brokerCommissionPercentage?: number;
     /** Dollar commission stored on the application row (`Application.commissionAmount`). */
     commissionAmount?: number | null;
     /** Dollar underwriter commission stored on the application row. */
     underwriterCommissionAmount?: number | null;
+    /** Dollar broker commission stored on the application row. */
+    brokerCommissionAmount?: number | null;
     /** Links the deal to an ISO; backend validates and syncs commission from the ISO record. */
     isoId?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"); pass null/"" to clear. */
@@ -219,5 +225,9 @@ export interface GetApplicationsParams {
     underwriterPipeline?: string;
     /** Organization filter for list table (e.g. "Katan II", "Katan III"). */
     organization?: string;
+    /** SUPER_ADMIN / OPERATIONS: filter by scrubbing-stage claim (`claimedByUnderwriterId`). */
+    claimedByUnderwriterId?: string;
+    /** SUPER_ADMIN / OPERATIONS: filter by underwriter assignment. */
+    assignedUnderwriterId?: string;
 }
 

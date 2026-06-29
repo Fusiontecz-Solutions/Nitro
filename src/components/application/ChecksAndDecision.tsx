@@ -13,6 +13,7 @@ import { updateApplicationQueue, getApplicationById } from "@/redux/actions/appl
 import { isUnderwriterApprovedApplication, resolveApprovingUnderwriter } from "@/lib/underwriterApprovalLabel";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import ApprovedByUnderwriterBadge from "./ApprovedByUnderwriterBadge";
+import ApplicationClaimAssignments from "./ApplicationClaimAssignments";
 
 interface ChecksAndDecisionProps {
     /** Plain SCRUBBING (scrubbing) — primary CTA is "Recommend for approval", not send-to-FU wording. */
@@ -375,6 +376,16 @@ const ChecksAndDecision = ({
                         >[0]["app"]
                     }
                     fallback="an underwriter"
+                />
+            ) : null}
+            {applicationData ? (
+                <ApplicationClaimAssignments
+                    app={
+                        applicationData as Parameters<
+                            typeof ApplicationClaimAssignments
+                        >[0]["app"]
+                    }
+                    variant="panel"
                 />
             ) : null}
             {/* Make Underwriting Decision Section */}
