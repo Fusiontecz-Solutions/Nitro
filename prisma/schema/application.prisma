@@ -219,6 +219,8 @@ model Application {
   commissionAmount                 Float?
   underwriterCommissionAmount      Float?
   brokerCommissionAmount           Float?
+  /// Ops-entered broker name at disbursement; not tied to referringAgent.
+  brokerName                       String?
   dealDisplayName          String?
   dealId                   String?
   status                   String?

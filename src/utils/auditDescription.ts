@@ -13,7 +13,8 @@ function singularize(label: string): string {
 function nounPhrase(entity: string): string {
   const singular = singularize(entity);
   if (!singular || singular === 'system') return 'the system';
-  return `a ${singular}`;
+  const article = /^[aeiou]/.test(singular) ? 'an' : 'a';
+  return `${article} ${singular}`;
 }
 
 function verbFor(action: string): string {

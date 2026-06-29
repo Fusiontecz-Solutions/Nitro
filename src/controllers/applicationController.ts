@@ -103,6 +103,7 @@ import {
     getApplicationActivityLogsForUser,
     type ApplicationActivityActionType,
 } from '../services/applicationActivityLogService';
+import { recordApplicationUpdateActivityLog } from '../services/applicationUpdateActivityLog';
 import {
     listPaymentMailLogs,
     enrichPaymentMailLogsForApi,
@@ -3020,6 +3021,7 @@ class ApplicationController {
                 commissionAmount,
                 underwriterCommissionAmount,
                 brokerCommissionAmount,
+                brokerName,
                 category,
             } = req.body;
             const authUser = getAuthenticatedUser(req);
@@ -3029,7 +3031,22 @@ class ApplicationController {
                 ? { applicationId: Number(idStr) }
                 : { id: idStr };
 
-            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+            const activityLogInclude = {
+                client: { select: { id: true, businessName: true, clientId: true } },
+                iso: { select: { id: true, name: true } },
+                referringAgent: {
+                    select: { id: true, firstName: true, lastName: true, email: true },
+                },
+                salesRepresentative: {
+                    select: { id: true, firstName: true, lastName: true, email: true },
+                },
+            } as const;
+
+            const { application, forbidden } = await getApplicationForUser(
+                whereClause,
+                authUser,
+                activityLogInclude,
+            );
 
             if (forbidden) {
                 return res.status(403).json({
@@ -3312,6 +3329,11 @@ class ApplicationController {
                 data.brokerCommissionAmount = brokerCommissionAmountNum;
             }
 
+            if (brokerName !== undefined) {
+                const trimmedBrokerName = String(brokerName ?? '').trim();
+                data.brokerName = trimmedBrokerName.length > 0 ? trimmedBrokerName : null;
+            }
+
             if (category !== undefined) {
                 if (category === null) {
                     data.category = null;
@@ -3417,6 +3439,18 @@ class ApplicationController {
                     actorRole: authUserForNotif?.role || null,
                     transitionAction: statusSentToFu ? 'SEND_TO_FINAL_UNDERWRITER' : 'QUEUE_CHANGED',
                 });
+            }
+
+            try {
+                await recordApplicationUpdateActivityLog({
+                    req,
+                    before: application as any,
+                    after: updatedRecord as any,
+                    user: authUserForUpdate,
+                    actorName: (req as any).user?.name || '',
+                });
+            } catch (logError) {
+                console.error('Failed to create activity log for application update:', logError);
             }
 
             invalidateAllApplicationStatsCache();

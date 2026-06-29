@@ -2,6 +2,7 @@ import type { Role } from '@prisma/client';
 import type { Request } from 'express';
 import prisma from '../config/prismaClient';
 import { resolveAuditLogUserId } from '../middleware/authMiddleware';
+import { markActivityLogged } from './outboundCommunicationService';
 import type { AuthenticatedUser } from './applicationService';
 
 // Local TypeScript representation of allowed activity action types.
@@ -62,6 +63,9 @@ export async function createApplicationActivityLog(input: CreateApplicationActiv
       currentStatus,
       metadata: metadata ? (metadata as any) : undefined,
     },
+  }).then((log) => {
+    if (req) markActivityLogged(req);
+    return log;
   });
 }
 

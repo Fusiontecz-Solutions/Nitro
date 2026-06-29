@@ -225,13 +225,10 @@ async function resolveStageRecipients(
     };
 
     if (transitionAction === 'CREATED') {
+        // Only notify the application's own stakeholders (referring agent, sales rep,
+        // creator). Do NOT broadcast creation to ADMIN / SUPER_ADMIN / OPERATIONS /
+        // SCRUBBING — they should not receive a "New application created" toast.
         pushStakeholders();
-        recipients.push(
-            ...(await findActiveUsersByRoles(['OPERATIONS', 'ADMIN', 'SUPER_ADMIN'])),
-        );
-        if (q === 'scrubbing' || q === 'underwriting') {
-            recipients.push(...(await findActiveUsersByRoles(['SCRUBBING'])));
-        }
         return recipients;
     }
 
