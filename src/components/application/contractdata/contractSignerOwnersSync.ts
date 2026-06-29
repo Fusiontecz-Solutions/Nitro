@@ -10,7 +10,6 @@ import {
 } from "@/redux/actions/contractActions";
 import { ownerRowHasIdentity } from "./contractPartyCounts";
 import {
-    dedupeContractSignerRows,
     resolveDocuSignSignerRole,
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
@@ -61,7 +60,7 @@ function mapClientOwnerToParty(row: Record<string, unknown>): OwnerPartyForSigne
     };
 }
 
-function dedupeOwnerParties(parties: OwnerPartyForSigner[]): OwnerPartyForSigner[] {
+export function dedupeOwnerParties(parties: OwnerPartyForSigner[]): OwnerPartyForSigner[] {
     const seen = new Set<string>();
     const out: OwnerPartyForSigner[] = [];
     for (const party of parties) {
@@ -119,11 +118,11 @@ export function resolveClientOwnerPartiesFromApplication(
     if (!client) return [];
 
     return resolveOwnersFromClientData(client)
-        .map((row) => mapClientOwnerToParty(row as Record<string, unknown>))
+        .map((row) => mapClientOwnerToParty(row as unknown as Record<string, unknown>))
         .filter(partyHasIdentity);
 }
 
-function mergeOwnerPartyAtIndex(
+export function mergeOwnerPartyAtIndex(
     contractParty: OwnerPartyForSigner | undefined,
     clientParty: OwnerPartyForSigner | undefined,
 ): OwnerPartyForSigner | null {

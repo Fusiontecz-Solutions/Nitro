@@ -400,7 +400,7 @@ const ApproveForDisbursementModal = ({
     );
 
     return (
-        <Dialog open={open} onOpenChange={(next) => (busy ? undefined : onOpenChange(next))}>
+        <Dialog open={open} onOpenChange={(next: boolean) => (busy ? undefined : onOpenChange(next))}>
             <DialogContent className="sm:max-w-2xl w-[calc(100%-2rem)] max-h-[90vh] overflow-y-auto flex flex-col gap-3">
                 <DialogHeader>
                     <DialogTitle
@@ -583,7 +583,7 @@ const ApproveForDisbursementModal = ({
                                         </Label>
                                         <Select
                                             value={offer.achFrequency || undefined}
-                                            onValueChange={(value) => updateDriver({ achFrequency: value })}
+                                            onValueChange={(value: string) => updateDriver({ achFrequency: value })}
                                         >
                                             <SelectTrigger className={`h-9 w-full rounded-sm text-sm ${isDark ? "bg-muted border-gray-700 text-gray-200" : "bg-white border-gray-200"}`}>
                                                 <SelectValue placeholder="Select frequency" />
