@@ -63,8 +63,8 @@ export function loadBackendEnv(): void {
   const docAiOk =
     !!String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim() &&
     !!String(process.env.DOCUMENT_AI_PROCESSOR_ID || '').trim();
-  const provider = String(process.env.PDF_EXTRACTION_PROVIDER || 'documentai').trim().toLowerCase();
-  const useClaude = provider === 'claude' || provider === 'anthropic';
+  const provider = String(process.env.PDF_EXTRACTION_PROVIDER || 'claude').trim().toLowerCase();
+  const useClaude = provider !== 'documentai' && provider !== 'document_ai' && provider !== 'google';
   const keyOk = useClaude
     ? !!String(process.env.ANTHROPIC_API_KEY ?? '').trim()
     : docAiOk;
@@ -76,11 +76,11 @@ export function loadBackendEnv(): void {
             ` - Expected backend .env at: ${BACKEND_DOTENV_PATH}` +
             ` (${fs.existsSync(BACKEND_DOTENV_PATH) ? 'exists' : 'missing'})\n` +
             ` - First loaded dotenv path: ${loadedFrom ?? '(none)'}`
-        : `[env] Document AI is not configured (default PDF_EXTRACTION_PROVIDER=documentai).\n` +
+        : `[env] Document AI is not configured (PDF_EXTRACTION_PROVIDER=documentai).\n` +
             ` - Set GOOGLE_CLOUD_PROJECT and DOCUMENT_AI_PROCESSOR_ID in ${BACKEND_DOTENV_PATH}\n` +
             ` - Optional: DOCUMENT_AI_KYC_PROCESSOR_ID, DOCUMENT_AI_OCR_PROCESSOR_ID, DOCUMENT_AI_LOCATION\n` +
             ` - Auth: GOOGLE_APPLICATION_CREDENTIALS or Application Default Credentials\n` +
-            ` - Roll back to Claude: PDF_EXTRACTION_PROVIDER=claude`,
+            ` - Default is Claude; remove PDF_EXTRACTION_PROVIDER=documentai to use Claude`,
     );
   }
 }

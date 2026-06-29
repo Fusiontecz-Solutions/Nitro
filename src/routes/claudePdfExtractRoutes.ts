@@ -51,9 +51,9 @@ async function handlePdfExtract(req: express.Request, res: express.Response): Pr
   }
 }
 
-router.post("/document-ai", upload.any(), handlePdfExtract);
-
-/** @deprecated Use POST /pdf-extraction/document-ai */
 router.post("/claude", upload.any(), handlePdfExtract);
+
+/** @deprecated Document AI opt-in only — set PDF_EXTRACTION_PROVIDER=documentai */
+router.post("/document-ai", upload.any(), handlePdfExtract);
 
 export default router;

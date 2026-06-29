@@ -1,8 +1,7 @@
 import type { ConfigService } from '@nestjs/config';
 import { ClaudePdfExtractionService } from '../../nestjs-claude-pdf/claude-pdf-extraction.service';
-import { DocumentAiPdfExtractionService } from '../document-ai/documentAiPdfExtraction.service';
 
-export type PdfExtractionProvider = 'documentai' | 'claude';
+export type PdfExtractionProvider = 'claude' | 'documentai';
 
 export interface PdfExtractionServiceLike {
   getRuntimeDebugConfig(): Record<string, unknown>;
@@ -22,11 +21,11 @@ export interface PdfExtractionServiceLike {
 let singleton: PdfExtractionServiceLike | undefined;
 
 function readProvider(): PdfExtractionProvider {
-  const raw = String(process.env.PDF_EXTRACTION_PROVIDER || 'documentai')
+  const raw = String(process.env.PDF_EXTRACTION_PROVIDER || 'claude')
     .trim()
     .toLowerCase();
-  if (raw === 'claude' || raw === 'anthropic') return 'claude';
-  return 'documentai';
+  if (raw === 'documentai' || raw === 'document_ai' || raw === 'google') return 'documentai';
+  return 'claude';
 }
 
 function buildEnvConfigService(): Pick<ConfigService, 'get'> {
@@ -42,18 +41,26 @@ function buildEnvConfigService(): Pick<ConfigService, 'get'> {
   } as Pick<ConfigService, 'get'>;
 }
 
-/** Document AI by default; Claude when PDF_EXTRACTION_PROVIDER=claude. */
+function createClaudeService(): PdfExtractionServiceLike {
+  return new ClaudePdfExtractionService(buildEnvConfigService() as ConfigService);
+}
+
+/** Claude by default; set PDF_EXTRACTION_PROVIDER=documentai only if you use Google Document AI. */
 export function getPdfExtractionService(): PdfExtractionServiceLike {
   if (!singleton) {
-    singleton =
-      readProvider() === 'claude'
-        ? new ClaudePdfExtractionService(buildEnvConfigService() as ConfigService)
-        : new DocumentAiPdfExtractionService();
+    if (readProvider() === 'documentai') {
+      // Optional — not used unless explicitly enabled in env.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { DocumentAiPdfExtractionService } = require('../document-ai/documentAiPdfExtraction.service');
+      singleton = new DocumentAiPdfExtractionService();
+    } else {
+      singleton = createClaudeService();
+    }
   }
   return singleton;
 }
 
-/** @deprecated Use getPdfExtractionService() */
+/** Always returns Claude extraction (ignores PDF_EXTRACTION_PROVIDER). */
 export function getClaudePdfExtractionService(): PdfExtractionServiceLike {
-  return getPdfExtractionService();
+  return createClaudeService();
 }

@@ -1,5 +1,5 @@
 /**
- * Gmail / PDF-ingest pipeline: Document AI extraction (default) → synthetic parse text.
+ * Gmail / PDF-ingest pipeline: Claude hybrid extraction → synthetic parse text.
  */
 import path from 'path';
 import { getPdfExtractionService } from './pdf-extraction/pdfExtraction.context';
@@ -22,7 +22,7 @@ export async function extractPdfPlainTextForParsing(
         const kd = result.key_data || {};
         const nonEmptyKeyCount = Object.values(kd).filter((v) => String(v ?? '').trim().length > 0).length;
         console.log(
-            `[pdfIngestion] PDF extraction (${name}): provider=${dbg.provider ?? 'document_ai'} mode=${meta.text_mode_used} letters_seen=${meta.extracted_letters} bytes=${pdfBuffer.length} key_data_non_empty=${nonEmptyKeyCount}`,
+            `[pdfIngestion] PDF extraction (${name}): provider=${String((dbg as { provider?: string }).provider ?? 'claude')} mode=${meta.text_mode_used} letters_seen=${meta.extracted_letters} bytes=${pdfBuffer.length} key_data_non_empty=${nonEmptyKeyCount}`,
         );
         console.log(
             `[pdfIngestion] key preview (${name}): business_name="${String(kd.business_name ?? '').trim()}" legal_business_name="${String(kd.legal_business_name ?? '').trim()}" owner_first_name="${String(kd.owner_first_name ?? '').trim()}" owner_last_name="${String(kd.owner_last_name ?? '').trim()}"`,
