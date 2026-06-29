@@ -50,6 +50,14 @@ export function resolveApplicationOfferAmount(
   );
 }
 
+/** Original requested amount on the application (never offer/approved). */
+export function resolveApplicationRequestAmount(
+  app: ApplicationAmountSource | null | undefined,
+): number | null {
+  if (!app) return null;
+  return parseLoanAmount(app.loanAmount);
+}
+
 /**
  * Amount shown in application lists: prefer OfferDecision offer after underwriting,
  * otherwise the requested amount on the application (`loanAmount`).

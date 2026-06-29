@@ -9,6 +9,8 @@ import { formatCurrency } from "@/lib/utils";
 import { formatActionRequired } from "@/lib/formatActionRequired";
 import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel";
 import ApprovedByUnderwriterBadge from "./ApprovedByUnderwriterBadge";
+import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
+import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 // import { Button } from "../ui/button";
@@ -86,15 +88,9 @@ const ApplicationSummary = ({
     const loanAmount = showDynamicData && applicationData?.loanAmount != null
         ? Number(applicationData.loanAmount)
         : null;
-    let status: string | null = null;
-    if (showDynamicData) {
-        const q =
-            (applicationData as any)?.currentQueue ??
-            (applicationData as any)?.queue;
-        if (q != null && String(q).trim() !== "") {
-            status = String(q).trim();
-        }
-    }
+    const status = showDynamicData
+        ? getApplicationSummaryStatusLabel(applicationData)
+        : null;
     const actionRequired = showDynamicData ? formatActionRequired((applicationData as any)?.note) : "--";
     const isUnderwriterApproved = showDynamicData
         ? isUnderwriterApprovedApplication(applicationData)

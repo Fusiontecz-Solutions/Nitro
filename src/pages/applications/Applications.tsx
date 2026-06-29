@@ -74,10 +74,8 @@ import { axiosGet, axiosPostFormData } from "@/redux/axios";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import { getClientByClientId } from "@/redux/actions/clientActions";
 import {
-  inferOperationsListStatusFromApplication,
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
-  OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS,
   operationsDashboardStatusTitle,
 } from "@/constants/operationsDashboardApplications";
 import {
@@ -107,7 +105,7 @@ import { getOperationsPipelineStageTabId } from "@/constants/operationsPipelineT
 import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashboardActions";
 import { shouldPrefetchOpsDashboardSummary } from "@/lib/shellPrefetchRoutes";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
-import { formatDealPipelineCurrentStateLabel } from "@/lib/dealPipelineCurrentState";
+import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
 import {
   downloadFailedBulkUploadRows,
   type BulkImportRowError,
@@ -117,7 +115,7 @@ import {
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
-import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
+import { resolveApplicationRequestAmount } from "@/lib/applicationLoanAmount";
 import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
 import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
 import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
@@ -544,57 +542,7 @@ const Applications = () => {
   }, []);
 
   const getApplicationQueueLabel = useCallback((application: Application): string => {
-    const stRaw = application.currentState ?? application.state;
-    const stStr = String(stRaw ?? "").trim();
-    const stateCompact = stStr.replace(/[\s_-]+/g, "").toLowerCase();
-    /** Underwriter Approved stage only — not generic Approved / ISO Approved. */
-    if (stateCompact === "underwriterapproved") {
-      return "Underwriter-Approved";
-    }
-
-    const q = application.currentQueue || application.queue;
-    if (q == null || String(q).trim() === "") {
-      return "-";
-    }
-    const raw = String(q).trim();
-
-    if (raw.toLowerCase() === "new") {
-      const creator = application.createdBy as
-        | { id?: string; _id?: string; role?: string }
-        | string
-        | undefined;
-      const referring = application.referringAgent as
-        | { id?: string; _id?: string }
-        | string
-        | undefined;
-
-      const creatorRole =
-        typeof creator === "object" && creator?.role != null
-          ? String(creator.role).toUpperCase().replace(/-/g, "_")
-          : "";
-      if (creatorRole === "AGENT") return "Agent";
-
-      const creatorId =
-        typeof creator === "object" && creator
-          ? String(creator.id ?? creator._id ?? "")
-          : "";
-      const referringId =
-        typeof referring === "object" && referring
-          ? String(referring.id ?? referring._id ?? "")
-          : "";
-      if (creatorId && referringId && creatorId === referringId) return "Agent";
-
-      return raw;
-    }
-
-    /** Use queue + state so approval/contract stages match sidebar buckets. */
-    const pipelineLabel = formatDealPipelineCurrentStateLabel({
-      currentQueue: raw,
-      queue: raw,
-      currentState: application.currentState ?? application.state,
-      state: application.currentState ?? application.state,
-    });
-    return pipelineLabel === "—" ? raw : pipelineLabel;
+    return getApplicationSummaryStatusLabel(application);
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
@@ -919,14 +867,13 @@ const Applications = () => {
         : []),
       {
         id: "loanAmount",
-        accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
+        accessorFn: (row) => resolveApplicationRequestAmount(row),
         enableSorting: true,
         header: ({ column }) => (
-          <DataTableSortHeader column={column} label="Loan Amount" />
-              Request Amount
+          <DataTableSortHeader column={column} label="Request Amount" />
         ),
         cell: ({ row }) => {
-          const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
+          const loanAmount = resolveApplicationRequestAmount(row.original);
           if (loanAmount == null) {
             return <span className="text-foreground">-</span>;
           }
@@ -1003,45 +950,13 @@ const Applications = () => {
       {
         id: "status",
         accessorFn: (row) =>
-          row.currentState ?? row.state ?? row.currentQueue ?? row.queue ?? "",
+          getApplicationSummaryStatusLabel(row),
         enableSorting: true,
         header: ({ column }) => (
           <DataTableSortHeader column={column} label="Current State" />
         ),
         cell: ({ row }) => {
-          let queueLabel = getApplicationQueueLabel(row.original);
-
-          /**
-           * When navigating from the Operations dashboard (e.g. clicking the
-           * "Funded" / "Disbursement" stat cards), the list is already scoped
-           * to a single operations stage via `dashboardStateFilter`. In that
-           * context, show the normalized operations stage label so users see
-           * "Funded" applications instead of the underlying workflow queue
-           * such as "Contracted".
-           */
-          if (isOperationsDashboardView && dashboardStateFilter) {
-            const normalized = normalizeOperationsDashboardStatusParam(
-              dashboardStateFilter,
-            );
-            if (
-              normalized &&
-              OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS.has(normalized)
-            ) {
-              const inferred = inferOperationsListStatusFromApplication(
-                row.original.currentQueue ?? row.original.queue,
-                {
-                  explicitStatus: row.original.status,
-                  currentState:
-                    row.original.currentState ?? row.original.state,
-                },
-              );
-              if (inferred) {
-                queueLabel = operationsDashboardStatusTitle(inferred);
-              }
-            } else if (normalized) {
-              queueLabel = operationsDashboardStatusTitle(normalized);
-            }
-          }
+          const queueLabel = getApplicationQueueLabel(row.original);
 
           return (
             <span
@@ -2462,7 +2377,7 @@ const Applications = () => {
                 {table.getRowModel().rows.map((row) => {
                   const app = row.original;
                   const queueLabel = getApplicationQueueLabel(app);
-                  const loanAmount = resolveApplicationDisplayLoanAmount(app);
+                  const loanAmount = resolveApplicationRequestAmount(app);
                   const approvedAmount = showApprovedAmountColumn
                     ? getApplicationApprovedAmount(app)
                     : null;

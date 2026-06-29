@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
 import AgentDealIsoTag from "@/components/application/AgentDealIsoTag";
 import ApplicationBasicDetails from "@/components/application/ApplicationBasicDetails";
-import ApplicationOverviewBankDetails from "@/components/application/ApplicationOverviewBankDetails";
 import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
 import Approval from "@/components/application/Approval";
@@ -16,7 +15,6 @@ import BankAnalysis from "@/components/application/BankAnalysis";
 import ChecksAndDecision from "@/components/application/ChecksAndDecision";
 import SendApplicationToUnderwriter from "@/components/application/SendApplicationToUnderwriter";
 import ContractTab from "@/components/application/ContractTab";
-import BackgroundCheckPanel from "@/components/application/BackgroundCheckPanel";
 import { getBackgroundCheck } from "@/redux/actions/backgroundCheckActions";
 import { clearBackgroundCheck } from "@/redux/slices/backgroundCheckSlice";
 import ComplianceChecks from "@/components/application/ComplianceChecks";
@@ -71,7 +69,6 @@ import { ChevronLeft, ChevronRight, ScrollText, Mail, ShieldAlert } from "lucide
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
-import { canManageBankDetailsOnOverview } from "@/lib/bankDetailsAccess";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
@@ -156,7 +153,6 @@ const ApplicationDetails = () => {
     const isAgent = roleKey === 'AGENT';
     const canEditIsoDetails =
         isSuperAdmin || isAgent || roleKey === "OPERATIONS";
-    const showBankDetailsOnOverview = canManageBankDetailsOnOverview(userRole);
     const hideBusinessProfileOnDecisionMakingTab =
         roleKey === "SCRUBBING" ||
         roleKey === "OPERATIONS" ||
@@ -164,12 +160,6 @@ const ApplicationDetails = () => {
     /** Operations + Super Admin use the same funding-pipeline tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
         roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
-    const bankDetailsApplicationId =
-        applicationUuid != null
-            ? String(applicationUuid)
-            : resolvedApplicationId != null
-              ? String(resolvedApplicationId)
-              : applicationId ?? "";
     const operationsStatusQueryRaw = searchParams.get("operationsStatus");
     const operationsEntryStatus = useMemo(
         () =>
@@ -256,12 +246,13 @@ const ApplicationDetails = () => {
         //     stateNorm === 'completed' ||
         //     stateNorm === 'contracted';
 
-        // UNDERWRITER: Overview (ISO + business details), then decision making.
+        // UNDERWRITER (final review): overview with ISO, then pipeline tabs through decision making.
         if (isFinalUnderwriter) {
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
                 { id: "background-check", label: "BACKGROUND CHECK" },
+                { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
                 { id: "decision-making", label: "DECISION MAKING" },
             ];
         }
@@ -271,6 +262,7 @@ const ApplicationDetails = () => {
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
+                { id: "background-check", label: "BACKGROUND CHECK" },
                 { id: "decision-making", label: "SCRUBBING" },
             ];
         }
@@ -844,9 +836,6 @@ const ApplicationDetails = () => {
                     />
                     Activity log
                 </Button>
-            {EXTERNAL_LINKS.map((link) => (
-                    className="text-sm font-semibold text-[var(--brand)] underline underline-offset-2"
-                    {link.label}
             </div>
         ) : null;
 
@@ -868,13 +857,13 @@ const ApplicationDetails = () => {
                     <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
                         {/* Row 1: Tabs (left) + Links (right) */}
                         <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                            <HorizontalScrollFade className="w-full" scrollKey={activeTab}>
+                            <HorizontalScrollFade className="min-w-0 w-full flex-1" scrollKey={activeTab}>
                             <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex w-max flex-nowrap items-center shrink-0">
                                 {tabs.map((tab, index) => {
                                     const isActive = activeTab === tab.id;
                                     const isFirst = index === 0;
                                     const isLast = index === tabs.length - 1;
-                                    const zIndex = isActive ? 10 : 2 - index;
+                                    const zIndex = isActive ? 10 : tabs.length - index;
                                     const clipPath = isFirst
                                         ? "polygon(0 0, calc(100% - 18px) 0, 100% 50%, calc(100% - 18px) 100%, 0 100%)"
                                         : isLast
@@ -914,18 +903,20 @@ const ApplicationDetails = () => {
                             applicationId={applicationId}
                             onBack={() => navigate(-1)}
                         />
-                        {activeTab !== "eligibility-analysis" && activeTab !== "background-check" ? (
                         {canRenderTabContent ? (
                             <>
-                                <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
-                                    <BackgroundCheckTab />
-                                </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
                                     <ApplicationBasicDetails applicationId={applicationId} />
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="documents" className="mt-6">
                                     <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
+                                </LazyTabContent>
+                                <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <BackgroundCheckTab />
+                                </LazyTabContent>
+                                <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
+                                    <EligibilityAnalysis />
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
                                     <DecisionMakeFinalValues
@@ -958,9 +949,6 @@ const ApplicationDetails = () => {
                                             />
                                         </div>
                                     </div>
-                                </LazyTabContent>
-                                <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
-                                    <BackgroundCheckPanel applicationId={String((applicationData as any)?.id ?? (applicationData as any)?._id ?? applicationId ?? "")} />
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
                                     {backgroundCheckStatus && backgroundCheckStatus !== "APPROVED" ? (
@@ -1083,25 +1071,10 @@ const ApplicationDetails = () => {
 	                            <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <>
                                         <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
-                                        {showBankDetailsOnOverview && bankDetailsApplicationId ? (
-                                            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-stretch">
-                                                <AgentDealIsoTag
-                                                    applicationId={applicationId}
-                                                    alwaysEditable={canEditIsoDetails}
-                                                    splitLayout
-                                                    className="mb-0 h-full"
-                                                />
-                                                <ApplicationOverviewBankDetails
-                                                    applicationId={bankDetailsApplicationId}
-                                                    className="mt-0 h-full"
-                                                />
-                                            </div>
-                                        ) : (
-                                            <AgentDealIsoTag
-                                                applicationId={applicationId}
-                                                alwaysEditable={canEditIsoDetails}
-                                            />
-                                        )}
+                                        <AgentDealIsoTag
+                                            applicationId={applicationId}
+                                            alwaysEditable={canEditIsoDetails}
+                                        />
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                         {canShowSendToUnderwriterButton ? (
                                             <div className="flex justify-end mb-4">
@@ -1147,7 +1120,8 @@ const ApplicationDetails = () => {
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
-                                    <BackgroundCheckPanel applicationId={String((applicationData as any)?.id ?? (applicationData as any)?._id ?? applicationId ?? "")} />
+                                    <ApplicationSummary onBack={() => navigate(-1)} />
+                                    <BackgroundCheckTab />
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
@@ -1214,11 +1188,6 @@ const ApplicationDetails = () => {
                             <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
                                     <ApplicationSummary onBack={() => navigate(-1)} />
                                     <EligibilityAnalysis />
-                            </LazyTabContent>
-
-                            <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
-                                    <ApplicationSummary onBack={() => navigate(-1)} />
-                                    <BackgroundCheckTab />
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="checks" className="mt-6">

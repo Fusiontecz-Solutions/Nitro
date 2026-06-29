@@ -541,6 +541,13 @@ const adminSections: SidebarNavSection[] = [
   },
 ];
 
+const superAdminDealPipelineSection: SidebarNavSection = {
+  ...dealPipelineSection,
+  items: dealPipelineSection.items.filter(
+    (item) => item.operationsStatus !== "Final_Approval",
+  ),
+};
+
 const superAdminSections: SidebarNavSection[] = [
   {
     title: "",
@@ -550,7 +557,7 @@ const superAdminSections: SidebarNavSection[] = [
       { label: "Clients", url: "/clients", icon: People },
     ],
   },
-  dealPipelineSection,
+  superAdminDealPipelineSection,
   {
     title: "MANAGEMENT",
     items: [

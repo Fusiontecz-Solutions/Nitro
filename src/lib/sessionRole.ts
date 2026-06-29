@@ -4,7 +4,7 @@ export function normalizeRoleKey(role: string): string {
   const r = role.trim();
   if (!r) return "";
   let key = r.toUpperCase().replace(/\s+/g, "_");
-  if (key === "FINALUNDERWRITER") key = "UNDERWRITER";
+  if (key === "FINALUNDERWRITER" || key === "FINAL_UNDERWRITER") key = "UNDERWRITER";
   if (key === "SUPERADMIN") key = "SUPER_ADMIN";
   return key;
 }

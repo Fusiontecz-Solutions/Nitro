@@ -292,6 +292,7 @@ export default function EligibilityAnalysis() {
               type="button"
               size="sm"
               variant="default"
+              className="bg-[image:none] bg-green-600 text-white hover:bg-green-700 hover:opacity-100"
               disabled={isSendingFinalApproval || isFinalApprovalStage}
               onClick={() => void handleSendForFinalUnderwriterApproval()}
             >

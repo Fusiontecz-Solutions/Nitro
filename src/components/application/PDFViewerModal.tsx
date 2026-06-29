@@ -1219,7 +1219,7 @@ const PDFViewerModal = ({
         bankStatement?: string;
         utilityBill?: string;
     }>({});
-    const [activePreview, setActivePreview] = useState<null | "voidedCheck" | "driverLicense" | "bankStatement" | "utilityBill">(null);
+    const [activePreview, setActivePreview] = useState<RequiredDocumentKey | null>(null);
     const voidedCheckRef = useRef<HTMLInputElement>(null);
     const driverLicenseRef = useRef<HTMLInputElement>(null);
     // const bankStatementRef = useRef<HTMLInputElement>(null);
