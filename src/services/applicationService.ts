@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { Prisma as PrismaTypes, Application, Role } from '@prisma/client';
+import axios from 'axios';
 import fs from 'fs/promises';
 import path from 'path';
 import prisma from '../config/prismaClient';
@@ -10,6 +11,7 @@ import { normalizeOcrTextForParsing } from './ocrFieldExtraction';
 import { logExtractedBusinessDataCsv } from './csvConverter';
 import { scheduleApplicationStageNotification } from './applicationStageNotificationService';
 import { applicationCreateUncheckedData } from '../utils/prisma/applicationCreateUncheckedData';
+import { gmailAutoCreateMessageNote } from './pdfFileDedupeService';
 
 export type UserRole = Role;
 
@@ -625,6 +627,285 @@ export async function createClientAndApplicationFromPDFBuffer(
     };
 }
 
+/** Placeholder owner names when Gmail subject fallback creates a client without PDF extraction. */
+export const GMAIL_SUBJECT_FALLBACK_OWNER_FIRST = 'none';
+export const GMAIL_SUBJECT_FALLBACK_OWNER_LAST = 'none';
+
+export interface CreateGmailSubjectFallbackOptions {
+    isoId?: string | null;
+    gmailMessageId?: string | null;
+}
+
+/**
+ * Creates a Client + Application using only the merchant name parsed from the email subject.
+ * Used when PDF extraction cannot supply enough data for the normal auto-create path.
+ */
+export async function createApplicationFromGmailSubjectFallback(
+    businessName: string,
+    userId: string,
+    options?: CreateGmailSubjectFallbackOptions,
+): Promise<PdfApplicationResult> {
+    const trimmedBusinessName = String(businessName || '').trim();
+    if (!trimmedBusinessName) {
+        throw new Error('Business name is required for Gmail subject fallback');
+    }
+
+    const isoId = options?.isoId ? String(options.isoId).trim() : null;
+    let commissionPercentageFromIso = 0;
+    if (isoId) {
+        const isoRecord = await prisma.iso.findUnique({
+            where: { id: isoId },
+            select: { commissionPercentage: true },
+        });
+        if (isoRecord) {
+            commissionPercentageFromIso = Number(isoRecord.commissionPercentage ?? 0);
+        }
+    }
+
+    const gmailMessageId = String(options?.gmailMessageId || '').trim();
+    const notes = gmailMessageId
+        ? `Auto-created from Gmail subject (PDF extraction incomplete). MessageId: ${gmailMessageId}`
+        : 'Auto-created from Gmail subject (PDF extraction incomplete).';
+
+    const result = await prisma.$transaction(async (tx) => {
+        const newClient = await tx.client.create({
+            data: {
+                businessName: trimmedBusinessName,
+                ownerFirstName: GMAIL_SUBJECT_FALLBACK_OWNER_FIRST,
+                ownerLastName: GMAIL_SUBJECT_FALLBACK_OWNER_LAST,
+                notes,
+                createdById: userId,
+            },
+        });
+
+        const newApplication = await tx.application.create({
+            data: applicationCreateUncheckedData({
+                priority: 'High',
+                type: 'New',
+                salesRepresentativeId: userId,
+                referringAgentId: userId,
+                clientId: newClient.id,
+                isoId: isoId || null,
+                commissionPercentage: commissionPercentageFromIso,
+                createdById: userId,
+                currentQueue: PDF_EMAIL_AUTO_CREATE_QUEUE,
+                currentState: PDF_EMAIL_AUTO_CREATE_STATE,
+                note: gmailMessageId ? gmailAutoCreateMessageNote(gmailMessageId) : '',
+            }),
+            include: applicationWithFilesInclude,
+        });
+
+        return { newClient, newApplication };
+    }, { maxWait: 20_000, timeout: 120_000 });
+
+    const applicationWithFiles =
+        (await refetchApplicationWithFiles(result.newApplication.id)) || result.newApplication;
+
+    console.log(
+        '[createApplicationFromGmailSubjectFallback] Created from subject:',
+        JSON.stringify(
+            {
+                businessName: trimmedBusinessName,
+                clientId: result.newClient.id,
+                applicationId: applicationWithFiles.id,
+            },
+            null,
+            2,
+        ),
+    );
+
+    scheduleApplicationStageNotification({
+        application: applicationWithFiles as any,
+        transitionAction: 'CREATED',
+        actorId: userId,
+    });
+
+    return {
+        client: result.newClient,
+        application: applicationWithFiles,
+        existingClient: false,
+    };
+}
+
+function pdfExtractString(value: unknown): string {
+    return value != null ? String(value).trim() : '';
+}
+
+async function downloadPdfBufferFromUrl(url: string): Promise<Buffer> {
+    const response = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 120_000,
+        maxContentLength: 50 * 1024 * 1024,
+        maxBodyLength: 50 * 1024 * 1024,
+    });
+    return Buffer.from(response.data);
+}
+
+/**
+ * Runs Claude/Document AI extraction on a stored application PDF and merges
+ * business + owner fields into the linked client (and loan amount on the application).
+ */
+export async function applyPdfExtractToApplicationFromStoredFile(
+    applicationId: string,
+    fileId: string,
+): Promise<{ client: any; application: any; parsedData: unknown }> {
+    const file = await prisma.applicationFile.findFirst({
+        where: { id: fileId, applicationId },
+    });
+    if (!file?.url) {
+        throw new Error('Application file not found');
+    }
+
+    const fileName = String(file.originalName || '').trim() || 'document.pdf';
+    const mime = String(file.mimeType || '').toLowerCase();
+    const isPdf =
+        mime === 'application/pdf' ||
+        fileName.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+        throw new Error('Only PDF files can be used to fill application details');
+    }
+
+    const application = await prisma.application.findUnique({
+        where: { id: applicationId },
+        include: { client: true },
+    });
+    if (!application?.client) {
+        throw new Error('Application or client not found');
+    }
+
+    const pdfBuffer = await downloadPdfBufferFromUrl(file.url);
+    const syntheticText = await extractPdfPlainTextForParsing(pdfBuffer, fileName);
+    const parsedData = parseBusinessData(normalizeOcrTextForParsing(syntheticText));
+
+    if (!parsedData || typeof parsedData !== 'object') {
+        throw new Error('Failed to extract structured data from PDF');
+    }
+
+    logExtractedBusinessDataCsv(parsedData, {
+        tag: '[fillFromPdf]',
+        fileName,
+    });
+
+    const business: Record<string, unknown> = (parsedData as { business?: Record<string, unknown> }).business || {};
+    const owner: Record<string, unknown> = (parsedData as { owner?: Record<string, unknown> }).owner || {};
+    const client = application.client;
+
+    const ownerSsnNorm = normalizeSsn(
+        pdfExtractString(owner.owner_ssn || owner.ownerSsn || owner.ssn) || null,
+    );
+
+    const requestedAmountRaw =
+        business.business_requested_amount || business.requested_amount || null;
+    const loanAmountNum = parseNumericAmount(requestedAmountRaw as string | number | null | undefined);
+
+    const grossAnnualRaw = business.business_monthly_revenue;
+    const annualRevenue = parseNumericAmount(grossAnnualRaw as string | number | null | undefined);
+    const monthlyRevenue =
+        annualRevenue != null ? Math.round((annualRevenue / 12) * 100) / 100 : null;
+
+    const patch: Prisma.ClientUpdateInput = {};
+
+    const businessName =
+        pdfExtractString(business.business_name) || pdfExtractString(business.dba_name);
+    if (businessName) patch.businessName = businessName;
+
+    const assignString = (key: keyof Prisma.ClientUpdateInput, value: unknown) => {
+        const v = pdfExtractString(value);
+        if (v) (patch as Record<string, unknown>)[key as string] = v;
+    };
+
+    assignString('businessEmail', business.business_email);
+    assignString('businessNumber', business.phone_number);
+    assignString('businessWebsite', business.business_website);
+    assignString('businessIncorporationState', business.business_incorporation_state || business.business_state);
+    assignString('businessEntityType', business.business_type_of_entity);
+    assignString('businessEinNumber', business.business_ein_number);
+    assignString('businessAddress1', business.business_address1);
+    assignString('businessAddress2', business.business_address2);
+    assignString('businessCity', business.business_city);
+    assignString('businessState', business.business_state);
+    assignString('businessZipCode', business.business_zip_code);
+
+    const incorporationDate = parseDateForClientFields(
+        pdfExtractString(business.business_incorporation_date) || null,
+    );
+    if (incorporationDate) patch.businessIncorporationDate = incorporationDate;
+    if (annualRevenue != null) patch.businessAnnualRevenue = annualRevenue;
+    if (monthlyRevenue != null) patch.businessMonthlyRevenue = monthlyRevenue;
+
+    const ownerFirst = pdfExtractString(owner.owner_first_name);
+    const ownerLast = pdfExtractString(owner.owner_last_name);
+    if (ownerFirst) patch.ownerFirstName = ownerFirst;
+    if (ownerLast) patch.ownerLastName = ownerLast;
+
+    assignString('ownerMiddleName', owner.owner_middle_name);
+    assignString('ownerEmail', owner.owner_email);
+    assignString('ownerMobileNumber', owner.owner_mobile_number);
+    assignString('ownerAddress1', owner.owner_address1);
+    assignString('ownerCity', owner.owner_city);
+    assignString('ownerState', owner.owner_state);
+    assignString('ownerZipCode', owner.owner_zip_code);
+
+    const ownerDob = parseDateForClientFields(pdfExtractString(owner.owner_date_of_birth) || null);
+    if (ownerDob) patch.ownerDateOfBirth = ownerDob;
+    if (ownerSsnNorm) patch.ownerSsn = ownerSsnNorm;
+
+    const fico = pdfExtractString(owner.owner_fico_score);
+    if (fico && !Number.isNaN(Number(fico))) patch.ownerFicoScore = Number(fico);
+
+    const ownershipPct = pdfExtractString(owner.owner_ownership_percentage);
+    if (ownershipPct && !Number.isNaN(Number(ownershipPct))) {
+        patch.ownerOwnershipPercentage = Number(ownershipPct);
+    }
+
+    if (Object.keys(patch).length === 0 && loanAmountNum == null) {
+        throw new Error(
+            'PDF extraction did not return enough business or owner fields to update this application',
+        );
+    }
+
+    const updatedClient =
+        Object.keys(patch).length > 0
+            ? await prisma.client.update({
+                  where: { id: client.id },
+                  data: patch,
+              })
+            : client;
+
+    const applicationPatch: Prisma.ApplicationUpdateInput = {};
+    if (loanAmountNum != null && !Number.isNaN(loanAmountNum)) {
+        applicationPatch.loanAmount = loanAmountNum;
+    }
+
+    const updatedApplication = await prisma.application.update({
+        where: { id: applicationId },
+        data: applicationPatch,
+        include: applicationWithFilesInclude,
+    });
+
+    console.log(
+        '[applyPdfExtractToApplicationFromStoredFile] Updated application from PDF:',
+        JSON.stringify(
+            {
+                applicationId,
+                fileId,
+                fileName,
+                clientId: updatedClient.id,
+                fieldsUpdated: Object.keys(patch),
+                loanAmount: loanAmountNum,
+            },
+            null,
+            2,
+        ),
+    );
+
+    return {
+        client: updatedClient,
+        application: updatedApplication,
+        parsedData,
+    };
+}
+
 const applicationService = {
     mergeApplicationVisibilityWhere,
     canUserAccessApplication,
@@ -632,6 +913,8 @@ const applicationService = {
     getApplicationForUserByRef,
     resolveApplicationWhere,
     createClientAndApplicationFromPDFBuffer,
+    createApplicationFromGmailSubjectFallback,
+    applyPdfExtractToApplicationFromStoredFile,
 };
 
 export default applicationService;

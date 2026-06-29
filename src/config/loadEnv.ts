@@ -60,14 +60,27 @@ export function loadBackendEnv(): void {
 
   hoistUtf8BomKeyedEnvVars();
 
-  const keyOk = !!String(process.env.ANTHROPIC_API_KEY ?? '').trim();
+  const docAiOk =
+    !!String(process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '').trim() &&
+    !!String(process.env.DOCUMENT_AI_PROCESSOR_ID || '').trim();
+  const provider = String(process.env.PDF_EXTRACTION_PROVIDER || 'documentai').trim().toLowerCase();
+  const useClaude = provider === 'claude' || provider === 'anthropic';
+  const keyOk = useClaude
+    ? !!String(process.env.ANTHROPIC_API_KEY ?? '').trim()
+    : docAiOk;
+
   if (!keyOk) {
     console.warn(
-      `[env] ANTHROPIC_API_KEY is not set.\n` +
-        ` - Expected backend .env at: ${BACKEND_DOTENV_PATH}` +
-        ` (${fs.existsSync(BACKEND_DOTENV_PATH) ? 'exists' : 'missing'})\n` +
-        ` - First loaded dotenv path: ${loadedFrom ?? '(none)'}\n` +
-        ` - Verify a line exactly: ANTHROPIC_API_KEY=sk-ant-... (no spaces around "=").`,
+      useClaude
+        ? `[env] ANTHROPIC_API_KEY is not set (PDF_EXTRACTION_PROVIDER=claude).\n` +
+            ` - Expected backend .env at: ${BACKEND_DOTENV_PATH}` +
+            ` (${fs.existsSync(BACKEND_DOTENV_PATH) ? 'exists' : 'missing'})\n` +
+            ` - First loaded dotenv path: ${loadedFrom ?? '(none)'}`
+        : `[env] Document AI is not configured (default PDF_EXTRACTION_PROVIDER=documentai).\n` +
+            ` - Set GOOGLE_CLOUD_PROJECT and DOCUMENT_AI_PROCESSOR_ID in ${BACKEND_DOTENV_PATH}\n` +
+            ` - Optional: DOCUMENT_AI_KYC_PROCESSOR_ID, DOCUMENT_AI_OCR_PROCESSOR_ID, DOCUMENT_AI_LOCATION\n` +
+            ` - Auth: GOOGLE_APPLICATION_CREDENTIALS or Application Default Credentials\n` +
+            ` - Roll back to Claude: PDF_EXTRACTION_PROVIDER=claude`,
     );
   }
 }

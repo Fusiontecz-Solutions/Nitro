@@ -12,6 +12,7 @@ import {
     createClientAndApplicationFromPDFBuffer,
     InsufficientParsedPdfError,
     assertReadyToCreateNewClientFromPdf,
+    applyPdfExtractToApplicationFromStoredFile,
     type AuthenticatedUser,
 } from '../services/applicationService';
 import { mapClientToApi, resolveClientOwners } from '../utils/clientMapper';
@@ -1525,6 +1526,78 @@ class ApplicationController {
             return res.status(500).json({
                 success: false,
                 message: error?.message || 'Internal server error',
+            });
+        }
+    }
+
+    /** Extract business/owner fields from a stored PDF and merge into the application's client. */
+    async fillApplicationFromPdfFile(req: Request, res: Response) {
+        try {
+            const { id, fileId } = req.params;
+
+            if (!fileId || !id) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application id and file id are required',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const { application, forbidden } = await getApplicationForUser(
+                { id },
+                authUser,
+                { client: true, files: true },
+            );
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
+                return;
+            }
+
+            const file = application.files?.find((f: { id: string }) => f.id === fileId);
+            if (!file) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'File not found on this application',
+                });
+            }
+
+            const result = await applyPdfExtractToApplicationFromStoredFile(application.id, fileId);
+
+            const populatedApplication = mapApplicationToApi(result.application);
+            const mappedClient = mapClientToApi(result.client);
+
+            return res.status(200).json({
+                success: true,
+                message: 'Application details updated from PDF extraction',
+                data: {
+                    client: mappedClient,
+                    application: populatedApplication,
+                    parsedData: result.parsedData,
+                },
+            });
+        } catch (error: unknown) {
+            const message =
+                error instanceof Error && error.message
+                    ? error.message
+                    : 'Failed to fill application from PDF';
+            console.error('[fillApplicationFromPdfFile] Error:', error);
+            return res.status(400).json({
+                success: false,
+                message,
             });
         }
     }

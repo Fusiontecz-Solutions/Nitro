@@ -1,6 +1,6 @@
 import express from "express";
 import multer from "multer";
-import { getClaudePdfExtractionService } from "../nestjs-claude-pdf/claude-pdf-extraction.context";
+import { getPdfExtractionService } from "../services/pdf-extraction/pdfExtraction.context";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -9,7 +9,7 @@ const upload = multer({
 
 const router = express.Router();
 
-router.post("/claude", upload.any(), async (req, res) => {
+async function handlePdfExtract(req: express.Request, res: express.Response): Promise<void> {
   try {
     const files = req.files as Express.Multer.File[] | undefined;
     const uploaded =
@@ -34,18 +34,26 @@ router.post("/claude", upload.any(), async (req, res) => {
       return;
     }
 
-    const svc = getClaudePdfExtractionService();
+    const svc = getPdfExtractionService();
     const { result, meta } = await svc.extractHybridFromPdfBuffer(uploaded.buffer);
-    res.status(200).json({ result, meta });
-    return;
+    res.status(200).json({ result, meta, provider: svc.getRuntimeDebugConfig() });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Claude PDF extraction failed";
+    const msg = err instanceof Error ? err.message : "PDF extraction failed";
     const lower = msg.toLowerCase();
     const status =
-      lower.includes("anthropic_api_key") || lower.includes("required for claude") ? 503 : 500;
+      lower.includes("document_ai_processor_id") ||
+      lower.includes("google_cloud_project") ||
+      lower.includes("anthropic_api_key") ||
+      lower.includes("required for claude")
+        ? 503
+        : 500;
     res.status(status).json({ message: msg });
-    return;
   }
-});
+}
+
+router.post("/document-ai", upload.any(), handlePdfExtract);
+
+/** @deprecated Use POST /pdf-extraction/document-ai */
+router.post("/claude", upload.any(), handlePdfExtract);
 
 export default router;

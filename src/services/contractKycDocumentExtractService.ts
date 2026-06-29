@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { getClaudePdfExtractionService } from '../nestjs-claude-pdf/claude-pdf-extraction.context';
+import { getPdfExtractionService } from './pdf-extraction/pdfExtraction.context';
 import {
   type KycDocumentType,
   type KycExtractionMapped,
@@ -40,7 +40,7 @@ class ContractKycDocumentExtractService {
     mimeType: string,
     documentType: KycDocumentType,
   ): Promise<KycExtractionMapped> {
-    const svc = getClaudePdfExtractionService();
+    const svc = getPdfExtractionService();
     const { key_data } = await svc.extractKycDocument(buffer, mimeType, documentType);
     return mapKycKeyDataToPrefill(documentType, key_data);
   }

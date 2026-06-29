@@ -3,6 +3,13 @@ import prisma from '../config/prismaClient';
 
 const DEDUPE_DAYS_DEFAULT = 7;
 
+/** Stored on `Application.note` when Gmail subject fallback auto-creates a deal. */
+export const GMAIL_AUTO_CREATE_MSG_NOTE_PREFIX = 'gmail-msg:';
+
+export function gmailAutoCreateMessageNote(gmailMessageId: string): string {
+    return `${GMAIL_AUTO_CREATE_MSG_NOTE_PREFIX}${String(gmailMessageId || '').trim()}`;
+}
+
 export function readPdfFileDedupeDays(): number {
     const raw = Number(process.env.GMAIL_AUTO_CREATE_DEDUPE_DAYS ?? DEDUPE_DAYS_DEFAULT);
     if (!Number.isFinite(raw) || raw < 1) return DEDUPE_DAYS_DEFAULT;
@@ -64,6 +71,89 @@ export async function hasRecentDuplicatePdfForCreator(params: {
         },
         select: { id: true, applicationId: true },
         orderBy: { uploadedAt: 'desc' },
+    });
+    return !!existing;
+}
+
+/** True if any of the given PDF filenames already exist on a recent app from this creator. */
+export async function hasRecentDuplicatePdfFilenamesForCreator(params: {
+    createdById: string;
+    fileNames: string[];
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const names = Array.from(
+        new Set(
+            (params.fileNames || [])
+                .map((n) => String(n || '').trim())
+                .filter(Boolean),
+        ),
+    );
+    for (const fileName of names) {
+        const dup = await hasRecentDuplicatePdfForCreator({
+            createdById: params.createdById,
+            fileName,
+            dedupeDays: params.dedupeDays,
+        });
+        if (dup) return true;
+    }
+    return false;
+}
+
+/**
+ * Gmail subject-fallback guard: same INBOX message must not create two applications
+ * (e.g. cron re-run while email still unread).
+ */
+export async function hasRecentApplicationForGmailMessage(params: {
+    createdById: string;
+    gmailMessageId: string;
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const gmailMessageId = String(params.gmailMessageId || '').trim();
+    if (!gmailMessageId || !params.createdById) return false;
+
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const since = new Date(Date.now() - dedupeDays * 24 * 60 * 60 * 1000);
+    const noteMarker = gmailAutoCreateMessageNote(gmailMessageId);
+
+    const existing = await prisma.application.findFirst({
+        where: {
+            createdById: params.createdById,
+            createdAt: { gte: since },
+            note: { contains: noteMarker },
+        },
+        select: { id: true },
+    });
+    return !!existing;
+}
+
+/**
+ * Subject-fallback guard: same merchant + ISO from same creator within the dedupe window.
+ * Targets placeholder-owner (`none`/`none`) clients created when PDF extraction failed.
+ */
+export async function hasRecentSubjectFallbackMerchantApplication(params: {
+    createdById: string;
+    businessName: string;
+    isoId?: string | null;
+    dedupeDays?: number;
+}): Promise<boolean> {
+    const businessName = String(params.businessName || '').trim();
+    if (!businessName || !params.createdById) return false;
+
+    const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
+    const since = new Date(Date.now() - dedupeDays * 24 * 60 * 60 * 1000);
+
+    const existing = await prisma.application.findFirst({
+        where: {
+            createdById: params.createdById,
+            createdAt: { gte: since },
+            ...(params.isoId ? { isoId: params.isoId } : {}),
+            client: {
+                businessName: { equals: businessName, mode: 'insensitive' },
+                ownerFirstName: { equals: 'none', mode: 'insensitive' },
+                ownerLastName: { equals: 'none', mode: 'insensitive' },
+            },
+        },
+        select: { id: true },
     });
     return !!existing;
 }
