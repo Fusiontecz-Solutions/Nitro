@@ -206,6 +206,38 @@ export const applicationDealAmountSelectSql = Prisma.sql`
   a."assignedUnderwriterId" AS "assignedUnderwriterId"
 `;
 
+/**
+ * Approved/offer amount for stat cards — the underwritten offer, never the requested `loanAmount`.
+ * Mirrors the FE `resolveApplicationOfferAmount` precedence: a non-declined OfferDecision offer,
+ * then the latest terms offer `approvedAmount`, then the locked-in `Contract.approvedAmount`.
+ * Requires a `LEFT JOIN LATERAL (...) tof` exposing `tof."approvedAmount"` (latest terms offer).
+ */
+export const applicationOfferAmountSelectSql = Prisma.sql`
+  COALESCE(
+    CASE
+      WHEN LOWER(COALESCE(od."decision", '')) = 'declined' THEN NULL
+      ELSE od."offer"::double precision
+    END,
+    tof."approvedAmount",
+    ct."approvedAmount"
+  ) AS "dealAmount",
+  a."currentQueue" AS "currentQueue",
+  a."currentState" AS "currentState",
+  a."claimedByUnderwriterId" AS "claimedByUnderwriterId",
+  a."assignedUnderwriterId" AS "assignedUnderwriterId"
+`;
+
+/** Latest terms offer per application, joined as `tof` for offer-amount aggregation. */
+export const latestTermsOfferLateralJoinSql = Prisma.sql`
+  LEFT JOIN LATERAL (
+    SELECT t."approvedAmount"
+    FROM "TermsOffer" t
+    WHERE t."applicationId" = a.id
+    ORDER BY t."createdAt" DESC
+    LIMIT 1
+  ) tof ON TRUE
+`;
+
 type StatsRow = {
     funded_count: bigint;
     funded_sum: number | null;
@@ -281,17 +313,19 @@ export async function aggregateApplicationStats(params: {
 
     const query = Prisma.sql`
     WITH scoped AS (
-      SELECT ${applicationDealAmountSelectSql}
+      SELECT ${applicationOfferAmountSelectSql}
       FROM "Application" a
       LEFT JOIN "OfferDecision" od ON od."applicationId" = a.id
       LEFT JOIN "Contract" ct ON ct."applicationId" = a.id
+      ${latestTermsOfferLateralJoinSql}
       WHERE ${whereScoped}
     ),
     workflow_base AS (
-      SELECT ${applicationDealAmountSelectSql}
+      SELECT ${applicationOfferAmountSelectSql}
       FROM "Application" a
       LEFT JOIN "OfferDecision" od ON od."applicationId" = a.id
       LEFT JOIN "Contract" ct ON ct."applicationId" = a.id
+      ${latestTermsOfferLateralJoinSql}
       WHERE ${whereWorkflow}
     )
     SELECT

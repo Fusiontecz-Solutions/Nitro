@@ -452,17 +452,45 @@ const normalizeQueueToken = (value: unknown): string => {
     return value.trim().toUpperCase().replace(/[\s-]+/g, '_');
 };
 
-/** Clear exclusive scrubbing claim when a deal enters or leaves the Scrubbing queue. */
+/** Clear exclusive scrubbing claim when a deal (re-)enters the Scrubbing queue. */
 const patchClearUnderwriterClaimIfQueueChanged = (
     previousQueue: string | null | undefined,
     nextQueue: string | null | undefined,
 ): Pick<Prisma.ApplicationUpdateInput, 'claimedByUnderwriter' | 'claimedAt'> | undefined => {
     const prevIs = normalizeQueueToken(previousQueue ?? '') === 'SCRUBBING';
     const nextIs = normalizeQueueToken(nextQueue ?? '') === 'SCRUBBING';
-    if (prevIs === nextIs) return undefined;
+    // Preserve who claimed/scrubbed the deal when it advances past Scrubbing (ops list "Scrubber" column).
+    if (!nextIs || prevIs) return undefined;
     return {
         claimedByUnderwriter: { disconnect: true },
         claimedAt: null,
+    };
+};
+
+/**
+ * Record who scrubbed the deal when a Scrubbing user advances it out of the
+ * Scrubbing queue (mirrors how the Underwriter is captured). Only sets the
+ * scrubber when the actor holds the SCRUBBING role and no scrubber claim is
+ * recorded yet — never overwrites an existing explicit claim.
+ */
+const patchRecordScrubberClaimOnAdvance = (
+    authUser: AuthenticatedUser | null | undefined,
+    application: { claimedByUnderwriterId?: string | null },
+    previousQueue: string | null | undefined,
+    nextQueue: string | null | undefined,
+): Pick<Prisma.ApplicationUpdateInput, 'claimedByUnderwriter' | 'claimedAt'> | undefined => {
+    if (!authUser?.id) return undefined;
+    const roleUpper = String(authUser.role || '').toUpperCase().replace(/-/g, '_');
+    if (roleUpper !== 'SCRUBBING') return undefined;
+    // Only when the deal is leaving the Scrubbing queue for a different queue.
+    const prevIs = normalizeQueueToken(previousQueue ?? '') === 'SCRUBBING';
+    const nextIs = normalizeQueueToken(nextQueue ?? '') === 'SCRUBBING';
+    if (!prevIs || nextIs) return undefined;
+    // Preserve an existing scrubber claim (e.g. someone explicitly claimed it).
+    if (application.claimedByUnderwriterId) return undefined;
+    return {
+        claimedByUnderwriter: { connect: { id: authUser.id } },
+        claimedAt: new Date(),
     };
 };
 
@@ -1776,6 +1804,37 @@ class ApplicationController {
                 };
             }
 
+            const canFilterByClaimAssignments =
+                authRoleUpper === 'SUPER_ADMIN' ||
+                authRoleUpper === 'SUPERADMIN' ||
+                authRoleUpper === 'OPERATIONS';
+            if (canFilterByClaimAssignments) {
+                const rawClaimedByScrubberId = req.query.claimedByUnderwriterId;
+                const rawAssignedUnderwriterId = req.query.assignedUnderwriterId;
+                const claimedByScrubberId =
+                    rawClaimedByScrubberId != null
+                        ? String(
+                              Array.isArray(rawClaimedByScrubberId)
+                                  ? rawClaimedByScrubberId[0]
+                                  : rawClaimedByScrubberId,
+                          ).trim()
+                        : '';
+                const assignedUnderwriterFilterId =
+                    rawAssignedUnderwriterId != null
+                        ? String(
+                              Array.isArray(rawAssignedUnderwriterId)
+                                  ? rawAssignedUnderwriterId[0]
+                                  : rawAssignedUnderwriterId,
+                          ).trim()
+                        : '';
+                if (claimedByScrubberId) {
+                    where.claimedByUnderwriterId = claimedByScrubberId;
+                }
+                if (assignedUnderwriterFilterId) {
+                    where.assignedUnderwriterId = assignedUnderwriterFilterId;
+                }
+            }
+
             if (
                 authRoleUpper === 'UNDERWRITER' &&
                 authUser?.id &&
@@ -2884,8 +2943,10 @@ class ApplicationController {
                 isoId,
                 commissionPercentage,
                 underwriterCommissionPercentage,
+                brokerCommissionPercentage,
                 commissionAmount,
                 underwriterCommissionAmount,
+                brokerCommissionAmount,
                 category,
             } = req.body;
             const authUser = getAuthenticatedUser(req);
@@ -3098,6 +3159,23 @@ class ApplicationController {
                 data.underwriterCommissionPercentage = raw;
             }
 
+            if (brokerCommissionPercentage !== undefined) {
+                const raw =
+                    typeof brokerCommissionPercentage === 'number'
+                        ? brokerCommissionPercentage
+                        : parseFloat(
+                              String(brokerCommissionPercentage).replace(/[^0-9.-]+/g, ''),
+                          );
+                if (Number.isNaN(raw) || raw < 0 || raw > 100) {
+                    return res.status(400).json({
+                        success: false,
+                        message:
+                            'brokerCommissionPercentage must be a number between 0 and 100',
+                    });
+                }
+                data.brokerCommissionPercentage = raw;
+            }
+
             if (commissionAmount !== undefined) {
                 const commissionAmountNum =
                     commissionAmount === '' || commissionAmount === null
@@ -3137,6 +3215,28 @@ class ApplicationController {
                     });
                 }
                 data.underwriterCommissionAmount = underwriterCommissionAmountNum;
+            }
+
+            if (brokerCommissionAmount !== undefined) {
+                const brokerCommissionAmountNum =
+                    brokerCommissionAmount === '' || brokerCommissionAmount === null
+                        ? null
+                        : typeof brokerCommissionAmount === 'number'
+                          ? brokerCommissionAmount
+                          : parseFloat(
+                                String(brokerCommissionAmount).replace(/[^0-9.-]+/g, ''),
+                            );
+                if (
+                    brokerCommissionAmountNum !== null &&
+                    (Number.isNaN(brokerCommissionAmountNum) ||
+                        brokerCommissionAmountNum < 0)
+                ) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'brokerCommissionAmount must be a non-negative number',
+                    });
+                }
+                data.brokerCommissionAmount = brokerCommissionAmountNum;
             }
 
             if (category !== undefined) {
@@ -3192,6 +3292,18 @@ class ApplicationController {
                     data,
                     patchRecordUnderwriterApproval(authUserForUpdate, application),
                 );
+            }
+
+            if (data.currentQueue !== undefined) {
+                const scrubberPatch = patchRecordScrubberClaimOnAdvance(
+                    authUserForUpdate,
+                    application,
+                    application.currentQueue,
+                    resolvedNextQueue,
+                );
+                if (scrubberPatch) {
+                    Object.assign(data, scrubberPatch);
+                }
             }
 
             const previousQueue = application.currentQueue;
@@ -3339,6 +3451,15 @@ class ApplicationController {
                     updateData,
                     patchRecordUnderwriterApproval(authUser, existingApplication),
                 );
+            }
+            const scrubberClaimPatch = patchRecordScrubberClaimOnAdvance(
+                authUser,
+                existingApplication,
+                previousQueue,
+                transition.queue,
+            );
+            if (scrubberClaimPatch) {
+                Object.assign(updateData, scrubberClaimPatch);
             }
 
             // Final approval: Underwriter signs off the deal out of the Final Approval

@@ -175,9 +175,17 @@ export type QueueMetricsAggregate = {
     totalCases: number;
 };
 
+function toFiniteNumber(value: unknown): number | null {
+    if (value == null || value === '') return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+}
+
 /**
- * Count applications per `currentQueue` bucket and sum funded amounts from `Position.fundedAmount`
- * (falls back to `Application.loanAmount` when no position rows exist).
+ * Count applications per `currentQueue` bucket and sum the underwritten **offer/approved amount**
+ * (never the requested `loanAmount`). Mirrors the FE `resolveApplicationOfferAmount` precedence:
+ * a non-declined `OfferDecision.offer`, then the latest `TermsOffer.approvedAmount`, then
+ * `Contract.approvedAmount`. Applications without an offer contribute 0.
  */
 export async function aggregateQueueMetricsByCurrentQueue(
     authUser: AuthenticatedUser | null,
@@ -189,7 +197,7 @@ export async function aggregateQueueMetricsByCurrentQueue(
 
     const apps = await prisma.application.findMany({
         where: visibilityBase,
-        select: { id: true, currentQueue: true, currentState: true, loanAmount: true },
+        select: { id: true, currentQueue: true, currentState: true },
     });
 
     const counts = emptyBucketRecord();
@@ -200,15 +208,38 @@ export async function aggregateQueueMetricsByCurrentQueue(
     }
 
     const appIds = apps.map((app) => app.id);
-    const positionAgg = await prisma.position.groupBy({
-        by: ['applicationId'],
-        where: { applicationId: { in: appIds } },
-        _sum: { fundedAmount: true },
-    });
 
-    const fundedByAppId = new Map(
-        positionAgg.map((row) => [row.applicationId, Number(row._sum.fundedAmount ?? 0)]),
+    const [offerDecisions, termsOffers, contracts] = await Promise.all([
+        prisma.offerDecision.findMany({
+            where: { applicationId: { in: appIds } },
+            select: { applicationId: true, offer: true, decision: true },
+        }),
+        prisma.termsOffer.findMany({
+            where: { applicationId: { in: appIds } },
+            select: { applicationId: true, approvedAmount: true },
+            orderBy: { createdAt: 'desc' },
+        }),
+        prisma.contract.findMany({
+            where: { applicationId: { in: appIds } },
+            select: { applicationId: true, approvedAmount: true },
+        }),
+    ]);
+
+    const offerDecisionByApp = new Map(
+        offerDecisions.map((row) => [row.applicationId, row]),
     );
+    const latestTermsByApp = new Map<string, number | null>();
+    for (const row of termsOffers) {
+        if (!latestTermsByApp.has(row.applicationId)) {
+            latestTermsByApp.set(row.applicationId, toFiniteNumber(row.approvedAmount));
+        }
+    }
+    const contractByApp = new Map<string, number | null>();
+    for (const row of contracts) {
+        if (row.applicationId && !contractByApp.has(row.applicationId)) {
+            contractByApp.set(row.applicationId, toFiniteNumber(row.approvedAmount));
+        }
+    }
 
     for (const app of apps) {
         const bucket = classifyApplicationPipelineStage(
@@ -219,10 +250,17 @@ export async function aggregateQueueMetricsByCurrentQueue(
 
         counts[bucket] += 1;
 
-        const positionFunded = fundedByAppId.get(app.id) ?? 0;
-        const amount =
-            positionFunded > 0 ? positionFunded : Number(app.loanAmount ?? 0);
-        amounts[bucket] += amount;
+        const od = offerDecisionByApp.get(app.id);
+        const odOffer =
+            od && String(od.decision ?? '').toLowerCase() !== 'declined'
+                ? toFiniteNumber(od.offer)
+                : null;
+        const offerAmount =
+            odOffer ??
+            latestTermsByApp.get(app.id) ??
+            contractByApp.get(app.id) ??
+            0;
+        amounts[bucket] += offerAmount;
     }
 
     return { counts, amounts, totalCases: apps.length };

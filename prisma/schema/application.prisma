@@ -214,8 +214,11 @@ model Application {
   commissionPercentage             Float                         @default(0)
   /// Per-deal underwriter commission rate (0–100), distinct from ISO `commissionPercentage`.
   underwriterCommissionPercentage  Float                         @default(0)
+  /// Per-deal broker commission rate (0–100), set at disbursement; distinct from ISO profile default.
+  brokerCommissionPercentage       Float                         @default(0)
   commissionAmount                 Float?
   underwriterCommissionAmount      Float?
+  brokerCommissionAmount           Float?
   dealDisplayName          String?
   dealId                   String?
   status                   String?
