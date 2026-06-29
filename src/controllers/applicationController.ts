@@ -1880,9 +1880,6 @@ class ApplicationController {
                     OfferDecision: {
                         select: { offer: true, decision: true },
                     },
-                    OfferDecision: {
-                        select: { offer: true },
-                    },
                 }
                 : {
                     referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
