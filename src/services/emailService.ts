@@ -621,6 +621,9 @@ export function injectApplicationApprovalEmailValues(
     return out;
 }
 
+/** @deprecated Use {@link injectApplicationApprovalEmailValues} */
+export const buildApplicationApprovedEmailInjectValues = injectApplicationApprovalEmailValues;
+
 export const APPROVAL_EMAIL_PDF_FILENAME = 'Application-approved-template.pdf';
 export const OFFER_UPDATED_EMAIL_PDF_FILENAME = 'Update-offer-template.pdf';
 
