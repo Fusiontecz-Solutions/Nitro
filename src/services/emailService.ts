@@ -2136,6 +2136,77 @@ function decisionLogicInvitationHostKey(raw: string): string | null {
     }
 }
 
+export function buildDecisionLogicEmailHtml({
+    verificationUrl,
+    alternateVerificationUrl,
+    showAlternateLink = false,
+}: {
+    verificationUrl: string;
+    alternateVerificationUrl?: string;
+    showAlternateLink?: boolean;
+}): string {
+    const safeUrl = String(verificationUrl || '').trim();
+    const safeAlternateUrl = String(alternateVerificationUrl || '').trim();
+    const alternateBlock =
+        showAlternateLink && safeAlternateUrl && safeAlternateUrl !== safeUrl
+            ? `
+                            <p style="margin: 16px 0 0; font-size:12px; color:#6b7280; line-height:1.5;">
+                                Alternate link:
+                                <a href="${safeAlternateUrl}" style="color:#276D9C; word-break:break-all;">${safeAlternateUrl}</a>
+                            </p>`
+            : '';
+
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Bank Verification</title>
+    ${buildBrandHeaderStyles()}
+</head>
+<body style="margin:0; padding:0; background:#f4f7f9; font-family: Arial, Helvetica, sans-serif;">
+    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+        <tr>
+            <td style="padding: 20px 0;">
+                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="background:#ffffff; border:1px solid #e5e7eb;">
+                    ${buildBrandHeaderRowHtml()}
+                    <tr>
+                        <td style="padding: 20px 24px 8px;">
+                            <h2 style="margin:0; color:#111827; font-size:22px;">Bank Verification</h2>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 0 24px 20px; color:#374151; font-size:14px; line-height:1.6;">
+                            <p style="margin: 0 0 12px;">Hello,</p>
+                            <p style="margin: 0 0 12px;">
+                                You have been invited to complete secure bank verification for your application with <strong>${DEFAULT_BRAND_NAME}</strong>.
+                            </p>
+                            <p style="margin: 0 0 12px;">
+                                Use the button below to connect your financial institution through Decision Logic. The process is encrypted.
+                            </p>
+                            <p style="margin: 20px 0 0; text-align:center;">
+                                <a href="${safeUrl}" style="display:inline-block; background:#276D9C; color:#ffffff; text-decoration:none; font-weight:600; font-size:14px; padding:12px 24px; border-radius:6px;">Complete bank verification</a>
+                            </p>
+                            <p style="margin: 20px 0 0; font-size:12px; color:#6b7280; line-height:1.5;">
+                                If the button does not work, copy and paste this URL into your browser:
+                                <br/>
+                                <a href="${safeUrl}" style="color:#276D9C; word-break:break-all;">${safeUrl}</a>
+                            </p>
+                            ${alternateBlock}
+                            <p style="margin: 20px 0 0; font-size:12px; color:#6b7280; line-height:1.5;">
+                                This link is unique to you and may expire. If it has expired, please contact your underwriter for a new invitation.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>`;
+}
+
 export async function sendDecisionLogicEmail(
     to: string,
     token: string,
@@ -2171,23 +2242,18 @@ export async function sendDecisionLogicEmail(
         primaryHost != null &&
         hostedHost != null &&
         primaryHost === hostedHost;
-    const subject = 'Bank verification — Decision Logic';
-    const hostedBlock =
-        primaryIsHosted
-            ? ''
-            : `
-      <p style="margin-top:14px;"><a href="${hostedLink}">Open Decision Logic (hosted — katan.finexusai.com)</a></p>
-      <p style="font-size:12px; color:#6B7280;">Hosted URL (copy/paste): ${hostedLink}</p>
-    `;
-    const html = `
-    <div style="font-family:Arial,Helvetica,sans-serif; color:#111827; line-height:1.5;">
-      <p>You have been invited to complete bank verification.</p>
-      <p><a href="${link}">Open Decision Logic</a></p>
-      <p style="font-size:12px; color:#6B7280;">If the link does not work, copy and paste this URL: ${link}</p>
-      ${hostedBlock}
-    </div>
-  `;
-    await sendMail(to, subject, html);
+    const subject = `Bank verification — ${DEFAULT_BRAND_NAME}`;
+    const html = buildDecisionLogicEmailHtml({
+        verificationUrl: link,
+        alternateVerificationUrl: hostedLink,
+        showAlternateLink: !primaryIsHosted,
+    });
+    await sendMail({
+        to,
+        subject,
+        html,
+        attachments: buildBrandLogoAttachments(),
+    });
 }
 
 export {
