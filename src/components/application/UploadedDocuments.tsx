@@ -5,11 +5,11 @@ import { useParams } from "react-router"
 import { Card, CardContent } from "../ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table"
 import { Button } from "../ui/button"
-import { Trash2, Eye, Pin } from "lucide-react"
+import { Trash2, Eye, Pin, Sparkles, Loader2 } from "lucide-react"
 import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import type { ApplicationFiles } from "@/types/applicationTypes"
-import { deleteApplicationFile, getApplicationByApplicationId, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
+import { deleteApplicationFile, fillApplicationFromPdfFile, getApplicationByApplicationId, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
 import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
@@ -18,6 +18,12 @@ import { isPinnedDocumentSlug } from "@/constants/documentRequestTypes"
 
 const fileDocumentSlug = (file: ApplicationFiles): string =>
     String((file as any).documentType || (file as any).requestedDocumentSlug || "").trim()
+
+const isPdfApplicationFile = (file: ApplicationFiles): boolean => {
+    const name = String(file.originalName || "").trim().toLowerCase()
+    const mime = String(file.mimeType || "").toLowerCase()
+    return mime === "application/pdf" || name.endsWith(".pdf")
+}
 
 type UploadedDocumentsProps = {
     applicationId?: string
@@ -34,6 +40,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false)
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
     const [pdfFileName, setPdfFileName] = useState<string>("")
+    const [fillingFileId, setFillingFileId] = useState<string | null>(null)
     const fileInputRef = useRef<HTMLInputElement | null>(null)
 
     const { data: applicationData } = useSelector(
@@ -167,6 +174,40 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
         setIsPDFModalOpen(false)
         setPdfFileUrl(null)
         setPdfFileName("")
+    }
+
+    const handleFillApplicationFromPdf = async (file: ApplicationFiles) => {
+        if (!applicationData?._id || !file._id) {
+            toast.error("Application or file ID not found")
+            return
+        }
+
+        setFillingFileId(file._id)
+        try {
+            await dispatch(
+                fillApplicationFromPdfFile({
+                    applicationId: applicationData._id,
+                    fileId: file._id,
+                }),
+            ).unwrap()
+
+            toast.success("Application details filled from PDF")
+
+            const refreshKey = applicationData.applicationId ?? effectiveApplicationId
+            if (refreshKey != null) {
+                await dispatch(getApplicationByApplicationId(refreshKey))
+            }
+        } catch (error: unknown) {
+            const message =
+                typeof error === "string"
+                    ? error
+                    : error instanceof Error
+                      ? error.message
+                      : "Failed to fill application from PDF"
+            toast.error(message)
+        } finally {
+            setFillingFileId(null)
+        }
     }
 
     // Pin the two key ISO-captured docs (voided check / driver's license) to the
@@ -379,6 +420,23 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                                                 >
                                                     <Eye className="size-4" />
                                                 </Button>
+                                                {!readOnly && isPdfApplicationFile(file) && (
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        onClick={() => handleFillApplicationFromPdf(file)}
+                                                        disabled={fillingFileId === file._id}
+                                                        className="text-violet-600 hover:text-violet-700 hover:bg-violet-50 dark:hover:bg-violet-950 h-4 w-4 py-0 px-2"
+                                                        title="Fill application from this PDF"
+                                                    >
+                                                        {fillingFileId === file._id ? (
+                                                            <Loader2 className="size-4 animate-spin" />
+                                                        ) : (
+                                                            <Sparkles className="size-4" />
+                                                        )}
+                                                    </Button>
+                                                )}
                                                 {!readOnly && (
                                                     <Button
                                                         type="button"

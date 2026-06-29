@@ -787,6 +787,28 @@ export const deleteApplicationFile = createAsyncThunk(
     }
 );
 
+/** Run Claude/Document AI extraction on a stored application PDF and merge into client fields. */
+export const fillApplicationFromPdfFile = createAsyncThunk(
+    'application/fillApplicationFromPdfFile',
+    async (
+        { applicationId, fileId }: { applicationId: string; fileId: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${applicationId}/files/${fileId}/fill-from-pdf`,
+                {},
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Fill application from PDF error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fill application from PDF',
+            );
+        }
+    },
+);
+
 // Send approval email to client for an application
 export const sendApprovalEmail = createAsyncThunk(
     'application/sendApprovalEmail',
