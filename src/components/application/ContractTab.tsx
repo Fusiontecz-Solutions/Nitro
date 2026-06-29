@@ -132,7 +132,11 @@ import {
     resolveActiveOwnerCount,
     resolveSecondOwnerSignerName,
 } from "./contractdata/contractPartyCounts";
-import { resolveOwnerRowsForContractPrefill } from "./contractdata/contractSignerOwnersSync";
+import {
+    applicationWithClientOwners,
+    resolveOwnerRowsForContractPrefill,
+} from "./contractdata/contractSignerOwnersSync";
+import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 import {
     formatCurrency,
     formatCurrencyFull,
@@ -298,6 +302,12 @@ export default function ContractTab({
     const dispatch = useDispatch<AppDispatch>();
     const { data: applicationData } = useSelector(
         (state: RootState) => state.applicationDetail,
+    );
+    const applicationClient = (applicationData as { client?: unknown } | null)?.client;
+    const { owners: fullClientOwners } = useApplicationClientOwners(applicationClient);
+    const applicationForOwnerResolution = useMemo(
+        () => applicationWithClientOwners(applicationData, fullClientOwners),
+        [applicationData, fullClientOwners],
     );
     const { data: termsOffers, loading: termsOffersLoading } = useSelector(
         (state: RootState) => state.termsOffers,
@@ -1734,10 +1744,14 @@ export default function ContractTab({
                       );
 
             const ownerRows = resolveOwnerRowsForContractPrefill(
-                applicationData,
-                Array.isArray(contractOwnerListState.data)
+                applicationForOwnerResolution,
+                [...(Array.isArray(contractOwnerListState.data)
                     ? contractOwnerListState.data
-                    : [],
+                    : [])].sort((a, b) => {
+                    const aT = new Date(String(a?.createdAt ?? 0)).getTime();
+                    const bT = new Date(String(b?.createdAt ?? 0)).getTime();
+                    return aT - bT;
+                }),
             );
             const guarantorRows = Array.isArray(contractGuarantorListState.data)
                 ? contractGuarantorListState.data

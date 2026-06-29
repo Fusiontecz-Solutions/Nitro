@@ -23,6 +23,57 @@ type ApplicationSheetActivityLogProps = {
   headerClassName?: string;
 };
 
+type FieldChange = {
+  field?: string;
+  label: string;
+  previous?: string | null;
+  current?: string | null;
+};
+
+function extractFieldChanges(metadata?: Record<string, unknown> | null): FieldChange[] {
+  const raw = metadata?.changes;
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((item): item is FieldChange => {
+        if (!item || typeof item !== 'object') return false;
+        return typeof (item as FieldChange).label === 'string';
+      })
+      .map((item) => ({
+        field: item.field,
+        label: item.label,
+        previous: item.previous ?? null,
+        current: item.current ?? null,
+      }));
+  }
+
+  const single = metadata?.change;
+  if (single && typeof single === 'object' && typeof (single as FieldChange).label === 'string') {
+    const change = single as FieldChange;
+    return [
+      {
+        field: change.field,
+        label: change.label,
+        previous: change.previous ?? null,
+        current: change.current ?? null,
+      },
+    ];
+  }
+
+  return [];
+}
+
+function extractSubActivityPreview(metadata?: Record<string, unknown> | null): string | null {
+  if (!metadata) return null;
+  const preview = metadata.preview ?? metadata.question ?? metadata.commentType;
+  if (typeof preview !== 'string' || !preview.trim()) return null;
+  return preview.trim();
+}
+
+function formatChangeValue(value: string | null | undefined): string {
+  if (value == null || value === '') return '—';
+  return value;
+}
+
 function channelLabel(channel: string | null | undefined): string {
   if (!channel) return '';
   const map: Record<string, string> = {
@@ -144,6 +195,8 @@ export default function ApplicationSheetActivityLog({
           <div className="space-y-6">
             {appLogs.map((log) => {
               const isComm = isCommunicationLog(log);
+              const fieldChanges = extractFieldChanges(log.metadata);
+              const subActivityPreview = extractSubActivityPreview(log.metadata);
               return (
                 <div key={log.id} className="relative flex items-start gap-4">
                   <div className="relative z-10 mt-1">
@@ -250,6 +303,35 @@ export default function ApplicationSheetActivityLog({
                       <p className="mt-3 text-sm text-foreground/80 leading-relaxed">
                         {log.metadata.reason}
                       </p>
+                    ) : null}
+
+                    {subActivityPreview ? (
+                      <p className="mt-3 text-sm text-foreground/80 leading-relaxed italic">
+                        “{subActivityPreview}”
+                      </p>
+                    ) : null}
+
+                    {fieldChanges.length > 0 ? (
+                      <div className="mt-3 rounded-lg border border-border/60 bg-background/70 p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground mb-2">
+                          Changes
+                        </p>
+                        <ul className="space-y-2">
+                          {fieldChanges.map((change) => (
+                            <li
+                              key={`${log.id}-${change.field ?? change.label}`}
+                              className="text-sm text-foreground/90"
+                            >
+                              <span className="font-medium">{change.label}:</span>{' '}
+                              <span className="text-muted-foreground">
+                                {formatChangeValue(change.previous)}
+                              </span>
+                              <span className="mx-1 text-muted-foreground">→</span>
+                              <span>{formatChangeValue(change.current)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     ) : null}
                   </div>
                 </div>

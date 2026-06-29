@@ -75,29 +75,11 @@ function getIsoDisplayName(app: Record<string, unknown> | null | undefined): str
   return "—";
 }
 
-function getBrokerDisplayName(app: Record<string, unknown> | null | undefined): string {
-  if (!app) return "—";
-
-  const agent = app.referringAgent;
-  if (agent && typeof agent === "object") {
-    const a = agent as Record<string, unknown>;
-    const full = [a.firstName, a.lastName].filter(Boolean).join(" ").trim();
-    if (full) return full;
-    if (a.name && String(a.name).trim()) return String(a.name).trim();
-    if (a.email && String(a.email).trim()) return String(a.email).trim();
-  }
-  if (typeof agent === "string" && agent.trim()) return agent.trim();
-
-  const salesRep = app.salesRepresentative;
-  if (salesRep && typeof salesRep === "object") {
-    const s = salesRep as Record<string, unknown>;
-    const full = [s.firstName, s.lastName].filter(Boolean).join(" ").trim();
-    if (full) return full;
-    if (s.name && String(s.name).trim()) return String(s.name).trim();
-    if (s.email && String(s.email).trim()) return String(s.email).trim();
-  }
-  if (typeof salesRep === "string" && salesRep.trim()) return salesRep.trim();
-  return "—";
+function getStoredBrokerName(app: Record<string, unknown> | null | undefined): string {
+  if (!app) return "";
+  const name = app.brokerName;
+  if (name != null && String(name).trim()) return String(name).trim();
+  return "";
 }
 
 function getApprovingUnderwriterName(
@@ -342,7 +324,7 @@ export function DisbursementCommissionSection({
   const appRecord = applicationDetail as Record<string, unknown> | null;
 
   const isoName = useMemo(() => getIsoDisplayName(appRecord), [appRecord]);
-  const brokerName = useMemo(() => getBrokerDisplayName(appRecord), [appRecord]);
+  const storedBrokerName = useMemo(() => getStoredBrokerName(appRecord), [appRecord]);
   const underwriterName = useMemo(
     () => getApprovingUnderwriterName(appRecord),
     [appRecord],
@@ -396,6 +378,8 @@ export function DisbursementCommissionSection({
   const [isoPercentBaseline, setIsoPercentBaseline] = useState<number | null>(null);
   const [brokerPercentBaseline, setBrokerPercentBaseline] = useState<number | null>(null);
   const [underwriterPercentBaseline, setUnderwriterPercentBaseline] = useState<number | null>(null);
+  const [brokerNameDraft, setBrokerNameDraft] = useState("");
+  const [brokerNameBaseline, setBrokerNameBaseline] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -411,6 +395,8 @@ export function DisbursementCommissionSection({
     setUnderwriterBaseline(storedUnderwriterAmount);
     setUnderwriterPercentDraft(formatPercentDraft(storedUnderwriterPercent));
     setUnderwriterPercentBaseline(storedUnderwriterPercent);
+    setBrokerNameDraft(storedBrokerName);
+    setBrokerNameBaseline(storedBrokerName);
   }, [
     storedIsoAmount,
     storedBrokerAmount,
@@ -418,6 +404,7 @@ export function DisbursementCommissionSection({
     storedIsoPercent,
     storedBrokerPercent,
     storedUnderwriterPercent,
+    storedBrokerName,
     applicationRecordId,
   ]);
 
@@ -560,7 +547,8 @@ export function DisbursementCommissionSection({
       valueChanged(draftUnderwriterAmount, underwriterBaseline) ||
       valueChanged(draftIsoPercent, isoPercentBaseline) ||
       valueChanged(draftBrokerPercent, brokerPercentBaseline) ||
-      valueChanged(draftUnderwriterPercent, underwriterPercentBaseline)
+      valueChanged(draftUnderwriterPercent, underwriterPercentBaseline) ||
+      brokerNameDraft.trim() !== brokerNameBaseline.trim()
     );
   }, [
     draftIsoAmount,
@@ -575,6 +563,8 @@ export function DisbursementCommissionSection({
     isoPercentBaseline,
     brokerPercentBaseline,
     underwriterPercentBaseline,
+    brokerNameDraft,
+    brokerNameBaseline,
   ]);
 
   const canSave = useMemo(() => {
@@ -715,6 +705,10 @@ export function DisbursementCommissionSection({
       payload.underwriterCommissionPercentage =
         resolvedUnderwriterPercent ?? undefined;
     }
+    const trimmedBrokerName = brokerNameDraft.trim();
+    if (trimmedBrokerName !== brokerNameBaseline.trim()) {
+      payload.brokerName = trimmedBrokerName || null;
+    }
 
     if (Object.keys(payload).length === 0) {
       toast.info("No commission changes to save.");
@@ -736,6 +730,8 @@ export function DisbursementCommissionSection({
       setIsoPercentBaseline(resolvedIsoPercent);
       setBrokerPercentBaseline(resolvedBrokerPercent);
       setUnderwriterPercentBaseline(resolvedUnderwriterPercent);
+      setBrokerNameBaseline(trimmedBrokerName);
+      setBrokerNameDraft(trimmedBrokerName);
       if (resolvedIsoAmount != null) {
         setIsoAmountDraft(formatNumberUS(resolvedIsoAmount));
       }
@@ -808,7 +804,7 @@ export function DisbursementCommissionSection({
           />
           <CommissionReadOnlyParty
             role="Broker"
-            name={brokerName}
+            name={storedBrokerName || "—"}
             amount={storedBrokerAmount}
             percent={storedBrokerPercent ?? computeCommissionPercent(storedBrokerAmount, offerAmount)}
           />
@@ -926,12 +922,20 @@ export function DisbursementCommissionSection({
         </div>
 
         <div className="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
-          <label className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300">
+          <label
+            htmlFor="disbursement-broker-name"
+            className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300"
+          >
             Broker
           </label>
-          <div className="w-full border border-slate-200 rounded-md py-2.5 px-3 text-sm font-medium bg-white text-slate-700 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200">
-            {brokerName}
-          </div>
+          <input
+            id="disbursement-broker-name"
+            type="text"
+            placeholder="Enter broker name"
+            value={brokerNameDraft}
+            onChange={(e) => setBrokerNameDraft(e.target.value)}
+            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-[#1e60a3]/20 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200"
+          />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <label

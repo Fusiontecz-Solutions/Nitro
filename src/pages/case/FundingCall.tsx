@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import MyNotes from '@/components/application/MyNotes';
 import RejectApplicationModal from '@/components/application/RejectApplicationModal';
 import RequestMissingDocumentsModal from '@/components/application/RequestMissingDocumentsModal';
+import ApproveForDisbursementModal from '@/components/application/ApproveForDisbursementModal';
 import { Button } from '@/components/ui/button';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
@@ -95,6 +96,22 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     [applicationDetail],
   );
 
+  /** Numeric applicationId (preferred) or _id for offer-decision read/write in the approval modal. */
+  const offerApplicationId = useMemo(() => {
+    const data = applicationDetail as
+      | { applicationId?: string | number; _id?: string; id?: string }
+      | null;
+    return data?.applicationId ?? data?._id ?? data?.id ?? applicationId ?? null;
+  }, [applicationDetail, applicationId]);
+
+  const requestLoanAmount = useMemo(() => {
+    const raw = (applicationDetail as { loanAmount?: number | string | null } | null)
+      ?.loanAmount;
+    if (raw == null) return null;
+    const num = typeof raw === 'number' ? raw : Number(raw);
+    return Number.isFinite(num) ? num : null;
+  }, [applicationDetail]);
+
   const roleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
   const isSuperAdmin = roleKey === 'SUPER_ADMIN';
 
@@ -132,6 +149,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [documentsModalOpen, setDocumentsModalOpen] = useState(false);
+  const [approveModalOpen, setApproveModalOpen] = useState(false);
   const [approveForDisbursementPending, setApproveForDisbursementPending] = useState(false);
   const [disbursementApproved, setDisbursementApproved] = useState(false);
   const [disbursementEmailSent, setDisbursementEmailSent] = useState<boolean | null>(null);
@@ -304,16 +322,18 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
 
   const isApproveActionComplete = isApprovedForDisbursement && disbursementEmailSent === true;
 
-  const handleApproveForDisbursement = useCallback(async () => {
+  const handleApproveForDisbursement = useCallback(async (overrideClientEmail?: string): Promise<boolean> => {
     if (!applicationId) {
       toast.error('Application ID is missing for this funding call.');
-      return;
+      return false;
     }
-    if (isApproveActionComplete) return;
+    if (isApproveActionComplete) return false;
 
     const approvalEmailHtml = renderApplicationApprovedEmailHtml(
       buildApplicationApprovedEmailServerPlaceholderValues(),
     );
+
+    const clientEmail = (overrideClientEmail ?? linkedClientEmail).trim();
 
     setApproveForDisbursementPending(true);
     const toastId = toast.loading('Approving application for disbursement...');
@@ -322,7 +342,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
       const result = await dispatch(
         approveFundingCallForDisbursement({
           application: applicationId,
-          clientEmail: linkedClientEmail || undefined,
+          clientEmail: clientEmail || undefined,
           emailHtml: approvalEmailHtml,
           emailSubject: APPLICATION_APPROVED_EMAIL_SUBJECT,
         }),
@@ -359,6 +379,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
       });
 
       onSaved?.();
+      return true;
     } catch (err: unknown) {
       const message =
         typeof err === 'string'
@@ -371,6 +392,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
         isLoading: false,
         autoClose: 5000,
       });
+      return false;
     } finally {
       setApproveForDisbursementPending(false);
     }
@@ -382,6 +404,14 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     onCallStatusChange,
     onSaved,
   ]);
+
+  const handleConfirmApproval = useCallback(
+    async (clientEmail: string) => {
+      const ok = await handleApproveForDisbursement(clientEmail);
+      if (ok) setApproveModalOpen(false);
+    },
+    [handleApproveForDisbursement],
+  );
 
   return (
     <div
@@ -694,7 +724,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
               <div className="flex flex-1 flex-col justify-center gap-5 px-4 pb-4">
                 <button
                   type="button"
-                  onClick={() => void handleApproveForDisbursement()}
+                  onClick={() => setApproveModalOpen(true)}
                   disabled={isBusy || isApproveActionComplete}
                   className={cn(
                     decisionButtonBase,
@@ -788,6 +818,21 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
         onSuccess={() => {
           toast.success('Document request sent.');
         }}
+      />
+
+      <ApproveForDisbursementModal
+        open={approveModalOpen}
+        onOpenChange={setApproveModalOpen}
+        applicationId={offerApplicationId}
+        loanAmount={requestLoanAmount}
+        defaultClientEmail={linkedClientEmail}
+        confirming={approveForDisbursementPending}
+        confirmLabel={
+          isApprovedForDisbursement && disbursementEmailSent === false
+            ? 'Resend approval email'
+            : 'Approve & send email'
+        }
+        onConfirm={handleConfirmApproval}
       />
     </div>
   );

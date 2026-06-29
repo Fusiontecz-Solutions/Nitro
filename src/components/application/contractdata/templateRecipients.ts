@@ -298,7 +298,7 @@ export function parseContractSignerOverridesFromPrefill(
             };
         })
         .filter((r): r is ContractSignerOverrideRow => r != null);
-    const deduped = dedupeContractSignerRows(parsed);
+    const deduped = parsed.slice(0, 2);
     return deduped.length ? deduped : null;
 }
 

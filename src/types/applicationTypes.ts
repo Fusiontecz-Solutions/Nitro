@@ -159,6 +159,8 @@ export interface UpdateApplicationPayload {
     underwriterCommissionAmount?: number | null;
     /** Dollar broker commission stored on the application row. */
     brokerCommissionAmount?: number | null;
+    /** Ops-entered broker display name at disbursement. */
+    brokerName?: string | null;
     /** Links the deal to an ISO; backend validates and syncs commission from the ISO record. */
     isoId?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"); pass null/"" to clear. */

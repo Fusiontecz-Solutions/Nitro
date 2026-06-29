@@ -202,7 +202,6 @@ export function resolveActiveOwnerCount(options: {
             fromDistinctPartySigners,
         ),
     );
-  if (distinctSigners === 1) return 1;
   if (distinctSigners >= 2) return 2;
   return computed;
 }

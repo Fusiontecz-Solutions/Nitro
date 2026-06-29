@@ -188,8 +188,10 @@ import {
     supplementalOptionLabel,
 } from "./contractdata/platformDocumentConfig";
 import { funderAvailableForContractState, useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 import { clearParty2PrefillFieldPayload, resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
 import {
+    applicationWithClientOwners,
     buildContractSignerRowsFromOwnerParties,
     fetchFreshOwnerPartiesForContractSigners,
     mergeContractSignerEditorRows,
@@ -949,7 +951,7 @@ function resolveSignerEmailForSummary(
     useSavedSignerOverrides: boolean,
 ): string {
     const saved = String(rowEmail ?? "").trim();
-    if (useSavedSignerOverrides && saved) return saved;
+    if (useSavedSignerOverrides) return saved;
     return mergeBoldSignRoleSignerEmail(roleLabel, saved, crmSignerEmail);
 }
 
@@ -1455,6 +1457,12 @@ const PDFViewerModal = ({
         (state: RootState) => state.uploadedContractDocuments,
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
+    const applicationClient = applicationData?.client;
+    const { owners: fullClientOwners } = useApplicationClientOwners(applicationClient);
+    const applicationForOwnerResolution = useMemo(
+        () => applicationWithClientOwners(applicationData, fullClientOwners),
+        [applicationData, fullClientOwners],
+    );
     /** CRM-only client email (contract + application client). */
     const primaryClientRecipientEmail = useMemo(
         () => getSignerRecipientEmailForContract(applicationData, resolvedContract),
@@ -1508,20 +1516,24 @@ const PDFViewerModal = ({
     const guarantorListState = useSelector((state: RootState) => state.contractGuarantorList);
     const bankDetailsListState = useSelector((state: RootState) => state.bankDetails);
 
-    const contractOwnerRows = useMemo(
-        () => (Array.isArray(ownerListState.data) ? ownerListState.data : []),
-        [ownerListState.data],
-    );
+    const contractOwnerRows = useMemo(() => {
+        const rows = Array.isArray(ownerListState.data) ? ownerListState.data : [];
+        return [...rows].sort((a, b) => {
+            const aT = new Date(String(a?.createdAt ?? 0)).getTime();
+            const bT = new Date(String(b?.createdAt ?? 0)).getTime();
+            return aT - bT;
+        });
+    }, [ownerListState.data]);
 
     /** Owners from contract CRM rows, application client, or live Info Required edits. */
     const resolvedOwnerParties = useMemo(
         () =>
             resolveOwnerPartiesForContractSigners(
-                applicationData,
+                applicationForOwnerResolution,
                 contractOwnerRows,
                 activeInfoPanel === "owner" ? ownerEntries : null,
             ),
-        [applicationData, contractOwnerRows, activeInfoPanel, ownerEntries],
+        [applicationForOwnerResolution, contractOwnerRows, activeInfoPanel, ownerEntries],
     );
 
     /** DocuSign/BoldSign template roles for Summary (top-level `roles`, not `raw.roles`). */
@@ -1602,8 +1614,12 @@ const PDFViewerModal = ({
     );
 
     const summaryTemplateRoles = useMemo(() => {
-        if (effectiveContractSignerRows.length > 0) {
-            return suggestedRowsToSummaryTemplateRoles(effectiveContractSignerRows);
+        const signerRowsForSummary =
+            suggestedContractSignerRows.length > effectiveContractSignerRows.length
+                ? suggestedContractSignerRows
+                : effectiveContractSignerRows;
+        if (signerRowsForSummary.length > 0) {
+            return suggestedRowsToSummaryTemplateRoles(signerRowsForSummary);
         }
         if (templateRoleRowsForSigner.length > 0) return templateRoleRowsForSigner;
         const signerEmail = docuSignSignerEmail.email.trim();
@@ -1618,6 +1634,7 @@ const PDFViewerModal = ({
         ];
     }, [
         effectiveContractSignerRows,
+        suggestedContractSignerRows,
         templateRoleRowsForSigner,
         docuSignSignerEmail.email,
     ]);
@@ -2254,11 +2271,16 @@ const PDFViewerModal = ({
             );
         }
         const freshSuggested = buildContractSignerRowsFromOwnerParties(freshParties);
+        const partySuggested = buildContractSignerRowsFromOwnerParties(
+            freshParties.length ? freshParties : resolvedOwnerParties,
+        );
         const liveSignerRows = reconcileSignerRowsWithFreshOwners(
             contractSignerOverrides,
-            freshSuggested.length > 0
-                ? freshSuggested
-                : suggestedContractSignerRows,
+            partySuggested.length > 0
+                ? partySuggested
+                : freshSuggested.length > 0
+                  ? freshSuggested
+                  : suggestedContractSignerRows,
         );
 
         const existing = summaryTemplateRoles;
@@ -2301,12 +2323,16 @@ const PDFViewerModal = ({
             resolvedOwnerParties.length,
             activeOwnerCount,
             liveSignerRows.length,
-            dedupeContractSignerRows(editorRows).length,
+            editorRows.length,
             1,
         );
         const merged = mergeContractSignerEditorRows(
             editorRows,
-            liveSignerRows.length ? liveSignerRows : suggestedContractSignerRows,
+            partySuggested.length
+                ? partySuggested
+                : liveSignerRows.length
+                  ? liveSignerRows
+                  : suggestedContractSignerRows,
             targetSignerCount,
             freshParties.length ? freshParties : resolvedOwnerParties,
         );
@@ -7717,29 +7743,28 @@ const PDFViewerModal = ({
                                                                 recipientEditorRows.every((r) => !r.email.trim())
                                                             }
                                                             onClick={async () => {
-                                                                const rows = dedupeContractSignerRows(
-                                                                    recipientEditorRows
-                                                                        .filter((r) => r.email.trim())
-                                                                        .map((r) => ({
-                                                                            role: resolveDocuSignSignerRole(),
-                                                                            name: r.name.trim(),
-                                                                            email: r.email.trim(),
-                                                                        })),
+                                                                if (
+                                                                    recipientEditorRows.some(
+                                                                        (r) => !r.email.trim(),
+                                                                    )
+                                                                ) {
+                                                                    toast.error(
+                                                                        "Every signer role needs an email address.",
+                                                                    );
+                                                                    return;
+                                                                }
+                                                                const rows = recipientEditorRows.map(
+                                                                    (r) => ({
+                                                                        role: resolveDocuSignSignerRole(),
+                                                                        name: r.name.trim(),
+                                                                        email: r.email.trim(),
+                                                                    }),
                                                                 );
                                                                 const roles =
                                                                     buildDocuSignRolesFromEditorRows(rows);
                                                                 if (!roles.length) {
                                                                     toast.error(
                                                                         "Enter an email for at least one signer.",
-                                                                    );
-                                                                    return;
-                                                                }
-                                                                const missingEmail = rows.some(
-                                                                    (r) => !r.email,
-                                                                );
-                                                                if (missingEmail) {
-                                                                    toast.error(
-                                                                        "Every signer role needs an email address.",
                                                                     );
                                                                     return;
                                                                 }
@@ -7802,10 +7827,16 @@ const PDFViewerModal = ({
                                                                             await syncContractSignerRowsToCrm({
                                                                                 dispatch,
                                                                                 contractId: cid,
-                                                                                applicationData,
+                                                                                applicationData:
+                                                                                    applicationForOwnerResolution,
                                                                                 signerRows: rows,
                                                                                 existingContractOwners: contractOwnerRows,
                                                                             });
+                                                                            await dispatch(
+                                                                                getAllContractOwners({
+                                                                                    contractId: cid,
+                                                                                }),
+                                                                            ).unwrap();
                                                                         } catch (syncOwnerErr: unknown) {
                                                                             console.error(syncOwnerErr);
                                                                             toast.warn(

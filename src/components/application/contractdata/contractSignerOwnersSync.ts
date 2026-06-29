@@ -1,7 +1,7 @@
 import type { CreateClientPayload, OwnerDetail } from "@/types/clientTypes";
 import type { AppDispatch } from "@/redux/store";
 import { getApplicationById } from "@/redux/actions/applicationActions";
-import { getClientById, updateClient } from "@/redux/actions/clientActions";
+import { getClientByClientId, getClientById, updateClient } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import {
     createContractOwner,
@@ -15,6 +15,11 @@ import {
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
 import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
+import {
+    getClientFetchArg,
+    getClientFetchKeyFromApplicationClient,
+    resolveOwnersFromClientData,
+} from "@/lib/clientOwners";
 import {
     resolveApplicationUuidForUpdate,
     resolveClientIdFromApplication,
@@ -87,30 +92,35 @@ function partyHasIdentity(party: OwnerPartyForSigner | undefined): boolean {
     });
 }
 
+/** Merge full `owners[]` from client detail onto the embedded application client payload. */
+export function applicationWithClientOwners(
+    application: unknown,
+    owners: OwnerDetail[] | null | undefined,
+): unknown {
+    const app = application as Record<string, unknown> | null | undefined;
+    if (!app || !owners?.length) return application;
+    const client = app.client as Record<string, unknown> | undefined;
+    if (!client || typeof client !== "object") return application;
+    return {
+        ...app,
+        client: {
+            ...client,
+            owners,
+        },
+    };
+}
+
 /** Client `owners[]` (or legacy flat owner fields) from the linked application. */
 export function resolveClientOwnerPartiesFromApplication(
     application: unknown,
 ): OwnerPartyForSigner[] {
     const app = application as Record<string, unknown> | null | undefined;
-    const client = app?.client as Record<string, unknown> | undefined;
+    const client = app?.client;
     if (!client) return [];
 
-    const related = client.owners;
-    if (Array.isArray(related) && related.length) {
-        return dedupeOwnerParties(
-            related
-                .map((row) => mapClientOwnerToParty(row as Record<string, unknown>))
-                .filter(partyHasIdentity),
-        );
-    }
-
-    const own = (client.owner ?? {}) as Record<string, unknown>;
-    const flat: OwnerPartyForSigner = {
-        ownerFirstName: str(client.ownerFirstName ?? own.firstName),
-        ownerLastName: str(client.ownerLastName ?? own.lastName),
-        ownerEmail: str(client.ownerEmail ?? own.email ?? client.businessEmail),
-    };
-    return partyHasIdentity(flat) ? [flat] : [];
+    return resolveOwnersFromClientData(client)
+        .map((row) => mapClientOwnerToParty(row as Record<string, unknown>))
+        .filter(partyHasIdentity);
 }
 
 function mergeOwnerPartyAtIndex(
@@ -192,7 +202,7 @@ export function resolveOwnerRowsForContractPrefill(
     if (client) {
         const related = client.owners;
         if (Array.isArray(related) && related.length) {
-            return related
+            const rows = related
                 .map((row, i) =>
                     mergeOwnerRowAtIndex(
                         fromContract[i] as Record<string, unknown> | undefined,
@@ -200,6 +210,11 @@ export function resolveOwnerRowsForContractPrefill(
                     ),
                 )
                 .filter((row): row is Record<string, unknown> => row != null);
+            for (let i = related.length; i < fromContract.length; i++) {
+                const row = fromContract[i];
+                if (row && ownerRowHasIdentity(row)) rows.push(row);
+            }
+            return rows;
         }
 
         const own = (client.owner ?? {}) as Record<string, unknown>;
@@ -232,8 +247,8 @@ export function ownerPartiesFingerprint(parties: OwnerPartyForSigner[]): string 
 }
 
 /**
- * Contract-owner rows win when present; otherwise fall back to application client owners.
- * Local Info Required edits (owner panel) override when they carry identity.
+ * Application client owners are source of truth; contract-owner rows fill gaps and
+ * supply additional signer slots when the contract has more owners than the client.
  */
 export function resolveOwnerPartiesForContractSigners(
     application: unknown,
@@ -241,33 +256,21 @@ export function resolveOwnerPartiesForContractSigners(
     localOwnerEntries?: OwnerPartyForSigner[] | null,
 ): OwnerPartyForSigner[] {
     const local = localOwnerEntries?.filter(partyHasIdentity) ?? [];
+    if (local.length > 0) return local.slice(0, 2);
 
-    const fromContract = (Array.isArray(contractOwners) ? contractOwners : [])
-        .map(mapContractOwnerRowToParty)
+    return resolveOwnerRowsForContractPrefill(application, contractOwners)
+        .slice(0, 2)
+        .map((row) => mapContractOwnerRowToParty(row))
         .filter(partyHasIdentity);
-
-    const fromClient = resolveClientOwnerPartiesFromApplication(application);
-
-    if (local.length > 0) return dedupeOwnerParties(local);
-
-    if (fromClient.length > 0) {
-        return dedupeOwnerParties(
-            fromClient.map((clientParty, i) => {
-                const row = mergeOwnerPartyAtIndex(fromContract[i], clientParty);
-                return row ?? clientParty;
-            }),
-        );
-    }
-
-    return dedupeOwnerParties(fromContract);
 }
 
-/** One signer row per application owner (name + email from CRM). */
+/** One signer row per CRM owner slot (up to 2); do not collapse by shared email. */
 export function buildContractSignerRowsFromOwnerParties(
     owners: OwnerPartyForSigner[],
 ): ContractSignerOverrideRow[] {
-    return dedupeContractSignerRows(
-        dedupeOwnerParties(owners).map((o) => {
+    return owners
+        .slice(0, 2)
+        .map((o) => {
             const name = `${str(o.ownerFirstName)} ${str(o.ownerLastName)}`.trim();
             const email = str(o.ownerEmail);
             return {
@@ -275,35 +278,39 @@ export function buildContractSignerRowsFromOwnerParties(
                 name: name || (email ? email.split("@")[0] : ""),
                 email,
             };
-        }),
-    );
+        })
+        .filter((row) => row.name || row.email);
 }
 
 /**
  * Prefer live CRM owner rows over saved contract signer overrides (stale prefill).
- * Saved rows only fill slots where CRM has no owner data.
+ * Owner slots are positional (up to 2) — never collapse two owners because they share an email.
  */
 export function reconcileSignerRowsWithFreshOwners(
     saved: ContractSignerOverrideRow[] | null | undefined,
     fresh: ContractSignerOverrideRow[],
 ): ContractSignerOverrideRow[] {
-    const freshDeduped = dedupeContractSignerRows(fresh);
+    const freshRows = fresh.slice(0, 2);
     if (!saved?.length) {
-        return freshDeduped;
+        return freshRows;
+    }
+    if (!freshRows.length) {
+        return saved.slice(0, 2);
     }
 
-    const savedDeduped = dedupeContractSignerRows(saved);
+    const savedRows = saved.slice(0, 2);
+    const slotCount = Math.max(freshRows.length, savedRows.length);
     const out: ContractSignerOverrideRow[] = [];
-    for (let i = 0; i < savedDeduped.length; i++) {
-        const persisted = savedDeduped[i]!;
-        const live = freshDeduped[i];
+    for (let i = 0; i < slotCount; i++) {
+        const live = freshRows[i];
+        const persisted = savedRows[i];
         out.push({
-            role: resolveDocuSignSignerRole(persisted.role || live?.role),
-            name: str(live?.name) || str(persisted.name),
-            email: str(live?.email) || str(persisted.email),
+            role: resolveDocuSignSignerRole(persisted?.role || live?.role),
+            name: str(live?.name) || str(persisted?.name),
+            email: str(live?.email) || str(persisted?.email),
         });
     }
-    return out.length ? out : freshDeduped;
+    return out;
 }
 
 /** Refetch application + contract owners; returns latest owner parties for signers. */
@@ -327,13 +334,45 @@ export async function fetchFreshOwnerPartiesForContractSigners(
         try {
             const res = await dispatch(getAllContractOwners({ contractId })).unwrap();
             const rows = (res as { data?: unknown })?.data ?? res;
-            contractOwners = Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+            contractOwners = sortContractOwnerRows(
+                Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [],
+            );
         } catch {
             /* ignore */
         }
     }
 
-    return resolveOwnerPartiesForContractSigners(applicationData, contractOwners, null);
+    let applicationForResolve = applicationData;
+    const fetchKey = getClientFetchKeyFromApplicationClient(
+        (applicationData as { client?: unknown } | null)?.client,
+    );
+    const fetchArg = getClientFetchArg(fetchKey);
+    if (fetchArg) {
+        try {
+            const clientRes = fetchKey?.startsWith("clientId:")
+                ? await dispatch(getClientByClientId(fetchArg)).unwrap()
+                : await dispatch(getClientById(fetchArg)).unwrap();
+            const fullClient = (clientRes as { data?: unknown })?.data ?? clientRes;
+            applicationForResolve = applicationWithClientOwners(
+                applicationData,
+                resolveOwnersFromClientData(fullClient),
+            );
+        } catch {
+            /* use application embed */
+        }
+    }
+
+    return resolveOwnerPartiesForContractSigners(applicationForResolve, contractOwners, null);
+}
+
+export function sortContractOwnerRows(
+    rows: Record<string, unknown>[],
+): Record<string, unknown>[] {
+    return [...rows].sort((a, b) => {
+        const aT = new Date(String(a.createdAt ?? 0)).getTime();
+        const bT = new Date(String(b.createdAt ?? 0)).getTime();
+        return aT - bT;
+    });
 }
 
 function partyRowFromOwner(party: OwnerPartyForSigner | undefined): ContractSignerOverrideRow {
@@ -348,45 +387,32 @@ function partyRowFromOwner(party: OwnerPartyForSigner | undefined): ContractSign
     };
 }
 
-/** Pad signer editor rows — empty slots autofill from linked application owners. */
+/** Pad signer editor rows — one row per owner slot (up to 2), without email dedupe. */
 export function mergeContractSignerEditorRows(
     currentRows: ContractSignerOverrideRow[],
     suggestedRows: ContractSignerOverrideRow[],
     targetCount: number,
     ownerParties?: OwnerPartyForSigner[],
 ): ContractSignerOverrideRow[] {
-    const dedupedSuggested = dedupeContractSignerRows(suggestedRows);
-    const dedupedOwners = ownerParties ? dedupeOwnerParties(ownerParties) : [];
-    const count = Math.max(1, targetCount);
-    const base = currentRows.length ? currentRows : dedupedSuggested;
-    const out = [...base];
+    const count = Math.min(2, Math.max(1, targetCount));
+    const parties = (ownerParties ?? []).slice(0, count);
+    const suggested = suggestedRows.slice(0, count);
+    const out: ContractSignerOverrideRow[] = [];
 
-    while (out.length < count) {
-        const idx = out.length;
-        const fromSuggested = dedupedSuggested[idx];
-        const fromParty = partyRowFromOwner(dedupedOwners[idx]);
-        if (fromSuggested?.email || fromSuggested?.name) {
-            out.push(fromSuggested);
-        } else if (fromParty.email || fromParty.name) {
-            out.push(fromParty);
-        } else {
-            out.push({
-                role: resolveDocuSignSignerRole(),
-                name: "",
-                email: "",
-            });
-        }
+    for (let i = 0; i < count; i++) {
+        const current = currentRows[i];
+        const suggest = suggested[i];
+        const party = partyRowFromOwner(parties[i]);
+        out.push({
+            role: resolveDocuSignSignerRole(
+                current?.role || suggest?.role || party.role,
+            ),
+            name: str(current?.name) || str(suggest?.name) || str(party.name),
+            email: str(current?.email) || str(suggest?.email) || str(party.email),
+        });
     }
 
-    for (let i = 0; i < out.length; i++) {
-        const party = dedupedOwners[i];
-        if (!party) continue;
-        const fill = partyRowFromOwner(party);
-        if (!str(out[i]!.name) && fill.name) out[i]!.name = fill.name;
-        if (!str(out[i]!.email) && fill.email) out[i]!.email = fill.email;
-    }
-
-    return dedupeContractSignerRows(out.slice(0, count));
+    return out;
 }
 
 function mapApiOwnerToDetail(owner: Record<string, unknown> | OwnerDetail): OwnerDetail {
@@ -606,23 +632,50 @@ export async function syncContractSignerRowsToCrm(args: {
     await syncContractOwnerRecords(
         dispatch,
         contractId,
-        Array.isArray(existingContractOwners) ? existingContractOwners : [],
+        sortContractOwnerRows(
+            Array.isArray(existingContractOwners) ? existingContractOwners : [],
+        ),
         rows,
     );
 
     const clientId = resolveClientIdFromApplication(applicationData);
     if (!clientId) return;
 
-    const base = await fetchClientPayloadForUpdate(dispatch, clientId, applicationData);
+    let base = await fetchClientPayloadForUpdate(dispatch, clientId, applicationData);
     if (!base) return;
+
+    const fetchKey = getClientFetchKeyFromApplicationClient(
+        (applicationData as { client?: unknown } | null)?.client,
+    );
+    const fetchArg = getClientFetchArg(fetchKey);
+    if (fetchArg) {
+        try {
+            const clientRes = fetchKey?.startsWith("clientId:")
+                ? await dispatch(getClientByClientId(fetchArg)).unwrap()
+                : await dispatch(getClientById(fetchArg)).unwrap();
+            const fullClient = (clientRes as { data?: unknown })?.data ?? clientRes;
+            const fullOwners = resolveOwnersFromClientData(fullClient);
+            if (fullOwners.length > 0) {
+                const refreshed = await fetchClientPayloadForUpdate(
+                    dispatch,
+                    clientId,
+                    applicationWithClientOwners(applicationData, fullOwners),
+                );
+                if (refreshed) base = refreshed;
+            }
+        } catch {
+            /* use base from initial fetch */
+        }
+    }
+
+    while (base.owners.length < rows.length) {
+        base.owners.push(emptyOwnerDetail());
+    }
 
     for (let i = 0; i < rows.length; i++) {
         const row = rows[i]!;
         const email = str(row.email);
         const { firstName, lastName } = splitPersonName(row.name);
-        if (!base.owners[i]) {
-            base.owners.push(emptyOwnerDetail());
-        }
         const owner = base.owners[i]!;
         if (firstName) owner.firstName = firstName;
         if (lastName) owner.lastName = lastName;
