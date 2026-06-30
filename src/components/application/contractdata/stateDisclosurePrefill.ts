@@ -1,9 +1,9 @@
 import type { ContractPrefillField } from "./Contract";
 import {
     getApplicationClientPrefillArgs,
-    getApplicationPrimaryRecipientName,
     resolveAppendixUnderwritingFeesDollars,
     resolveBalanceTransferMerchantContext,
+    resolveDisclosureBusinessNamePrefill,
     resolveDisclosureOwnerNamePrefill,
     resolvePaybackAmountDollars,
 } from "./Contract";
@@ -67,8 +67,10 @@ export interface StateDisclosureContext {
     estimatedNumberOfPayments?: string;
     /** Prepayment description / amount text. */
     prepayment?: string;
-    /** Recipient (legal client / business) name. */
+    /** Recipient (legal client / business) name — state disclosures only. */
     recipientName?: string;
+    /** Owner / signer personal name — addenda and contract tabs (not state disclosures). */
+    ownerName?: string;
     /** Funder / provider legal name on the disclosure. */
     funderName?: string;
     /** Broker fee paid to broker (Utah disclosure). */
@@ -666,21 +668,14 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
 
     const appPrefill = getApplicationClientPrefillArgs(args.application);
     const merchant = resolveBalanceTransferMerchantContext(contract, args.application);
-    const ownerName = resolveDisclosureOwnerNamePrefill(contract, args.application);
     const customerName =
-        ownerName ||
-        getApplicationPrimaryRecipientName(args.application) ||
-        str(contract.customerName) ||
-        str(appPrefill.customerName) ||
-        merchant.clientName ||
-        str(contract.clientName) ||
-        str(appPrefill.clientName) ||
+        resolveDisclosureBusinessNamePrefill(contract, args.application) ||
         merchant.businessName ||
         merchant.clientLegalName ||
         str(contract.legalName) ||
         str(contract.clientLegalName) ||
-        str((contract as Record<string, unknown>).client_legal_name) ||
-        str(appPrefill.legalName);
+        str((contract as Record<string, unknown>).client_legal_name);
+    const ownerName = resolveDisclosureOwnerNamePrefill(contract, args.application);
 
     const businessAddressLine = [
         str(contract.businessAddress),
@@ -792,6 +787,7 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
             numberOfPayments !== undefined ? String(Math.trunc(numberOfPayments)) : "",
         prepayment: "",
         recipientName: customerName,
+        ownerName,
         funderName: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         recipientAddress: businessAddressLine,
         recipientAddressMultiline: virginiaRecipientAddressMultiline,
@@ -897,6 +893,7 @@ export function stateDisclosureEditorPlaceholderContext(): StateDisclosureContex
         estimatedNumberOfPayments: d(),
         prepayment: d(),
         recipientName: d(),
+        ownerName: d(),
         funderName: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         recipientAddress: d(),
         signatureDate: d(),

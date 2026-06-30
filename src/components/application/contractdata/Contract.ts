@@ -2446,7 +2446,38 @@ export function resolveMerchantBusinessNameForPrefill(
     );
 }
 
-/** Owner / signer personal name for ACH account holder and disclosure merchant fields. */
+/** Business / legal merchant name for state disclosure recipient and client name fields. */
+export function resolveDisclosureBusinessNamePrefill(
+    contract?: Record<string, unknown> | null,
+    application?: unknown,
+): string {
+    const c = contract ?? {};
+    const overrides = normalizeContractPrefillOverrides(c.contractPrefillOverrides) ?? {};
+    const appPrefill = getApplicationClientPrefillArgs(application);
+    const linkedClient = (c.client ?? null) as Record<string, unknown> | null;
+    const app = (application ?? {}) as Record<string, unknown>;
+    const bi = app.businessInfo;
+    const firstBi = Array.isArray(bi) ? bi[0] : bi;
+    const biRecord = (firstBi ?? {}) as Record<string, unknown>;
+
+    return (
+        str(c.legalName) ||
+        str(overrides.legalName) ||
+        str(appPrefill.legalName) ||
+        str(linkedClient?.businessName) ||
+        str(c.securityBusinessName) ||
+        str(overrides.securityBusinessName) ||
+        str(appPrefill.securityBusinessName) ||
+        str(c.doingBusinessAs) ||
+        str(overrides.doingBusinessAs) ||
+        str(appPrefill.doingBusinessAs) ||
+        str(biRecord.clientBusinessName) ||
+        resolveMerchantBusinessNameForPrefill(c, appPrefill) ||
+        ""
+    );
+}
+
+/** Owner / signer personal name for ACH account holder fields. */
 export function resolveDisclosureOwnerNamePrefill(
     contract?: Record<string, unknown> | null,
     application?: unknown,

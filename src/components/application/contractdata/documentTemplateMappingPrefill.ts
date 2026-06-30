@@ -4,6 +4,7 @@ import {
     getContractPrefillEditDefaultsFromApplication,
     resolveAchAccountHolderNamePrefill,
     resolveBalanceTransferMerchantContext,
+    resolveDisclosureBusinessNamePrefill,
     resolveDisclosureOwnerNamePrefill,
     resolveNumberOfPaymentsPrefillValue,
     resolveOfferAmountDollarsForUnderwritingFees,
@@ -111,6 +112,41 @@ function resolvePersonalClientNameFromPrefillMap(
         readPrefillMapValue(byId, "guaranty_client_name") ||
         ""
     );
+}
+
+/** Business / legal merchant name for state disclosure tabs (not owner personal name). */
+function resolveDisclosureBusinessNameFromPrefillMap(
+    byId: Map<string, { id: string; value: string }>,
+    contract?: Record<string, unknown> | null,
+    application?: Record<string, unknown> | null,
+): string {
+    return (
+        resolveDisclosureBusinessNamePrefill(contract, application) ||
+        readPrefillMapValue(byId, "disclosure_merchant_name") ||
+        readPrefillMapValue(byId, "client_legal_name") ||
+        readPrefillMapValue(byId, "business_legal_name") ||
+        readPrefillMapValue(byId, "merchant_legal_name") ||
+        readPrefillMapValue(byId, "legal_name") ||
+        readPrefillMapValue(byId, "recipient_name") ||
+        readPrefillMapValue(byId, "disclosure_name") ||
+        ""
+    );
+}
+
+function applyDisclosureMerchantNameFields(
+    byId: Map<string, { id: string; value: string }>,
+    businessName: string,
+): void {
+    const name = String(businessName ?? "").trim();
+    if (!name) return;
+    for (const id of [
+        "recipient_name",
+        "recipient_name2",
+        "disclosure_name",
+        "disclosure_merchant_name",
+    ] as const) {
+        byId.set(id, { id, value: name });
+    }
 }
 
 function shouldSkipClientNamePrefillOverwrite(
@@ -363,7 +399,7 @@ function buildBalanceTransferComputed(
 ): ContractPrefillField[] {
     const c = contract ?? {};
     const merchant = resolveBalanceTransferMerchantContext(contract, application, {
-        recipientName: sctx.recipientName,
+        recipientName: sctx.ownerName,
         recipientAddress: sctx.recipientAddress,
     });
     const refinanceAmount = resolveRefinanceAmountDollars(c, application);
@@ -397,11 +433,12 @@ function buildKatanBuyoutComputed(
     sctx: StateDisclosureContext,
 ): ContractPrefillField[] {
     const c = contract ?? {};
+    const ownerName = sctx.ownerName || "";
     return buildKatanBuyoutBlankAddendumContractPrefillFields({
         addendumEnteredDate: sctx.signatureDate,
         addendumAgreementDate: sctx.signatureDate,
-        clientName: sctx.recipientName,
-        agreeName: sctx.recipientName,
+        clientName: ownerName,
+        agreeName: ownerName,
         advanceRemit: sctx.estimatedPayment,
         agreementTo: str(c.authorizationApplication),
         amountOfDirecltyDisbursed: sctx.fundingDisbursed,
@@ -410,7 +447,7 @@ function buildKatanBuyoutComputed(
         abaRouting: str(c.authorizationClientBankRouting),
         checkingAccount: str(c.authorizationClientBankAccount),
         transferAmount: sctx.totalRepayment,
-        ownerName: sctx.recipientName,
+        ownerName,
     });
 }
 
@@ -623,11 +660,11 @@ function buildDiscoverEpoComputed(contract: Record<string, unknown> | null, sctx
     }
     return buildDiscoverAdvanceEpoAddendumContractPrefillFields({
         loanAgreementDated: sctx.signatureDate,
-        borrowerName: sctx.recipientName,
+        borrowerName: sctx.ownerName,
         payingToDiscoverAgent60: p60,
         payingToDiscoverAgent90: p90,
         payingToDiscoverAgent120: p120,
-        printBorrowerName1: str(c.clientName) || sctx.recipientName,
+        printBorrowerName1: str(c.clientName) || sctx.ownerName,
         printBorrowerTitle1: str(c["ownerTitle"]),
         printBorrowerName2: str(c["owner1GuarantorName"]),
         printBorrowerTitle2: "",
@@ -652,11 +689,11 @@ function buildDiscoverRefiComputed(contract: Record<string, unknown> | null, sct
     const c = contract ?? {};
     return buildDiscoverRefiBalanceTransferAddendumContractPrefillFields({
         loanAgreementDated: sctx.signatureDate,
-        borrowerName: sctx.recipientName,
+        borrowerName: sctx.ownerName,
         borrowerPay: sctx.estimatedPayment,
         financialDate: sctx.signatureDate,
         previousFinancingDirectlyTo: "",
-        borrowerName1: str(c.clientName) || sctx.recipientName,
+        borrowerName1: str(c.clientName) || sctx.ownerName,
         borrowerTitle1: str(c["ownerTitle"]),
     });
 }
@@ -1113,22 +1150,16 @@ export function mergeStateDisclosurePrefillFallback(args: {
         id: "funder_name",
         value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
     });
-    const merchant = String(
-        resolvePersonalClientNameFromPrefillMap(byId) ||
-            byId.get("client_name")?.value ||
-            byId.get("customer_name")?.value ||
-            sctx.recipientName ||
-            byId.get("client_legal_name")?.value ||
+    const businessName = String(
+        sctx.recipientName ||
+            resolveDisclosureBusinessNameFromPrefillMap(
+                byId,
+                effectiveContract,
+                args.application ?? null,
+            ) ||
             "",
     ).trim();
-    if (merchant) {
-        byId.set("client_name", { id: "client_name", value: merchant });
-        byId.set("disclosure_merchant_name", {
-            id: "disclosure_merchant_name",
-            value: merchant,
-        });
-        byId.set("disclosure_name", { id: "disclosure_name", value: merchant });
-    }
+    applyDisclosureMerchantNameFields(byId, businessName);
     return Array.from(byId.values());
 }
 
@@ -1486,31 +1517,33 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             id: "funder_name",
             value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         });
-        const merchant = String(
-            resolvePersonalClientNameFromPrefillMap(byId) ||
-                byId.get("client_name")?.value ||
-                byId.get("customer_name")?.value ||
-                byId.get("client_legal_name")?.value ||
-                byId.get("business_legal_name")?.value ||
+        const businessName = String(
+            resolveDisclosureBusinessNameFromPrefillMap(
+                byId,
+                args.contract ?? null,
+                args.application ?? null,
+            ) ||
+                readPrefillMapValue(byId, "recipient_name") ||
+                readPrefillMapValue(byId, "disclosure_merchant_name") ||
                 "",
         ).trim();
-        if (merchant) {
-            byId.set("client_name", { id: "client_name", value: merchant });
-        }
+        applyDisclosureMerchantNameFields(byId, businessName);
     }
 
-    const personalClientName = resolvePersonalClientNameFromPrefillMap(byId);
-    const legalClientName =
-        readPrefillMapValue(byId, "client_legal_name") ||
-        readPrefillMapValue(byId, "business_legal_name");
-    const currentClientName = readPrefillMapValue(byId, "client_name");
-    if (
-        personalClientName &&
-        legalClientName &&
-        currentClientName &&
-        currentClientName === legalClientName
-    ) {
-        byId.set("client_name", { id: "client_name", value: personalClientName });
+    if (!disclosureMerged) {
+        const personalClientName = resolvePersonalClientNameFromPrefillMap(byId);
+        const legalClientName =
+            readPrefillMapValue(byId, "client_legal_name") ||
+            readPrefillMapValue(byId, "business_legal_name");
+        const currentClientName = readPrefillMapValue(byId, "client_name");
+        if (
+            personalClientName &&
+            legalClientName &&
+            currentClientName &&
+            currentClientName === legalClientName
+        ) {
+            byId.set("client_name", { id: "client_name", value: personalClientName });
+        }
     }
 
     return Array.from(byId.values());

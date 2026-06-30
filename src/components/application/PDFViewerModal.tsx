@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DocumentViewerPanel } from "@/components/documents/DocumentViewerPanel";
+import { isPdfMimeOrName } from "@/lib/documentPreview";
 import { flushSync } from "react-dom";
 import {
     AlertCircle,
@@ -95,7 +96,7 @@ import {
     getApplicationPrimaryRecipientName,
     getSignerRecipientEmailForContract,
     resolveEffectiveDocuSignSignerEmail,
-    resolveDisclosureOwnerNamePrefill,
+    resolveDisclosureBusinessNamePrefill,
     parseNoteStructuredSection,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
@@ -4211,8 +4212,7 @@ const PDFViewerModal = ({
             const fieldOverrides = mapDisclosureMetricsToEditorFieldOverrides(args.metrics, {
                 merchantName:
                     args.inputs.merchantName ||
-                    resolveDisclosureOwnerNamePrefill(resolvedContract, applicationData) ||
-                    getApplicationPrimaryRecipientName(applicationData) ||
+                    resolveDisclosureBusinessNamePrefill(resolvedContract, applicationData) ||
                     undefined,
                 signatureDate: args.inputs.disbursementDate,
                 state: args.inputs.state,
@@ -4665,6 +4665,8 @@ const PDFViewerModal = ({
                     (platformKey ? supplementalOptionLabel(platformKey) : null) ||
                     formatDisclosureTemplateLabel(row) ||
                     "Template";
+                const previewName = /\.pdf$/i.test(label) ? label : `${label}.pdf`;
+                setUploadedPreviewName(previewName);
                 setDocumentUploadMessage(`Showing template: ${formatDropdownLabel(label)}`);
             } catch (error: any) {
                 const apiMsg =
@@ -5673,6 +5675,8 @@ const PDFViewerModal = ({
               : effectiveContractPreviewName || fileName || "Contract.pdf";
 
     const useMultiFormatPreview = currentPreviewUrl !== effectiveContractPreviewUrl;
+    const useDirectPdfPreview =
+        !useMultiFormatPreview || isPdfMimeOrName("application/pdf", currentPreviewFileName);
 
     return (
         <>
@@ -8609,19 +8613,19 @@ const PDFViewerModal = ({
                                             <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
                                             <span>Loading document preview…</span>
                                         </div>
-                                    ) : useMultiFormatPreview ? (
+                                    ) : useDirectPdfPreview ? (
+                                        <DirectPdfViewer
+                                            key={currentPreviewUrl}
+                                            fileUrl={currentPreviewUrl}
+                                            errorMessage="Could not render this PDF. Please check that the PDF URL is reachable and allows browser access."
+                                        />
+                                    ) : (
                                         <DocumentViewerPanel
                                             key={`${currentPreviewUrl}-${currentPreviewFileName}`}
                                             fileUrl={currentPreviewUrl}
                                             fileName={currentPreviewFileName}
                                             className="absolute inset-0"
                                             minHeightClassName="min-h-full"
-                                        />
-                                    ) : (
-                                        <DirectPdfViewer
-                                            key={currentPreviewUrl}
-                                            fileUrl={currentPreviewUrl}
-                                            errorMessage="Could not render this PDF. Please check that the PDF URL is reachable and allows browser access."
                                         />
                                     )
                                 ) : prefilledBoldSignPdfLoading ? (

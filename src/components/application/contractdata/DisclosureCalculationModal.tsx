@@ -328,7 +328,7 @@ export function DisclosureCalculationModal({
                             <div className="space-y-4">
                                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                                     <div className="space-y-1.5 sm:col-span-2">
-                                        <Label className="text-xs">Owner name</Label>
+                                        <Label className="text-xs">Business name</Label>
                                         <Input
                                             className={EDITABLE_INPUT_CLASS}
                                             value={form.merchantName ?? ""}
