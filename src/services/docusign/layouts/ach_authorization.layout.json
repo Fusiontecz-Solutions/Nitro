@@ -25,6 +25,7 @@
     "ach_authorization_account_holder_bank_account_number",
     "ach_authorization_account_holder_bank_branch_city",
     "ach_authorization_account_holder_bank_name",
+    "ach_authorization_account_holder_bank_number_of_transactions",
     "ach_authorization_account_holder_bank_routing_number",
     "ach_authorization_account_holder_bank_state",
     "ach_authorization_account_holder_bank_transaction_fee",
@@ -431,6 +432,20 @@
       "signerRole": "Receiver",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_bank_transaction_fee"
+    },
+    {
+      "id": "p30",
+      "type": "text",
+      "variable": "ach_authorization_account_holder_bank_number_of_transactions",
+      "documentId": "1",
+      "pageNumber": "2",
+      "x": "445",
+      "y": "481",
+      "width": "48",
+      "height": "19",
+      "signerRole": "Receiver",
+      "optional": true,
+      "sourceTabLabel": "ach_authorization_account_holder_bank_number_of_transactions"
     },
     {
       "id": "p29",

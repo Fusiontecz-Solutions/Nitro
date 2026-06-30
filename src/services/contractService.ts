@@ -34,30 +34,21 @@ async function resolvePaymentBankDetailForContract(
     routingNumber: true,
   } as const;
 
+  // Bank details are optional at contract creation — filled later from voided check / KYC.
   if (applicationId) {
     if (paymentBankId) {
       const bank = await prismaClient.bankDetail.findFirst({
         where: { id: paymentBankId, applicationId },
         select: selectBank,
       });
-      if (!bank) {
-        throw new ValidationError(
-          'Selected bank account was not found for this application; add BankDetail on the application or pass a valid paymentBankId.',
-        );
-      }
-      return mapBankDetailRecordForApi(bank);
+      return bank ? mapBankDetailRecordForApi(bank) : null;
     }
     const bank = await prismaClient.bankDetail.findFirst({
       where: { applicationId },
       orderBy: { createdAt: 'desc' },
       select: selectBank,
     });
-    if (!bank) {
-      throw new ValidationError(
-        'Bank details must exist on the application (BankDetail) before creating a contract.',
-      );
-    }
-    return mapBankDetailRecordForApi(bank);
+    return bank ? mapBankDetailRecordForApi(bank) : null;
   }
 
   if (paymentBankId) {
@@ -65,15 +56,10 @@ async function resolvePaymentBankDetailForContract(
       where: { id: paymentBankId },
       select: selectBank,
     });
-    if (!bank) {
-      throw new ValidationError('paymentBankId does not reference an existing BankDetail.');
-    }
-    return mapBankDetailRecordForApi(bank);
+    return bank ? mapBankDetailRecordForApi(bank) : null;
   }
 
-  throw new ValidationError(
-    'paymentBankId is required when creating a contract without an application.',
-  );
+  return null;
 }
 
 /** Coerce optional FK to a positive int or null so bogus values (e.g. NaN, 0, placeholders) never hit Prisma. */
@@ -712,7 +698,7 @@ class ContractService {
     const derivedCreatedById =
       data.createdById ?? application?.createdById ?? application?.salesRepresentative?.id ?? null;
     const derivedOfferId = data.offerId ?? application?.termsOffers?.[0]?.id ?? null;
-    const derivedPaymentBankId = resolvedPaymentBank.id;
+    const derivedPaymentBankId = resolvedPaymentBank?.id ?? null;
     const derivedContractLength =
       data.contractLenght ??
       parseContractLengthDaysFromOfferTerm(application?.OfferDecision?.term ?? null);
@@ -732,7 +718,6 @@ class ContractService {
 
     if (!derivedOfferId) throw new Error('offerId could not be derived from request/application termsOffers');
     if (!derivedCreatedById) throw new Error('createdById could not be derived');
-    if (!derivedPaymentBankId) throw new Error('paymentBankId could not be derived');
     if (derivedContractLength == null) throw new Error('contractLenght could not be derived');
     if (derivedApprovedAmount == null) throw new Error('approvedAmount could not be derived');
     if (derivedTotalAmount == null) throw new Error('totalAmount could not be derived');

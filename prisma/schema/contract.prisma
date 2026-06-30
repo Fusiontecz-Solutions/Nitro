@@ -24,7 +24,7 @@ model Contract {
   updatedAt                      DateTime                          @updatedAt
   createdById                    String                            @db.Uuid
   agreementDate                  DateTime
-  paymentBankId                  String                            @db.Uuid
+  paymentBankId                  String?                           @db.Uuid
   status                         ContractStatus                    @default(DRAFT)
   funderName                     String?
   state                          String?
@@ -76,7 +76,7 @@ model Contract {
   client                         Client?                           @relation(fields: [clientId], references: [id])
   createdBy                      User                              @relation("ContractCreatedBy", fields: [createdById], references: [id])
   offer                          OfferDecision                     @relation(fields: [offerId], references: [id], onDelete: Cascade)
-  paymentBank                    BankDetail                        @relation(fields: [paymentBankId], references: [id])
+  paymentBank                    BankDetail?                       @relation(fields: [paymentBankId], references: [id])
   clients                        ContractClient[]
   templateMappings               ContractDocumentTemplateMapping[]
   guarantors                     ContractGuarantor[]

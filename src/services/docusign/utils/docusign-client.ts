@@ -75,6 +75,10 @@ export const DOCUSIGN_DEFAULT_CC_EMAIL =
 export const DOCUSIGN_AUTO_SEND_ENVELOPE =
   String(process.env.DOCUSIGN_AUTO_SEND_ENVELOPE || 'true').trim().toLowerCase() !== 'false';
 
+/** When true (default), contract + addendum/disclosure PDFs are merged into one DocuSign document. */
+export const DOCUSIGN_COMBINE_PACKAGE_PDF =
+  String(process.env.DOCUSIGN_COMBINE_PACKAGE_PDF || 'true').trim().toLowerCase() !== 'false';
+
 export const DOCUSIGN_WEBHOOK_BASIC_USER = process.env.DOCUSIGN_WEBHOOK_BASIC_USER || '';
 export const DOCUSIGN_WEBHOOK_BASIC_PASSWORD = process.env.DOCUSIGN_WEBHOOK_BASIC_PASSWORD || '';
 

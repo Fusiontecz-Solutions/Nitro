@@ -24,6 +24,7 @@
     "ach_authorization_account_holder_bank_account_number",
     "ach_authorization_account_holder_bank_branch_city",
     "ach_authorization_account_holder_bank_name",
+    "ach_authorization_account_holder_bank_number_of_transactions",
     "ach_authorization_account_holder_bank_routing_number",
     "ach_authorization_account_holder_bank_state",
     "ach_authorization_account_holder_bank_transaction_fee",
@@ -138,7 +139,7 @@
       "slot": "signature_p2_420_103",
       "documentId": "1",
       "pageNumber": "2",
-      "x": "420",
+      "x": "413",
       "y": "103",
       "signerRole": "Signer",
       "optional": false,
@@ -213,11 +214,11 @@
     {
       "id": "p7",
       "type": "signature",
-      "slot": "signature_p15_211_637",
+      "slot": "signature_p15_202_634",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "211",
-      "y": "625",
+      "x": "202",
+      "y": "634",
       "signerRole": "Signer",
       "optional": false,
       "sourceTabLabel": "Signature 6ad0c7e2-0156-4cc1-84b7-6c98621957ac",
@@ -316,6 +317,20 @@
       "optional": false,
       "sourceTabLabel": "Initial 5421f8c0-5582-4f37-8f52-eb42a8ab0931",
       "signerParty": "primary"
+    },
+    {
+      "id": "p14b",
+      "type": "initial",
+      "slot": "initial_p1_268_738",
+      "documentId": "1",
+      "pageNumber": "1",
+      "x": "268",
+      "y": "738",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Initial owner 2 page 1",
+      "signerParty": "secondary",
+      "when": "owners >= 2"
     },
     {
       "id": "p15",
@@ -461,17 +476,45 @@
       "signerParty": "primary"
     },
     {
+      "id": "p25b",
+      "type": "initial",
+      "slot": "initial_p14_229_725",
+      "documentId": "1",
+      "pageNumber": "14",
+      "x": "229",
+      "y": "725",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Initial owner 2 page 14",
+      "signerParty": "secondary",
+      "when": "owners >= 2"
+    },
+    {
       "id": "p26",
       "type": "initial",
-      "slot": "initial_p15_157_727",
+      "slot": "initial_p15_121_731",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "157",
-      "y": "727",
+      "x": "121",
+      "y": "731",
       "signerRole": "Signer",
       "optional": false,
       "sourceTabLabel": "Initial bfeed892-986a-4e20-bbeb-59281fd03cc9",
       "signerParty": "primary"
+    },
+    {
+      "id": "p26b",
+      "type": "initial",
+      "slot": "initial_p15_229_725",
+      "documentId": "1",
+      "pageNumber": "15",
+      "x": "229",
+      "y": "725",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Initial owner 2 page 15",
+      "signerParty": "secondary",
+      "when": "owners >= 2"
     },
     {
       "id": "p27",
@@ -485,6 +528,20 @@
       "optional": false,
       "sourceTabLabel": "Initial 8f85ebc7-4b78-4137-bfae-0efbffb046c9",
       "signerParty": "primary"
+    },
+    {
+      "id": "p27b",
+      "type": "initial",
+      "slot": "initial_p16_269_719",
+      "documentId": "1",
+      "pageNumber": "16",
+      "x": "269",
+      "y": "719",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Initial owner 2 page 16",
+      "signerParty": "secondary",
+      "when": "owners >= 2"
     },
     {
       "id": "p28",
@@ -542,14 +599,15 @@
       "id": "p32",
       "type": "date",
       "variable": "signature_date",
-      "slot": "date_p15_524_645",
+      "slot": "date_p15_524_644",
       "documentId": "1",
       "pageNumber": "15",
       "x": "524",
-      "y": "645",
+      "y": "644",
       "signerRole": "Signer",
       "optional": false,
-      "sourceTabLabel": "Date Signed 13b5b9f9-efcd-45c4-bfdd-571a47045fce"
+      "sourceTabLabel": "Date Signed 13b5b9f9-efcd-45c4-bfdd-571a47045fce",
+      "signerParty": "primary"
     },
     {
       "id": "p33",
@@ -888,13 +946,27 @@
       "sourceTabLabel": "ach_authorization_account_holder_bank_transaction_fee"
     },
     {
+      "id": "p59b",
+      "type": "text",
+      "variable": "ach_authorization_account_holder_bank_number_of_transactions",
+      "documentId": "1",
+      "pageNumber": "14",
+      "x": "445",
+      "y": "481",
+      "width": "48",
+      "height": "19",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "ach_authorization_account_holder_bank_number_of_transactions"
+    },
+    {
       "id": "p60",
       "type": "text",
       "variable": "authorized_business_phone",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "366",
-      "y": "99",
+      "x": "370",
+      "y": "98",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "authorized_business_phone"
@@ -905,7 +977,7 @@
       "variable": "ach_authorization_account_holder_name",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "141",
+      "x": "140",
       "y": "188",
       "signerRole": "Signer",
       "optional": true,
@@ -917,8 +989,8 @@
       "variable": "ach_authorization_account_holder_dba",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "288",
-      "y": "189",
+      "x": "287",
+      "y": "187",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_dba"
@@ -930,7 +1002,7 @@
       "documentId": "1",
       "pageNumber": "15",
       "x": "477",
-      "y": "189",
+      "y": "187",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_phone"
@@ -941,7 +1013,7 @@
       "variable": "ach_authorization_account_holder_address",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "140",
+      "x": "139",
       "y": "219",
       "signerRole": "Signer",
       "optional": true,
@@ -953,7 +1025,7 @@
       "variable": "ach_authorization_account_holder_city",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "365",
+      "x": "361",
       "y": "219",
       "signerRole": "Signer",
       "optional": true,
@@ -965,7 +1037,7 @@
       "variable": "ach_authorization_account_holder_state",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "486",
+      "x": "495",
       "y": "218",
       "signerRole": "Signer",
       "optional": true,
@@ -977,7 +1049,7 @@
       "variable": "ach_authorization_account_holder_zip",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "551",
+      "x": "549",
       "y": "217",
       "signerRole": "Signer",
       "optional": true,
@@ -989,7 +1061,7 @@
       "variable": "ach_authorization_account_holder_bank_name",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "141",
+      "x": "143",
       "y": "272",
       "signerRole": "Signer",
       "optional": true,
@@ -1001,8 +1073,8 @@
       "variable": "ach_authorization_account_holder_bank_branch_city",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "367",
-      "y": "272",
+      "x": "363",
+      "y": "269",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_bank_branch_city"
@@ -1013,8 +1085,8 @@
       "variable": "ach_authorization_account_holder_bank_state",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "486",
-      "y": "270",
+      "x": "491",
+      "y": "268",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_bank_state"
@@ -1025,8 +1097,8 @@
       "variable": "ach_authorization_account_holder_bank_zip",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "548",
-      "y": "271",
+      "x": "547",
+      "y": "268",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_bank_zip"
@@ -1037,8 +1109,8 @@
       "variable": "ach_authorization_account_holder_bank_routing_number",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "140",
-      "y": "347",
+      "x": "142",
+      "y": "344",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_bank_routing_number"
@@ -1049,7 +1121,7 @@
       "variable": "ach_authorization_account_holder_bank_account_number",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "366",
+      "x": "364",
       "y": "346",
       "signerRole": "Signer",
       "optional": true,
@@ -1061,11 +1133,25 @@
       "variable": "ach_authorization_account_holder_bank_transaction_fee",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "151",
-      "y": "481",
+      "x": "152",
+      "y": "480",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_account_holder_bank_transaction_fee"
+    },
+    {
+      "id": "p74b",
+      "type": "text",
+      "variable": "ach_authorization_account_holder_bank_number_of_transactions",
+      "documentId": "1",
+      "pageNumber": "15",
+      "x": "445",
+      "y": "481",
+      "width": "48",
+      "height": "19",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "ach_authorization_account_holder_bank_number_of_transactions"
     },
     {
       "id": "p75",
@@ -1238,14 +1324,17 @@
     {
       "id": "p89",
       "type": "text",
-      "variable": "owner2_guarantor_name",
+      "variable": "guaranty_guarantor2_name",
       "documentId": "1",
       "pageNumber": "2",
-      "x": "72",
-      "y": "328",
+      "x": "76",
+      "y": "327",
+      "width": "153",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "owner2_guarantor_name"
+      "when": "owners >= 2",
+      "sourceTabLabel": "guaranty_guarantor2_name page 2"
     },
     {
       "id": "p90",
@@ -1337,10 +1426,13 @@
       "variable": "guaranty_owner2_name",
       "documentId": "1",
       "pageNumber": "11",
-      "x": "71",
-      "y": "52",
+      "x": "82",
+      "y": "59",
+      "width": "210",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_owner2_name"
     },
     {
@@ -1361,10 +1453,13 @@
       "variable": "guaranty_guarantor2_name",
       "documentId": "1",
       "pageNumber": "11",
-      "x": "70",
-      "y": "286",
+      "x": "73",
+      "y": "288",
+      "width": "172",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_guarantor2_name"
     },
     {
@@ -1373,10 +1468,13 @@
       "variable": "guaranty_owner2_ss",
       "documentId": "1",
       "pageNumber": "11",
-      "x": "69",
-      "y": "96",
+      "x": "84",
+      "y": "102",
+      "width": "210",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_owner2_ss"
     },
     {
@@ -1385,10 +1483,13 @@
       "variable": "guaranty_owner2_driver_license",
       "documentId": "1",
       "pageNumber": "11",
-      "x": "416",
-      "y": "98",
+      "x": "426",
+      "y": "99",
+      "width": "165",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_owner2_driver_license"
     },
     {
@@ -1553,10 +1654,13 @@
       "variable": "guaranty_guarantor2_ss",
       "documentId": "1",
       "pageNumber": "11",
-      "x": "77",
-      "y": "326",
+      "x": "75",
+      "y": "325",
+      "width": "172",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_guarantor2_ss"
     },
     {
@@ -1577,10 +1681,13 @@
       "variable": "guaranty_guarantor2_driver_license",
       "documentId": "1",
       "pageNumber": "11",
-      "x": "411",
+      "x": "412",
       "y": "324",
+      "width": "162",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_guarantor2_driver_license"
     },
     {
@@ -1601,8 +1708,8 @@
       "variable": "ach_authorization_concent_account_holder_name",
       "documentId": "1",
       "pageNumber": "15",
-      "x": "332",
-      "y": "639",
+      "x": "339",
+      "y": "642",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "ach_authorization_concent_account_holder_name"
@@ -1616,8 +1723,12 @@
       "x": "194",
       "y": "129",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_bank_portal_website"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_bank_portal_website",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p121",
@@ -1628,8 +1739,12 @@
       "x": "194",
       "y": "148",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_username"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_username",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p122",
@@ -1640,8 +1755,12 @@
       "x": "193",
       "y": "167",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_password"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_password",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p123",
@@ -1652,8 +1771,12 @@
       "x": "193",
       "y": "185",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_security_question1"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_security_question1",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p124",
@@ -1664,8 +1787,12 @@
       "x": "193",
       "y": "201",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_security_answer1"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_security_answer1",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p125",
@@ -1676,8 +1803,12 @@
       "x": "193",
       "y": "216",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_security_question2"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_security_question2",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p126",
@@ -1688,8 +1819,12 @@
       "x": "193",
       "y": "232",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_security_answer2"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_security_answer2",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p127",
@@ -1700,8 +1835,12 @@
       "x": "193",
       "y": "249",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_security_question3"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_security_question3",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p128",
@@ -1712,8 +1851,12 @@
       "x": "192",
       "y": "266",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_security_answer3"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_security_answer3",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p129",
@@ -1724,8 +1867,12 @@
       "x": "193",
       "y": "289",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_other_infomation"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_other_infomation",
+      "width": "282",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p130",
@@ -1808,8 +1955,12 @@
       "x": "99",
       "y": "405",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_name1"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_name1",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p137",
@@ -1820,8 +1971,12 @@
       "x": "99",
       "y": "426",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_number_1"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_number_1",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p138",
@@ -1832,8 +1987,12 @@
       "x": "100",
       "y": "442",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_relationship1"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_relationship1",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p139",
@@ -1844,8 +2003,12 @@
       "x": "101",
       "y": "470",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_name2"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_name2",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p140",
@@ -1856,8 +2019,12 @@
       "x": "100",
       "y": "488",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_number2"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_number2",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p141",
@@ -1868,8 +2035,12 @@
       "x": "98",
       "y": "507",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_relationship2"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_relationship2",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p142",
@@ -1880,8 +2051,12 @@
       "x": "100",
       "y": "533",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_name3"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_name3",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p143",
@@ -1892,8 +2067,12 @@
       "x": "99",
       "y": "551",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_number3"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_number3",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p144",
@@ -1904,8 +2083,12 @@
       "x": "99",
       "y": "567",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "ach_authorization_reference_relationship3"
+      "optional": false,
+      "sourceTabLabel": "ach_authorization_reference_relationship3",
+      "width": "233",
+      "height": "19",
+      "fillAtSigning": true,
+      "signerParty": "primary"
     },
     {
       "id": "p145",
@@ -2040,16 +2223,32 @@
       "sourceTabLabel": "exhibit_a_value_10"
     },
     {
+      "id": "p167",
+      "type": "signature",
+      "slot": "signature_p17_472_685",
+      "documentId": "1",
+      "pageNumber": "17",
+      "x": "472",
+      "y": "685",
+      "signerRole": "Signer",
+      "optional": false,
+      "sourceTabLabel": "Signature exhibit page 17",
+      "signerParty": "primary"
+    },
+    {
       "id": "p158",
       "type": "text",
-      "variable": "merchant2_name",
+      "variable": "owner2_guarantor_name",
       "documentId": "1",
       "pageNumber": "2",
-      "x": "72",
-      "y": "188",
+      "x": "76",
+      "y": "192",
+      "width": "153",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "merchant2_name"
+      "when": "owners >= 2",
+      "sourceTabLabel": "owner2_guarantor_name_merchant2"
     },
     {
       "id": "p159",
@@ -2057,8 +2256,8 @@
       "slot": "signature_p2_423_172",
       "documentId": "1",
       "pageNumber": "2",
-      "x": "423",
-      "y": "172",
+      "x": "415",
+      "y": "170",
       "signerRole": "Signer",
       "optional": false,
       "signerParty": "secondary",
@@ -2071,10 +2270,13 @@
       "variable": "appendix_merchant2_name",
       "documentId": "1",
       "pageNumber": "12",
-      "x": "69",
-      "y": "565",
+      "x": "68",
+      "y": "567",
+      "width": "165",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "appendix_merchant2_name"
     },
     {
@@ -2083,8 +2285,8 @@
       "slot": "signature_p12_424_549",
       "documentId": "1",
       "pageNumber": "12",
-      "x": "424",
-      "y": "549",
+      "x": "417",
+      "y": "546",
       "signerRole": "Signer",
       "optional": false,
       "signerParty": "secondary",
@@ -2094,14 +2296,17 @@
     {
       "id": "p162",
       "type": "text",
-      "variable": "merchant2_name",
+      "variable": "guaranty_owner2_name",
       "documentId": "1",
       "pageNumber": "10",
-      "x": "78",
-      "y": "516",
+      "x": "76",
+      "y": "514",
+      "width": "163",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "merchant2_name page 10"
+      "when": "owners >= 2",
+      "sourceTabLabel": "guaranty_owner2_name page 10"
     },
     {
       "id": "p163",
@@ -2109,8 +2314,8 @@
       "slot": "signature_p10_425_498",
       "documentId": "1",
       "pageNumber": "10",
-      "x": "425",
-      "y": "498",
+      "x": "424",
+      "y": "496",
       "signerRole": "Signer",
       "optional": false,
       "signerParty": "secondary",
@@ -2123,10 +2328,13 @@
       "variable": "guaranty_owner2_ss",
       "documentId": "1",
       "pageNumber": "10",
-      "x": "69",
-      "y": "514",
+      "x": "75",
+      "y": "553",
+      "width": "210",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_owner2_ss page 10"
     },
     {
@@ -2135,10 +2343,13 @@
       "variable": "guaranty_owner2_driver_license",
       "documentId": "1",
       "pageNumber": "10",
-      "x": "416",
-      "y": "512",
+      "x": "425",
+      "y": "553",
+      "width": "165",
+      "height": "19",
       "signerRole": "Signer",
       "optional": true,
+      "when": "owners >= 2",
       "sourceTabLabel": "guaranty_owner2_driver_license page 10"
     }
   ]

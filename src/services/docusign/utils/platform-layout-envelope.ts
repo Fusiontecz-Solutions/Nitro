@@ -19,7 +19,12 @@ import {
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
-import { DOCUSIGN_DEFAULT_ROLE_NAME, DOCUSIGN_SECONDARY_ROLE_NAME } from './docusign-client';
+import {
+  DOCUSIGN_COMBINE_PACKAGE_PDF,
+  DOCUSIGN_DEFAULT_ROLE_NAME,
+  DOCUSIGN_SECONDARY_ROLE_NAME,
+} from './docusign-client';
+import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
 
@@ -344,6 +349,25 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
     await assertLayoutPlacementsFitPdfPages(layout);
   }
 
+  let mergedDocument: { name: string; documentBase64: string } | undefined;
+  let pageOffsetByLayoutKey: Map<string, number> | undefined;
+  if (DOCUSIGN_COMBINE_PACKAGE_PDF && flattenedLayouts.length > 1) {
+    const merged = await mergeLayoutPdfsToSingleDocument(flattenedLayouts);
+    pageOffsetByLayoutKey = merged.pageOffsetByLayoutKey;
+    const mergedName =
+      String(options.documentName || '').trim() ||
+      flattenedLayouts[0].document.originalFileName ||
+      flattenedLayouts[0].name ||
+      'Contract Package';
+    mergedDocument = {
+      name: mergedName,
+      documentBase64: merged.documentBase64,
+    };
+    console.log(
+      `[DocuSign] combined ${flattenedLayouts.length} layout PDF(s) into one document (${merged.pageCount} pages) for envelope send`,
+    );
+  }
+
   const envelope = buildEnvelopeFromLayouts({
     layouts: flattenedLayouts,
     values,
@@ -353,6 +377,8 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
     primaryDocumentName: options.documentName,
     flattenedLayoutKeys,
     lockDataTabs: options.lockDataTabs === true,
+    mergedDocument,
+    pageOffsetByLayoutKey,
   });
 
   const createTimePrefillTabCount = prefillFlattenedInPdf

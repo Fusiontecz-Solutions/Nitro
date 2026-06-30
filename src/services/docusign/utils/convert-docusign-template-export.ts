@@ -31,6 +31,8 @@ export type DocumentLayoutPlacement = {
   sourceTabLabel?: string;
   /** When true, prefill tab is locked so signers cannot edit. */
   lockedForSigner?: boolean;
+  /** When true, tab is left blank at send so the signer fills it during signing (never locked or flattened). */
+  fillAtSigning?: boolean;
 };
 
 export type DocumentLayout = {
