@@ -91,6 +91,7 @@ export function getTemplateRoleEmailFromRow(row: Record<string, unknown>): strin
     );
 }
 
+import { OWNER2_NAME_SYNC_CAMEL_KEYS } from "./contractPartyCounts";
 import {
     DOCUSIGN_DEFAULT_SIGNER_ROLE,
     DOCUSIGN_PRIMARY_SIGNER_ROLE,
@@ -149,10 +150,60 @@ export function mergeContractPrefillWithSignerOverrides(
         baseRaw && typeof baseRaw === "object" && !Array.isArray(baseRaw)
             ? { ...(baseRaw as Record<string, unknown>) }
             : {};
-    return {
+    const withSigners = {
         ...base,
         [CONTRACT_SIGNER_OVERRIDES_KEY]: signerRows,
     };
+    return applyOwner2PrefillKeysFromSignerRows(withSigners, signerRows);
+}
+
+/** Mirror owner-2 signer name into prefill override keys when saving signers. */
+export function applyOwner2PrefillKeysFromSignerRows(
+    record: Record<string, unknown>,
+    signerRows: ContractSignerOverrideRow[],
+): Record<string, unknown> {
+    const secondRow = findSecondOwnerSignerRow(signerRows);
+    if (!secondRow) return record;
+    const secondName = String(secondRow.name || "").trim();
+    if (!secondName) return record;
+    const out = { ...record };
+    for (const key of OWNER2_NAME_SYNC_CAMEL_KEYS) {
+        out[key] = secondName;
+    }
+    return out;
+}
+
+export function splitSignerDisplayName(name: string): {
+    firstName: string;
+    lastName: string;
+} {
+    const parts = String(name || "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+    if (parts.length === 0) return { firstName: "", lastName: "" };
+    if (parts.length === 1) return { firstName: parts[0]!, lastName: parts[0]! };
+    return { firstName: parts[0]!, lastName: parts.slice(1).join(" ") };
+}
+
+/** Second merchant signer row from Manage Signers (Owner 2 / Guarantor 2 or 2nd distinct email). */
+export function findSecondOwnerSignerRow(
+    rows: ContractSignerOverrideRow[],
+): ContractSignerOverrideRow | null {
+    if (!rows.length) return null;
+    const explicit = rows.find((r) =>
+        /owner\s*2|guarantor\s*2/i.test(String(r.role || "").trim()),
+    );
+    if (explicit && String(explicit.email || "").trim()) return explicit;
+    const primaryEmail = String(rows[0]?.email || "")
+        .trim()
+        .toLowerCase();
+    const distinctSecond = rows.find((r, idx) => {
+        if (idx === 0) return false;
+        const email = String(r.email || "").trim().toLowerCase();
+        return Boolean(email && email !== primaryEmail);
+    });
+    return distinctSecond ?? (rows.length >= 2 ? rows[1]! : null);
 }
 
 const DOCUSIGN_SIGNER_ROLE_COMMON = {

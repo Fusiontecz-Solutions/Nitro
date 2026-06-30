@@ -208,20 +208,101 @@ const PRIMARY_GUARANTOR_PREFILL_IDS = [
     "owner1_guarantor_name",
     "guaranty_owner1_name",
     "guaranty_guarantor1_name",
+    "guaranty_client_name",
+    "client_name",
+    "security_guarantor",
 ] as const;
 
-/** Merchant / owner 1 / guarantor 1 share the same name on all guarantor lines. */
+const PRIMARY_PARTY_SS_IDS = [
+    "guaranty_owner1_ss",
+    "guaranty_guarantor1_ss",
+    "guaranty_ss",
+] as const;
+
+const PRIMARY_PARTY_DL_IDS = [
+    "guaranty_owner1_driver_license",
+    "guaranty_guarantor1_driver_license",
+    "guaranty_ss_driver_license",
+] as const;
+
+const SECOND_PARTY_SS_IDS = ["guaranty_owner2_ss", "guaranty_guarantor2_ss"] as const;
+
+const SECOND_PARTY_DL_IDS = [
+    "guaranty_owner2_driver_license",
+    "guaranty_guarantor2_driver_license",
+] as const;
+
+const PARTY2_PREFILL_FIELD_IDS = [
+    ...SECOND_OWNER_PREFILL_IDS,
+    "business_name_2",
+    "addendum_dated_principal_owner2_name",
+    "addendum_dated_principal_owner2_date",
+] as const;
+
+function isParty2PrefillFieldId(id: string): boolean {
+    const key = String(id || "").trim().toLowerCase();
+    if (!key) return false;
+    if ((PARTY2_PREFILL_FIELD_IDS as readonly string[]).includes(key)) return true;
+    return /owner2|owner_2|guarantor2|guarantor_2|merchant2|merchant_2|seller_2|business_name_2|appendix_merchant2/.test(
+        key,
+    );
+}
+
+/** Remove owner-2 / guarantor-2 / merchant-2 prefill when only one merchant signer. */
+export function clearParty2PrefillFieldPayload(
+    fields: Array<{ id: string; value: string }>,
+    ownerCount: number,
+): Array<{ id: string; value: string }> {
+    if (ownerCount >= 2) return fields;
+    return fields.filter((f) => !isParty2PrefillFieldId(f.id));
+}
+
+function mirrorEmptyPrefillIds(
+    byId: Map<string, { id: string; value: string }>,
+    ids: readonly string[],
+    value: string,
+): void {
+    const v = String(value || "").trim();
+    if (!v) return;
+    for (const id of ids) {
+        if (!String(byId.get(id)?.value || "").trim()) {
+            byId.set(id, { id, value: v });
+        }
+    }
+}
+
+function forcePrefillIds(
+    byId: Map<string, { id: string; value: string }>,
+    ids: readonly string[],
+    value: string,
+): void {
+    const v = String(value || "").trim();
+    if (!v) return;
+    for (const id of ids) {
+        byId.set(id, { id, value: v });
+    }
+}
+
+export function resolveOwnerRowFullName(
+    row: Record<string, unknown> | null | undefined,
+): string {
+    if (!row) return "";
+    return `${String(row.firstName || row.ownerFirstName || "").trim()} ${String(row.lastName || row.ownerLastName || "").trim()}`.trim();
+}
+
+/** Merchant / owner 1 / guarantor 1 share the same identity on all primary-party lines. */
 export function applyPrimaryGuarantorNamesToPrefillFields(
     fields: Array<{ id: string; value: string }>,
     primaryName: string,
+    options?: { primarySs?: string; primaryDriverLicense?: string },
 ): Array<{ id: string; value: string }> {
-    const name = String(primaryName || "").trim();
-    if (!name) return fields;
     const byId = new Map(fields.map((f) => [f.id, { ...f }]));
-    for (const id of PRIMARY_GUARANTOR_PREFILL_IDS) {
-        if (!String(byId.get(id)?.value || "").trim()) {
-            byId.set(id, { id, value: name });
-        }
+    mirrorEmptyPrefillIds(byId, PRIMARY_GUARANTOR_PREFILL_IDS, primaryName);
+    mirrorEmptyPrefillIds(byId, PRIMARY_PARTY_SS_IDS, options?.primarySs || "");
+    mirrorEmptyPrefillIds(byId, PRIMARY_PARTY_DL_IDS, options?.primaryDriverLicense || "");
+    const personal = String(primaryName || "").trim();
+    if (personal) {
+        byId.set("client_name", { id: "client_name", value: personal });
     }
     return Array.from(byId.values());
 }
@@ -266,23 +347,50 @@ export function resolveSecondOwnerSignerName(
     return `${String(secondFromDb?.firstName || "").trim()} ${String(secondFromDb?.lastName || "").trim()}`.trim();
 }
 
-/** Fill owner-2 / guarantor-2 name lines from the 2nd contract signer. */
+/** Fill owner-2 / guarantor-2 / merchant-2 lines from the 2nd contract signer. */
 export function applySecondOwnerNameToPrefillFields(
     fields: Array<{ id: string; value: string }>,
-    options: { ownerCount: number; secondOwnerName?: string },
+    options: {
+        ownerCount: number;
+        secondOwnerName?: string;
+        secondOwnerSs?: string;
+        secondOwnerDriverLicense?: string;
+    },
 ): Array<{ id: string; value: string }> {
-    const name = String(options.secondOwnerName || "").trim();
-    if (options.ownerCount < 2 || !name) return fields;
+    if (options.ownerCount < 2) return fields;
     const byId = new Map(fields.map((f) => [f.id, { ...f }]));
-    for (const id of SECOND_OWNER_PREFILL_IDS) {
-        if (id.includes("name") && !String(byId.get(id)?.value || "").trim()) {
-            byId.set(id, { id, value: name });
-        }
-    }
+    const nameIds = PARTY2_PREFILL_FIELD_IDS.filter((id) => id.includes("name"));
+    forcePrefillIds(byId, nameIds, options.secondOwnerName || "");
+    forcePrefillIds(byId, SECOND_PARTY_SS_IDS, options.secondOwnerSs || "");
+    forcePrefillIds(byId, SECOND_PARTY_DL_IDS, options.secondOwnerDriverLicense || "");
     return Array.from(byId.values());
 }
 
+/** All camelCase prefill keys that represent the same person as Owner / Merchant / Guarantor 2. */
+export const OWNER2_NAME_SYNC_CAMEL_KEYS = [
+    "owner2GuarantorName",
+    "merchant2Name",
+    "guarantyOwner2Name",
+    "guarantyGuarantor2Name",
+    "appendixMerchant2Name",
+    "addendumDatedPrincipalOwner2Name",
+    "businessName2",
+] as const;
+
+/** Force the canonical Owner 2 person name onto every linked party-2 name field. */
+export function syncOwner2NameToPrefillPartial(
+    partial: Record<string, unknown>,
+    name: string,
+): void {
+    const value = String(name || "").trim();
+    if (!value) return;
+    for (const key of OWNER2_NAME_SYNC_CAMEL_KEYS) {
+        partial[key] = value;
+    }
+}
+
 export const OWNER2_PREFILL_FORM_KEYS = [
+    "merchant2Name",
     "owner2GuarantorName",
     "guarantyOwner2Name",
     "guarantyOwner2Ss",
@@ -290,6 +398,22 @@ export const OWNER2_PREFILL_FORM_KEYS = [
     "addendumDatedPrincipalOwner2Name",
     "addendumDatedPrincipalOwner2Date",
 ] as const;
+
+/** Clear camelCase party-2 keys on the prefill partial object. */
+export function clearParty2PrefillPartial(
+    partial: Record<string, unknown>,
+    ownerCount: number,
+): void {
+    if (ownerCount >= 2) return;
+    for (const key of [
+        ...OWNER2_PREFILL_FORM_KEYS,
+        ...GUARANTOR2_PREFILL_FORM_KEYS,
+        "appendixMerchant2Name",
+        "businessName2",
+    ]) {
+        delete partial[key];
+    }
+}
 
 export const GUARANTOR2_PREFILL_FORM_KEYS = [
     "guarantyGuarantor2Name",

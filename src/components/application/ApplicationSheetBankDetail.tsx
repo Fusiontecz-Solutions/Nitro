@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Edit2, Eye, EyeOff, Landmark, Trash2 } from "lucide-react";
+import { Edit2, Eye, EyeOff, Trash2 } from "lucide-react";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 
@@ -18,7 +18,6 @@ import { Button } from "@/components/ui/button";
 import { useTheme } from "@/context/ThemeContext";
 import {
     filterBankDetailsForApplication,
-    hasCompleteBankDetailRow,
 } from "@/lib/bankDetailUtils";
 import { cn } from "@/lib/utils";
 
@@ -63,13 +62,6 @@ export default function ApplicationSheetBankDetail({
         () => filterBankDetailsForApplication(bankDetailsList, applicationKeys),
         [bankDetailsList, applicationKeys],
     );
-
-    const hasCompleteBankDetails = bankDetails.some(hasCompleteBankDetailRow);
-    const showIncompleteHint =
-        isOverview &&
-        Boolean(applicationId) &&
-        !loading &&
-        !hasCompleteBankDetails;
 
     const [form, setForm] = useState({
         bankName: "",
@@ -141,7 +133,7 @@ export default function ApplicationSheetBankDetail({
             return;
         }
         if (!String(form.routingNumber || "").trim()) {
-            toast.error("Please enter a routing number (required for contracts).");
+            toast.error("Please enter a routing number.");
             return;
         }
 
@@ -402,27 +394,6 @@ export default function ApplicationSheetBankDetail({
                     </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 px-6 pt-4">
-                    {showIncompleteHint ? (
-                        <div
-                            role="status"
-                            className={`flex gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed ${isDark
-                                ? "border-amber-900/60 bg-amber-950/40 text-amber-100/95"
-                                : "border-amber-200/90 bg-amber-50 text-amber-950"
-                                }`}
-                        >
-                            <Landmark
-                                className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${isDark ? "text-amber-400" : "text-amber-700"}`}
-                                aria-hidden
-                            />
-                            <p>
-                                Account and routing number are required before generating a
-                                contract.
-                                {bankDetails.length > 0 && !hasCompleteBankDetails
-                                    ? " A saved row is missing routing — edit it below."
-                                    : null}
-                            </p>
-                        </div>
-                    ) : null}
                     {formGrid}
                     {bankDetails.length > 0 || loading ? (
                         <div className="pt-1">{savedRows}</div>

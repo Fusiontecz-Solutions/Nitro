@@ -54,10 +54,9 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Info, Landmark, Loader2 } from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
 import {
     filterBankDetailsForApplication,
-    hasCompleteBankDetailRow,
 } from "@/lib/bankDetailUtils";
 import PDFViewerModal from "./PDFViewerModal";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
@@ -105,8 +104,10 @@ import {
 import {
     applyPrimaryGuarantorNamesToPrefillFields,
     applySecondOwnerNameToPrefillFields,
+    clearParty2PrefillFieldPayload,
     collapseDocuSignRolesToSignerSlots,
     resolveActiveOwnerCount,
+    resolveOwnerRowFullName,
     resolveSecondOwnerSignerName,
 } from "./contractdata/contractPartyCounts";
 import {
@@ -254,7 +255,7 @@ export default function ContractTab({
         (state: RootState) => state.offerDecision,
     );
     const { data: loginData } = useSelector((state: RootState) => state.login);
-    const { data: bankDetailsList, loading: bankDetailsLoading } = useSelector(
+    const { data: bankDetailsList } = useSelector(
         (state: RootState) => state.bankDetails,
     );
     const achListState = useSelector((state: RootState) => state.achList);
@@ -1157,17 +1158,6 @@ export default function ContractTab({
             return;
         }
 
-        if (bankDetailsLoading) {
-            toast.info("Bank details are still loading. Try again in a moment.");
-            return;
-        }
-        if (!hasCompleteBankDetailsForContract) {
-            toast.error(
-                "Add a bank account number and routing number before generating a contract.",
-            );
-            return;
-        }
-
         if (!globalTemplateUrl || !applicationUuid) {
             toast.error(
                 "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
@@ -1511,24 +1501,63 @@ export default function ContractTab({
                 ? [achDocumentRef]
                 : supplementalDocumentRefs;
 
-            const firstOwnerFromDb = ownerRows[0] as { firstName?: string; lastName?: string } | undefined;
+            const firstOwnerFromDb = ownerRows[0] as {
+                firstName?: string;
+                lastName?: string;
+                ssnNumber?: string;
+                ssn?: string;
+                driverLicenseNumber?: string;
+                driverLicense?: string;
+            } | undefined;
+            const secondOwnerFromDb = ownerRows[1] as {
+                firstName?: string;
+                lastName?: string;
+                ssnNumber?: string;
+                ssn?: string;
+                driverLicenseNumber?: string;
+                driverLicense?: string;
+            } | undefined;
             const primaryOwnerName =
                 `${String(firstOwnerFromDb?.firstName || "").trim()} ${String(firstOwnerFromDb?.lastName || "").trim()}`.trim() ||
                 docuSignClientName;
             prefillFieldsPayload = applyPrimaryGuarantorNamesToPrefillFields(
                 prefillFieldsPayload,
                 primaryOwnerName,
+                {
+                    primarySs: String(
+                        firstOwnerFromDb?.ssnNumber || firstOwnerFromDb?.ssn || "",
+                    ).trim(),
+                    primaryDriverLicense: String(
+                        firstOwnerFromDb?.driverLicenseNumber ||
+                            firstOwnerFromDb?.driverLicense ||
+                            "",
+                    ).trim(),
+                },
             );
 
             const secondOwnerName =
+                resolveOwnerRowFullName(secondOwnerFromDb) ||
+                secondOwnerNameBeforeCollapse ||
                 String(
                     roles.find((r) => /owner\s*2/i.test(String(r.signerRole || "")))?.signerName ||
                         "",
-                ).trim() || secondOwnerNameBeforeCollapse;
+                ).trim();
             prefillFieldsPayload = applySecondOwnerNameToPrefillFields(prefillFieldsPayload, {
                 ownerCount,
                 secondOwnerName,
+                secondOwnerSs: String(
+                    secondOwnerFromDb?.ssnNumber || secondOwnerFromDb?.ssn || "",
+                ).trim(),
+                secondOwnerDriverLicense: String(
+                    secondOwnerFromDb?.driverLicenseNumber ||
+                        secondOwnerFromDb?.driverLicense ||
+                        "",
+                ).trim(),
             });
+            prefillFieldsPayload = clearParty2PrefillFieldPayload(
+                prefillFieldsPayload,
+                ownerCount,
+            );
 
             try {
                 const contractNumericId = Number((latestContract as { id?: unknown })?.id);
@@ -2004,20 +2033,6 @@ export default function ContractTab({
     /** Saved grid for anyone when values are persisted (incl. Operations read-only) — avoids disabled-input fade. */
     const showSavedContractGrid = contractValuesSaved;
 
-    const hasCompleteBankDetailsForContract = bankDetailsForApplication.some(
-        hasCompleteBankDetailRow,
-    );
-
-    const generateContractBlockedByBank =
-        !isReadOnly &&
-        !hasGeneratedContract &&
-        (bankDetailsLoading || !hasCompleteBankDetailsForContract);
-
-    const showBankDetailsHint =
-        Boolean(applicationUuid) &&
-        !bankDetailsLoading &&
-        !hasCompleteBankDetailsForContract;
-
     const calculationSummaryFields = [
         { label: "Amount Financed", value: amountFinancedInput },
         { label: "Recipient Funds", value: recipientFundsInput },
@@ -2094,34 +2109,6 @@ export default function ContractTab({
 
     return (
         <div className="space-y-6">
-            {showBankDetailsHint && (
-                <div
-                    role="status"
-                    className={`flex gap-3 rounded-lg border px-4 py-3 text-sm leading-relaxed ${isDark
-                        ? "border-amber-900/60 bg-amber-950/40 text-amber-100/95"
-                        : "border-amber-200/90 bg-gradient-to-r from-amber-50 to-orange-50/80 text-amber-950"
-                        }`}
-                >
-                    <Landmark
-                        className={`mt-0.5 h-4 w-4 shrink-0 ${isDark ? "text-amber-400" : "text-amber-700"}`}
-                        aria-hidden
-                    />
-                    <p className={`min-w-0 ${isDark ? "text-amber-100/90" : "text-amber-950/90"}`}>
-                        <span className="font-semibold">Bank details required for contracts.</span>{" "}
-                        Go to the <span className="font-medium">Overview</span> tab and save both{" "}
-                        <span className="font-medium">account number</span> and{" "}
-                        <span className="font-medium">routing number</span> for this application.
-                        {bankDetailsForApplication.length > 0 &&
-                        !hasCompleteBankDetailsForContract ? (
-                            <>
-                                {" "}
-                                A saved row is missing the routing number — edit it and add routing.
-                            </>
-                        ) : null}
-                    </p>
-                </div>
-            )}
-
             {/* Contract Filter Section - Light blue-grey background */}
             <div
                 className={`rounded-lg border p-6 ${isDark ? "bg-[#1F2021] border-[#374151]" : "bg-[#E8F0F8] border-[#D1D5DB]"}`}
@@ -2154,17 +2141,7 @@ export default function ContractTab({
                         <Button
                             type="button"
                             onClick={handleGenerateContract}
-                            disabled={
-                                creatingEnvelope ||
-                                generateContractBlockedByBank
-                            }
-                            title={
-                                generateContractBlockedByBank && !creatingEnvelope
-                                    ? bankDetailsLoading
-                                        ? "Loading bank details…"
-                                        : "Add bank account number and routing number on the Overview tab first."
-                                    : undefined
-                            }
+                            disabled={creatingEnvelope}
                             className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer  px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
 
 

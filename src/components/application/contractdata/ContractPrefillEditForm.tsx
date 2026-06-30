@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import {
     Building2,
     ChevronRight,
+    CopyCheck,
     DollarSign,
     FilePenLine,
     FileText,
@@ -39,14 +40,30 @@ import {
 import {
     applyAuthorizationBusinessNamePrefillFields,
     applyLiveBankDetailsToPrefillMerge,
+    applyLiveOfferSyncToPrefillPartial,
+    applyOwnerRowsToPrefillMerge,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
+    stripStaleOfferOverridesFromPersisted,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./Contract";
 import {
+    clearParty2PrefillPartial,
+    GUARANTOR1_PREFILL_FORM_KEYS,
+    GUARANTOR2_PREFILL_FORM_KEYS,
+    OWNER2_PREFILL_FORM_KEYS,
+    resolveActiveGuarantorCount,
+    resolveActiveOwnerCount,
+    resolveOwnerRowFullName,
+    resolveSecondOwnerSignerName,
+    syncOwner2NameToPrefillPartial,
+} from "./contractPartyCounts";
+import {
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
+    DOCUMENT_SEND_HISTORY_KEY,
     getDocumentTemplatePrefillFieldRowsForEditor,
     LINKED_DOCUSIGN_ADDENDUM_SECTION_ID,
     stripDocumentTemplateBlobFromPrefillOverrides,
@@ -57,13 +74,8 @@ import { getByApplicationIdContract, updateContract } from "@/redux/actions/cont
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
 import {
-    GUARANTOR1_PREFILL_FORM_KEYS,
-    GUARANTOR2_PREFILL_FORM_KEYS,
-    OWNER2_PREFILL_FORM_KEYS,
-    resolveActiveGuarantorCount,
-    resolveActiveOwnerCount,
-} from "./contractPartyCounts";
-import {
+    buildDocuSignRolesFromEditorRows,
+    CONTRACT_SIGNER_OVERRIDES_KEY,
     parseContractSignerOverridesFromPrefill,
     type ContractSignerOverrideRow,
 } from "./templateRecipients";
@@ -116,6 +128,9 @@ const FIELD_LABELS = {
     clientName: "Name",
     owner1GuarantorName: "Name",
     owner2GuarantorName: "Name",
+    merchant2Name: "Name",
+    appendixMerchant2Name: "Name",
+    businessName2: "Name",
     securityBusinessName: "Business name",
     securityTaxEin: "Tax ID / EIN",
     securityDoingBusinessAs: "DBA",
@@ -419,7 +434,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "ach_account_bank",
             title: "ACH — Account & bank",
-            description: "Account holder, bank branch, routing, account number, transaction fee, consent signature.",
+            description: "Account holder, bank branch, routing, account number, NO. of transaction (term), transaction fee, consent signature.",
             Icon: Wallet,
             groups: [
                 {
@@ -534,6 +549,254 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             ],
         },
     ];
+
+type PrefillSyncGroup = {
+    id: string;
+    label: string;
+    keys: ContractPrefillFormFieldKey[];
+};
+
+/** Shared logical values repeated across contract sections — synced via “Sync to all”. */
+const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
+    {
+        id: "ein",
+        label: "EIN / Tax ID",
+        keys: ["federalTaxIdEin", "securityTaxEin", "authorizationClientTaxId"],
+    },
+    {
+        id: "dba",
+        label: "DBA",
+        keys: ["doingBusinessAs", "securityDoingBusinessAs", "achAuthorizationAccountHolderDba"],
+    },
+    {
+        id: "routing",
+        label: "Routing number",
+        keys: ["authorizationClientBankRouting", "achAuthorizationAccountHolderBankRoutingNumber"],
+    },
+    {
+        id: "account",
+        label: "Account number",
+        keys: ["authorizationClientBankAccount", "achAuthorizationAccountHolderBankAccountNumber"],
+    },
+    {
+        id: "bankName",
+        label: "Bank name",
+        keys: ["authorizationClientBankName", "achAuthorizationAccountHolderBankName"],
+    },
+    {
+        id: "businessName",
+        label: "Business / legal name",
+        keys: [
+            "legalName",
+            "securityBusinessName",
+            "achAuthorizationAccountHolderName",
+            "achAuthorizationConcentAccountHolderName",
+            "addendumDatedPrincipalBusiness",
+        ],
+    },
+    {
+        id: "clientName",
+        label: "Client / primary name",
+        keys: [
+            "customerName",
+            "clientName",
+            "appendixClientName",
+            "authorizationApplication",
+            "authorizationClientName",
+            "authorizationClientNamePrint",
+            "guarantyClientName",
+            "securityGuarantor",
+            "exhibitOwnerName",
+            "addendumDatedPrincipalOwner",
+            "owner1GuarantorName",
+            "guarantyOwner1Name",
+            "guarantyGuarantor1Name",
+        ],
+    },
+    {
+        id: "businessPhone",
+        label: "Business phone",
+        keys: ["clientPhone", "authorizedBusinessPhone", "achAuthorizationAccountHolderPhone"],
+    },
+    {
+        id: "street",
+        label: "Street",
+        keys: [
+            "businessAddress",
+            "businessAddressContract",
+            "securityBusinessAddress",
+            "achAuthorizationAccountHolderAddress",
+        ],
+    },
+    {
+        id: "city",
+        label: "City",
+        keys: [
+            "businessAddressCity",
+            "businessAddressContractCity",
+            "securityBusinessAddressCity",
+            "achAuthorizationAccountHolderCity",
+        ],
+    },
+    {
+        id: "addressState",
+        label: "State",
+        keys: [
+            "businessAddressState",
+            "businessAddressContractState",
+            "securityBusinessAddressState",
+            "achAuthorizationAccountHolderState",
+        ],
+    },
+    {
+        id: "zip",
+        label: "ZIP",
+        keys: [
+            "businessAddressZip",
+            "businessAddressContractZip",
+            "securityBusinessAddressZip",
+            "achAuthorizationAccountHolderZip",
+        ],
+    },
+    {
+        id: "offerAmount",
+        label: "Offer amount",
+        keys: ["purchaseAmount", "addendumDatedPrincipalOwnerAmount"],
+    },
+    {
+        id: "paybackAmount",
+        label: "Payback amount",
+        keys: ["purchasePrice", "addendumDatedPrincipalOwnerAmount2"],
+    },
+    {
+        id: "paymentAmount",
+        label: "Payment / transaction fee",
+        keys: ["remittance", "achAuthorizationAccountHolderBankTransactionFee"],
+    },
+    {
+        id: "owner1Name",
+        label: "Owner 1 name",
+        keys: [
+            "owner1GuarantorName",
+            "guarantyClientName",
+            "guarantyOwner1Name",
+            "guarantyGuarantor1Name",
+            "addendumDatedPrincipalOwner1Name",
+            "customerName",
+            "clientName",
+        ],
+    },
+    {
+        id: "owner2Name",
+        label: "Owner 2 name",
+        keys: [
+            "owner2GuarantorName",
+            "merchant2Name",
+            "guarantyOwner2Name",
+            "guarantyGuarantor2Name",
+            "appendixMerchant2Name",
+            "addendumDatedPrincipalOwner2Name",
+            "businessName2",
+        ],
+    },
+    {
+        id: "ssn",
+        label: "SSN",
+        keys: ["guarantySs", "guarantyOwner1Ss", "guarantyGuarantor1Ss"],
+    },
+    {
+        id: "driverLicense",
+        label: "Driver license",
+        keys: [
+            "guarantySsDriverLicense",
+            "guarantyOwner1DriverLicense",
+            "guarantyGuarantor1DriverLicense",
+        ],
+    },
+    {
+        id: "owner2Ssn",
+        label: "Owner 2 SSN",
+        keys: ["guarantyOwner2Ss", "guarantyGuarantor2Ss"],
+    },
+    {
+        id: "owner2DriverLicense",
+        label: "Owner 2 driver license",
+        keys: ["guarantyOwner2DriverLicense", "guarantyGuarantor2DriverLicense"],
+    },
+    {
+        id: "date",
+        label: "Date",
+        keys: [
+            "agreementDate",
+            "authorizationClientDate",
+            "achAuthorizationAccountHolderDate",
+            "achAuthorizationConcentAccountHolderDate",
+            "addendumDated",
+            "addendumDatedPrincipalOwner1Date",
+            "addendumDatedPrincipalOwner2Date",
+        ],
+    },
+];
+
+/** Shared logical values — mirrored on every keystroke (Katan-style sync across sections). */
+const PREFILL_REALTIME_MIRROR_BY_KEY = (() => {
+    const map = new Map<ContractPrefillFormFieldKey, ContractPrefillFormFieldKey[]>();
+    for (const group of PREFILL_SYNC_GROUPS) {
+        for (const key of group.keys) {
+            map.set(key, group.keys);
+        }
+    }
+    return map;
+})();
+
+function pickPreservedContractPrefillMeta(
+    resolvedContract: Record<string, unknown> | null | undefined,
+    liveSignerRows: ContractSignerOverrideRow[] | null | undefined,
+): Record<string, unknown> {
+    const preserved: Record<string, unknown> = {};
+    const raw = resolvedContract?.contractPrefillOverrides;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        const o = raw as Record<string, unknown>;
+        for (const key of [
+            CONTRACT_SIGNER_OVERRIDES_KEY,
+            DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
+            DOCUMENT_SEND_HISTORY_KEY,
+        ] as const) {
+            if (o[key] !== undefined) preserved[key] = o[key];
+        }
+    }
+    if (liveSignerRows?.length) {
+        preserved[CONTRACT_SIGNER_OVERRIDES_KEY] = liveSignerRows;
+    } else if (!preserved[CONTRACT_SIGNER_OVERRIDES_KEY]) {
+        const parsed = parseContractSignerOverridesFromPrefill(raw);
+        if (parsed?.length) preserved[CONTRACT_SIGNER_OVERRIDES_KEY] = parsed;
+    }
+    return preserved;
+}
+
+function applySecondOwnerNameToPrefillPartial(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+    secondOwnerName: string,
+    secondOwnerSs?: string,
+    secondOwnerDriverLicense?: string,
+): void {
+    const name = String(secondOwnerName || "").trim();
+    if (name) {
+        syncOwner2NameToPrefillPartial(partial as Record<string, unknown>, name);
+    }
+    const ssn = String(secondOwnerSs || "").trim();
+    if (ssn) {
+        for (const key of ["guarantyOwner2Ss", "guarantyGuarantor2Ss"] as const) {
+            if (!String(partial[key] || "").trim()) partial[key] = ssn;
+        }
+    }
+    const dl = String(secondOwnerDriverLicense || "").trim();
+    if (dl) {
+        for (const key of ["guarantyOwner2DriverLicense", "guarantyGuarantor2DriverLicense"] as const) {
+            if (!String(partial[key] || "").trim()) partial[key] = dl;
+        }
+    }
+}
 
 function emptyValuesRecord(): Record<keyof BuildContractPrefillFieldsArgs, string> {
     const out = {} as Record<keyof BuildContractPrefillFieldsArgs, string>;
@@ -828,6 +1091,8 @@ export type ContractPrefillEditFormProps = {
         main: Partial<BuildContractPrefillFieldsArgs> | null,
         documentTemplatePrefillByMappingId: Record<string, Record<string, string>>,
     ) => void;
+    /** Parent syncs saved values to an open DocuSign draft envelope (contract PDF modal). */
+    onAfterPrefillSaved?: () => void;
     /** Application UUID — used to reload the contract row after save so `contractPrefillOverrides` matches the DB. */
     applicationUuid?: string | null;
     contractRecords?: ContractPrefillContractRecords;
@@ -857,6 +1122,7 @@ export function ContractPrefillEditForm({
     prefillOverridesReady = true,
     onPersistedPrefillChange,
     onPersistedPrefillFullChange,
+    onAfterPrefillSaved,
     applicationUuid = null,
     contractRecords,
     resolvedContract = null,
@@ -883,15 +1149,15 @@ export function ContractPrefillEditForm({
         return raw as Record<string, Record<string, string>>;
     }, [additionalContractPrefillJson]);
 
-    const strippedMainPrefillOverrides = useMemo(
-        () =>
-            stripDocumentTemplateBlobFromPrefillOverrides(
-                persistedPrefillOverrides === undefined
-                    ? undefined
-                    : (normalizeContractPrefillOverrides(persistedPrefillOverrides) ?? null),
-            ),
-        [persistedPrefillOverrides],
-    );
+    const strippedMainPrefillOverrides = useMemo(() => {
+        const main = stripDocumentTemplateBlobFromPrefillOverrides(
+            persistedPrefillOverrides === undefined
+                ? undefined
+                : (normalizeContractPrefillOverrides(persistedPrefillOverrides) ?? null),
+        );
+        if (main === undefined) return undefined;
+        return stripStaleOfferOverridesFromPersisted(main, offerDecision, applicationData);
+    }, [persistedPrefillOverrides, offerDecision, applicationData]);
 
     const addendumEditorRows = useMemo(() => {
         if (!linkedAddendumMapping?.id) return [];
@@ -961,6 +1227,14 @@ export function ContractPrefillEditForm({
             }),
         [contractRecords?.owners, contractSignerRolesForCounts],
     );
+    const resolvedOwnerRows = useMemo(
+        () =>
+            Array.isArray(contractRecords?.owners)
+                ? (contractRecords.owners as Record<string, unknown>[])
+                : [],
+        [contractRecords?.owners],
+    );
+    const showSecondPartyFields = activeOwnerCount >= 2;
     const activeGuarantorCount = useMemo(
         () =>
             resolveActiveGuarantorCount({
@@ -1019,21 +1293,52 @@ export function ContractPrefillEditForm({
             contractRecords,
             offerDecision,
         });
-        const persisted =
+        const persistedRaw =
             strippedMainPrefillOverrides === undefined
                 ? ({} as Partial<BuildContractPrefillFieldsArgs>)
                 : (strippedMainPrefillOverrides ?? ({} as Partial<BuildContractPrefillFieldsArgs>));
-        const merged = applyAuthorizationBusinessNamePrefillFields(
-            finalizeContractPrefillMoneyFields(
-                applyLiveBankDetailsToPrefillMerge(defaults, { ...defaults, ...persisted }),
-                {
-                    application: applicationData as Record<string, unknown> | undefined,
-                    contract: contractRecords?.contract ?? null,
-                    offerDecision: offerDecision ?? null,
-                },
-            ),
+        const mergedBase = applyLiveBankDetailsToPrefillMerge(defaults, { ...defaults, ...persistedRaw });
+        let merged = applyAuthorizationBusinessNamePrefillFields(
+            finalizeContractPrefillMoneyFields(mergedBase, {
+                application: applicationData as Record<string, unknown> | undefined,
+                contract: contractRecords?.contract ?? null,
+                offerDecision: offerDecision ?? null,
+                prefill: mergedBase,
+            }),
             applicationData,
         );
+        merged = applyLiveOfferSyncToPrefillPartial(merged, applicationData, offerDecision);
+
+        const ownerCount = Math.min(
+            2,
+            Math.max(resolvedOwnerRows.length, activeOwnerCount),
+        );
+        applyOwnerRowsToPrefillMerge(merged, resolvedOwnerRows);
+        if (ownerCount >= 2) {
+            const signerRoles = buildDocuSignRolesFromEditorRows(
+                liveContractSignerOverrides?.length
+                    ? liveContractSignerOverrides
+                    : (parseContractSignerOverridesFromPrefill(
+                          strippedMainPrefillOverrides ?? persistedPrefillOverrides,
+                      ) ?? []),
+            );
+            const secondRow = resolvedOwnerRows[1];
+            const secondOwnerName =
+                resolveOwnerRowFullName(secondRow) ||
+                resolveSecondOwnerSignerName(signerRoles, ownerCount, resolvedOwnerRows);
+            const secondOwnerSs = String(secondRow?.ssnNumber ?? secondRow?.ssn ?? "").trim();
+            const secondOwnerDriverLicense = String(
+                secondRow?.driverLicenseNumber ?? secondRow?.driverLicense ?? "",
+            ).trim();
+            applySecondOwnerNameToPrefillPartial(
+                merged,
+                secondOwnerName,
+                secondOwnerSs,
+                secondOwnerDriverLicense,
+            );
+        }
+
+        clearParty2PrefillPartial(merged as Record<string, unknown>, ownerCount);
         setValues(mergeFormState(merged));
         setFieldErrors({});
     }, [
@@ -1041,7 +1346,11 @@ export function ContractPrefillEditForm({
         contractRecords,
         agreementDateForDefaults,
         strippedMainPrefillOverrides,
+        persistedPrefillOverrides,
         offerDecision,
+        activeOwnerCount,
+        resolvedOwnerRows,
+        liveContractSignerOverrides,
     ]);
 
     const resetAddendumFromSources = useCallback(() => {
@@ -1055,18 +1364,62 @@ export function ContractPrefillEditForm({
     resetAddendumFromSourcesRef.current = resetAddendumFromSources;
 
     const openedHydratedRef = useRef(false);
+    const prevActiveOwnerCountRef = useRef(activeOwnerCount);
+    const formReady = prefillOverridesReady && persistedPrefillOverrides !== undefined;
 
     useEffect(() => {
         if (!open) {
             openedHydratedRef.current = false;
+            prevActiveOwnerCountRef.current = activeOwnerCount;
             return;
         }
-        if (!prefillOverridesReady || persistedPrefillOverrides === undefined) return;
+        if (!formReady) return;
         if (openedHydratedRef.current) return;
         openedHydratedRef.current = true;
         resetFromSourcesRef.current();
         resetAddendumFromSourcesRef.current();
-    }, [open, prefillOverridesReady, persistedPrefillOverrides]);
+        prevActiveOwnerCountRef.current = activeOwnerCount;
+        // Intentionally omit persistedPrefillOverrides — re-hydrating on parent updates resets in-progress edits.
+    }, [open, formReady, activeOwnerCount]);
+
+    /** When owner 2 is added while the form is open, merge party-2 fields without wiping other edits. */
+    useEffect(() => {
+        if (!open || !formReady) return;
+        const prev = prevActiveOwnerCountRef.current;
+        prevActiveOwnerCountRef.current = activeOwnerCount;
+        if (prev >= 2 || activeOwnerCount < 2) return;
+
+        setValues((prevValues) => {
+            const merged = { ...prevValues } as Partial<BuildContractPrefillFieldsArgs>;
+            applyOwnerRowsToPrefillMerge(merged, resolvedOwnerRows);
+            const signerRoles = buildDocuSignRolesFromEditorRows(
+                liveContractSignerOverrides?.length
+                    ? liveContractSignerOverrides
+                    : (parseContractSignerOverridesFromPrefill(
+                          strippedMainPrefillOverrides ?? persistedPrefillOverrides,
+                      ) ?? []),
+            );
+            const secondRow = resolvedOwnerRows[1];
+            const secondOwnerName =
+                resolveOwnerRowFullName(secondRow) ||
+                resolveSecondOwnerSignerName(signerRoles, activeOwnerCount, resolvedOwnerRows);
+            applySecondOwnerNameToPrefillPartial(
+                merged,
+                secondOwnerName,
+                String(secondRow?.ssnNumber ?? secondRow?.ssn ?? "").trim(),
+                String(secondRow?.driverLicenseNumber ?? secondRow?.driverLicense ?? "").trim(),
+            );
+            return mergeFormState(merged);
+        });
+    }, [
+        open,
+        formReady,
+        activeOwnerCount,
+        resolvedOwnerRows,
+        liveContractSignerOverrides,
+        strippedMainPrefillOverrides,
+        persistedPrefillOverrides,
+    ]);
 
     useEffect(() => {
         if (!open) {
@@ -1086,6 +1439,106 @@ export function ContractPrefillEditForm({
     const nextSection =
         activeIdx >= 0 && activeIdx < navSections.length - 1 ? navSections[activeIdx + 1] : null;
     const isLinkedAddendumSection = activeSectionId === LINKED_DOCUSIGN_ADDENDUM_SECTION_ID;
+
+    const activeSectionSyncGroups = useMemo(() => {
+        if (!activeSection || isLinkedAddendumSection) {
+            return [] as PrefillSyncGroup[];
+        }
+        const keysInSection = new Set<string>(activeSection.groups.flatMap((g) => g.keys));
+        return PREFILL_SYNC_GROUPS.filter((group) => group.keys.some((k) => keysInSection.has(k)));
+    }, [activeSection, isLinkedAddendumSection]);
+
+    const offerDecisionSyncKey = useMemo(() => {
+        const root =
+            offerDecision && typeof offerDecision === "object"
+                ? offerDecision
+                : (() => {
+                      const app = applicationData as Record<string, unknown> | null;
+                      const embedded =
+                          (app?.offerDecision as Record<string, unknown> | undefined) ??
+                          (app?.OfferDecision as Record<string, unknown> | undefined) ??
+                          null;
+                      if (embedded && typeof embedded === "object" && !Array.isArray(embedded)) {
+                          return embedded;
+                      }
+                      const termsRaw = app?.termsOffers;
+                      if (Array.isArray(termsRaw) && termsRaw[0] && typeof termsRaw[0] === "object") {
+                          return termsRaw[0] as Record<string, unknown>;
+                      }
+                      if (termsRaw && typeof termsRaw === "object" && !Array.isArray(termsRaw)) {
+                          return termsRaw as Record<string, unknown>;
+                      }
+                      return null;
+                  })();
+        if (!root || typeof root !== "object") return "";
+        const inner =
+            root.offer != null && typeof root.offer === "object" && !Array.isArray(root.offer)
+                ? (root.offer as Record<string, unknown>)
+                : root;
+        return [
+            inner.offer,
+            inner.approvedAmount,
+            inner.totalRemit,
+            inner.fees,
+            inner.rate,
+            inner.term,
+            inner.numberOfPayments,
+            inner.paymentFrequency,
+            inner.monthlyPayment,
+            inner.dailyPayment,
+        ]
+            .map((v) => String(v ?? ""))
+            .join("|");
+    }, [offerDecision, applicationData]);
+
+    useEffect(() => {
+        if (!open || !offerDecisionSyncKey) return;
+        setValues((prev) =>
+            mergeFormState(
+                applyLiveOfferSyncToPrefillPartial(prev, applicationData, offerDecision),
+            ),
+        );
+    }, [open, offerDecisionSyncKey, applicationData, offerDecision]);
+
+    const handleSyncSectionToAll = () => {
+        if (readOnly || !activeSection) return;
+        const keysInSection = new Set<string>(activeSection.groups.flatMap((g) => g.keys));
+        const isHiddenTarget = (k: keyof BuildContractPrefillFieldsArgs) =>
+            (activeOwnerCount < 2 && owner2KeySet.has(k)) ||
+            (activeGuarantorCount < 2 && guarantor2KeySet.has(k));
+        const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {};
+        const syncedLabels: string[] = [];
+        for (const group of PREFILL_SYNC_GROUPS) {
+            const sourceKey = group.keys.find(
+                (k) => keysInSection.has(k) && String(values[k] ?? "").trim() !== "",
+            );
+            if (!sourceKey) continue;
+            const value = String(values[sourceKey] ?? "");
+            let changed = false;
+            for (const k of group.keys) {
+                if (isHiddenTarget(k)) continue;
+                if (String(values[k] ?? "") !== value) {
+                    updates[k] = value;
+                    changed = true;
+                }
+            }
+            if (changed) syncedLabels.push(group.label);
+        }
+        if (!syncedLabels.length) {
+            toast.info("Fill a shared field on this stage first, then sync.");
+            return;
+        }
+        setValues((prev) => ({ ...prev, ...updates }));
+        setFieldErrors((prev) => {
+            const next = { ...prev };
+            for (const k of Object.keys(updates) as (keyof BuildContractPrefillFieldsArgs)[]) {
+                delete next[k];
+            }
+            return next;
+        });
+        setSaveError(null);
+        toast.success(`Synced ${syncedLabels.join(", ")} to every stage.`);
+    };
 
     const handleSave = async () => {
         setSaveError(null);
@@ -1113,7 +1566,13 @@ export function ContractPrefillEditForm({
         setFieldErrors({});
         setSaving(true);
         try {
-            const payload = toPayload(values);
+            const rawPayload = toPayload(values);
+            const payload = finalizeContractPrefillMoneyFields(rawPayload, {
+                application: applicationData as Record<string, unknown> | undefined,
+                contract: contractRecords?.contract ?? null,
+                offerDecision: offerDecision ?? null,
+                prefill: rawPayload,
+            });
             const existingBlob =
                 documentTemplatePrefillByMappingId && typeof documentTemplatePrefillByMappingId === "object"
                     ? { ...documentTemplatePrefillByMappingId }
@@ -1123,6 +1582,10 @@ export function ContractPrefillEditForm({
                 nextBlob[linkedAddendumMapping.id] = { ...addendumFieldValues };
             }
             const contractPrefillOverrides = {
+                ...pickPreservedContractPrefillMeta(
+                    resolvedContract,
+                    liveContractSignerOverrides,
+                ),
                 ...(payload as Record<string, unknown>),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
             };
@@ -1174,6 +1637,9 @@ export function ContractPrefillEditForm({
             );
             setSaveError(null);
             toast.success("Contract prefill fields saved.");
+            queueMicrotask(() => {
+                onAfterPrefillSaved?.();
+            });
             onOpenChange(false);
         } catch (e) {
             console.error(e);
@@ -1265,16 +1731,41 @@ export function ContractPrefillEditForm({
         }
     };
 
-    const setField = (key: keyof BuildContractPrefillFieldsArgs, v: string) => {
-        setValues((prev) => ({ ...prev, [key]: v }));
-        setSaveError(null);
-        setFieldErrors((prev) => {
-            if (!prev[key]) return prev;
-            const next = { ...prev };
-            delete next[key];
-            return next;
-        });
-    };
+    const setField = useCallback(
+        (key: keyof BuildContractPrefillFieldsArgs, v: string) => {
+            setValues((prev) => {
+                const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {
+                    [key]: v,
+                };
+                const mirrorKeys = PREFILL_REALTIME_MIRROR_BY_KEY.get(key as ContractPrefillFormFieldKey);
+                if (mirrorKeys) {
+                    for (const mirrorKey of mirrorKeys) {
+                        if (mirrorKey === key) continue;
+                        if (
+                            !showSecondPartyFields &&
+                            (owner2KeySet.has(mirrorKey) || guarantor2KeySet.has(mirrorKey))
+                        ) {
+                            continue;
+                        }
+                        updates[mirrorKey] = v;
+                    }
+                }
+                return { ...prev, ...updates };
+            });
+            setSaveError(null);
+            setFieldErrors((prev) => {
+                const mirrorKeys = PREFILL_REALTIME_MIRROR_BY_KEY.get(key as ContractPrefillFormFieldKey);
+                if (!prev[key] && !mirrorKeys?.some((k) => prev[k])) return prev;
+                const next = { ...prev };
+                delete next[key];
+                for (const mirrorKey of mirrorKeys ?? []) {
+                    delete next[mirrorKey];
+                }
+                return next;
+            });
+        },
+        [showSecondPartyFields, owner2KeySet, guarantor2KeySet],
+    );
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1362,19 +1853,46 @@ export function ContractPrefillEditForm({
                         {activeSection ? (
                             <div className="space-y-4">
                                 <div className="rounded-xl border border-[#276D9C]/12 bg-slate-50/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-900/50">
-                                    <div className="flex items-start gap-3">
-                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]">
-                                            <activeSection.Icon className="h-4 w-4" aria-hidden />
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="flex min-w-0 items-start gap-3">
+                                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]">
+                                                <activeSection.Icon className="h-4 w-4" aria-hidden />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                    {activeSection.title}
+                                                </h4>
+                                                <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                                                    {activeSection.description}
+                                                </p>
+                                            </div>
                                         </div>
-                                        <div className="min-w-0">
-                                            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                                {activeSection.title}
-                                            </h4>
-                                            <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
-                                                {activeSection.description}
-                                            </p>
-                                        </div>
+                                        {!readOnly && activeSectionSyncGroups.length > 0 ? (
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={handleSyncSectionToAll}
+                                                disabled={saving}
+                                                title={`Copy this stage's shared fields (${activeSectionSyncGroups
+                                                    .map((g) => g.label)
+                                                    .join(", ")}) to every other stage`}
+                                                className="h-8 shrink-0 gap-1.5 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                            >
+                                                <CopyCheck className="h-3.5 w-3.5" aria-hidden />
+                                                Sync to all
+                                            </Button>
+                                        ) : null}
                                     </div>
+                                    {!readOnly && activeSectionSyncGroups.length > 0 ? (
+                                        <p className="mt-2 pl-12 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+                                            Shared with other stages:{" "}
+                                            <span className="font-medium text-slate-600 dark:text-slate-300">
+                                                {activeSectionSyncGroups.map((g) => g.label).join(", ")}
+                                            </span>
+                                            . Fill them once here, then click “Sync to all”.
+                                        </p>
+                                    ) : null}
                                 </div>
                                 {isLinkedAddendumSection ? (
                                     <div className="grid gap-4 sm:grid-cols-2">

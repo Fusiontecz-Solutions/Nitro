@@ -22,7 +22,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { axiosGet, axiosPost } from "@/redux/axios";
+import { axiosGet, axiosPatch, axiosPost } from "@/redux/axios";
 import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
@@ -48,6 +48,7 @@ import {
     parseDocumentTemplatePrefillByMappingId,
     resolveAchEnvelopeDisplayStatus,
     resolveAchPdfEnvelopeId,
+    getDocumentTemplatePrefillFieldRowsForEditor,
     type DocumentTemplateEnvelopeMeta,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
@@ -610,6 +611,56 @@ export default function ACHFormViewerModal({
             setDocuSignPdfLoading(false);
         }
     }, [achPdfEnvelopeId]);
+
+    const syncAchPrefillToDraftEnvelope = useCallback(async () => {
+        if (!achEnvelopeId || !achMapping?.id) return;
+        const draftLike =
+            isAchEnvelopeDraftLikeStatus(achStatus) ||
+            ACH_DRAFT_STATUSES.has(achStatus.toLowerCase());
+        if (!draftLike || isAchEnvelopeSigningFinished(achStatus)) return;
+
+        const saved = documentTemplatePrefillByMappingId[achMapping.id] ?? {};
+        const rows = getDocumentTemplatePrefillFieldRowsForEditor({
+            templateId: achMapping.template?.templateId ?? achMapping.templateId ?? null,
+            templateName: achMapping.template?.name ?? null,
+            templateType: achMapping.template?.type ?? achMapping.documentType ?? null,
+            templateLayoutKey: achMapping.template?.layoutKey ?? null,
+            templateState: achMapping.template?.state ?? null,
+            templateFrequency: achMapping.template?.frequency ?? null,
+            contract: resolvedContract,
+            application: applicationData as Record<string, unknown> | null,
+            contractRecords: contractPrefillRecords,
+            agreementDate: new Date().toLocaleDateString("en-US"),
+            mainPrefillOverrides: mainPrefillOverridesForDialog ?? undefined,
+            savedOverridesForMapping: saved,
+        });
+        const fields = rows
+            .map((f) => ({ id: f.id, value: String(f.value ?? "").trim() }))
+            .filter((f) => f.id && f.value);
+        if (!fields.length) return;
+        try {
+            await axiosPatch("/docusign/prefill-fields", {
+                documentId: achEnvelopeId,
+                fields,
+            });
+            if (pdfPaneTab === "docusign") {
+                void loadDocuSignPdf();
+            }
+        } catch (err) {
+            console.warn("[DocuSign] ACH prefill sync to draft envelope failed:", err);
+        }
+    }, [
+        achEnvelopeId,
+        achMapping,
+        achStatus,
+        documentTemplatePrefillByMappingId,
+        resolvedContract,
+        applicationData,
+        contractPrefillRecords,
+        mainPrefillOverridesForDialog,
+        pdfPaneTab,
+        loadDocuSignPdf,
+    ]);
 
     const refreshAchSigningPreview = useCallback(
         async (silent = false) => {
@@ -1498,7 +1549,9 @@ export default function ACHFormViewerModal({
                 documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
                 mainPrefillOverrides={mainPrefillOverridesForDialog}
                 onSaved={() => {
-                    void refreshContractRow();
+                    void refreshContractRow().then(() => {
+                        void syncAchPrefillToDraftEnvelope();
+                    });
                     if (pdfPaneTab === "template") void loadTemplatePdf();
                 }}
             />

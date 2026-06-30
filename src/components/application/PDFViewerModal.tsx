@@ -179,12 +179,15 @@ import {
     mergeApplicationDataIntoSignerRoles,
     parseBoldSignTemplateRolesFromRecipientsPayload,
     parseContractSignerOverridesFromPrefill,
+    findSecondOwnerSignerRow,
+    splitSignerDisplayName,
+    CONTRACT_SIGNER_OVERRIDES_KEY,
     suggestNextTemplateSignerRole,
     validateDocuSignSignerRoles,
     type ContractSignerOverrideRow,
     type DocuSignTemplateRolePayload,
 } from "./contractdata/templateRecipients";
-import { resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
+import { resolveActiveOwnerCount, clearParty2PrefillFieldPayload, collapseDocuSignRolesToSignerSlots, applyPrimaryGuarantorNamesToPrefillFields, applySecondOwnerNameToPrefillFields, resolveOwnerRowFullName, resolveSecondOwnerSignerName } from "./contractdata/contractPartyCounts";
 import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
@@ -1435,6 +1438,16 @@ const PDFViewerModal = ({
         contractPrefillFromDb,
     ]);
 
+    const activeOwnerCountForPrefill = useMemo(
+        () =>
+            resolveActiveOwnerCount({
+                owners: contractPrefillRecords.owners ?? null,
+                guarantors: contractPrefillRecords.guarantors ?? null,
+                signerRoles: contractSignerOverrides ?? null,
+            }),
+        [contractPrefillRecords.owners, contractPrefillRecords.guarantors, contractSignerOverrides],
+    );
+
     const contractPrefillOverrides = useMemo(() => {
         const fromNote = parseNoteStructuredSection<Partial<BuildContractPrefillFieldsArgs>>(
             String((applicationData as { note?: string } | null | undefined)?.note || ""),
@@ -2005,25 +2018,34 @@ const PDFViewerModal = ({
     primarySignerEmailRef.current = docuSignSignerEmail.email;
 
     const buildDocuSignRolesForSync = useCallback((): DocuSignTemplateRolePayload[] => {
+        let roles: DocuSignTemplateRolePayload[];
         const rows = resolveSignerOverrideRowsForSend();
         if (rows.length) {
-            return buildDocuSignRolesFromEditorRows(rows);
+            roles = buildDocuSignRolesFromEditorRows(rows);
+        } else {
+            const signerEmail = String(primarySignerEmailRef.current || "").trim();
+            const signerName = getApplicationPrimaryRecipientName(applicationData);
+            roles = mergeApplicationDataIntoSignerRoles(
+                buildBoldSignRolesFromTemplateRecipients(
+                    templateRoleRowsForSigner,
+                    signerEmail,
+                    signerName,
+                    { singleSignerOnly: false },
+                ),
+                applicationSignerRowsForMerge.map((r) => ({
+                    role: r.role,
+                    name: r.name,
+                    email: r.email,
+                })),
+            );
         }
-        const signerEmail = String(primarySignerEmailRef.current || "").trim();
-        const signerName = getApplicationPrimaryRecipientName(applicationData);
-        return mergeApplicationDataIntoSignerRoles(
-            buildBoldSignRolesFromTemplateRecipients(
-                templateRoleRowsForSigner,
-                signerEmail,
-                signerName,
-                { singleSignerOnly: false },
-            ),
-            applicationSignerRowsForMerge.map((r) => ({
-                role: r.role,
-                name: r.name,
-                email: r.email,
+        const ownerCount = resolveActiveOwnerCount({
+            signerRoles: roles.map((r) => ({
+                signerRole: r.signerRole,
+                signerEmail: r.signerEmail,
             })),
-        );
+        });
+        return collapseDocuSignRolesToSignerSlots(roles, ownerCount);
     }, [
         resolveSignerOverrideRowsForSend,
         applicationData,
@@ -3492,9 +3514,53 @@ const PDFViewerModal = ({
             bankDetail: contractPrefillRecords.bankDetail ?? null,
         });
 
-        return mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
+        let mergedPayload = mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields);
+
+        if (activeOwnerCountForPrefill >= 2) {
+            const firstOwner = contractPrefillRecords.owners?.[0] as
+                | Record<string, unknown>
+                | undefined;
+            const secondOwner = contractPrefillRecords.owners?.[1] as
+                | Record<string, unknown>
+                | undefined;
+            const primaryOwnerName =
+                resolveOwnerRowFullName(firstOwner) ||
+                String(dealReviewFields.find((f) => f.id === "owner1GuarantorName")?.value || "").trim();
+            mergedPayload = applyPrimaryGuarantorNamesToPrefillFields(
+                mergedPayload,
+                primaryOwnerName,
+                {
+                    primarySs: String(firstOwner?.ssnNumber ?? firstOwner?.ssn ?? "").trim(),
+                    primaryDriverLicense: String(
+                        firstOwner?.driverLicenseNumber ?? firstOwner?.driverLicense ?? "",
+                    ).trim(),
+                },
+            );
+            const signerRoles = buildDocuSignRolesForSync();
+            const secondOwnerName =
+                resolveOwnerRowFullName(secondOwner) ||
+                resolveSecondOwnerSignerName(
+                    signerRoles,
+                    activeOwnerCountForPrefill,
+                    contractPrefillRecords.owners ?? null,
+                );
+            mergedPayload = applySecondOwnerNameToPrefillFields(mergedPayload, {
+                ownerCount: activeOwnerCountForPrefill,
+                secondOwnerName,
+                secondOwnerSs: String(secondOwner?.ssnNumber ?? secondOwner?.ssn ?? "").trim(),
+                secondOwnerDriverLicense: String(
+                    secondOwner?.driverLicenseNumber ?? secondOwner?.driverLicense ?? "",
+                ).trim(),
+            });
+        }
+
+        return clearParty2PrefillFieldPayload(
+            mergedPayload,
+            activeOwnerCountForPrefill,
+        );
     }, [
         dealReviewFields,
+        activeOwnerCountForPrefill,
         resolveAddendumTemplateIdForDocuSignMerge,
         resolveDisclosureTemplateRefForDocuSignMerge,
         contractPrefillOverrides,
@@ -3505,7 +3571,9 @@ const PDFViewerModal = ({
         templateMappings,
         applicationData,
         contractPrefillRecords.bankDetail,
+        contractPrefillRecords.owners,
         linkedDisclosureMapping,
+        buildDocuSignRolesForSync,
     ]);
 
     const syncPrefillToDraftEnvelope = useCallback(async () => {
@@ -3846,6 +3914,10 @@ const PDFViewerModal = ({
             const main = stripDocumentTemplateBlobFromPrefillOverrides(
                 rawOverrides,
             ) as Record<string, unknown>;
+            const signerRows =
+                contractSignerOverrides?.length
+                    ? contractSignerOverrides
+                    : parseContractSignerOverridesFromPrefill(rawOverrides);
             const sendHistory = upsertDocumentSendHistory(parseDocumentSendHistory(rawOverrides), {
                 envelopeId,
                 documentKind: "contract",
@@ -3855,6 +3927,9 @@ const PDFViewerModal = ({
             });
             const contractPrefillOverrides = {
                 ...main,
+                ...(signerRows?.length
+                    ? { [CONTRACT_SIGNER_OVERRIDES_KEY]: signerRows }
+                    : {}),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: documentTemplatePrefillByMappingId,
                 [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: documentTemplateEnvelopeByMappingId,
                 [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
@@ -3865,11 +3940,22 @@ const PDFViewerModal = ({
                     data: { contractPrefillOverrides },
                 }),
             ).unwrap();
+            setContractPrefillFromDb(
+                stripDocumentTemplateBlobFromPrefillOverrides(
+                    normalizeContractPrefillOverrides(contractPrefillOverrides) ?? null,
+                ),
+            );
+            setResolvedContract((prev) =>
+                prev && typeof prev === "object"
+                    ? { ...prev, contractPrefillOverrides }
+                    : prev,
+            );
             onContractDocumentsChanged?.();
         },
         [
             effectiveContractId,
             resolvedContract,
+            contractSignerOverrides,
             documentTemplatePrefillByMappingId,
             documentTemplateEnvelopeByMappingId,
             dispatch,
@@ -7026,9 +7112,19 @@ const PDFViewerModal = ({
                                                                     const cid = effectiveContractId;
                                                                     if (cid != null) {
                                                                         const prefillBase =
-                                                                            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
-                                                                                ?.contractPrefillOverrides ??
-                                                                            contractPrefillFromDb;
+                                                                        stripDocumentTemplateBlobFromPrefillOverrides(
+                                                                            normalizeContractPrefillOverrides(
+                                                                                contractPrefillFromDb ??
+                                                                                    (resolvedContract as {
+                                                                                        contractPrefillOverrides?: unknown;
+                                                                                    } | null)
+                                                                                        ?.contractPrefillOverrides,
+                                                                            ) ?? null,
+                                                                        ) ??
+                                                                        contractPrefillFromDb ??
+                                                                        (resolvedContract as {
+                                                                            contractPrefillOverrides?: unknown;
+                                                                        } | null)?.contractPrefillOverrides;
                                                                         const contractPrefillOverrides =
                                                                             mergeContractPrefillWithSignerOverrides(
                                                                                 prefillBase,
@@ -7065,6 +7161,124 @@ const PDFViewerModal = ({
                                                                                   }
                                                                                 : (payload as Record<string, unknown>),
                                                                         );
+                                                                        setContractPrefillFromDb(
+                                                                            stripDocumentTemplateBlobFromPrefillOverrides(
+                                                                                normalizeContractPrefillOverrides(
+                                                                                    contractPrefillOverrides,
+                                                                                ) ?? null,
+                                                                            ),
+                                                                        );
+                                                                        const ownerCountSaved =
+                                                                            resolveActiveOwnerCount({
+                                                                                signerRoles:
+                                                                                    buildDocuSignRolesFromEditorRows(
+                                                                                        rows,
+                                                                                    ),
+                                                                            });
+                                                                        if (ownerCountSaved >= 2) {
+                                                                            const secondSigner =
+                                                                                findSecondOwnerSignerRow(
+                                                                                    rows,
+                                                                                );
+                                                                            if (secondSigner) {
+                                                                                const {
+                                                                                    firstName,
+                                                                                    lastName,
+                                                                                } =
+                                                                                    splitSignerDisplayName(
+                                                                                        secondSigner.name,
+                                                                                    );
+                                                                                const secondEmail =
+                                                                                    String(
+                                                                                        secondSigner.email ||
+                                                                                            "",
+                                                                                    ).trim();
+                                                                                if (
+                                                                                    firstName &&
+                                                                                    lastName
+                                                                                ) {
+                                                                                    const ownersRes =
+                                                                                        await dispatch(
+                                                                                            getAllContractOwners(
+                                                                                                {
+                                                                                                    contractId:
+                                                                                                        cid,
+                                                                                                },
+                                                                                            ),
+                                                                                        ).unwrap();
+                                                                                    const dbOwners =
+                                                                                        Array.isArray(
+                                                                                            (
+                                                                                                ownersRes as {
+                                                                                                    data?: unknown;
+                                                                                                }
+                                                                                            )?.data,
+                                                                                        )
+                                                                                            ? ((
+                                                                                                  ownersRes as {
+                                                                                                      data: unknown[];
+                                                                                                  }
+                                                                                              )
+                                                                                                  .data as Record<
+                                                                                                  string,
+                                                                                                  unknown
+                                                                                              >[])
+                                                                                            : [];
+                                                                                    if (
+                                                                                        dbOwners.length <
+                                                                                        2
+                                                                                    ) {
+                                                                                        await dispatch(
+                                                                                            createContractOwner(
+                                                                                                {
+                                                                                                    contractId:
+                                                                                                        cid,
+                                                                                                    firstName,
+                                                                                                    lastName,
+                                                                                                    email:
+                                                                                                        secondEmail ||
+                                                                                                        undefined,
+                                                                                                } as any,
+                                                                                            ),
+                                                                                        ).unwrap();
+                                                                                    } else {
+                                                                                        const secondId =
+                                                                                            Number(
+                                                                                                dbOwners[1]
+                                                                                                    ?.id,
+                                                                                            );
+                                                                                        if (
+                                                                                            Number.isFinite(
+                                                                                                secondId,
+                                                                                            )
+                                                                                        ) {
+                                                                                            await dispatch(
+                                                                                                updateContractOwner(
+                                                                                                    {
+                                                                                                        id: secondId,
+                                                                                                        data: {
+                                                                                                            firstName,
+                                                                                                            lastName,
+                                                                                                            email:
+                                                                                                                secondEmail ||
+                                                                                                                undefined,
+                                                                                                        },
+                                                                                                    },
+                                                                                                ),
+                                                                                            ).unwrap();
+                                                                                        }
+                                                                                    }
+                                                                                    await dispatch(
+                                                                                        getAllContractOwners(
+                                                                                            {
+                                                                                                contractId:
+                                                                                                    cid,
+                                                                                            },
+                                                                                        ),
+                                                                                    );
+                                                                                }
+                                                                            }
+                                                                        }
                                                                     }
                                                                     toast.success(
                                                                         hadDraft
@@ -7999,6 +8213,9 @@ const PDFViewerModal = ({
                             : prev,
                     );
                     invalidateDocuSignDraftSession();
+                    queueMicrotask(() => {
+                        void syncPrefillToDraftEnvelope();
+                    });
                 }}
                 onPersistedPrefillFullChange={(main, mappingMap) => {
                     setDocumentTemplatePrefillByMappingId(mappingMap);
@@ -8025,6 +8242,12 @@ const PDFViewerModal = ({
                             : prev,
                     );
                     invalidateDocuSignDraftSession();
+                    queueMicrotask(() => {
+                        void syncPrefillToDraftEnvelope();
+                    });
+                }}
+                onAfterPrefillSaved={() => {
+                    void syncPrefillToDraftEnvelope();
                 }}
                 contractRecords={contractPrefillRecords}
                 resolvedContract={resolvedContract}
