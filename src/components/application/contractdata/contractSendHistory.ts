@@ -165,6 +165,57 @@ export function canResendMainContract(
     );
 }
 
+/** Current (or only) main-contract row from the send-history table. */
+export function resolveMainContractSendTableRow(
+    contract: Record<string, unknown> | null | undefined,
+): ContractSendTableRow | null {
+    const rows = buildContractSendTableRows(contract);
+    return (
+        rows.find((row) => row.rowType === "contract" && row.isCurrent) ??
+        rows.find((row) => row.rowType === "contract") ??
+        null
+    );
+}
+
+/**
+ * Main contract may be sent again after a full sign or a void/declined/expired envelope.
+ * Uses CRM contract + document status and the send-history table (when CRM lags DocuSign).
+ */
+export function canSendMainContractAgain(
+    contract: Record<string, unknown> | null | undefined,
+): boolean {
+    if (!contract) return false;
+    const doc = pickContractEnvelopeDocument(contract);
+    const contractStatus = (contract as { status?: unknown }).status;
+    const documentStatus = doc?.status;
+
+    if (canResendMainContract(contract)) return true;
+    if (isContractVoidedOrTerminal(contractStatus, documentStatus)) return true;
+
+    const mainRow = resolveMainContractSendTableRow(contract);
+    if (mainRow) {
+        if (isContractSendTableRowFullySigned(mainRow)) return true;
+        if (isContractSendTableRowVoided(mainRow)) return true;
+    }
+    return false;
+}
+
+/** True when the main contract envelope is still out for signature (void before resend). */
+export function isMainContractOutForSignature(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    return canVoidMainContract(contract, sessionSentAt);
+}
+
+/** A main-contract send-history row that is fully signed or voided/terminal — eligible for a new send. */
+export function canResendContractSendTableRow(
+    row: ContractSendTableRow | null | undefined,
+): boolean {
+    if (!row || row.rowType !== "contract") return false;
+    return isContractSendTableRowFullySigned(row) || isContractSendTableRowVoided(row);
+}
+
 export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendHistoryEntry[] {
     if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return [];
     const list = (raw as Record<string, unknown>)[CONTRACT_SEND_HISTORY_KEY];

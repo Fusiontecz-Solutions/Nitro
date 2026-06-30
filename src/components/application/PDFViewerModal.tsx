@@ -120,8 +120,12 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
 import {
     buildContractSendTableRows,
+    canResendContractSendTableRow,
     canSendMainContract,
+    canSendMainContractAgain,
     canVoidContractSendTableRow,
+    isMainContractOutForSignature,
+    resolveMainContractSendTableRow,
     getContractSendTableRowStatusLabel,
     hasVisibleContractSendTableRows,
     isContractFullySigned,
@@ -854,6 +858,14 @@ function canReviewAndSendToDocuSign(
     sessionSentAt: Date | null,
     sentStepUnlocked = false,
 ): boolean {
+    if (
+        isContractVoidedOrTerminal(
+            contract?.status,
+            pickContractEnvelopeDocument(contract)?.status,
+        )
+    ) {
+        return true;
+    }
     if (!canSendMainContract(contract, sessionSentAt)) return false;
     if (isContractAlreadySent(contract, sessionSentAt, sentStepUnlocked)) return false;
     return true;
@@ -2168,27 +2180,66 @@ const PDFViewerModal = ({
         [resolvedContract, sentAt, sentStepUnlocked],
     );
 
-    const contractIsFullySigned = useMemo(() => {
-        const doc = pickContractEnvelopeDocument(resolvedContract);
-        return isContractFullySigned(resolvedContract?.status, doc?.status);
-    }, [resolvedContract]);
-
-    const canResendSignedContract = useMemo(
-        () => Boolean(onPrepareDocuSignDraft) && contractIsFullySigned,
-        [onPrepareDocuSignDraft, contractIsFullySigned],
+    const selectedMainContractRow = useMemo(
+        () => (selectedSentRow?.rowType === "contract" ? selectedSentRow : null),
+        [selectedSentRow],
     );
 
-    const contractNeedsNewEnvelope = useMemo(
-        () =>
+    const mainContractSendAgainEligible = useMemo(() => {
+        if (!onPrepareDocuSignDraft) return false;
+        if (selectedMainContractRow && canResendContractSendTableRow(selectedMainContractRow)) {
+            return true;
+        }
+        return canSendMainContractAgain(resolvedContract);
+    }, [onPrepareDocuSignDraft, selectedMainContractRow, resolvedContract]);
+
+    const mainContractOutForSignature = useMemo(() => {
+        if (selectedMainContractRow && canResendContractSendTableRow(selectedMainContractRow)) {
+            return false;
+        }
+        return isMainContractOutForSignature(resolvedContract, sentAt);
+    }, [selectedMainContractRow, resolvedContract, sentAt]);
+
+    const contractNeedsNewEnvelope = useMemo(() => {
+        if (selectedMainContractRow && isContractSendTableRowVoided(selectedMainContractRow)) {
+            return true;
+        }
+        return (
             isContractVoidedOrTerminal(
                 resolvedContract?.status,
                 pickContractEnvelopeDocument(resolvedContract)?.status,
-            ),
-        [resolvedContract],
+            ) ||
+            (() => {
+                const mainRow = resolveMainContractSendTableRow(resolvedContract);
+                return Boolean(mainRow && isContractSendTableRowVoided(mainRow));
+            })()
+        );
+    }, [resolvedContract, selectedMainContractRow]);
+
+    /**
+     * Signed or voided main contract — start a fresh envelope.
+     * Honors the selected send-history row (e.g. voided "send 3") even when a newer envelope exists.
+     */
+    const showSendContractAgainButton = useMemo(
+        () =>
+            mainContractSendAgainEligible && !mainContractOutForSignature && !docuSignOpenUrl,
+        [mainContractSendAgainEligible, mainContractOutForSignature, docuSignOpenUrl],
     );
 
-    const showResendContractButton =
-        canResendSignedContract && !canCancelSentContract && !docuSignOpenUrl;
+    const sendContractAgainLabel = useMemo(() => {
+        if (selectedMainContractRow) {
+            if (isContractSendTableRowVoided(selectedMainContractRow)) {
+                return "Send contract again";
+            }
+            if (isContractSendTableRowFullySigned(selectedMainContractRow)) {
+                return "Resend contract";
+            }
+        }
+        const mainRow = resolveMainContractSendTableRow(resolvedContract);
+        const voided =
+            contractNeedsNewEnvelope || Boolean(mainRow && isContractSendTableRowVoided(mainRow));
+        return voided ? "Send contract again" : "Resend contract";
+    }, [resolvedContract, contractNeedsNewEnvelope, selectedMainContractRow]);
 
     const contractSignersValidationError = useMemo(() => {
         const roles =
@@ -3136,12 +3187,12 @@ const PDFViewerModal = ({
             options?.forceNewEnvelope === true || contractNeedsNewEnvelope;
         const packageIncludesMainContract =
             !canSendWithoutContract || includeMainContractInSendRef.current;
+        const mayStartNewMainContractEnvelope =
+            mainContractSendAgainEligible ||
+            contractNeedsNewEnvelope ||
+            canSendMainContract(resolvedContract, sentAt);
         if (forceNewEnvelope) {
-            if (
-                packageIncludesMainContract &&
-                !canResendSignedContract &&
-                !canSendMainContract(resolvedContract, sentAt)
-            ) {
+            if (packageIncludesMainContract && !mayStartNewMainContractEnvelope) {
                 toast.error("This contract cannot be sent yet.");
                 return;
             }
@@ -8189,13 +8240,19 @@ const PDFViewerModal = ({
                                                             {selectedSentRow &&
                                                             isContractSendTableRowFullySigned(selectedSentRow)
                                                                 ? `${selectedSentRow.label} fully signed`
-                                                                : `${selectedSentRow?.label ?? "Document"} is on its way for signature`}
+                                                                : selectedSentRow &&
+                                                                    isContractSendTableRowVoided(selectedSentRow)
+                                                                  ? `${selectedSentRow.label} voided`
+                                                                  : `${selectedSentRow?.label ?? "Document"} is on its way for signature`}
                                                         </h3>
                                                         <p className="mt-1 text-sm leading-relaxed text-white/85">
                                                             {selectedSentRow &&
                                                             isContractSendTableRowFullySigned(selectedSentRow)
                                                                 ? "All signers completed. The PDF on the right includes signatures."
-                                                                : "The DocuSign envelope was sent. Use Refresh to check signing status from DocuSign."}
+                                                                : selectedSentRow &&
+                                                                    isContractSendTableRowVoided(selectedSentRow)
+                                                                  ? "This envelope was voided. Use Send contract again below to create a new DocuSign envelope."
+                                                                  : "The DocuSign envelope was sent. Use Refresh to check signing status from DocuSign."}
                                                         </p>
                                                     </div>
                                                 </div>
@@ -8428,6 +8485,34 @@ const PDFViewerModal = ({
                                                 </span>
                                             </p>
                                         </div>
+
+                                        {showSendContractAgainButton ? (
+                                            <div className="rounded-2xl border border-[var(--brand)]/25 bg-[var(--brand)]/5 p-4 shadow-sm dark:border-[var(--brand)]/30 dark:bg-[var(--brand)]/10">
+                                                <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                                                    {contractNeedsNewEnvelope
+                                                        ? "This contract envelope is voided or ended. Start a new send when you are ready."
+                                                        : "This contract is fully signed. Send a new envelope if terms or signers changed."}
+                                                </p>
+                                                <Button
+                                                    type="button"
+                                                    className={cn("mt-3", DOCUSIGN_PRIMARY_BTN_CLASS)}
+                                                    disabled={
+                                                        isSending ||
+                                                        isCancellingContract ||
+                                                        Boolean(contractSignersValidationError)
+                                                    }
+                                                    onClick={() =>
+                                                        handleReviewInDocuSignClick({
+                                                            forceNewEnvelope: true,
+                                                        })
+                                                    }
+                                                >
+                                                    {isSending
+                                                        ? "Preparing DocuSign…"
+                                                        : sendContractAgainLabel}
+                                                </Button>
+                                            </div>
+                                        ) : null}
 
 
                                     </section>
@@ -8676,7 +8761,9 @@ const PDFViewerModal = ({
                                         : `Void ${selectedSentRow?.label ?? "document"}`}
                                 </Button>
                             ) : null}
-                            {activeStep === "sent" && !canCancelSentContract && !showResendContractButton ? (
+                            {activeStep === "sent" &&
+                            !canCancelSentContract &&
+                            !showSendContractAgainButton ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -8686,7 +8773,7 @@ const PDFViewerModal = ({
                                     Done
                                 </Button>
                             ) : null}
-                            {showResendContractButton ? (
+                            {showSendContractAgainButton ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -8700,7 +8787,7 @@ const PDFViewerModal = ({
                                         handleReviewInDocuSignClick({ forceNewEnvelope: true })
                                     }
                                 >
-                                    {isSending ? "Preparing DocuSign…" : "Resend contract"}
+                                    {isSending ? "Preparing DocuSign…" : sendContractAgainLabel}
                                 </Button>
                             ) : null}
                             {canReviewAndSendCurrentPackage && docuSignOpenUrl ? (
@@ -8736,7 +8823,9 @@ const PDFViewerModal = ({
                                     Open DocuSign
                                 </Button>
                             ) : null}
-                            {canReviewAndSendCurrentPackage && !docuSignOpenUrl ? (
+                            {canReviewAndSendCurrentPackage &&
+                            !docuSignOpenUrl &&
+                            !showSendContractAgainButton ? (
                                 <Button
                                     type="button"
                                     variant="default"
