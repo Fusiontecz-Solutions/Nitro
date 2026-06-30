@@ -679,6 +679,7 @@
       "width": "223",
       "height": "19",
       "signerRole": "Signer",
+      "optional": false,
       "sourceTabLabel": "client_phone"
     },
     {

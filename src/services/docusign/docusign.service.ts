@@ -938,7 +938,11 @@ export class DocusignService {
     envelopeId: string,
     tabsPath: string,
     group: string,
-    updates: Array<{ tabId: string; value: string }>,
+    updates: Array<{
+      tabId: string;
+      value: string;
+      tab?: Record<string, unknown>;
+    }>,
     lockTabs = false,
   ): Promise<number> {
     if (!updates.length) return 0;
@@ -946,12 +950,20 @@ export class DocusignService {
     const CHUNK_SIZE = 20;
     let applied = 0;
     for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
-      const chunk = updates.slice(i, i + CHUNK_SIZE).map((t) => ({
-        tabId: t.tabId,
-        [valueKey]: t.value,
-        ...(lockTabs ? { locked: 'true' } : {}),
-        shared: 'true',
-      }));
+      const chunk = updates.slice(i, i + CHUNK_SIZE).map((t) => {
+        const signerEditable = t.tab
+          ? isFillAtSigningTabRef(t.tab as { tabLabel?: string; name?: string })
+          : false;
+        return {
+          tabId: t.tabId,
+          [valueKey]: t.value,
+          ...(signerEditable
+            ? { locked: 'false', shared: 'false' }
+            : lockTabs
+              ? { locked: 'true', shared: 'true' }
+              : { shared: 'true' }),
+        };
+      });
       await client.put(
         `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/${tabsPath}`,
         { [group]: chunk },
@@ -987,13 +999,17 @@ export class DocusignService {
     const tabsPath = `recipients/${recipientId}/tabs`;
 
     for (const [group, tabs] of this.collectSignerDataTabGroups(tabsResData)) {
-      const pending: Array<{ tabId: string; value: string }> = [];
+      const pending: Array<{
+        tabId: string;
+        value: string;
+        tab?: Record<string, unknown>;
+      }> = [];
       for (const tab of tabs) {
         const tabId = String(tab.tabId || '').trim();
         if (!tabId || updatedTabIds.has(tabId)) continue;
         const prefill = resolvePrefillForTab(valueMap, tab as DocusignTextTabRef);
         if (!prefill) continue;
-        pending.push({ tabId, value: prefill });
+        pending.push({ tabId, value: prefill, tab });
       }
       if (!pending.length) continue;
 
@@ -1215,7 +1231,71 @@ export class DocusignService {
       }
     }
 
+    await this.ensureSignerEditableTabsWritable(client, accountId, envelopeId);
     return totalLocked;
+  }
+
+  /** Page-1 client phone (and page-15 ACH) must stay writable even if a prior lock pass touched them. */
+  private async ensureSignerEditableTabsWritable(
+    client: AxiosInstance,
+    accountId: string,
+    envelopeId: string,
+  ): Promise<number> {
+    const recRes = await client.get(
+      `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients`,
+    );
+    const signers = (recRes.data?.signers || []) as Array<{ recipientId?: string }>;
+    let updated = 0;
+
+    for (const signer of signers) {
+      const recipientId = String(signer.recipientId || '').trim();
+      if (!recipientId) continue;
+
+      let tabsResData: Record<string, unknown>;
+      try {
+        const tabsRes = await client.get(
+          `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${recipientId}/tabs`,
+        );
+        tabsResData = (tabsRes.data || {}) as Record<string, unknown>;
+      } catch (err) {
+        this.logDocusignApiError(`ensureSignerEditableTabsWritable fetch ${recipientId}`, err);
+        continue;
+      }
+
+      for (const [group, tabs] of this.collectSignerDataTabGroups(tabsResData)) {
+        const toUnlock = tabs
+          .filter(
+            (tab) =>
+              isFillAtSigningTabRef(tab as { tabLabel?: string; name?: string }) &&
+              this.isSignerDataTabLocked(tab),
+          )
+          .map((tab) => {
+            const tabId = String(tab.tabId || '').trim();
+            if (!tabId) return null;
+            return {
+              tabId,
+              locked: 'false',
+              shared: 'false',
+              required: 'true',
+              optional: 'false',
+            };
+          })
+          .filter((row) => row != null);
+        if (!toUnlock.length) continue;
+
+        try {
+          await client.put(
+            `/v2.1/accounts/${accountId}/envelopes/${envelopeId}/recipients/${recipientId}/tabs`,
+            { [group]: toUnlock },
+          );
+          updated += toUnlock.length;
+        } catch (err) {
+          this.logDocusignApiError(`ensureSignerEditableTabsWritable ${recipientId}/${group}`, err);
+        }
+      }
+    }
+
+    return updated;
   }
 
   /**
@@ -2474,15 +2554,18 @@ export class DocusignService {
         const tabLabel = String(tab.tabLabel || tab.name || '').trim();
         if (!tabLabel) continue;
 
+        const signerEditable = isFillAtSigningTabRef(tab as { tabLabel?: string; name?: string });
         const row: Record<string, string> = {
           tabLabel,
-          shared: 'true',
+          ...(signerEditable
+            ? { locked: 'false', shared: 'false', required: 'true', optional: 'false' }
+            : { shared: 'true' }),
         };
 
         const prefill = resolvePrefillForTab(valueMap, tab as DocusignTextTabRef);
         if (prefill) {
           row[valueKey] = prefill;
-        } else {
+        } else if (!signerEditable) {
           for (const key of DocusignService.TAB_VALUE_PRESERVE_KEYS) {
             const v = tab[key];
             if (v === undefined || v === null || String(v).trim() === '') continue;

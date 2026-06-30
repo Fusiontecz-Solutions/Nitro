@@ -6,6 +6,7 @@ import {
   buildLayoutPrefillValueRecord,
   CRM_ID_TO_LAYOUT_VARIABLE,
   getPrefillDisplayLabel,
+  PREFILL_DISPLAY_LABEL_BY_VARIABLE,
 } from './prefill-layout-bridge';
 import type { PrefillFieldInput } from './docusign-prefill';
 import { DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
@@ -404,13 +405,34 @@ function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
 }
 
 /** True when a live DocuSign tab must stay unlocked at send (signer fills or confirms). */
+function resolveSignerEditableTabVariable(tab: {
+  tabLabel?: string;
+  name?: string;
+}): string {
+  const candidates = [
+    String(tab.name || '').trim().toLowerCase(),
+    String(tab.tabLabel || '').trim().toLowerCase(),
+  ].filter(Boolean);
+  for (const label of candidates) {
+    if (FILL_AT_SIGNING_VARIABLES.has(label) || REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label)) {
+      return label;
+    }
+    const compact = label.replace(/_/g, '');
+    for (const variable of [...FILL_AT_SIGNING_VARIABLES, ...REQUIRED_SIGNER_EDITABLE_VARIABLES]) {
+      if (variable.replace(/_/g, '') === compact) return variable;
+    }
+    for (const [variable, display] of Object.entries(PREFILL_DISPLAY_LABEL_BY_VARIABLE)) {
+      if (display.toLowerCase() === label) return variable.toLowerCase();
+    }
+  }
+  return candidates[0] || '';
+}
+
 export function isFillAtSigningTabRef(tab: {
   tabLabel?: string;
   name?: string;
 }): boolean {
-  const label = String(tab.tabLabel || tab.name || '')
-    .trim()
-    .toLowerCase();
+  const label = resolveSignerEditableTabVariable(tab);
   return Boolean(
     label &&
       (FILL_AT_SIGNING_VARIABLES.has(label) ||
@@ -418,7 +440,35 @@ export function isFillAtSigningTabRef(tab: {
   );
 }
 
+const DISCLOSURE_MERCHANT_NAME_TAB_VARIABLES = new Set([
+  'client_name',
+  'recipient_name',
+  'recipient_name2',
+  'disclosure_name',
+  'disclosure_merchant_name',
+]);
+
+function isStateDisclosureTextPlacement(placement?: DocumentLayoutPlacement): boolean {
+  return Boolean(String(placement?.id || '').startsWith('sd_text_'));
+}
+
+function resolveDisclosureMerchantBusinessName(values: Record<string, string>): string {
+  return String(
+    values.disclosure_merchant_name ||
+      values.client_legal_name ||
+      values.business_legal_name ||
+      values.merchant_legal_name ||
+      values.legal_name ||
+      values.security_business_name ||
+      values.doing_business_as ||
+      values.recipient_name ||
+      values.disclosure_name ||
+      '',
+  ).trim();
+}
+
 function expandPrefillValues(values: Record<string, string>): Record<string, string> {
+  const savedDisclosureBusinessName = resolveDisclosureMerchantBusinessName(values);
   const out = { ...values };
   for (const [canonical, aliases] of Object.entries(PREFILL_VALUE_ALIASES)) {
     const v = String(out[canonical] || '').trim();
@@ -462,6 +512,19 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
   forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
   forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
   forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
+
+  const disclosureBusinessName = savedDisclosureBusinessName || resolveDisclosureMerchantBusinessName(out);
+  if (disclosureBusinessName) {
+    for (const key of [
+      'recipient_name',
+      'recipient_name2',
+      'disclosure_name',
+      'disclosure_merchant_name',
+    ] as const) {
+      out[key] = disclosureBusinessName;
+    }
+  }
+
   return out;
 }
 
@@ -549,6 +612,19 @@ function enrichValuesFromSigners(
     forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
     forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
   }
+
+  const disclosureBusinessName = resolveDisclosureMerchantBusinessName(out);
+  if (disclosureBusinessName) {
+    for (const key of [
+      'recipient_name',
+      'recipient_name2',
+      'disclosure_name',
+      'disclosure_merchant_name',
+    ] as const) {
+      out[key] = disclosureBusinessName;
+    }
+  }
+
   return out;
 }
 
@@ -785,9 +861,17 @@ function isZeroMoneyPrefillValue(value: unknown): boolean {
 function resolveTextPlacementValue(
   variable: string,
   values: Record<string, string>,
+  placement?: DocumentLayoutPlacement,
 ): string {
   const key = String(variable || '').trim();
   if (!key) return '';
+  if (
+    isStateDisclosureTextPlacement(placement) &&
+    DISCLOSURE_MERCHANT_NAME_TAB_VARIABLES.has(key.toLowerCase())
+  ) {
+    const business = resolveDisclosureMerchantBusinessName(values);
+    if (business) return business;
+  }
   const formatIfMoney = (raw: string) =>
     FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
       ? formatFlexAddendumMoneyUsd(raw)
@@ -898,7 +982,7 @@ function toTextTab(
     ...(optionalTab
       ? { optional: 'true' }
       : { required: 'true', optional: 'false' }),
-    ...(lockTab ? { locked: 'true' } : {}),
+    ...(lockTab ? { locked: 'true' } : { locked: 'false' }),
     shared: signerEditable ? 'false' : 'true',
     width,
     ...(placement.height ? { height: placement.height } : {}),
@@ -925,7 +1009,7 @@ export async function renderFlattenedLayoutPdf(
     if (placement.type !== 'text' && placement.type !== 'date') continue;
     if (!placementAllowed(placement, counts, expanded)) continue;
     if (isFillAtSigningPlacement(placement)) continue;
-    const text = resolveTextPlacementValue(placement.variable || '', expanded);
+    const text = resolveTextPlacementValue(placement.variable || '', expanded, placement);
     if (!text) continue;
 
     const pageIndex = Math.max(0, parseInt(String(placement.pageNumber || '1'), 10) - 1);
@@ -1059,7 +1143,7 @@ export function buildRecipientTabsByRoleForLayout(
 
     if (placement.type === 'text') {
       const variable = placement.variable || '';
-      const value = resolveTextPlacementValue(variable, values);
+      const value = resolveTextPlacementValue(variable, values, placement);
       if (!value && !shouldIncludeEmptyTextPlacement(placement)) {
         continue;
       }
@@ -1191,7 +1275,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
           continue;
         }
         const variable = placement.variable || '';
-        const resolved = resolveTextPlacementValue(variable, values);
+        const resolved = resolveTextPlacementValue(variable, values, tabPlacement);
         const value = isFillAtSigningPlacement(placement) ? '' : resolved;
         if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
         if (!value && !shouldIncludeEmptyTextPlacement(placement)) continue;
