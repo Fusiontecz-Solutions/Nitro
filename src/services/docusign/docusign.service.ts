@@ -2676,14 +2676,13 @@ export class DocusignService {
           (priorWasCompleted ? new Date() : null),
       });
 
-      if (priorWasCompleted) {
-        await syncApplicationOnMainContractResend(prisma, applicationId, {
-          source: 'docusign.linkEnvelopeToApplication',
-          contractId: contractRow?.id,
-          contractStatusPrevious: String(contractRow?.status ?? ''),
-          contractStatusNew: 'DRAFT',
-        });
-      }
+      // Resend after signed, voided, or any prior main-contract send — back to Contract Generated.
+      await syncApplicationOnMainContractResend(prisma, applicationId, {
+        source: 'docusign.linkEnvelopeToApplication',
+        contractId: contractRow?.id,
+        contractStatusPrevious: String(contractRow?.status ?? ''),
+        contractStatusNew: 'DRAFT',
+      });
     }
 
     await clearAchAuthorizationIfMatchesMainContract(applicationId, newEnvelopeId);

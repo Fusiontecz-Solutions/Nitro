@@ -334,6 +334,9 @@ const PARTY2_NAME_PREFERRED = [
   'business_name_2',
 ] as const;
 
+/** Contract page 1 — merchant confirms or enters phone at signing (prefilled when available). */
+export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set(['client_phone']);
+
 /** Contract page 15 — ACH portal, credentials, and references (merchant fills at signing). */
 export const FILL_AT_SIGNING_VARIABLES = new Set([
   'ach_authorization_bank_portal_website',
@@ -363,9 +366,31 @@ function isExhibitPrefillPlacement(placement: DocumentLayoutPlacement): boolean 
   return EXHIBIT_PREFILL_VARIABLE_PATTERN.test(String(placement.variable || '').trim());
 }
 
-/** Only page-15 ACH portal / security / reference fields are required signer text. */
+function isRequiredSignerEditablePlacement(placement: DocumentLayoutPlacement): boolean {
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return REQUIRED_SIGNER_EDITABLE_VARIABLES.has(variable);
+}
+
+/** Page-15 ACH fields start blank; page-1 editable fields keep CRM prefill. */
+function clearsValueAtSend(placement: DocumentLayoutPlacement): boolean {
+  if (placement.fillAtSigning === true) return true;
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return FILL_AT_SIGNING_VARIABLES.has(variable);
+}
+
+function isSignerEditableTextPlacement(placement: DocumentLayoutPlacement): boolean {
+  if (placement.fillAtSigning === true) return true;
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return (
+    FILL_AT_SIGNING_VARIABLES.has(variable) ||
+    REQUIRED_SIGNER_EDITABLE_VARIABLES.has(variable)
+  );
+}
+
+/** Page-15 ACH fields and page-1 client phone are required signer text. */
 function isRequiredSignerTextField(placement: DocumentLayoutPlacement): boolean {
   if (placement.type !== 'text') return false;
+  if (isRequiredSignerEditablePlacement(placement)) return true;
   return (
     String(placement.pageNumber || '') === '15' &&
     isFillAtSigningPlacement(placement)
@@ -378,7 +403,7 @@ function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
   return FILL_AT_SIGNING_VARIABLES.has(variable);
 }
 
-/** True when a live DocuSign tab is a signer-fill field (must stay unlocked at send). */
+/** True when a live DocuSign tab must stay unlocked at send (signer fills or confirms). */
 export function isFillAtSigningTabRef(tab: {
   tabLabel?: string;
   name?: string;
@@ -386,7 +411,11 @@ export function isFillAtSigningTabRef(tab: {
   const label = String(tab.tabLabel || tab.name || '')
     .trim()
     .toLowerCase();
-  return Boolean(label && FILL_AT_SIGNING_VARIABLES.has(label));
+  return Boolean(
+    label &&
+      (FILL_AT_SIGNING_VARIABLES.has(label) ||
+        REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label)),
+  );
 }
 
 function expandPrefillValues(values: Record<string, string>): Record<string, string> {
@@ -828,7 +857,7 @@ function placementAllowed(
 
 function shouldIncludeEmptyTextPlacement(placement: DocumentLayoutPlacement): boolean {
   if (placement.type !== 'text') return false;
-  if (isFillAtSigningPlacement(placement)) return true;
+  if (isSignerEditableTextPlacement(placement)) return true;
   if (placement.lockedForSigner) return true;
   if (placement.optional) return true;
   return false;
@@ -839,8 +868,8 @@ function toTextTab(
   value: string,
   envelopeDocumentId: string,
 ): DocuSignTab {
-  const fillAtSigning = isFillAtSigningPlacement(placement);
-  const tabValue = fillAtSigning ? '' : value;
+  const signerEditable = isSignerEditableTextPlacement(placement);
+  const tabValue = clearsValueAtSend(placement) ? '' : value;
   const variable = String(placement.variable || '').trim();
   const displayLabel =
     getPrefillDisplayLabel(variable) ||
@@ -856,8 +885,8 @@ function toTextTab(
     height: placement.height,
     layoutWidth: placement.width,
   });
-  // Only page-15 ACH signer-fill fields stay editable; all other text is read-only.
-  const lockTab = !fillAtSigning;
+  // Page-15 ACH and page-1 client phone stay editable; all other text is read-only.
+  const lockTab = !signerEditable;
   const optionalTab = !isRequiredSignerTextField(placement);
   const tabPayload: Record<string, string> = {
     tabLabel,
@@ -870,7 +899,7 @@ function toTextTab(
       ? { optional: 'true' }
       : { required: 'true', optional: 'false' }),
     ...(lockTab ? { locked: 'true' } : {}),
-    shared: fillAtSigning ? 'false' : 'true',
+    shared: signerEditable ? 'false' : 'true',
     width,
     ...(placement.height ? { height: placement.height } : {}),
   };

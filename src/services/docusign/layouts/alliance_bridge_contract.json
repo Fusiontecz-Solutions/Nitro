@@ -12,7 +12,7 @@
       {"tabLabel": "federal_tax_id_EIN", "pageNumber": "1", "xPosition": "156", "yPosition": "280", "tabType": "text", "width": "120", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "business_address", "pageNumber": "1", "xPosition": "154", "yPosition": "310", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "seller_1_name", "pageNumber": "1", "xPosition": "415", "yPosition": "186", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
-      {"tabLabel": "client_phone", "pageNumber": "1", "xPosition": "417", "yPosition": "250", "tabType": "text", "width": "120", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
+      {"tabLabel": "client_phone", "pageNumber": "1", "xPosition": "417", "yPosition": "250", "tabType": "text", "width": "120", "height": "19", "required": "true", "locked": "false", "fontSize": "size9"},
       {"tabLabel": "client_email", "pageNumber": "1", "xPosition": "416", "yPosition": "282", "tabType": "text", "width": "170", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "business_address_contract", "pageNumber": "1", "xPosition": "418", "yPosition": "309", "tabType": "text", "width": "150", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
       {"tabLabel": "purchase_amount", "pageNumber": "1", "xPosition": "472", "yPosition": "422", "tabType": "text", "width": "100", "height": "19", "required": "false", "locked": "true", "fontSize": "size9"},
