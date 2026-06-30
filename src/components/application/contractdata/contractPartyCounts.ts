@@ -249,10 +249,10 @@ function isParty2PrefillFieldId(id: string): boolean {
 }
 
 /** Remove owner-2 / guarantor-2 / merchant-2 prefill when only one merchant signer. */
-export function clearParty2PrefillFieldPayload(
-    fields: Array<{ id: string; value: string }>,
+export function clearParty2PrefillFieldPayload<T extends { id: string; value: string }>(
+    fields: T[],
     ownerCount: number,
-): Array<{ id: string; value: string }> {
+): T[] {
     if (ownerCount >= 2) return fields;
     return fields.filter((f) => !isParty2PrefillFieldId(f.id));
 }

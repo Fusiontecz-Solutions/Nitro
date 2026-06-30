@@ -3066,7 +3066,6 @@ function resolveOwnerCountForPrefillRecords(
     const signerRows = parseContractSignerOverridesFromPrefill(overridesRaw);
     return resolveActiveOwnerCount({
         owners: rec?.owners ?? null,
-        guarantors: rec?.guarantors ?? null,
         signerRoles:
             signerRows?.map((r) => ({
                 signerRole: r.role,

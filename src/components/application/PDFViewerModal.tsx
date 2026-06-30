@@ -1442,10 +1442,12 @@ const PDFViewerModal = ({
         () =>
             resolveActiveOwnerCount({
                 owners: contractPrefillRecords.owners ?? null,
-                guarantors: contractPrefillRecords.guarantors ?? null,
-                signerRoles: contractSignerOverrides ?? null,
+                signerRoles: contractSignerOverrides?.map((r) => ({
+                    signerRole: r.role,
+                    signerEmail: r.email,
+                })),
             }),
-        [contractPrefillRecords.owners, contractPrefillRecords.guarantors, contractSignerOverrides],
+        [contractPrefillRecords.owners, contractSignerOverrides],
     );
 
     const contractPrefillOverrides = useMemo(() => {

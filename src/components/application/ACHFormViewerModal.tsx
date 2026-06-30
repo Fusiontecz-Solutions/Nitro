@@ -131,6 +131,8 @@ export type AchDocumentTemplateMappingRow = {
         templateId?: string;
         pdfUrl?: string;
         layoutKey?: string;
+        state?: string | null;
+        frequency?: string | null;
     } | null;
 };
 
