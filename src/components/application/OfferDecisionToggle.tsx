@@ -23,6 +23,7 @@ import { toast } from "react-toastify";
 import { Badge } from "@/components/ui/badge";
 import MyNotes from "./MyNotes";
 import { ApprovedOfferDisplay } from "./ApprovedOfferDisplay";
+import RejectApplicationModal from "./RejectApplicationModal";
 
 type Frequency = "Daily" | "Weekly" | "Bi-Weekly" | "Monthly" | "";
 
@@ -431,8 +432,6 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
   const [showApproveForm, setShowApproveForm] = useState<boolean>(false);
   const [isApproveLoading, setIsApproveLoading] = useState(false);
   const [isDeclineModalOpen, setIsDeclineModalOpen] = useState(false);
-  const [declineReason, setDeclineReason] = useState("");
-  const [isDeclineLoading, setIsDeclineLoading] = useState(false);
   // Used to show an inline loading state while we fetch saved decision.
   const [isOfferDecisionLoading, setIsOfferDecisionLoading] = useState(false);
   const [persistedDecision, setPersistedDecision] = useState<
@@ -1189,52 +1188,37 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
     setIsDeclineModalOpen(true);
   };
 
-  const handleConfirmDecline = async () => {
-    const trimmed = declineReason.trim();
-    if (!trimmed) return;
-    if (!applicationId) {
-      toast.error("Missing application id. Please reload and try again.");
-      return;
-    }
-    try {
-      setIsDeclineLoading(true);
+  // Runs after RejectApplicationModal's rejectApplication succeeds: keep the
+  // offer-decision record + local offer form in sync with the rejected state.
+  const handleAfterReject = async (reason: string) => {
+    const trimmed = reason.trim();
 
-      // Persist decline decision to backend
-      await axiosPost("/offer-decisions/decline", {
-        applicationId,
-        declineReason: trimmed,
-        decision: "declined",
-      });
-
-      // Optional parent callback
-      if (onDecline) {
-        const maybePromise = onDecline(trimmed);
-        if (maybePromise && typeof (maybePromise as any).then === "function") {
-          await maybePromise;
-        }
+    if (applicationId) {
+      try {
+        await axiosPost("/offer-decisions/decline", {
+          applicationId,
+          declineReason: trimmed,
+          decision: "declined",
+        });
+      } catch (error: unknown) {
+        console.error("Failed to persist offer decline:", error);
       }
-
-      toast.success("Offer declined successfully.");
-
-      // Clear editable fields after a decline.
-      hasManualOurRemitRef.current = false;
-      lastChangedFieldRef.current = null;
-      offerSnapshotBeforeEditRef.current = null;
-      setLocalData({ ...DEFAULT_FORM_STATE });
-      setShowApproveForm(false);
-      setIsDeclineModalOpen(false);
-      setDeclineReason("");
-    } catch (error: any) {
-      // eslint-disable-next-line no-console
-      console.error("Decline offer error:", error);
-      const message =
-        error?.response?.data?.message ||
-        error?.message ||
-        "Failed to decline offer. Please try again.";
-      toast.error(message);
-    } finally {
-      setIsDeclineLoading(false);
     }
+
+    if (onDecline) {
+      const maybePromise = onDecline(trimmed);
+      if (maybePromise && typeof (maybePromise as any).then === "function") {
+        await maybePromise;
+      }
+    }
+
+    // Clear editable fields after a decline.
+    hasManualOurRemitRef.current = false;
+    lastChangedFieldRef.current = null;
+    offerSnapshotBeforeEditRef.current = null;
+    setLocalData({ ...DEFAULT_FORM_STATE });
+    setShowApproveForm(false);
+    setPersistedDecision("declined");
   };
 
   const canApproveOffer = useMemo(() => {
@@ -1844,47 +1828,12 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
         </div>
       </div>
 
-      {/* DECLINE MODAL */}
-      {isDeclineModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-[#141517]">
-            <h2 className="mb-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-              Decline Offer
-            </h2>
-            <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">
-              Please provide a brief reason for declining this offer.
-            </p>
-            <textarea
-              className="min-h-[90px] w-full rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-900 outline-none focus:border-[#0f766e] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500"
-              value={declineReason}
-              onChange={(e) => setDeclineReason(e.target.value)}
-              placeholder="Enter decline reason"
-              disabled={disabled}
-            />
-            <div className="mt-5 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsDeclineModalOpen(false);
-                  setDeclineReason("");
-                }}
-                disabled={disabled}
-                className="cursor-pointer rounded-lg px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDecline}
-                disabled={disabled || !declineReason.trim() || isDeclineLoading}
-                className="px-4 py-2 text-sm font-semibold rounded-lg bg-[#ef4444] text-white hover:bg-[#dc2626] cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {isDeclineLoading ? "Working..." : "Confirm Decline"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* DECLINE MODAL — same flow as ChecksAndDecision (reason dropdown + ISO rejection email) */}
+      <RejectApplicationModal
+        open={isDeclineModalOpen}
+        onOpenChange={setIsDeclineModalOpen}
+        onAfterReject={handleAfterReject}
+      />
     </div>
   );
 };

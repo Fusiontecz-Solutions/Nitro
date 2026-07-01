@@ -11,20 +11,33 @@ import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel
 import ApprovedByUnderwriterBadge from "./ApprovedByUnderwriterBadge";
 import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
 import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
+import {
+    OFFER_DECISION_UPDATED_EVENT,
+    offerDecisionUpdateMatchesApplication,
+} from "@/lib/offerDecisionSync";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 // import { Button } from "../ui/button";
 
 interface ApplicationSummaryProps {
     isUnderwriter?: boolean;
+    /** When true, show the Scrubber Request field (Underwriter role only). */
+    showScrubberRequest?: boolean;
     /** When provided (e.g. on application-detail overview for agent), only show data for this application — no static values */
     applicationId?: string | null;
     /** Called when back arrow is clicked */
     onBack?: () => void;
 }
 
+function scrubberRecommendationBadgeClass(recommendation: string): string {
+    return /approv/i.test(recommendation)
+        ? "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-200"
+        : "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-200";
+}
+
 const ApplicationSummary = ({
     isUnderwriter,
+    showScrubberRequest,
     applicationId,
     onBack,
 }: ApplicationSummaryProps) => {
@@ -72,9 +85,38 @@ const ApplicationSummary = ({
         void dispatch(getTermsOffers({ application: apiApplicationKey }));
     }, [apiApplicationKey, dispatch]);
 
+    useEffect(() => {
+        if (!apiApplicationKey) return;
+        const onOfferDecisionUpdated = (event: Event) => {
+            const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+            if (
+                !offerDecisionUpdateMatchesApplication(
+                    detail?.applicationId,
+                    apiApplicationKey,
+                )
+            ) {
+                return;
+            }
+            void dispatch(getOfferDecisionByApplication(apiApplicationKey));
+            void dispatch(getTermsOffers({ application: apiApplicationKey }));
+        };
+        window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+        return () => {
+            window.removeEventListener(
+                OFFER_DECISION_UPDATED_EVENT,
+                onOfferDecisionUpdated,
+            );
+        };
+    }, [apiApplicationKey, dispatch]);
+
     const latestTermsOffer = termsOffers?.[0];
+    const offerDecisionSource =
+        offerDecisionData ??
+        (applicationData?.OfferDecision as Record<string, unknown> | null | undefined) ??
+        (applicationData?.offerDecision as Record<string, unknown> | null | undefined) ??
+        null;
     const offerAmount = showDynamicData
-        ? resolveApplicationOfferAmount(offerDecisionData, latestTermsOffer)
+        ? resolveApplicationOfferAmount(offerDecisionSource, latestTermsOffer)
         : null;
 
     const isLoading = fetchLoading;
@@ -95,12 +137,21 @@ const ApplicationSummary = ({
     const isUnderwriterApproved = showDynamicData
         ? isUnderwriterApprovedApplication(applicationData)
         : false;
+    const scrubberRecommendation = showDynamicData
+        ? (
+              (applicationData as { scrubberRecommendation?: string | null })
+                  ?.scrubberRecommendation ?? ""
+          ).trim() || null
+        : null;
+    const showScrubberRequestField = Boolean(showScrubberRequest);
     // Brand gradient is theme- and mode-aware via the --brand-gradient CSS var.
     const gradient = "var(--brand-gradient)";
 
     const panelTint = isDark ? "bg-white/10 border border-white/15" : "bg-white/30";
 
-    const innerPanelClass = `grid gap-4 rounded-lg p-4 justify-center items-center shadow-md dark:shadow-lg ${panelTint} grid-cols-1 md:grid-cols-3 lg:grid-cols-6`;
+    const innerPanelClass = `grid gap-4 rounded-lg p-4 justify-center items-center shadow-md dark:shadow-lg ${panelTint} grid-cols-1 md:grid-cols-3 ${
+        showScrubberRequestField ? "lg:grid-cols-7" : "lg:grid-cols-6"
+    }`;
 
     const standardFiveColumns = (
         <>
@@ -169,7 +220,7 @@ const ApplicationSummary = ({
                 ) : (
                     <>
                         <p className="text-sm font-medium opacity-90 mb-1">Status</p>
-                        <p className="text-base font-semibold capitalize">{status ?? "-"}</p>
+                        <p className="text-base font-semibold">{status ?? "-"}</p>
                     </>
                 )}
             </div>
@@ -188,6 +239,31 @@ const ApplicationSummary = ({
                     </>
                 )}
             </div>
+            {showScrubberRequestField ? (
+                <div className="text-white">
+                    {isLoading ? (
+                        <div className="space-y-2 pr-12">
+                            <Skeleton className="h-4 w-[150px] bg-white/30" />
+                            <Skeleton className="h-4 w-[100px] bg-white/30" />
+                        </div>
+                    ) : (
+                        <>
+                            <p className="text-sm font-medium opacity-90 mb-1">
+                                Scrubber Request
+                            </p>
+                            {scrubberRecommendation ? (
+                                <span
+                                    className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap ${scrubberRecommendationBadgeClass(scrubberRecommendation)}`}
+                                >
+                                    {scrubberRecommendation}
+                                </span>
+                            ) : (
+                                <p className="text-base font-semibold">-</p>
+                            )}
+                        </>
+                    )}
+                </div>
+            ) : null}
         </>
     );
 

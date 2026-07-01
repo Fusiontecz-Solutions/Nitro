@@ -241,12 +241,12 @@ const ApplicationDetails = () => {
         //     stateNorm === 'contracted';
 
         // UNDERWRITER (final review): overview with ISO, then pipeline tabs through decision making.
+        // CONTRACT and DECISION LOGIC tabs are intentionally omitted — only Operations / Super Admin get them.
         if (isFinalUnderwriter) {
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
                 { id: "background-check", label: "BACKGROUND CHECK" },
-                { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
                 { id: "decision-making", label: "DECISION MAKING" },
             ];
         }
@@ -271,6 +271,7 @@ const ApplicationDetails = () => {
             isApprovedQueue ||
             isContractedQueue
         ) {
+            // DECISION LOGIC tab is intentionally omitted — only Operations / Super Admin get it.
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
@@ -294,18 +295,14 @@ const ApplicationDetails = () => {
         } else {
             list = getTabs();
         }
-        // Background Check tab — Super Admin only — before Eligibility Analysis when
-        // present, otherwise immediately before Contract.
+        // Background Check tab — Super Admin only — immediately before Contract.
         if (isSuperAdmin && !list.some((t) => t.id === "background-check")) {
             const bc: TabOption = { id: "background-check", label: "BACKGROUND CHECK" };
-            const eligIdx = list.findIndex((t) => t.id === "eligibility-analysis");
             const contractIdx = list.findIndex((t) => t.id === "contract");
             const at =
-                eligIdx >= 0
-                    ? eligIdx
-                    : contractIdx >= 0
-                      ? contractIdx
-                      : (() => {
+                contractIdx >= 0
+                    ? contractIdx
+                    : (() => {
                             const overviewIdx = list.findIndex((t) => t.id === "overview");
                             return overviewIdx >= 0 ? overviewIdx + 1 : list.length;
                         })();
@@ -899,9 +896,6 @@ const ApplicationDetails = () => {
                                 <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
                                     <BackgroundCheckTab />
                                 </LazyTabContent>
-                                <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
-                                    <EligibilityAnalysis />
-                                </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
                                     <DecisionMakeFinalValues
                                             applicationId={applicationId}
@@ -929,13 +923,12 @@ const ApplicationDetails = () => {
                                                     !underwriterWorkflowDecisionActive
                                                 }
                                                 compactLayout
-                                                onProceedToContract={() => handleTabChange("contract")}
                                             />
                                         </div>
                                     </div>
                                 </LazyTabContent>
-                                <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
-                                    <ContractTab readOnly />
+                                <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
+                                    <EligibilityAnalysis />
                                 </LazyTabContent>
                             </>
                         ) : showAccessDenied ? (
@@ -1106,6 +1099,11 @@ const ApplicationDetails = () => {
                                     <ContractTab readOnly={isAgent || isViewOnlyBrowse} />
                             </LazyTabContent>
 
+                            <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
+                                    <ApplicationSummary onBack={() => navigate(-1)} />
+                                    <EligibilityAnalysis />
+                            </LazyTabContent>
+
                                 {/* -------------------------------------------------------------- */}
                                 {/* OPERATIONS specific tabs */}
                             <LazyTabContent activeTab={activeTab} value="doc-request-contract" className="mt-6">
@@ -1145,7 +1143,7 @@ const ApplicationDetails = () => {
                                 {/* -------------------------------------------------------------- */}
 
                             <LazyTabContent activeTab={activeTab} value="bank-analysis" className="mt-6">
-                                    <ApplicationSummary onBack={() => navigate(-1)} />
+                                    <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
                                     <BankAnalysis
                                         readOnly={bankAnalysisTabReadOnly}
                                         enableCreate={
@@ -1155,11 +1153,6 @@ const ApplicationDetails = () => {
                                     />
                                     <RequiredDocument isBankAnalysis={true} readOnly={bankAnalysisTabReadOnly} />
                                     <div className="mt-6"><CommentSection readOnly={commentsReadOnly} /></div>
-                            </LazyTabContent>
-
-                            <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
-                                    <ApplicationSummary onBack={() => navigate(-1)} />
-                                    <EligibilityAnalysis />
                             </LazyTabContent>
 
                             <LazyTabContent activeTab={activeTab} value="checks" className="mt-6">

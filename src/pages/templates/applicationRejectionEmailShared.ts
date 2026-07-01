@@ -1,5 +1,15 @@
 export const APPLICATION_REJECTION_EMAIL_SUBJECT = "Application Rejected";
 
+/** Decline email subject — includes business name when available. */
+export function buildApplicationRejectionEmailSubject(
+  businessName?: string | null,
+): string {
+  const business = String(businessName || "").trim();
+  return business
+    ? `${APPLICATION_REJECTION_EMAIL_SUBJECT} — ${business}`
+    : APPLICATION_REJECTION_EMAIL_SUBJECT;
+}
+
 export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")

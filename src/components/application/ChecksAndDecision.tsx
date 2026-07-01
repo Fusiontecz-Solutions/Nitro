@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams } from "react-router";
 import ApprovedApplicationModal from "./ApprovedApplicationModal";
 import { isFinalUnderwriterWorkflowQueue, isApplicationInFinalApprovalStage, resolveApplicationWorkflowQueueAndStates } from "@/lib/applicationWorkflowState";
@@ -9,11 +9,15 @@ import { useSelector, useDispatch } from "react-redux";
 import { toast } from "react-toastify";
 import type { RootState, AppDispatch } from "@/redux/store";
 import { getApplicationActivityLogs } from "@/redux/actions/applicationActivityLogActions";
-import { updateApplicationQueue, getApplicationById } from "@/redux/actions/applicationActions";
+import { updateApplicationQueue, getApplicationById, updateApplication } from "@/redux/actions/applicationActions";
+import { getCommentsByApplication } from "@/redux/actions/commentActions";
 import { isUnderwriterApprovedApplication, resolveApprovingUnderwriter } from "@/lib/underwriterApprovalLabel";
-import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
+import { normalizeRoleKey, resolveEffectiveRole, resolveSessionUser } from "@/lib/sessionRole";
 import ApprovedByUnderwriterBadge from "./ApprovedByUnderwriterBadge";
 import ApplicationClaimAssignments from "./ApplicationClaimAssignments";
+import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
+import { Checkbox } from "@/components/ui/checkbox";
+import { invalidateUnderwriterPipelineCounts } from "@/lib/underwriterPipelineCounts";
 
 interface ChecksAndDecisionProps {
     /** Plain SCRUBBING (scrubbing) — primary CTA is "Recommend for approval", not send-to-FU wording. */
@@ -39,7 +43,8 @@ const decisionButtonBase =
 const UNDERWRITER_RECOMMEND_LABEL = "Recommend for approval";
 const UNDERWRITER_RECOMMEND_DESCRIPTION =
     "Send this application to the Underwriter queue for review";
-const CONTRACT_PENDING_STAGE = "Contract Pending";
+/** Underwriter final approval moves the deal into the operations "Final" pipeline stage. */
+const FINAL_STAGE = "Final";
 const FINAL_APPROVAL_LABEL = "Final Approval";
 const FINAL_APPROVAL_DESCRIPTION =
     "Grant final approval and automate the deal for contract";
@@ -53,13 +58,15 @@ const ChecksAndDecision = ({
     previewMode,
     compactLayout,
 }: ChecksAndDecisionProps = {}) => {
-    const loginUserRole = useSelector(
-        (state: RootState) => state.login.data?.user?.role,
+    const loginUser = useSelector(
+        (state: RootState) => state.login.data?.user,
     );
+    const loginUserRole = loginUser?.role;
     const viewerRoleKey = normalizeRoleKey(
         resolveEffectiveRole({ role: loginUserRole }),
     );
     const isUnderwriterRole = viewerRoleKey === "UNDERWRITER";
+    const sessionUserId = resolveSessionUser(loginUser)?.id ?? "";
     // UNDERWRITER role: approve directly (update DB to Approved) — no ISO approval mail.
     const showUnderwriterApproveFlow = Boolean(
         (isFinalUnderwriter || isUnderwriterRole) && !canSendApprovalMailToIso,
@@ -70,15 +77,17 @@ const ChecksAndDecision = ({
         isPlainUnderwriter && !showIsoApprovalMailFlow && !showUnderwriterApproveFlow,
     );
     const showUnderwritingDecision = !hideUnderwritingDecision && !previewMode;
+    const showUnderwriterIsoMailButton =
+        isUnderwriterRole && showUnderwriterApproveFlow && showUnderwritingDecision;
+    const needsIsoApprovalMailTracking =
+        showIsoApprovalMailFlow || showUnderwriterIsoMailButton;
     const { applicationId: paramApplicationId } = useParams<{ applicationId: string }>();
     const dispatch = useDispatch<AppDispatch>();
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
 
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data);
-    const currentUserId = useSelector(
-        (state: RootState) => state.login.data?.user?._id ?? "",
-    );
+    const currentUserId = sessionUserId;
     const applicationUuid =
         (applicationData as { _id?: string; id?: string })?._id ??
         (applicationData as { id?: string })?.id ??
@@ -140,6 +149,7 @@ const ChecksAndDecision = ({
         queueNorm === "contract_pending" ||
         currentStateNorm === "contract pending" ||
         currentStateNorm === "contract_pending";
+    const isFinalStage = queueNorm === "final" || currentStateNorm === "final";
 
     /** Underwriter queue → first approval; Final Approval queue → final approval CTA. */
     const showUnderwriterApprovalButton =
@@ -155,22 +165,15 @@ const ChecksAndDecision = ({
         !assignedUnderwriterId ||
         !currentUserId ||
         String(assignedUnderwriterId) === String(currentUserId);
+    /** Match backend — underwriters and ops/admin roles may resolve ISO query. */
+    const canResolveIsoQuery =
+        viewerRoleKey === "SUPER_ADMIN" ||
+        viewerRoleKey === "ADMIN" ||
+        viewerRoleKey === "OPERATIONS" ||
+        isUnderwriterRole;
     const canActOnFinalApprovalStage =
         isFinalApprovalStage &&
         (isApprovingUnderwriterForDeal || isAssignedUnderwriterForDeal);
-    /** Underwriter role: show decision panel when the deal is in an actionable UW queue. */
-    const showUnderwriterDecisionActions =
-        showUnderwriterApprovalButton ||
-        showFinalApprovalButton ||
-        isUnderwriterApprovedStage;
-    const showDecisionPanel =
-        showUnderwritingDecision &&
-        (!showUnderwriterApproveFlow || showUnderwriterDecisionActions);
-    const canExecuteUnderwriterDecisions =
-        !showUnderwriterApproveFlow ||
-        isUnderwriterApprovedStage ||
-        showUnderwriterApprovalButton ||
-        (showFinalApprovalButton && canActOnFinalApprovalStage);
     const isContractedQueue =
         queueNorm === "contracted" ||
         queueNorm === "contract out" ||
@@ -189,16 +192,6 @@ const ChecksAndDecision = ({
 
     // Underwriter direct-approve flow: lock the button once the application is approved,
     // except when the deal is back in Final Approval for the second sign-off.
-    const isApplicationApproved =
-        !isFinalApprovalStage &&
-        (isUnderwriterApprovedStage ||
-        isLegacyUwApprovedStage ||
-        isApprovedStatus ||
-        isApprovedQueue ||
-        statusNorm === "approved" ||
-        isCompletedStatus ||
-        isContractedQueue);
-
     // The underwriter's approval credit must survive later stage changes. When a
     // Super Admin sends the ISO approval mail the deal moves to "Approval Sent",
     // which previously dropped this badge and made it look like the recorded
@@ -218,6 +211,16 @@ const ChecksAndDecision = ({
         currentStateNorm === "iso approved" ||
         currentStateNorm === "iso_approved" ||
         (queueNorm === "approved" && currentStateNorm === "approved");
+    const isApplicationApproved =
+        !isFinalApprovalStage &&
+        (isUnderwriterApprovedStage ||
+            isLegacyUwApprovedStage ||
+            isApprovedStatus ||
+            isApprovedQueue ||
+            statusNorm === "approved" ||
+            isCompletedStatus ||
+            isContractedQueue ||
+            (hasRecordedApprovingUnderwriter && isApprovalSentStage));
     const isAtOrPastUnderwriterApproval =
         isUnderwriterApprovedStage ||
         isLegacyUwApprovedStage ||
@@ -227,6 +230,29 @@ const ChecksAndDecision = ({
         isContractedQueue ||
         isApprovalSentStage ||
         isIsoApprovedStage;
+    /** Underwriter role: show decision panel when the deal is in an actionable UW queue. */
+    const showUnderwriterIsoMailStage =
+        showUnderwriterIsoMailButton &&
+        (isUnderwriterQueue ||
+            isUnderwriterApprovedStage ||
+            isApprovalSentStage ||
+            isIsoApprovedStage ||
+            isFinalApprovalStage);
+    const showUnderwriterDecisionActions =
+        showUnderwriterApprovalButton ||
+        showFinalApprovalButton ||
+        isUnderwriterApprovedStage ||
+        showUnderwriterIsoMailStage;
+    const showDecisionPanel =
+        showUnderwritingDecision &&
+        (!showUnderwriterApproveFlow || showUnderwriterDecisionActions);
+    const canExecuteUnderwriterDecisions =
+        !showUnderwriterApproveFlow ||
+        isUnderwriterApprovedStage ||
+        showUnderwriterApprovalButton ||
+        (showFinalApprovalButton && canActOnFinalApprovalStage) ||
+        (showUnderwriterIsoMailButton &&
+            (isApprovalSentStage || isIsoApprovedStage));
     const showApprovedByUnderwriterBadge =
         !isFinalApprovalStage &&
         (isUnderwriterApprovedStage ||
@@ -237,14 +263,14 @@ const ChecksAndDecision = ({
     // between "Approved application" (no offer change yet OR mail already sent) and
     // "Send Approval Mail to ISO" (FU updated the offer, mail not yet sent).
     useEffect(() => {
-        if (showIsoApprovalMailFlow && applicationUuid) {
+        if (needsIsoApprovalMailTracking && applicationUuid) {
             dispatch(getApplicationActivityLogs(paramApplicationId ?? applicationUuid));
         }
-    }, [showIsoApprovalMailFlow, applicationUuid, paramApplicationId, dispatch]);
+    }, [needsIsoApprovalMailTracking, applicationUuid, paramApplicationId, dispatch]);
 
     // Keep ISO approval-mail CTA state fresh after ISO comments / offer edits without requiring manual refresh.
     useEffect(() => {
-        if (!showIsoApprovalMailFlow || !applicationUuid) return;
+        if (!needsIsoApprovalMailTracking || !applicationUuid) return;
 
         const refresh = () => {
             dispatch(getApplicationActivityLogs(paramApplicationId ?? applicationUuid));
@@ -260,7 +286,7 @@ const ChecksAndDecision = ({
             window.clearInterval(intervalId);
             document.removeEventListener("visibilitychange", onVisibilityChange);
         };
-    }, [showIsoApprovalMailFlow, applicationUuid, paramApplicationId, dispatch]);
+    }, [needsIsoApprovalMailTracking, applicationUuid, paramApplicationId, dispatch]);
 
     const activityLogs = useSelector((state: RootState) => state.activityLogs.logs) as Array<{
         actionType?: string;
@@ -307,25 +333,108 @@ const ChecksAndDecision = ({
     }, [hasSentApprovalMailOnce, applicationAlreadyApproved]);
 
     const shouldResendApprovalMail =
-        showIsoApprovalMailFlow &&
+        needsIsoApprovalMailTracking &&
         (hasSentApprovalMailOnce || applicationAlreadyApproved || approvalMailSentSticky);
 
-    const isoApprovalMailButtonLabel = shouldResendApprovalMail
-        ? "Resend Approval Mail to ISO"
-        : "Send Approval Mail to ISO";
+    const needsContractReinitiation = applicationNeedsContractReinitiation(
+        applicationData as Record<string, unknown> | null,
+    );
+    const shouldReinitiateContractWithResend =
+        shouldResendApprovalMail && needsContractReinitiation;
 
-    const isoApprovalMailButtonDescription = shouldResendApprovalMail
-        ? "ISO commented and offer was updated. Send the updated offer email."
-        : "Send the approval email to the linked ISO";
+    const resendApprovalMailButtonLabel = shouldReinitiateContractWithResend
+        ? "Resend approval mail to ISO and reinitiate contract"
+        : shouldResendApprovalMail
+          ? "Resend Approval Mail to ISO"
+          : "Send Approval Mail to ISO";
+
+    const resendApprovalMailButtonDescription = shouldReinitiateContractWithResend
+        ? "Offer values changed after a contract was generated. Send the updated offer email and reset the contract for regeneration."
+        : shouldResendApprovalMail
+          ? "ISO commented and offer was updated. Send the updated offer email."
+          : "Send the approval email to the linked ISO";
+
+    const underwriterIsoMailButtonLabel = resendApprovalMailButtonLabel;
+    const underwriterIsoMailButtonDescription = resendApprovalMailButtonDescription;
+
+    const canSendUnderwriterIsoMail =
+        showUnderwriterIsoMailButton &&
+        !isContractedQueue &&
+        !isCompletedStatus &&
+        (canExecuteUnderwriterDecisions ||
+            isApprovalSentStage ||
+            isIsoApprovedStage);
+
+    const isoApprovalMailButtonLabel = resendApprovalMailButtonLabel;
+    const isoApprovalMailButtonDescription = resendApprovalMailButtonDescription;
 
     const showUnderwriterApprovalModal =
         showUnderwriterApprovalButton ||
         (showUnderwriterApproveFlow && !showFinalApprovalButton && !isApplicationApproved);
 
     const [isApprovalModalOpen, setIsApprovalModalOpen] = useState(false);
+    const [isIsoApprovalMailModalOpen, setIsIsoApprovalMailModalOpen] = useState(false);
     const [isRequestDocumentsModalOpen, setIsRequestDocumentsModalOpen] = useState(false);
     const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
     const [isApproving, setIsApproving] = useState(false);
+    const [isUpdatingIsoQueryResolved, setIsUpdatingIsoQueryResolved] = useState(false);
+
+    const comments = useSelector((state: RootState) => state.comments.data);
+    const isoQueryResolved =
+        (applicationData as { isoQueryResolved?: boolean } | null)?.isoQueryResolved === true;
+
+    const hasIsoComments = useMemo(
+        () =>
+            Array.isArray(comments) &&
+            comments.some(
+                (comment) =>
+                    !comment.isDeleted &&
+                    (comment.type === "ISO Comment" ||
+                        String(comment.type ?? "").trim().toLowerCase() === "iso comment"),
+            ),
+        [comments],
+    );
+
+    useEffect(() => {
+        if (!applicationUuid) return;
+        dispatch(getCommentsByApplication({ applicationId: applicationUuid }));
+    }, [applicationUuid, dispatch]);
+
+    const handleIsoQueryResolvedChange = async (checked: boolean) => {
+        if (!applicationUuid || !canResolveIsoQuery) return;
+        setIsUpdatingIsoQueryResolved(true);
+        const toastId = toast.loading(
+            checked ? "Marking ISO query as resolved..." : "Reopening ISO query...",
+        );
+        try {
+            await dispatch(
+                updateApplication({
+                    id: applicationUuid,
+                    data: { isoQueryResolved: checked },
+                }),
+            ).unwrap();
+            await dispatch(getApplicationById(paramApplicationId ?? applicationUuid));
+            invalidateUnderwriterPipelineCounts();
+            toast.update(toastId, {
+                render: checked
+                    ? "ISO query marked as resolved. This deal was removed from ISO Query."
+                    : "ISO query reopened.",
+                type: "success",
+                isLoading: false,
+                autoClose: 3000,
+            });
+        } catch (err) {
+            console.error("Failed to update ISO query resolution:", err);
+            toast.update(toastId, {
+                render: "Failed to update ISO query resolution. Please try again.",
+                type: "error",
+                isLoading: false,
+                autoClose: 4000,
+            });
+        } finally {
+            setIsUpdatingIsoQueryResolved(false);
+        }
+    };
 
     const handleFinalApproveApplication = async () => {
         if (!applicationUuid) {
@@ -333,17 +442,17 @@ const ChecksAndDecision = ({
             return;
         }
         setIsApproving(true);
-        const toastId = toast.loading("Sending application to contract...");
+        const toastId = toast.loading("Granting final approval...");
         try {
             await dispatch(
                 updateApplicationQueue({
                     id: applicationUuid,
-                    data: { currentQueue: CONTRACT_PENDING_STAGE },
+                    data: { currentQueue: FINAL_STAGE },
                 }),
             ).unwrap();
             await dispatch(getApplicationById(paramApplicationId ?? applicationUuid));
             toast.update(toastId, {
-                render: "Application moved to Contract Pending.",
+                render: "Application moved to Final.",
                 type: "success",
                 isLoading: false,
                 autoClose: 3000,
@@ -362,10 +471,21 @@ const ChecksAndDecision = ({
     };
 
     useEffect(() => {
-        if (showIsoApprovalMailFlow && applicationUuid && isApprovalModalOpen) {
+        if (
+            needsIsoApprovalMailTracking &&
+            applicationUuid &&
+            (isApprovalModalOpen || isIsoApprovalMailModalOpen)
+        ) {
             dispatch(getApplicationActivityLogs(paramApplicationId ?? applicationUuid));
         }
-    }, [showIsoApprovalMailFlow, applicationUuid, isApprovalModalOpen, paramApplicationId, dispatch]);
+    }, [
+        needsIsoApprovalMailTracking,
+        applicationUuid,
+        isApprovalModalOpen,
+        isIsoApprovalMailModalOpen,
+        paramApplicationId,
+        dispatch,
+    ]);
     return (
         <div className={`w-full ${compactLayout ? "" : "space-y-6"}`}>
             {showApprovedByUnderwriterBadge ? (
@@ -388,15 +508,74 @@ const ChecksAndDecision = ({
                     variant="panel"
                 />
             ) : null}
+            {hasIsoComments ? (
+                <div
+                    className={`border border-[#FDFDFD] shadow-[0px_4px_20px_0px_#00000005] flex flex-col gap-3 w-full rounded-lg overflow-hidden ${compactLayout ? "my-0" : "my-6"} ${isDark ? "bg-card border-white" : "bg-white"}`}
+                >
+                    <h2
+                        className={`text-base font-roboto w-full font-semibold ${isDark ? "bg-card" : "bg-[#F9FAFD]"} px-6 py-2 ${isDark ? "text-gray-200" : "text-[#374151]"}`}
+                    >
+                        ISO Query
+                    </h2>
+                    <div className="px-6 pb-6">
+                        <div
+                            role="checkbox"
+                            aria-checked={isoQueryResolved}
+                            tabIndex={canResolveIsoQuery && !isUpdatingIsoQueryResolved ? 0 : -1}
+                            onClick={() => {
+                                if (!canResolveIsoQuery || isUpdatingIsoQueryResolved) return;
+                                void handleIsoQueryResolvedChange(!isoQueryResolved);
+                            }}
+                            onKeyDown={(event) => {
+                                if (event.key !== "Enter" && event.key !== " ") return;
+                                event.preventDefault();
+                                if (!canResolveIsoQuery || isUpdatingIsoQueryResolved) return;
+                                void handleIsoQueryResolvedChange(!isoQueryResolved);
+                            }}
+                            className={`flex items-start gap-3 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
+                                canResolveIsoQuery && !isUpdatingIsoQueryResolved
+                                    ? "cursor-pointer"
+                                    : "cursor-not-allowed opacity-60"
+                            }`}
+                        >
+                            <Checkbox
+                                id="iso-query-resolved"
+                                checked={isoQueryResolved}
+                                disabled={!canResolveIsoQuery || isUpdatingIsoQueryResolved}
+                                onCheckedChange={(value: boolean | "indeterminate") => {
+                                    void handleIsoQueryResolvedChange(value === true);
+                                }}
+                                className="mt-0.5 pointer-events-none"
+                            />
+                            <span className="flex flex-col gap-1">
+                                <span
+                                    className={`text-sm font-medium ${isDark ? "text-gray-100" : "text-[#374151]"}`}
+                                >
+                                    ISO query Resolved
+                                </span>
+                                <span
+                                    className={`text-xs ${isDark ? "text-gray-400" : "text-muted-foreground"}`}
+                                >
+                                    {isoQueryResolved
+                                        ? "This deal is hidden from the ISO Query pipeline. A new ISO comment will reopen it."
+                                        : "Mark resolved once you have addressed the ISO comment. The deal will leave ISO Query."}
+                                </span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
             {/* Make Underwriting Decision Section */}
             {showDecisionPanel && (
-            <div className={`border border-[#FDFDFD] shadow-[0px_4px_20px_0px_#00000005] flex flex-col gap-4 w-full pt-0 rounded-lg overflow-hidden ${compactLayout ? "my-0 h-[420px]" : "my-6"} ${isDark ? 'bg-card border-white' : 'bg-white'}`}>
+            <div className={`border border-[#FDFDFD] shadow-[0px_4px_20px_0px_#00000005] flex flex-col gap-4 w-full pt-0 rounded-lg overflow-hidden ${compactLayout ? (showUnderwriterIsoMailButton ? "my-0 h-[520px]" : "my-0 h-[420px]") : "my-6"} ${isDark ? 'bg-card border-white' : 'bg-white'}`}>
             <h2 className={`text-base font-roboto w-full font-semibold ${isDark ? 'bg-card' : 'bg-[#F9FAFD]'} px-6 py-2 ${isDark ? 'text-gray-200' : 'text-[#374151]'}`}>Make Underwriting Decision</h2>
                 
                 <div className={`${
                     compactLayout
                         ? "flex flex-1 flex-col justify-center gap-5 px-4 pb-4"
-                        : "grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-4 px-6 pb-6"
+                        : showUnderwriterIsoMailButton
+                          ? "grid grid-cols-1 md:grid-cols-2 gap-5 md:gap-4 px-6 pb-6"
+                          : "grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-4 px-6 pb-6"
                 }`}>
                     {/* Approved Button */}
                     <button
@@ -409,7 +588,7 @@ const ChecksAndDecision = ({
                         disabled={
                             !canExecuteUnderwriterDecisions ||
                             (showFinalApprovalButton
-                                ? isApproving || isContractPendingStage
+                                ? isApproving || isContractPendingStage || isFinalStage
                                 : showUnderwriterApprovalButton
                                   ? isApproving || isApplicationApproved
                                   : showUnderwriterApproveFlow
@@ -450,6 +629,22 @@ const ChecksAndDecision = ({
                         </span>
                     </button>
 
+                    {showUnderwriterIsoMailButton ? (
+                        <button
+                            type="button"
+                            onClick={() => setIsIsoApprovalMailModalOpen(true)}
+                            disabled={!canSendUnderwriterIsoMail}
+                            className={`${decisionButtonBase} bg-[#276D9C] hover:bg-[#1f5a80] shadow-md shadow-[#276D9C]/25`}
+                        >
+                            <span className="text-base font-roboto font-bold whitespace-normal break-words w-full px-1">
+                                {underwriterIsoMailButtonLabel}
+                            </span>
+                            <span className="text-xs font-normal opacity-90 whitespace-normal break-words w-full leading-snug px-1">
+                                {underwriterIsoMailButtonDescription}
+                            </span>
+                        </button>
+                    ) : null}
+
                     {/* Send back for documents Button */}
                     <button
                         type="button"
@@ -479,11 +674,21 @@ const ChecksAndDecision = ({
                 <>
             {/* Approved Application Modal */}
             <ApprovedApplicationModal
-                open={isApprovalModalOpen}
-                onOpenChange={setIsApprovalModalOpen}
+                open={isApprovalModalOpen || isIsoApprovalMailModalOpen}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setIsApprovalModalOpen(false);
+                        setIsIsoApprovalMailModalOpen(false);
+                    }
+                }}
                 isPlainUnderwriter={showUnderwriterRecommendFlow}
-                isFinalUnderwriter={showIsoApprovalMailFlow}
-                isUnderwriterDirectApprove={showUnderwriterApprovalModal}
+                isFinalUnderwriter={showIsoApprovalMailFlow || isIsoApprovalMailModalOpen}
+                isUnderwriterDirectApprove={
+                    isApprovalModalOpen &&
+                    showUnderwriterApprovalModal &&
+                    !isIsoApprovalMailModalOpen
+                }
+                showIsoRecipientFields={isIsoApprovalMailModalOpen}
                 showComplianceChecks={
                     canSendApprovalMailToIso && !isFinalUnderwriter
                         ? true
@@ -491,8 +696,9 @@ const ChecksAndDecision = ({
                 }
                 onProceedToContract={onProceedToContract}
                 resendApprovalEmail={shouldResendApprovalMail}
+                reinitiateContract={needsContractReinitiation}
                 onOfferUpdated={() => {
-                    if (showIsoApprovalMailFlow && applicationUuid) {
+                    if (needsIsoApprovalMailTracking && applicationUuid) {
                         dispatch(
                             getApplicationActivityLogs(
                                 paramApplicationId ?? applicationUuid,

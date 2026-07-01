@@ -82,6 +82,7 @@ import {
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import PersonIcon from '@mui/icons-material/Person';
 import VerifiedUser from "@mui/icons-material/VerifiedUser";
+import QuestionAnswer from "@mui/icons-material/QuestionAnswer";
 type SidebarNavIcon = ComponentType<SvgIconProps>;
 
 type PipelineAccent =
@@ -362,6 +363,13 @@ const dealPipelineSection: SidebarNavSection = {
 const underwriterDealPipelineSection: SidebarNavSection = {
   title: "DEAL PIPELINE",
   items: [
+    {
+      label: "ISO Query",
+      url: "/applications",
+      icon: QuestionAnswer,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.ISO_QUERY,
+      pipelineAccent: "approval-sent",
+    },
     {
       label: "Applications",
       url: "/applications",

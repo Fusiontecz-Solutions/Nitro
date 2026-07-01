@@ -1270,7 +1270,7 @@ export default function BrokerPortal() {
                             <SelectTrigger className={selectTriggerClass}>
                                 <SelectValue placeholder="Select ISO" />
                             </SelectTrigger>
-                            <SelectContent align="end" className="min-w-[var(--radix-select-trigger-width)]">
+                            <SelectContent align="end" enableSearch className="min-w-[var(--radix-select-trigger-width)]">
                                 {isos.map((b) => (
                                     <SelectItem key={b.id} value={String(b.id)}>
                                         <span className="font-medium">{b.name}</span>

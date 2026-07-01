@@ -14,8 +14,8 @@ export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "documents", label: "DOCUMENTS" },
   { id: "decision-making", label: "SCRUBBING" },
   { id: "background-check", label: "BACKGROUND CHECK" },
-  { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
   { id: "contract", label: "CONTRACT" },
+  { id: "eligibility-analysis", label: "DECISION LOGIC" },
   FINALS_AND_FUNDING_CALL_TAB,
   { id: "disbursement", label: "DISBURSEMENT" },
 ];
@@ -29,8 +29,8 @@ export const OPERATIONS_PIPELINE_TABS: PipelineTab[] = [
   { id: "documents", label: "DOCUMENTS" },
   { id: "decision-making", label: "DECISION MAKING" },
   { id: "background-check", label: "BACKGROUND CHECK" },
-  { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
   { id: "contract", label: "CONTRACT" },
+  { id: "eligibility-analysis", label: "DECISION LOGIC" },
   FINALS_AND_FUNDING_CALL_TAB,
   { id: "disbursement", label: "DISBURSEMENT" },
 ];
@@ -49,8 +49,8 @@ const TAB_INDEX = {
  * Uses {@link OPERATIONS_PIPELINE_TABS} (includes merged Finals & Funding Call tab).
  *
  * - Agent → OVERVIEW, DOCUMENTS
- * - Scrubbing → through CONTRACT (overview → eligibility analysis)
- * - Underwriter → DECISION MAKING, BACKGROUND CHECK, ELIGIBILITY ANALYSIS, CONTRACT
+ * - Scrubbing → through CONTRACT (overview → contract)
+ * - Underwriter → DECISION MAKING, BACKGROUND CHECK, CONTRACT, DECISION LOGIC
  * - Contract pending / … → through CONTRACT
  * - Final / Funding Call / Finals & Funding Call → through merged tab
  * - Funded / Disbursment → full strip
@@ -76,20 +76,22 @@ export function getOperationsTabsForDashboardEntry(
       return [
         { id: "decision-making", label: "DECISION MAKING" },
         { id: "background-check", label: "BACKGROUND CHECK" },
-        { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
         { id: "contract", label: "CONTRACT" },
+        { id: "eligibility-analysis", label: "DECISION LOGIC" },
       ];
     case "Contract_Pending":
     case "Contract_Generated":
     case "Contract_Sent":
     case "Contract_Cancelled":
     case "Contract_Out":
-    case "Contracted":
-    case "Contract_Signed":
-    case "Signed_Contracts":
-    case "Signed_Contracts": {
+    case "Contracted": {
       const end = TAB_INDEX.contract;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
+    }
+    case "Contract_Signed":
+    case "Signed_Contracts": {
+      const eligIdx = full.findIndex((t) => t.id === "eligibility-analysis");
+      return eligIdx >= 0 ? full.slice(0, eligIdx + 1) : [...full];
     }
     case "Final":
     case "Funding Call":
@@ -126,10 +128,10 @@ export function getOperationsPipelineStageTabId(
     case "Contract_Cancelled":
     case "Contract_Out":
     case "Contracted":
+      return "contract";
     case "Contract_Signed":
     case "Signed_Contracts":
-    case "Signed_Contracts":
-      return "contract";
+      return "eligibility-analysis";
     case "Final":
     case "Funding Call":
     case "Finals_And_Funding_Call":

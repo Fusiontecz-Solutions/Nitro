@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { useParams } from "react-router";
 import { Loader2 } from "lucide-react";
@@ -24,14 +24,17 @@ import {
   fetchDecisionLogicReport,
   initiateDecisionLogic,
 } from "@/redux/actions/decision-logic-actions";
+import { uploadAndDownloadCsv } from "@/redux/actions/automatedBankStatementActions";
 import {
   getApplicationById,
   sendApplicationForFinalUnderwriterApproval,
 } from "@/redux/actions/applicationActions";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
+import { isContractSignedApplication } from "@/lib/applicationWorkflowState";
 import {
   formatApprovedByUnderwriterLabel,
-  isIsoApprovedApplication,
+  formatUserLiteName,
+  resolveFinalApprovalTargetUnderwriter,
 } from "@/lib/underwriterApprovalLabel";
 import type { AppDispatch, RootState } from "@/redux/store";
 import type { BankDetail } from "@/types/bankDetailTypes";
@@ -97,6 +100,10 @@ export default function EligibilityAnalysis() {
   const [dlReportRow, setDlReportRow] = useState<Record<string, unknown> | null>(null);
   const [dlReportFetched, setDlReportFetched] = useState(false);
   const [reportFetchNonce, setReportFetchNonce] = useState(0);
+  const [uploadedBankFiles, setUploadedBankFiles] = useState<string[]>([]);
+  const { loading: uploadStatementLoading, error: uploadStatementError } = useSelector(
+    (state: RootState) => state.automatedBankStatement,
+  );
 
   const owners = useMemo(() => normalizeOwners(applicationData), [applicationData]);
   const applicationRecordId = useMemo(
@@ -132,19 +139,22 @@ export default function EligibilityAnalysis() {
   const roleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
   const canSendFinalUnderwriterApproval =
     roleKey === "SUPER_ADMIN" || roleKey === "OPERATIONS";
-  const isIsoApproved = isIsoApprovedApplication(applicationData);
-  const approvingUnderwriterId = String(applicationData?.approvedByUnderwriterId ?? "").trim();
+  const isContractSignedStage = isContractSignedApplication(applicationData);
+  const finalApprovalTarget = resolveFinalApprovalTargetUnderwriter(applicationData ?? {});
+  const approvingUnderwriterId = finalApprovalTarget?.id ?? "";
   const currentQueueNorm = String(applicationData?.currentQueue ?? "")
     .trim()
     .toLowerCase()
     .replace(/[\s_-]+/g, "");
   const isFinalApprovalStage = currentQueueNorm === "finalapproval";
-  const approvingUnderwriterName = formatApprovedByUnderwriterLabel(
-    (applicationData ?? {}) as Parameters<typeof formatApprovedByUnderwriterLabel>[0],
-  );
+  const approvingUnderwriterName = finalApprovalTarget
+    ? formatUserLiteName(finalApprovalTarget.user)
+    : formatApprovedByUnderwriterLabel(
+        (applicationData ?? {}) as Parameters<typeof formatApprovedByUnderwriterLabel>[0],
+      );
   const showSendFinalApprovalButton =
     canSendFinalUnderwriterApproval &&
-    isIsoApproved &&
+    isContractSignedStage &&
     Boolean(approvingUnderwriterId);
 
   useEffect(() => {
@@ -187,6 +197,66 @@ export default function EligibilityAnalysis() {
       cancelled = true;
     };
   }, [clientOwnerId, reportFetchNonce]);
+
+  const handleUploadBankStatement = useCallback(() => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".pdf,application/pdf";
+    input.multiple = true;
+    input.onchange = async () => {
+      const files = input.files;
+      if (!files || files.length === 0) return;
+
+      const names = Array.from(files).map((f) => f.name);
+      setUploadedBankFiles(names);
+
+      const [firstFile] = Array.from(files);
+      if (!firstFile) return;
+
+      const toastId = toast.loading("Uploading bank statement…");
+      try {
+        const { csvContent, filename } = await dispatch(
+          uploadAndDownloadCsv(firstFile),
+        ).unwrap();
+
+        const blob = new Blob(
+          [typeof csvContent === "string" ? csvContent : String(csvContent)],
+          { type: "text/csv;charset=utf-8" },
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        if (applicationRecordId) {
+          void dispatch(getBankDetails({ application: applicationRecordId }));
+        }
+
+        toast.update(toastId, {
+          render: "Bank statement uploaded and parsed successfully.",
+          type: "success",
+          isLoading: false,
+          autoClose: 3000,
+        });
+      } catch (err) {
+        const message =
+          typeof err === "string"
+            ? err
+            : "Failed to upload bank statement. Please try again.";
+        toast.update(toastId, {
+          render: message,
+          type: "error",
+          isLoading: false,
+          autoClose: 4000,
+        });
+      }
+    };
+    input.click();
+  }, [applicationRecordId, dispatch]);
 
   const onInitiateDecisionLogic = () => {
     if (!owners.length) {
@@ -310,16 +380,50 @@ export default function EligibilityAnalysis() {
           </div>
         ) : null}
         <div className="rounded-md border border-[#E5E7EB] p-3 space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-[#111827]">Decision Logic</h3>
-            <Button
-              size="sm"
-              variant="default"
-              onClick={onInitiateDecisionLogic}
-            >
-              Initiate Decision Logic
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {uploadedBankFiles.length > 0 ? (
+                <div className="flex max-w-[14rem] flex-wrap gap-1 text-[11px] text-[#6B7280]">
+                  {uploadedBankFiles.map((name, idx) => (
+                    <span
+                      key={`${name}-${idx}`}
+                      className="rounded-full border border-[#E5E7EB] bg-[#F9FAFB] px-2 py-0.5"
+                      title={name}
+                    >
+                      {name.length > 22 ? `${name.slice(0, 19)}…` : name}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={uploadStatementLoading}
+                onClick={handleUploadBankStatement}
+              >
+                {uploadStatementLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+                    Uploading…
+                  </>
+                ) : (
+                  "Upload bank statement"
+                )}
+              </Button>
+              <Button
+                size="sm"
+                variant="default"
+                onClick={onInitiateDecisionLogic}
+              >
+                Initiate Decision Logic
+              </Button>
+            </div>
           </div>
+          {uploadStatementError ? (
+            <p className="text-[11px] text-red-600">{uploadStatementError}</p>
+          ) : null}
           {owners.map((owner) => (
             <details key={`decision-${owner.id}`} className="rounded-md border border-[#E5E7EB]">
               <summary className="cursor-pointer list-none px-3 py-2 text-xs font-semibold uppercase text-[#111827]">

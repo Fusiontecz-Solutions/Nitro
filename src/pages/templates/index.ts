@@ -67,6 +67,7 @@ export {
 } from "./applicationApprovedEmailShared";
 export {
   APPLICATION_REJECTION_EMAIL_SUBJECT,
+  buildApplicationRejectionEmailSubject,
   resolveApplicationRejectionEmailFields,
 } from "./applicationRejectionEmailShared";
 export {

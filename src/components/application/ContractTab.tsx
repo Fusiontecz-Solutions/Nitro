@@ -7,6 +7,7 @@ import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActi
 import {
     getApplicationByApplicationId,
     getApplicationById,
+    reinitiateContract,
     updateApplication,
 } from "@/redux/actions/applicationActions";
 import {
@@ -49,7 +50,7 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Ban, FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
+import { Ban, Eye, FileText, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import { useFunderProfiles } from "@/hooks/useFunderProfiles";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
@@ -321,6 +322,7 @@ export default function ContractTab({
         (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
         "";
     const roleKey = String(userRoleRaw || "").replace(/-/g, "_").toUpperCase();
+    const isOpsOrSuperAdmin = roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
     const { data: bankDetailsList } = useSelector(
         (state: RootState) => state.bankDetails,
     );
@@ -362,6 +364,7 @@ export default function ContractTab({
         null,
     );
     const [creatingEnvelope, setCreatingEnvelope] = useState(false);
+    const [regeneratingContract, setRegeneratingContract] = useState(false);
     const [viewingSignedContract, setViewingSignedContract] = useState(false);
     const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
     const [voidingContract, setVoidingContract] = useState(false);
@@ -1466,6 +1469,53 @@ export default function ContractTab({
         }
     };
 
+    const showRegenerateContractButton =
+        isOpsOrSuperAdmin && hasGeneratedContract && !isReadOnly;
+
+    const handleRegenerateContract = async () => {
+        if (!applicationUuid) {
+            toast.error("Missing application ID.");
+            return;
+        }
+        if (!globalTemplateUrl) {
+            toast.error(
+                "No contract template uploaded. Please upload it from the Underwriter dashboard.",
+            );
+            return;
+        }
+
+        setRegeneratingContract(true);
+        try {
+            await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
+            const byApp = await dispatch(
+                getByApplicationIdContract(String(applicationUuid)),
+            ).unwrap();
+            const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
+            if (contract && typeof contract === "object") {
+                setFetchedContract(contract);
+                const contractId = Number((contract as { id?: unknown }).id);
+                setSelectedContractId(Number.isFinite(contractId) ? contractId : null);
+            }
+            if (applicationUuid) {
+                void dispatch(getApplicationById(String(applicationUuid)));
+            }
+            setPdfUrl(globalTemplateUrl);
+            setPdfName(globalTemplateName || "Contract.pdf");
+            setPdfViewerInitialRightPaneTab("template");
+            setPdfViewerOpen(true);
+            toast.success("Contract reinitiated. Review and send the updated contract.");
+        } catch (error: unknown) {
+            const message =
+                typeof error === "string"
+                    ? error
+                    : (error as { message?: string })?.message ||
+                      "Failed to reinitiate contract.";
+            toast.error(String(message));
+        } finally {
+            setRegeneratingContract(false);
+        }
+    };
+
     const handleGenerateContract = async () => {
         if (isReadOnly) {
             const opened = await tryOpenExistingDraftViewer();
@@ -2388,6 +2438,9 @@ export default function ContractTab({
               (viewingSignedEnvelopeId
                   ? viewingSignedEnvelopeId === rowEnvelopeId
                   : row.isCurrent);
+        const rowCanViewDocument =
+            Boolean(rowEnvelopeId) &&
+            (rowFullySigned || isSupplementalRow || !row.isCurrent);
 
         return (
             <TableRow key={row.key} className={tableRowClass}>
@@ -2452,7 +2505,7 @@ export default function ContractTab({
                             </span>
                             {rowEnvelopeId ? (
                                 <>
-                                    {rowFullySigned || (isSupplementalRow && rowEnvelopeId) ? (
+                                    {rowCanViewDocument ? (
                                         <Button
                                             type="button"
                                             variant="ghost"
@@ -2482,7 +2535,9 @@ export default function ContractTab({
                                                       ? rowFullySigned
                                                           ? "View signed supplemental documents"
                                                           : "View supplemental documents"
-                                                      : "View signed contract"
+                                                      : row.isCurrent
+                                                        ? "View contract"
+                                                        : "View prior generated contract"
                                             }
                                         >
                                             {isViewingRow ? (
@@ -2491,7 +2546,7 @@ export default function ContractTab({
                                                     aria-hidden
                                                 />
                                             ) : (
-                                                <Info className="h-3.5 w-3.5" aria-hidden />
+                                                <Eye className="h-3.5 w-3.5" aria-hidden />
                                             )}
                                         </Button>
                                     ) : null}
@@ -2662,17 +2717,25 @@ export default function ContractTab({
                         <Button
                             type="button"
                             variant="default"
-                            onClick={handleGenerateContract}
-                            disabled={creatingEnvelope}
+                            onClick={
+                                showRegenerateContractButton
+                                    ? () => void handleRegenerateContract()
+                                    : handleGenerateContract
+                            }
+                            disabled={creatingEnvelope || regeneratingContract}
                             className="h-10 px-6 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
 
 
                         >
-                            {creatingEnvelope ? (
+                            {creatingEnvelope || regeneratingContract ? (
                                 <span className="inline-flex items-center gap-2">
                                     <Loader2 className="h-4 w-4 animate-spin" />
-                                    Generating contract...
+                                    {regeneratingContract
+                                        ? "Reinitiating contract..."
+                                        : "Generating contract..."}
                                 </span>
+                            ) : showRegenerateContractButton ? (
+                                "Regenerate Contract"
                             ) : isReadOnly || hasGeneratedContract ? (
                                 "View Contract"
                             ) : (

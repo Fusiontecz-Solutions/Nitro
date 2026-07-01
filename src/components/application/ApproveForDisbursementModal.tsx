@@ -152,6 +152,8 @@ export interface ApproveForDisbursementModalProps {
     confirmLabel?: string;
     /** Send the approval mail with the (possibly edited) client email. */
     onConfirm: (clientEmail: string) => void | Promise<void>;
+    /** Called after the offer terms are saved/edited in this modal. */
+    onOfferUpdated?: () => void;
 }
 
 const ApproveForDisbursementModal = ({
@@ -163,6 +165,7 @@ const ApproveForDisbursementModal = ({
     confirming = false,
     confirmLabel = "Approve & send email",
     onConfirm,
+    onOfferUpdated,
 }: ApproveForDisbursementModalProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const { resolvedTheme } = useTheme();
@@ -345,6 +348,7 @@ const ApproveForDisbursementModal = ({
 
             offerSnapshotRef.current = offer;
             setIsEditingOffer(false);
+            onOfferUpdated?.();
             toast.update(toastId, {
                 render: "Offer details updated.",
                 type: "success",

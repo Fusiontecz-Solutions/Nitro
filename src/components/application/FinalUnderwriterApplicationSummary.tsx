@@ -2,11 +2,11 @@ import type { ComponentProps } from "react";
 import ApplicationSummary from "./ApplicationSummary";
 
 /**
- * Final-scrubbing decision view uses the same summary card as other roles;
- * kept as a separate component for role-specific layout changes later.
+ * Underwriter application-detail summary — includes Scrubber Request
+ * (not shown to Super Admin or other roles).
  */
 export default function FinalUnderwriterApplicationSummary(
   props: ComponentProps<typeof ApplicationSummary>,
 ) {
-  return <ApplicationSummary {...props} />;
+  return <ApplicationSummary {...props} showScrubberRequest />;
 }

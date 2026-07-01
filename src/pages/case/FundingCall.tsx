@@ -3,6 +3,7 @@ import MyNotes from '@/components/application/MyNotes';
 import RejectApplicationModal from '@/components/application/RejectApplicationModal';
 import RequestMissingDocumentsModal from '@/components/application/RequestMissingDocumentsModal';
 import ApproveForDisbursementModal from '@/components/application/ApproveForDisbursementModal';
+import ApprovedApplicationModal from '@/components/application/ApprovedApplicationModal';
 import { Button } from '@/components/ui/button';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
@@ -11,12 +12,18 @@ import {
   createFundingCall,
   getFundingCalls,
 } from '@/redux/actions/fundingCallActions';
+import { getApplicationById } from '@/redux/actions/applicationActions';
 import { resetCreateFundingCall } from '@/redux/slices/fundingCallSlice';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/context/ThemeContext';
 import { normalizeRoleKey, resolveEffectiveRole } from '@/lib/sessionRole';
 import { normalizeFundingCallStatus } from '@/constants/operationsDashboardApplications';
+import { applicationNeedsContractReinitiation } from '@/lib/contractReinitiation';
+import {
+  OFFER_DECISION_UPDATED_EVENT,
+  offerDecisionUpdateMatchesApplication,
+} from '@/lib/offerDecisionSync';
 import {
   APPLICATION_APPROVED_EMAIL_SUBJECT,
   buildApplicationApprovedEmailServerPlaceholderValues,
@@ -112,6 +119,17 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     return Number.isFinite(num) ? num : null;
   }, [applicationDetail]);
 
+  /** UUID (_id) used to refetch the application detail after an offer edit. */
+  const applicationUuid = useMemo(() => {
+    const data = applicationDetail as { _id?: string; id?: string } | null;
+    return data?._id ?? data?.id ?? applicationId ?? null;
+  }, [applicationDetail, applicationId]);
+
+  const needsContractReinitiation = useMemo(
+    () => applicationNeedsContractReinitiation(applicationDetail as Record<string, unknown> | null),
+    [applicationDetail],
+  );
+
   const roleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
   const isSuperAdmin = roleKey === 'SUPER_ADMIN';
 
@@ -150,6 +168,9 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [documentsModalOpen, setDocumentsModalOpen] = useState(false);
   const [approveModalOpen, setApproveModalOpen] = useState(false);
+  const [isoResendModalOpen, setIsoResendModalOpen] = useState(false);
+  /** True once the Super Admin edits the offer terms — unlocks the ISO resend + contract reinitiation CTA. */
+  const [offerUpdated, setOfferUpdated] = useState(false);
   const [approveForDisbursementPending, setApproveForDisbursementPending] = useState(false);
   const [disbursementApproved, setDisbursementApproved] = useState(false);
   const [disbursementEmailSent, setDisbursementEmailSent] = useState<boolean | null>(null);
@@ -412,6 +433,39 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     },
     [handleApproveForDisbursement],
   );
+
+  const refreshApplicationDetail = useCallback(() => {
+    if (applicationUuid) {
+      void dispatch(getApplicationById(String(applicationUuid)));
+    }
+  }, [applicationUuid, dispatch]);
+
+  /** After the offer terms are edited (in the approval modal), surface the ISO resend CTA. */
+  const handleOfferUpdated = useCallback(() => {
+    setOfferUpdated(true);
+    refreshApplicationDetail();
+  }, [refreshApplicationDetail]);
+
+  // Reset the local offer-updated flag when switching applications.
+  useEffect(() => {
+    setOfferUpdated(false);
+  }, [offerApplicationId]);
+
+  // Offer edits made elsewhere (e.g. contract tab) also unlock the ISO resend CTA.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { applicationId?: unknown } | undefined;
+      if (offerDecisionUpdateMatchesApplication(detail?.applicationId, offerApplicationId)) {
+        setOfferUpdated(true);
+        refreshApplicationDetail();
+      }
+    };
+    window.addEventListener(OFFER_DECISION_UPDATED_EVENT, handler);
+    return () => window.removeEventListener(OFFER_DECISION_UPDATED_EVENT, handler);
+  }, [offerApplicationId, refreshApplicationDetail]);
+
+  const showResendApprovalMailToIso =
+    isSuperAdmin && (offerUpdated || needsContractReinitiation);
 
   return (
     <div
@@ -721,7 +775,12 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                 </div>
               )}
 
-              <div className="flex flex-1 flex-col justify-center gap-5 px-4 pb-4">
+              <div
+                className={cn(
+                  'flex flex-1 flex-col gap-5 overflow-y-auto px-4 pb-4',
+                  showResendApprovalMailToIso ? 'justify-start' : 'justify-center',
+                )}
+              >
                 <button
                   type="button"
                   onClick={() => setApproveModalOpen(true)}
@@ -746,6 +805,29 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                       : 'Send approval email to client and notify Operations'}
                   </span>
                 </button>
+
+                {showResendApprovalMailToIso && (
+                  <button
+                    type="button"
+                    onClick={() => setIsoResendModalOpen(true)}
+                    disabled={isBusy}
+                    className={cn(
+                      decisionButtonBase,
+                      'bg-[#276D9C] shadow-md shadow-[#276D9C]/25 hover:bg-[#1f5a80]',
+                    )}
+                  >
+                    <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                      {needsContractReinitiation
+                        ? 'Resend approval mail to ISO and reinitiate contract'
+                        : 'Resend approval mail to ISO'}
+                    </span>
+                    <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                      {needsContractReinitiation
+                        ? 'Offer values changed after a contract was generated. Send the updated offer email and reset the contract for regeneration.'
+                        : 'Offer values changed. Send the updated offer email to the linked ISO.'}
+                    </span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -833,7 +915,20 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
             : 'Approve & send email'
         }
         onConfirm={handleConfirmApproval}
+        onOfferUpdated={handleOfferUpdated}
       />
+
+      {isSuperAdmin && (
+        <ApprovedApplicationModal
+          open={isoResendModalOpen}
+          onOpenChange={setIsoResendModalOpen}
+          isFinalUnderwriter
+          showIsoRecipientFields
+          resendApprovalEmail
+          reinitiateContract={needsContractReinitiation || offerUpdated}
+          onOfferUpdated={refreshApplicationDetail}
+        />
+      )}
     </div>
   );
 };

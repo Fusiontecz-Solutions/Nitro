@@ -191,6 +191,9 @@ export const applicationsSlice = createSlice({
                 state.error = action.payload as string;
                 state.latestRequestId = null;
             })
+            .addCase(updateApplication.fulfilled, (state, action) => {
+                patchApplicationInList(state, action.payload);
+            })
             .addCase(updateApplicationQueue.fulfilled, (state, action) => {
                 patchApplicationInList(state, action.payload);
             })
