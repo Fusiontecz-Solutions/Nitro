@@ -159,6 +159,10 @@ interface SendMailOptions {
     cc?: string | string[];
     bcc?: string | string[];
     replyTo?: string;
+    /** RFC 2822 `In-Reply-To` for email threading. */
+    inReplyTo?: string;
+    /** RFC 2822 `References` for email threading. */
+    references?: string;
     attachments?: Array<{
         filename?: string | false;
         content?: Buffer | string;
@@ -245,6 +249,21 @@ function normalizeRecipients(to: string | string[]): Array<{ email: string }> {
         .map((email) => ({ email }));
 }
 
+function listRecipientEmails(value?: string | string[]): string[] {
+    if (!value) return [];
+    const list = Array.isArray(value) ? value : [value];
+    return list.map((entry) => String(entry || '').trim()).filter(Boolean);
+}
+
+/** SendGrid HTTP API is used for tracked mail; multi-To / CC / BCC are more reliable via SMTP relay. */
+function shouldUseSendGridHttpApi(options: SendMailOptions): boolean {
+    if (!useSendgrid || !options.trackingId?.trim()) return false;
+    const hasCc = listRecipientEmails(options.cc).length > 0;
+    const hasBcc = listRecipientEmails(options.bcc).length > 0;
+    const toCount = listRecipientEmails(options.to).length;
+    return !hasCc && !hasBcc && toCount <= 1;
+}
+
 function toSendGridApiAttachments(
     attachments?: SendMailOptions['attachments'],
 ): Array<{
@@ -293,6 +312,15 @@ function toSendGridApiAttachments(
  * Send via SendGrid Mail Send HTTP API (v3). Unlike SMTP + X-SMTPAPI, `custom_args`
  * reliably appear on Event Webhook payloads as top-level `ocid`.
  */
+function buildThreadingHeaders(options: Pick<SendMailOptions, 'inReplyTo' | 'references'>): Record<string, string> | undefined {
+    const headers: Record<string, string> = {};
+    const inReplyTo = String(options.inReplyTo || '').trim();
+    const references = String(options.references || '').trim();
+    if (inReplyTo) headers['In-Reply-To'] = inReplyTo;
+    if (references) headers.References = references;
+    return Object.keys(headers).length ? headers : undefined;
+}
+
 async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMailResult> {
     if (!sendgridApiKey) {
         throw new Error('SendGrid API key is not configured');
@@ -311,8 +339,11 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
         enableOpenTracking,
         enableClickTracking,
         categories,
+        inReplyTo,
+        references,
     } = options;
 
+    const threadingHeaders = buildThreadingHeaders({ inReplyTo, references });
     const fromAddr = buildMailFrom(from);
     const wantsTracking = Boolean(trackingId?.trim());
     const openTracking =
@@ -323,8 +354,10 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
     const personalization: Record<string, unknown> = {
         to: normalizeRecipients(to),
     };
-    if (cc) personalization.cc = normalizeRecipients(cc);
-    if (bcc) personalization.bcc = normalizeRecipients(bcc);
+    const ccRecipients = normalizeRecipients(listRecipientEmails(cc));
+    const bccRecipients = normalizeRecipients(listRecipientEmails(bcc));
+    if (ccRecipients.length) personalization.cc = ccRecipients;
+    if (bccRecipients.length) personalization.bcc = bccRecipients;
     if (trackingId?.trim()) {
         personalization.custom_args = { ocid: trackingId.trim() };
     }
@@ -337,6 +370,7 @@ async function sendViaSendGridHttpApi(options: SendMailOptions): Promise<SendMai
     };
 
     if (replyTo) payload.reply_to = { email: extractEmailAddress(String(replyTo)) };
+    if (threadingHeaders) payload.headers = threadingHeaders;
     if (categories?.length) payload.categories = categories;
 
     const apiAttachments = toSendGridApiAttachments(attachments);
@@ -404,10 +438,15 @@ const sendMail = async (
             enableOpenTracking,
             enableClickTracking,
             categories,
+            inReplyTo,
+            references,
         } = options;
 
+        const threadingHeaders = buildThreadingHeaders({ inReplyTo, references });
+
         // Tracked mail uses the HTTP API so `custom_args.ocid` is present on webhooks.
-        if (useSendgrid && trackingId?.trim()) {
+        // When CC/BCC are present, prefer SMTP relay — CC delivery is unreliable on HTTP API.
+        if (shouldUseSendGridHttpApi(options)) {
             return sendViaSendGridHttpApi(options);
         }
 
@@ -429,7 +468,14 @@ const sendMail = async (
             bcc,
             replyTo,
             ...(attachments?.length ? { attachments } : {}),
-            ...(smtpApiHeader ? { headers: { 'X-SMTPAPI': smtpApiHeader } } : {}),
+            ...(smtpApiHeader || threadingHeaders
+                ? {
+                      headers: {
+                          ...(smtpApiHeader ? { 'X-SMTPAPI': smtpApiHeader } : {}),
+                          ...(threadingHeaders ?? {}),
+                      },
+                  }
+                : {}),
         };
 
         const response = await transporter.sendMail(mailOptions);
@@ -449,7 +495,8 @@ export async function sendSendGridMail(options: SendMailOptions) {
     }
 
     // Tracked sends use the HTTP API so `custom_args.ocid` is present on webhooks.
-    if (options.trackingId?.trim()) {
+    // When CC/BCC are present, prefer SMTP relay — CC delivery is unreliable on HTTP API.
+    if (shouldUseSendGridHttpApi(options)) {
         return sendViaSendGridHttpApi({
             ...options,
             from:
@@ -473,7 +520,10 @@ export async function sendSendGridMail(options: SendMailOptions) {
         enableOpenTracking,
         enableClickTracking,
         categories,
+        inReplyTo,
+        references,
     } = options;
+    const threadingHeaders = buildThreadingHeaders({ inReplyTo, references });
     const smtpApiHeader = buildSendGridSmtpApiHeader({
         trackingId,
         enableOpenTracking,
@@ -494,7 +544,14 @@ export async function sendSendGridMail(options: SendMailOptions) {
         bcc,
         replyTo,
         ...(attachments?.length ? { attachments } : {}),
-        ...(smtpApiHeader ? { headers: { 'X-SMTPAPI': smtpApiHeader } } : {}),
+        ...(smtpApiHeader || threadingHeaders
+            ? {
+                  headers: {
+                      ...(smtpApiHeader ? { 'X-SMTPAPI': smtpApiHeader } : {}),
+                      ...(threadingHeaders ?? {}),
+                  },
+              }
+            : {}),
     };
     const result = await transporter.sendMail(mailOptions);
     return result;

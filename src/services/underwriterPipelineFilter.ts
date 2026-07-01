@@ -15,7 +15,11 @@ export const UNDERWRITER_PIPELINE_FILTERS = [
     'declined-by-uw',
     'final-approval',
     'final-approved-by-uw',
+    'iso-query',
 ] as const;
+
+/** Comment type posted by ISO from the approval portal. */
+export const ISO_COMMENT_TYPE = 'ISO Comment' as const;
 
 export type UnderwriterPipelineFilter =
     (typeof UNDERWRITER_PIPELINE_FILTERS)[number];
@@ -76,6 +80,22 @@ export function buildUnderwriterPipelineWhere(
             return {
                 underwriterAction: UNDERWRITER_ACTION_FINAL_APPROVED,
                 ...linkedToUnderwriter(viewerId),
+            };
+        case 'iso-query':
+            // Deals the underwriter is linked to that have unresolved ISO comments.
+            return {
+                AND: [
+                    linkedToUnderwriter(viewerId),
+                    { isoQueryResolved: false },
+                    {
+                        comments: {
+                            some: {
+                                type: ISO_COMMENT_TYPE,
+                                isDeleted: false,
+                            },
+                        },
+                    },
+                ],
             };
         default:
             return {};

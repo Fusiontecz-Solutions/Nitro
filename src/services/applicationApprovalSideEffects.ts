@@ -230,13 +230,21 @@ export async function processApplicationApprovalSideEffects(
         return;
     }
 
-    const currentQueue = String(application.currentQueue ?? '').trim().toLowerCase();
-    const currentState = String(application.currentState ?? '').trim().toLowerCase();
+    const normalizeStageToken = (value: string | null | undefined): string =>
+        String(value ?? '')
+            .trim()
+            .toLowerCase()
+            .replace(/[\s_-]+/g, '');
+
+    const currentQueueToken = normalizeStageToken(application.currentQueue);
+    const currentStateToken = normalizeStageToken(application.currentState);
     const isApprovedStage =
-        currentQueue === 'approved' ||
-        currentState === 'approved' ||
-        currentQueue === 'iso approved' ||
-        currentState === 'iso approved';
+        currentQueueToken === 'approved' ||
+        currentStateToken === 'approved' ||
+        currentQueueToken === 'isoapproved' ||
+        currentStateToken === 'isoapproved' ||
+        currentQueueToken === 'contractpending' ||
+        currentStateToken === 'contractpending';
     if (!isApprovedStage) {
         console.warn('[approvalSideEffects] application no longer Approved — skipping fan-out:', {
             applicationId,

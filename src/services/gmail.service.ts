@@ -3,6 +3,7 @@ import prisma from '../config/prismaClient';
 import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
 import { parseMerchantNameFromSubject } from './gmailSubjectMerchantParser';
 import {
+    gmailAutoCreateMessageNote,
     hasRecentDuplicatePdfForCreator,
     hasRecentDuplicatePdfFilenamesForCreator,
     hasRecentApplicationForGmailMessage,
@@ -1176,6 +1177,20 @@ export async function autoCreateApplicationsFromEmails(
                             isoId: resolvedIsoId,
                             originalFileName: pickedFileName,
                         });
+
+                    try {
+                        const gmailNote = gmailAutoCreateMessageNote(msg.id);
+                        await prisma.application.update({
+                            where: { id: application.id },
+                            data: { note: gmailNote },
+                        });
+                        (application as { note?: string }).note = gmailNote;
+                    } catch (noteErr) {
+                        console.warn(
+                            `[gmail-auto-create] message=${msg.id} failed to stamp gmail-msg on application ${application.id}:`,
+                            noteErr,
+                        );
+                    }
 
                     // Upload all remaining PDFs from the same email into the application's files/documents.
                     const extraPdfParts = pdfParts.filter(

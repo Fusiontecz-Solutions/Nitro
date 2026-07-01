@@ -230,9 +230,15 @@ model Application {
   approvedAt               DateTime?
   /// Last action an Underwriter performed on this deal: "Approved By UW", "Decline by UW", "Final Approved by UW".
   underwriterAction        String?
+  /// Scrubber's recommendation from the compliance-check modal: "Recommend Approval" or "Recommend Decline".
+  scrubberRecommendation   String?
   assignedUnderwriterId    String?                       @db.Uuid
   category                 String?
   organization             String?
+  /// True when UW updated the offer after a contract was generated — requires ISO re-approval and contract regeneration.
+  needsContractReinitiation  Boolean                       @default(false)
+  /// Underwriter marked the ISO comment thread as resolved — hides deal from ISO Query pipeline until a new ISO comment arrives.
+  isoQueryResolved           Boolean                       @default(false)
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
   approvedByUnderwriter    User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
   assignedUnderwriter      User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])

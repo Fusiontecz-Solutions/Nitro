@@ -7,6 +7,10 @@ import {
     enqueueApplicationApprovalSideEffects,
     isApplicationApprovalQueueEnabled,
 } from '../../queues/applicationApprovalQueue';
+import {
+    APPLICATION_QUEUE_CONTRACT_PENDING,
+    APPLICATION_STATE_CONTRACT_PENDING,
+} from '../contractApplicationWorkflowSync';
 
 /* ============================================================================
  * Application Approval domain service
@@ -37,13 +41,16 @@ export const APPLICATION_APPROVED_STATE = 'Approved' as const;
 const isIsoApprovalActor = (actorType: string | null | undefined): boolean =>
     String(actorType ?? '').trim().toUpperCase() === 'ISO';
 
-/** All approval transitions persist the legacy Approved/Approved queue labels. */
+/**
+ * ISO public-portal approvals advance straight to Contract Pending so Operations
+ * can generate the contract. Internal CRM approvals keep Approved/Approved.
+ */
 const resolveApprovalTarget = (
-    _actorType: string | null | undefined
-): { queue: string; state: string } => ({
-    queue: APPLICATION_APPROVED_QUEUE,
-    state: APPLICATION_APPROVED_STATE,
-});
+    actorType: string | null | undefined
+): { queue: string; state: string } =>
+    isIsoApprovalActor(actorType)
+        ? { queue: APPLICATION_QUEUE_CONTRACT_PENDING, state: APPLICATION_STATE_CONTRACT_PENDING }
+        : { queue: APPLICATION_APPROVED_QUEUE, state: APPLICATION_APPROVED_STATE };
 
 /** Public contract returned to the controller / API. */
 export interface ApproveApplicationResult {
@@ -292,8 +299,9 @@ async function runApproval(
     }
 
     /**
-     * Target stage is always Approved/Approved (legacy queue labels). Pipeline
-     * buckets distinguish ISO vs UW via activity logs and prior workflow stage.
+     * Target stage depends on who approved:
+     *   - ISO (public portal)  → Contract Pending (ready for contract generation).
+     *   - Internal CRM actor   → legacy Approved/Approved bucket.
      *
      * Single non-interactive update by primary key to avoid Prisma interactive
      * transaction timeout failures (P2028) under DB latency spikes.

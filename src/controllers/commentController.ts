@@ -205,6 +205,14 @@ class CommentController {
         },
       });
 
+      // Re-open ISO Query pipeline when ISO posts a new comment after prior resolution.
+      if (normalizedType === 'ISO Comment') {
+        await prisma.application.update({
+          where: { id: application.id },
+          data: { isoQueryResolved: false },
+        });
+      }
+
       // Notify Underwriter(s) when ISO comments are added from approval page.
       if (normalizedType === 'ISO Comment') {
         try {
