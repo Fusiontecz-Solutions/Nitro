@@ -13,6 +13,26 @@ export const DOCUSIGN_PRIMARY_SIGNER_ROLE = String(
 /** Default signer role when template recipients are unavailable (must match DocuSign template). */
 export const DOCUSIGN_DEFAULT_SIGNER_ROLE = DOCUSIGN_PRIMARY_SIGNER_ROLE;
 
+/** Map legacy DocuSign role labels (Receiver, Client, etc.) to the platform signer role. */
+export function normalizeDocuSignSignerRoleName(role: unknown): string {
+    const trimmed = String(role ?? "").trim();
+    if (!trimmed) return DOCUSIGN_DEFAULT_SIGNER_ROLE;
+    if (/^owner\s*2$/i.test(trimmed) || /^guarantor\s*2$/i.test(trimmed)) {
+        return trimmed;
+    }
+    const lower = trimmed.toLowerCase();
+    if (
+        lower === "receiver" ||
+        lower === "client" ||
+        lower === "merchant" ||
+        lower === "customer" ||
+        lower === "signer"
+    ) {
+        return DOCUSIGN_DEFAULT_SIGNER_ROLE;
+    }
+    return trimmed;
+}
+
 /** Public HTTPS URL DocuSign redirects to after Send (required for localhost dev). */
 export const DOCUSIGN_SENDER_RETURN_URL = String(
     (typeof import.meta !== "undefined" &&

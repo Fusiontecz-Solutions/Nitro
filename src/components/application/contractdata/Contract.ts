@@ -3453,7 +3453,7 @@ export function resolveBalanceTransferMerchantContext(
         clientNameBy ||
         recipientFallback;
 
-    const clientLegalName = businessName || clientName || recipientFallback;
+    const clientLegalName = clientName || clientNameBy || recipientFallback;
 
     const contractLine = [
         str(c.businessAddress) || str(overrides.businessAddress),

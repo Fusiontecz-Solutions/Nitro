@@ -15,7 +15,7 @@ export type PlatformLayoutKey =
 export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Katan Capital LLC";
 
 /** DocuSign envelope role names — must match backend platform-document-registry slots. */
-export const PLATFORM_PRIMARY_SIGNER_ROLE = "Client";
+export const PLATFORM_PRIMARY_SIGNER_ROLE = "Signer";
 export const PLATFORM_SECONDARY_SIGNER_ROLE = "Owner 2";
 
 export const PLATFORM_SIGNER_SLOTS = [

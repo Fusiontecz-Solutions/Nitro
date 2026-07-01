@@ -14,6 +14,7 @@ import {
 } from "./Contract";
 import {
     buildBalanceTransferSheetContractPrefillFields,
+    BALANCE_TRANSFER_SHEET_TAB_LABEL_BY_KEY,
     type BalanceTransferSheetContractPrefillFields,
 } from "./BALANCE_TRANSFER_SHEET_ADDENDUM";
 import {
@@ -287,6 +288,20 @@ function mergeFieldRows(
             value: formatValue(def.id, computedVal),
         };
     });
+}
+
+/** Legacy balance-transfer saves used `client_legal_name` (same id as contract page 1). */
+function normalizeBalanceTransferSavedOverrides(
+    savedForRow: Record<string, string> | null | undefined,
+): Record<string, string> {
+    const saved = { ...(savedForRow ?? {}) };
+    const btKey = BALANCE_TRANSFER_SHEET_TAB_LABEL_BY_KEY.clientLegalName;
+    const legacy = str(saved.client_legal_name);
+    if (!str(saved[btKey]) && legacy) {
+        saved[btKey] = legacy;
+    }
+    delete saved.client_legal_name;
+    return saved;
 }
 
 function stateDisclosureAllDefs(
@@ -877,7 +892,11 @@ function tryAddendumPrefillFieldRowsForEditor(options: {
         sctx,
         options.application ?? null,
     );
-    return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+    const savedOverrides =
+        addendum === "balance_transfer_sheet"
+            ? normalizeBalanceTransferSavedOverrides(options.savedOverridesForMapping)
+            : options.savedOverridesForMapping;
+    return mergeFieldRows(all, computed, savedOverrides);
 }
 
 /** Whether the addendum prefill editor has registered fields for this document layout. */
@@ -1497,9 +1516,19 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
                   return expanded;
               })()
             : editorValues;
-        for (const [id, value] of Object.entries(fieldsToMerge)) {
+        const addendumKind = resolveTemplateRefsForAddendumKind({
+            templateId: templateId || tid || layoutKey,
+            templateName: row.template?.name ?? null,
+            templateLayoutKey: layoutKey || null,
+        });
+        const normalizedAddendumFields =
+            addendumKind === "balance_transfer_sheet"
+                ? normalizeBalanceTransferSavedOverrides(fieldsToMerge)
+                : fieldsToMerge;
+        for (const [id, value] of Object.entries(normalizedAddendumFields)) {
             const v = String(value ?? "").trim();
             if (!v) continue;
+            if (id === "client_legal_name") continue;
             if (id === "client_name" && shouldSkipClientNamePrefillOverwrite(byId, v)) continue;
             byId.set(id, { id, value: v });
         }

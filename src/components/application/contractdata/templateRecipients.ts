@@ -59,7 +59,7 @@ export function parseBoldSignTemplateRolesFromRecipientsPayload(
 }
 
 export function getTemplateRoleLabel(row: Record<string, unknown>): string {
-    return (
+    const raw =
         firstNonEmptyString(
             row.roleName,
             row.RoleName,
@@ -67,8 +67,8 @@ export function getTemplateRoleLabel(row: Record<string, unknown>): string {
             row.Name,
             row.signerRole,
             row.SignerRole,
-        ) || "Role"
-    );
+        ) || "Signer";
+    return normalizeDocuSignSignerRoleName(raw);
 }
 
 export function getTemplateRoleEmailFromRow(row: Record<string, unknown>): string {
@@ -94,6 +94,7 @@ export function getTemplateRoleEmailFromRow(row: Record<string, unknown>): strin
 import {
     DOCUSIGN_DEFAULT_SIGNER_ROLE,
     DOCUSIGN_PRIMARY_SIGNER_ROLE,
+    normalizeDocuSignSignerRoleName,
 } from "./docusignTemplateConfig";
 
 /** Role payload for `/docusign/send-template` and sync-envelope-cc. */
@@ -153,9 +154,9 @@ type SuggestedSignerParty = {
     guarantorEmail?: string;
 };
 
-/** DocuSign envelope role — CRM display labels (Client, Owner, etc.) map to this on send. */
-export function resolveDocuSignSignerRole(_crmRole?: string): string {
-    return DOCUSIGN_DEFAULT_SIGNER_ROLE;
+/** DocuSign envelope role — CRM display labels (Client, Receiver, etc.) map to Signer on send. */
+export function resolveDocuSignSignerRole(crmRole?: string): string {
+    return normalizeDocuSignSignerRoleName(crmRole);
 }
 
 /** Suggested CRM signer rows (client + owners/guarantors with emails). */
@@ -257,7 +258,7 @@ export function suggestedRowsToSummaryTemplateRoles(
     rows: ContractSignerOverrideRow[],
 ): Array<Record<string, unknown>> {
     return rows.map((r, idx) => ({
-        roleName: r.role,
+        roleName: normalizeDocuSignSignerRoleName(r.role),
         signerEmail: r.email,
         signerName: r.name,
         roleIndex: idx + 1,
@@ -499,7 +500,7 @@ export function buildBoldSignRolesFromTemplateRecipients(
             signerName,
             signerOrder: idx + 1,
             signerEmail,
-            signerRole: roleLabel,
+            signerRole: resolveDocuSignSignerRole(roleLabel),
             ...DOCUSIGN_SIGNER_ROLE_COMMON,
         };
     });

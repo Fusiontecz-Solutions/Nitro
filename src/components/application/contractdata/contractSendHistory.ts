@@ -318,15 +318,16 @@ export function isContractSendTableRowVoided(row: ContractSendTableRow): boolean
     return isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
 }
 
-export function canVoidContractSendTableRow(
-    contract: Record<string, unknown> | null | undefined,
-    row: ContractSendTableRow | null | undefined,
-    sessionSentAt?: Date | null,
-): boolean {
-    if (!row?.isCurrent || !String(row.envelopeId ?? "").trim()) return false;
-    if (row.rowType === "contract") {
-        return canVoidMainContract(contract, sessionSentAt);
+/**
+ * Row-level "out for signature" — uses the send-table row status, not only the live contract record.
+ * Covers Sent / Viewed envelopes (main contract, ACH, standalone package) before they are signed or voided.
+ */
+export function isSendTableRowOutForSignature(row: ContractSendTableRow): boolean {
+    if (!String(row.envelopeId ?? "").trim()) return false;
+    if (isContractSendTableRowFullySigned(row) || isContractSendTableRowVoided(row)) {
+        return false;
     }
+
     if (row.rowType === "ach") {
         const status = row.achStatus ?? "DRAFT";
         return status === "DRAFT" || status === "SENT" || status === "VIEWED";
@@ -335,6 +336,29 @@ export function canVoidContractSendTableRow(
         const status = row.packageStatus ?? "DRAFT";
         return status === "DRAFT" || status === "SENT" || status === "VIEWED";
     }
+
+    const ds = String(row.documentStatus ?? "").trim().toLowerCase();
+    const cs = String(row.contractStatus ?? "").trim().toUpperCase();
+    if (["SENT", "VIEWED"].includes(cs)) return true;
+    if (["sent", "viewed", "delivered"].includes(ds)) return true;
+    if (row.sentAt) return true;
+    return false;
+}
+
+export function canVoidContractSendTableRow(
+    contract: Record<string, unknown> | null | undefined,
+    row: ContractSendTableRow | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    if (!row || !String(row.envelopeId ?? "").trim()) return false;
+
+    if (isSendTableRowOutForSignature(row)) return true;
+
+    // CRM row status may lag DocuSign — fall back to live contract for the current main envelope.
+    if (row.rowType === "contract" && row.isCurrent) {
+        return canVoidMainContract(contract, sessionSentAt);
+    }
+
     return false;
 }
 

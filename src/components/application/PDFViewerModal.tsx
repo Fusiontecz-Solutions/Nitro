@@ -214,6 +214,7 @@ import {
     getTemplateRoleEmailFromRow,
     getTemplateRoleLabel,
     getTemplateRoleNameFromRow,
+    isClientRoleName,
     buildBoldSignRolesFromTemplateRecipients,
     buildDocuSignRolesFromEditorRows,
     buildSuggestedContractSignerRows,
@@ -7559,7 +7560,7 @@ const PDFViewerModal = ({
                                                                     <span className="text-sm font-semibold text-slate-900 truncate">
                                                                         {(
                                                                             !hasSavedSignerOverrides &&
-                                                                            signer.role === "Client"
+                                                                            isClientRoleName(signer.role)
                                                                                 ? (
                                                                                     ownerEntries
                                                                                         .map((entry) =>

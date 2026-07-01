@@ -71,7 +71,7 @@ import type { DocuSignTemplateRolePayload } from "./contractdata/templateRecipie
 import {
     buildDocuSignRolesFromEditorRows,
 } from "./contractdata/templateRecipients";
-import { DOCUSIGN_DEFAULT_SIGNER_ROLE } from "./contractdata/docusignTemplateConfig";
+import { DOCUSIGN_DEFAULT_SIGNER_ROLE, normalizeDocuSignSignerRoleName } from "./contractdata/docusignTemplateConfig";
 import {
     buildContractSignerRowsFromOwnerParties,
     resolveClientOwnerPartiesFromApplication,
@@ -622,15 +622,15 @@ export default function ACHViewerModal({
 
     const saveAchSigners = useCallback(async () => {
         const rows = achSignerEditorRows
-            .filter((r) => r.role.trim())
+            .filter((r) => r.email.trim())
             .map((r) => ({
-                role: r.role.trim(),
+                role: DOCUSIGN_DEFAULT_SIGNER_ROLE,
                 name: r.name.trim(),
                 email: r.email.trim(),
             }));
         const roles = buildDocuSignRolesFromEditorRows(rows);
         if (!roles.length) {
-            toast.error("Enter a role name and email for at least one signer.");
+            toast.error("Enter an email for at least one signer.");
             return;
         }
         if (rows.some((r) => r.role && !r.email)) {
@@ -1116,7 +1116,7 @@ export default function ACHViewerModal({
                                                 </div>
                                                 <div className="min-w-0 flex-1">
                                                     <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                                                        {signer.role}
+                                                        {normalizeDocuSignSignerRoleName(signer.role)}
                                                     </p>
                                                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
                                                         {signer.name || "—"}
@@ -1181,18 +1181,11 @@ export default function ACHViewerModal({
                                                 </span>
                                                 <div className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-3">
                                                     <Input
-                                                        placeholder="Role"
-                                                        className="h-9 text-xs"
-                                                        value={entry.role}
-                                                        onChange={(e) =>
-                                                            setAchSignerEditorRows((prev) =>
-                                                                prev.map((x) =>
-                                                                    x.id === entry.id
-                                                                        ? { ...x, role: e.target.value }
-                                                                        : x,
-                                                                ),
-                                                            )
-                                                        }
+                                                        placeholder="Signer"
+                                                        className="h-9 text-xs bg-slate-50"
+                                                        value={DOCUSIGN_DEFAULT_SIGNER_ROLE}
+                                                        readOnly
+                                                        disabled
                                                     />
                                                     <Input
                                                         placeholder="Signer name"
@@ -1254,7 +1247,7 @@ export default function ACHViewerModal({
                                                 className="h-8 bg-[var(--brand)] px-6 text-xs text-white hover:bg-[var(--brand-hover)]"
                                                 disabled={
                                                     savingAchSigners ||
-                                                    achSignerEditorRows.every((r) => !r.role.trim())
+                                                    achSignerEditorRows.every((r) => !r.email.trim())
                                                 }
                                                 onClick={() => void saveAchSigners()}
                                             >
