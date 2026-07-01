@@ -297,8 +297,11 @@ function normalizeBalanceTransferSavedOverrides(
     const saved = { ...(savedForRow ?? {}) };
     const btKey = BALANCE_TRANSFER_SHEET_TAB_LABEL_BY_KEY.clientLegalName;
     const legacy = str(saved.client_legal_name);
+    const businessLegal = str(saved.business_legal_name);
     if (!str(saved[btKey]) && legacy) {
-        saved[btKey] = legacy;
+        if (!businessLegal || legacy.toLowerCase() !== businessLegal.toLowerCase()) {
+            saved[btKey] = legacy;
+        }
     }
     delete saved.client_legal_name;
     return saved;
@@ -431,7 +434,7 @@ function buildBalanceTransferComputed(
         dateOfNewSecuredAgreement: agreementDate,
         dateOfPreviousSecuredAgreement: agreementDate,
         remainingRtrBalance: remainingRtr,
-        merchantLegalName: merchant.clientName,
+        merchantLegalName: merchant.clientLegalName,
         businessLegalName: merchant.businessName,
         dba: merchant.clientDba,
         clientNameBy: merchant.clientNameBy,
@@ -1529,6 +1532,12 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             const v = String(value ?? "").trim();
             if (!v) continue;
             if (id === "client_legal_name") continue;
+            if (
+                id === "balance_transfer_client_legal_name" &&
+                v === readPrefillMapValue(byId, "client_legal_name")
+            ) {
+                continue;
+            }
             if (id === "client_name" && shouldSkipClientNamePrefillOverwrite(byId, v)) continue;
             byId.set(id, { id, value: v });
         }

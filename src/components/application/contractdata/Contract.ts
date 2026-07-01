@@ -3437,14 +3437,29 @@ export function resolveBalanceTransferMerchantContext(
         str(c.securityDoingBusinessAs) ||
         str(overrides.securityDoingBusinessAs);
 
+    const businessNorm = businessName.trim().toLowerCase();
+    const isDistinctFromBusiness = (name: string) => {
+        const n = name.trim();
+        if (!n) return false;
+        return !businessNorm || n.toLowerCase() !== businessNorm;
+    };
+
+    const ownerMerchantCandidates = [
+        ownerName,
+        linkedOwnerName,
+        str(c.customerName),
+        str(overrides.customerName),
+        str(c.owner1GuarantorName),
+        str(overrides.owner1GuarantorName),
+        str(c.guarantyClientName),
+        str(overrides.guarantyClientName),
+        str(c.guarantyOwner1Name),
+        str(overrides.guarantyOwner1Name),
+        recipientFallback,
+    ];
+
     const clientNameBy =
-        str(c.customerName) ||
-        ownerName ||
-        linkedOwnerName ||
-        str(c.clientName) ||
-        str(overrides.clientName) ||
-        str(app.clientName) ||
-        recipientFallback;
+        ownerMerchantCandidates.find(isDistinctFromBusiness) || ownerName || recipientFallback;
 
     const clientName =
         str(c.clientName) ||
@@ -3453,7 +3468,8 @@ export function resolveBalanceTransferMerchantContext(
         clientNameBy ||
         recipientFallback;
 
-    const clientLegalName = clientName || clientNameBy || recipientFallback;
+    const clientLegalName =
+        ownerMerchantCandidates.find(isDistinctFromBusiness) || ownerName || linkedOwnerName || recipientFallback;
 
     const contractLine = [
         str(c.businessAddress) || str(overrides.businessAddress),

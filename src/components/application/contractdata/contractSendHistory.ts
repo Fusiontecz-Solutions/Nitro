@@ -10,8 +10,8 @@ import {
     parseStandalonePackageDocuSignFromPrefill,
     parseStandalonePackageSendHistoryFromPrefill,
     type StandalonePackageDocuSignCapsuleStatus,
-    type StandalonePackageDocuSignMeta,
 } from "./standalonePackageDocuSign";
+import { formatDateTimeUS } from "@/lib/utils";
 
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
@@ -267,14 +267,22 @@ function isPackageRowVisibleInSendTable(
     return Boolean(status && status !== "DRAFT");
 }
 
-function buildStandalonePackageHistoryLabel(
-    packageMeta: StandalonePackageDocuSignMeta["package"] | undefined,
-    historyCount: number,
-    sendNumber: number,
-): string {
-    const base = formatStandalonePackageSendLabel(packageMeta);
-    if (historyCount <= 1) return `${base} (prior send)`;
-    return `${base} (send ${sendNumber})`;
+/** Disambiguate repeated send rows with sent date/time instead of "send N". */
+function buildSendHistoryRowLabel(baseLabel: string, sentAt: unknown): string {
+    const when = formatDateTimeUS(sentAt, "");
+    return when ? `${baseLabel} (${when})` : baseLabel;
+}
+
+function applySendRowDateLabels(
+    rows: ContractSendTableRow[],
+    rowType: ContractSendTableRowKind,
+    resolveBaseLabel: (row: ContractSendTableRow) => string,
+): void {
+    const matching = rows.filter((row) => row.rowType === rowType);
+    if (matching.length <= 1) return;
+    for (const row of matching) {
+        row.label = buildSendHistoryRowLabel(resolveBaseLabel(row), row.sentAt);
+    }
 }
 
 export function getContractSendTableRowStatusLabel(row: ContractSendTableRow): string {
@@ -429,20 +437,16 @@ export function buildContractSendTableRows(
     }
 
     const contractHistoryNewestFirst = [...contractHistory].reverse();
-    contractHistoryNewestFirst.forEach((entry, index) => {
+    contractHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
         if (!isContractRowVisibleInSendTable(entry.status, entry.status, entry.envelopeId)) {
             return;
         }
         seenEnvelopeIds.add(entry.envelopeId);
-        const sendNumber = contractHistory.length - index;
         rows.push({
             rowType: "contract",
             key: `history-contract-${entry.envelopeId}`,
-            label:
-                contractHistory.length > 1
-                    ? `Contract (send ${sendNumber})`
-                    : "Contract (prior send)",
+            label: "Contract",
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
             documentStatus: entry.status,
@@ -486,19 +490,14 @@ export function buildContractSendTableRows(
     }
 
     const packageHistoryNewestFirst = [...packageHistory].reverse();
-    packageHistoryNewestFirst.forEach((entry, index) => {
+    packageHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
         if (!isPackageRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
         seenEnvelopeIds.add(entry.envelopeId);
-        const sendNumber = packageHistory.length - index;
         rows.push({
             rowType: "package",
             key: `history-package-${entry.envelopeId}`,
-            label: buildStandalonePackageHistoryLabel(
-                entry.package,
-                packageHistory.length,
-                sendNumber,
-            ),
+            label: formatStandalonePackageSendLabel(entry.package),
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
             documentStatus: entry.status,
@@ -509,18 +508,14 @@ export function buildContractSendTableRows(
     });
 
     const achHistoryNewestFirst = [...achHistory].reverse();
-    achHistoryNewestFirst.forEach((entry, index) => {
+    achHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
         if (!isAchRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
         seenEnvelopeIds.add(entry.envelopeId);
-        const sendNumber = achHistory.length - index;
         rows.push({
             rowType: "ach",
             key: `history-ach-${entry.envelopeId}`,
-            label:
-                achHistory.length > 1
-                    ? `ACH Authorization (send ${sendNumber})`
-                    : "ACH Authorization (prior send)",
+            label: "ACH Authorization",
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
             documentStatus: entry.status,
@@ -529,6 +524,10 @@ export function buildContractSendTableRows(
             achStatus: entry.status,
         });
     });
+
+    applySendRowDateLabels(rows, "contract", () => "Contract");
+    applySendRowDateLabels(rows, "ach", () => "ACH Authorization");
+    applySendRowDateLabels(rows, "package", (row) => row.label);
 
     return rows;
 }

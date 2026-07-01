@@ -2626,6 +2626,8 @@ const PDFViewerModal = ({
 
     const primarySignerEmailRef = useRef("");
     primarySignerEmailRef.current = docuSignSignerEmail.email;
+    const selectedFunderRef = useRef("");
+    selectedFunderRef.current = String(selectedFunder || "").trim();
 
     const buildDocuSignRolesForSync = useCallback((): DocuSignTemplateRolePayload[] => {
         if (effectiveContractSignerRows.length > 0) {
@@ -2654,6 +2656,8 @@ const PDFViewerModal = ({
             const signerEmail = String(primarySignerEmailRef.current || "").trim();
             const appId = applicationIdForLookupRef.current;
             const roles = buildDocuSignRolesForSync();
+            const funderName = selectedFunderRef.current;
+            const contractIdForAuth = effectiveContractId;
             try {
                 const res = await axiosPost("/docusign/sender-view", {
                     envelopeId,
@@ -2661,6 +2665,10 @@ const PDFViewerModal = ({
                     ccEmails: ccForSync,
                     roles,
                     ...(appId ? { applicationId: appId } : {}),
+                    ...(funderName ? { funderName } : {}),
+                    ...(contractIdForAuth != null && Number.isFinite(contractIdForAuth)
+                        ? { contractId: contractIdForAuth }
+                        : {}),
                     ...(signerEmail
                         ? {
                               signerEmail,
@@ -2682,7 +2690,7 @@ const PDFViewerModal = ({
                 };
             }
         },
-        [applicationData, buildDocuSignRolesForSync],
+        [applicationData, buildDocuSignRolesForSync, effectiveContractId],
     );
 
     const fetchDocuSignSenderViewUrlWithRetry = useCallback(
@@ -3812,6 +3820,7 @@ const PDFViewerModal = ({
                                     contractId: Number.isFinite(Number(c.id))
                                         ? Number(c.id)
                                         : contractId,
+                                    funderName: selectedFunderRef.current || undefined,
                                     force: options?.forceDocuSignSync === true,
                                     silent: Boolean(silent),
                                     envelopeLabel: selectedRow?.label ?? "contract",
@@ -7916,6 +7925,22 @@ const PDFViewerModal = ({
                                                                                     ccEmails: ccEmailsRef.current,
                                                                                     ...(appId
                                                                                         ? { applicationId: appId }
+                                                                                        : {}),
+                                                                                    ...(selectedFunderRef.current
+                                                                                        ? {
+                                                                                              funderName:
+                                                                                                  selectedFunderRef.current,
+                                                                                          }
+                                                                                        : {}),
+                                                                                    ...(effectiveContractId !=
+                                                                                            null &&
+                                                                                    Number.isFinite(
+                                                                                        effectiveContractId,
+                                                                                    )
+                                                                                        ? {
+                                                                                              contractId:
+                                                                                                  effectiveContractId,
+                                                                                          }
                                                                                         : {}),
                                                                                     signerEmail:
                                                                                         roles[0]?.signerEmail,
