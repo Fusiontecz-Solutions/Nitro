@@ -327,6 +327,8 @@ export interface CreatePdfApplicationOptions {
     isoId?: string | null;
     /** Original filename for the stored ApplicationFile (e.g. Gmail attachment name). */
     originalFileName?: string | null;
+    /** Gmail message id for durable auto-create dedupe (`gmail-msg:` note). */
+    gmailMessageId?: string | null;
     /**
      * When provided (e.g. OCR + `parseBusinessData` already ran in the controller),
      * skips PDF text extraction and parsing inside this helper.
@@ -410,6 +412,8 @@ export async function createClientAndApplicationFromPDFBuffer(
     }
     const agentCreationQueue = PDF_EMAIL_AUTO_CREATE_QUEUE;
     const agentCreationState = PDF_EMAIL_AUTO_CREATE_STATE;
+    const gmailMessageId = String(options?.gmailMessageId || '').trim();
+    const gmailNote = gmailMessageId ? gmailAutoCreateMessageNote(gmailMessageId) : '';
 
     let parsedData: any;
     if (options?.preParsedData && typeof options.preParsedData === 'object') {
@@ -498,6 +502,7 @@ export async function createClientAndApplicationFromPDFBuffer(
                 createdById: userId,
                 currentQueue: agentCreationQueue,
                 currentState: agentCreationState,
+                note: gmailNote || undefined,
             }),
             include: applicationWithFilesInclude,
         });
@@ -592,6 +597,7 @@ export async function createClientAndApplicationFromPDFBuffer(
                 createdById: userId,
                 currentQueue: agentCreationQueue,
                 currentState: agentCreationState,
+                note: gmailNote || undefined,
             }),
             include: applicationWithFilesInclude,
         });

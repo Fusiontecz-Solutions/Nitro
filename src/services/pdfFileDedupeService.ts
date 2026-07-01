@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import prisma from '../config/prismaClient';
+import { isGmailAutoCreateMessageHandled } from './gmailAutoCreateProcessedStore';
 
 const DEDUPE_DAYS_DEFAULT = 7;
 
@@ -110,6 +111,10 @@ export async function hasRecentApplicationForGmailMessage(params: {
 }): Promise<boolean> {
     const gmailMessageId = String(params.gmailMessageId || '').trim();
     if (!gmailMessageId || !params.createdById) return false;
+
+    if (await isGmailAutoCreateMessageHandled(params.createdById, gmailMessageId)) {
+        return true;
+    }
 
     const dedupeDays = params.dedupeDays ?? readPdfFileDedupeDays();
     const since = new Date(Date.now() - dedupeDays * 24 * 60 * 60 * 1000);
