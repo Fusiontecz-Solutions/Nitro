@@ -11,7 +11,7 @@ export type PlatformDocumentDefinition = {
 };
 
 export const PLATFORM_SIGNER_SLOTS = [
-  { roleIndex: 1, roleName: 'Client', signerOrder: 1 },
+  { roleIndex: 1, roleName: 'Signer', signerOrder: 1 },
   { roleIndex: 2, roleName: 'Owner 2', signerOrder: 2 },
 ] as const;
 

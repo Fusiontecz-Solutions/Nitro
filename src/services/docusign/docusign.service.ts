@@ -13,6 +13,7 @@ import {
   DOCUSIGN_CLIENT_SECRET,
   DOCUSIGN_AUTO_SEND_ENVELOPE,
   DOCUSIGN_DEFAULT_ROLE_NAME,
+  normalizeDocuSignSignerRoleName,
   DOCUSIGN_DEFAULT_TEMPLATE_ID,
   DOCUSIGN_LOCK_SIGNER_DATA_TABS,
   DOCUSIGN_LOCK_RETRY_ATTEMPTS,
@@ -2388,13 +2389,7 @@ export class DocusignService {
     return roles
       .map((r, idx) => {
         const rawRole = String(r.roleName || r.signerRole || defaultRole || `Signer ${idx + 1}`).trim();
-        const roleLower = rawRole.toLowerCase();
-        const roleName =
-          !rawRole ||
-          roleLower === defaultRole.toLowerCase() ||
-          /^(receiver|client|merchant|customer|owner|guarantor|signer)/i.test(rawRole)
-            ? defaultRole
-            : rawRole;
+        const roleName = normalizeDocuSignSignerRoleName(rawRole || defaultRole);
         return {
           roleName,
           name: String(r.signerName || '').trim(),

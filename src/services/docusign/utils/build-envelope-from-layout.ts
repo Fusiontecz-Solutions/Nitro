@@ -9,7 +9,7 @@ import {
   PREFILL_DISPLAY_LABEL_BY_VARIABLE,
 } from './prefill-layout-bridge';
 import type { PrefillFieldInput } from './docusign-prefill';
-import { DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
+import { DOCUSIGN_DEFAULT_ROLE_NAME, normalizeDocuSignSignerRoleName } from './docusign-client';
 import {
   applyDocuSignPrefillTabStyle,
   resolveDocuSignPrefillTabWidth,
@@ -71,7 +71,15 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   remaining_rtr_balance: ['refinance_amount', 'remaining_rtr_balance', 'remaining_rtr', 'remainingRtrBalance'],
   date_by_which_amount_mustbe_received: ['prepayment_received_by_date'],
   funder_name: ['disclosure_funder_name'],
-  client_legal_name: ['business_legal_name', 'merchant_legal_name'],
+  /** Balance transfer only — fall back to contract business legal name when empty. */
+  business_legal_name: ['client_legal_name'],
+  /** Balance transfer signature block — merchant / owner name, not business entity. */
+  balance_transfer_client_legal_name: [
+    'merchant_legal_name',
+    'client_name',
+    'client_name_by',
+    'owner1_guarantor_name',
+  ],
   business_name_2: [
     'owner2_guarantor_name',
     'guaranty_owner2_name',
@@ -485,7 +493,7 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
       out.client_name = personal;
     } else {
       const legal = String(
-        out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+        out.client_legal_name || out.business_legal_name || '',
       ).trim();
       if (legal) out.client_name = legal;
     }
@@ -494,7 +502,7 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
   forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
   forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
   const legalName = String(
-    out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+    out.client_legal_name || out.business_legal_name || '',
   ).trim();
   const personalClientName = PARTY1_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
     Boolean,
@@ -591,7 +599,7 @@ function enrichValuesFromSigners(
   forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
   forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
   const legalAfterSigners = String(
-    out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+    out.client_legal_name || out.business_legal_name || '',
   ).trim();
   const personalAfterSigners = PARTY1_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
     Boolean,
@@ -1304,7 +1312,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   const mappedSigners = options.signers.map((s, idx) => {
     const tabs = signerTabs.get(idx) || emptyTabs();
     return {
-      roleName: s.roleName,
+      roleName: normalizeDocuSignSignerRoleName(s.roleName),
       name: s.name,
       email: s.email,
       routingOrder: s.routingOrder,
@@ -1322,7 +1330,9 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
       const secondaryInput = options.signers[secondaryIdx];
       if (secondaryInput) {
         mappedSigners.push({
-          roleName: secondaryInput.roleName || resolveSecondarySignerRoleName(options.signers),
+          roleName: normalizeDocuSignSignerRoleName(
+            secondaryInput.roleName || resolveSecondarySignerRoleName(options.signers),
+          ),
           name: secondaryInput.name,
           email: secondaryInput.email,
           routingOrder: secondaryInput.routingOrder ?? 2,
@@ -1335,7 +1345,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   const signers = mappedSigners
     .filter((s) => signerHasTabs(s.tabs))
     .map((s, idx) => ({
-      roleName: s.roleName,
+      roleName: normalizeDocuSignSignerRoleName(s.roleName),
       name: s.name,
       email: s.email,
       recipientId: String(idx + 1),

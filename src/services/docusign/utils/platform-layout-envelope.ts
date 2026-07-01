@@ -19,7 +19,7 @@ import {
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
-import { DOCUSIGN_COMBINE_PACKAGE_PDF, DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
+import { DOCUSIGN_COMBINE_PACKAGE_PDF, DOCUSIGN_DEFAULT_ROLE_NAME, normalizeDocuSignSignerRoleName } from './docusign-client';
 import { PLATFORM_SIGNER_SLOTS } from '../platform-document-registry';
 import { isAllianceBridgeFunder } from './resolve-main-contract-layout';
 import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
@@ -145,7 +145,9 @@ export function signerRolesToLayoutSigners(
 ): LayoutSignerInput[] {
   return roles
     .map((r, idx) => ({
-      roleName: String(r.roleName || r.signerRole || `Signer ${idx + 1}`).trim(),
+      roleName: normalizeDocuSignSignerRoleName(
+        String(r.roleName || r.signerRole || `Signer ${idx + 1}`).trim(),
+      ),
       name: String(r.signerName || '').trim(),
       email: String(r.signerEmail || '').trim(),
       routingOrder: Number(r.signerOrder ?? idx + 1),
@@ -212,7 +214,7 @@ export function collapseSignerRolesForLayoutEnvelope(
       withEmail[1];
   }
 
-  const primaryRoleName = PLATFORM_SIGNER_SLOTS[0].roleName;
+  const primaryRoleName = DOCUSIGN_DEFAULT_ROLE_NAME;
   const secondaryRoleName = DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME;
 
   const out: Array<Record<string, unknown>> = [];

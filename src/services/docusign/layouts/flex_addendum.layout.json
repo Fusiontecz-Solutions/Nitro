@@ -9,7 +9,7 @@
   },
   "signers": [
     {
-      "roleName": "Client",
+      "roleName": "Signer",
       "routingOrder": 1
     },
     {

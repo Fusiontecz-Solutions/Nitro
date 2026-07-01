@@ -9,7 +9,7 @@
   },
   "signers": [
     {
-      "roleName": "Client",
+      "roleName": "Signer",
       "routingOrder": 1
     }
   ],
@@ -21,8 +21,8 @@
     "business_address_city",
     "business_address_state",
     "business_address_zip",
+    "balance_transfer_client_legal_name",
     "business_legal_name",
-    "client_legal_name",
     "client_name_by",
     "dba",
     "merchant_legal_name"
@@ -143,7 +143,7 @@
     {
       "id": "p10",
       "type": "text",
-      "variable": "client_legal_name",
+      "variable": "balance_transfer_client_legal_name",
       "documentId": "1",
       "pageNumber": "1",
       "x": "171",
