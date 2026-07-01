@@ -76,9 +76,11 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   /** Balance transfer signature block — merchant / owner name, not business entity. */
   balance_transfer_client_legal_name: [
     'merchant_legal_name',
-    'client_name',
     'client_name_by',
     'owner1_guarantor_name',
+    'customer_name',
+    'guaranty_owner1_name',
+    'guaranty_client_name',
   ],
   business_name_2: [
     'owner2_guarantor_name',
@@ -460,6 +462,52 @@ function isStateDisclosureTextPlacement(placement?: DocumentLayoutPlacement): bo
   return Boolean(String(placement?.id || '').startsWith('sd_text_'));
 }
 
+function resolveOwnerMerchantLegalName(values: Record<string, string>): string {
+  const entityNorm = String(values.client_legal_name || values.business_legal_name || '')
+    .trim()
+    .toLowerCase();
+  const ownerKeys = [
+    'merchant_legal_name',
+    'owner1_guarantor_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'customer_name',
+    'client_name_by',
+    'guaranty_client_name',
+  ];
+  for (const key of ownerKeys) {
+    const name = String(values[key] || '').trim();
+    if (!name) continue;
+    if (entityNorm && name.toLowerCase() === entityNorm) continue;
+    return name;
+  }
+  const balanceTransfer = String(values.balance_transfer_client_legal_name || '').trim();
+  if (balanceTransfer && (!entityNorm || balanceTransfer.toLowerCase() !== entityNorm)) {
+    return balanceTransfer;
+  }
+  return '';
+}
+
+function isolateBalanceTransferMerchantLegalName(values: Record<string, string>): void {
+  const merchant = resolveOwnerMerchantLegalName(values);
+  if (merchant) {
+    values.balance_transfer_client_legal_name = merchant;
+    if (!String(values.merchant_legal_name || '').trim()) {
+      values.merchant_legal_name = merchant;
+    }
+    return;
+  }
+  const entityLegal = String(values.client_legal_name || values.business_legal_name || '').trim();
+  const balanceTransfer = String(values.balance_transfer_client_legal_name || '').trim();
+  if (
+    balanceTransfer &&
+    entityLegal &&
+    balanceTransfer.toLowerCase() === entityLegal.toLowerCase()
+  ) {
+    delete values.balance_transfer_client_legal_name;
+  }
+}
+
 function resolveDisclosureMerchantBusinessName(values: Record<string, string>): string {
   return String(
     values.disclosure_merchant_name ||
@@ -532,6 +580,8 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
       out[key] = disclosureBusinessName;
     }
   }
+
+  isolateBalanceTransferMerchantLegalName(out);
 
   return out;
 }
@@ -873,6 +923,11 @@ function resolveTextPlacementValue(
 ): string {
   const key = String(variable || '').trim();
   if (!key) return '';
+  if (key === 'balance_transfer_client_legal_name') {
+    const merchant = resolveOwnerMerchantLegalName(values);
+    if (merchant) return merchant;
+    return '';
+  }
   if (
     isStateDisclosureTextPlacement(placement) &&
     DISCLOSURE_MERCHANT_NAME_TAB_VARIABLES.has(key.toLowerCase())
@@ -955,6 +1010,17 @@ function shouldIncludeEmptyTextPlacement(placement: DocumentLayoutPlacement): bo
   return false;
 }
 
+function resolveEnvelopeTextTabLabel(
+  placement: DocumentLayoutPlacement,
+  variable: string,
+): string {
+  const source = String(placement.sourceTabLabel || '').trim();
+  const v = String(variable || '').trim();
+  // CRM variable may differ from the PDF data label when the same label appears on multiple docs.
+  if (v && source && v.toLowerCase() !== source.toLowerCase()) return v;
+  return source || v || `${v || 'text'}_${placement.id}`;
+}
+
 function toTextTab(
   placement: DocumentLayoutPlacement,
   value: string,
@@ -969,7 +1035,7 @@ function toTextTab(
     variable ||
     placement.slot;
   const tabLabel =
-    String(placement.sourceTabLabel || '').trim() ||
+    resolveEnvelopeTextTabLabel(placement, variable) ||
     displayLabel ||
     `${variable || 'text'}_${placement.id}`;
   const width = resolveDocuSignPrefillTabWidth({
@@ -1206,6 +1272,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     ),
     counts.ownerCount,
   );
+  isolateBalanceTransferMerchantLegalName(values);
   const documents: Array<{ documentId: string; name: string; documentBase64: string }> =
     [];
   /** Map each layout package to envelope document id (1-based merge order). */

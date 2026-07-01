@@ -517,6 +517,70 @@ export class DocusignService {
     return this.getOAuthAuthContext(userId);
   }
 
+  private async resolveFunderNameForEnvelopeAuth(hints: {
+    funderName?: string | null;
+    envelopeId?: string;
+    applicationId?: string;
+    contractId?: number;
+  }): Promise<string | null> {
+    const explicit = String(hints.funderName ?? '').trim();
+    if (explicit) return explicit;
+
+    const contractId = Number(hints.contractId);
+    if (Number.isFinite(contractId) && contractId > 0) {
+      const contract = await prisma.contract.findUnique({
+        where: { id: contractId },
+        select: { funderName: true },
+      });
+      const name = String(contract?.funderName ?? '').trim();
+      if (name) return name;
+    }
+
+    let applicationId = String(hints.applicationId ?? '').trim();
+    if (!applicationId) {
+      const eid = String(hints.envelopeId ?? '').trim();
+      if (eid) {
+        const doc = await prisma.document.findFirst({
+          where: { envelopeId: eid },
+          select: { applicationId: true },
+        });
+        applicationId = String(doc?.applicationId ?? '').trim();
+      }
+    }
+
+    if (applicationId) {
+      const contract = await prisma.contract.findFirst({
+        where: { applicationId },
+        select: { funderName: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      const fromContract = String(contract?.funderName ?? '').trim();
+      if (fromContract) return fromContract;
+
+      const businessInfo = await prisma.businessInfo.findUnique({
+        where: { applicationId },
+        select: { funderName: true },
+      });
+      const fromBusiness = String(businessInfo?.funderName ?? '').trim();
+      if (fromBusiness) return fromBusiness;
+    }
+
+    return null;
+  }
+
+  private async getAuthContextForEnvelope(
+    userId: string,
+    hints: {
+      funderName?: string | null;
+      envelopeId?: string;
+      applicationId?: string;
+      contractId?: number;
+    },
+  ) {
+    const funderName = await this.resolveFunderNameForEnvelopeAuth(hints);
+    return this.getAuthContext(userId, { funderName: funderName || undefined });
+  }
+
   // ─── Prefill helpers ───────────────────────────────────────────────────────
 
   /**
@@ -2256,12 +2320,18 @@ export class DocusignService {
     signerEmail?: string,
     signerName?: string,
     roles?: SignerRoleInput[],
+    envelopeAuth?: { funderName?: string | null; contractId?: number },
   ) {
     const eid = String(envelopeId || '').trim();
     if (!eid) {
       throw new BadRequestException('envelopeId is required');
     }
-    const { client, accountId } = await this.getAuthContext(userId);
+    const { client, accountId } = await this.getAuthContextForEnvelope(userId, {
+      funderName: envelopeAuth?.funderName,
+      contractId: envelopeAuth?.contractId,
+      envelopeId: eid,
+      applicationId,
+    });
 
     await this.assertEnvelopeDraftOrThrow(client, accountId, eid);
 
@@ -4300,12 +4370,18 @@ export class DocusignService {
     userId: string,
     documentId: string,
     fields: PrefillField[],
+    options?: { funderName?: string | null; applicationId?: string; contractId?: number },
   ) {
     const eid = String(documentId || '').trim();
     if (!eid) {
       throw new BadRequestException('documentId (envelopeId) is required');
     }
-    const { client, accountId } = await this.getAuthContext(userId);
+    const { client, accountId } = await this.getAuthContextForEnvelope(userId, {
+      funderName: options?.funderName,
+      contractId: options?.contractId,
+      envelopeId: eid,
+      applicationId: options?.applicationId,
+    });
     await this.assertEnvelopeDraftOrThrow(client, accountId, eid);
     const templateId =
       (await this.getTemplateIdFromEnvelope(client, accountId, eid)) || undefined;
@@ -4354,9 +4430,19 @@ export class DocusignService {
     return res.data;
   }
 
-  async voidDocument(userId: string, documentId: string, reason: string) {
+  async voidDocument(
+    userId: string,
+    documentId: string,
+    reason: string,
+    options?: { funderName?: string | null; applicationId?: string; contractId?: number },
+  ) {
     const envelopeId = String(documentId || '').trim();
-    const { client, accountId } = await this.getAuthContext(userId);
+    const { client, accountId } = await this.getAuthContextForEnvelope(userId, {
+      funderName: options?.funderName,
+      contractId: options?.contractId,
+      envelopeId,
+      applicationId: options?.applicationId,
+    });
     await client.put(`/v2.1/accounts/${accountId}/envelopes/${envelopeId}`, {
       status: 'voided',
       voidedReason: reason || 'Voided by user',
@@ -4416,15 +4502,26 @@ export class DocusignService {
         'No DocuSign envelope is linked to this application yet. Send to DocuSign first.',
       );
     }
-    return this.downloadDocumentPdfByEnvelopeId(userId, envelopeId);
+    return this.downloadDocumentPdfByEnvelopeId(userId, envelopeId, {
+      applicationId: applicationUuid,
+    });
   }
 
-  async downloadDocumentPdfByEnvelopeId(userId: string, envelopeId: string) {
+  async downloadDocumentPdfByEnvelopeId(
+    userId: string,
+    envelopeId: string,
+    options?: { funderName?: string | null; applicationId?: string; contractId?: number },
+  ) {
     const eid = String(envelopeId || '').trim();
     if (!eid) {
       throw new BadRequestException('envelopeId is required');
     }
-    const { client, accountId } = await this.getAuthContext(userId);
+    const { client, accountId } = await this.getAuthContextForEnvelope(userId, {
+      funderName: options?.funderName,
+      contractId: options?.contractId,
+      envelopeId: eid,
+      applicationId: options?.applicationId,
+    });
     const status = await this.getEnvelopeStatus(client, accountId, eid);
     let buf = await this.downloadEnvelopePdfBufferForPreview(client, accountId, eid, status);
     if (!buf?.length) {
@@ -4504,9 +4601,17 @@ export class DocusignService {
       signerEmail?: string;
       signerName?: string;
       roles?: SignerRoleInput[];
+      funderName?: string | null;
+      contractId?: number;
     },
   ) {
     const eid = String(envelopeId || '').trim();
+    const authHints = {
+      funderName: options?.funderName,
+      contractId: options?.contractId,
+      envelopeId: eid,
+      applicationId: options?.applicationId,
+    };
     try {
       const ccList = [
         ...new Set((options?.ccEmails || []).map((e) => String(e).trim()).filter(Boolean)),
@@ -4523,9 +4628,10 @@ export class DocusignService {
           options?.signerEmail,
           options?.signerName,
           options?.roles,
+          { funderName: options?.funderName, contractId: options?.contractId },
         );
       }
-      const { client, accountId } = await this.getAuthContext(userId);
+      const { client, accountId } = await this.getAuthContextForEnvelope(userId, authHints);
       await this.assertEnvelopeDraftForSenderView(client, accountId, eid);
       const url = await this.createSenderViewUrl(client, accountId, eid, returnUrl);
       return { url };
@@ -4607,14 +4713,25 @@ export class DocusignService {
   async sendEnvelope(
     userId: string,
     envelopeId: string,
-    options?: { applicationId?: string; ccEmails?: string[]; title?: string },
+    options?: {
+      applicationId?: string;
+      ccEmails?: string[];
+      title?: string;
+      funderName?: string | null;
+      contractId?: number;
+    },
   ) {
     const eid = String(envelopeId || '').trim();
     if (!eid) {
       throw new BadRequestException('envelopeId is required');
     }
-    const { client, accountId } = await this.getAuthContext(userId);
     const appId = String(options?.applicationId || '').trim();
+    const { client, accountId } = await this.getAuthContextForEnvelope(userId, {
+      funderName: options?.funderName,
+      contractId: options?.contractId,
+      envelopeId: eid,
+      applicationId: appId || undefined,
+    });
     const ccFromRequest = mergeDefaultContractCcEmails(options?.ccEmails);
     const priorStatus = await this.getEnvelopeStatus(client, accountId, eid);
 
@@ -4623,6 +4740,10 @@ export class DocusignService {
       eid,
       ccFromRequest,
       appId || undefined,
+      undefined,
+      undefined,
+      undefined,
+      { funderName: options?.funderName, contractId: options?.contractId },
     );
 
     if (priorStatus === 'sent' || priorStatus === 'completed') {
@@ -4769,6 +4890,7 @@ export class DocusignService {
       ccEmails?: string[];
       contractId?: number;
       force?: boolean;
+      funderName?: string | null;
     },
   ) {
     let envelopeId = String(options.envelopeId || '').trim();
@@ -4783,6 +4905,16 @@ export class DocusignService {
       );
     }
 
+    const contractIdHint = Number(options.contractId);
+    const resolvedContractId =
+      Number.isFinite(contractIdHint) && contractIdHint > 0 ? contractIdHint : undefined;
+    const authHints = {
+      funderName: options.funderName,
+      contractId: resolvedContractId,
+      envelopeId,
+      applicationId: applicationId || undefined,
+    };
+
     const forceRefresh = options.force === true;
     const cached = envelopeStatusSyncCache.get(envelopeId);
     if (
@@ -4793,13 +4925,9 @@ export class DocusignService {
       return { ...cached.payload, cached: true };
     }
 
-    const contractIdHint = Number(options.contractId);
     const achHints = {
       applicationId: applicationId || undefined,
-      contractId:
-        Number.isFinite(contractIdHint) && contractIdHint > 0
-          ? contractIdHint
-          : undefined,
+      contractId: resolvedContractId,
     };
 
     const isAchEnvelope = await isStandaloneAchEnvelope(envelopeId, achHints);
@@ -4824,7 +4952,7 @@ export class DocusignService {
       }
     }
 
-    const { client, accountId } = await this.getAuthContext(userId);
+    const { client, accountId } = await this.getAuthContextForEnvelope(userId, authHints);
     let res: { data?: { status?: string } };
     try {
       res = await client.get(
