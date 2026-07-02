@@ -1094,6 +1094,8 @@ export default function ACHViewerModal({
                         roles: signerRoles,
                         ccEmails: ccEmailsToSend,
                         ...(applicationId ? { applicationId: String(applicationId) } : {}),
+                        ...(contractId ? { contractId } : {}),
+                        funderName: resolvedAchFunderName.trim() || undefined,
                         signerEmail: signerRoles[0]?.signerEmail,
                         signerName: signerRoles[0]?.signerName,
                     });
