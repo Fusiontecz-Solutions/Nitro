@@ -1010,10 +1010,10 @@ class ContractService {
       paymentBank: { select: { id: true, bankName: true } },
     };
 
-    /** Default interactive tx timeout is 5s — this flow runs multiple writes (contract + ACH + addendum + owner + application). */
-    const createContractTransactionOptions = { maxWait: 10_000, timeout: 30_000 } as const;
+    /** Neon + multi-table writes can exceed 30s under load; keep tx lean and reload after commit. */
+    const createContractTransactionOptions = { maxWait: 20_000, timeout: 120_000 } as const;
 
-    return (prisma as any).$transaction(async (tx: any) => {
+    const contractId = await (prisma as any).$transaction(async (tx: any) => {
       const contractData = {
         clientId: derivedClientId,
         applicationId: data.applicationId || null,
@@ -1032,7 +1032,7 @@ class ContractService {
       };
       applyContractExtraFields(contractData, data);
 
-      let created: any;
+      let created: { id: number; clientId: string | null };
       // applicationId is unique on Contract. Repeated "create contract" clicks (double-click
       // or a retry firing while the first request is still in flight) must not throw P2002.
       // Use an atomic upsert (INSERT ... ON CONFLICT DO UPDATE) so concurrent requests for the
@@ -1060,15 +1060,16 @@ class ContractService {
           where: { applicationId: data.applicationId },
           create: contractData,
           update: updateData,
-          include: contractInclude,
+          select: { id: true, clientId: true },
         });
       } else {
         created = await tx.contract.create({
           data: contractData,
-          include: contractInclude,
+          select: { id: true, clientId: true },
         });
       }
 
+      const contractClientId = created.clientId ?? derivedClientId;
       const businessInfoId = normalizeBusinessInfoIdForFk(application?.businessInfo?.id);
 
       const existingAch = await tx.aCH.findFirst({
@@ -1078,7 +1079,7 @@ class ContractService {
       if (!existingAch) {
         await tx.aCH.create({
           data: {
-            clientId: created.clientId,
+            clientId: contractClientId,
             contractId: created.id,
             businessInfoId,
             bankName: bankName || null,
@@ -1107,7 +1108,7 @@ class ContractService {
       if (!existingAddendum) {
         await tx.addendum.create({
           data: {
-            clientId: created.clientId,
+            clientId: contractClientId,
             contractId: created.id,
             businessInfoId,
             legalName1: legalName || null,
@@ -1192,11 +1193,23 @@ class ContractService {
             },
           });
         }
-        await clearNeedsContractReinitiation(String(data.applicationId));
       }
 
-      return mapContractRecordForApi(created);
+      return created.id as number;
     }, createContractTransactionOptions);
+
+    if (data.applicationId) {
+      await clearNeedsContractReinitiation(String(data.applicationId));
+    }
+
+    const row = await (prisma as any).contract.findUnique({
+      where: { id: contractId },
+      include: contractInclude,
+    });
+    if (!row) {
+      throw new Error('Contract was created but could not be reloaded');
+    }
+    return mapContractRecordForApi(row);
   }
 
   async getAllContracts(filters: {
