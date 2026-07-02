@@ -53,6 +53,7 @@ import { toast } from "react-toastify";
 import { Ban, Eye, FileText, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import { useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { fetchMainContractTemplatePreview } from "./contractdata/contractTemplatePreview";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
 import ReverseDisbursementScheduleSection from "./ReverseDisbursementScheduleSection";
@@ -376,7 +377,7 @@ export default function ContractTab({
     const contractStateForFunders = String(
         (fetchedContract as { state?: string | null } | null)?.state ?? "",
     ).trim();
-    const { resolveLayoutKey, funders } = useFunderProfiles(contractStateForFunders || null);
+    const { resolveLayoutKey, funders, previewNameFor } = useFunderProfiles(contractStateForFunders || null);
     const [viewingAchDocument, setViewingAchDocument] = useState(false);
     const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
     const [contractSyncError, setContractSyncError] = useState<string | null>(null);
@@ -920,6 +921,48 @@ export default function ContractTab({
         fetchTemplate();
     }, []);
 
+    const resolveContractTemplateForOpen = useCallback(
+        async (funderName?: string | null) => {
+            const name = String(
+                funderName ??
+                    (fetchedContract as { funderName?: string | null } | null)?.funderName ??
+                    "",
+            ).trim();
+            const state = String(
+                (fetchedContract as { state?: string | null } | null)?.state ??
+                    contractStateForFunders ??
+                    "",
+            ).trim();
+            const layoutKey = resolveLayoutKey(name || null);
+            const preview = await fetchMainContractTemplatePreview({
+                layoutKey,
+                funderName: name || null,
+                state: state || null,
+                previewName: previewNameFor(name || null),
+                fallbackUrl: globalTemplateUrl,
+                fallbackName: globalTemplateName,
+            });
+            if (preview?.url) {
+                return { url: preview.url, name: preview.name };
+            }
+            if (globalTemplateUrl) {
+                return {
+                    url: globalTemplateUrl,
+                    name: globalTemplateName || "Contract.pdf",
+                };
+            }
+            return null;
+        },
+        [
+            contractStateForFunders,
+            fetchedContract,
+            globalTemplateName,
+            globalTemplateUrl,
+            previewNameFor,
+            resolveLayoutKey,
+        ],
+    );
+
     /**
      * Open the PDF viewer for any existing contract on this application — regardless of status.
      * Re-opening a contract that has advanced past DRAFT (SENT/VIEWED/SIGNED/COMPLETED via BoldSign
@@ -928,8 +971,6 @@ export default function ContractTab({
      */
     const tryOpenExistingDraftViewer = async (): Promise<boolean> => {
         if (!applicationUuid) return false;
-        const templateUrl = globalTemplateUrl;
-        if (!templateUrl) return false;
         try {
             const byApp = await dispatch(
                 getByApplicationIdContract(String(applicationUuid)),
@@ -939,10 +980,14 @@ export default function ContractTab({
             if (!Number.isFinite(byAppContractId) || byAppContractId <= 0) {
                 return false;
             }
+            const template = await resolveContractTemplateForOpen(
+                (contract as { funderName?: string | null })?.funderName,
+            );
+            if (!template?.url) return false;
             setSelectedContractId(byAppContractId);
             setFetchedContract(contract);
-            setPdfUrl(templateUrl);
-            setPdfName(globalTemplateName || "Contract.pdf");
+            setPdfUrl(template.url);
+            setPdfName(template.name || "Contract.pdf");
             const linkedEnvelopeId = String(
                 (contract as any)?.application?.document?.envelopeId ?? "",
             ).trim();
@@ -1602,7 +1647,10 @@ export default function ContractTab({
             toast.error("Missing application ID.");
             return;
         }
-        if (!globalTemplateUrl) {
+        const template = await resolveContractTemplateForOpen(
+            (fetchedContract as { funderName?: string | null } | null)?.funderName,
+        );
+        if (!template?.url) {
             toast.error(
                 "No contract template uploaded. Please upload it from the Underwriter dashboard.",
             );
@@ -1624,8 +1672,11 @@ export default function ContractTab({
             if (applicationUuid) {
                 void dispatch(getApplicationById(String(applicationUuid)));
             }
-            setPdfUrl(globalTemplateUrl);
-            setPdfName(globalTemplateName || "Contract.pdf");
+            const reopenedTemplate = await resolveContractTemplateForOpen(
+                (contract as { funderName?: string | null } | undefined)?.funderName,
+            );
+            setPdfUrl(reopenedTemplate?.url ?? template.url);
+            setPdfName(reopenedTemplate?.name ?? template.name);
             setPdfViewerInitialRightPaneTab("template");
             setPdfViewerOpen(true);
             toast.success("Contract reinitiated. Review and send the updated contract.");
@@ -1650,9 +1701,17 @@ export default function ContractTab({
             return;
         }
 
-        if (!globalTemplateUrl || !applicationUuid) {
+        if (!applicationUuid) {
+            toast.error("Missing application ID.");
+            return;
+        }
+
+        const template = await resolveContractTemplateForOpen(
+            (fetchedContract as { funderName?: string | null } | null)?.funderName,
+        );
+        if (!template?.url) {
             toast.error(
-                "No contract template uploaded. Please upload it from the Underwriter dashboard.",
+                "No contract template found for the selected funder. Upload the template in Settings or pick another funder.",
             );
             return;
         }
@@ -1794,8 +1853,12 @@ export default function ContractTab({
             } catch {
                 /* create response may already have set contract state */
             }
-            setPdfUrl(globalTemplateUrl);
-            setPdfName(globalTemplateName || "Contract.pdf");
+            const openTemplate = await resolveContractTemplateForOpen(
+                (fetchedContract as { funderName?: string | null } | null)?.funderName ??
+                    (createdContract as { funderName?: string | null } | undefined)?.funderName,
+            );
+            setPdfUrl(openTemplate?.url ?? template.url);
+            setPdfName(openTemplate?.name ?? template.name);
             setPdfViewerInitialRightPaneTab("template");
             setPdfViewerOpen(true);
             toast.success("Contract generated. Review and send from the contract viewer.");
@@ -1876,10 +1939,16 @@ export default function ContractTab({
         };
 
         const includeMainContract = sendPayload.includeMainContract !== false;
-        if (includeMainContract && (!globalTemplateUrl || !applicationUuid)) {
-            failDocuSignEnvelope(
-                "No contract template uploaded. Please upload it from the Underwriter dashboard.",
+        if (includeMainContract) {
+            const mainTemplate = await resolveContractTemplateForOpen(
+                sendPayload.funderName ??
+                    (fetchedContract as { funderName?: string | null } | null)?.funderName,
             );
+            if (!mainTemplate?.url || !applicationUuid) {
+                failDocuSignEnvelope(
+                    "No contract template found for the selected funder. Upload the template in Settings or pick another funder.",
+                );
+            }
         }
         if (!applicationUuid) {
             failDocuSignEnvelope("Application is required to send via DocuSign.");

@@ -203,6 +203,7 @@ import {
     isPlatformLayoutKey,
     resolveFunderSupplementalDocumentLabel,
 } from "./contractdata/platformDocumentConfig";
+import { fetchMainContractTemplatePreview } from "./contractdata/contractTemplatePreview";
 import {
     findFunderProfile,
     funderAvailableForContractState,
@@ -1183,48 +1184,74 @@ const PDFViewerModal = ({
     }, [funderSelectEntries, selectedFunder]);
     const [contractPreviewUrl, setContractPreviewUrl] = useState<string | null>(null);
     const [contractPreviewName, setContractPreviewName] = useState<string>("Contract.pdf");
+    const [loadingContractPreview, setLoadingContractPreview] = useState(false);
+    const contractPreviewBlobRef = useRef<string | null>(null);
     const effectiveContractPreviewUrl = contractPreviewUrl || fileUrl;
     const effectiveContractPreviewName = contractPreviewName || fileName || "Contract.pdf";
 
     useEffect(() => {
         if (!isOpen) {
+            if (contractPreviewBlobRef.current) {
+                URL.revokeObjectURL(contractPreviewBlobRef.current);
+                contractPreviewBlobRef.current = null;
+            }
             setContractPreviewUrl(null);
+            setLoadingContractPreview(false);
             return;
         }
         const layoutKey = resolveLayoutKey(selectedFunder);
+        const funderName = selectedFunder.trim();
+        const state = pickUsStateForSelect(selectedState) || undefined;
+        const profile = findFunder(selectedFunder);
+        const funderProfileId = profile?.id ? String(profile.id).trim() : "";
         let cancelled = false;
         void (async () => {
-            try {
-                const res = await axiosGet("/contract-templates/latest", {
-                    params: {
-                        layoutKey,
-                        funderName: selectedFunder.trim() || undefined,
-                        state: pickUsStateForSelect(selectedState) || undefined,
-                    },
-                });
-                const data = (
-                    res as { data?: { data?: { url?: string; originalName?: string } } }
-                )?.data?.data;
-                if (cancelled) return;
-                if (data?.url) {
-                    setContractPreviewUrl(data.url);
-                    setContractPreviewName(
-                        data.originalName || previewNameFor(selectedFunder),
-                    );
-                    return;
+            setLoadingContractPreview(true);
+            const preview = await fetchMainContractTemplatePreview({
+                layoutKey,
+                funderName,
+                funderProfileId: funderProfileId || null,
+                state,
+                previewName: previewNameFor(selectedFunder),
+                fallbackUrl: fileUrl,
+                fallbackName: fileName,
+                findFunder,
+            });
+            if (cancelled) {
+                if (preview?.source === "docusign-download") {
+                    URL.revokeObjectURL(preview.url);
                 }
-            } catch {
-                /* fall through */
+                return;
             }
-            if (!cancelled) {
-                setContractPreviewUrl(fileUrl);
-                setContractPreviewName(fileName || previewNameFor(selectedFunder));
+            if (contractPreviewBlobRef.current) {
+                URL.revokeObjectURL(contractPreviewBlobRef.current);
+                contractPreviewBlobRef.current = null;
             }
+            if (preview?.url) {
+                if (preview.source === "docusign-download") {
+                    contractPreviewBlobRef.current = preview.url;
+                }
+                setContractPreviewUrl(preview.url);
+                setContractPreviewName(preview.name);
+            } else {
+                setContractPreviewUrl(null);
+                setContractPreviewName(previewNameFor(selectedFunder));
+            }
+            setLoadingContractPreview(false);
         })();
         return () => {
             cancelled = true;
         };
-    }, [isOpen, selectedFunder, fileUrl, fileName, resolveLayoutKey, previewNameFor]);
+    }, [
+        isOpen,
+        selectedFunder,
+        selectedState,
+        fileUrl,
+        fileName,
+        resolveLayoutKey,
+        previewNameFor,
+        findFunder,
+    ]);
     /** Canonical contract id for this application (filled after lookup below). */
     const [resolvedContractId, setResolvedContractId] = useState<number | null>(null);
     /** Prefill overrides from `Contract.contractPrefillOverrides` (null = loaded, none stored). */
@@ -4866,6 +4893,68 @@ const PDFViewerModal = ({
         syncDisclosureTemplateForState,
     ]);
 
+    const [previewingMainContract, setPreviewingMainContract] = useState(false);
+
+    const handlePreviewMainContractTemplate = useCallback(async () => {
+        const layoutKey = resolveLayoutKey(selectedFunderRef.current);
+        const funderName = String(selectedFunderRef.current || "").trim();
+        const state = pickUsStateForSelect(selectedState) || undefined;
+        const profile = findFunder(funderName);
+        setPreviewingMainContract(true);
+        try {
+            const preview = await fetchMainContractTemplatePreview({
+                layoutKey,
+                funderName,
+                funderProfileId: profile?.id ? String(profile.id) : null,
+                state,
+                previewName: previewNameFor(funderName),
+                fallbackUrl: fileUrl,
+                fallbackName: fileName,
+                findFunder,
+            });
+            if (!preview?.url) {
+                setDocumentUploadMessage(
+                    funderName
+                        ? `No contract PDF configured for ${funderName}.`
+                        : "Select a funder to preview the contract template.",
+                );
+                return;
+            }
+            if (templatePreviewBlobUrlRef.current) {
+                URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
+            }
+            const url =
+                preview.source === "docusign-download"
+                    ? preview.url
+                    : preview.url;
+            if (preview.source === "docusign-download") {
+                templatePreviewBlobUrlRef.current = url;
+            } else {
+                templatePreviewBlobUrlRef.current = null;
+            }
+            setActivePreview(null);
+            setUploadedPreviewUrl(url);
+            setPdfRightPaneTab("template");
+            const previewName = /\.pdf$/i.test(preview.name)
+                ? preview.name
+                : `${preview.name}.pdf`;
+            setUploadedPreviewName(previewName);
+            setDocumentUploadMessage(`Showing contract: ${formatDropdownLabel(preview.name)}`);
+        } catch (error: unknown) {
+            const err = error as {
+                response?: { data?: { message?: string } };
+                message?: string;
+            };
+            setDocumentUploadMessage(
+                err?.response?.data?.message ||
+                    err?.message ||
+                    "Failed to load contract template PDF.",
+            );
+        } finally {
+            setPreviewingMainContract(false);
+        }
+    }, [fileUrl, fileName, findFunder, previewNameFor, resolveLayoutKey, selectedState]);
+
     const downloadPlatformTemplatePreview = useCallback(
         async (
             platformKey: string,
@@ -5988,7 +6077,7 @@ const PDFViewerModal = ({
         void handleSaveCurrentPanel();
     };
 
-    if (!isOpen || !effectiveContractPreviewUrl) return null;
+    if (!isOpen) return null;
 
     const currentPreviewUrl =
         (activeStep === "documents" || activeStep === "info" || activeStep === "summary") && uploadedPreviewUrl
@@ -6766,6 +6855,7 @@ const PDFViewerModal = ({
                                                         <Building2 className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Select Funder
                                                     </label>
+                                                    <div className="flex items-center gap-1.5">
                                                     <Select
                                                         value={selectedFunder || undefined}
                                                         disabled={savingContractMeta}
@@ -6799,7 +6889,7 @@ const PDFViewerModal = ({
                                                     >
                                                         <SelectTrigger
                                                             id="pdf-viewer-contract-funder-info"
-                                                            className="h-10 w-full rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600"
+                                                            className="h-10 min-w-0 flex-1 rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600"
                                                         >
                                                             <SelectValue placeholder="Select funder" />
                                                         </SelectTrigger>
@@ -6811,6 +6901,27 @@ const PDFViewerModal = ({
                                                             ))}
                                                         </SelectContent>
                                                     </Select>
+                                                    <Button
+                                                        type="button"
+                                                        size="icon"
+                                                        variant="outline"
+                                                        className="h-10 w-10 shrink-0 border-[var(--brand)]/20"
+                                                        title="View main contract template"
+                                                        disabled={!selectedFunder || previewingMainContract}
+                                                        onClick={() => void handlePreviewMainContractTemplate()}
+                                                    >
+                                                        {previewingMainContract ? (
+                                                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                                                        ) : (
+                                                            <Eye className="h-4 w-4" aria-hidden />
+                                                        )}
+                                                    </Button>
+                                                    </div>
+                                                    {selectedFunder ? (
+                                                        <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                                                            Template: {effectiveContractPreviewName}
+                                                        </p>
+                                                    ) : null}
                                                 </div>
                                             </div>
                                         </div>
@@ -8986,7 +9097,20 @@ const PDFViewerModal = ({
                             </div>
                             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
                                 {pdfRightPaneTab === "template" ? (
-                                    loadingInlinePreview ? (
+                                    loadingContractPreview && !currentPreviewUrl ? (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
+                                            <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
+                                            <span>Loading contract template…</span>
+                                        </div>
+                                    ) : !currentPreviewUrl ? (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
+                                            <span>
+                                                {selectedFunder
+                                                    ? `No contract PDF found for ${selectedFunder}.`
+                                                    : "Select a funder to load the contract template."}
+                                            </span>
+                                        </div>
+                                    ) : loadingInlinePreview ? (
                                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
                                             <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
                                             <span>Loading document preview…</span>
