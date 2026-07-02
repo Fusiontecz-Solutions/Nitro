@@ -37,17 +37,9 @@ export function resolveApplicationOfferAmount(
   if (String(od.decision ?? "").toLowerCase() === "declined") {
     return fromTerms;
   }
-  const inner =
-    od.offer && typeof od.offer === "object" && !Array.isArray(od.offer)
-      ? (od.offer as Record<string, unknown>)
-      : null;
-  return (
-    toValidNumber(od.offer) ??
-    toValidNumber(inner?.offer) ??
-    toValidNumber(inner?.approvedAmount) ??
-    toValidNumber(od.approvedAmount) ??
-    fromTerms
-  );
+  const fromOffer = resolveOfferDecisionFundedAmount(od);
+  if (fromOffer != null && fromOffer > 0) return fromOffer;
+  return toValidNumber(od.approvedAmount) ?? fromTerms;
 }
 
 /** Original requested amount on the application (never offer/approved). */

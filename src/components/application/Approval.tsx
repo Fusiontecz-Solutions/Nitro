@@ -309,8 +309,8 @@ const Approval = ({
             }
 
             setApprovalStatusOverride({
-                currentQueue: body?.data?.currentQueue ?? "Approved",
-                currentState: body?.data?.currentState ?? "Approved",
+                currentQueue: body?.data?.currentQueue ?? "Contract Pending",
+                currentState: body?.data?.currentState ?? "Contract_Pending",
             });
             setLocallyApproved(true);
 

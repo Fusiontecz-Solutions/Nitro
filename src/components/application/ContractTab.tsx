@@ -7,6 +7,7 @@ import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActi
 import {
     getApplicationByApplicationId,
     getApplicationById,
+    reinitiateContract,
     updateApplication,
 } from "@/redux/actions/applicationActions";
 import {
@@ -49,12 +50,13 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Ban, FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
+import { Ban, Eye, FileText, Landmark, Loader2, RefreshCw } from "lucide-react";
 import PDFViewerModal from "./PDFViewerModal";
 import { useFunderProfiles } from "@/hooks/useFunderProfiles";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
 import ReverseDisbursementScheduleSection from "./ReverseDisbursementScheduleSection";
+import { applicationNeedsContractReinitiation, isIsoUpdatedOfferApproved } from "@/lib/contractReinitiation";
 import { mergeContractCcEmailList } from "./boldsignCcList";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./contractdata/docusignAddendumTemplates";
@@ -321,6 +323,7 @@ export default function ContractTab({
         (typeof window !== "undefined" ? localStorage.getItem("role") : "") ||
         "";
     const roleKey = String(userRoleRaw || "").replace(/-/g, "_").toUpperCase();
+    const isOpsOrSuperAdmin = roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
     const { data: bankDetailsList } = useSelector(
         (state: RootState) => state.bankDetails,
     );
@@ -362,6 +365,7 @@ export default function ContractTab({
         null,
     );
     const [creatingEnvelope, setCreatingEnvelope] = useState(false);
+    const [regeneratingContract, setRegeneratingContract] = useState(false);
     const [viewingSignedContract, setViewingSignedContract] = useState(false);
     const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
     const [voidingContract, setVoidingContract] = useState(false);
@@ -528,6 +532,12 @@ export default function ContractTab({
     }, [latestTermsOffer, fetchedContract]);
 
     const contractsForTable = termsOffers ?? [];
+    const needsContractReinitiation = applicationNeedsContractReinitiation(
+        applicationData as Record<string, unknown> | null,
+    );
+    const isoApprovedUpdatedOffer = isIsoUpdatedOfferApproved(
+        applicationData as Record<string, unknown> | null,
+    );
     const hasGeneratedContract = useMemo(() => {
         const fetchedId = Number((fetchedContract as { id?: unknown } | null)?.id);
         if (Number.isFinite(fetchedId) && fetchedId > 0) return true;
@@ -1582,6 +1592,55 @@ export default function ContractTab({
         }
     };
 
+    const showRegenerateContractButton =
+        isOpsOrSuperAdmin &&
+        !isReadOnly &&
+        (needsContractReinitiation || hasGeneratedContract);
+
+    const handleRegenerateContract = async () => {
+        if (!applicationUuid) {
+            toast.error("Missing application ID.");
+            return;
+        }
+        if (!globalTemplateUrl) {
+            toast.error(
+                "No contract template uploaded. Please upload it from the Underwriter dashboard.",
+            );
+            return;
+        }
+
+        setRegeneratingContract(true);
+        try {
+            await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
+            const byApp = await dispatch(
+                getByApplicationIdContract(String(applicationUuid)),
+            ).unwrap();
+            const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
+            if (contract && typeof contract === "object") {
+                setFetchedContract(contract);
+                const contractId = Number((contract as { id?: unknown }).id);
+                setSelectedContractId(Number.isFinite(contractId) ? contractId : null);
+            }
+            if (applicationUuid) {
+                void dispatch(getApplicationById(String(applicationUuid)));
+            }
+            setPdfUrl(globalTemplateUrl);
+            setPdfName(globalTemplateName || "Contract.pdf");
+            setPdfViewerInitialRightPaneTab("template");
+            setPdfViewerOpen(true);
+            toast.success("Contract reinitiated. Review and send the updated contract.");
+        } catch (error: unknown) {
+            const message =
+                typeof error === "string"
+                    ? error
+                    : (error as { message?: string })?.message ||
+                      "Failed to reinitiate contract.";
+            toast.error(String(message));
+        } finally {
+            setRegeneratingContract(false);
+        }
+    };
+
     const handleGenerateContract = async () => {
         if (isReadOnly) {
             const opened = await tryOpenExistingDraftViewer();
@@ -1598,10 +1657,42 @@ export default function ContractTab({
             return;
         }
 
-        // Re-open existing contract before any DB-mutating createContract call so a webhook-driven
-        // status (SENT/VIEWED/SIGNED/COMPLETED) is never clobbered back to DRAFT by the upsert.
-        const reopenedExisting = await tryOpenExistingDraftViewer();
-        if (reopenedExisting) return;
+        const awaitingFreshContractAfterIsoApproval =
+            needsContractReinitiation && isoApprovedUpdatedOffer;
+
+        if (awaitingFreshContractAfterIsoApproval) {
+            setRegeneratingContract(true);
+            try {
+                await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
+                const byApp = await dispatch(
+                    getByApplicationIdContract(String(applicationUuid)),
+                ).unwrap();
+                const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
+                if (contract && typeof contract === "object") {
+                    setFetchedContract(contract);
+                    const contractId = Number((contract as { id?: unknown }).id);
+                    setSelectedContractId(Number.isFinite(contractId) ? contractId : null);
+                }
+                if (applicationUuid) {
+                    void dispatch(getApplicationById(String(applicationUuid)));
+                }
+            } catch (error: unknown) {
+                const message =
+                    typeof error === "string"
+                        ? error
+                        : (error as { message?: string })?.message ||
+                          "Failed to archive the prior contract before generating a new one.";
+                toast.error(String(message));
+                return;
+            } finally {
+                setRegeneratingContract(false);
+            }
+        } else {
+            // Re-open existing contract before any DB-mutating createContract call so a webhook-driven
+            // status (SENT/VIEWED/SIGNED/COMPLETED) is never clobbered back to DRAFT by the upsert.
+            const reopenedExisting = await tryOpenExistingDraftViewer();
+            if (reopenedExisting) return;
+        }
 
         const anyApp = applicationData as any;
 
@@ -2493,6 +2584,12 @@ export default function ContractTab({
         const isAchRow = row.rowType === "ach";
         const isPackageRow = row.rowType === "package";
         const isSupplementalRow = isAchRow || isPackageRow;
+        const isPriorMainContractRow =
+            row.rowType === "contract" &&
+            (!row.isCurrent || (needsContractReinitiation && row.isCurrent));
+        const rowTerms = row.termsSnapshot ?? null;
+        const rowDisplayLabel =
+            isPriorMainContractRow && !isSupplementalRow ? "Old Contract" : row.label;
         const rowStatusLabel = isAchRow
             ? formatAchTableStatusLabel({
                   envelopeId: row.envelopeId,
@@ -2536,6 +2633,9 @@ export default function ContractTab({
               (viewingSignedEnvelopeId
                   ? viewingSignedEnvelopeId === rowEnvelopeId
                   : row.isCurrent);
+        const rowCanViewDocument =
+            Boolean(rowEnvelopeId) &&
+            (rowFullySigned || isSupplementalRow || !row.isCurrent);
 
         return (
             <TableRow key={row.key} className={tableRowClass}>
@@ -2557,34 +2657,66 @@ export default function ContractTab({
                                 aria-hidden
                             />
                         )}
-                        {row.label}
+                        {rowDisplayLabel}
                     </span>
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : (fetchedContract?.offer?.term ?? "—")}
+                    {isSupplementalRow
+                        ? "—"
+                        : (rowTerms?.term ??
+                              (rowTerms?.contractLength != null
+                                  ? String(rowTerms.contractLength)
+                                  : null) ??
+                              fetchedContract?.offer?.term ??
+                              "—")}
                 </TableCell>
-                <TableCell className={tableCellClass}>{isSupplementalRow ? "—" : "1"}</TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : formatContractCurrency(fetchedContract?.approvedAmount)}
+                    {isSupplementalRow ? "—" : (rowTerms?.position ?? "1")}
                 </TableCell>
                 <TableCell className={tableCellClass}>
                     {isSupplementalRow
                         ? "—"
                         : formatContractCurrency(
-                              fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit,
+                              rowTerms?.approvedAmount ?? fetchedContract?.approvedAmount,
                           )}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : formatContractCurrency(contractTableMetrics.perPeriodPayment)}
+                    {isSupplementalRow
+                        ? "—"
+                        : formatContractCurrency(
+                              rowTerms?.paybackAmount ??
+                                  rowTerms?.totalAmount ??
+                                  fetchedContract?.totalAmount ??
+                                  fetchedContract?.offer?.totalRemit,
+                          )}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : contractTableMetrics.buyRate}
+                    {isSupplementalRow
+                        ? "—"
+                        : formatContractCurrency(
+                              rowTerms?.paymentAmount ?? contractTableMetrics.perPeriodPayment,
+                          )}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : contractTableMetrics.upsell}
+                    {isSupplementalRow
+                        ? "—"
+                        : rowTerms?.buyRate != null
+                          ? `${rowTerms.buyRate}%`
+                          : contractTableMetrics.buyRate}
                 </TableCell>
                 <TableCell className={tableCellClass}>
-                    {isSupplementalRow ? "—" : contractTableMetrics.factor}
+                    {isSupplementalRow
+                        ? "—"
+                        : rowTerms?.percentOfGross != null
+                          ? `${rowTerms.percentOfGross}%`
+                          : contractTableMetrics.upsell}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow
+                        ? "—"
+                        : rowTerms?.factorRate != null
+                          ? String(rowTerms.factorRate)
+                          : contractTableMetrics.factor}
                 </TableCell>
                 <TableCell>
                     <div className="flex flex-col gap-1">
@@ -2600,7 +2732,7 @@ export default function ContractTab({
                             </span>
                             {rowEnvelopeId ? (
                                 <>
-                                    {rowFullySigned || (isSupplementalRow && rowEnvelopeId) ? (
+                                    {rowCanViewDocument ? (
                                         <Button
                                             type="button"
                                             variant="ghost"
@@ -2630,7 +2762,9 @@ export default function ContractTab({
                                                       ? rowFullySigned
                                                           ? "View signed supplemental documents"
                                                           : "View supplemental documents"
-                                                      : "View signed contract"
+                                                      : row.isCurrent
+                                                        ? "View contract"
+                                                        : "View prior generated contract"
                                             }
                                         >
                                             {isViewingRow ? (
@@ -2639,7 +2773,7 @@ export default function ContractTab({
                                                     aria-hidden
                                                 />
                                             ) : (
-                                                <Info className="h-3.5 w-3.5" aria-hidden />
+                                                <Eye className="h-3.5 w-3.5" aria-hidden />
                                             )}
                                         </Button>
                                     ) : null}
@@ -2796,6 +2930,18 @@ export default function ContractTab({
         setContractValuesSaved(true);
     };
 
+    const handlePrimaryContractAction = () => {
+        if (!showRegenerateContractButton) {
+            void handleGenerateContract();
+            return;
+        }
+        if (needsContractReinitiation && isoApprovedUpdatedOffer) {
+            void handleGenerateContract();
+            return;
+        }
+        void handleRegenerateContract();
+    };
+
     return (
         <div className="space-y-6">
             {/* Contract Filter Section - Light blue-grey background */}
@@ -2810,17 +2956,21 @@ export default function ContractTab({
                         <Button
                             type="button"
                             variant="default"
-                            onClick={handleGenerateContract}
-                            disabled={creatingEnvelope}
+                            onClick={handlePrimaryContractAction}
+                            disabled={creatingEnvelope || regeneratingContract}
                             className="h-10 px-6 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
 
 
                         >
-                            {creatingEnvelope ? (
+                            {creatingEnvelope || regeneratingContract ? (
                                 <span className="inline-flex items-center gap-2">
                                     <Loader2 className="h-4 w-4 animate-spin" />
-                                    Generating contract...
+                                    {regeneratingContract
+                                        ? "Reinitiating contract..."
+                                        : "Generating contract..."}
                                 </span>
+                            ) : showRegenerateContractButton ? (
+                                "Regenerate Contract"
                             ) : isReadOnly || hasGeneratedContract ? (
                                 "View Contract"
                             ) : (
@@ -3184,7 +3334,9 @@ export default function ContractTab({
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {(!hasGeneratedContract && contractsForTable.length === 0) ? (
+                            {contractSendTableRows.length > 0 ? (
+                                contractSendTableRows.map(renderContractSendTableRow)
+                            ) : !hasGeneratedContract && contractsForTable.length === 0 ? (
                                 <TableRow className={tableRowClass}>
                                     <TableCell
                                         colSpan={11}
@@ -3193,8 +3345,6 @@ export default function ContractTab({
                                         No contracts generated yet.
                                     </TableCell>
                                 </TableRow>
-                            ) : contractSendTableRows.length > 0 ? (
-                                contractSendTableRows.map(renderContractSendTableRow)
                             ) : hasGeneratedContract ? (
                                 <TableRow className={tableRowClass}>
                                     <TableCell

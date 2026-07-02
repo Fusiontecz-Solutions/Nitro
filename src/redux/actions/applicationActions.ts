@@ -694,11 +694,15 @@ export const rejectApplication = createAsyncThunk(
             reason,
             emailHtml,
             emailSubject,
+            isoEmail,
+            ccEmails,
         }: {
             id: string | number;
             reason: string;
             emailHtml?: string;
             emailSubject?: string;
+            isoEmail?: string;
+            ccEmails?: string[];
         },
         { rejectWithValue },
     ) => {
@@ -707,6 +711,8 @@ export const rejectApplication = createAsyncThunk(
                 reason,
                 ...(emailHtml ? { emailHtml } : {}),
                 ...(emailSubject ? { emailSubject } : {}),
+                ...(isoEmail ? { isoEmail } : {}),
+                ccEmails: ccEmails ?? [],
             });
             await invalidateApplicationsListCache();
             return response.data;
@@ -816,14 +822,21 @@ export const sendApprovalEmail = createAsyncThunk(
         {
             applicationId,
             resend,
+            reinitiateContract,
             emailHtml,
             emailSubject,
+            isoEmail,
+            ccEmails,
         }: {
             applicationId: string | number;
             resend?: boolean;
+            /** Archive prior contract envelope when resending updated offer to ISO. */
+            reinitiateContract?: boolean;
             /** Branded HTML rendered by the frontend approval template (backend injects URL / names). */
             emailHtml?: string;
             emailSubject?: string;
+            isoEmail?: string;
+            ccEmails?: string[];
         },
         { rejectWithValue }
     ) => {
@@ -831,9 +844,13 @@ export const sendApprovalEmail = createAsyncThunk(
             const response = await axiosPost('/applications/send-approval-email', {
                 applicationId,
                 resend: !!resend,
+                reinitiateContract: !!reinitiateContract,
                 ...(emailHtml ? { emailHtml } : {}),
                 ...(emailSubject ? { emailSubject } : {}),
+                ...(isoEmail ? { isoEmail } : {}),
+                ccEmails: ccEmails ?? [],
             });
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Send approval email error:', error);
@@ -842,6 +859,24 @@ export const sendApprovalEmail = createAsyncThunk(
             );
         }
     }
+);
+
+export const reinitiateContract = createAsyncThunk(
+    'application/reinitiateContract',
+    async (applicationId: string | number, { rejectWithValue }) => {
+        try {
+            const response = await axiosPost('/applications/reinitiate-contract', {
+                applicationId,
+            });
+            await invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Reinitiate contract error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to reinitiate contract',
+            );
+        }
+    },
 );
 
 /** Funded notification — best-effort client email (any role with app access) */

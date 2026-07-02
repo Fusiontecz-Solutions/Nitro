@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { motion } from "framer-motion";
 import {
     Dialog,
     DialogContent,
@@ -25,6 +26,7 @@ import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
 import { feesPercentToDollarsFromFunded } from "@/lib/offerDecisionFees";
 import { deriveOfferRepaymentStack } from "@/lib/offerRepaymentCalculations";
 import {
+    cn,
     formatNumberUS,
     formatNumberUSForInput,
     formatRateUS,
@@ -152,6 +154,15 @@ export interface ApproveForDisbursementModalProps {
     confirmLabel?: string;
     /** Send the approval mail with the (possibly edited) client email. */
     onConfirm: (clientEmail: string) => void | Promise<void>;
+    /** Called after the offer terms are saved/edited in this modal. */
+    onOfferUpdated?: () => void;
+    /** Parent flag: offer values were updated (in this modal or elsewhere). */
+    offerUpdated?: boolean;
+    /** Send the deal to the approving Underwriter for final sign-off. */
+    onSendForFinalApproval?: () => boolean | void | Promise<boolean | void>;
+    sendingFinalApproval?: boolean;
+    /** True when the deal is already in the Final Approval queue. */
+    isFinalApprovalStage?: boolean;
 }
 
 const ApproveForDisbursementModal = ({
@@ -163,6 +174,11 @@ const ApproveForDisbursementModal = ({
     confirming = false,
     confirmLabel = "Approve & send email",
     onConfirm,
+    onOfferUpdated,
+    offerUpdated = false,
+    onSendForFinalApproval,
+    sendingFinalApproval = false,
+    isFinalApprovalStage = false,
 }: ApproveForDisbursementModalProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const { resolvedTheme } = useTheme();
@@ -181,6 +197,8 @@ const ApproveForDisbursementModal = ({
         ourRemit: null,
     });
     const [decision, setDecision] = useState<"approved" | "declined">("approved");
+    const [offerSavedInSession, setOfferSavedInSession] = useState(false);
+    const [isClosing, setIsClosing] = useState(false);
 
     const resolvedApplicationId =
         applicationId != null && String(applicationId).trim() !== ""
@@ -191,8 +209,11 @@ const ApproveForDisbursementModal = ({
         if (!open) {
             setIsEditingOffer(false);
             setEmailError(null);
+            setOfferSavedInSession(false);
+            setIsClosing(false);
             return;
         }
+        setIsClosing(false);
         setClientEmail(defaultClientEmail ?? "");
 
         let active = true;
@@ -345,6 +366,8 @@ const ApproveForDisbursementModal = ({
 
             offerSnapshotRef.current = offer;
             setIsEditingOffer(false);
+            setOfferSavedInSession(true);
+            onOfferUpdated?.();
             toast.update(toastId, {
                 render: "Offer details updated.",
                 type: "success",
@@ -378,7 +401,27 @@ const ApproveForDisbursementModal = ({
         await onConfirm(trimmed);
     };
 
-    const busy = confirming || savingOffer;
+    const busy = confirming || savingOffer || sendingFinalApproval || isClosing;
+    const showSendForFinalApproval =
+        Boolean(onSendForFinalApproval) && (offerUpdated || offerSavedInSession);
+
+    const handleSendForFinalApprovalClick = useCallback(async () => {
+        if (!onSendForFinalApproval || isClosing) return;
+        try {
+            const result = await onSendForFinalApproval();
+            if (result !== false) {
+                setIsClosing(true);
+            }
+        } catch {
+            /* keep modal open on failure */
+        }
+    }, [isClosing, onSendForFinalApproval]);
+
+    const handleCloseAnimationComplete = useCallback(() => {
+        if (!isClosing) return;
+        setIsClosing(false);
+        onOpenChange(false);
+    }, [isClosing, onOpenChange]);
 
     const labelClass = `text-xs font-medium ${isDark ? "text-gray-300" : "text-gray-700"}`;
     const inputClass = `h-9 text-sm rounded-sm ${
@@ -400,8 +443,31 @@ const ApproveForDisbursementModal = ({
     );
 
     return (
-        <Dialog open={open} onOpenChange={(next: boolean) => (busy ? undefined : onOpenChange(next))}>
-            <DialogContent className="sm:max-w-2xl w-[calc(100%-2rem)] max-h-[90vh] overflow-y-auto flex flex-col gap-3">
+        <Dialog
+            open={open || isClosing}
+            onOpenChange={(next: boolean) => (busy ? undefined : onOpenChange(next))}
+        >
+            <DialogContent
+                className={cn(
+                    "sm:max-w-2xl w-[calc(100%-2rem)] max-h-[90vh] overflow-y-auto flex flex-col gap-3",
+                    "data-[state=open]:!animate-none data-[state=closed]:!animate-none",
+                )}
+                overlayClassName={cn(
+                    "transition-opacity duration-300 ease-out",
+                    isClosing && "!opacity-0",
+                )}
+            >
+                <motion.div
+                    className="flex min-h-0 flex-1 flex-col gap-3"
+                    initial={{ opacity: 0, scale: 0.96, y: 18 }}
+                    animate={
+                        isClosing
+                            ? { opacity: 0, scale: 0.96, y: 18 }
+                            : { opacity: 1, scale: 1, y: 0 }
+                    }
+                    transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+                    onAnimationComplete={handleCloseAnimationComplete}
+                >
                 <DialogHeader>
                     <DialogTitle
                         className={`text-lg font-semibold ${isDark ? "text-gray-200" : "text-black"}`}
@@ -624,6 +690,43 @@ const ApproveForDisbursementModal = ({
                             </>
                         )}
                     </div>
+
+                    {showSendForFinalApproval ? (
+                        <div
+                            className={`rounded-lg border px-4 py-3 ${
+                                isDark
+                                    ? "border-emerald-900/50 bg-emerald-950/30"
+                                    : "border-emerald-200 bg-emerald-50"
+                            }`}
+                        >
+                            <p
+                                className={`mb-3 text-xs ${
+                                    isDark ? "text-gray-400" : "text-gray-600"
+                                }`}
+                            >
+                                {isFinalApprovalStage
+                                    ? "This deal has already been sent for final Underwriter approval."
+                                    : "Offer values changed. Send the updated deal to the approving Underwriter for final sign-off before resending the ISO approval mail."}
+                            </p>
+                            <Button
+                                type="button"
+                                onClick={() => void handleSendForFinalApprovalClick()}
+                                disabled={
+                                    busy ||
+                                    isEditingOffer ||
+                                    offerLoading ||
+                                    isFinalApprovalStage
+                                }
+                                className="w-full bg-[image:none] bg-[#16A34A] px-6 text-white hover:bg-green-700 hover:opacity-100"
+                            >
+                                {sendingFinalApproval
+                                    ? "Sending…"
+                                    : isFinalApprovalStage
+                                      ? "Sent for final approval"
+                                      : "Send for Final Approval"}
+                            </Button>
+                        </div>
+                    ) : null}
                 </div>
 
                 <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/60 pt-4">
@@ -654,6 +757,7 @@ const ApproveForDisbursementModal = ({
                               : confirmLabel}
                     </Button>
                 </div>
+                </motion.div>
             </DialogContent>
         </Dialog>
     );

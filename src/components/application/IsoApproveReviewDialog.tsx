@@ -353,7 +353,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
         return true;
     };
 
-    const saveCorrections = async () => {
+    const validateMerchantDetails = () => {
         if (!clientId) {
             toast.info("Merchant details are still loading — please wait a moment.");
             return false;
@@ -366,6 +366,11 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             toast.error("Date of birth must be in mm-dd-yy format (e.g. 03-15-85). You can also use mm-dd-yyyy.");
             return false;
         }
+        return true;
+    };
+
+    const saveCorrections = async () => {
+        if (!validateMerchantDetails()) return false;
         setSaving(true);
         try {
             const ownersPayload = owners.map((o) => ({
@@ -473,14 +478,12 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
 
     const totalUploaded = Object.values(uploaded).reduce((sum, names) => sum + names.length, 0);
 
-    const handleStep0Next = async () => {
-        const saved = await saveCorrections();
-        if (saved) setStep(1);
+    const handleStep0Next = () => {
+        if (validateMerchantDetails()) setStep(1);
     };
 
     const finalApprove = async () => {
-        const saved = await saveCorrections();
-        if (!saved) {
+        if (!validateMerchantDetails()) {
             setStep(0);
             return;
         }
@@ -601,7 +604,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                             <Button variant="outline" onClick={() => void saveCorrections()} disabled={saving}>
                                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck2 className="h-4 w-4" />} Verify and Save
                             </Button>
-                            <Button onClick={() => void handleStep0Next()} disabled={saving} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">
+                            <Button onClick={handleStep0Next} disabled={saving} className="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white">
                                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Next →
                             </Button>
                         </div>

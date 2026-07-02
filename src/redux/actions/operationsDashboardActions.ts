@@ -154,6 +154,11 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
           Final: Number(data.caseStageCounts.Final) || 0,
           "Funding Call": Number(data.caseStageCounts["Funding Call"]) || 0,
           Declined: Number(data.caseStageCounts.Declined) || 0,
+          Contract_Pending: Number(data.caseStageCounts.Contract_Pending) || 0,
+          Contract_Sent: Number(data.caseStageCounts.Contract_Sent) || 0,
+          Contract_Signed: Number(data.caseStageCounts.Contract_Signed) || 0,
+          Reinitiate_Contract:
+            Number(data.caseStageCounts.Reinitiate_Contract) || 0,
         },
         caseStageAmounts: {
           Agent: Number(data.caseStageAmounts?.Agent) || 0,

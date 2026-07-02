@@ -105,7 +105,6 @@ import { shouldPrefetchOpsDashboardSummary } from "@/lib/shellPrefetchRoutes";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
 import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
 import {
-  formatScrubberClaimLabel,
   formatUnderwriterClaimLabel,
   canViewApplicationClaimAssignments,
   canViewApplicationApprovedAmount,
@@ -131,6 +130,7 @@ import {
   resolveEffectiveRole,
 } from "@/lib/sessionRole";
 import { getApplicationApprovedAmount } from "@/lib/applicationOfferAmount";
+import { getReinitiateContractIsoDecisionLabel, isIsoUpdatedOfferApproved, applicationAwaitingContractReinitiation } from "@/lib/contractReinitiation";
 
 /** List/table: imported `dealId` when set, otherwise business `applicationId`. */
 function getApplicationDealIdDisplay(app: Application): string {
@@ -179,15 +179,8 @@ const Applications = () => {
   const showClaimedByColumn = canViewApplicationClaimAssignments(effectiveRoleKey);
   /** Ops/admin + Scrubbing/Underwriter — show approved offer amount alongside request amount. */
   const showApprovedAmountColumn = canViewApplicationApprovedAmount(effectiveRoleKey);
-  const scrubbers = useSelector(
-    (state: RootState) => state.settingsUsers.byRole.SCRUBBING?.list ?? [],
-  );
   const underwriters = useSelector(
     (state: RootState) => state.settingsUsers.byRole.UNDERWRITER?.list ?? [],
-  );
-  const scrubberFilterOptions = useMemo(
-    () => mapUsersToClaimFilterOptions(scrubbers),
-    [scrubbers],
   );
   const underwriterFilterOptions = useMemo(
     () => mapUsersToClaimFilterOptions(underwriters),
@@ -196,7 +189,6 @@ const Applications = () => {
 
   useEffect(() => {
     if (!showClaimedByColumn) return;
-    void dispatch(fetchUsersByRole("SCRUBBING"));
     void dispatch(fetchUsersByRole("UNDERWRITER"));
   }, [dispatch, showClaimedByColumn]);
 
@@ -253,7 +245,6 @@ const Applications = () => {
   );
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
-  const [scrubberFilter, setScrubberFilter] = useState<string>("all");
   const [underwriterFilter, setUnderwriterFilter] = useState<string>("all");
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
@@ -539,10 +530,16 @@ const Applications = () => {
   }, []);
 
   const getApplicationQueueLabel = useCallback((application: Application): string => {
+    if (applicationAwaitingContractReinitiation(application)) {
+      return "Reinitiated Contract";
+    }
     return getApplicationSummaryStatusLabel(application);
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
+    if (queueLabel.toLowerCase() === "reinitiated contract") {
+      return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200";
+    }
     const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
     if (contractWorkflowClass) return contractWorkflowClass;
     if (isContractSignedQueueBadgeLabel(queueLabel)) {
@@ -669,6 +666,14 @@ const Applications = () => {
   const handleToggleApplicationProgress = useCallback((rowId: string) => {
     setExpandedProgressRowId((prev) => (prev === rowId ? null : rowId));
   }, []);
+
+  const showReinitiateContractIsoDecisionColumn = useMemo(() => {
+    const normalizedStatus = normalizeOperationsDashboardStatusParam(dashboardStateFilter);
+    return (
+      (effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS") &&
+      normalizedStatus === "Reinitiate_Contract"
+    );
+  }, [dashboardStateFilter, effectiveRoleKey]);
 
   // Define columns
   const columns: ColumnDef<Application>[] = useMemo(() => {
@@ -801,27 +806,6 @@ const Applications = () => {
       ...(showClaimedByColumn
         ? ([
           {
-            id: "claimedByScrubber",
-            size: 180,
-            header: () => (
-              <span className="font-medium text-foreground tracking-wide">
-                  Scrubber
-              </span>
-            ),
-            cell: ({ row }) => {
-              const label = formatScrubberClaimLabel(row.original);
-              return (
-                <span
-                  className="block truncate text-foreground text-sm"
-                  title={label}
-                >
-                  {label}
-                </span>
-              );
-            },
-            enableSorting: false,
-          },
-          {
             id: "claimedByUnderwriter",
             size: 180,
             header: () => (
@@ -889,6 +873,36 @@ const Applications = () => {
           },
         ] satisfies ColumnDef<Application>[])
         : []),
+      ...(showReinitiateContractIsoDecisionColumn
+        ? ([
+          {
+            id: "isoDecision",
+            size: 140,
+            accessorFn: (row) => getReinitiateContractIsoDecisionLabel(row),
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
+                ISO Decision
+              </span>
+            ),
+            cell: ({ row }) => {
+              const label = getReinitiateContractIsoDecisionLabel(row.original);
+              const isApproved = label === "Approved";
+              return (
+                <span
+                  className={
+                    isApproved
+                      ? "font-medium text-green-700 dark:text-green-400"
+                      : "text-foreground"
+                  }
+                >
+                  {label}
+                </span>
+              );
+            },
+            enableSorting: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       // {
       //     accessorKey: 'priority',
       //     header: ({ column }) => (
@@ -930,7 +944,7 @@ const Applications = () => {
         id: "status",
         size: 170,
         accessorFn: (row) =>
-          getApplicationSummaryStatusLabel(row),
+          getApplicationQueueLabel(row),
         enableSorting: true,
         header: ({ column }) => (
           <DataTableSortHeader column={column} label="Current State" />
@@ -947,6 +961,44 @@ const Applications = () => {
           );
         },
       },
+      ...(sessionRoleKey === "UNDERWRITER"
+        ? ([
+          {
+            id: "scrubberRecommendation",
+            size: 180,
+            accessorFn: (row) => row.scrubberRecommendation ?? "",
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
+                Request
+              </span>
+            ),
+            cell: ({ row }) => {
+              const recommendation = row.original.scrubberRecommendation;
+              if (!recommendation) {
+                return <span className="text-foreground">-</span>;
+              }
+              const isApproval = /approv/i.test(recommendation);
+              const displayLabel = /recommend\s+decline/i.test(recommendation)
+                ? "Decline"
+                : /recommend\s+approval/i.test(recommendation)
+                  ? "Approve"
+                  : recommendation;
+              return (
+                <span
+                  className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                    isApproval
+                      ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                      : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                  }`}
+                >
+                  {displayLabel}
+                </span>
+              );
+            },
+            enableSorting: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       {
         id: "createdAt",
         size: 170,
@@ -1060,6 +1112,7 @@ const Applications = () => {
     showUwDealPoolUi,
     showClaimedByColumn,
     showApprovedAmountColumn,
+    showReinitiateContractIsoDecisionColumn,
     underwriterPoolTab,
     claimBusyAppId,
     handleUwClaimDeal,
@@ -1142,7 +1195,6 @@ const Applications = () => {
       statusFilter,
       typeFilter,
       priorityFilter,
-      scrubberFilter: showClaimedByColumn ? scrubberFilter : "all",
       underwriterFilter: showClaimedByColumn ? underwriterFilter : "all",
       useDashboardStageFilter: isOperationsDashboardView,
       ...sort,
@@ -1152,7 +1204,6 @@ const Applications = () => {
     statusFilter,
     typeFilter,
     priorityFilter,
-    scrubberFilter,
     underwriterFilter,
     showClaimedByColumn,
     isOperationsDashboardView,
@@ -1403,7 +1454,7 @@ const Applications = () => {
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [searchTerm, typeFilter, priorityFilter, scrubberFilter, underwriterFilter]);
+  }, [searchTerm, typeFilter, priorityFilter, underwriterFilter]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
@@ -1680,6 +1731,9 @@ const Applications = () => {
     }
     if (normalizedStatus === "Contract_Signed") {
       return "Contract Signed Application";
+    }
+    if (normalizedStatus === "Reinitiate_Contract") {
+      return "Reinitiated Contract Application";
     }
     if (normalizedStatus === "Contracted") {
       return "CONTRACT APPLICATIONS";
@@ -2180,26 +2234,15 @@ const Applications = () => {
             }}
           />
           {showClaimedByColumn ? (
-            <>
-              <ApplicationClaimUserFilterDropdown
-                allLabel="All scrubbers"
-                value={scrubberFilter}
-                options={scrubberFilterOptions}
-                onChange={(next) => {
-                  setScrubberFilter(next);
-                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                }}
-              />
-              <ApplicationClaimUserFilterDropdown
-                allLabel="All underwriters"
-                value={underwriterFilter}
-                options={underwriterFilterOptions}
-                onChange={(next) => {
-                  setUnderwriterFilter(next);
-                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                }}
-              />
-            </>
+            <ApplicationClaimUserFilterDropdown
+              allLabel="All underwriters"
+              value={underwriterFilter}
+              options={underwriterFilterOptions}
+              onChange={(next) => {
+                setUnderwriterFilter(next);
+                setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+              }}
+            />
           ) : null}
           <div className="relative min-w-[12rem] flex-1 max-w-xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
@@ -2461,32 +2504,19 @@ const Applications = () => {
                           <span className="text-foreground/80">ISO: </span>
                           {getApplicationIsoLabel(app)}
                         </p>
-                        {showClaimedByColumn && (
-                          <>
-                            <p
-                              className="truncate"
-                              title={formatScrubberClaimLabel(app)}
-                            >
-                              <span className="text-foreground/80">
-                               Scrubber:{" "}
-                              </span>
-                              <span className="text-foreground">
-                                {formatScrubberClaimLabel(app)}
-                              </span>
-                            </p>
-                            <p
-                              className="truncate"
-                              title={formatUnderwriterClaimLabel(app)}
-                            >
-                              <span className="text-foreground/80">
-                                  Underwriter:{" "}
-                              </span>
-                              <span className="text-foreground">
-                                {formatUnderwriterClaimLabel(app)}
-                              </span>
-                            </p>
-                          </>
-                        )}
+                        {showClaimedByColumn ? (
+                          <p
+                            className="truncate"
+                            title={formatUnderwriterClaimLabel(app)}
+                          >
+                            <span className="text-foreground/80">
+                              Underwriter:{" "}
+                            </span>
+                            <span className="text-foreground">
+                              {formatUnderwriterClaimLabel(app)}
+                            </span>
+                          </p>
+                        ) : null}
                         <p>
                           <span className="text-foreground/80">Request: </span>
                           {loanAmount == null
@@ -2501,6 +2531,20 @@ const Applications = () => {
                               : formatCurrency(approvedAmount)}
                           </p>
                         )}
+                        {showReinitiateContractIsoDecisionColumn ? (
+                          <p>
+                            <span className="text-foreground/80">ISO Decision: </span>
+                            <span
+                              className={
+                                isIsoUpdatedOfferApproved(app)
+                                  ? "font-medium text-green-700 dark:text-green-400"
+                                  : "text-foreground"
+                              }
+                            >
+                              {getReinitiateContractIsoDecisionLabel(app)}
+                            </span>
+                          </p>
+                        ) : null}
                         <p>
                           <span className="text-foreground/80">Created: </span>
                           {formatDateTime(app.createdAt)}

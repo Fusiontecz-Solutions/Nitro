@@ -196,6 +196,15 @@ export const applicationsSlice = createSlice({
             })
             .addCase(updateApplicationState.fulfilled, (state, action) => {
                 patchApplicationInList(state, action.payload);
+            })
+            .addCase(updateApplication.fulfilled, (state, action) => {
+                patchApplicationInList(state, action.payload);
+            })
+            .addCase(getApplicationById.fulfilled, (state, action) => {
+                patchApplicationInList(state, action.payload);
+            })
+            .addCase(getApplicationByApplicationId.fulfilled, (state, action) => {
+                patchApplicationInList(state, action.payload);
             });
     },
 });

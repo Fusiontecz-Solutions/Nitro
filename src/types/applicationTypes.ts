@@ -109,8 +109,16 @@ export interface Application {
     approvedByUnderwriter?: ApplicationUserLite | null;
     /** Last action the Underwriter took: "Approved By UW", "Decline by UW", "Final Approved by UW". */
     underwriterAction?: string | null;
+    /** Scrubber's recommendation from the compliance-check modal: "Recommend Approval" or "Recommend Decline". */
+    scrubberRecommendation?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"). */
     category?: string | null;
+    /** UW updated offer after contract generation — requires ISO re-approval and contract regeneration. */
+    needsContractReinitiation?: boolean;
+    /** ISO approved the updated offer while {@link needsContractReinitiation} is true. */
+    isoUpdatedOfferApproved?: boolean;
+    /** Underwriter marked ISO comments as resolved — removes deal from ISO Query pipeline. */
+    isoQueryResolved?: boolean;
     createdAt?: string;
     updatedAt?: string;
 }
@@ -165,10 +173,14 @@ export interface UpdateApplicationPayload {
     isoId?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"); pass null/"" to clear. */
     category?: string | null;
+    /** Mark ISO comment thread as resolved (removes from ISO Query pipeline). */
+    isoQueryResolved?: boolean;
 }
 
 export interface UpdateQueuePayload {
     currentQueue: string;
+    /** Scrubber's recommendation captured on the compliance-check modal ("Recommend Approval" / "Recommend Decline"). */
+    scrubberRecommendation?: string;
 }
 
 export interface UpdateStatePayload {

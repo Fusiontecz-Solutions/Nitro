@@ -17,12 +17,27 @@ import type { DateInput } from "@/lib/dateTime";
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
 
+/** Contract terms captured when a main-contract envelope is archived. */
+export type ContractSendHistoryTermsSnapshot = {
+    approvedAmount?: number | null;
+    totalAmount?: number | null;
+    contractLength?: number | null;
+    term?: string | null;
+    position?: string | null;
+    buyRate?: number | null;
+    factorRate?: number | null;
+    paymentAmount?: number | null;
+    paybackAmount?: number | null;
+    percentOfGross?: number | null;
+};
+
 export type ContractSendHistoryEntry = {
     envelopeId: string;
     status: string;
     sentAt?: string | null;
     completedAt?: string | null;
     archivedAt: string;
+    termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
 };
 
 export type ContractSendTableRowKind = "contract" | "ach" | "package";
@@ -36,6 +51,8 @@ export type ContractSendTableRow = {
     documentStatus: unknown;
     sentAt: unknown;
     isCurrent: boolean;
+    /** Archived contract terms when this row is from send history. */
+    termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
     /** Present when `rowType === "ach"`. */
     achStatus?: AchAuthorizationDocuSignCapsuleStatus;
     /** Present when `rowType === "package"`. */
@@ -227,12 +244,20 @@ export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendH
         const o = item as Record<string, unknown>;
         const envelopeId = String(o.envelopeId ?? "").trim();
         if (!envelopeId) continue;
+        const rawSnapshot = o.termsSnapshot;
+        const termsSnapshot =
+            rawSnapshot != null &&
+            typeof rawSnapshot === "object" &&
+            !Array.isArray(rawSnapshot)
+                ? (rawSnapshot as ContractSendHistoryTermsSnapshot)
+                : null;
         out.push({
             envelopeId,
             status: String(o.status ?? "draft").trim().toLowerCase(),
             sentAt: o.sentAt != null ? String(o.sentAt) : null,
             completedAt: o.completedAt != null ? String(o.completedAt) : null,
             archivedAt: String(o.archivedAt ?? ""),
+            termsSnapshot,
         });
     }
     return out;
@@ -463,12 +488,13 @@ export function buildContractSendTableRows(
         rows.push({
             rowType: "contract",
             key: `history-contract-${entry.envelopeId}`,
-            label: "Contract",
+            label: "Old Contract",
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
             documentStatus: entry.status,
             sentAt: entry.sentAt ?? entry.archivedAt ?? null,
             isCurrent: false,
+            termsSnapshot: entry.termsSnapshot ?? null,
         });
     });
 

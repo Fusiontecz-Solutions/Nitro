@@ -75,6 +75,26 @@ const resolveUserLiteId = (user?: ApplicationUserLite | null): string => {
     return String(user.id ?? user._id ?? "").trim();
 };
 
+/** True when the viewer is assigned to or recorded as approving underwriter on the deal. */
+export function isUnderwriterLinkedToApplication(
+    app: UnderwriterApprovalAppFields | null | undefined,
+    viewerUserId: string | null | undefined,
+): boolean {
+    const viewerId = String(viewerUserId ?? "").trim();
+    if (!viewerId || !app) return false;
+    const linkedIds = [
+        app.approvedByUnderwriterId,
+        resolveUserLiteId(app.approvedByUnderwriter),
+        app.assignedUnderwriterId,
+        resolveUserLiteId(app.assignedUnderwriter),
+        app.claimedByUnderwriterId,
+        resolveUserLiteId(app.claimedByUnderwriter),
+    ]
+        .map((id) => String(id ?? "").trim())
+        .filter(Boolean);
+    return linkedIds.some((id) => id === viewerId);
+}
+
 /**
  * Resolve the underwriter to credit on the deal. Always prefer the deal's
  * assigned/claimed underwriter over whoever recorded the approval (which can be
@@ -101,6 +121,34 @@ export function resolveApprovingUnderwriter(
     }
     if (approvedId) {
         return { id: approvedId, user: app.approvedByUnderwriter };
+    }
+    return null;
+}
+
+/**
+ * Underwriter who should receive the post-contract final approval send.
+ * Prefer the recorded approver, then assigned / claimed on the deal.
+ */
+export function resolveFinalApprovalTargetUnderwriter(
+    app: UnderwriterApprovalAppFields,
+): { id: string; user?: ApplicationUserLite | null } | null {
+    const approvedId = String(
+        app.approvedByUnderwriterId ?? resolveUserLiteId(app.approvedByUnderwriter) ?? "",
+    ).trim();
+    if (approvedId) {
+        return { id: approvedId, user: app.approvedByUnderwriter };
+    }
+    const assignedId = String(
+        app.assignedUnderwriterId ?? resolveUserLiteId(app.assignedUnderwriter) ?? "",
+    ).trim();
+    if (assignedId) {
+        return { id: assignedId, user: app.assignedUnderwriter };
+    }
+    const claimedId = String(
+        app.claimedByUnderwriterId ?? resolveUserLiteId(app.claimedByUnderwriter) ?? "",
+    ).trim();
+    if (claimedId) {
+        return { id: claimedId, user: app.claimedByUnderwriter };
     }
     return null;
 }

@@ -37,6 +37,11 @@ const isDisbursementWorkflowStage = (value: string | null | undefined) => {
   return key === "disbursement" || key === "disbursment";
 };
 
+const isFundedWorkflowStage = (value: string | null | undefined) => {
+  const key = normalizeWorkflowQueueKey(value);
+  return key === "funded" || key === "completed";
+};
+
 type DisbursementProps = {
   /** Application id used for bank-details API (often resolved from loaded detail). */
   applicationId?: string;
@@ -97,18 +102,19 @@ export const Disbursement = ({
     (applicationDetailData as { _id?: string } | null)?._id ??
     null;
 
-  const effectiveQueueKey = useMemo(
-    () => normalizeWorkflowQueueKey(effectiveQueue),
-    [effectiveQueue]
-  );
-
   const explicitStatus =
     (applicationDetailData as { status?: string } | null)?.status ?? null;
   const currentState =
     (applicationDetailData as { currentState?: string } | null)?.currentState ??
     null;
 
-  const isApplicationFunded = effectiveQueueKey === "funded";
+  const isApplicationFunded = useMemo(
+    () =>
+      isFundedWorkflowStage(effectiveQueue) ||
+      isFundedWorkflowStage(currentState) ||
+      isFundedWorkflowStage(explicitStatus),
+    [effectiveQueue, currentState, explicitStatus],
+  );
   const isAtDisbursementQueue = useMemo(
     () =>
       isDisbursementWorkflowStage(effectiveQueue) ||
@@ -140,12 +146,6 @@ export const Disbursement = ({
     if (!applicationId) return;
     void dispatch(getFundingCalls({ application: String(applicationId) }));
   }, [applicationId, dispatch]);
-
-  useEffect(() => {
-    if (isApplicationFunded) {
-      navigate("/payments", { replace: true });
-    }
-  }, [isApplicationFunded, navigate]);
 
   const [form, setForm] = useState({
     bankName: "",
@@ -287,7 +287,6 @@ export const Disbursement = ({
       return;
     }
     if (isApplicationFunded) {
-      navigate("/payments", { replace: true });
       return;
     }
 
@@ -334,8 +333,17 @@ export const Disbursement = ({
           onBack={onBack}
         />
         <p className="text-xs md:text-sm text-slate-600 -mt-2 px-1 dark:text-slate-400">
-          Funds will be disbursed to the bank account below after final approval.
+          {isApplicationFunded
+            ? "This deal has been funded. Bank and disbursement details are shown below for reference."
+            : "Funds will be disbursed to the bank account below after final approval."}
         </p>
+        {isApplicationFunded ? (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900 dark:bg-emerald-950/40">
+            <p className="text-sm font-medium text-emerald-900 dark:text-emerald-100">
+              This deal has been funded.
+            </p>
+          </div>
+        ) : null}
 
         {/* Main white card */}
         <div className="bg-white px-4 py-5 md:px-6 md:py-6 rounded-lg shadow-md border border-slate-100 dark:border-slate-700 dark:bg-[#141517] dark:shadow-lg dark:shadow-black/20">

@@ -82,12 +82,12 @@ import {
 import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import PersonIcon from '@mui/icons-material/Person';
 import VerifiedUser from "@mui/icons-material/VerifiedUser";
+import QuestionAnswer from "@mui/icons-material/QuestionAnswer";
 type SidebarNavIcon = ComponentType<SvgIconProps>;
 
 type PipelineAccent =
   | "approved-by-uw"
   | "approval-sent"
-  | "approved-by-iso"
   | "contract-pending"
   | "contract-sent"
   | "contract-signed"
@@ -306,14 +306,9 @@ const dealPipelineSection: SidebarNavSection = {
           pipelineAccent: "approved-by-uw",
         },
         {
-          label: operationsDashboardStatusTitle("Approval_Sent"),
+          label: "Approval sent to Broker",
           operationsStatus: "Approval_Sent",
           pipelineAccent: "approval-sent",
-        },
-        {
-          label: operationsDashboardStatusTitle("Approved_By_ISO"),
-          operationsStatus: "Approved_By_ISO",
-          pipelineAccent: "approved-by-iso",
         },
       ],
     },
@@ -336,6 +331,11 @@ const dealPipelineSection: SidebarNavSection = {
         {
           label: operationsDashboardStatusTitle("Contract_Signed"),
           operationsStatus: "Contract_Signed",
+          pipelineAccent: "contract-signed",
+        },
+        {
+          label: "Re-Initiate",
+          operationsStatus: "Reinitiate_Contract",
           pipelineAccent: "contract-signed",
         },
       ],
@@ -362,6 +362,13 @@ const dealPipelineSection: SidebarNavSection = {
 const underwriterDealPipelineSection: SidebarNavSection = {
   title: "DEAL PIPELINE",
   items: [
+    {
+      label: "ISO Query",
+      url: "/applications",
+      icon: QuestionAnswer,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.ISO_QUERY,
+      pipelineAccent: "approval-sent",
+    },
     {
       label: "Applications",
       url: "/applications",
@@ -439,7 +446,7 @@ const operationsSections: SidebarNavSection[] = [
       { label: "Reports", url: "/reports", icon: Description },
       { label: "Syndicators", url: "/syndicators/dashboard", icon: SyndicatorsSidebarIcon },
       { label: "Commissions", url: "/commission-portal", icon: BarChart },
-      { label: "Accountant", url: "/payments", icon: Payments },
+      { label: "All Deals", url: "/payments", icon: Payments },
     ],
   },
   {
@@ -457,7 +464,7 @@ const accountsSections: SidebarNavSection[] = [
   {
     title: "",
     items: [
-      { label: "Accountant", url: "/payments", icon: Payments },
+      { label: "All Deals", url: "/payments", icon: Payments },
     ],
   },
 ];
@@ -570,7 +577,7 @@ const superAdminSections: SidebarNavSection[] = [
   {
     title: "OPERATIONS",
     items: [
-      { label: "Accountant", url: "/payments", icon: Payments },
+      { label: "All Deals", url: "/payments", icon: Payments },
       { label: "Commission", url: "/commission-portal", icon: BarChart },
       { label: "Reports", url: "/reports", icon: Description },
     ],
@@ -1037,6 +1044,7 @@ const Sidebar = () => {
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton
+
                   onClick={handleLogout}
                   className={logoutButtonClass}
                 >

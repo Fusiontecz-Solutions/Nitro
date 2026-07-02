@@ -160,9 +160,15 @@ type BankAnalysisProps = {
     readOnly?: boolean;
     /** When false, hide add-bank/month and Create Position even if not read-only. Defaults to true when editable. */
     enableCreate?: boolean;
+    /** When false, hide automated bank statement upload (e.g. Decision Making / Scrubbing tab). */
+    showBankStatementUpload?: boolean;
 };
 
-const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisProps) => {
+const BankAnalysis = ({
+    readOnly = false,
+    enableCreate = true,
+    showBankStatementUpload = true,
+}: BankAnalysisProps) => {
     // const { resolvedTheme } = useTheme();
     // const isDark = resolvedTheme === 'dark';
     const dispatch = useDispatch<AppDispatch>();
@@ -1378,7 +1384,7 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                                         )}
                                     </div>
 
-                                    {/* Bank statement upload — right on desktop, right-aligned when stacked */}
+                                    {showBankStatementUpload ? (
                                     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:shrink-0">
                                         {uploadedBankFiles.length > 0 && (
                                             <div className="flex max-w-[18rem] flex-wrap gap-1 text-[11px] text-muted-foreground">
@@ -1486,6 +1492,7 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                                             </span>
                                         )}
                                     </div>
+                                    ) : null}
                                 </div>
                             )}
                         </div>

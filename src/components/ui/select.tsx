@@ -1,8 +1,68 @@
 import * as React from "react"
 import * as SelectPrimitive from "@radix-ui/react-select"
-import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
+import { CheckIcon, ChevronDownIcon, ChevronUpIcon, SearchIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+
+// Recursively extract the plain text of a React node so we can match/rank it.
+function extractNodeText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return ""
+  if (typeof node === "string" || typeof node === "number") return String(node)
+  if (Array.isArray(node)) return node.map(extractNodeText).join("")
+  if (React.isValidElement(node)) {
+    return extractNodeText((node.props as { children?: React.ReactNode })?.children)
+  }
+  return ""
+}
+
+// Score how well an option text matches the query. Higher is better, -1 = no match.
+function scoreMatch(text: string, query: string): number {
+  const t = text.toLowerCase().trim()
+  const q = query.toLowerCase().trim()
+  if (!q) return 0
+  if (t === q) return 10000
+  if (t.startsWith(q)) return 5000 - t.length
+  const idx = t.indexOf(q)
+  if (idx >= 0) return 2000 - idx * 10 - t.length
+  // fuzzy subsequence match (characters appear in order)
+  let qi = 0
+  for (let i = 0; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) qi++
+  }
+  if (qi === q.length) return 500 - t.length
+  return -1
+}
+
+// Marker so SelectContent can reliably find options even across HMR / bundler splits.
+const SELECT_ITEM_MARKER = Symbol.for("katam.select.item")
+
+function isSelectOptionElement(child: React.ReactElement): boolean {
+  if (typeof child.type === "function" && SELECT_ITEM_MARKER in (child.type as object)) {
+    return true
+  }
+  if (child.type === SelectItem) return true
+  const props = child.props as { value?: unknown }
+  return props.value !== undefined && props.value !== null
+}
+
+function walkSelectOptions(
+  nodes: React.ReactNode,
+  visitor: (child: React.ReactElement, index: number) => void
+) {
+  let index = 0
+  const walk = (nodeList: React.ReactNode) => {
+    React.Children.forEach(nodeList, (child) => {
+      if (!React.isValidElement(child)) return
+      if (isSelectOptionElement(child)) {
+        visitor(child, index++)
+      } else {
+        const kids = (child.props as { children?: React.ReactNode })?.children
+        if (kids) walk(kids)
+      }
+    })
+  }
+  walk(nodes)
+}
 
 function Select({
   ...props
@@ -53,8 +113,75 @@ function SelectContent({
   children,
   position = "popper",
   align = "center",
+  enableSearch,
+  searchPlaceholder = "Type to search...",
+  searchThreshold = 0,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+}: React.ComponentProps<typeof SelectPrimitive.Content> & {
+  /** Force the search box on/off. Defaults to auto (shown when there are enough options). */
+  enableSearch?: boolean
+  searchPlaceholder?: string
+  /** Minimum number of options before the search box is shown automatically. */
+  searchThreshold?: number
+}) {
+  const [query, setQuery] = React.useState("")
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  // Reset the query whenever the dropdown re-opens so stale filters don't stick.
+  React.useEffect(() => {
+    setQuery("")
+    const id = requestAnimationFrame(() => inputRef.current?.focus())
+    return () => cancelAnimationFrame(id)
+  }, [])
+
+  // Count the total number of selectable options anywhere in the tree.
+  const itemCount = React.useMemo(() => {
+    let count = 0
+    walkSelectOptions(children, () => {
+      count++
+    })
+    return count
+  }, [children])
+
+  const showSearch = enableSearch ?? itemCount > searchThreshold
+
+  // Radix moves focus to list items when options re-render; keep it on the search box.
+  React.useLayoutEffect(() => {
+    if (!showSearch) return
+    const input = inputRef.current
+    if (!input) return
+    const end = input.value.length
+    input.focus({ preventScroll: true })
+    input.setSelectionRange(end, end)
+  }, [query, showSearch])
+
+  // When searching, flatten every option, keep matches, and rank the closest ones first.
+  const rendered = React.useMemo(() => {
+    if (!showSearch || !query.trim()) return children
+
+    const matches: { child: React.ReactElement; score: number; index: number }[] = []
+    walkSelectOptions(children, (child, index) => {
+      const props = child.props as { textValue?: string; children?: React.ReactNode }
+      const text = props.textValue ?? extractNodeText(props.children)
+      const score = scoreMatch(text, query)
+      if (score > -1) matches.push({ child, score, index })
+    })
+
+    matches.sort((a, b) => b.score - a.score || a.index - b.index)
+
+    if (matches.length === 0) {
+      return (
+        <div className="text-muted-foreground py-4 text-center text-sm">
+          No results found
+        </div>
+      )
+    }
+
+    return matches.map(({ child }, i) =>
+      React.cloneElement(child, { key: child.key ?? i })
+    )
+  }, [children, query, showSearch])
+
   return (
     <SelectPrimitive.Portal>
       <SelectPrimitive.Content
@@ -67,17 +194,83 @@ function SelectContent({
         )}
         position={position}
         align={align}
+        onOpenAutoFocus={(e: Event) => {
+          if (!showSearch) return
+          e.preventDefault()
+          requestAnimationFrame(() => inputRef.current?.focus())
+        }}
+        onKeyDown={(e: React.KeyboardEvent) => {
+          if (!showSearch || e.target === inputRef.current) return
+          const passthrough = [
+            "ArrowDown",
+            "ArrowUp",
+            "Enter",
+            "Escape",
+            "Tab",
+            "Home",
+            "End",
+            "PageUp",
+            "PageDown",
+          ]
+          if (passthrough.includes(e.key)) return
+          if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault()
+            e.stopPropagation()
+            inputRef.current?.focus()
+          }
+        }}
         {...props}
       >
+        {showSearch && (
+          <div
+            className="bg-popover sticky top-0 z-10 border-b p-2"
+            onPointerDown={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+          >
+            <div className="border-input focus-within:border-ring focus-within:ring-ring/50 flex items-center gap-2 rounded-md border bg-background px-2 focus-within:ring-[3px]">
+              <SearchIcon className="text-muted-foreground size-4 shrink-0" />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={searchPlaceholder}
+                autoFocus
+                className="placeholder:text-muted-foreground h-8 w-full bg-transparent py-1 text-sm outline-none"
+                onKeyDown={(e) => {
+                  const passthrough = [
+                    "ArrowDown",
+                    "ArrowUp",
+                    "Enter",
+                    "Escape",
+                    "Tab",
+                    "Home",
+                    "End",
+                    "PageUp",
+                    "PageDown",
+                  ]
+                  if (passthrough.includes(e.key)) return
+                  // Stop Radix typeahead, but keep normal text editing (letters, backspace, etc.).
+                  e.stopPropagation()
+                }}
+              />
+            </div>
+          </div>
+        )}
         <SelectScrollUpButton />
         <SelectPrimitive.Viewport
           className={cn(
             "p-1",
             position === "popper" &&
-              "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)] scroll-my-1"
+              "w-full min-w-[var(--radix-select-trigger-width)] scroll-my-1",
+            showSearch
+              ? "h-auto max-h-[min(280px,var(--radix-select-content-available-height))]"
+              : position === "popper" &&
+                  "h-[var(--radix-select-trigger-height)]"
           )}
         >
-          {children}
+          {rendered}
         </SelectPrimitive.Viewport>
         <SelectScrollDownButton />
       </SelectPrimitive.Content>
@@ -121,6 +314,7 @@ function SelectItem({
     </SelectPrimitive.Item>
   )
 }
+Object.assign(SelectItem, { [SELECT_ITEM_MARKER]: true })
 
 function SelectSeparator({
   className,

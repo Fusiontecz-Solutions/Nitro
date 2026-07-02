@@ -7,6 +7,7 @@ export const UNDERWRITER_PIPELINE_FILTERS = {
   DECLINED_BY_UW: "declined-by-uw",
   FINAL_APPROVAL: "final-approval",
   FINAL_APPROVED_BY_UW: "final-approved-by-uw",
+  ISO_QUERY: "iso-query",
 } as const;
 
 export type UnderwriterPipelineFilter =
@@ -36,6 +37,8 @@ export function underwriterPipelineTitle(
       return "Admin Sent for final Approval";
     case UNDERWRITER_PIPELINE_FILTERS.FINAL_APPROVED_BY_UW:
       return "Final Approved";
+    case UNDERWRITER_PIPELINE_FILTERS.ISO_QUERY:
+      return "ISO Query";
     default:
       return "Applications";
   }

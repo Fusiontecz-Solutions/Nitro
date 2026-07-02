@@ -77,6 +77,10 @@ export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[
           label: operationsDashboardStatusTitle("Contract_Signed"),
           filterValue: "Contract_Signed",
         },
+        {
+          label: operationsDashboardStatusTitle("Reinitiate_Contract"),
+          filterValue: "Reinitiate_Contract",
+        },
       ],
     },
     {
@@ -136,6 +140,10 @@ export const APPLICATIONS_STATUS_FILTER_OPTIONS: ApplicationsPipelineFilterChild
       filterValue: "Contract_Signed",
     },
     {
+      label: operationsDashboardStatusTitle("Reinitiate_Contract"),
+      filterValue: "Reinitiate_Contract",
+    },
+    {
       label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
       filterValue: "Finals_And_Funding_Call",
     },
@@ -170,7 +178,8 @@ export function isApplicationsPipelineFilterActive(
     return (
       statusFilter === "Contract_Pending" ||
       statusFilter === "Contract_Sent" ||
-      statusFilter === "Contract_Signed"
+      statusFilter === "Contract_Signed" ||
+      statusFilter === "Reinitiate_Contract"
     );
   }
   if (filterValue === "Approved") {
@@ -227,6 +236,8 @@ export function resolveApplicationsPipelineCount(
       return summaryCounts.contractsOut;
     case "Contract_Signed":
       return summaryCounts.signedContracts;
+    case "Reinitiate_Contract":
+      return caseStageCounts.Reinitiate_Contract ?? 0;
     case "Final":
       return caseStageCounts.Final ?? 0;
     case "Funding Call":
