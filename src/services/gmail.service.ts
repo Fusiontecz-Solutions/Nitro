@@ -1,6 +1,13 @@
 import axios from 'axios';
 import prisma from '../config/prismaClient';
 import { attachBufferAsApplicationFile } from './applicationPdfAttachService';
+import {
+    buildGmailPdfInboxQuery,
+    hasRecentGmailPdfContentHash,
+    isGmailAutoCreateMessageHandled,
+    recordGmailAutoCreateMessageHandled,
+    sha256PdfContent,
+} from './gmailAutoCreateProcessedStore';
 import { parseMerchantNameFromSubject } from './gmailSubjectMerchantParser';
 import {
     gmailAutoCreateMessageNote,
@@ -998,20 +1005,26 @@ async function attemptGmailSubjectFallbackCreate(params: {
 
 async function handleGmailSubjectFallbackOutcome(
     messageId: string,
+    userId: string,
     accessToken: string,
     outcome: Awaited<ReturnType<typeof attemptGmailSubjectFallbackCreate>>,
     onCreated: (result: import('./applicationService').PdfApplicationResult) => void,
 ): Promise<void> {
     if (outcome?.kind === 'created') {
         onCreated(outcome.result);
+        await recordGmailAutoCreateMessageHandled(userId, messageId, 'success', {
+            applicationId: outcome.result.application?.id,
+        });
         await starMessage(messageId, accessToken);
         await markMessageAsRead(messageId, accessToken);
         return;
     }
     if (outcome?.kind === 'duplicate') {
+        await recordGmailAutoCreateMessageHandled(userId, messageId, 'skipped_duplicate');
         await markMessageAsRead(messageId, accessToken);
         return;
     }
+    await recordGmailAutoCreateMessageHandled(userId, messageId, 'failed_parse');
     await starMessage(messageId, accessToken);
 }
 
@@ -1031,13 +1044,14 @@ export async function autoCreateApplicationsFromEmails(
         const { createClientAndApplicationFromPDFBuffer, InsufficientParsedPdfError } =
             await import('./applicationService');
 
-        // 1️⃣ Fetch unread INBOX emails with PDF attachments
+        // 1️⃣ Fetch recent INBOX emails with PDF attachments (read + unread; idempotency via ledger)
+        const inboxQuery = buildGmailPdfInboxQuery();
         const { messages: rawMessages } = await fetchAllEmails(
             accessToken,
             undefined,
             15,
             "INBOX",
-            "has:attachment filename:pdf is:unread"
+            inboxQuery
         );
         const messages = Array.from(
             new Map((rawMessages ?? []).map((m) => [m.id, m])).values(),
@@ -1057,6 +1071,12 @@ export async function autoCreateApplicationsFromEmails(
             if (!msg?.id) continue;
             if (inFlightAutoCreateMessageIds.has(msg.id)) {
                 console.warn(`[gmail-auto-create] message=${msg.id} already in-flight; skipping duplicate trigger`);
+                continue;
+            }
+            if (await isGmailAutoCreateMessageHandled(userId, msg.id)) {
+                console.log(
+                    `[gmail-auto-create] message=${msg.id} already in ledger for user=${userId}; skipping (no Claude)`,
+                );
                 continue;
             }
             inFlightAutoCreateMessageIds.add(msg.id);
@@ -1091,9 +1111,9 @@ export async function autoCreateApplicationsFromEmails(
                     })
                 ) {
                     console.log(
-                        `[gmail-auto-create] message=${msg.id} already processed (gmail-msg note); marking read`,
+                        `[gmail-auto-create] message=${msg.id} already processed (ledger or gmail-msg note); skipping`,
                     );
-                    await markMessageAsRead(msg.id, accessToken);
+                    await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate');
                     continue;
                 }
 
@@ -1125,7 +1145,7 @@ export async function autoCreateApplicationsFromEmails(
                         resolvedIsoId,
                         accessToken,
                     });
-                    await handleGmailSubjectFallbackOutcome(msg.id, accessToken, fallbackOutcome, (result) => {
+                    await handleGmailSubjectFallbackOutcome(msg.id, userId, accessToken, fallbackOutcome, (result) => {
                         results.push({
                             messageId: msg.id,
                             fileName: null,
@@ -1160,9 +1180,9 @@ export async function autoCreateApplicationsFromEmails(
                     });
                     if (isRecentDuplicate) {
                         console.log(
-                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${dedupeDays}d (same PDF filename): "${pickedFileName}" — skipping create, marking read`,
+                            `[gmail-auto-create] message=${msg.id} duplicate_detected_within_${dedupeDays}d (same PDF filename): "${pickedFileName}" — skipping create`,
                         );
-                        await markMessageAsRead(msg.id, accessToken);
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate');
                         continue;
                     }
 
@@ -1171,11 +1191,32 @@ export async function autoCreateApplicationsFromEmails(
                         attachmentId,
                         accessToken,
                     );
+                    const pdfContentHash = sha256PdfContent(
+                        Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer as any),
+                    );
+
+                    if (
+                        await hasRecentGmailPdfContentHash({
+                            userId,
+                            pdfContentHash,
+                            dedupeDays,
+                        })
+                    ) {
+                        console.log(
+                            `[gmail-auto-create] message=${msg.id} duplicate PDF content hash within ${dedupeDays}d — skipping create`,
+                        );
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate', {
+                            pdfContentHash,
+                        });
+                        continue;
+                    }
 
                     const { client, application, existingClient } =
                         await createClientAndApplicationFromPDFBuffer(pdfBuffer as any, userId, {
                             isoId: resolvedIsoId,
                             originalFileName: pickedFileName,
+                            gmailMessageId: msg.id,
+                            skipClaudeBusinessNameRetry: true,
                         });
 
                     try {
@@ -1229,6 +1270,10 @@ export async function autoCreateApplicationsFromEmails(
                         senderEmail,
                         matchedIsoId: resolvedIsoId,
                     });
+                    await recordGmailAutoCreateMessageHandled(userId, msg.id, 'success', {
+                        applicationId: application.id,
+                        pdfContentHash,
+                    });
                     processedAnyPdf = true;
                 } catch (pdfError: unknown) {
                     const pm = pdfError instanceof Error ? pdfError.message : String(pdfError);
@@ -1257,15 +1302,21 @@ export async function autoCreateApplicationsFromEmails(
                             matchedIsoId: resolvedIsoId,
                         });
                         processedAnyPdf = true;
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'success', {
+                            applicationId: fallbackOutcome.result.application?.id,
+                        });
                         await starMessage(msg.id, accessToken);
                     } else if (fallbackOutcome?.kind === 'duplicate') {
                         processedAnyPdf = true;
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate');
                     } else if (pdfError instanceof InsufficientParsedPdfError) {
                         console.warn(
                             `[gmail-auto-create] message=${msg.id} insufficient PDF data and no subject merchant; starring`,
                         );
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'failed_parse');
                         await starMessage(msg.id, accessToken);
                     } else {
+                        await recordGmailAutoCreateMessageHandled(userId, msg.id, 'failed_other');
                         await starMessage(msg.id, accessToken);
                     }
                 }

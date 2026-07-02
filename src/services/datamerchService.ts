@@ -198,6 +198,10 @@ async function datamerchGet(pathSuffix: string): Promise<unknown> {
         cachedSession = null;
         throw new ValidationError('DataMerch session expired. Please retry.');
     }
+    // DataMerch returns 404 when no merchant matches the EIN / legal name query.
+    if (response.status === 404 && pathSuffix.replace(/^\//, '').startsWith('merchants/')) {
+        return [];
+    }
     if (!response.ok) {
         throw new ValidationError(
             extractApiMessage(payload, `DataMerch request failed (${response.status}).`),

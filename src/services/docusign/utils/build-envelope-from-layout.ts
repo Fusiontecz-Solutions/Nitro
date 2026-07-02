@@ -9,12 +9,23 @@ import {
   PREFILL_DISPLAY_LABEL_BY_VARIABLE,
 } from './prefill-layout-bridge';
 import type { PrefillFieldInput } from './docusign-prefill';
-import { DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
+import { DOCUSIGN_DEFAULT_ROLE_NAME, normalizeDocuSignSignerRoleName } from './docusign-client';
 import {
   applyDocuSignPrefillTabStyle,
   resolveDocuSignPrefillTabWidth,
 } from './docusign-tab-style';
 import { embedArialPdfFont } from './embed-arial-pdf-font';
+import {
+  buildScopedValuesForLayout,
+  isMainContractLayoutKey,
+  isStateDisclosureTextPlacement,
+  resolveSupplementalEnvelopeTabLabel,
+  toDisclosureScopedPrefillId,
+} from './layout-prefill-scope';
+import {
+  applyAllianceBridgeContractPrefillValues,
+  isAllianceBridgeContractLayoutKey,
+} from './alliance-contract-prefill';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
   process.env.DOCUSIGN_SECONDARY_ROLE_NAME || 'Owner 2';
@@ -71,7 +82,17 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   remaining_rtr_balance: ['refinance_amount', 'remaining_rtr_balance', 'remaining_rtr', 'remainingRtrBalance'],
   date_by_which_amount_mustbe_received: ['prepayment_received_by_date'],
   funder_name: ['disclosure_funder_name'],
-  client_legal_name: ['business_legal_name', 'merchant_legal_name'],
+  /** Balance transfer only — do not alias contract business legal name into addendum fields. */
+  business_legal_name: [],
+  /** Balance transfer signature block — merchant / owner name, not business entity. */
+  balance_transfer_client_legal_name: [
+    'merchant_legal_name',
+    'client_name_by',
+    'owner1_guarantor_name',
+    'customer_name',
+    'guaranty_owner1_name',
+    'guaranty_client_name',
+  ],
   business_name_2: [
     'owner2_guarantor_name',
     'guaranty_owner2_name',
@@ -151,8 +172,8 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   recipient_address2: ['recipient_address', 'recipient_address1'],
   recipient_address: ['recipient_address1', 'business_address'],
   total_amount_commercial_financing: ['disclosure_amount_financed', 'funding_provided', 'total_amount_business_fund'],
-  total_commerical_financing: ['disclosure_total_payment', 'total_repayment_amount'],
-  deducted_at_disbursement: ['disclosure_origination_fee'],
+  total_commerical_financing: ['disclosure_recipient_funds', 'total_amount_of_fund_disbursed', 'net_to_merchant'],
+  deducted_at_disbursement: ['disclosure_fees_deducted', 'disclosure_origination_fee', 'appendix_underwriting_fees'],
   estimated_time_periodic_paymement: ['disclosure_term_days', 'estimated_number_of_payments'],
   theestimatedpayment: ['disclosure_estimated_payment', 'estimated_payment'],
   payment_exceed_percent: ['disclosure_payment_terms', 'percent_of_business_income'],
@@ -214,7 +235,16 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   ],
   doing_business_as: ['dba', 'security_doing_business_as'],
   client_phone: ['authorized_business_phone', 'guarantor_phone'],
-  exhibit_company_name_1: ['exhibit_company_name_2', 'exhibit_company_name_3'],
+  exhibit_company_name_1: ['exhibit_a_value_1'],
+  exhibit_company_name_2: ['exhibit_a_value_2'],
+  exhibit_company_name_3: ['exhibit_a_value_3'],
+  exhibit_company_name_4: ['exhibit_a_value_4'],
+  exhibit_company_name_5: ['exhibit_a_value_5'],
+  exhibit_company_name_6: ['exhibit_a_value_6'],
+  exhibit_company_name_7: ['exhibit_a_value_7'],
+  exhibit_company_name_8: ['exhibit_a_value_8'],
+  exhibit_company_name_9: ['exhibit_a_value_9'],
+  exhibit_company_name_10: ['exhibit_a_value_10'],
 };
 
 /**
@@ -361,7 +391,8 @@ export const FILL_AT_SIGNING_VARIABLES = new Set([
   'ach_authorization_reference_relationship3',
 ]);
 
-const EXHIBIT_PREFILL_VARIABLE_PATTERN = /^(exhibit_a_value_\d+|exhibit_owner_name)$/i;
+const EXHIBIT_PREFILL_VARIABLE_PATTERN =
+  /^(exhibit_a_value_\d+|exhibit_company_name_\d+|exhibit_owner_name)$/i;
 
 function isExhibitPrefillPlacement(placement: DocumentLayoutPlacement): boolean {
   return EXHIBIT_PREFILL_VARIABLE_PATTERN.test(String(placement.variable || '').trim());
@@ -448,8 +479,52 @@ const DISCLOSURE_MERCHANT_NAME_TAB_VARIABLES = new Set([
   'disclosure_merchant_name',
 ]);
 
-function isStateDisclosureTextPlacement(placement?: DocumentLayoutPlacement): boolean {
-  return Boolean(String(placement?.id || '').startsWith('sd_text_'));
+function resolveOwnerMerchantLegalName(values: Record<string, string>): string {
+  const entityNorm = String(values.client_legal_name || values.business_legal_name || '')
+    .trim()
+    .toLowerCase();
+  const ownerKeys = [
+    'merchant_legal_name',
+    'owner1_guarantor_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'customer_name',
+    'client_name_by',
+    'guaranty_client_name',
+  ];
+  for (const key of ownerKeys) {
+    const name = String(values[key] || '').trim();
+    if (!name) continue;
+    if (entityNorm && name.toLowerCase() === entityNorm) continue;
+    return name;
+  }
+  const balanceTransfer = String(
+    values.balance_transfer_client_legal_name || '',
+  ).trim();
+  if (balanceTransfer && (!entityNorm || balanceTransfer.toLowerCase() !== entityNorm)) {
+    return balanceTransfer;
+  }
+  return '';
+}
+
+function isolateBalanceTransferMerchantLegalName(values: Record<string, string>): void {
+  const merchant = resolveOwnerMerchantLegalName(values);
+  if (merchant) {
+    values.balance_transfer_client_legal_name = merchant;
+    if (!String(values.merchant_legal_name || '').trim()) {
+      values.merchant_legal_name = merchant;
+    }
+    return;
+  }
+  const entityLegal = String(values.client_legal_name || values.business_legal_name || '').trim();
+  const balanceTransfer = String(values.balance_transfer_client_legal_name || '').trim();
+  if (
+    balanceTransfer &&
+    entityLegal &&
+    balanceTransfer.toLowerCase() === entityLegal.toLowerCase()
+  ) {
+    delete values.balance_transfer_client_legal_name;
+  }
 }
 
 function resolveDisclosureMerchantBusinessName(values: Record<string, string>): string {
@@ -485,7 +560,7 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
       out.client_name = personal;
     } else {
       const legal = String(
-        out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+        out.client_legal_name || out.business_legal_name || '',
       ).trim();
       if (legal) out.client_name = legal;
     }
@@ -494,7 +569,7 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
   forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
   forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
   const legalName = String(
-    out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+    out.client_legal_name || out.business_legal_name || '',
   ).trim();
   const personalClientName = PARTY1_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
     Boolean,
@@ -524,6 +599,8 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
       out[key] = disclosureBusinessName;
     }
   }
+
+  isolateBalanceTransferMerchantLegalName(out);
 
   return out;
 }
@@ -591,7 +668,7 @@ function enrichValuesFromSigners(
   forceMirrorIdentityFields(out, PARTY1_SS_KEYS);
   forceMirrorIdentityFields(out, PARTY1_DL_KEYS);
   const legalAfterSigners = String(
-    out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
+    out.client_legal_name || out.business_legal_name || '',
   ).trim();
   const personalAfterSigners = PARTY1_NAME_PREFERRED.map((k) => String(out[k] || '').trim()).find(
     Boolean,
@@ -865,11 +942,25 @@ function resolveTextPlacementValue(
 ): string {
   const key = String(variable || '').trim();
   if (!key) return '';
+  const disclosureScoped = String(
+    values[toDisclosureScopedPrefillId(key)] ?? '',
+  ).trim();
+  if (disclosureScoped) {
+    return FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
+      ? formatFlexAddendumMoneyUsd(disclosureScoped)
+      : disclosureScoped;
+  }
+  if (key === 'balance_transfer_client_legal_name') {
+    const merchant = resolveOwnerMerchantLegalName(values);
+    if (merchant) return merchant;
+    return '';
+  }
   if (
     isStateDisclosureTextPlacement(placement) &&
     DISCLOSURE_MERCHANT_NAME_TAB_VARIABLES.has(key.toLowerCase())
   ) {
-    const business = resolveDisclosureMerchantBusinessName(values);
+    const business = String(values[toDisclosureScopedPrefillId('client_name')] ?? '').trim()
+      || resolveDisclosureMerchantBusinessName(values);
     if (business) return business;
   }
   const formatIfMoney = (raw: string) =>
@@ -947,10 +1038,28 @@ function shouldIncludeEmptyTextPlacement(placement: DocumentLayoutPlacement): bo
   return false;
 }
 
+function resolveEnvelopeTextTabLabel(
+  placement: DocumentLayoutPlacement,
+  variable: string,
+  layoutKey?: string,
+): string {
+  const scoped = layoutKey
+    ? resolveSupplementalEnvelopeTabLabel(layoutKey, placement, variable)
+    : null;
+  if (scoped) return scoped;
+
+  const source = String(placement.sourceTabLabel || '').trim();
+  const v = String(variable || '').trim();
+  // CRM variable may differ from the PDF data label when the same label appears on multiple docs.
+  if (v && source && v.toLowerCase() !== source.toLowerCase()) return v;
+  return source || v || `${v || 'text'}_${placement.id}`;
+}
+
 function toTextTab(
   placement: DocumentLayoutPlacement,
   value: string,
   envelopeDocumentId: string,
+  layoutKey?: string,
 ): DocuSignTab {
   const signerEditable = isSignerEditableTextPlacement(placement);
   const tabValue = clearsValueAtSend(placement) ? '' : value;
@@ -961,7 +1070,7 @@ function toTextTab(
     variable ||
     placement.slot;
   const tabLabel =
-    String(placement.sourceTabLabel || '').trim() ||
+    resolveEnvelopeTextTabLabel(placement, variable, layoutKey) ||
     displayLabel ||
     `${variable || 'text'}_${placement.id}`;
   const width = resolveDocuSignPrefillTabWidth({
@@ -1003,13 +1112,21 @@ export async function renderFlattenedLayoutPdf(
   const pdfDoc = await PDFDocument.load(Buffer.from(layout.documentBase64, 'base64'));
   const font = await embedArialPdfFont(pdfDoc);
   const pages = pdfDoc.getPages();
-  const expanded = expandPrefillValues(values);
+  let layoutValues = buildScopedValuesForLayout(layout, values);
+  if (isMainContractLayoutKey(String(layout.key || ''))) {
+    layoutValues = expandPrefillValues(layoutValues);
+  }
+  if (isAllianceBridgeContractLayoutKey(String(layout.key || ''))) {
+    applyAllianceBridgeContractPrefillValues(layoutValues);
+  }
+  const expanded = layoutValues;
 
   for (const placement of layout.placements) {
     if (placement.type !== 'text' && placement.type !== 'date') continue;
     if (!placementAllowed(placement, counts, expanded)) continue;
     if (isFillAtSigningPlacement(placement)) continue;
     const text = resolveTextPlacementValue(placement.variable || '', expanded, placement);
+    if (isExhibitPrefillPlacement(placement) && !String(text || '').trim()) continue;
     if (!text) continue;
 
     const pageIndex = Math.max(0, parseInt(String(placement.pageNumber || '1'), 10) - 1);
@@ -1144,6 +1261,7 @@ export function buildRecipientTabsByRoleForLayout(
     if (placement.type === 'text') {
       const variable = placement.variable || '';
       const value = resolveTextPlacementValue(variable, values, placement);
+      if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
       if (!value && !shouldIncludeEmptyTextPlacement(placement)) {
         continue;
       }
@@ -1190,14 +1308,11 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     ownerCount: options.ownerCount ?? 1,
     guarantorCount: options.guarantorCount ?? 0,
   };
-  const values = stripParty2PrefillUnlessMultiOwner(
-    enrichValuesFromSigners(
-      expandPrefillValues(options.values),
-      options.signers,
-      counts.ownerCount,
-    ),
+  const baseValues = stripParty2PrefillUnlessMultiOwner(
+    enrichValuesFromSigners(options.values, options.signers, counts.ownerCount),
     counts.ownerCount,
   );
+
   const documents: Array<{ documentId: string; name: string; documentBase64: string }> =
     [];
   /** Map each layout package to envelope document id (1-based merge order). */
@@ -1253,9 +1368,17 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   for (const layout of expandedLayouts) {
     const envelopeDocId = layoutKeyToEnvelopeDocId.get(layout.key) || '1';
     const pageOffset = pageOffsetByLayoutKey.get(layout.key) ?? 0;
+    let layoutValues = buildScopedValuesForLayout(layout, baseValues);
+    if (isMainContractLayoutKey(String(layout.key || ''))) {
+      layoutValues = expandPrefillValues(layoutValues);
+      isolateBalanceTransferMerchantLegalName(layoutValues);
+    }
+    if (isAllianceBridgeContractLayoutKey(String(layout.key || ''))) {
+      applyAllianceBridgeContractPrefillValues(layoutValues);
+    }
 
     for (const placement of layout.placements) {
-      if (!placementAllowed(placement, counts, values)) continue;
+      if (!placementAllowed(placement, counts, layoutValues)) continue;
 
       const signerIndex = resolvePlacementSignerIndex(placement, options.signers, counts);
       const tabPlacement = placementPageOffset(placement, pageOffset);
@@ -1275,11 +1398,11 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
           continue;
         }
         const variable = placement.variable || '';
-        const resolved = resolveTextPlacementValue(variable, values, tabPlacement);
+        const resolved = resolveTextPlacementValue(variable, layoutValues, tabPlacement);
         const value = isFillAtSigningPlacement(placement) ? '' : resolved;
         if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
         if (!value && !shouldIncludeEmptyTextPlacement(placement)) continue;
-        bucket.textTabs.push(toTextTab(tabPlacement, value, envelopeDocId));
+        bucket.textTabs.push(toTextTab(tabPlacement, value, envelopeDocId, layout.key));
         continue;
       }
 
@@ -1304,7 +1427,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   const mappedSigners = options.signers.map((s, idx) => {
     const tabs = signerTabs.get(idx) || emptyTabs();
     return {
-      roleName: s.roleName,
+      roleName: normalizeDocuSignSignerRoleName(s.roleName),
       name: s.name,
       email: s.email,
       routingOrder: s.routingOrder,
@@ -1322,7 +1445,9 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
       const secondaryInput = options.signers[secondaryIdx];
       if (secondaryInput) {
         mappedSigners.push({
-          roleName: secondaryInput.roleName || resolveSecondarySignerRoleName(options.signers),
+          roleName: normalizeDocuSignSignerRoleName(
+            secondaryInput.roleName || resolveSecondarySignerRoleName(options.signers),
+          ),
           name: secondaryInput.name,
           email: secondaryInput.email,
           routingOrder: secondaryInput.routingOrder ?? 2,
@@ -1335,7 +1460,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   const signers = mappedSigners
     .filter((s) => signerHasTabs(s.tabs))
     .map((s, idx) => ({
-      roleName: s.roleName,
+      roleName: normalizeDocuSignSignerRoleName(s.roleName),
       name: s.name,
       email: s.email,
       recipientId: String(idx + 1),

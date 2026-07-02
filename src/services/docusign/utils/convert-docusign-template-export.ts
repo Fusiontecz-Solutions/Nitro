@@ -330,7 +330,7 @@ export function convertSimplifiedTabsContractExport(
     ],
     recipients: {
       signers: [
-        { roleName: 'Client', routingOrder: 1, tabs: exportJson.tabs || {} },
+        { roleName: 'Signer', routingOrder: 1, tabs: exportJson.tabs || {} },
         { roleName: 'Owner 2', routingOrder: 2, tabs: {} },
       ],
     },

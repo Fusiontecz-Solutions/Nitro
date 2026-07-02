@@ -101,7 +101,7 @@ async function recomputeStatus(backgroundCheckId: string, actorId?: string) {
 
 async function updateItem(
     itemId: string,
-    body: { result?: string | null; notes?: string; status?: string; required?: boolean },
+    body: { result?: string | null; notes?: string; status?: string; required?: boolean; metadata?: Record<string, unknown> | null },
     actor: Actor,
 ) {
     const item = await db.backgroundCheckItem.findUnique({ where: { id: itemId } });
@@ -118,6 +118,7 @@ async function updateItem(
     }
     if (body.notes !== undefined) data.notes = String(body.notes);
     if (body.required !== undefined) data.required = Boolean(body.required);
+    if (body.metadata !== undefined) data.metadata = body.metadata;
     if (body.status !== undefined) {
         const s = String(body.status).trim().toUpperCase();
         if (!ITEM_STATUSES.includes(s)) throw new BackgroundCheckError(`Invalid status. Allowed: ${ITEM_STATUSES.join(', ')}`);

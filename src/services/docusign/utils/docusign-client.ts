@@ -48,6 +48,26 @@ export const DOCUSIGN_DEFAULT_TEMPLATE_ID =
 export const DOCUSIGN_DEFAULT_ROLE_NAME =
   process.env.DOCUSIGN_DEFAULT_ROLE_NAME || 'Signer';
 
+/** Map legacy DocuSign role labels (Receiver, Client, etc.) to the platform signer role. */
+export function normalizeDocuSignSignerRoleName(role: string): string {
+  const trimmed = String(role || '').trim();
+  if (!trimmed) return DOCUSIGN_DEFAULT_ROLE_NAME;
+  if (/^owner\s*2$/i.test(trimmed) || /^guarantor\s*2$/i.test(trimmed)) {
+    return trimmed;
+  }
+  const lower = trimmed.toLowerCase();
+  if (
+    lower === 'receiver' ||
+    lower === 'client' ||
+    lower === 'merchant' ||
+    lower === 'customer' ||
+    lower === 'signer'
+  ) {
+    return DOCUSIGN_DEFAULT_ROLE_NAME;
+  }
+  return trimmed;
+}
+
 /**
  * When true (default), draft envelopes drop signer slots not listed in CRM roles
  * (DocuSign templates often define multiple signer roles).

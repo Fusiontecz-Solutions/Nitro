@@ -10,7 +10,7 @@ import {
   normalizeSupplementalLayoutKeys,
   findBoldSignTemplatePdfUrlByExactLayoutKey,
 } from '../platform-document-registry';
-import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
+import { isFunderContractLayoutKey, funderSupplementalLayoutKey } from '../../../utils/funderContractLayout';
 import type { DocumentLayout } from './convert-docusign-template-export';
 import {
   buildEnvelopeFromLayouts,
@@ -19,11 +19,15 @@ import {
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
-import { DOCUSIGN_COMBINE_PACKAGE_PDF, DOCUSIGN_DEFAULT_ROLE_NAME } from './docusign-client';
+import { DOCUSIGN_COMBINE_PACKAGE_PDF, DOCUSIGN_DEFAULT_ROLE_NAME, normalizeDocuSignSignerRoleName } from './docusign-client';
 import { PLATFORM_SIGNER_SLOTS } from '../platform-document-registry';
-import { isAllianceBridgeFunder } from './resolve-main-contract-layout';
+import {
+  resolveMainContractCoordinateLayoutKey,
+} from './resolve-main-contract-layout';
 import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
 import { maybeAppendReverseDisbursementToMainContractLayout } from '../../pdf/reverseDisbursementSchedule.service';
+import { resolveFunderProfile, type SerializedFunderProfile } from '../../funderProfileService';
+import { resolveDocumentsLayoutFunderId, resolveFunderSupplementalDocumentDisplayName } from '../../../utils/funderDocumentSource';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
   process.env.DOCUSIGN_SECONDARY_ROLE_NAME || PLATFORM_SIGNER_SLOTS[1].roleName;
@@ -32,6 +36,7 @@ export type DocumentLayoutWithBase64 = DocumentLayout & { documentBase64: string
 
 async function resolveCoordinateLayoutKeyForFunderPdf(
   funderLayoutKey: string,
+  contractState?: string | null,
 ): Promise<DocumentLayoutKey> {
   const funderId = String(funderLayoutKey || '')
     .trim()
@@ -42,26 +47,45 @@ async function resolveCoordinateLayoutKeyForFunderPdf(
       select: { name: true, displayName: true, mainContractLayoutKey: true },
     });
     if (row) {
-      const profileLayout = String(row.mainContractLayoutKey || '').trim();
-      if (
-        profileLayout === DOCUMENT_LAYOUT_KEYS.allianceBridgeContract ||
-        isAllianceBridgeFunder(row.name) ||
-        isAllianceBridgeFunder(row.displayName)
-      ) {
-        return DOCUMENT_LAYOUT_KEYS.allianceBridgeContract;
-      }
+      return resolveMainContractCoordinateLayoutKey({
+        funderName: row.name,
+        state: contractState,
+        mainContractLayoutKey: row.mainContractLayoutKey,
+      });
     }
   }
   return DOCUMENT_LAYOUT_KEYS.contract;
 }
 
+export type FunderLayoutContext = {
+  funderProfileId?: string | null;
+  funderName?: string | null;
+  contractState?: string | null;
+};
+
+async function resolveFunderLayoutContext(
+  context?: FunderLayoutContext,
+): Promise<SerializedFunderProfile | null> {
+  if (!context) return null;
+  const hasHints =
+    String(context.funderProfileId ?? '').trim() ||
+    String(context.funderName ?? '').trim();
+  if (!hasHints) return null;
+  return resolveFunderProfile({
+    funderProfileId: context.funderProfileId,
+    funderName: context.funderName,
+    state: context.contractState,
+  });
+}
+
 export async function loadMainContractLayoutPackage(
   layoutKey: string = DOCUMENT_LAYOUT_KEYS.contract,
+  contractState?: string | null,
 ): Promise<DocumentLayoutWithBase64> {
   const key = String(layoutKey || '').trim() || DOCUMENT_LAYOUT_KEYS.contract;
 
   if (isFunderContractLayoutKey(key)) {
-    const coordinateKey = await resolveCoordinateLayoutKeyForFunderPdf(key);
+    const coordinateKey = await resolveCoordinateLayoutKeyForFunderPdf(key, contractState);
     const layout = getDocumentLayout(coordinateKey);
     const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(key);
     if (!pdfUrl) {
@@ -112,10 +136,52 @@ export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutW
 
 export async function loadSupplementalLayoutPackage(
   ref: string,
+  funderContext?: FunderLayoutContext,
 ): Promise<DocumentLayoutWithBase64> {
   const sourceRef = String(ref || '').trim();
+  const funder = await resolveFunderLayoutContext(funderContext);
+
   if (isDocumentLayoutKey(sourceRef)) {
     const layout = getDocumentLayout(sourceRef);
+    if (funder?.id) {
+      const docsFunderId = resolveDocumentsLayoutFunderId(funder);
+      if (docsFunderId) {
+        const scopedKey = funderSupplementalLayoutKey(docsFunderId, sourceRef);
+        let scopedPdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(scopedKey);
+        if (!scopedPdfUrl) {
+          const typedRow = await prisma.boldSignTemplate.findFirst({
+            where: {
+              type: sourceRef,
+              OR: [
+                { layoutKey: { startsWith: `funder_${docsFunderId}_` } },
+                { templateId: { startsWith: `funder_${docsFunderId}_` } },
+              ],
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+          scopedPdfUrl = String(typedRow?.pdfUrl || '').trim() || null;
+        }
+        if (scopedPdfUrl) {
+          const documentBase64 = await fetchPdfAsBase64(scopedPdfUrl);
+          const row = await prisma.boldSignTemplate.findFirst({
+            where: { OR: [{ layoutKey: scopedKey }, { templateId: scopedKey }] },
+            orderBy: { createdAt: 'desc' },
+            select: { name: true },
+          });
+          return {
+            ...layout,
+            key: scopedKey,
+            name: resolveFunderSupplementalDocumentDisplayName(
+              sourceRef,
+              funder,
+              row?.name,
+              layout.name,
+            ),
+            documentBase64,
+          };
+        }
+      }
+    }
     const documentBase64 = await loadPlatformDocumentPdfBase64(sourceRef);
     return { ...layout, documentBase64 };
   }
@@ -145,7 +211,9 @@ export function signerRolesToLayoutSigners(
 ): LayoutSignerInput[] {
   return roles
     .map((r, idx) => ({
-      roleName: String(r.roleName || r.signerRole || `Signer ${idx + 1}`).trim(),
+      roleName: normalizeDocuSignSignerRoleName(
+        String(r.roleName || r.signerRole || `Signer ${idx + 1}`).trim(),
+      ),
       name: String(r.signerName || '').trim(),
       email: String(r.signerEmail || '').trim(),
       routingOrder: Number(r.signerOrder ?? idx + 1),
@@ -212,7 +280,7 @@ export function collapseSignerRolesForLayoutEnvelope(
       withEmail[1];
   }
 
-  const primaryRoleName = PLATFORM_SIGNER_SLOTS[0].roleName;
+  const primaryRoleName = DOCUSIGN_DEFAULT_ROLE_NAME;
   const secondaryRoleName = DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME;
 
   const out: Array<Record<string, unknown>> = [];
@@ -341,12 +409,26 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   lockDataTabs?: boolean;
   /** When set, may append reverse disbursement schedule as last page of main contract PDF. */
   contractId?: number;
+  funderProfileId?: string | null;
+  funderName?: string | null;
+  contractState?: string | null;
 }) {
   const includeMainContract = options.includeMainContract !== false;
+  const funderProfile = await resolveFunderLayoutContext({
+    funderProfileId: options.funderProfileId,
+    funderName: options.funderName,
+    contractState: options.contractState,
+  });
+  const funderContext: FunderLayoutContext = {
+    funderProfileId: funderProfile?.id ?? options.funderProfileId,
+    funderName: funderProfile?.name ?? options.funderName,
+    contractState: options.contractState,
+  };
   const layouts: DocumentLayoutWithBase64[] = [];
   if (includeMainContract) {
     let mainLayout = await loadMainContractLayoutPackage(
       options.mainContractLayoutKey || DOCUMENT_LAYOUT_KEYS.contract,
+      options.contractState,
     );
     const contractId = Number(options.contractId);
     if (Number.isFinite(contractId) && contractId > 0) {
@@ -358,7 +440,7 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
     layouts.push(mainLayout);
   }
   for (const ref of options.supplementalRefs || []) {
-    layouts.push(await loadSupplementalLayoutPackage(ref));
+    layouts.push(await loadSupplementalLayoutPackage(ref, funderContext));
   }
   if (!layouts.length) {
     throw new Error('At least one document layout is required.');

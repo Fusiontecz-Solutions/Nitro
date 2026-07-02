@@ -64,6 +64,7 @@ model BackgroundCheckItem {
   status          BackgroundCheckItemStatus  @default(NOT_STARTED)
   result          BackgroundCheckResult?
   notes           String?
+  metadata        Json?
   performedById   String?                    @db.Uuid
   performedAt     DateTime?
   createdAt       DateTime                   @default(now())

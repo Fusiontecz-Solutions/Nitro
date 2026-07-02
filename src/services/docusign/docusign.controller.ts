@@ -263,14 +263,21 @@ export const getEmbeddedSignLink = async (req: Request, res: Response) => {
 export const voidDocument = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { documentId, reason } = req.body;
+    const { documentId, reason, funderName, applicationId, contractId } = req.body;
     if (!documentId) {
       return res.status(400).json({ message: 'Missing documentId' });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.voidDocument(
       userId,
       documentId,
       reason || 'Voided by user',
+      {
+        funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+        applicationId: applicationId ? String(applicationId) : undefined,
+        contractId:
+          Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+      },
     );
     return res.json(result);
   } catch (error: any) {
@@ -320,9 +327,13 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
     if (!templateId?.trim()) {
       return res.status(400).json({ message: 'templateId is required' });
     }
+    const funderName = String(req.query.funderName ?? '').trim() || undefined;
+    const funderProfileId = String(req.query.funderProfileId ?? '').trim() || undefined;
+    const contractState = String(req.query.state ?? req.query.contractState ?? '').trim() || undefined;
     const pdfBuffer = await docusignService.downloadTemplatePdf(
       userId,
       String(templateId).trim(),
+      { funderName, funderProfileId, contractState },
     );
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
@@ -394,6 +405,8 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       contractId,
       sendPackage,
       funderName,
+      funderProfileId,
+      contractState,
     } = req.body;
 
     const hasSupplementalLayoutKeys =
@@ -467,6 +480,14 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
             }
           : undefined,
       funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+      funderProfileId:
+        typeof funderProfileId === 'string' && funderProfileId.trim()
+          ? funderProfileId.trim()
+          : undefined,
+      contractState:
+        typeof contractState === 'string' && contractState.trim()
+          ? contractState.trim()
+          : undefined,
     });
 
     try {
@@ -516,7 +537,7 @@ export const docusignWebhook = async (req: Request, res: Response) => {
 export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
-    const { applicationId, envelopeId, ccEmails, contractId, force } = req.body || {};
+    const { applicationId, envelopeId, ccEmails, contractId, force, funderName } = req.body || {};
     if (!applicationId && !envelopeId) {
       return res.status(400).json({
         message: 'applicationId or envelopeId is required',
@@ -530,6 +551,7 @@ export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) =>
       contractId:
         Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
       force: force === true,
+      funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
     });
     return res.json(result);
   } catch (error: unknown) {
@@ -548,17 +570,30 @@ export const createDraftEnvelope = async (req: Request, res: Response) => {
 export const getSenderView = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId, returnUrl, ccEmails, applicationId, signerEmail, signerName, roles } =
-      req.body;
+    const {
+      envelopeId,
+      returnUrl,
+      ccEmails,
+      applicationId,
+      signerEmail,
+      signerName,
+      roles,
+      funderName,
+      contractId,
+    } = req.body;
     if (!envelopeId || !returnUrl) {
       return res.status(400).json({ message: 'Missing envelopeId and returnUrl' });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.getSenderViewUrl(userId, envelopeId, returnUrl, {
       ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
       applicationId: applicationId ? String(applicationId) : undefined,
       signerEmail: signerEmail ? String(signerEmail) : undefined,
       signerName: signerName ? String(signerName) : undefined,
       roles: Array.isArray(roles) ? roles : undefined,
+      funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+      contractId:
+        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
     });
     return res.json(result);
   } catch (error: unknown) {
@@ -589,11 +624,20 @@ export const sendEnvelope = async (req: Request, res: Response) => {
 export const syncEnvelopeCc = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId, ccEmails, applicationId, signerEmail, signerName, roles } =
-      req.body;
+    const {
+      envelopeId,
+      ccEmails,
+      applicationId,
+      signerEmail,
+      signerName,
+      roles,
+      funderName,
+      contractId,
+    } = req.body;
     if (!envelopeId) {
       return res.status(400).json({ message: 'Missing envelopeId' });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.syncEnvelopeCcEmails(
       userId,
       String(envelopeId),
@@ -602,6 +646,11 @@ export const syncEnvelopeCc = async (req: Request, res: Response) => {
       signerEmail ? String(signerEmail) : undefined,
       signerName ? String(signerName) : undefined,
       Array.isArray(roles) ? roles : undefined,
+      {
+        funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+        contractId:
+          Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+      },
     );
     return res.json(result);
   } catch (error: any) {

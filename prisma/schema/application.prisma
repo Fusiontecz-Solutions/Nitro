@@ -64,6 +64,7 @@ model User {
   typingIndicators           TypingIndicator[]
   verificationTokens         VerificationToken[]
   outbound_communications    outbound_communications[]
+  gmailAutoCreateLedger      GmailAutoCreateLedger[]
 }
 
 model AccessToken {
@@ -283,6 +284,7 @@ model Application {
   scheduledRePayments      ScheduledRePayment[]
   termsOffers              TermsOffer[]
   outbound_communications  outbound_communications[]
+  gmailAutoCreateLedger    GmailAutoCreateLedger[]
   syndicator               Syndicator[]                  @relation("ApplicationSyndicators")
 
   @@index([isoId])

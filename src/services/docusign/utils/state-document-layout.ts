@@ -149,7 +149,7 @@ export function buildDocumentLayoutFromStateDocumentConfig(options: {
       documentId: config.documentId,
       originalFileName: fileName || `${name}.pdf`,
     },
-    signers: [{ roleName: 'Client', routingOrder: 1 }],
+    signers: [{ roleName: 'Signer', routingOrder: 1 }],
     variables,
     placements: chunks,
   };

@@ -106,6 +106,8 @@ const CRM_LABEL_TO_FIELD_ID: Record<string, string> = {
   date_of_previous_secured_agreement: 'date_of_previous_secured_agreement',
   remainingrtrbalance: 'remaining_rtr_balance',
   remaining_rtr_balance: 'remaining_rtr_balance',
+  balance_transfer_client_legal_name: 'balance_transfer_client_legal_name',
+  clientlegalnamemerchant: 'balance_transfer_client_legal_name',
 };
 
 /** Normalize CRM / DocuSign field keys for fuzzy matching (snake_case, spaces, case). */
@@ -161,9 +163,19 @@ export function resolvePrefillForTab(
   valueMap: Map<string, string>,
   tab: DocusignTextTabRef,
 ): string | undefined {
+  const tabLabel = String(tab.tabLabel || '').trim();
+  const tabName = String(tab.name || '').trim();
+  if (
+    tabName &&
+    tabLabel &&
+    normalizeFieldKey(tabName) !== normalizeFieldKey(tabLabel)
+  ) {
+    const byName = lookupPrefillValue(valueMap, tabName);
+    if (byName) return byName;
+  }
   const candidates = [
-    tab.tabLabel,
-    tab.name,
+    tabLabel,
+    tabName,
     tab.tabId,
   ].filter(Boolean) as string[];
   for (const c of candidates) {
