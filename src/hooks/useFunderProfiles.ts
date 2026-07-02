@@ -29,6 +29,7 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     organization: "Katan II",
     sortOrder: 1,
     isActive: true,
+    documentsSource: "platform",
   },
   {
     id: "fallback-katan-iii",
@@ -43,6 +44,7 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     organization: "Katan III",
     sortOrder: 2,
     isActive: true,
+    documentsSource: "platform",
   },
   {
     id: "fallback-alliance-bridge",

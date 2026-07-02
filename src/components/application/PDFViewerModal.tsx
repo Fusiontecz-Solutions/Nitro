@@ -210,7 +210,7 @@ import {
     isTexasContractState,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
-import { funderDisclosureLayoutKeyForState } from "@/utils/funderLayoutKeys";
+import { funderDisclosureLayoutKeyForState, isPlatformScopedBoldSignTemplateRow } from "@/utils/funderLayoutKeys";
 import { resolveDocumentsLayoutFunderId } from "@/utils/funderDocumentSource";
 import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 import { clearParty2PrefillFieldPayload, resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
@@ -464,6 +464,7 @@ type DisclosureTemplateLookupRow = {
     id?: string;
     name?: string | null;
     frequency?: string | null;
+    layoutKey?: string | null;
     pdfUrl?: string | null;
 };
 
@@ -4647,37 +4648,46 @@ const PDFViewerModal = ({
             const normalizedFrequency = normalizeFrequencyForTemplateLookup(frequency);
             const normalizedState = normalizeStateForTemplateLookup(state);
             const profile = findFunderProfile(funders, selectedFunder, normalizedState);
-            if (profile?.id) {
-                const docsFunderId = resolveDocumentsLayoutFunderId(profile);
-                if (docsFunderId) {
-                    const funderLayoutKey = funderDisclosureLayoutKeyForState(
-                        docsFunderId,
-                        normalizedState,
-                        normalizedFrequency,
-                    );
-                    const funderParams = new URLSearchParams({
-                        type: "disclosure",
-                        layoutKey: funderLayoutKey,
-                    });
-                    const funderRes = await axiosGet(`/contract/templates?${funderParams.toString()}`);
-                    const funderRows = (funderRes?.data?.data ?? []) as DisclosureTemplateLookupRow[];
-                    const funderMatch = Array.isArray(funderRows)
-                        ? funderRows.find((row) => String(row?.pdfUrl ?? "").trim())
-                        : undefined;
-                    if (funderMatch?.id) return String(funderMatch.id);
-                }
+            const docsFunderId = profile ? resolveDocumentsLayoutFunderId(profile) : null;
+
+            const lookupPlatformDisclosure = async (): Promise<string | null> => {
+                const params = new URLSearchParams({
+                    type: "disclosure",
+                    state: normalizedState,
+                    frequency: normalizedFrequency,
+                });
+                const res = await axiosGet(`/contract/templates?${params.toString()}`);
+                const rows = (res?.data?.data ?? []) as DisclosureTemplateLookupRow[];
+                const platformRows = Array.isArray(rows)
+                    ? rows.filter(isPlatformScopedBoldSignTemplateRow)
+                    : [];
+                const match = pickDisclosureTemplateForFrequency(
+                    platformRows,
+                    normalizedFrequency,
+                );
+                return match?.id ? String(match.id) : null;
+            };
+
+            if (docsFunderId) {
+                const funderLayoutKey = funderDisclosureLayoutKeyForState(
+                    docsFunderId,
+                    normalizedState,
+                    normalizedFrequency,
+                );
+                const funderParams = new URLSearchParams({
+                    type: "disclosure",
+                    layoutKey: funderLayoutKey,
+                });
+                const funderRes = await axiosGet(`/contract/templates?${funderParams.toString()}`);
+                const funderRows = (funderRes?.data?.data ?? []) as DisclosureTemplateLookupRow[];
+                const funderMatch = Array.isArray(funderRows)
+                    ? funderRows.find((row) => String(row?.pdfUrl ?? "").trim())
+                    : undefined;
+                if (funderMatch?.id) return String(funderMatch.id);
+                return null;
             }
-            const params = new URLSearchParams({
-                type: "disclosure",
-                state: normalizedState,
-                frequency: normalizedFrequency,
-            });
-            const res = await axiosGet(`/contract/templates?${params.toString()}`);
-            const rows = (res?.data?.data ?? []) as DisclosureTemplateLookupRow[];
-            const match = Array.isArray(rows)
-                ? pickDisclosureTemplateForFrequency(rows, normalizedFrequency)
-                : undefined;
-            return match?.id ? String(match.id) : null;
+
+            return lookupPlatformDisclosure();
         },
         [funders, selectedFunder],
     );

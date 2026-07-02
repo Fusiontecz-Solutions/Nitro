@@ -62,3 +62,12 @@ export function isFunderAddendumRow(row: FunderDocumentTemplateRow): boolean {
     key.endsWith("_ach_authorization")
   );
 }
+
+/** Platform Katan disclosures — exclude funder-owned layout keys from state/frequency lookup. */
+export function isPlatformScopedBoldSignTemplateRow(row: {
+  layoutKey?: string | null;
+}): boolean {
+  const key = String(row?.layoutKey ?? "").trim();
+  if (!key) return true;
+  return !key.startsWith("funder_");
+}
