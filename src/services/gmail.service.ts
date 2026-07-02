@@ -18,7 +18,101 @@ import {
 } from './pdfFileDedupeService';
 
 const GMAIL_BASE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me';
+const IN_CRM_GMAIL_LABEL_NAME = 'in-crm';
 const inFlightAutoCreateMessageIds = new Set<string>();
+const inCrmLabelIdByUserId = new Map<string, string>();
+
+interface GmailLabelRecord {
+    id: string;
+    name: string;
+}
+
+async function resolveInCrmLabelId(accessToken: string, userId: string): Promise<string | null> {
+    if (!accessToken || !userId) return null;
+
+    const cached = inCrmLabelIdByUserId.get(userId);
+    if (cached) return cached;
+
+    try {
+        const listResponse = await axios.get(`${GMAIL_BASE_URL}/labels`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const labels = (listResponse.data?.labels ?? []) as GmailLabelRecord[];
+        const existing = labels.find(
+            (label) => String(label.name || '').trim().toLowerCase() === IN_CRM_GMAIL_LABEL_NAME,
+        );
+        if (existing?.id) {
+            inCrmLabelIdByUserId.set(userId, existing.id);
+            return existing.id;
+        }
+
+        const createResponse = await axios.post(
+            `${GMAIL_BASE_URL}/labels`,
+            {
+                name: IN_CRM_GMAIL_LABEL_NAME,
+                labelListVisibility: 'labelShow',
+                messageListVisibility: 'show',
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            },
+        );
+        const createdId = String(createResponse.data?.id || '').trim();
+        if (createdId) {
+            inCrmLabelIdByUserId.set(userId, createdId);
+            return createdId;
+        }
+    } catch (error: any) {
+        console.warn(
+            '[gmail] Failed to resolve in-crm label:',
+            error?.response?.data?.error?.message || error?.message || error,
+        );
+    }
+
+    return null;
+}
+
+async function addInCrmLabelToMessage(
+    messageId: string,
+    accessToken: string,
+    userId: string,
+): Promise<void> {
+    if (!messageId || !accessToken || !userId) return;
+
+    const labelId = await resolveInCrmLabelId(accessToken, userId);
+    if (!labelId) return;
+
+    try {
+        await axios.post(
+            `${GMAIL_BASE_URL}/messages/${messageId}/modify`,
+            { addLabelIds: [labelId] },
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            },
+        );
+    } catch (error: any) {
+        console.warn(
+            `Failed to add in-crm label to message ${messageId}:`,
+            error?.response?.data?.error?.message || error?.message || error,
+        );
+    }
+}
+
+/** Apply the Gmail user label `in-crm` to a message after CRM application creation. */
+export async function markGmailMessageInCrm(
+    messageId: string,
+    accessToken: string,
+    userId: string,
+): Promise<void> {
+    await addInCrmLabelToMessage(messageId, accessToken, userId);
+}
+
 
 /** Gmail allows ~50 concurrent in-flight requests per mailbox — stay well under that. */
 const GMAIL_MESSAGE_FETCH_CONCURRENCY = 8;
@@ -1014,6 +1108,7 @@ async function handleGmailSubjectFallbackOutcome(
         await recordGmailAutoCreateMessageHandled(userId, messageId, 'success', {
             applicationId: outcome.result.application?.id,
         });
+        await addInCrmLabelToMessage(messageId, accessToken, userId);
         await starMessage(messageId, accessToken);
         await markMessageAsRead(messageId, accessToken);
         return;
@@ -1190,9 +1285,7 @@ export async function autoCreateApplicationsFromEmails(
                         attachmentId,
                         accessToken,
                     );
-                    const pdfContentHash = sha256PdfContent(
-                        Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer as any),
-                    );
+                    const pdfContentHash = sha256PdfContent(Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer as any));
 
                     if (
                         await hasRecentGmailPdfContentHash({
@@ -1259,6 +1352,7 @@ export async function autoCreateApplicationsFromEmails(
                         applicationId: application.id,
                         pdfContentHash,
                     });
+                    await addInCrmLabelToMessage(msg.id, accessToken, userId);
                     processedAnyPdf = true;
                 } catch (pdfError: unknown) {
                     const pm = pdfError instanceof Error ? pdfError.message : String(pdfError);
@@ -1290,6 +1384,7 @@ export async function autoCreateApplicationsFromEmails(
                         await recordGmailAutoCreateMessageHandled(userId, msg.id, 'success', {
                             applicationId: fallbackOutcome.result.application?.id,
                         });
+                        await addInCrmLabelToMessage(msg.id, accessToken, userId);
                         await starMessage(msg.id, accessToken);
                     } else if (fallbackOutcome?.kind === 'duplicate') {
                         processedAnyPdf = true;

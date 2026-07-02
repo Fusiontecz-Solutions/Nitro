@@ -9,6 +9,7 @@ import {
     fetchAllEmails,
     getMessageDetails,
     autoCreateApplicationsFromEmails,
+    markGmailMessageInCrm,
     sendEmail,
 } from '../services/gmail.service';
 import sendMail, {
@@ -340,6 +341,44 @@ export async function autoCreateFromEmails(req: Request, res: Response): Promise
         res.status(500).json({
             success: false,
             message: error.message || 'Failed to auto-create applications from emails',
+        });
+    }
+}
+
+/**
+ * POST /api/gmail/message/:messageId/in-crm
+ * Adds the Gmail user label `in-crm` to the message (visible in Gmail).
+ */
+export async function markMessageInCrm(req: Request, res: Response): Promise<void> {
+    try {
+        const { messageId } = req.params;
+        const { accessToken } = req.body;
+        const userId = (req as any).user?.id;
+
+        if (!messageId) {
+            res.status(400).json({ success: false, message: 'messageId is required' });
+            return;
+        }
+        if (!accessToken) {
+            res.status(400).json({ success: false, message: 'Access token is required' });
+            return;
+        }
+        if (!userId) {
+            res.status(401).json({ success: false, message: 'User authentication required' });
+            return;
+        }
+
+        await markGmailMessageInCrm(messageId, accessToken, userId);
+
+        res.status(200).json({
+            success: true,
+            message: 'Gmail message labeled in-crm',
+        });
+    } catch (error: any) {
+        console.error('Mark Gmail message in-crm error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to label Gmail message in-crm',
         });
     }
 }
