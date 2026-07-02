@@ -388,7 +388,10 @@ export async function resolveSupplementalRefsFromDb(filters: {
   if (type) where.type = type;
 
   const rows = await prisma.boldSignTemplate.findMany({
-    where,
+    where: {
+      ...where,
+      OR: [{ layoutKey: null }, { NOT: { layoutKey: { startsWith: 'funder_' } } }],
+    },
     select: { id: true, pdfUrl: true },
   });
   return [...new Set(rows.filter((r) => r.pdfUrl).map((r) => r.id))];
