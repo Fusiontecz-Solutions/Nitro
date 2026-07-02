@@ -8,6 +8,7 @@ import {
     isQueueEligibleForContractReinitiation,
     offerDecisionValuesChanged,
 } from '../services/contractReinitiationService';
+import { recordContractWorkflowActivityLog } from '../services/contractWorkflowActivityLog';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -268,6 +269,28 @@ class OfferDecisionController {
           isQueueEligibleForContractReinitiation(app.currentQueue)
         ) {
           await flagNeedsContractReinitiation(app.id);
+          await recordContractWorkflowActivityLog(
+            app.id,
+            'REINITIATION_REQUIRED',
+            {
+              user: authUserFromReq(req),
+              req,
+              actorName: String((req as any).user?.name || ''),
+              source: 'offerDecisionController.upsert',
+            },
+            {
+              previousStatus: `${app.currentQueue ?? ''} / ${app.currentState ?? ''}`.trim(),
+              metadata: {
+                contractId: existingContract.id,
+                priorOffer: priorOfferDecision?.offer ?? null,
+                newOffer: result.offer ?? null,
+                priorRate: priorOfferDecision?.rate ?? null,
+                newRate: result.rate ?? null,
+                priorTotalRemit: priorOfferDecision?.totalRemit ?? null,
+                newTotalRemit: result.totalRemit ?? null,
+              },
+            },
+          );
         }
       } catch (reinitErr) {
         console.error(

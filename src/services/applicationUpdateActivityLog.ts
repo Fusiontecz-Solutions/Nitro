@@ -154,9 +154,40 @@ function buildChangeSummary(changes: ApplicationFieldChange[]): string {
   return `updated ${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
 }
 
+function normalizeContractQueueToken(value: string | null | undefined): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+}
+
+function contractQueueTransitionDescription(
+  actorPrefix: string,
+  previousQueue: string | null | undefined,
+  nextQueue: string | null | undefined,
+): string | null {
+  const next = normalizeContractQueueToken(nextQueue);
+  const prev = normalizeContractQueueToken(previousQueue);
+
+  if (next === 'contractpending' && prev !== 'contractpending') {
+    return `${actorPrefix} started contract generation (moved deal to Contract Pending).`.trim();
+  }
+  if (next === 'contractgenerated' && prev !== 'contractgenerated') {
+    return `${actorPrefix} advanced contract generation (moved deal to Contract Generated).`.trim();
+  }
+  return null;
+}
+
 function resolveActionType(changes: ApplicationFieldChange[]): ApplicationActivityActionType {
   const fields = new Set(changes.map((c) => c.field));
-  if (fields.has('currentQueue')) return 'QUEUE_CHANGED';
+  const queueChange = changes.find((c) => c.field === 'currentQueue');
+  if (queueChange) {
+    const next = normalizeContractQueueToken(queueChange.current);
+    if (next === 'contractpending' || next === 'contractgenerated') {
+      return 'CONTRACT_GENERATED';
+    }
+    return 'QUEUE_CHANGED';
+  }
   if (fields.has('currentState')) return 'STATUS_CHANGED';
   return 'APPLICATION_UPDATED';
 }
@@ -178,19 +209,27 @@ export async function recordApplicationUpdateActivityLog(input: {
 
   if (changes.length === 1) {
     const change = changes[0];
+    const contractDescription =
+      change.field === 'currentQueue'
+        ? contractQueueTransitionDescription(actorPrefix, change.previous, change.current)
+        : null;
     return recordApplicationSubActivity({
       req,
       applicationId: after.id,
       user,
       actionType: resolveActionType(changes),
       description:
+        contractDescription ??
         `${actorPrefix} changed ${change.label}: ` +
-        `${change.previous ?? '—'} → ${change.current ?? '—'}.`,
+          `${change.previous ?? '—'} → ${change.current ?? '—'}.`,
       subAction: 'FIELD_CHANGED',
       change,
       previousStatus,
       currentStatus,
       markLogged: true,
+      details: contractDescription
+        ? { category: 'CONTRACT', contractWorkflowStep: 'QUEUE_ADVANCED' }
+        : undefined,
     });
   }
 

@@ -809,6 +809,7 @@ export const mapApplicationToApi = (app: any) => {
         assignedUnderwriterId,
         assignedUnderwriter,
         needsContractReinitiation,
+        isoUpdatedOfferApproved,
         isoQueryResolved,
         ...rest
     } = app;
@@ -969,6 +970,7 @@ export const mapApplicationToApi = (app: any) => {
         assignedUnderwriterId: assignedUnderwriterId ?? undefined,
         assignedUnderwriter: mapUserLite(assignedUnderwriter),
         needsContractReinitiation: needsContractReinitiation === true,
+        isoUpdatedOfferApproved: isoUpdatedOfferApproved === true,
         isoQueryResolved: isoQueryResolved === true,
         client: mappedClient,
         iso: iso
@@ -6710,7 +6712,12 @@ class ApplicationController {
             const shouldReinitiateContract = !!resend && !!reinitiateContract;
             if (shouldReinitiateContract) {
                 try {
-                    await reinitiateContractForApplication(String(fallbackId));
+                    await reinitiateContractForApplication(String(fallbackId), {
+                        user: getAuthenticatedUser(req),
+                        req,
+                        actorName: String((req as any).user?.name || ''),
+                        source: 'applicationController.sendApprovalEmail',
+                    });
                 } catch (reinitErr) {
                     console.error(
                         'Send approval email: contract reinitiation failed:',
@@ -6828,7 +6835,12 @@ class ApplicationController {
                 });
             }
 
-            const ok = await reinitiateContractForApplication(String((application as any).id));
+            const ok = await reinitiateContractForApplication(String((application as any).id), {
+                user: authUser,
+                req,
+                actorName: String((req as any).user?.name || ''),
+                source: 'applicationController.reinitiateContract',
+            });
             if (!ok) {
                 return res.status(404).json({
                     success: false,

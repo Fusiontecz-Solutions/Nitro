@@ -114,6 +114,8 @@ export async function aggregateOperationsDashboardSummary(
         approvedByIsoCount,
         finalApprovalCount,
         finalCount,
+        reinitiateContractCount,
+        signedContractCount,
     ] = await Promise.all([
         countApplicationsForPipelineStage(authUser, 'Agent'),
         countApplicationsForPipelineStage(authUser, 'Scrubbing'),
@@ -123,11 +125,13 @@ export async function aggregateOperationsDashboardSummary(
         countApplicationsForPipelineStage(authUser, 'Approved_By_ISO'),
         countApplicationsForPipelineStage(authUser, 'Final_Approval'),
         countApplicationsForPipelineStage(authUser, 'Final'),
+        countApplicationsForPipelineStage(authUser, 'Reinitiate_Contract'),
+        countApplicationsForPipelineStage(authUser, 'Contract_Signed'),
     ]);
 
     const contractPending = counts.Contract_Pending;
     const contractsOut = counts.Contract_Sent;
-    const signedContracts = counts.Contract_Signed;
+    const signedContracts = signedContractCount;
     const fundingCall = counts['Funding Call'];
     const disbursment = counts.Disbursment;
     const funded = counts.Funded;
@@ -163,6 +167,7 @@ export async function aggregateOperationsDashboardSummary(
             'Contract_Pending': contractPending,
             Contract_Sent: contractsOut,
             Contract_Signed: signedContracts,
+            Reinitiate_Contract: reinitiateContractCount,
             Final: finalCount,
             'Funding Call': fundingCall,
             Disbursment: disbursment,

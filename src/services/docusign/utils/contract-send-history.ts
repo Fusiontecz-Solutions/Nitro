@@ -4,13 +4,74 @@ import prisma from '../../../config/prismaClient';
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = 'contractSendHistory';
 
+/** Contract terms captured when a main-contract envelope is archived. */
+export type ContractSendHistoryTermsSnapshot = {
+  approvedAmount?: number | null;
+  totalAmount?: number | null;
+  contractLength?: number | null;
+  term?: string | null;
+  position?: string | null;
+  buyRate?: number | null;
+  factorRate?: number | null;
+  paymentAmount?: number | null;
+  paybackAmount?: number | null;
+  percentOfGross?: number | null;
+};
+
 export type ContractSendHistoryEntry = {
   envelopeId: string;
   status: string;
   sentAt?: string | null;
   completedAt?: string | null;
   archivedAt: string;
+  termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
 };
+
+/** Coerce Prisma Decimal / numeric strings into plain numbers for JSON snapshots. */
+function toSnapshotNumber(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'object' && value !== null && 'toNumber' in value) {
+    const n = Number((value as { toNumber: () => number }).toNumber());
+    return Number.isFinite(n) ? n : null;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function buildContractSendHistoryTermsSnapshot(
+  contract: Record<string, unknown> | null | undefined,
+): ContractSendHistoryTermsSnapshot | undefined {
+  if (!contract) return undefined;
+  const terms = Array.isArray(contract.termsOffers)
+    ? (contract.termsOffers[0] as Record<string, unknown> | undefined)
+    : undefined;
+  const offer =
+    contract.offer != null && typeof contract.offer === 'object'
+      ? (contract.offer as Record<string, unknown>)
+      : null;
+  return {
+    approvedAmount:
+      toSnapshotNumber(contract.approvedAmount) ??
+      toSnapshotNumber(terms?.approvedAmount) ??
+      toSnapshotNumber(offer?.offer),
+    totalAmount:
+      toSnapshotNumber(contract.totalAmount) ??
+      toSnapshotNumber(terms?.paybackAmount) ??
+      toSnapshotNumber(offer?.totalRemit),
+    contractLength:
+      toSnapshotNumber(contract.contractLenght) ?? toSnapshotNumber(terms?.termLength),
+    term: offer?.term != null ? String(offer.term) : null,
+    position: terms?.position != null ? String(terms.position) : null,
+    buyRate: toSnapshotNumber(terms?.buyRate) ?? toSnapshotNumber(offer?.rate),
+    factorRate: toSnapshotNumber(terms?.factorRate),
+    paymentAmount:
+      toSnapshotNumber(terms?.paymentAmount) ?? toSnapshotNumber(offer?.repayPerPeriod),
+    paybackAmount:
+      toSnapshotNumber(terms?.paybackAmount) ?? toSnapshotNumber(offer?.totalRemit),
+    percentOfGross: toSnapshotNumber(terms?.percentOfGross),
+  };
+}
 
 const COMPLETED_ENVELOPE_STATUSES = new Set([
   'completed',
@@ -57,20 +118,31 @@ export function parseContractSendHistoryFromPrefill(raw: unknown): ContractSendH
     const o = item as Record<string, unknown>;
     const envelopeId = String(o.envelopeId ?? '').trim();
     if (!envelopeId) continue;
-    out.push({
-      envelopeId,
-      status: String(o.status ?? 'draft').trim().toLowerCase(),
-      sentAt: o.sentAt != null ? String(o.sentAt) : null,
-      completedAt: o.completedAt != null ? String(o.completedAt) : null,
-      archivedAt: String(o.archivedAt ?? new Date(0).toISOString()),
-    });
+        const rawSnapshot = o.termsSnapshot;
+        const termsSnapshot =
+          rawSnapshot != null &&
+          typeof rawSnapshot === 'object' &&
+          !Array.isArray(rawSnapshot)
+            ? (rawSnapshot as ContractSendHistoryTermsSnapshot)
+            : null;
+        out.push({
+            envelopeId,
+            status: String(o.status ?? 'draft').trim().toLowerCase(),
+            sentAt: o.sentAt != null ? String(o.sentAt) : null,
+            completedAt: o.completedAt != null ? String(o.completedAt) : null,
+            archivedAt: String(o.archivedAt ?? new Date(0).toISOString()),
+            termsSnapshot,
+        });
   }
   return out;
 }
 
 export function appendContractSendHistoryEntry(
   baseRaw: unknown,
-  entry: Omit<ContractSendHistoryEntry, 'archivedAt'> & { archivedAt?: string },
+  entry: Omit<ContractSendHistoryEntry, 'archivedAt'> & {
+    archivedAt?: string;
+    termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
+  },
 ): Record<string, unknown> {
   const base =
     baseRaw && typeof baseRaw === 'object' && !Array.isArray(baseRaw)
@@ -87,6 +159,7 @@ export function appendContractSendHistoryEntry(
     sentAt: entry.sentAt ?? null,
     completedAt: entry.completedAt ?? null,
     archivedAt: entry.archivedAt ?? new Date().toISOString(),
+    termsSnapshot: entry.termsSnapshot ?? null,
   };
 
   return {
@@ -167,6 +240,7 @@ export async function archiveMainContractEnvelopeToHistory(
     status: string;
     sentAt?: Date | string | null;
     completedAt?: Date | string | null;
+    termsSnapshot?: ContractSendHistoryTermsSnapshot | null;
   },
 ): Promise<boolean> {
   const appId = String(applicationId || '').trim();
@@ -185,6 +259,7 @@ export async function archiveMainContractEnvelopeToHistory(
     sentAt: snapshot.sentAt ? new Date(snapshot.sentAt).toISOString() : null,
     completedAt: snapshot.completedAt ? new Date(snapshot.completedAt).toISOString() : null,
     archivedAt: new Date().toISOString(),
+    termsSnapshot: snapshot.termsSnapshot ?? null,
   });
 
   await prisma.contract.update({

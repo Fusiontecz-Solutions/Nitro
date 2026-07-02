@@ -1185,15 +1185,10 @@ class ContractService {
             data: {
               currentQueue: 'Contract Pending',
               currentState: 'Contract_Pending',
-              needsContractReinitiation: false,
             },
           });
-        } else {
-          await tx.application.update({
-            where: { id: data.applicationId },
-            data: { needsContractReinitiation: false },
-          });
         }
+        await clearNeedsContractReinitiation(String(data.applicationId));
       }
 
       return mapContractRecordForApi(created);

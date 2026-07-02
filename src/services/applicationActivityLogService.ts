@@ -23,7 +23,12 @@ export type ApplicationActivityActionType =
   | 'PAYMENT_MAIL_SENT'
   | 'PAYMENT_MAIL_FAILED'
   | 'PAYMENT_MAIL_QUEUED'
-  | 'CONTRACT_SIGNING_STATUS';
+  | 'CONTRACT_SIGNING_STATUS'
+  | 'CONTRACT_REINITIATION_REQUIRED'
+  | 'CONTRACT_REINITIATED'
+  | 'CONTRACT_GENERATED'
+  | 'CONTRACT_DRAFT_CREATED'
+  | 'CONTRACT_ENVELOPE_SENT';
 
 export interface CreateApplicationActivityLogInput {
   applicationId: string | null;

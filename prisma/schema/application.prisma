@@ -237,6 +237,8 @@ model Application {
   organization             String?
   /// True when UW updated the offer after a contract was generated — requires ISO re-approval and contract regeneration.
   needsContractReinitiation  Boolean                       @default(false)
+  /// ISO approved the updated offer while {@link needsContractReinitiation} is true.
+  isoUpdatedOfferApproved    Boolean                       @default(false)
   /// Underwriter marked the ISO comment thread as resolved — hides deal from ISO Query pipeline until a new ISO comment arrives.
   isoQueryResolved           Boolean                       @default(false)
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])

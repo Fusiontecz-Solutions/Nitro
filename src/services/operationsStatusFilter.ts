@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { awaitingNewContractReinitiationWhere } from './contractReinitiationService';
 
 type ApplicationState =
     | 'DRAFT'
@@ -313,15 +314,39 @@ const CONTRACT_SIGNED_QUEUE_STRICT = [
     'SignedContracts',
 ];
 
+/** Applications flagged for contract regeneration after offer changes post-signature. */
+export function reinitiateContractMatchWhere(): Prisma.ApplicationWhereInput {
+    return awaitingNewContractReinitiationWhere();
+}
+
+/** Exclude deals that belong in the Reinitiate_Contract pipeline bucket. */
+export function excludeNeedsContractReinitiationWhere(): Prisma.ApplicationWhereInput {
+    return { NOT: { needsContractReinitiation: true } };
+}
+
+function andExcludeNeedsContractReinitiation(
+    where: Prisma.ApplicationWhereInput,
+): Prisma.ApplicationWhereInput {
+    return {
+        AND: [where, excludeNeedsContractReinitiationWhere()],
+    };
+}
+
 /**
  * Strict contract-signed: `currentState` in SIGNED_CONTRACTS spellings **or** `currentQueue`
  * matches explicit signed-contract labels (operations “Contract Signed” card drill-down).
+ * Excludes deals awaiting contract reinitiation (shown under Reinitiate_Contract).
  */
 export function signedContractsStrictMatchWhere(): Prisma.ApplicationWhereInput {
     return {
-        OR: [
-            { currentState: { in: expandStoredCurrentStateValues('SIGNED_CONTRACTS') } },
-            { currentQueue: { in: CONTRACT_SIGNED_QUEUE_STRICT } },
+        AND: [
+            {
+                OR: [
+                    { currentState: { in: expandStoredCurrentStateValues('SIGNED_CONTRACTS') } },
+                    { currentQueue: { in: CONTRACT_SIGNED_QUEUE_STRICT } },
+                ],
+            },
+            { NOT: { needsContractReinitiation: true } },
         ],
     };
 }
@@ -521,7 +546,7 @@ export const isApprovedPipelineKey = (value: string): boolean => {
 
 /** Final underwriter approved; queue is Underwriter Approved (source of truth). */
 export function approvedByUwMatchWhere(): Prisma.ApplicationWhereInput {
-    return uwApprovedBucketWhere;
+    return andExcludeNeedsContractReinitiation(uwApprovedBucketWhere);
 }
 
 /**
@@ -544,6 +569,7 @@ function progressedPastApprovalSentMatchWhere(): Prisma.ApplicationWhereInput {
                     { currentState: { equals: 'Approved', mode: 'insensitive' } },
                 ],
             },
+            reinitiateContractMatchWhere(),
             contractPendingStrictMatchWhere(),
             contractGeneratedStrictMatchWhere(),
             contractSentStrictMatchWhere(),
@@ -569,6 +595,7 @@ function progressedPastApprovalSentMatchWhere(): Prisma.ApplicationWhereInput {
 function progressedPastIsoApprovedMatchWhere(): Prisma.ApplicationWhereInput {
     return {
         OR: [
+            reinitiateContractMatchWhere(),
             contractPendingStrictMatchWhere(),
             contractGeneratedStrictMatchWhere(),
             contractSentStrictMatchWhere(),
@@ -601,7 +628,7 @@ export function approvalSentMatchWhere(): Prisma.ApplicationWhereInput {
         NOT: { currentQueue: { equals: 'Underwriter Approved', mode: 'insensitive' } },
     };
 
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             approvalSentQueueWhere,
             {
@@ -613,7 +640,7 @@ export function approvalSentMatchWhere(): Prisma.ApplicationWhereInput {
                 ],
             },
         ],
-    };
+    });
 }
 
 /** ISO approved via portal — deal is ready for contract generation. */
@@ -640,7 +667,7 @@ export function approvedByIsoMatchWhere(): Prisma.ApplicationWhereInput {
         ],
     };
 
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             isoApprovedQueueWhere,
             legacyIsoApprovedQueueWhere,
@@ -651,7 +678,7 @@ export function approvedByIsoMatchWhere(): Prisma.ApplicationWhereInput {
                 ],
             },
         ],
-    };
+    });
 }
 
 /** Umbrella `operationsStatus=Approved`: all approval workflow substages. */
@@ -744,6 +771,9 @@ export function buildOperationsStatusFilterWhere(
     }
     if (canonical === 'Contract_Signed') {
         return signedContractsStrictMatchWhere();
+    }
+    if (canonical === 'Reinitiate_Contract') {
+        return reinitiateContractMatchWhere();
     }
     if (canonical === 'Agent') {
         return agentPipelineMatchWhere();
