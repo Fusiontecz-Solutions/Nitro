@@ -1262,6 +1262,8 @@ const PDFViewerModal = ({
     const [resolvedContract, setResolvedContract] = useState<Record<string, unknown> | null>(null);
     /** After the first contract meta fetch for this dialog open, prefer DB overrides over legacy application note. */
     const [contractPrefillLoaded, setContractPrefillLoaded] = useState(false);
+    /** Avoid re-entering the prefill loading state when unrelated application refetches occur. */
+    const contractPrefillLoadKeyRef = useRef<string | null>(null);
     const sessionEnvelopeHydratedRef = useRef(false);
 
     useEffect(() => {
@@ -1543,6 +1545,8 @@ const PDFViewerModal = ({
         (state: RootState) => state.uploadedContractDocuments,
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
+    const applicationDataRef = useRef(applicationData);
+    applicationDataRef.current = applicationData;
     const applicationClient = applicationData?.client;
     const { owners: fullClientOwners } = useApplicationClientOwners(applicationClient);
     const applicationForOwnerResolution = useMemo(
@@ -2057,6 +2061,7 @@ const PDFViewerModal = ({
 
     useEffect(() => {
         if (!isOpen) {
+            contractPrefillLoadKeyRef.current = null;
             setResolvedContractId(null);
             setSelectedState("");
             setSelectedFunder("");
@@ -2081,15 +2086,21 @@ const PDFViewerModal = ({
             prefilledBoldSignPdfUrlRef.current = null;
             return;
         }
-        setContractPrefillLoaded(false);
         const propId = Number(contractId);
         const appId = applicationIdForLookup;
+        const loadKey = `${appId ?? ""}:${Number.isFinite(propId) ? propId : ""}`;
+        const isNewContractLoad = contractPrefillLoadKeyRef.current !== loadKey;
+        contractPrefillLoadKeyRef.current = loadKey;
+        if (isNewContractLoad) {
+            setContractPrefillLoaded(false);
+        }
         const applyContractMeta = (contract: unknown) => {
             const c = contract as { state?: unknown; funderName?: unknown; contractPrefillOverrides?: unknown } | null;
             setResolvedContract(c && typeof c === "object" ? (c as Record<string, unknown>) : null);
             let stateForSelect = pickUsStateForSelect(c?.state);
-            if (!stateForSelect && applicationData) {
-                const ad = applicationData as Record<string, unknown>;
+            const applicationDataSnapshot = applicationDataRef.current;
+            if (!stateForSelect && applicationDataSnapshot) {
+                const ad = applicationDataSnapshot as Record<string, unknown>;
                 const bi0 = Array.isArray(ad.businessInfo)
                     ? (ad.businessInfo[0] as Record<string, unknown>)
                     : undefined;
@@ -2189,7 +2200,7 @@ const PDFViewerModal = ({
         return () => {
             cancelled = true;
         };
-    }, [isOpen, contractId, applicationIdForLookup, applicationData, dispatch]);
+    }, [isOpen, contractId, applicationIdForLookup, dispatch]);
 
     const effectiveContractId = useMemo(() => {
         if (resolvedContractId != null && Number.isFinite(resolvedContractId)) {
