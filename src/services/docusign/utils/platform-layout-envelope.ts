@@ -10,7 +10,7 @@ import {
   normalizeSupplementalLayoutKeys,
   findBoldSignTemplatePdfUrlByExactLayoutKey,
 } from '../platform-document-registry';
-import { isFunderContractLayoutKey, funderSupplementalLayoutKey } from '../../../utils/funderContractLayout';
+import { isFunderContractLayoutKey, funderSupplementalLayoutKeyForDocument, resolveFunderSupplementalStorageType } from '../../../utils/funderContractLayout';
 import type { DocumentLayout } from './convert-docusign-template-export';
 import {
   buildEnvelopeFromLayouts,
@@ -28,6 +28,7 @@ import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
 import { maybeAppendReverseDisbursementToMainContractLayout } from '../../pdf/reverseDisbursementSchedule.service';
 import { resolveFunderProfile, type SerializedFunderProfile } from '../../funderProfileService';
 import { resolveDocumentsLayoutFunderId, resolveFunderSupplementalDocumentDisplayName } from '../../../utils/funderDocumentSource';
+import { isAllianceFunderProfile } from '../../../utils/funderProfileResolver';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
   process.env.DOCUSIGN_SECONDARY_ROLE_NAME || PLATFORM_SIGNER_SLOTS[1].roleName;
@@ -144,14 +145,17 @@ export async function loadSupplementalLayoutPackage(
   if (isDocumentLayoutKey(sourceRef)) {
     const layout = getDocumentLayout(sourceRef);
     if (funder?.id) {
-      const docsFunderId = resolveDocumentsLayoutFunderId(funder);
+      const docsFunderId =
+        resolveDocumentsLayoutFunderId(funder) ||
+        (isAllianceFunderProfile(funder) ? funder.id : null);
       if (docsFunderId) {
-        const scopedKey = funderSupplementalLayoutKey(docsFunderId, sourceRef);
+        const storageType = resolveFunderSupplementalStorageType(sourceRef);
+        const scopedKey = funderSupplementalLayoutKeyForDocument(docsFunderId, sourceRef);
         let scopedPdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(scopedKey);
         if (!scopedPdfUrl) {
           const typedRow = await prisma.boldSignTemplate.findFirst({
             where: {
-              type: sourceRef,
+              type: storageType,
               OR: [
                 { layoutKey: { startsWith: `funder_${docsFunderId}_` } },
                 { templateId: { startsWith: `funder_${docsFunderId}_` } },
@@ -172,7 +176,7 @@ export async function loadSupplementalLayoutPackage(
             ...layout,
             key: scopedKey,
             name: resolveFunderSupplementalDocumentDisplayName(
-              sourceRef,
+              storageType,
               funder,
               row?.name,
               layout.name,

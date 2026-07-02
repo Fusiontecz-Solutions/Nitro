@@ -1,7 +1,7 @@
 {
   "layoutVersion": 1,
   "key": "ach_authorization_standalone",
-  "name": "Katan LLC ACH Authorization (standalone)",
+  "name": "Katan LLC ACH Authorization",
   "skipOwner2InitialMirror": true,
   "legacyDocuSignTemplateId": "15a61a5b-af2f-41cb-aaad-68bded7ffa3e",
   "document": {

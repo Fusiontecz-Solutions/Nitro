@@ -94,6 +94,7 @@ import { isFunderContractLayoutKey } from '../../utils/funderContractLayout';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
 import { isFillAtSigningTabRef } from './utils/build-envelope-from-layout';
 import {
+  findAchEnvelopeAuthHints,
   findApplicationIdByAchEnvelopeId,
   isStandaloneAchEnvelope,
   linkAchAuthorizationEnvelopeToContract,
@@ -532,6 +533,12 @@ export class DocusignService {
     const explicit = String(hints.funderName ?? '').trim();
     if (explicit) return explicit;
 
+    const eid = String(hints.envelopeId ?? '').trim();
+    if (eid) {
+      const achHints = await findAchEnvelopeAuthHints(eid);
+      if (achHints?.funderName) return achHints.funderName;
+    }
+
     const contractId = Number(hints.contractId);
     if (Number.isFinite(contractId) && contractId > 0) {
       const contract = await prisma.contract.findUnique({
@@ -543,9 +550,12 @@ export class DocusignService {
     }
 
     let applicationId = String(hints.applicationId ?? '').trim();
-    if (!applicationId) {
-      const eid = String(hints.envelopeId ?? '').trim();
-      if (eid) {
+    if (!applicationId && eid) {
+      const achHints = await findAchEnvelopeAuthHints(eid);
+      if (achHints?.applicationId) {
+        applicationId = achHints.applicationId;
+      }
+      if (!applicationId) {
         const doc = await prisma.document.findFirst({
           where: { envelopeId: eid },
           select: { applicationId: true },
@@ -594,8 +604,18 @@ export class DocusignService {
       contractId?: number;
     },
   ) {
-    const funderName = await this.resolveFunderNameForEnvelopeAuth(hints);
-    const contractState = await this.resolveContractStateForAuth(hints.contractId);
+    const eid = String(hints.envelopeId ?? '').trim();
+    const achHints = eid ? await findAchEnvelopeAuthHints(eid) : null;
+    const mergedHints = {
+      ...hints,
+      applicationId: hints.applicationId || achHints?.applicationId || undefined,
+      contractId:
+        hints.contractId ||
+        (achHints?.contractId && achHints.contractId > 0 ? achHints.contractId : undefined),
+      funderName: hints.funderName || achHints?.funderName || undefined,
+    };
+    const funderName = await this.resolveFunderNameForEnvelopeAuth(mergedHints);
+    const contractState = await this.resolveContractStateForAuth(mergedHints.contractId);
     return this.getAuthContext(userId, {
       funderName: funderName || undefined,
       contractState,
@@ -3767,6 +3787,7 @@ export class DocusignService {
           envelopeId,
           'draft',
           resolvedContractId,
+          options.funderName,
         );
       } else {
         await linkStandalonePackageEnvelopeToContract(
@@ -4629,8 +4650,16 @@ export class DocusignService {
     );
   }
 
-  async downloadSignedPdf(userId: string, documentId: string) {
-    return this.downloadDocumentPdfByEnvelopeId(userId, documentId);
+  async downloadSignedPdf(
+    userId: string,
+    documentId: string,
+    options?: {
+      funderName?: string | null;
+      applicationId?: string;
+      contractId?: number;
+    },
+  ) {
+    return this.downloadDocumentPdfByEnvelopeId(userId, documentId, options);
   }
 
   async fetchSignedDocumentPdf(userId: string, envelopeId: string) {

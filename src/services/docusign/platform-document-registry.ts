@@ -43,7 +43,7 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
   },
   [DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone]: {
     layoutKey: DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone,
-    name: 'Katan LLC ACH Authorization (standalone)',
+    name: 'Katan LLC ACH Authorization',
     type: 'ach_authorization',
   },
 };
