@@ -20,7 +20,7 @@ router.get('/me', authenticateToken, getGmailLinkedAccount);
 /**
  * POST /api/gmail/sync
  */
-router.post('/sync', syncGmail);
+router.post('/sync', authenticateToken, syncGmail);
 
 /**
  * GET /api/gmail/message/:messageId
