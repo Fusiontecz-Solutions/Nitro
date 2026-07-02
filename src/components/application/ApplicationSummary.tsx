@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Card, CardContent } from "../ui/card"
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -10,7 +10,11 @@ import { formatActionRequired } from "@/lib/formatActionRequired";
 import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel";
 import ApprovedByUnderwriterBadge from "./ApprovedByUnderwriterBadge";
 import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
-import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
+import {
+    getApplicationSummaryStatusLabel,
+    resolveApplicationTableCurrentQueue,
+} from "@/lib/applicationSummaryStatus";
+import { findApplicationListRowForRoute } from "@/lib/applicationDetailCache";
 import {
     OFFER_DECISION_UPDATED_EVENT,
     offerDecisionUpdateMatchesApplication,
@@ -35,6 +39,12 @@ function scrubberRecommendationBadgeClass(recommendation: string): string {
         : "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-200";
 }
 
+function formatScrubberRecommendationLabel(recommendation: string): string {
+    if (/recommend\s+decline/i.test(recommendation)) return "Decline";
+    if (/recommend\s+approval/i.test(recommendation)) return "Approve";
+    return recommendation;
+}
+
 const ApplicationSummary = ({
     isUnderwriter,
     showScrubberRequest,
@@ -44,6 +54,9 @@ const ApplicationSummary = ({
     const dispatch = useDispatch<AppDispatch>();
     const { loading: fetchLoading, data: applicationData } = useSelector(
         (state: RootState) => state.applicationDetail
+    );
+    const applicationsListRows = useSelector(
+        (state: RootState) => state.applications.data,
     );
     const { data: offerDecisionData, loading: offerDecisionLoading } = useSelector(
         (state: RootState) => state.offerDecision,
@@ -113,7 +126,6 @@ const ApplicationSummary = ({
     const offerDecisionSource =
         offerDecisionData ??
         (applicationData?.OfferDecision as Record<string, unknown> | null | undefined) ??
-        (applicationData?.offerDecision as Record<string, unknown> | null | undefined) ??
         null;
     const offerAmount = showDynamicData
         ? resolveApplicationOfferAmount(offerDecisionSource, latestTermsOffer)
@@ -130,8 +142,32 @@ const ApplicationSummary = ({
     const loanAmount = showDynamicData && applicationData?.loanAmount != null
         ? Number(applicationData.loanAmount)
         : null;
+    const matchingListRow = useMemo(() => {
+        if (!showDynamicData || !applicationData) return undefined;
+        const routeKey =
+            normalizedApplicationId ??
+            String(
+                (applicationData as { applicationId?: string | number; _id?: string })
+                    .applicationId ??
+                    (applicationData as { _id?: string })._id ??
+                    "",
+            ).trim();
+        if (!routeKey) return undefined;
+        return findApplicationListRowForRoute(routeKey, applicationsListRows);
+    }, [
+        showDynamicData,
+        applicationData,
+        normalizedApplicationId,
+        applicationsListRows,
+    ]);
+
     const status = showDynamicData
-        ? getApplicationSummaryStatusLabel(applicationData)
+        ? getApplicationSummaryStatusLabel({
+              currentQueue: resolveApplicationTableCurrentQueue(
+                  applicationData,
+                  matchingListRow,
+              ),
+          })
         : null;
     const actionRequired = showDynamicData ? formatActionRequired((applicationData as any)?.note) : "--";
     const isUnderwriterApproved = showDynamicData
@@ -220,7 +256,7 @@ const ApplicationSummary = ({
                 ) : (
                     <>
                         <p className="text-sm font-medium opacity-90 mb-1">Status</p>
-                        <p className="text-base font-semibold">{status ?? "-"}</p>
+                        <p className="text-base font-semibold capitalize">{status ?? "-"}</p>
                     </>
                 )}
             </div>
@@ -249,13 +285,13 @@ const ApplicationSummary = ({
                     ) : (
                         <>
                             <p className="text-sm font-medium opacity-90 mb-1">
-                                Scrubber Request
+                                Request
                             </p>
                             {scrubberRecommendation ? (
                                 <span
                                     className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold whitespace-nowrap ${scrubberRecommendationBadgeClass(scrubberRecommendation)}`}
                                 >
-                                    {scrubberRecommendation}
+                                    {formatScrubberRecommendationLabel(scrubberRecommendation)}
                                 </span>
                             ) : (
                                 <p className="text-base font-semibold">-</p>

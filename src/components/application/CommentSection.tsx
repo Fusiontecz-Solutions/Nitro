@@ -453,7 +453,11 @@ const CommentSection = ({
         ? "w-full @lg:w-[45%] @lg:min-w-0 flex flex-col min-h-0"
         : "w-full @lg:w-[60%] @lg:min-w-0 flex flex-col min-h-0";
 
-    const commentsCardHeightClass = compactLayout ? "h-[420px]" : "h-[695px]";
+    // In the paired compact layout the comment card should match the height of
+    // the sibling side component (ChecksAndDecision), whose height varies. Fill
+    // the stretched flex column (`items-stretch` on the parent) instead of a
+    // fixed pixel height so both columns stay equal.
+    const commentsCardHeightClass = compactLayout ? "h-full" : "h-[695px]";
     const commentsCardMarginClass = compactLayout ? "my-0" : "my-6 mt-0";
     const composeTextareaMinHClass = compactLayout ? "min-h-[72px]" : "min-h-[100px]";
 

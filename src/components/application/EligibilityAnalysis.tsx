@@ -374,7 +374,7 @@ export default function EligibilityAnalysis() {
               ) : isFinalApprovalStage ? (
                 "Sent for final approval"
               ) : (
-                "Send UNDERWRITER for final Approval"
+                "Send for Final Approval"
               )}
             </Button>
           </div>

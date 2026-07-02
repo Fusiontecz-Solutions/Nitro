@@ -88,7 +88,6 @@ type SidebarNavIcon = ComponentType<SvgIconProps>;
 type PipelineAccent =
   | "approved-by-uw"
   | "approval-sent"
-  | "approved-by-iso"
   | "contract-pending"
   | "contract-sent"
   | "contract-signed"
@@ -311,11 +310,6 @@ const dealPipelineSection: SidebarNavSection = {
           operationsStatus: "Approval_Sent",
           pipelineAccent: "approval-sent",
         },
-        {
-          label: operationsDashboardStatusTitle("Approved_By_ISO"),
-          operationsStatus: "Approved_By_ISO",
-          pipelineAccent: "approved-by-iso",
-        },
       ],
     },
     {
@@ -337,6 +331,11 @@ const dealPipelineSection: SidebarNavSection = {
         {
           label: operationsDashboardStatusTitle("Contract_Signed"),
           operationsStatus: "Contract_Signed",
+          pipelineAccent: "contract-signed",
+        },
+        {
+          label: operationsDashboardStatusTitle("Reinitiate_Contract"),
+          operationsStatus: "Reinitiate_Contract",
           pipelineAccent: "contract-signed",
         },
       ],

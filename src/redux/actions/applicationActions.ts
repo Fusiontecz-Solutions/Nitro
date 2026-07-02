@@ -830,7 +830,6 @@ export const sendApprovalEmail = createAsyncThunk(
         }: {
             applicationId: string | number;
             resend?: boolean;
-            reinitiateContract?: boolean;
             /** Archive prior contract envelope when resending updated offer to ISO. */
             reinitiateContract?: boolean;
             /** Branded HTML rendered by the frontend approval template (backend injects URL / names). */

@@ -36,6 +36,10 @@ const defaultCaseStageCounts: Record<string, number> = {
   Approval_Sent: 0,
   Approved_By_ISO: 0,
   Contracted: 0,
+  Contract_Pending: 0,
+  Contract_Sent: 0,
+  Contract_Signed: 0,
+  Reinitiate_Contract: 0,
   Final: 0,
   "Funding Call": 0,
   Declined: 0,
@@ -52,6 +56,7 @@ const defaultCaseStageAmounts: Record<string, number> = {
   Contract_Pending: 0,
   Contract_Sent: 0,
   Contract_Signed: 0,
+  Reinitiate_Contract: 0,
   Disbursment: 0,
   Funded: 0,
 };

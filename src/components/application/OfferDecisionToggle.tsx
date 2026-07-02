@@ -1477,7 +1477,7 @@ const OfferDecisionToggle: React.FC<OfferDecisionToggleProps> = (props) => {
                   : "bg-[#00b377] text-white cursor-pointer hover:bg-[#009e69] transform hover:-translate-y-0.5"
               } disabled:opacity-60 disabled:cursor-not-allowed`}
             >
-              {isApproveLoading ? "Saving..." : "Approve & Save"}
+              {isApproveLoading ? "Saving..." : "Scrubbed & Saved"}
             </button>
           </>
         )}

@@ -475,6 +475,7 @@ const ApprovedApplicationModal = ({
     const [reinitiateContractChecked, setReinitiateContractChecked] = useState(false);
     const isoEmailTouchedRef = useRef(false);
     const isoRecipientWasOpenRef = useRef(false);
+    const reinitiateContractTouchedRef = useRef(false);
 
     const linkedIso = (applicationData as { iso?: { name?: string; email?: string; phone?: string } | null })
         ?.iso;
@@ -562,12 +563,15 @@ const ApprovedApplicationModal = ({
     useEffect(() => {
         if (!open) {
             setReinitiateContractChecked(false);
+            reinitiateContractTouchedRef.current = false;
             return;
         }
         if (!resendApprovalEmail) {
             setReinitiateContractChecked(false);
+            reinitiateContractTouchedRef.current = false;
             return;
         }
+        if (reinitiateContractTouchedRef.current) return;
         setReinitiateContractChecked(
             reinitiateContract ??
                 applicationNeedsContractReinitiation(
@@ -1749,9 +1753,10 @@ const ApprovedApplicationModal = ({
                         <Checkbox
                             id="reinitiate-contract-on-resend"
                             checked={reinitiateContractChecked}
-                            onCheckedChange={(checked) =>
-                                setReinitiateContractChecked(checked === true)
-                            }
+                            onCheckedChange={(checked: boolean | "indeterminate") => {
+                                reinitiateContractTouchedRef.current = true;
+                                setReinitiateContractChecked(checked === true);
+                            }}
                             disabled={isSubmitting}
                             className="mt-0.5"
                         />
@@ -1883,7 +1888,7 @@ const ApprovedApplicationModal = ({
                     ) : (
                         <Button
                             type="button"
-                            onClick={handleSubmit(onSubmit)}
+                            onClick={handleSubmit((data) => onSubmit(data))}
                             disabled={
                                 offerDecisionLoading ||
                                 isSubmitting ||

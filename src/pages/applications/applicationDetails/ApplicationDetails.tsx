@@ -712,25 +712,23 @@ const ApplicationDetails = () => {
             dispatch(hydrateApplicationDetailFromCache({ success: true, data: seed }));
         }
 
-        const cachedBody = getCachedApplicationDetail(applicationId);
-        const cachedPayload = buildDetailHydrationPayload(cachedBody);
-        if (
-            cachedPayload &&
-            !routeParamMatchesApplication(applicationId, applicationDetailRef.current)
-        ) {
-            dispatch(hydrateApplicationDetailFromCache(cachedBody));
+        // Only warm from detail cache when there is no list/preview row — stale cache must not
+        // overwrite a fresher applications-table `currentQueue`.
+        if (!seed) {
+            const cachedBody = getCachedApplicationDetail(applicationId);
+            const cachedPayload = buildDetailHydrationPayload(cachedBody);
+            if (
+                cachedPayload &&
+                !routeParamMatchesApplication(applicationId, applicationDetailRef.current)
+            ) {
+                dispatch(hydrateApplicationDetailFromCache(cachedBody));
+            }
         }
 
-        const currentData = applicationDetailRef.current;
-        const shouldFetch =
-            !currentData ||
-            !routeParamMatchesApplication(applicationId, currentData);
-        if (shouldFetch) {
-            if (isNumericApplicationRouteParam(applicationId)) {
-                dispatch(getApplicationByApplicationId(applicationId));
-            } else {
-                dispatch(getApplicationById(applicationId));
-            }
+        if (isNumericApplicationRouteParam(applicationId)) {
+            dispatch(getApplicationByApplicationId(applicationId));
+        } else {
+            dispatch(getApplicationById(applicationId));
         }
     }, [applicationId, applicationsListRows, dispatch, location.state]);
 
@@ -912,8 +910,10 @@ const ApplicationDetails = () => {
                                             )}
                                         />
                                     <div className="flex flex-row gap-4 w-full mt-10 items-stretch">
-                                        <div className="flex-[7] min-w-0 flex flex-col">
-                                            <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                        <div className="flex-[7] min-w-0 relative">
+                                            <div className="absolute inset-0 flex flex-col">
+                                                <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                            </div>
                                         </div>
                                         <div className="flex-[3] min-w-0 flex flex-col">
                                             <ChecksAndDecision
@@ -1172,6 +1172,7 @@ const ApplicationDetails = () => {
                                                 <BankAnalysis
                                                     readOnly={bankAnalysisTabReadOnly}
                                                     enableCreate={plainUnderwriterWorkflowEdit}
+                                                    showBankStatementUpload={false}
                                                 />
                                             </div>
                                             <RequiredDocument
@@ -1241,8 +1242,10 @@ const ApplicationDetails = () => {
                                         </div>
                                     )}
                                     <div className="flex flex-row mt-6 gap-4 w-full items-stretch">
-                                        <div className="flex-[7] min-w-0 flex flex-col">
-                                            <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                        <div className="flex-[7] min-w-0 relative">
+                                            <div className="absolute inset-0 flex flex-col">
+                                                <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                            </div>
                                         </div>
                                         <div className="flex-[3] min-w-0 flex flex-col">
                                             <ChecksAndDecision

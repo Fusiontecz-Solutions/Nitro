@@ -194,12 +194,12 @@ function SelectContent({
         )}
         position={position}
         align={align}
-        onOpenAutoFocus={(e) => {
+        onOpenAutoFocus={(e: Event) => {
           if (!showSearch) return
           e.preventDefault()
           requestAnimationFrame(() => inputRef.current?.focus())
         }}
-        onKeyDown={(e) => {
+        onKeyDown={(e: React.KeyboardEvent) => {
           if (!showSearch || e.target === inputRef.current) return
           const passthrough = [
             "ArrowDown",

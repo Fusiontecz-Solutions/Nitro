@@ -115,6 +115,8 @@ export interface Application {
     category?: string | null;
     /** UW updated offer after contract generation — requires ISO re-approval and contract regeneration. */
     needsContractReinitiation?: boolean;
+    /** ISO approved the updated offer while {@link needsContractReinitiation} is true. */
+    isoUpdatedOfferApproved?: boolean;
     /** Underwriter marked ISO comments as resolved — removes deal from ISO Query pipeline. */
     isoQueryResolved?: boolean;
     createdAt?: string;

@@ -1,43 +1,38 @@
-import { formatDealPipelineCurrentStateLabel } from "@/lib/dealPipelineCurrentState";
-
-type ApplicationStatusFields = {
-  currentState?: string | null;
-  state?: string | null;
+/** Status label shown in ApplicationSummary — `Application.currentQueue` only. */
+export function getApplicationSummaryStatusLabel(app: {
   currentQueue?: string | null;
-  queue?: string | null;
-};
+}): string {
+  const q = app.currentQueue;
+  if (q != null && String(q).trim() !== "") {
+    return String(q).trim();
+  }
+  return "-";
+}
 
-function formatWorkflowStateValue(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return "—";
-
-  const pipelineLabel = formatDealPipelineCurrentStateLabel({
-    currentState: trimmed,
-    state: trimmed,
-  });
-  if (pipelineLabel !== "—") return pipelineLabel;
-
-  return trimmed.replace(/_/g, " ");
+function parseUpdatedAtMs(value: unknown): number {
+  if (value == null || value === "") return 0;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : 0;
 }
 
 /**
- * Status label for Application Summary and the applications list "Current State" column.
- * Prefers `currentState` (workflow state) over `currentQueue`.
+ * Resolve `Application.currentQueue` for summary display.
+ * Prefer the fresher row when list and detail disagree (stale detail cache).
  */
-export function getApplicationSummaryStatusLabel(
-  app: ApplicationStatusFields,
+export function resolveApplicationTableCurrentQueue(
+  application: { currentQueue?: string | null; updatedAt?: unknown },
+  listRow?: { currentQueue?: string | null; updatedAt?: unknown } | null,
 ): string {
-  const state = String(app.currentState ?? app.state ?? "").trim();
-  if (state) return formatWorkflowStateValue(state);
+  const detailQueue = String(application.currentQueue ?? "").trim();
+  const listQueue = String(listRow?.currentQueue ?? "").trim();
 
-  const queue = String(app.currentQueue ?? app.queue ?? "").trim();
-  if (queue) {
-    const pipelineLabel = formatDealPipelineCurrentStateLabel({
-      currentQueue: queue,
-      queue,
-    });
-    return pipelineLabel !== "—" ? pipelineLabel : queue;
+  if (detailQueue && listQueue && detailQueue !== listQueue) {
+    const detailUpdatedAt = parseUpdatedAtMs(application.updatedAt);
+    const listUpdatedAt = parseUpdatedAtMs(listRow?.updatedAt);
+    if (listUpdatedAt > detailUpdatedAt) return listQueue;
+    if (detailUpdatedAt > listUpdatedAt) return detailQueue;
+    return listQueue;
   }
 
-  return "—";
+  return detailQueue || listQueue || "-";
 }

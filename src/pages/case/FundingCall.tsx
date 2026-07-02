@@ -12,7 +12,10 @@ import {
   createFundingCall,
   getFundingCalls,
 } from '@/redux/actions/fundingCallActions';
-import { getApplicationById } from '@/redux/actions/applicationActions';
+import {
+  getApplicationById,
+  sendApplicationForFinalUnderwriterApproval,
+} from '@/redux/actions/applicationActions';
 import { resetCreateFundingCall } from '@/redux/slices/fundingCallSlice';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
@@ -20,6 +23,11 @@ import { useTheme } from '@/context/ThemeContext';
 import { normalizeRoleKey, resolveEffectiveRole } from '@/lib/sessionRole';
 import { normalizeFundingCallStatus } from '@/constants/operationsDashboardApplications';
 import { applicationNeedsContractReinitiation } from '@/lib/contractReinitiation';
+import { isApplicationInFinalApprovalStage } from '@/lib/applicationWorkflowState';
+import {
+  formatApprovedByUnderwriterLabel,
+  resolveFinalApprovalTargetUnderwriter,
+} from '@/lib/underwriterApprovalLabel';
 import {
   OFFER_DECISION_UPDATED_EVENT,
   offerDecisionUpdateMatchesApplication,
@@ -171,6 +179,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const [isoResendModalOpen, setIsoResendModalOpen] = useState(false);
   /** True once the Super Admin edits the offer terms — unlocks the ISO resend + contract reinitiation CTA. */
   const [offerUpdated, setOfferUpdated] = useState(false);
+  const [isSendingFinalApproval, setIsSendingFinalApproval] = useState(false);
   const [approveForDisbursementPending, setApproveForDisbursementPending] = useState(false);
   const [disbursementApproved, setDisbursementApproved] = useState(false);
   const [disbursementEmailSent, setDisbursementEmailSent] = useState<boolean | null>(null);
@@ -181,7 +190,8 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
 
   const options = ["Call Done", "Not Reachable", "Call Back Later", "Rejected", "Interested"];
 
-  const isBusy = saving || fetchingExistingCalls || approveForDisbursementPending;
+  const isBusy =
+    saving || fetchingExistingCalls || approveForDisbursementPending || isSendingFinalApproval;
 
   const latestFromCalls = useMemo(() => {
     if (!existingCalls?.length) return '';
@@ -440,18 +450,98 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     }
   }, [applicationUuid, dispatch]);
 
-  /** After the offer terms are edited (in the approval modal), surface the ISO resend CTA. */
+  /** After the offer terms are edited (in the approval modal), surface the final-approval CTA. */
   const handleOfferUpdated = useCallback(() => {
     setOfferUpdated(true);
     refreshApplicationDetail();
   }, [refreshApplicationDetail]);
+
+  const finalApprovalTarget = useMemo(
+    () =>
+      resolveFinalApprovalTargetUnderwriter(
+        (applicationDetail ?? {}) as Parameters<typeof resolveFinalApprovalTargetUnderwriter>[0],
+      ),
+    [applicationDetail],
+  );
+  const approvingUnderwriterId = finalApprovalTarget?.id ?? '';
+  const isFinalApprovalStage = useMemo(
+    () => isApplicationInFinalApprovalStage(applicationDetail as Record<string, unknown> | null),
+    [applicationDetail],
+  );
+  const approvingUnderwriterName = useMemo(() => {
+    if (finalApprovalTarget) {
+      const fn = String(finalApprovalTarget.user?.firstName ?? '').trim();
+      const ln = String(finalApprovalTarget.user?.lastName ?? '').trim();
+      const full = [fn, ln].filter(Boolean).join(' ');
+      if (full) return full;
+      if (finalApprovalTarget.user?.email?.trim()) return finalApprovalTarget.user.email.trim();
+    }
+    return formatApprovedByUnderwriterLabel(
+      (applicationDetail ?? {}) as Parameters<typeof formatApprovedByUnderwriterLabel>[0],
+    );
+  }, [applicationDetail, finalApprovalTarget]);
+
+  const showResendApprovalMailToIso =
+    isSuperAdmin && needsContractReinitiation && !offerUpdated;
+
+  const handleSendForFinalUnderwriterApproval = useCallback(async (): Promise<boolean> => {
+    const recordId = applicationUuid ?? applicationId;
+    if (!recordId) {
+      toast.error('Missing application id. Please reload and try again.');
+      return false;
+    }
+    if (!approvingUnderwriterId) {
+      toast.error('No approving Underwriter is recorded for this application.');
+      return false;
+    }
+    setIsSendingFinalApproval(true);
+    const toastId = toast.loading('Sending to Underwriter for final approval...');
+    try {
+      await dispatch(
+        sendApplicationForFinalUnderwriterApproval({
+          applicationId: String(recordId),
+        }),
+      ).unwrap();
+      refreshApplicationDetail();
+      toast.update(toastId, {
+        render: approvingUnderwriterName
+          ? `Application sent to ${approvingUnderwriterName} for final approval.`
+          : 'Application sent to the approving Underwriter for final approval.',
+        type: 'success',
+        isLoading: false,
+        autoClose: 3000,
+      });
+      return true;
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string'
+          ? err
+          : 'Failed to send application for final Underwriter approval. Please try again.';
+      toast.update(toastId, {
+        render: message,
+        type: 'error',
+        isLoading: false,
+        autoClose: 4000,
+      });
+      return false;
+    } finally {
+      setIsSendingFinalApproval(false);
+    }
+  }, [
+    applicationId,
+    applicationUuid,
+    approvingUnderwriterId,
+    approvingUnderwriterName,
+    dispatch,
+    refreshApplicationDetail,
+  ]);
 
   // Reset the local offer-updated flag when switching applications.
   useEffect(() => {
     setOfferUpdated(false);
   }, [offerApplicationId]);
 
-  // Offer edits made elsewhere (e.g. contract tab) also unlock the ISO resend CTA.
+  // Offer edits made elsewhere (e.g. contract tab) also unlock the final-approval CTA.
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail as { applicationId?: unknown } | undefined;
@@ -463,9 +553,6 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     window.addEventListener(OFFER_DECISION_UPDATED_EVENT, handler);
     return () => window.removeEventListener(OFFER_DECISION_UPDATED_EVENT, handler);
   }, [offerApplicationId, refreshApplicationDetail]);
-
-  const showResendApprovalMailToIso =
-    isSuperAdmin && (offerUpdated || needsContractReinitiation);
 
   return (
     <div
@@ -817,14 +904,11 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                     )}
                   >
                     <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
-                      {needsContractReinitiation
-                        ? 'Resend approval mail to ISO and reinitiate contract'
-                        : 'Resend approval mail to ISO'}
+                      Resend approval mail to ISO and reinitiate contract
                     </span>
                     <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
-                      {needsContractReinitiation
-                        ? 'Offer values changed after a contract was generated. Send the updated offer email and reset the contract for regeneration.'
-                        : 'Offer values changed. Send the updated offer email to the linked ISO.'}
+                      Offer values changed after a contract was generated. Send the updated offer
+                      email and reset the contract for regeneration.
                     </span>
                   </button>
                 )}
@@ -916,6 +1000,14 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
         }
         onConfirm={handleConfirmApproval}
         onOfferUpdated={handleOfferUpdated}
+        offerUpdated={offerUpdated}
+        onSendForFinalApproval={
+          isSuperAdmin && approvingUnderwriterId
+            ? handleSendForFinalUnderwriterApproval
+            : undefined
+        }
+        sendingFinalApproval={isSendingFinalApproval}
+        isFinalApprovalStage={isFinalApprovalStage}
       />
 
       {isSuperAdmin && (
