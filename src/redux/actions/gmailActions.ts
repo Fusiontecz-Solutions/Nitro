@@ -39,6 +39,8 @@ export interface GmailConnectionInfo {
   connected: boolean;
   gmailEmail: string | null;
   crmEmail: string | null;
+  needsReconnect?: boolean;
+  message?: string | null;
 }
 
 export const fetchGmailConnection = createAsyncThunk<GmailConnectionInfo, void>(
@@ -54,6 +56,8 @@ export const fetchGmailConnection = createAsyncThunk<GmailConnectionInfo, void>(
         connected: Boolean(data.connected),
         gmailEmail: data.gmailEmail ?? null,
         crmEmail: data.crmEmail ?? null,
+        needsReconnect: Boolean(data.needsReconnect),
+        message: data.message ?? null,
       };
     } catch (error: any) {
       return rejectWithValue(
