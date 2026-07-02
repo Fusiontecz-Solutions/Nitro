@@ -182,6 +182,26 @@ export const autoCreateApplications = createAsyncThunk(
 );
 
 // ==============================
+// 🏷️ Label Gmail message in-crm
+// ==============================
+export const markGmailMessageInCrmLabel = createAsyncThunk(
+  "gmail/markMessageInCrmLabel",
+  async (messageId: string, { dispatch, rejectWithValue }) => {
+    try {
+      const accessToken = await dispatch(getGoogleAccessToken()).unwrap();
+      const response = await axiosPost(`/gmail/message/${messageId}/in-crm`, {
+        accessToken,
+      });
+      return response.data;
+    } catch (error: any) {
+      return rejectWithValue(
+        error.response?.data?.message || "Failed to label Gmail message in-crm",
+      );
+    }
+  },
+);
+
+// ==============================
 // 🔵 Send Email (Compose)
 // ==============================
 export const sendGmailCompose = createAsyncThunk(
