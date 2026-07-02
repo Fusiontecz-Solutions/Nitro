@@ -15,8 +15,14 @@ import {
   listFunderProfiles,
   updateFunderProfile,
   uploadFunderContractPdf,
+  uploadFunderSupplementalPdf,
+  uploadFunderDisclosurePdf,
+  uploadFunderNamedAddendumPdf,
+  listFunderDocumentTemplates,
+  deleteFunderDocumentTemplate,
   type FunderProfileInput,
 } from '../services/funderProfileService';
+import type { FunderSupplementalLayoutType } from '../utils/funderContractLayout';
 
 function handleError(res: Response, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -30,6 +36,22 @@ function getUploadedContractFile(req: Request): UploadedFile | null {
   const file = files.contract;
   return Array.isArray(file) ? file[0] : file;
 }
+
+function getUploadedSupplementalFile(
+  req: Request,
+  field: string,
+): UploadedFile | null {
+  const files = (req as Request & { files?: Record<string, UploadedFile | UploadedFile[]> }).files;
+  const raw = files?.[field];
+  if (!raw) return null;
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+const SUPPLEMENTAL_UPLOAD_FIELDS: Record<string, FunderSupplementalLayoutType> = {
+  flexAddendum: 'flex_addendum',
+  balanceTransfer: 'balance_transfer',
+  achAuthorization: 'ach_authorization',
+};
 
 function parseAllowedStates(raw: unknown): string[] | undefined {
   if (raw == null || raw === '') return undefined;
@@ -97,6 +119,16 @@ function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInp
     isActive,
   };
 
+  if (body.documentsSource !== undefined && body.documentsSource !== null && body.documentsSource !== '') {
+    payload.documentsSource = String(body.documentsSource).trim();
+  }
+  if (body.sharedDocumentsFunderId !== undefined) {
+    payload.sharedDocumentsFunderId =
+      body.sharedDocumentsFunderId === '' || body.sharedDocumentsFunderId == null
+        ? null
+        : String(body.sharedDocumentsFunderId);
+  }
+
   if (allowedStates !== undefined) {
     payload.allowedStates = allowedStates;
   }
@@ -121,6 +153,42 @@ async function saveFunderWithOptionalContract(
       throw new Error('Funder id and name are required to upload a contract.');
     }
     data = await uploadFunderContractPdf(funderId, funderName, contractFile);
+  }
+
+  for (const [field, supplementalType] of Object.entries(SUPPLEMENTAL_UPLOAD_FIELDS)) {
+    const supplementalFile = getUploadedSupplementalFile(req, field);
+    if (!supplementalFile) continue;
+    const funderId = String(data.id || '').trim();
+    const funderName = String(data.name || '').trim();
+    if (!funderId || !funderName) {
+      throw new Error('Funder id and name are required to upload supplemental PDFs.');
+    }
+    await uploadFunderSupplementalPdf(
+      funderId,
+      funderName,
+      supplementalType,
+      supplementalFile,
+    );
+  }
+
+  const disclosureFile = getUploadedSupplementalFile(req, 'disclosure');
+  if (disclosureFile) {
+    const funderId = String(data.id || '').trim();
+    const funderName = String(data.name || '').trim();
+    const disclosureState = String((req.body as Record<string, unknown>)?.disclosureState || 'texas').trim();
+    const disclosureFrequency = String(
+      (req.body as Record<string, unknown>)?.disclosureFrequency || 'daily',
+    ).trim();
+    if (!funderId || !funderName) {
+      throw new Error('Funder id and name are required to upload disclosure PDFs.');
+    }
+    await uploadFunderDisclosurePdf(
+      funderId,
+      funderName,
+      disclosureState,
+      disclosureFrequency,
+      disclosureFile,
+    );
   }
 
   return data;
@@ -231,6 +299,95 @@ export const updateFunder = async (req: Request, res: Response) => {
 export const removeFunder = async (req: Request, res: Response) => {
   try {
     const data = await deleteFunderProfile(String(req.params.id));
+    return res.json({ success: true, data });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+export const listFunderDocuments = async (req: Request, res: Response) => {
+  try {
+    const data = await listFunderDocumentTemplates(String(req.params.id));
+    return res.json({ success: true, data });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+export const uploadFunderDisclosure = async (req: Request, res: Response) => {
+  try {
+    const funderId = String(req.params.id || '').trim();
+    const funder = await getFunderProfileById(funderId);
+    if (!funder) return res.status(404).json({ success: false, message: 'Funder not found.' });
+
+    const file = getUploadedSupplementalFile(req, 'file');
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'PDF file is required (field: file).' });
+    }
+
+    const state = String((req.body as Record<string, unknown>)?.state || '').trim();
+    const frequency = String((req.body as Record<string, unknown>)?.frequency || 'daily').trim();
+    if (!state) {
+      return res.status(400).json({ success: false, message: 'State is required.' });
+    }
+
+    const data = await uploadFunderDisclosurePdf(
+      funderId,
+      funder.name,
+      state,
+      frequency,
+      file,
+    );
+    return res.status(201).json({ success: true, data });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+export const uploadFunderAddendum = async (req: Request, res: Response) => {
+  try {
+    const funderId = String(req.params.id || '').trim();
+    const funder = await getFunderProfileById(funderId);
+    if (!funder) return res.status(404).json({ success: false, message: 'Funder not found.' });
+
+    const file = getUploadedSupplementalFile(req, 'file');
+    if (!file) {
+      return res.status(400).json({ success: false, message: 'PDF file is required (field: file).' });
+    }
+
+    const name = String((req.body as Record<string, unknown>)?.name || '').trim();
+    const coordinateLayoutKey = String(
+      (req.body as Record<string, unknown>)?.coordinateLayoutKey || '',
+    ).trim();
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'Addendum name is required.' });
+    }
+    if (!coordinateLayoutKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'coordinateLayoutKey is required (flex_addendum, balance_transfer, ach_authorization).',
+      });
+    }
+
+    const data = await uploadFunderNamedAddendumPdf(
+      funderId,
+      funder.name,
+      name,
+      coordinateLayoutKey,
+      file,
+    );
+    return res.status(201).json({ success: true, data });
+  } catch (error) {
+    return handleError(res, error);
+  }
+};
+
+export const removeFunderDocument = async (req: Request, res: Response) => {
+  try {
+    const data = await deleteFunderDocumentTemplate(
+      String(req.params.id),
+      String(req.params.templateId),
+    );
     return res.json({ success: true, data });
   } catch (error) {
     return handleError(res, error);

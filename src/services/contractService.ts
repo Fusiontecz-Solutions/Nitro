@@ -9,7 +9,11 @@ import {
   mapBankDetailRecordForApi,
   mapContractRecordForApi,
 } from '../utils/fieldEncryption';
-import { resolveKatanFunderFromName } from '../utils/katanFunderDealId';
+import {
+  pickFunderProfileFromList,
+  listFunderProfiles,
+  resolveStoredContractFunderName,
+} from './funderProfileService';
 import { syncApplicationDealIdForKatanFunder } from './syncApplicationDealIdForKatanFunder';
 import contractKycDocumentExtractService from './contractKycDocumentExtractService';
 import {
@@ -1373,10 +1377,22 @@ class ContractService {
     if (data.paymentBankId !== undefined) updateData.paymentBankId = data.paymentBankId;
     if (data.state !== undefined) updateData.state = data.state;
     if (data.funderName !== undefined) {
-      const resolvedFunder = resolveKatanFunderFromName(data.funderName);
+      const stateForFunder =
+        data.state !== undefined
+          ? (data.state as string | null)
+          : (
+              await prisma.contract.findUnique({
+                where: { id },
+                select: { state: true },
+              })
+            )?.state;
       updateData.funderName =
-        resolvedFunder?.organization ??
-        (data.funderName === null ? null : String(data.funderName).trim() || null);
+        data.funderName === null
+          ? null
+          : await resolveStoredContractFunderName(
+              String(data.funderName).trim() || null,
+              stateForFunder,
+            );
     }
     if (data.contractPrefillOverrides !== undefined) {
       updateData.contractPrefillOverrides =
@@ -1449,15 +1465,22 @@ class ContractService {
 
     return prisma.$transaction(async (tx) => {
       if (options?.funderName !== undefined) {
-        const resolvedFunder = resolveKatanFunderFromName(options.funderName);
+        const contractState = (
+          await tx.contract.findUnique({
+            where: { id: contractId },
+            select: { state: true },
+          })
+        )?.state;
         await tx.contract.update({
           where: { id: contractId },
           data: {
             funderName:
-              resolvedFunder?.organization ??
-              (options.funderName === null
+              options.funderName === null
                 ? null
-                : String(options.funderName).trim() || null),
+                : await resolveStoredContractFunderName(
+                    String(options.funderName).trim() || null,
+                    contractState,
+                  ),
           },
         });
       }
@@ -2252,9 +2275,14 @@ class ContractService {
     type?: string;
     state?: string;
     frequency?: string;
+    layoutKey?: string;
   }) {
     const where: any = {};
     if (filters.type) where.type = String(filters.type).trim();
+    if (filters.layoutKey) {
+      const layoutKey = String(filters.layoutKey).trim();
+      where.OR = [{ layoutKey }, { templateId: layoutKey }];
+    }
     if (filters.state) {
       where.state = {
         equals: String(filters.state).trim(),

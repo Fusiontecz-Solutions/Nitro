@@ -72,11 +72,14 @@ class ContractTemplateController {
         try {
             const funderName =
                 typeof req.query.funderName === 'string' ? req.query.funderName.trim() : '';
+            const contractState =
+                typeof req.query.state === 'string' ? req.query.state.trim() : '';
             const layoutKeyFromQuery = String(req.query.layoutKey || '').trim();
             const layoutKey = funderName
                 ? await resolveMainContractLayoutKeyForSend({
                       mainContractLayoutKey: layoutKeyFromQuery || 'contract',
                       funderName,
+                      state: contractState || undefined,
                   })
                 : layoutKeyFromQuery || 'contract';
 

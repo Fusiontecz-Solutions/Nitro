@@ -52,15 +52,21 @@ export async function resolveTemplateRefForMerge(
 
   const row = await prisma.boldSignTemplate.findFirst({
     where: {
-      OR: [{ id: sourceRef }, { templateId: sourceRef }],
+      OR: [
+        { id: sourceRef },
+        { templateId: sourceRef },
+        { layoutKey: sourceRef },
+      ],
     },
+    orderBy: { createdAt: 'desc' },
   });
 
   if (row) {
     const layoutFromRow = String(row.layoutKey || '').trim();
+    const typeLayoutKey = resolveLayoutKeyFromBoldSignType(String(row.type || '')) || undefined;
     const layoutKey =
-      (layoutFromRow as DocumentLayoutKey) ||
-      resolveLayoutKeyFromBoldSignType(String(row.type || '')) ||
+      (isDocumentLayoutKey(layoutFromRow) ? (layoutFromRow as DocumentLayoutKey) : undefined) ||
+      typeLayoutKey ||
       undefined;
     const pdfUrl = String(row.pdfUrl || '').trim() || undefined;
     const inlineLayout = tryBuildStateDisclosureLayoutFromDbRow(row);

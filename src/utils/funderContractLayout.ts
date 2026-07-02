@@ -1,12 +1,87 @@
 export const DEFAULT_FUNDER_CONTRACT_LAYOUT_KEY = 'contract';
 export const DEFAULT_FUNDER_CONTRACT_FILENAME = 'Contract.pdf';
 
+export const FUNDER_SUPPLEMENTAL_LAYOUT_TYPES = [
+  'flex_addendum',
+  'balance_transfer',
+  'ach_authorization',
+] as const;
+
+export type FunderSupplementalLayoutType = (typeof FUNDER_SUPPLEMENTAL_LAYOUT_TYPES)[number];
+
 export function funderContractLayoutKey(funderId: string): string {
   return `funder_${String(funderId || '').trim()}`;
 }
 
-export function isFunderContractLayoutKey(layoutKey: string | null | undefined): boolean {
-  return String(layoutKey || '')
+export function funderSupplementalLayoutKey(
+  funderId: string,
+  supplementalType: string,
+): string {
+  const id = String(funderId || '').trim();
+  const type = String(supplementalType || '').trim();
+  return `funder_${id}_${type}`;
+}
+
+export function funderDisclosureLayoutKey(funderId: string): string {
+  return `funder_${String(funderId || '').trim()}_disclosure`;
+}
+
+export function funderDisclosureLayoutKeyForState(
+  funderId: string,
+  state: string,
+  frequency: string,
+): string {
+  const id = String(funderId || '').trim();
+  const stateToken = String(state || '')
     .trim()
-    .startsWith('funder_');
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_');
+  const freqToken = String(frequency || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_');
+  return `funder_${id}_disclosure_${stateToken}_${freqToken}`;
+}
+
+export function slugifyFunderDocumentToken(value: string): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+export function funderNamedAddendumLayoutKey(funderId: string, slug: string): string {
+  const id = String(funderId || '').trim();
+  const token = slugifyFunderDocumentToken(slug);
+  return token ? `funder_${id}_addendum_${token}` : `funder_${id}_addendum`;
+}
+
+export function isFunderOwnedLayoutKey(
+  layoutKey: string | null | undefined,
+  funderId: string,
+): boolean {
+  const key = String(layoutKey || '').trim();
+  const id = String(funderId || '').trim();
+  if (!key || !id) return false;
+  return key === funderContractLayoutKey(id) || key.startsWith(`funder_${id}_`);
+}
+
+export function parseFunderSupplementalLayoutKey(
+  layoutKey: string,
+): { funderId: string; supplementalType: string } | null {
+  const key = String(layoutKey || '').trim();
+  const match = /^funder_([0-9a-f-]{36})_(.+)$/i.exec(key);
+  if (!match) return null;
+  return { funderId: match[1], supplementalType: match[2] };
+}
+
+export function isFunderContractLayoutKey(layoutKey: string | null | undefined): boolean {
+  const key = String(layoutKey || '').trim();
+  if (!key.startsWith('funder_')) return false;
+  return !parseFunderSupplementalLayoutKey(key);
+}
+
+export function isFunderSupplementalLayoutKey(layoutKey: string | null | undefined): boolean {
+  return parseFunderSupplementalLayoutKey(String(layoutKey || '').trim()) != null;
 }

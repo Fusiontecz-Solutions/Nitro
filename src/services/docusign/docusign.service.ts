@@ -459,11 +459,14 @@ export class DocusignService {
     };
   }
 
-  private async getJwtAuthContextForFunder(funderName?: string | null) {
+  private async getJwtAuthContextForFunder(
+    funderName?: string | null,
+    contractState?: string | null,
+  ) {
     const name = String(funderName || '').trim();
     if (!name) return this.getJwtAuthContext();
 
-    const linked = await getFunderWithDocuSignCredentials(name);
+    const linked = await getFunderWithDocuSignCredentials(name, contractState);
     const profile = linked?.docusignProfile;
     if (!profile?.id || profile.isActive === false) {
       return this.getJwtAuthContext();
@@ -497,14 +500,17 @@ export class DocusignService {
 
   private async getAuthContext(
     userId: string,
-    options?: { funderName?: string | null },
+    options?: { funderName?: string | null; contractState?: string | null },
   ) {
     if (resolveDocusignAuthMode() === 'jwt') {
       const funderName = String(options?.funderName || '').trim();
       if (funderName) {
-        const linked = await getFunderWithDocuSignCredentials(funderName);
+        const linked = await getFunderWithDocuSignCredentials(
+          funderName,
+          options?.contractState,
+        );
         if (linked?.docusignProfile?.id && linked.docusignProfile.isActive !== false) {
-          return this.getJwtAuthContextForFunder(funderName);
+          return this.getJwtAuthContextForFunder(funderName, options?.contractState);
         }
       }
       if (!isDocusignJwtConfigured()) {
@@ -568,6 +574,17 @@ export class DocusignService {
     return null;
   }
 
+  private async resolveContractStateForAuth(contractId?: number): Promise<string | null> {
+    const id = Number(contractId);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const contract = await prisma.contract.findUnique({
+      where: { id },
+      select: { state: true },
+    });
+    const state = String(contract?.state ?? '').trim();
+    return state || null;
+  }
+
   private async getAuthContextForEnvelope(
     userId: string,
     hints: {
@@ -578,7 +595,11 @@ export class DocusignService {
     },
   ) {
     const funderName = await this.resolveFunderNameForEnvelopeAuth(hints);
-    return this.getAuthContext(userId, { funderName: funderName || undefined });
+    const contractState = await this.resolveContractStateForAuth(hints.contractId);
+    return this.getAuthContext(userId, {
+      funderName: funderName || undefined,
+      contractState,
+    });
   }
 
   // ─── Prefill helpers ───────────────────────────────────────────────────────
@@ -3720,12 +3741,19 @@ export class DocusignService {
       createTimePrefillTabCount?: number;
       /** CRM values are burned into uploaded PDFs — skip signer overlay text tabs. */
       prefillFlattenedInPdf?: boolean;
+      funderName?: string | null;
       client: AxiosInstance;
       accountId: string;
     },
   ) {
     const appId = String(options.applicationId || '').trim();
-    const ccEmails = mergeDefaultContractCcEmails(options.ccEmails);
+    const funderForCc =
+      String(options.funderName ?? '').trim() ||
+      (await this.resolveFunderNameForEnvelopeAuth({
+        contractId: options.contractId,
+        applicationId: appId || undefined,
+      }));
+    const ccEmails = mergeDefaultContractCcEmails(options.ccEmails, funderForCc);
     const linkApplicationDocument = options.linkApplicationDocument !== false;
     if (appId && linkApplicationDocument) {
       await this.linkEnvelopeToApplication(userId, appId, envelopeId);
@@ -4050,10 +4078,19 @@ export class DocusignService {
         includeDisclosure?: boolean;
       };
       funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
     },
   ) {
+    const contractId = Number(options.contractId);
+    let contractState = String(options.contractState ?? '').trim() || null;
+    if (!contractState && Number.isFinite(contractId) && contractId > 0) {
+      contractState = await this.resolveContractStateForAuth(contractId);
+    }
+
     const { client, accountId } = await this.getAuthContext(userId, {
       funderName: options.funderName,
+      contractState,
     });
 
     const supplementalRefs = options.supplementalRefs || [];
@@ -4069,6 +4106,7 @@ export class DocusignService {
       const layoutKeyForSend = await resolveMainContractLayoutKeyForSend({
         mainContractLayoutKey: options.mainContractLayoutKey,
         funderName: options.funderName,
+        state: contractState,
       });
       const mainContractLayoutKey = await this.resolveMainContractLayoutKeyOption(
         layoutKeyForSend,
@@ -4089,6 +4127,9 @@ export class DocusignService {
         flattenPrefillInPdf: sendImmediately,
         lockDataTabs: sendImmediately,
         contractId: options.contractId,
+        funderName: options.funderName,
+        funderProfileId: options.funderProfileId,
+        contractState,
       });
     } catch (err: any) {
       throw new BadRequestException(err?.message || String(err));
@@ -4129,6 +4170,7 @@ export class DocusignService {
         autoSend: options.autoSend,
         createTimePrefillTabCount: built.createTimePrefillTabCount,
         prefillFlattenedInPdf: built.prefillFlattenedInPdf,
+        funderName: options.funderName,
         client,
         accountId,
       });
@@ -4248,6 +4290,8 @@ export class DocusignService {
         includeDisclosure?: boolean;
       };
       funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
     },
   ) {
     if (!options?.roles?.length) {
@@ -4291,6 +4335,8 @@ export class DocusignService {
       contractId: options.contractId,
       sendPackage: options.sendPackage,
       funderName: options.funderName,
+      funderProfileId: options.funderProfileId,
+      contractState: options.contractState,
     });
   }
 
@@ -4534,14 +4580,33 @@ export class DocusignService {
     return buf;
   }
 
-  async downloadTemplatePdf(_userId: string, templateRef: string) {
+  async downloadTemplatePdf(
+    _userId: string,
+    templateRef: string,
+    options?: {
+      funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
+    },
+  ) {
     const ref = String(templateRef || '').trim();
-    const { isDocumentLayoutKey, loadPlatformDocumentPdfBase64 } = await import(
-      './platform-document-registry'
-    );
+    const { isDocumentLayoutKey } = await import('./platform-document-registry');
+    const { DOCUMENT_LAYOUT_KEYS } = await import('./layouts/document-layout.registry');
     if (isDocumentLayoutKey(ref)) {
-      const base64 = await loadPlatformDocumentPdfBase64(ref);
-      return Buffer.from(base64, 'base64');
+      const { loadSupplementalLayoutPackage, loadMainContractLayoutPackage } =
+        await import('./utils/platform-layout-envelope');
+      const funderContext = {
+        funderName: options?.funderName,
+        funderProfileId: options?.funderProfileId,
+        contractState: options?.contractState,
+      };
+      const isMainContract =
+        ref === DOCUMENT_LAYOUT_KEYS.contract ||
+        ref === DOCUMENT_LAYOUT_KEYS.allianceBridgeContract;
+      const layout = isMainContract
+        ? await loadMainContractLayoutPackage(ref, options?.contractState)
+        : await loadSupplementalLayoutPackage(ref, funderContext);
+      return Buffer.from(layout.documentBase64, 'base64');
     }
 
     const row = await prisma.boldSignTemplate.findFirst({
@@ -4732,7 +4797,14 @@ export class DocusignService {
       envelopeId: eid,
       applicationId: appId || undefined,
     });
-    const ccFromRequest = mergeDefaultContractCcEmails(options?.ccEmails);
+    const ccFromRequest = mergeDefaultContractCcEmails(
+      options?.ccEmails,
+      options?.funderName ??
+        (await this.resolveFunderNameForEnvelopeAuth({
+          contractId: options?.contractId,
+          applicationId: options?.applicationId,
+        })),
+    );
     const priorStatus = await this.getEnvelopeStatus(client, accountId, eid);
 
     await this.syncEnvelopeCcEmails(

@@ -1388,11 +1388,13 @@ class ContractController {
       const type = req.query.type as string | undefined;
       const state = req.query.state as string | undefined;
       const frequency = req.query.frequency as string | undefined;
+      const layoutKey = req.query.layoutKey as string | undefined;
 
       const data = await contractService.getAllBoldSignTemplates({
         type,
         state,
         frequency,
+        layoutKey,
       });
 
       return res.status(200).json({ success: true, data });

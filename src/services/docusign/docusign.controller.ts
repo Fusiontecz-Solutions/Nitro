@@ -269,9 +269,13 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
     if (!templateId?.trim()) {
       return res.status(400).json({ message: 'templateId is required' });
     }
+    const funderName = String(req.query.funderName ?? '').trim() || undefined;
+    const funderProfileId = String(req.query.funderProfileId ?? '').trim() || undefined;
+    const contractState = String(req.query.state ?? req.query.contractState ?? '').trim() || undefined;
     const pdfBuffer = await docusignService.downloadTemplatePdf(
       userId,
       String(templateId).trim(),
+      { funderName, funderProfileId, contractState },
     );
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
@@ -343,6 +347,8 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       contractId,
       sendPackage,
       funderName,
+      funderProfileId,
+      contractState,
     } = req.body;
 
     const hasSupplementalLayoutKeys =
@@ -416,6 +422,14 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
             }
           : undefined,
       funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+      funderProfileId:
+        typeof funderProfileId === 'string' && funderProfileId.trim()
+          ? funderProfileId.trim()
+          : undefined,
+      contractState:
+        typeof contractState === 'string' && contractState.trim()
+          ? contractState.trim()
+          : undefined,
     });
 
     return res.json(result);
