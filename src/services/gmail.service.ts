@@ -234,27 +234,6 @@ function collectMimeAttachmentParts(payload: unknown): any[] {
     return found;
 }
 
-async function markMessageAsRead(messageId: string, accessToken: string): Promise<void> {
-    if (!messageId || !accessToken) return;
-    try {
-        await axios.post(
-            `${GMAIL_BASE_URL}/messages/${messageId}/modify`,
-            { removeLabelIds: ['UNREAD'] },
-            {
-                headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                },
-            },
-        );
-    } catch (error: any) {
-        console.warn(
-            `Failed to mark message ${messageId} as read:`,
-            error?.response?.data?.error?.message || error?.message || error,
-        );
-    }
-}
-
 async function starMessage(messageId: string, accessToken: string): Promise<void> {
     if (!messageId || !accessToken) return;
     try {
@@ -1128,12 +1107,10 @@ async function handleGmailSubjectFallbackOutcome(
         });
         await addInCrmLabelToMessage(messageId, accessToken, userId);
         await starMessage(messageId, accessToken);
-        await markMessageAsRead(messageId, accessToken);
         return;
     }
     if (outcome?.kind === 'duplicate') {
         await recordGmailAutoCreateMessageHandled(userId, messageId, 'skipped_duplicate');
-        await markMessageAsRead(messageId, accessToken);
         return;
     }
     await recordGmailAutoCreateMessageHandled(userId, messageId, 'failed_parse');
@@ -1274,7 +1251,6 @@ export async function autoCreateApplicationsFromEmails(
                 console.log(
                     `[gmail-auto-create] message=${msg.id} pick_application_pdf attachment="${String(part.filename || '').trim()}" (among ${pdfCountBeforePick})`,
                 );
-                let processedAnyPdf = false;
 
                 try {
                     const attachmentId = part.body?.attachmentId;
@@ -1385,7 +1361,6 @@ export async function autoCreateApplicationsFromEmails(
                         pdfContentHash,
                     });
                     await addInCrmLabelToMessage(msg.id, accessToken, userId);
-                    processedAnyPdf = true;
                 } catch (pdfError: unknown) {
                     const pm = pdfError instanceof Error ? pdfError.message : String(pdfError);
                     console.error(
@@ -1412,14 +1387,12 @@ export async function autoCreateApplicationsFromEmails(
                             senderEmail,
                             matchedIsoId: resolvedIsoId,
                         });
-                        processedAnyPdf = true;
                         await recordGmailAutoCreateMessageHandled(userId, msg.id, 'success', {
                             applicationId: fallbackOutcome.result.application?.id,
                         });
                         await addInCrmLabelToMessage(msg.id, accessToken, userId);
                         await starMessage(msg.id, accessToken);
                     } else if (fallbackOutcome?.kind === 'duplicate') {
-                        processedAnyPdf = true;
                         await recordGmailAutoCreateMessageHandled(userId, msg.id, 'skipped_duplicate');
                     } else if (pdfError instanceof InsufficientParsedPdfError) {
                         console.warn(
@@ -1431,10 +1404,6 @@ export async function autoCreateApplicationsFromEmails(
                         await recordGmailAutoCreateMessageHandled(userId, msg.id, 'failed_other');
                         await starMessage(msg.id, accessToken);
                     }
-                }
-
-                if (processedAnyPdf) {
-                    await markMessageAsRead(msg.id, accessToken);
                 }
             } catch (messageErr: unknown) {
                 console.error(
