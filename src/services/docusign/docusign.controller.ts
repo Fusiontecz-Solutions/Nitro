@@ -1,7 +1,59 @@
 import type { Request, Response } from 'express';
 import { DocusignService, formatDocusignRouteError } from './docusign.service';
+import type { AuthenticatedUser } from '../applicationService';
+import { recordContractWorkflowActivityLog } from '../contractWorkflowActivityLog';
 
 const docusignService = new DocusignService();
+
+const authUserFromReq = (req: Request): AuthenticatedUser | null =>
+  (req as any).user?.id
+    ? { id: String((req as any).user.id), role: String((req as any).user.role || '') }
+    : null;
+
+async function logContractEnvelopeActivity(
+  req: Request,
+  applicationId: unknown,
+  roles: Array<{ signerEmail?: string; email?: string; name?: string }> | undefined,
+  result: {
+    envelopeId?: string;
+    documentId?: string;
+    data?: Record<string, unknown> | null;
+  },
+  includeMainContract?: boolean,
+): Promise<void> {
+  const appId = String(applicationId ?? '').trim();
+  if (!appId || includeMainContract === false) return;
+
+  const envelopeId = String(result.envelopeId ?? result.documentId ?? '').trim();
+  const resultData = result.data ?? {};
+  const envelopeStatus = String(resultData.envelopeStatus ?? '').trim().toLowerCase();
+  const autoSent =
+    envelopeStatus === 'sent' ||
+    resultData.autoSend === true;
+  const signers = (roles ?? [])
+    .map((role) => String(role.signerEmail ?? role.email ?? '').trim())
+    .filter(Boolean)
+    .join(', ');
+
+  await recordContractWorkflowActivityLog(
+    appId,
+    autoSent ? 'ENVELOPE_SENT' : 'DRAFT_ENVELOPE_CREATED',
+    {
+      user: authUserFromReq(req),
+      req,
+      actorName: String((req as any).user?.name || ''),
+      source: 'docusign.mergeAndSendTemplates',
+    },
+    {
+      metadata: {
+        envelopeId: envelopeId || null,
+        envelopeStatus: envelopeStatus || null,
+        signers: signers || null,
+        provider: 'docusign',
+      },
+    },
+  );
+}
 
 export const getDocusignAuthStatus = async (_req: Request, res: Response) => {
   try {
@@ -97,6 +149,12 @@ export const sendTemplate = async (req: Request, res: Response) => {
       applicationId,
       autoSend: autoSend === false ? false : undefined,
     });
+
+    try {
+      await logContractEnvelopeActivity(req, applicationId, roles, result);
+    } catch (auditErr) {
+      console.error('[docusign sendTemplate] contract activity log failed:', auditErr);
+    }
 
     return res.json(result);
   } catch (error: any) {
@@ -440,6 +498,18 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
           ? contractState.trim()
           : undefined,
     });
+
+    try {
+      const includeMain =
+        includeMainContract === false
+          ? false
+          : sendPackage?.includeMainContract === false
+            ? false
+            : true;
+      await logContractEnvelopeActivity(req, applicationId, roles, result, includeMain);
+    } catch (auditErr) {
+      console.error('[docusign mergeAndSendTemplates] contract activity log failed:', auditErr);
+    }
 
     return res.json(result);
   } catch (error: any) {

@@ -27,6 +27,7 @@ import {
   syncContractPrefillToBankDetail,
   type PlainBankFromRequest,
 } from './bankDetailContractSync';
+import { clearNeedsContractReinitiation } from './contractReinitiationService';
 import {
   loadContractReverseDisbursementConfig,
   normalizeReverseDisbursementScheduleData,
@@ -1032,38 +1033,35 @@ class ContractService {
       applyContractExtraFields(contractData, data);
 
       let created: any;
-      // applicationId is unique on Contract. Repeated "create contract" clicks
-      // should update the existing row instead of throwing P2002.
+      // applicationId is unique on Contract. Repeated "create contract" clicks (double-click
+      // or a retry firing while the first request is still in flight) must not throw P2002.
+      // Use an atomic upsert (INSERT ... ON CONFLICT DO UPDATE) so concurrent requests for the
+      // same applicationId collapse into a single row instead of racing on findUnique + create.
       if (data.applicationId) {
+        // Preserve lifecycle status set by BoldSign webhooks (SENT/VIEWED/SIGNED/COMPLETED/etc.)
+        // on the update path. Only allow status to remain at the explicit DRAFT default; never
+        // downgrade an advanced status back to DRAFT.
         const existing = await tx.contract.findUnique({
           where: { applicationId: data.applicationId },
-          select: { id: true, status: true },
+          select: { status: true },
         });
-
-        if (existing?.id) {
-          // Preserve lifecycle status set by BoldSign webhooks (SENT/VIEWED/SIGNED/COMPLETED/etc.)
-          // when a repeated create is triggered for the same applicationId. Only allow status to
-          // remain at the explicit DRAFT default; never downgrade an advanced status back to DRAFT.
-          const existingStatus = String(existing.status ?? '').toUpperCase();
-          const incomingStatusRaw = (contractData as { status?: string }).status;
-          const incomingStatus = String(incomingStatusRaw ?? '').toUpperCase();
-          const lifecycleAdvanced =
-            existingStatus && existingStatus !== 'DRAFT';
-          const updateData: Record<string, unknown> = { ...contractData };
-          if (lifecycleAdvanced && (!incomingStatus || incomingStatus === 'DRAFT')) {
-            delete updateData.status;
-          }
-          created = await tx.contract.update({
-            where: { id: existing.id },
-            data: updateData,
-            include: contractInclude,
-          });
-        } else {
-          created = await tx.contract.create({
-            data: contractData,
-            include: contractInclude,
-          });
+        const existingStatus = String(existing?.status ?? '').toUpperCase();
+        const incomingStatusRaw = (contractData as { status?: string }).status;
+        const incomingStatus = String(incomingStatusRaw ?? '').toUpperCase();
+        const lifecycleAdvanced = existingStatus && existingStatus !== 'DRAFT';
+        const updateData: Record<string, unknown> = { ...contractData };
+        if (lifecycleAdvanced && (!incomingStatus || incomingStatus === 'DRAFT')) {
+          delete updateData.status;
         }
+        // applicationId is not part of an update (it's the conflict target).
+        delete (updateData as { applicationId?: unknown }).applicationId;
+
+        created = await tx.contract.upsert({
+          where: { applicationId: data.applicationId },
+          create: contractData,
+          update: updateData,
+          include: contractInclude,
+        });
       } else {
         created = await tx.contract.create({
           data: contractData,
@@ -1194,6 +1192,7 @@ class ContractService {
             },
           });
         }
+        await clearNeedsContractReinitiation(String(data.applicationId));
       }
 
       return mapContractRecordForApi(created);

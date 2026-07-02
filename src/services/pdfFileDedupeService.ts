@@ -11,6 +11,23 @@ export function gmailAutoCreateMessageNote(gmailMessageId: string): string {
     return `${GMAIL_AUTO_CREATE_MSG_NOTE_PREFIX}${String(gmailMessageId || '').trim()}`;
 }
 
+/** Parse Gmail API message id stored on `Application.note` (`gmail-msg:…`). */
+export function parseGmailMessageIdFromApplicationNote(note: unknown): string | null {
+    const raw = String(note ?? '').trim();
+    if (!raw) return null;
+    const exact = raw.match(/^\s*gmail-msg:([a-zA-Z0-9_-]+)\s*$/i);
+    if (exact?.[1]) return exact[1];
+    const embedded = raw.match(/gmail-msg:([a-zA-Z0-9_-]+)/i);
+    return embedded?.[1] ?? null;
+}
+
+/** Parse Gmail API message id from client notes when subject fallback stored `MessageId: …`. */
+export function parseGmailMessageIdFromClientNotes(notes: unknown): string | null {
+    const raw = String(notes ?? '');
+    const match = raw.match(/MessageId:\s*([a-zA-Z0-9_-]+)/i);
+    return match?.[1]?.trim() || null;
+}
+
 export function readPdfFileDedupeDays(): number {
     const raw = Number(process.env.GMAIL_AUTO_CREATE_DEDUPE_DAYS ?? DEDUPE_DAYS_DEFAULT);
     if (!Number.isFinite(raw) || raw < 1) return DEDUPE_DAYS_DEFAULT;

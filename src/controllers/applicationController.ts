@@ -59,6 +59,7 @@ import {
     APPLICATION_QUEUE_APPROVAL_SENT,
     APPLICATION_STATE_APPROVAL_SENT,
 } from '../services/contractApplicationWorkflowSync';
+import { reinitiateContractForApplication } from '../services/contractReinitiationService';
 import {
     buildApplicationApprovalEmailHtml,
     buildApplicationApprovedEmailInjectValues,
@@ -78,9 +79,15 @@ import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationSer
 import {
     findHistoricalSamePdfFileApplications,
     findSamePdfFileApplications,
+    gmailAutoCreateMessageNote,
+    parseGmailMessageIdFromApplicationNote,
     pickPrimaryPdfFile,
     readPdfFileDedupeDays,
 } from '../services/pdfFileDedupeService';
+import {
+    buildApplicationRejectionEmailSubject,
+    resolveIsoSubmissionEmailThreadContext,
+} from '../services/applicationRejectionThreadService';
 import {
     buildPublicApprovalPortalUrl,
     resolveCrmFrontendBaseUrl,
@@ -801,6 +808,9 @@ export const mapApplicationToApi = (app: any) => {
         approvedByUnderwriter,
         assignedUnderwriterId,
         assignedUnderwriter,
+        needsContractReinitiation,
+        isoUpdatedOfferApproved,
+        isoQueryResolved,
         ...rest
     } = app;
 
@@ -959,6 +969,9 @@ export const mapApplicationToApi = (app: any) => {
         approvedByUnderwriter: mapUserLite(approvedByUnderwriter),
         assignedUnderwriterId: assignedUnderwriterId ?? undefined,
         assignedUnderwriter: mapUserLite(assignedUnderwriter),
+        needsContractReinitiation: needsContractReinitiation === true,
+        isoUpdatedOfferApproved: isoUpdatedOfferApproved === true,
+        isoQueryResolved: isoQueryResolved === true,
         client: mappedClient,
         iso: iso
             ? {
@@ -3023,6 +3036,7 @@ class ApplicationController {
                 brokerCommissionAmount,
                 brokerName,
                 category,
+                isoQueryResolved,
             } = req.body;
             const authUser = getAuthenticatedUser(req);
 
@@ -3343,6 +3357,42 @@ class ApplicationController {
                 }
             }
 
+            if (isoQueryResolved !== undefined) {
+                const roleUpper = String(authUser?.role || '')
+                    .toUpperCase()
+                    .replace(/-/g, '_');
+                const canResolveIsoQuery = [
+                    'UNDERWRITER',
+                    'SUPER_ADMIN',
+                    'ADMIN',
+                    'OPERATIONS',
+                ].includes(roleUpper);
+                if (!canResolveIsoQuery) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'You do not have permission to update ISO query resolution.',
+                    });
+                }
+                const resolved = isoQueryResolved === true;
+                if (resolved) {
+                    const isoCommentCount = await prisma.comment.count({
+                        where: {
+                            applicationId: application.id,
+                            type: 'ISO Comment',
+                            isDeleted: false,
+                        },
+                    });
+                    if (isoCommentCount === 0) {
+                        return res.status(400).json({
+                            success: false,
+                            message:
+                                'Cannot mark ISO query as resolved without an ISO comment on this application.',
+                        });
+                    }
+                }
+                data.isoQueryResolved = resolved;
+            }
+
             if (Object.keys(data).length === 0) {
                 const fromQueue = currentQueue !== undefined ? String(currentQueue) : '';
                 if (fromQueue === 'Disbursement') {
@@ -3545,6 +3595,18 @@ class ApplicationController {
             };
             if (transition.state) {
                 updateData.currentState = transition.state;
+            }
+            // Scrubber's recommendation captured on the compliance-check modal
+            // ("Recommend Approval" / "Recommend Decline"). Persisted alongside the
+            // queue advance so the ops list "Scrubber Request" column can show it.
+            const rawScrubberRecommendation = (req.body as { scrubberRecommendation?: unknown })
+                ?.scrubberRecommendation;
+            if (rawScrubberRecommendation != null) {
+                const recommendation = String(rawScrubberRecommendation).trim();
+                const validRecommendations = ['Recommend Approval', 'Recommend Decline'];
+                if (recommendation && validRecommendations.includes(recommendation)) {
+                    updateData.scrubberRecommendation = recommendation;
+                }
             }
             const claimClear = patchClearUnderwriterClaimIfQueueChanged(previousQueue, transition.queue);
             if (claimClear) {
@@ -4285,7 +4347,12 @@ class ApplicationController {
                 return res.status(404).json({ success: false, message: 'Application not found' });
             }
 
-            const approvingUnderwriterId = String(application.approvedByUnderwriterId ?? '').trim();
+            const approvingUnderwriterId = String(
+                application.approvedByUnderwriterId ??
+                    application.assignedUnderwriterId ??
+                    application.claimedByUnderwriterId ??
+                    '',
+            ).trim();
             if (!approvingUnderwriterId) {
                 return res.status(400).json({
                     success: false,
@@ -4577,7 +4644,14 @@ class ApplicationController {
     async rejectApplication(req: Request, res: Response) {
         try {
             const { id } = req.params;
-            const { reason, additionalComments, emailHtml, emailSubject } = req.body;
+            const {
+                reason,
+                additionalComments,
+                emailHtml,
+                emailSubject,
+                isoEmail: isoEmailOverride,
+                ccEmails,
+            } = req.body;
             const authUser = getAuthenticatedUser(req);
             const currentUserRole = authUser?.role;
             const isFinalUnderwriter = currentUserRole === 'UNDERWRITER';
@@ -4601,7 +4675,8 @@ class ApplicationController {
 
             const { application: existingApplication, forbidden } = await getApplicationForUser(
                 whereClause,
-                authUser
+                authUser,
+                { client: { select: { notes: true } } },
             );
 
             if (forbidden) {
@@ -4625,10 +4700,35 @@ class ApplicationController {
             const previousQueue = existingApplication.currentQueue;
             const previousState = existingApplication.currentState;
 
+            const clientBusinessName = String(
+                (existingApplication as { client?: { businessName?: string | null } | null })
+                    .client?.businessName || '',
+            ).trim();
+            const properRejectionSubject =
+                typeof emailSubject === 'string' && emailSubject.trim()
+                    ? emailSubject.trim()
+                    : buildApplicationRejectionEmailSubject(clientBusinessName);
+            const emailThreadContext = await resolveIsoSubmissionEmailThreadContext(
+                {
+                    note: existingApplication.note,
+                    createdById: existingApplication.createdById,
+                    client: (existingApplication as { client?: { notes?: string | null } | null })
+                        .client,
+                },
+                properRejectionSubject,
+            );
+
+            const storedGmailMessageId = parseGmailMessageIdFromApplicationNote(
+                existingApplication.note,
+            );
+            const declineNote = storedGmailMessageId
+                ? `${gmailAutoCreateMessageNote(storedGmailMessageId)}\n${fullNote}`
+                : fullNote;
+
             const declineUpdateData: Prisma.ApplicationUpdateInput = {
                 currentQueue: 'Declined',
                 currentState: ApplicationState.CANCELLED,
-                note: fullNote,
+                note: declineNote,
             };
             // Record the Underwriter's decline action on the deal record.
             if (isUnderwriterApproverRole(currentUserRole)) {
@@ -4701,6 +4801,17 @@ class ApplicationController {
 
             // Best-effort activity log for rejection (skipped when the new decline template email is audited)
             let rejectionCommunicationLogged = false;
+            let rejectionEmailDelivery: {
+                sent: boolean;
+                emailedTo: string[];
+                emailedCc: string[];
+                ccErrors: string[];
+            } = {
+                sent: false,
+                emailedTo: [],
+                emailedCc: [],
+                ccErrors: [],
+            };
             const authUserForLog = getAuthenticatedUser(req);
             const roleLabel = authUserForLog?.role
                 ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
@@ -4708,18 +4819,50 @@ class ApplicationController {
             const actorName = (req as any).user?.name || '';
             const reasonText = reason.trim();
 
+            const parsedCcEmails = (() => {
+                if (Array.isArray(ccEmails)) {
+                    return ccEmails.map((e: unknown) => String(e || '').trim()).filter(Boolean);
+                }
+                if (typeof ccEmails === 'string' && ccEmails.trim()) {
+                    return ccEmails
+                        .split(/[,;]+/)
+                        .map((e) => e.trim())
+                        .filter(Boolean);
+                }
+                return [];
+            })();
+            console.info('[reject] Decline request recipients', {
+                applicationId: existingApplication.id,
+                isoEmailOverride: typeof isoEmailOverride === 'string' ? isoEmailOverride.trim() : '',
+                ccEmails: parsedCcEmails,
+            });
+
             // Best-effort: notify the linked ISO with the branded decline template.
             try {
                 const iso = (applicationRecord as any).iso;
-                const isoEmail = String(iso?.email ?? '').trim();
+                const isoName = String(iso?.name ?? '').trim();
+                const linkedIsoEmail = String(iso?.email ?? '').trim();
+                const isoEmailOverrideTrimmed =
+                    typeof isoEmailOverride === 'string' ? isoEmailOverride.trim() : '';
+                const isoEmail = isoEmailOverrideTrimmed || linkedIsoEmail;
+                const emailCcList = parsedCcEmails;
+                const uniqueCcList = [...new Set(emailCcList.map((e) => e.toLowerCase()))]
+                    .map((lower) => emailCcList.find((e) => e.toLowerCase() === lower) || lower)
+                    .filter((e) => e.toLowerCase() !== isoEmail.toLowerCase());
+
+                if (uniqueCcList.length > 0) {
+                    console.info('[reject] Decline email CC recipients:', {
+                        applicationId: applicationRecord.id,
+                        to: isoEmail,
+                        cc: uniqueCcList,
+                    });
+                }
+
                 if (isoEmail) {
-                    const isoName = String(iso?.name ?? '').trim();
                     const clientEmailHtml =
                         typeof emailHtml === 'string' && emailHtml.trim() ? emailHtml.trim() : undefined;
                     const clientEmailSubject =
-                        typeof emailSubject === 'string' && emailSubject.trim()
-                            ? emailSubject.trim()
-                            : undefined;
+                        emailThreadContext?.replySubject || properRejectionSubject;
                     let trackingId: string | undefined;
 
                     if (clientEmailHtml) {
@@ -4747,6 +4890,14 @@ class ApplicationController {
                                     status: 'sent',
                                     hasLetterPdf: true,
                                     attachments: [REJECTION_EMAIL_PDF_FILENAME],
+                                    ccEmails: uniqueCcList,
+                                    emailThread: emailThreadContext
+                                        ? {
+                                              gmailMessageId: emailThreadContext.gmailMessageId,
+                                              gmailThreadId: emailThreadContext.gmailThreadId,
+                                              inReplyTo: emailThreadContext.inReplyTo,
+                                          }
+                                        : undefined,
                                     delivery: {
                                         status: 'sent',
                                         sentAt: new Date().toISOString(),
@@ -4762,13 +4913,17 @@ class ApplicationController {
                         }
                     }
 
-                    await sendApplicationRejectionEmail({
+                    rejectionEmailDelivery = await sendApplicationRejectionEmail({
                         to: isoEmail,
+                        cc: uniqueCcList.length ? uniqueCcList : undefined,
+                        inReplyTo: emailThreadContext?.inReplyTo,
+                        references: emailThreadContext?.references,
                         clientName: isoName || isoEmail,
                         primaryReason: reason.trim(),
                         otherReasons: additionalCommentsText,
                         html: clientEmailHtml,
                         subject: clientEmailSubject,
+                        freshSubject: properRejectionSubject,
                         trackingId,
                     });
                 } else {
@@ -4806,6 +4961,10 @@ class ApplicationController {
                 success: true,
                 message: 'Application rejected successfully',
                 data: application,
+                emailSent: rejectionEmailDelivery.sent,
+                emailedTo: rejectionEmailDelivery.emailedTo,
+                emailedCc: rejectionEmailDelivery.emailedCc,
+                ccErrors: rejectionEmailDelivery.ccErrors,
             });
         } catch (error) {
             console.error('Reject application error:', error);
@@ -6213,17 +6372,39 @@ class ApplicationController {
     // Send approval email to client for a given application (async email, non-blocking)
     async sendApprovalEmail(req: Request, res: Response) {
         try {
-            const { applicationId, resend, emailHtml: clientEmailHtmlRaw, emailSubject: clientEmailSubjectRaw } = req.body as {
+            const { applicationId, resend, reinitiateContract, emailHtml: clientEmailHtmlRaw, emailSubject: clientEmailSubjectRaw, isoEmail: isoEmailOverride, ccEmails } = req.body as {
                 applicationId?: string | number;
                 resend?: boolean;
+                /** When true with resend, archive the prior contract envelope and reset for regeneration. */
+                reinitiateContract?: boolean;
                 /** Frontend-rendered branded approval HTML (backend injects URL / ISO name / business name). */
                 emailHtml?: string;
                 emailSubject?: string;
+                /** Optional override for the linked ISO recipient email. */
+                isoEmail?: string;
+                /** Optional CC recipients on the approval / offer-updated template email. */
+                ccEmails?: string[] | string;
             };
             const clientEmailSubject =
                 typeof clientEmailSubjectRaw === 'string' && clientEmailSubjectRaw.trim()
                     ? clientEmailSubjectRaw.trim()
                     : undefined;
+            const parsedCcEmails = (() => {
+                if (Array.isArray(ccEmails)) {
+                    return ccEmails.map((e: unknown) => String(e || '').trim()).filter(Boolean);
+                }
+                if (typeof ccEmails === 'string' && ccEmails.trim()) {
+                    return ccEmails
+                        .split(/[,;]+/)
+                        .map((e) => e.trim())
+                        .filter(Boolean);
+                }
+                return [];
+            })();
+            const isoEmailOverrideTrimmed =
+                typeof isoEmailOverride === 'string' ? isoEmailOverride.trim() : '';
+            const uniqueCcList = [...new Set(parsedCcEmails.map((e) => e.toLowerCase()))]
+                .map((lower) => parsedCcEmails.find((e) => e.toLowerCase() === lower) || lower);
 
             if (!applicationId) {
                 return res.status(400).json({
@@ -6345,13 +6526,18 @@ class ApplicationController {
                       ? Number(offerDecision.totalRemit)
                       : undefined;
 
-            if (!isoEmailRaw) {
+            if (!isoEmailRaw && !isoEmailOverrideTrimmed) {
                 return res.status(400).json({
                     success: false,
                     message:
-                        'The linked ISO has no email on file. Add an email to that ISO in the broker/ISO settings, then try again.',
+                        'The linked ISO has no email on file. Add an email to that ISO in the broker/ISO settings, or enter a recipient email when sending.',
                 });
             }
+
+            const isoEmailToUse = isoEmailOverrideTrimmed || isoEmailRaw;
+            const uniqueCcForSend = uniqueCcList.filter(
+                (e) => e.toLowerCase() !== isoEmailToUse.toLowerCase(),
+            );
 
             try {
                 await syncTermsOfferFromOfferDecision(
@@ -6389,9 +6575,9 @@ class ApplicationController {
             const viewApplicationUrl = publicApprovalUrl;
             const calculateApprovalUrl = publicApprovalUrl;
 
-            const isoRecipientName = isoName || isoEmailRaw || merchantGreetingName;
+            const isoRecipientName = isoName || isoEmailToUse || merchantGreetingName;
             const recipients: { to: string; clientName: string }[] = [
-                { to: isoEmailRaw, clientName: isoRecipientName },
+                { to: isoEmailToUse, clientName: isoRecipientName },
             ];
 
             const emailSubject =
@@ -6457,7 +6643,8 @@ class ApplicationController {
                     actionDescription: `${roleLabel} ${actorName}`.trim() + approvalEmailLogSuffix,
                     metadata: {
                         emailSentTo: recipients.map((r) => r.to),
-                        sentToLinkedIsoOnly: true,
+                        ccEmails: uniqueCcForSend,
+                        sentToLinkedIsoOnly: !isoEmailOverrideTrimmed,
                         resend: !!resend,
                         template: resend ? 'offer-updated' : 'approval',
                         status: 'sent',
@@ -6478,6 +6665,7 @@ class ApplicationController {
                     const sendResult = resend
                         ? await sendApplicationOfferUpdatedEmail({
                             to,
+                            cc: uniqueCcForSend.length ? uniqueCcForSend : undefined,
                             clientName,
                             companyName,
                             viewApplicationUrl,
@@ -6495,6 +6683,7 @@ class ApplicationController {
                         })
                         : await sendApplicationApprovalEmail({
                             to,
+                            cc: uniqueCcForSend.length ? uniqueCcForSend : undefined,
                             clientName,
                             companyName,
                             viewApplicationUrl,
@@ -6518,6 +6707,23 @@ class ApplicationController {
                         'Could not deliver approval notification email. Check: (1) DISABLE_CLIENT_APPLICATION_EMAILS is not true, (2) SENDGRID_API_KEY or SMTP_AUTH_USER / SMTP_AUTH_PASS, (3) recipient spam folder.',
                     data: { attempted: deliveryResults },
                 });
+            }
+
+            const shouldReinitiateContract = !!resend && !!reinitiateContract;
+            if (shouldReinitiateContract) {
+                try {
+                    await reinitiateContractForApplication(String(fallbackId), {
+                        user: getAuthenticatedUser(req),
+                        req,
+                        actorName: String((req as any).user?.name || ''),
+                        source: 'applicationController.sendApprovalEmail',
+                    });
+                } catch (reinitErr) {
+                    console.error(
+                        'Send approval email: contract reinitiation failed:',
+                        reinitErr,
+                    );
+                }
             }
 
             try {
@@ -6556,11 +6762,25 @@ class ApplicationController {
             }
 
             try {
+                const normalizedActorRole = String(authUser?.role || '')
+                    .toUpperCase()
+                    .replace(/-/g, '_');
+                const shouldCreditUnderwriterApproval =
+                    normalizedActorRole === 'UNDERWRITER';
+                const underwriterApprovalPatch = shouldCreditUnderwriterApproval
+                    ? patchRecordUnderwriterApproval(authUser, {
+                          assignedUnderwriterId: (application as any).assignedUnderwriterId,
+                          claimedByUnderwriterId: (application as any).claimedByUnderwriterId,
+                          approvedByUnderwriterId: (application as any).approvedByUnderwriterId,
+                      })
+                    : undefined;
+
                 await prisma.application.update({
                     where: { id: fallbackId },
                     data: {
                         currentQueue: APPROVAL_SENT_QUEUE,
                         currentState: APPROVAL_SENT_STATE,
+                        ...(underwriterApprovalPatch ?? {}),
                     },
                 });
             } catch (stageErr) {
@@ -6577,6 +6797,82 @@ class ApplicationController {
             });
         } catch (error: any) {
             console.error('Send approval email error:', error);
+            return res.status(500).json({
+                success: false,
+                message: error?.message || 'Internal server error',
+            });
+        }
+    }
+
+    /** Archive the current contract envelope and reset CRM state so Operations can regenerate. */
+    async reinitiateContract(req: Request, res: Response) {
+        try {
+            const { applicationId } = req.body as { applicationId?: string | number };
+            if (!applicationId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'applicationId is required',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const applicationIdStr = String(applicationId);
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(applicationIdStr)
+                ? { applicationId: Number(applicationIdStr) }
+                : { id: applicationIdStr };
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser);
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            const ok = await reinitiateContractForApplication(String((application as any).id), {
+                user: authUser,
+                req,
+                actorName: String((req as any).user?.name || ''),
+                source: 'applicationController.reinitiateContract',
+            });
+            if (!ok) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'No contract found for this application',
+                });
+            }
+
+            const refreshed = await prisma.application.findUnique({
+                where: { id: (application as any).id },
+                include: {
+                    referringAgent: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    salesRepresentative: {
+                        select: { id: true, firstName: true, lastName: true, email: true },
+                    },
+                    createdBy: {
+                        select: { id: true, firstName: true, lastName: true, email: true, role: true },
+                    },
+                    client: true,
+                    iso: true,
+                    files: true,
+                },
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: 'Contract reinitiated. Generate a new contract when ready.',
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error: any) {
+            console.error('Reinitiate contract error:', error);
             return res.status(500).json({
                 success: false,
                 message: error?.message || 'Internal server error',

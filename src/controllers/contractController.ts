@@ -1,5 +1,13 @@
 ﻿import type { Request, Response } from 'express';
 import contractService from '../services/contractService';
+import type { AuthenticatedUser } from '../services/applicationService';
+import { recordContractWorkflowActivityLog } from '../services/contractWorkflowActivityLog';
+import prisma from '../config/prismaClient';
+
+const getAuthenticatedUser = (req: Request): AuthenticatedUser | null =>
+  (req as any).user?.id
+    ? { id: String((req as any).user.id), role: String((req as any).user.role || '') }
+    : null;
 
 class ContractController {
   async createContract(req: Request, res: Response) {
@@ -29,6 +37,18 @@ class ContractController {
         });
       }
 
+      const authUser = getAuthenticatedUser(req);
+      const appId = applicationId ? String(applicationId).trim() : '';
+      let hadExistingContract = false;
+      if (appId) {
+        try {
+          const existingContract = await contractService.getByApplicationIdContract(appId);
+          hadExistingContract = Boolean(existingContract?.id);
+        } catch {
+          hadExistingContract = false;
+        }
+      }
+
       const data = await contractService.createContract({
         clientId,
         applicationId,
@@ -44,6 +64,46 @@ class ContractController {
         paymentBankId ,
         ...rest,
       });
+
+      if (appId) {
+        try {
+          const application = await prisma.application.findUnique({
+            where: { id: appId },
+            select: { currentQueue: true, currentState: true },
+          });
+          const queueState = application
+            ? `${application.currentQueue ?? ''} / ${application.currentState ?? ''}`.trim()
+            : null;
+          const contractRow = data as {
+            id?: number;
+            approvedAmount?: number;
+            totalAmount?: number;
+          };
+
+          await recordContractWorkflowActivityLog(
+            appId,
+            hadExistingContract ? 'RECORD_REGENERATED' : 'RECORD_CREATED',
+            {
+              user: authUser,
+              req,
+              actorName: String((req as any).user?.name || ''),
+              source: 'contractController.createContract',
+            },
+            {
+              currentStatus: queueState,
+              metadata: {
+                contractId: contractRow?.id ?? null,
+                approvedAmount: contractRow?.approvedAmount ?? approvedAmount ?? null,
+                totalAmount: contractRow?.totalAmount ?? totalAmount ?? null,
+                contractStatus: status ?? 'DRAFT',
+                hadExistingContract,
+              },
+            },
+          );
+        } catch (logErr) {
+          console.error('[createContract] activity log failed:', logErr);
+        }
+      }
 
       return res.status(201).json({ success: true, message: 'Contract created successfully', data });
     } catch (error: any) {

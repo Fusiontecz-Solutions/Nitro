@@ -58,6 +58,7 @@ router.post(
 
 // Send approval email to client (non-blocking email send)
 router.post('/send-approval-email', applicationController.sendApprovalEmail.bind(applicationController));
+router.post('/reinitiate-contract', applicationController.reinitiateContract.bind(applicationController));
 
 // Funded / funds-released email (OPERATIONS only; non-blocking)
 router.post('/send-funded-email', applicationController.sendFundedEmail.bind(applicationController));

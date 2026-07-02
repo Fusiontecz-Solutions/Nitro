@@ -3,6 +3,12 @@ import type { Request, Response } from 'express';
 import prisma from '../config/prismaClient';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import {
+    flagNeedsContractReinitiation,
+    isQueueEligibleForContractReinitiation,
+    offerDecisionValuesChanged,
+} from '../services/contractReinitiationService';
+import { recordContractWorkflowActivityLog } from '../services/contractWorkflowActivityLog';
 
 const authUserFromReq = (req: Request): AuthenticatedUser | null =>
   (req as any).user?.id
@@ -197,6 +203,17 @@ class OfferDecisionController {
       if ('totalRemit' in body) updateData.totalRemit = parseNumber(totalRemit);
       if ('refinanceAmount' in body) updateData.refinanceAmount = parseNumber(refinanceAmount);
 
+      const priorOfferDecision = await prisma.offerDecision.findUnique({
+        where: { applicationId: app.id },
+        select: {
+          offer: true,
+          rate: true,
+          totalRemit: true,
+          term: true,
+          frequency: true,
+        },
+      });
+
       const result = await prisma.offerDecision.upsert({
         where: { applicationId: app.id },
         create: {
@@ -231,6 +248,54 @@ class OfferDecisionController {
         console.error(
           'OfferDecision upsert: failed to update Application.commissionAmount',
           commissionErr,
+        );
+      }
+
+      try {
+        const existingContract = await prisma.contract.findUnique({
+          where: { applicationId: app.id },
+          select: { id: true },
+        });
+        const offerChanged = offerDecisionValuesChanged(priorOfferDecision, {
+          offer: result.offer,
+          rate: result.rate,
+          totalRemit: result.totalRemit,
+          term: result.term,
+          frequency: result.frequency,
+        });
+        if (
+          existingContract &&
+          offerChanged &&
+          isQueueEligibleForContractReinitiation(app.currentQueue)
+        ) {
+          await flagNeedsContractReinitiation(app.id);
+          await recordContractWorkflowActivityLog(
+            app.id,
+            'REINITIATION_REQUIRED',
+            {
+              user: authUserFromReq(req),
+              req,
+              actorName: String((req as any).user?.name || ''),
+              source: 'offerDecisionController.upsert',
+            },
+            {
+              previousStatus: `${app.currentQueue ?? ''} / ${app.currentState ?? ''}`.trim(),
+              metadata: {
+                contractId: existingContract.id,
+                priorOffer: priorOfferDecision?.offer ?? null,
+                newOffer: result.offer ?? null,
+                priorRate: priorOfferDecision?.rate ?? null,
+                newRate: result.rate ?? null,
+                priorTotalRemit: priorOfferDecision?.totalRemit ?? null,
+                newTotalRemit: result.totalRemit ?? null,
+              },
+            },
+          );
+        }
+      } catch (reinitErr) {
+        console.error(
+          'OfferDecision upsert: failed to flag contract reinitiation',
+          reinitErr,
         );
       }
 

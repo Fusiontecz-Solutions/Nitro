@@ -113,11 +113,13 @@ import {
 } from './utils/standalone-package-docusign';
 import {
   archiveMainContractEnvelopeToHistory,
+  buildContractSendHistoryTermsSnapshot,
   isCompletedEnvelopeStatus,
   resolveArchivedMainContractEnvelopeStatus,
   updateArchivedContractSendHistoryStatus,
 } from './utils/contract-send-history';
 import { syncApplicationOnMainContractResend } from '../contractApplicationWorkflowSync';
+import { clearNeedsContractReinitiation } from '../contractReinitiationService';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
 import { handleContractSigningStatusTransition } from '../contractSigningStatusEffects';
 import {
@@ -2862,7 +2864,36 @@ export class DocusignService {
     if (priorEnvelopeId && priorEnvelopeId !== newEnvelopeId) {
       const contractRow = await prisma.contract.findUnique({
         where: { applicationId },
-        select: { id: true, status: true },
+        select: {
+          id: true,
+          status: true,
+          approvedAmount: true,
+          totalAmount: true,
+          contractLenght: true,
+          offer: {
+            select: {
+              offer: true,
+              term: true,
+              rate: true,
+              repayPerPeriod: true,
+              totalRemit: true,
+            },
+          },
+          termsOffers: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              approvedAmount: true,
+              position: true,
+              buyRate: true,
+              factorRate: true,
+              paymentAmount: true,
+              paybackAmount: true,
+              percentOfGross: true,
+              termLength: true,
+            },
+          },
+        },
       });
       const archiveStatus = resolveArchivedMainContractEnvelopeStatus(
         existingDoc?.status,
@@ -2880,6 +2911,7 @@ export class DocusignService {
         completedAt:
           existingDoc?.completedAt ??
           (priorWasCompleted ? new Date() : null),
+        termsSnapshot: buildContractSendHistoryTermsSnapshot(contractRow),
       });
 
       // Resend after signed, voided, or any prior main-contract send — back to Contract Generated.
@@ -2908,6 +2940,8 @@ export class DocusignService {
         completedAt: null,
       },
     });
+
+    await clearNeedsContractReinitiation(applicationId);
   }
 
   private sleep(ms: number) {
@@ -3159,6 +3193,7 @@ export class DocusignService {
         currentState: 'CONTRACT_GENERATED',
       },
     });
+    await clearNeedsContractReinitiation(appId);
   }
 
   /** Move deal to Contract Sent when envelope is out; Contract Signed when fully signed. */
@@ -3178,6 +3213,7 @@ export class DocusignService {
           currentState: 'SIGNED_CONTRACTS',
         },
       });
+      await clearNeedsContractReinitiation(appId);
       return;
     }
 
@@ -3189,6 +3225,7 @@ export class DocusignService {
           currentState: 'Contract Out',
         },
       });
+      await clearNeedsContractReinitiation(appId);
     }
   }
 

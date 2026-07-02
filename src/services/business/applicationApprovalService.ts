@@ -7,6 +7,10 @@ import {
     enqueueApplicationApprovalSideEffects,
     isApplicationApprovalQueueEnabled,
 } from '../../queues/applicationApprovalQueue';
+import {
+    APPLICATION_QUEUE_CONTRACT_PENDING,
+    APPLICATION_STATE_CONTRACT_PENDING,
+} from '../contractApplicationWorkflowSync';
 
 /* ============================================================================
  * Application Approval domain service
@@ -37,13 +41,16 @@ export const APPLICATION_APPROVED_STATE = 'Approved' as const;
 const isIsoApprovalActor = (actorType: string | null | undefined): boolean =>
     String(actorType ?? '').trim().toUpperCase() === 'ISO';
 
-/** All approval transitions persist the legacy Approved/Approved queue labels. */
+/**
+ * ISO public-portal approvals advance straight to Contract Pending so Operations
+ * can generate the contract. Internal CRM approvals keep Approved/Approved.
+ */
 const resolveApprovalTarget = (
-    _actorType: string | null | undefined
-): { queue: string; state: string } => ({
-    queue: APPLICATION_APPROVED_QUEUE,
-    state: APPLICATION_APPROVED_STATE,
-});
+    actorType: string | null | undefined
+): { queue: string; state: string } =>
+    isIsoApprovalActor(actorType)
+        ? { queue: APPLICATION_QUEUE_CONTRACT_PENDING, state: APPLICATION_STATE_CONTRACT_PENDING }
+        : { queue: APPLICATION_APPROVED_QUEUE, state: APPLICATION_APPROVED_STATE };
 
 /** Public contract returned to the controller / API. */
 export interface ApproveApplicationResult {
@@ -220,6 +227,7 @@ async function runApproval(
             applicationId: true,
             currentQueue: true,
             currentState: true,
+            needsContractReinitiation: true,
         },
     });
 
@@ -249,7 +257,7 @@ async function runApproval(
      * (e.g. Contract Generated → back to Approved) and never re-fires emails.
      */
     if (alreadyApproved) {
-        const current = await prisma.application.findUnique({
+        let current = await prisma.application.findUnique({
             where: { id: existing.id },
             include: includeForApiResponse,
         });
@@ -259,9 +267,25 @@ async function runApproval(
             previousState,
         });
 
-        // Backfill: ISO approval may have updated state while notifications failed.
-        // Re-run fan-out idempotently for ISO actors only.
-        if (
+        if (current && isIsoApprovalActor(options.actorType) && existing.needsContractReinitiation) {
+            current = await prisma.application.update({
+                where: { id: existing.id },
+                data: { isoUpdatedOfferApproved: true },
+                include: includeForApiResponse,
+            });
+            dispatchApprovalSideEffects({
+                applicationId: existing.id,
+                applicationNumber: existing.applicationId,
+                actorId: options.actor?.id ?? null,
+                actorRole: options.actor?.role ? String(options.actor.role) : null,
+                actorType: options.actorType ?? null,
+                actorName: options.actorName ?? null,
+                previousQueue: previousQueue ?? null,
+                previousState: previousState ?? null,
+                targetQueue: current.currentQueue,
+                targetState: current.currentState,
+            });
+        } else if (
             current &&
             (isIsoApprovedStage(current.currentQueue, current.currentState) ||
                 normalizeWorkflowToken(current.currentQueue) === 'approved' ||
@@ -269,6 +293,8 @@ async function runApproval(
                 isContractPendingStage(current.currentQueue, current.currentState)) &&
             isIsoApprovalActor(options.actorType)
         ) {
+            // Backfill: ISO approval may have updated state while notifications failed.
+            // Re-run fan-out idempotently for ISO actors only.
             dispatchApprovalSideEffects({
                 applicationId: existing.id,
                 applicationNumber: existing.applicationId,
@@ -292,20 +318,25 @@ async function runApproval(
     }
 
     /**
-     * Target stage is always Approved/Approved (legacy queue labels). Pipeline
-     * buckets distinguish ISO vs UW via activity logs and prior workflow stage.
+     * Target stage depends on who approved:
+     *   - ISO (public portal)  → Contract Pending (ready for contract generation).
+     *   - Internal CRM actor   → legacy Approved/Approved bucket.
      *
      * Single non-interactive update by primary key to avoid Prisma interactive
      * transaction timeout failures (P2028) under DB latency spikes.
      */
     const target = resolveApprovalTarget(options.actorType);
+    const approvalUpdateData: Prisma.ApplicationUpdateInput = {
+        currentQueue: target.queue,
+        currentState: target.state,
+    };
+    if (isIsoApprovalActor(options.actorType) && existing.needsContractReinitiation) {
+        approvalUpdateData.isoUpdatedOfferApproved = true;
+    }
 
     const application = await prisma.application.update({
         where: { id: existing.id },
-        data: {
-            currentQueue: target.queue,
-            currentState: target.state,
-        },
+        data: approvalUpdateData,
         include: includeForApiResponse,
     });
 

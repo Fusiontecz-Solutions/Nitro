@@ -3,6 +3,7 @@ import path from 'path';
 import sendMail, {
     getSendGridMailFrom,
     isOutboundSmtpConfigured,
+    isSendGridConfigured,
     sendSendGridMail,
 } from '../config/nodemailer';
 import prisma from '../config/prismaClient';
@@ -608,6 +609,8 @@ export async function sendWelcomeEmail({
 
 export interface ApplicationApprovalEmailParams {
     to: string;
+    /** Optional CC recipients on the approval template email. */
+    cc?: string[];
     clientName: string;
     companyName: string;
     viewApplicationUrl?: string;
@@ -836,6 +839,7 @@ function readSendGridMessageId(result: unknown): string | undefined {
 /** @returns send outcome; includes SendGrid message id when tracked delivery succeeds */
 export async function sendApplicationApprovalEmail({
     to,
+    cc,
     clientName,
     companyName,
     viewApplicationUrl,
@@ -882,12 +886,17 @@ export async function sendApplicationApprovalEmail({
     const trackingIdTrimmed = String(trackingId || '').trim();
     const usesApprovedOfferTemplate =
         Boolean(offerInjectValues) || html.includes('Approved Offer Details');
+    const ccList = (cc || []).map((e) => String(e || '').trim()).filter(Boolean);
+    const uniqueCc = [...new Set(ccList.map((e) => e.toLowerCase()))]
+        .map((lower) => ccList.find((e) => e.toLowerCase() === lower) || lower)
+        .filter((e) => e.toLowerCase() !== toTrimmed.toLowerCase());
 
     try {
         const attachments = await buildIsoBrandedEmailAttachments(html, APPROVAL_EMAIL_PDF_FILENAME);
         const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
         const mailOptions = {
             to: toTrimmed,
+            cc: uniqueCc.length ? uniqueCc : undefined,
             subject,
             html,
             attachments,
@@ -923,6 +932,12 @@ export async function sendApplicationApprovalEmail({
 
 export interface ApplicationRejectionEmailParams {
     to: string;
+    /** Optional CC recipients on the rejection template email. */
+    cc?: string[];
+    /** RFC `In-Reply-To` — threads decline mail onto the ISO submission email. */
+    inReplyTo?: string;
+    /** RFC `References` — threads decline mail onto the ISO submission email. */
+    references?: string;
     /** Greeting name — the linked ISO contact (falls back to recipient email). */
     clientName: string;
     /** Primary decline reason (the selected rejection reason). */
@@ -933,12 +948,34 @@ export interface ApplicationRejectionEmailParams {
     bannerLogoUrl?: string;
     /** Pre-rendered HTML from the CRM frontend template (skips legacy builder). */
     html?: string;
+    /** Threaded reply subject for the ISO (may include `Re:`). */
     subject?: string;
+    /** Standalone subject for CC copies — no threading, no `Re:` prefix. */
+    freshSubject?: string;
     /** SendGrid webhook correlation id (`ocid` custom arg). */
     trackingId?: string;
 }
 
 export const REJECTION_EMAIL_PDF_FILENAME = 'Application-declined-template.pdf';
+
+export type ApplicationRejectionEmailResult = {
+    sent: boolean;
+    emailedTo: string[];
+    emailedCc: string[];
+    ccErrors: string[];
+};
+
+function cloneMailAttachments(
+    attachments: Awaited<ReturnType<typeof buildIsoBrandedEmailAttachments>>,
+) {
+    return attachments.map((attachment) => ({
+        ...attachment,
+        content:
+            attachment.content != null && Buffer.isBuffer(attachment.content)
+                ? Buffer.from(attachment.content)
+                : attachment.content,
+    }));
+}
 
 /** Minimal HTML escaping for values interpolated into email markup. */
 function escapeEmailHtml(value: unknown): string {
@@ -1185,22 +1222,32 @@ export const buildApplicationRejectionEmailHtml = ({
 </html>`;
 };
 
-/** @returns true when SMTP accepted the message; false if disabled, invalid `to`, or send failed */
+/** @returns delivery summary; CC recipients each receive a dedicated To copy (reliable SendGrid delivery). */
 export async function sendApplicationRejectionEmail({
     to,
+    cc,
+    inReplyTo,
+    references,
     clientName,
     primaryReason,
     otherReasons,
     bannerLogoUrl,
     html: clientHtml,
     subject: clientSubject,
+    freshSubject: clientFreshSubject,
     trackingId,
-}: ApplicationRejectionEmailParams): Promise<boolean> {
+}: ApplicationRejectionEmailParams): Promise<ApplicationRejectionEmailResult> {
+    const emptyResult: ApplicationRejectionEmailResult = {
+        sent: false,
+        emailedTo: [],
+        emailedCc: [],
+        ccErrors: [],
+    };
     const toTrimmed = String(to || '').trim();
     if (!toTrimmed) {
         // eslint-disable-next-line no-console
         console.warn('[email] Application rejection skipped: empty recipient');
-        return false;
+        return emptyResult;
     }
 
     if (DISABLE_CLIENT_APPLICATION_EMAILS) {
@@ -1209,10 +1256,14 @@ export async function sendApplicationRejectionEmail({
             '[email] Application rejection skipped: DISABLE_CLIENT_APPLICATION_EMAILS=true (set to false to deliver ISO decline template)',
             { to: toTrimmed },
         );
-        return false;
+        return emptyResult;
     }
 
-    const subject = String(clientSubject || '').trim() || 'Application Rejected';
+    const threadedSubject = String(clientSubject || '').trim() || 'Application Rejected';
+    const standaloneSubject =
+        String(clientFreshSubject || '').trim() ||
+        threadedSubject.replace(/^re:\s*/i, '').trim() ||
+        'Application Rejected';
     const html =
         String(clientHtml || '').trim() ||
         buildApplicationRejectionEmailHtml({
@@ -1221,26 +1272,96 @@ export async function sendApplicationRejectionEmail({
             otherReasons,
             bannerLogoUrl,
         });
+    const ccList = (cc || []).map((e) => String(e || '').trim()).filter(Boolean);
+    const uniqueCc = [...new Set(ccList.map((e) => e.toLowerCase()))]
+        .map((lower) => ccList.find((e) => e.toLowerCase() === lower) || lower)
+        .filter((e) => e.toLowerCase() !== toTrimmed.toLowerCase());
+
+    const emailedTo: string[] = [];
+    const emailedCc: string[] = [];
+    const ccErrors: string[] = [];
+
+    const dispatchRejectionMail = async (
+        mailTo: string | string[],
+        options: { threaded: boolean; withTracking: boolean },
+        attachments: Awaited<ReturnType<typeof buildIsoBrandedEmailAttachments>>,
+    ) => {
+        const payload = {
+            inReplyTo: options.threaded
+                ? String(inReplyTo || '').trim() || undefined
+                : undefined,
+            references: options.threaded
+                ? String(references || '').trim() || undefined
+                : undefined,
+            subject: options.threaded ? threadedSubject : standaloneSubject,
+            html,
+            to: mailTo,
+            categories: ['rejection'] as string[],
+            attachments: cloneMailAttachments(attachments),
+            ...(options.withTracking && trackingId ? { trackingId } : {}),
+        };
+
+        if (isSendGridConfigured()) {
+            await sendSendGridMail(payload);
+            return;
+        }
+
+        await sendMail(payload);
+    };
+
     try {
         const attachments = await buildIsoBrandedEmailAttachments(html, REJECTION_EMAIL_PDF_FILENAME);
         const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
-        await sendMail({
-            to: toTrimmed,
-            subject,
-            html,
-            attachments,
-            trackingId,
-            categories: ['rejection'],
-        });
+
+        // ISO: reply in the original submission thread when headers are available.
+        await dispatchRejectionMail(toTrimmed, { threaded: true, withTracking: true }, attachments);
+        emailedTo.push(toTrimmed);
+
+        // CC: each address gets a fresh standalone message (no In-Reply-To / References).
+        for (const ccAddress of uniqueCc) {
+            try {
+                await dispatchRejectionMail(
+                    ccAddress,
+                    { threaded: false, withTracking: false },
+                    attachments,
+                );
+                emailedCc.push(ccAddress);
+            } catch (ccError) {
+                const message = ccError instanceof Error ? ccError.message : String(ccError);
+                ccErrors.push(`${ccAddress}: ${message}`);
+                console.error('[email] Application rejection CC copy failed:', {
+                    cc: ccAddress,
+                    error: ccError,
+                });
+            }
+        }
+
+        if (uniqueCc.length > 0) {
+            console.info('[email] Application rejection delivery summary', {
+                to: emailedTo,
+                cc: emailedCc,
+                ccErrors,
+            });
+        }
         if (!hasPdf) {
             // eslint-disable-next-line no-console
             console.warn('[email] Application rejection sent without PDF attachment (PDF generation failed)');
         }
-        return true;
+        return {
+            sent: emailedTo.length > 0,
+            emailedTo,
+            emailedCc,
+            ccErrors,
+        };
     } catch (error) {
         // eslint-disable-next-line no-console
-        console.error('Application rejection email send failed:', { to: toTrimmed, error });
-        return false;
+        console.error('Application rejection email send failed:', { to: toTrimmed, cc: uniqueCc, error });
+        return {
+            sent: false,
+            emailedTo,
+            emailedCc,
+            ccErrors,
+        };
     }
 }
 
@@ -1334,6 +1455,8 @@ export async function sendOperationsIsoApprovalAlertEmail({
 /** Client email when offer values are updated after approval comments. */
 export interface ApplicationOfferUpdatedEmailParams {
     to: string;
+    /** Optional CC recipients on the offer-updated template email. */
+    cc?: string[];
     clientName: string;
     companyName: string;
     viewApplicationUrl?: string;
@@ -1374,6 +1497,7 @@ export const buildApplicationOfferUpdatedEmailHtml = ({
 
 export async function sendApplicationOfferUpdatedEmail({
     to,
+    cc,
     clientName,
     companyName,
     viewApplicationUrl,
@@ -1412,12 +1536,17 @@ export async function sendApplicationOfferUpdatedEmail({
         clientName,
         companyName,
     });
+    const ccList = (cc || []).map((e) => String(e || '').trim()).filter(Boolean);
+    const uniqueCc = [...new Set(ccList.map((e) => e.toLowerCase()))]
+        .map((lower) => ccList.find((e) => e.toLowerCase() === lower) || lower)
+        .filter((e) => e.toLowerCase() !== toTrimmed.toLowerCase());
 
     try {
         const attachments = await buildIsoBrandedEmailAttachments(html, OFFER_UPDATED_EMAIL_PDF_FILENAME);
         const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
         const result = await sendMail({
             to: toTrimmed,
+            cc: uniqueCc.length ? uniqueCc : undefined,
             subject,
             html,
             attachments,
