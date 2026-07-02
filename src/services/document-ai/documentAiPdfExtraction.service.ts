@@ -53,19 +53,33 @@ function resolveProcessorId(key: string, fallbackKey?: string): string {
   return '';
 }
 
-function resolveMimeType(mimeType: string, buffer: Buffer): string {
-  const mime = String(mimeType || '').toLowerCase().trim();
-  if (mime && mime !== 'application/octet-stream' && mime !== 'binary/octet-stream') {
-    return mime;
-  }
-  if (buffer.length >= 4 && buffer.subarray(0, 4).toString() === '%PDF') {
-    return 'application/pdf';
-  }
+function detectMimeFromBuffer(buffer: Buffer): string | null {
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8) {
     return 'image/jpeg';
   }
   if (buffer.length >= 8 && buffer.subarray(0, 8).toString() === '\x89PNG\r\n\x1a\n') {
     return 'image/png';
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  if (buffer.length >= 4 && buffer.subarray(0, 4).toString() === '%PDF') {
+    return 'application/pdf';
+  }
+  return null;
+}
+
+function resolveMimeType(mimeType: string, buffer: Buffer): string {
+  const detected = detectMimeFromBuffer(buffer);
+  if (detected) return detected;
+
+  const mime = String(mimeType || '').toLowerCase().trim();
+  if (mime && mime !== 'application/octet-stream' && mime !== 'binary/octet-stream') {
+    return mime;
   }
   return 'application/pdf';
 }
