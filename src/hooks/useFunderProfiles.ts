@@ -91,15 +91,14 @@ export function pickCanonicalFunderName(
 }
 
 export function isAllianceFunderProfile(
-  funder: Pick<
-    FunderProfile,
-    | "name"
-    | "displayName"
-    | "mainContractLayoutKey"
-    | "organization"
-    | "legalName"
-    | "contactEmail"
-  >,
+  funder: {
+    name?: string | null;
+    displayName?: string | null;
+    mainContractLayoutKey?: string | null;
+    organization?: string | null;
+    legalName?: string | null;
+    contactEmail?: string | null;
+  },
 ): boolean {
   const name = normalizeFunderName(funder.name);
   const display = normalizeFunderName(funder.displayName);

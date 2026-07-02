@@ -42,7 +42,7 @@ export function resolveFunderSupplementalDocumentLabel(
 ): string {
     const key = String(layoutKey || "").trim();
     const genericLabel = supplementalOptionLabel(key);
-    const storedName = String(options?.storedTemplateName ?? "").trim();
+    const storedName = humanizeLayoutKeyLikeName(options?.storedTemplateName);
     const profile = options?.funderProfile;
     const usesPlatformDocs =
         !profile ||
@@ -125,6 +125,30 @@ export function getPlatformSignerRoleRows(
 }
 
 export function supplementalOptionLabel(layoutKey: string): string {
-    const found = SUPPLEMENTAL_DOCUMENT_OPTIONS.find((o) => o.layoutKey === layoutKey);
-    return found?.label || layoutKey;
+    const key = String(layoutKey || "").trim();
+    const normalized = key.toLowerCase().replace(/-/g, "_");
+    if (
+        normalized === PLATFORM_LAYOUT_KEYS.achAuthorization ||
+        normalized === "ach_authorization_standalone"
+    ) {
+        return "ACH Authorization";
+    }
+    const found = SUPPLEMENTAL_DOCUMENT_OPTIONS.find((o) => o.layoutKey === key);
+    return found?.label || key;
+}
+
+function humanizeLayoutKeyLikeName(value?: string | null): string {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    const normalized = raw.toLowerCase().replace(/-/g, "_");
+    if (
+        normalized === PLATFORM_LAYOUT_KEYS.achAuthorization ||
+        normalized === "ach_authorization_standalone"
+    ) {
+        return "ACH Authorization";
+    }
+    if (isPlatformLayoutKey(raw)) {
+        return supplementalOptionLabel(raw);
+    }
+    return raw;
 }

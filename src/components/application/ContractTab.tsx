@@ -2209,6 +2209,12 @@ export default function ContractTab({
                             contractPrefillOverrides,
                             {
                                 envelopeId: String(documentId),
+                                funderName:
+                                    String(
+                                        sendPayload.funderName ??
+                                            resolvedFunderName ??
+                                            "",
+                                    ).trim() || null,
                             },
                         );
                     } else if (!includeMainContract && sendPackageSelection) {
