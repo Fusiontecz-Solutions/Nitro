@@ -9,6 +9,7 @@ export type BackgroundCheckResource = {
   description: string;
   href?: string | ((ctx: BackgroundCheckLinkContext) => string);
   isApi?: boolean;
+  hasPanel?: boolean;
 };
 
 /**
@@ -25,6 +26,7 @@ export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
     id: "opencorporates",
     title: "OpenCorporates",
     description: "Entity registration & status",
+    hasPanel: true,
     href: ({ businessName }) =>
       businessName.trim()
         ? `https://opencorporates.com/companies?q=${encodeURIComponent(businessName.trim())}`
