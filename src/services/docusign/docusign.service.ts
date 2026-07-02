@@ -120,7 +120,11 @@ import {
 import { syncApplicationOnMainContractResend } from '../contractApplicationWorkflowSync';
 import { decryptField, isEncrypted } from '../../utils/fieldEncryption';
 import { handleContractSigningStatusTransition } from '../contractSigningStatusEffects';
-import { mergeDefaultContractCcEmails } from '../../utils/contractCcDefaults';
+import {
+  dedupeContractCcEmails,
+  mergeDefaultContractCcEmails,
+  mergeDefaultContractCcEmailsForSend,
+} from '../../utils/contractCcDefaults';
 import {
   buildContractEnvelopeDocumentName,
   buildContractEnvelopeEmailSubject,
@@ -1813,7 +1817,7 @@ export class DocusignService {
   ): Promise<number> {
     await this.removeEnvelopeCarbonCopies(client, accountId, envelopeId);
 
-    const list = mergeDefaultContractCcEmails(ccEmails).filter(
+    const list = dedupeContractCcEmails(ccEmails).filter(
       (email) =>
         !signerEmails
           .map((s) => String(s).trim().toLowerCase())
@@ -2424,7 +2428,20 @@ export class DocusignService {
       templateIdFromEnvelope,
     );
 
-    const list = mergeDefaultContractCcEmails(ccEmails);
+    const funderForCc =
+      String(envelopeAuth?.funderName ?? '').trim() ||
+      (await this.resolveFunderNameForEnvelopeAuth({
+        funderName: envelopeAuth?.funderName,
+        contractId: envelopeAuth?.contractId,
+        envelopeId: eid,
+        applicationId,
+      }));
+    const contractState = await this.resolveContractStateForAuth(envelopeAuth?.contractId);
+    const list = await mergeDefaultContractCcEmailsForSend(ccEmails, {
+      funderName: funderForCc,
+      contractId: envelopeAuth?.contractId,
+      contractState,
+    });
 
     const recAfter = await client.get(
       `/v2.1/accounts/${accountId}/envelopes/${eid}/recipients`,
@@ -3762,6 +3779,8 @@ export class DocusignService {
       /** CRM values are burned into uploaded PDFs — skip signer overlay text tabs. */
       prefillFlattenedInPdf?: boolean;
       funderName?: string | null;
+      funderProfileId?: string | null;
+      contractState?: string | null;
       client: AxiosInstance;
       accountId: string;
     },
@@ -3773,7 +3792,15 @@ export class DocusignService {
         contractId: options.contractId,
         applicationId: appId || undefined,
       }));
-    const ccEmails = mergeDefaultContractCcEmails(options.ccEmails, funderForCc);
+    const contractState =
+      String(options.contractState ?? '').trim() ||
+      (await this.resolveContractStateForAuth(options.contractId));
+    const ccEmails = await mergeDefaultContractCcEmailsForSend(options.ccEmails, {
+      funderName: funderForCc,
+      funderProfileId: options.funderProfileId,
+      contractState: contractState || null,
+      contractId: options.contractId,
+    });
     const linkApplicationDocument = options.linkApplicationDocument !== false;
     if (appId && linkApplicationDocument) {
       await this.linkEnvelopeToApplication(userId, appId, envelopeId);
@@ -4192,6 +4219,8 @@ export class DocusignService {
         createTimePrefillTabCount: built.createTimePrefillTabCount,
         prefillFlattenedInPdf: built.prefillFlattenedInPdf,
         funderName: options.funderName,
+        funderProfileId: options.funderProfileId,
+        contractState,
         client,
         accountId,
       });
@@ -4826,14 +4855,16 @@ export class DocusignService {
       envelopeId: eid,
       applicationId: appId || undefined,
     });
-    const ccFromRequest = mergeDefaultContractCcEmails(
-      options?.ccEmails,
-      options?.funderName ??
+    const ccFromRequest = await mergeDefaultContractCcEmailsForSend(options?.ccEmails, {
+      funderName:
+        options?.funderName ??
         (await this.resolveFunderNameForEnvelopeAuth({
           contractId: options?.contractId,
           applicationId: options?.applicationId,
         })),
-    );
+      contractId: options?.contractId,
+      contractState: await this.resolveContractStateForAuth(options?.contractId),
+    });
     const priorStatus = await this.getEnvelopeStatus(client, accountId, eid);
 
     await this.syncEnvelopeCcEmails(
