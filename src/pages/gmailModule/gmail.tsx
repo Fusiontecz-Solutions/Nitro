@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { toast } from 'react-toastify';
-import { getGmailMessageDetails, getGmailAttachments, syncGmail, sendGmailCompose, fetchGmailConnection } from '@/redux/actions/gmailActions';
+import { getGmailMessageDetails, getGmailAttachments, syncGmail, sendGmailCompose, fetchGmailConnection, markGmailMessageInCrmLabel } from '@/redux/actions/gmailActions';
 import { parseApplicationPdfForClientPrefill } from '@/redux/actions/applicationActions';
 import { getIsos } from '@/redux/actions/isoActions';
 import type { GmailLabel } from '@/redux/actions/gmailActions';
@@ -828,6 +828,13 @@ const GmailPage = () => {
                         isoId,
                       }),
                     ).unwrap();
+
+                    try {
+                      await dispatch(markGmailMessageInCrmLabel(selectedMessageId)).unwrap();
+                      void dispatch(syncGmail({ label: 'INBOX' }));
+                    } catch (labelError) {
+                      console.warn('Application created but Gmail in-crm label failed:', labelError);
+                    }
 
                     toast.success("Application created successfully");
 

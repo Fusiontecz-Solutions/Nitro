@@ -18,6 +18,7 @@ export type AchSendHistoryEntry = {
     status: AchAuthorizationDocuSignCapsuleStatus;
     sentAt?: string | null;
     archivedAt: string;
+    funderName?: string | null;
 };
 
 export type AchAuthorizationDocuSignCapsuleStatus =
@@ -32,6 +33,8 @@ export type AchAuthorizationDocuSignMeta = {
     status: AchAuthorizationDocuSignCapsuleStatus;
     sentAt?: string | null;
     updatedAt?: string | null;
+    /** DocuSign account used for this ACH send (Katan vs Alliance). */
+    funderName?: string | null;
 };
 
 export function mapInternalEnvelopeStatusToAchCapsule(
@@ -91,6 +94,7 @@ export function parseAchAuthorizationDocuSignFromPrefill(
         status,
         sentAt: o.sentAt != null ? String(o.sentAt) : null,
         updatedAt: o.updatedAt != null ? String(o.updatedAt) : null,
+        funderName: o.funderName != null ? String(o.funderName).trim() || null : null,
     };
 }
 
@@ -120,6 +124,10 @@ export function mergeAchAuthorizationDocuSignIntoPrefill(
                     ? (prior.sentAt ?? now)
                     : (prior.sentAt ?? null),
         updatedAt: patch.updatedAt ?? now,
+        funderName:
+            patch.funderName !== undefined
+                ? patch.funderName
+                : (prior.funderName ?? null),
     };
     return {
         ...base,
@@ -162,6 +170,16 @@ export function achCapsuleClassName(status: AchAuthorizationDocuSignCapsuleStatu
 /** ACH envelope is in-flight (draft, sent, or viewed) — void before resending. */
 export function achEnvelopeIsActive(status: AchAuthorizationDocuSignCapsuleStatus): boolean {
     return status === "DRAFT" || status === "SENT" || status === "VIEWED";
+}
+
+export function canSendAchAuthorization(
+    meta: AchAuthorizationDocuSignMeta | null,
+    sessionEnvelopeId?: string | null,
+): boolean {
+    const envelopeId = String(meta?.envelopeId ?? sessionEnvelopeId ?? "").trim();
+    if (!envelopeId) return true;
+    const status = meta?.status ?? "DRAFT";
+    return status === "VOIDED";
 }
 
 export function canVoidAchAuthorization(
@@ -255,6 +273,7 @@ export function parseAchSendHistoryFromPrefill(raw: unknown): AchSendHistoryEntr
             status,
             sentAt: o.sentAt != null ? String(o.sentAt) : null,
             archivedAt: String(o.archivedAt ?? ""),
+            funderName: o.funderName != null ? String(o.funderName).trim() || null : null,
         });
     }
     return out;

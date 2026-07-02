@@ -2,6 +2,7 @@ import { APP_LOGO_DARK_SRC } from "@/constants/appLogo";
 import { BACKGROUND_CHECK_RESOURCES } from "@/config/externalLinks";
 import { axiosPost } from "@/redux/axios";
 import type { DataMerchLookupData } from "@/redux/actions/datamerch-actions";
+import type { OpenCorporatesLookupData } from "@/components/application/opencorporatesTypes";
 import { resolveCheckAttachmentPreviews } from "./backgroundCheckAttachmentPreview";
 import type { BackgroundCheckFormState } from "./backgroundCheckTypes";
 
@@ -28,6 +29,8 @@ export type BackgroundCheckPdfInput = {
   savedAt?: string | null;
   datamerch?: Omit<DataMerchLookupData, "raw"> | null;
   datamerchSearchedAt?: string | null;
+  opencorporates?: OpenCorporatesLookupData | null;
+  opencorporatesSearchedAt?: string | null;
 };
 
 export function backgroundCheckPdfFilename(merchantName: string): string {
@@ -56,6 +59,8 @@ export async function fetchBackgroundCheckPdfBlob(
       checks: input.checks,
       datamerch: input.datamerch ?? null,
       datamerchSearchedAt: input.datamerchSearchedAt ?? null,
+      opencorporates: input.opencorporates ?? null,
+      opencorporatesSearchedAt: input.opencorporatesSearchedAt ?? null,
       attachmentPreviews,
     },
     { responseType: "blob" },

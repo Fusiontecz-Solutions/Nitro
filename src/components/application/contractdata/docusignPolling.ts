@@ -19,3 +19,28 @@ export function formatDocuSignSyncErrorMessage(err: unknown, context: string): s
     if (raw.trim()) return raw.trim();
     return `Could not refresh ${context} status.`;
 }
+
+export async function parseApiErrorMessageFromAxios(error: unknown): Promise<string> {
+    const e = error as {
+        response?: { data?: unknown };
+        message?: string;
+    };
+    const data = e?.response?.data;
+    if (data instanceof Blob) {
+        try {
+            const text = await data.text();
+            try {
+                const j = JSON.parse(text) as { message?: string };
+                return String(j?.message ?? text).trim() || "Request failed";
+            } catch {
+                return text.trim() || "Request failed";
+            }
+        } catch {
+            return "Request failed";
+        }
+    }
+    if (data && typeof data === "object" && "message" in data) {
+        return String((data as { message?: string }).message ?? e?.message ?? "Request failed");
+    }
+    return String(e?.message ?? "Request failed");
+}

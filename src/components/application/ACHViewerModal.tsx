@@ -29,6 +29,7 @@ import {
 import { cn } from "@/lib/utils";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import { parseApiErrorMessageFromAxios } from "./contractdata/docusignPolling";
 import {
     buildAchDocuSignPrefillFieldsPayload,
     docuSignPrefillSyncToast,
@@ -48,6 +49,7 @@ import {
 } from "./boldsignCcList";
 import {
     canResendAchAuthorization,
+    canSendAchAuthorization,
     canVoidAchAuthorization,
     mergeAchAuthorizationDocuSignIntoPrefill,
     mergeAchSignerOverridesIntoPrefill,
@@ -68,10 +70,11 @@ import {
     normalizeContractPrefillOverrides,
 } from "./contractdata/Contract";
 import { resolveFunderSupplementalDocumentLabel } from "./contractdata/platformDocumentConfig";
-import { useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { findFunderProfile, useFunderProfiles } from "@/hooks/useFunderProfiles";
 import {
     ACH_FUNDER_BRAND_OPTIONS,
     type AchFunderBrand,
+    inferAchFunderBrand,
     resolveAchFunderProfileName,
 } from "./achFunderSelect";
 import { pickContractEnvelopeDocument, isAchSigningFinished } from "./contractdata/contractSendHistory";
@@ -108,6 +111,22 @@ function normalizeContractStateForFunder(value: unknown): string {
 }
 
 type AchPdfTab = "template" | "filled";
+
+function formatAchDisplayLabel(value?: string | null): string {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    const normalized = raw.toLowerCase().replace(/-/g, "_");
+    if (
+        normalized === "ach_authorization" ||
+        normalized === "ach_authorization_standalone"
+    ) {
+        return "ACH Authorization";
+    }
+    return raw
+        .replace(/\s*\(standalone\)\s*/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
 
 type AchTemplateMappingRow = {
     id: string;
@@ -266,9 +285,13 @@ export default function ACHViewerModal({
     );
 
     const selectedAchFunderProfileId = useMemo(() => {
-        const profile = findFunder(resolvedAchFunderName);
+        const profile =
+            findFunder(resolvedAchFunderName) ??
+            findFunderProfile(funders, resolvedAchFunderName, null);
         return profile?.id ? String(profile.id).trim() : "";
-    }, [findFunder, resolvedAchFunderName]);
+    }, [findFunder, funders, resolvedAchFunderName]);
+
+    const achPreviewLayoutKey = DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE;
 
     const achTemplateLayoutKey = useMemo(() => {
         return String(
@@ -333,26 +356,44 @@ export default function ACHViewerModal({
 
     const hasFilledPdf = Boolean(linkedEnvelopeId);
     const isSigned = achCapsuleStatus === "SIGNED";
+    const isVoided = achCapsuleStatus === "VOIDED";
     const canVoidAch =
         !readOnly && canVoidAchAuthorization(achAuthorizationDocuSign, sessionEnvelopeId);
     const canResendAch =
         !readOnly &&
         Boolean(onPrepareDocuSignDraft) &&
         canResendAchAuthorization(achAuthorizationDocuSign, sessionEnvelopeId);
+    const canSendAchAfterVoid =
+        !readOnly &&
+        Boolean(onPrepareDocuSignDraft) &&
+        canSendAchAuthorization(achAuthorizationDocuSign, sessionEnvelopeId);
     const canContinueDraft =
         !readOnly &&
         Boolean(onPrepareDocuSignDraft) &&
         hasFilledPdf &&
         achCapsuleStatus === "DRAFT";
     const canInitialSend =
-        !readOnly && Boolean(onPrepareDocuSignDraft) && !hasFilledPdf;
-    const canReviewAndSend = canResendAch || canContinueDraft || canInitialSend;
+        !readOnly &&
+        Boolean(onPrepareDocuSignDraft) &&
+        canSendAchAfterVoid &&
+        !hasFilledPdf;
+    const canReviewAndSend = canContinueDraft || canInitialSend;
+
+    const achDownloadFunderName = useMemo(() => {
+        const fromMeta = String(achAuthorizationDocuSign?.funderName ?? "").trim();
+        if (fromMeta) return fromMeta;
+        return String(resolvedAchFunderName || "").trim();
+    }, [achAuthorizationDocuSign?.funderName, resolvedAchFunderName]);
 
     const canEditAchRecipients =
         !readOnly &&
         !isSigned &&
         achCapsuleStatus !== "SENT" &&
         achCapsuleStatus !== "VIEWED";
+
+    /** Funder can change before resend (signed/voided) or on first send; locked while out for signature. */
+    const canEditAchFunder =
+        !readOnly && achCapsuleStatus !== "SENT" && achCapsuleStatus !== "VIEWED";
 
     const suggestedAchSignerRows = useMemo(
         () => buildContractSignerRowsFromOwnerParties(
@@ -401,13 +442,25 @@ export default function ACHViewerModal({
     const templateLabel = useMemo(() => {
         const funderProfile = findFunder(resolvedAchFunderName);
         const fromMapping = linkedAchMapping?.template?.name?.trim();
-        return (
+        const raw =
             resolveFunderSupplementalDocumentLabel(achTemplateLayoutKey, {
                 funderProfile: funderProfile ?? null,
                 storedTemplateName: fromMapping ?? null,
-            }) || "ACH Authorization"
-        );
+            }) || "ACH Authorization";
+        return formatAchDisplayLabel(raw) || "ACH Authorization";
     }, [achTemplateLayoutKey, findFunder, linkedAchMapping, resolvedAchFunderName]);
+
+    const achDocumentSubtitle = useMemo(() => {
+        if (mappingLoading) return "Loading…";
+        if (templateLabel && templateLabel !== "ACH Authorization") return templateLabel;
+        const profile = findFunder(resolvedAchFunderName);
+        return (
+            profile?.displayName?.trim() ||
+            profile?.name?.trim() ||
+            resolvedAchFunderName.trim() ||
+            "ACH Authorization"
+        );
+    }, [findFunder, mappingLoading, resolvedAchFunderName, templateLabel]);
 
     const headerEntityLabel = useMemo(() => {
         if (!templateLabel || templateLabel === "ACH Authorization") return null;
@@ -420,12 +473,21 @@ export default function ACHViewerModal({
         return templateLabel;
     }, [templateLabel]);
 
-    const showResendButton =
-        canResendAch && !canContinueDraft && !canInitialSend && !docuSignOpenUrl && !isSigned;
+    const showVoidButton = canVoidAch && !docuSignOpenUrl;
+    const showSendAfterVoidButton =
+        isVoided &&
+        !docuSignOpenUrl &&
+        Boolean(onPrepareDocuSignDraft) &&
+        (canResendAch || canInitialSend) &&
+        !canContinueDraft;
+    const showResendAfterSignedButton = isSigned && canResendAch && !docuSignOpenUrl;
     const showReviewAndSendButton =
-        (canInitialSend || canContinueDraft) && !docuSignOpenUrl && !isSigned;
+        !isVoided &&
+        (canInitialSend || canContinueDraft) &&
+        !docuSignOpenUrl &&
+        !isSigned;
     const showOpenDocuSignInFooter =
-        Boolean(docuSignOpenUrl) && canReviewAndSend && !isSigned;
+        Boolean(docuSignOpenUrl) && canReviewAndSend && !isSigned && !isVoided;
 
     const revokeBlob = useCallback((url: string | null) => {
         if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
@@ -475,7 +537,7 @@ export default function ACHViewerModal({
     }, [contractId]);
 
     const loadTemplatePdf = useCallback(async () => {
-        const templateRef = achTemplateLayoutKey;
+        const templateRef = achPreviewLayoutKey;
         if (!templateRef) return;
         const funderName = String(resolvedAchFunderName || "").trim();
         const funderProfileId = selectedAchFunderProfileId;
@@ -511,7 +573,7 @@ export default function ACHViewerModal({
             setTemplatePdfLoading(false);
         }
     }, [
-        achTemplateLayoutKey,
+        achPreviewLayoutKey,
         contractState,
         revokeBlob,
         resolvedAchFunderName,
@@ -531,6 +593,11 @@ export default function ACHViewerModal({
                 const res = await axiosGet(`/docusign/download/${encodeURIComponent(eid)}`, {
                     responseType: "blob",
                     timeout: 120000,
+                    params: {
+                        ...(applicationId ? { applicationId: String(applicationId) } : {}),
+                        ...(contractId != null ? { contractId } : {}),
+                        ...(achDownloadFunderName ? { funderName: achDownloadFunderName } : {}),
+                    },
                 });
                 const blob =
                     res.data instanceof Blob
@@ -545,17 +612,26 @@ export default function ACHViewerModal({
                     revokeBlob(prev);
                     return url;
                 });
-            } catch {
+            } catch (err) {
+                const apiMessage = await parseApiErrorMessageFromAxios(err);
                 setFilledPdfHint(
                     isSigned
-                        ? "Could not load signed ACH PDF."
-                        : "Filled PDF is not ready yet. Refresh after sending from DocuSign.",
+                        ? apiMessage || "Could not load signed ACH PDF."
+                        : apiMessage ||
+                              "Filled PDF is not ready yet. Refresh after sending from DocuSign.",
                 );
             } finally {
                 if (!options?.silent) setFilledPdfLoading(false);
             }
         },
-        [linkedEnvelopeId, revokeBlob, isSigned],
+        [
+            achDownloadFunderName,
+            applicationId,
+            contractId,
+            linkedEnvelopeId,
+            revokeBlob,
+            isSigned,
+        ],
     );
 
     const syncPrefillToDraftEnvelope = useCallback(
@@ -611,19 +687,28 @@ export default function ACHViewerModal({
     );
 
     const mergeAchEnvelopeIntoLocalContract = useCallback(
-        (envelopeId: string, status: AchAuthorizationDocuSignCapsuleStatus = "DRAFT") => {
+        (
+            envelopeId: string,
+            status: AchAuthorizationDocuSignCapsuleStatus = "DRAFT",
+            funderName?: string | null,
+        ) => {
             setResolvedContract((prev) => {
                 if (!prev || typeof prev !== "object") return prev;
                 return {
                     ...prev,
                     contractPrefillOverrides: mergeAchAuthorizationDocuSignIntoPrefill(
                         (prev as { contractPrefillOverrides?: unknown }).contractPrefillOverrides,
-                        { envelopeId, status },
+                        {
+                            envelopeId,
+                            status,
+                            funderName:
+                                String(funderName ?? achDownloadFunderName ?? "").trim() || null,
+                        },
                     ),
                 };
             });
         },
-        [],
+        [achDownloadFunderName],
     );
 
     const refreshAchStatus = useCallback(
@@ -632,6 +717,9 @@ export default function ACHViewerModal({
             if (!eid) return;
             if (isAchSigningFinished(achCapsuleStatus)) {
                 if (!silent) setAchSyncError(null);
+                if (options?.force) {
+                    await loadFilledPdf(eid, { silent: true });
+                }
                 return;
             }
             if (!silent) setStatusRefreshing(true);
@@ -639,6 +727,7 @@ export default function ACHViewerModal({
                 const result = await syncDocuSignEnvelopeStatus(eid, {
                     applicationId: applicationId ?? undefined,
                     contractId,
+                    funderName: achDownloadFunderName || undefined,
                     force: options?.force ?? !silent,
                     silent,
                     envelopeLabel: "ACH authorization",
@@ -924,7 +1013,7 @@ export default function ACHViewerModal({
             resetAchFilledPreview();
             setPdfTab("template");
             await reloadContractLocal();
-            toast.success("ACH form voided in DocuSign. Use Resend ACH form when you are ready.");
+            toast.success("ACH form voided in DocuSign. You can send a new ACH form when you are ready.");
         } catch (err: unknown) {
             const msg =
                 typeof err === "string"
@@ -1085,7 +1174,20 @@ export default function ACHViewerModal({
             setDocuSignOpenUrl(null);
             setCcEmailDraft("");
             setShowAchSignerEditor(false);
-            setSelectedAchBrand("katan");
+            const storedAchFunder = parseAchAuthorizationDocuSignFromPrefill(
+                (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+                { excludeEnvelopeId: mainContractEnvelopeId },
+            )?.funderName;
+            setSelectedAchBrand(
+                inferAchFunderBrand(
+                    storedAchFunder,
+                    funders,
+                    normalizeContractStateForFunder(
+                        (fetchedContract as { state?: unknown } | null)?.state,
+                    ),
+                ),
+            );
         }
         setResolvedContract(fetchedContract);
         setAchSignerOverrides(
@@ -1094,7 +1196,7 @@ export default function ACHViewerModal({
                     ?.contractPrefillOverrides,
             ),
         );
-    }, [isOpen, fetchedContract, initialPdfTab]);
+    }, [isOpen, fetchedContract, funders, initialPdfTab, mainContractEnvelopeId]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -1111,7 +1213,7 @@ export default function ACHViewerModal({
     useEffect(() => {
         if (!isOpen || mappingLoading) return;
         void loadTemplatePdf();
-    }, [isOpen, mappingLoading, achTemplateLayoutKey, resolvedAchFunderName, loadTemplatePdf]);
+    }, [isOpen, mappingLoading, achPreviewLayoutKey, resolvedAchFunderName, selectedAchBrand, selectedAchFunderProfileId, loadTemplatePdf]);
 
     useEffect(() => {
         if (!isOpen || !linkedEnvelopeId) return;
@@ -1146,10 +1248,12 @@ export default function ACHViewerModal({
             documentType: "ach",
             template: {
                 templateId: DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE,
-                name: resolveFunderSupplementalDocumentLabel(
-                    DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE,
-                    { funderProfile: findFunder(resolvedAchFunderName) ?? null },
-                ),
+                name: formatAchDisplayLabel(
+                    resolveFunderSupplementalDocumentLabel(
+                        DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE,
+                        { funderProfile: findFunder(resolvedAchFunderName) ?? null },
+                    ),
+                ) || "ACH Authorization",
             },
         };
     }, [contractId, findFunder, linkedAchMapping, resolvedAchFunderName]);
@@ -1195,7 +1299,7 @@ export default function ACHViewerModal({
                                     </label>
                                     <Select
                                         value={selectedAchBrand}
-                                        disabled={!canEditAchRecipients}
+                                        disabled={!canEditAchFunder}
                                         onValueChange={(value: AchFunderBrand) => {
                                             setSelectedAchBrand(value);
                                             setTemplatePdfUrl((prev) => {
@@ -1214,9 +1318,16 @@ export default function ACHViewerModal({
                                                     contractState || null,
                                                 ),
                                             );
-                                            if (linkedEnvelopeId && achCapsuleStatus === "DRAFT") {
+                                            if (
+                                                linkedEnvelopeId &&
+                                                (achCapsuleStatus === "DRAFT" ||
+                                                    isSigned ||
+                                                    isVoided)
+                                            ) {
                                                 toast.info(
-                                                    "Funder changed. Use Resend ACH form to create a new DocuSign draft with the selected funder's PDF.",
+                                                    isSigned || isVoided
+                                                        ? "Funder changed. Click Resend ACH form (or Send ACH form) to create a new DocuSign envelope with the selected funder."
+                                                        : "Funder changed. Use Resend ACH form to create a new DocuSign draft with the selected funder's PDF.",
                                                 );
                                             }
                                         }}
@@ -1235,10 +1346,6 @@ export default function ACHViewerModal({
                                             ))}
                                         </SelectContent>
                                     </Select>
-                                    <p className="mt-2 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
-                                        Katan or Alliance only. Defaults to Katan (Katan DocuSign).
-                                        Alliance uses the Alliance DocuSign account and ACH PDF.
-                                    </p>
                                 </div>
                             ) : null}
 
@@ -1253,7 +1360,7 @@ export default function ACHViewerModal({
                                                 ACH Authorization
                                             </h4>
                                             <p className="mt-0.5 truncate text-[11px] font-medium text-slate-600 dark:text-slate-300">
-                                                {mappingLoading ? "Loading…" : templateLabel}
+                                                {achDocumentSubtitle}
                                             </p>
                                         </div>
                                     </div>
@@ -1273,7 +1380,7 @@ export default function ACHViewerModal({
                                         aria-hidden
                                     />
                                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800 dark:text-slate-100">
-                                        {mappingLoading ? "Loading…" : templateLabel}
+                                        {achDocumentSubtitle}
                                     </span>
                                     {!readOnly && prefillEditRow ? (
                                         <button
@@ -1627,7 +1734,7 @@ export default function ACHViewerModal({
                             <Button variant="ghost" className="h-9" onClick={onClose}>
                                 Close
                             </Button>
-                            {canVoidAch ? (
+                            {showVoidButton ? (
                                 <Button
                                     type="button"
                                     variant="outline"
@@ -1645,7 +1752,26 @@ export default function ACHViewerModal({
                                     )}
                                 </Button>
                             ) : null}
-                            {showResendButton ? (
+                            {showSendAfterVoidButton ? (
+                                <Button
+                                    type="button"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    disabled={isSending || mappingLoading || isVoiding}
+                                    onClick={() =>
+                                        void handleReviewInDocuSign({ forceNewEnvelope: true })
+                                    }
+                                >
+                                    {isSending ? (
+                                        <span className="inline-flex items-center gap-2">
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                            Preparing DocuSign…
+                                        </span>
+                                    ) : (
+                                        "Send ACH form"
+                                    )}
+                                </Button>
+                            ) : null}
+                            {showResendAfterSignedButton ? (
                                 <Button
                                     type="button"
                                     className={DOCUSIGN_PRIMARY_BTN_CLASS}
@@ -1704,7 +1830,8 @@ export default function ACHViewerModal({
                             {isSigned ? (
                                 <Button
                                     type="button"
-                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    variant="outline"
+                                    className="h-9"
                                     onClick={onClose}
                                 >
                                     Done
