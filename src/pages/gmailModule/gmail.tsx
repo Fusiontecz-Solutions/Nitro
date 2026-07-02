@@ -19,6 +19,17 @@ import {
   LogOut,
 } from 'lucide-react';
 import { buildGoogleOAuthConnectUrl } from '@/lib/googleOAuth';
+
+function isGmailReconnectNeeded(message: string | null | undefined): boolean {
+  const m = String(message || '').toLowerCase();
+  return (
+    m.includes('invalid authentication credentials') ||
+    m.includes('invalid_grant') ||
+    m.includes('reconnect google') ||
+    m.includes('gmail connection expired') ||
+    m.includes('gmail is not connected')
+  );
+}
 import {
   Dialog,
   DialogContent,
@@ -652,14 +663,18 @@ const GmailPage = () => {
                     <AlertCircle className="h-4 w-4 shrink-0" />
                     <span className="truncate">Sync failed — showing last loaded mail. {syncError}</span>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0"
-                    onClick={() => dispatch(syncGmail({ label: activeLabel }))}
-                  >
-                    Retry
-                  </Button>
+                  {isGmailReconnectNeeded(syncError) ? (
+                    <GoogleOAuthButton onClick={handleGoogleConnect} className="shrink-0" />
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => dispatch(syncGmail({ label: activeLabel }))}
+                    >
+                      Retry
+                    </Button>
+                  )}
                 </div>
               )}
 
@@ -689,22 +704,28 @@ const GmailPage = () => {
                   <div className="flex flex-col items-center justify-center py-16 px-4 min-h-[min(60vh,420px)]">
                     <div className="flex flex-col items-center text-center opacity-60">
                       <AlertCircle className="h-10 w-10 mb-3 text-red-400" />
-                      <span className="text-sm text-red-500 mb-2">Sync failed</span>
+                      <span className="text-sm text-red-500 mb-2">
+                        {isGmailReconnectNeeded(syncError) ? 'Gmail connection expired' : 'Sync failed'}
+                      </span>
                       <span className="text-xs opacity-50 mb-2 max-w-xs">{syncError}</span>
-                      {gmailEmail && (
+                      {gmailEmail && !isGmailReconnectNeeded(syncError) && (
                         <span className="text-xs text-muted-foreground mb-6">
                           Connected as {gmailEmail}
                         </span>
                       )}
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full max-w-sm"
-                      onClick={() => dispatch(syncGmail({ label: activeLabel }))}
-                    >
-                      Retry sync
-                    </Button>
+                    {isGmailReconnectNeeded(syncError) ? (
+                      <GoogleOAuthButton onClick={handleGoogleConnect} className="w-full max-w-sm" />
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full max-w-sm"
+                        onClick={() => dispatch(syncGmail({ label: activeLabel }))}
+                      >
+                        Retry sync
+                      </Button>
+                    )}
                   </div>
                 ) : filteredMessages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 opacity-50">
