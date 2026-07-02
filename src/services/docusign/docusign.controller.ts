@@ -352,7 +352,16 @@ export const downloadSignedPdf = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
     const { documentId } = req.params;
-    const pdfBuffer = await docusignService.downloadSignedPdf(userId, documentId);
+    const funderName = String(req.query.funderName ?? '').trim() || undefined;
+    const applicationId = String(req.query.applicationId ?? '').trim() || undefined;
+    const contractIdRaw = Number(req.query.contractId);
+    const contractId =
+      Number.isFinite(contractIdRaw) && contractIdRaw > 0 ? contractIdRaw : undefined;
+    const pdfBuffer = await docusignService.downloadSignedPdf(userId, documentId, {
+      funderName,
+      applicationId,
+      contractId,
+    });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',

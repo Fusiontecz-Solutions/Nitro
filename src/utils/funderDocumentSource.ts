@@ -1,3 +1,5 @@
+import { isAllianceFunderProfile } from './funderProfileResolver';
+
 export const FUNDER_DOCUMENTS_SOURCES = ['platform', 'own', 'shared'] as const;
 export type FunderDocumentsSource = (typeof FUNDER_DOCUMENTS_SOURCES)[number];
 
@@ -22,9 +24,7 @@ export function isKatanFunderName(name?: string | null, displayName?: string | n
 }
 
 export function isAllianceFunderName(name?: string | null, displayName?: string | null): boolean {
-  const n = normalizeToken(name);
-  const d = normalizeToken(displayName);
-  return n.includes('alliance') || d.includes('alliance');
+  return isAllianceFunderProfile({ name, displayName });
 }
 
 export function inferDefaultFunderDocumentsSource(input: {
@@ -39,10 +39,23 @@ export function inferDefaultFunderDocumentsSource(input: {
 /** Funder id used for addendum/disclosure layout keys; null = platform templates only. */
 export function resolveDocumentsLayoutFunderId(profile: {
   id: string;
+  name?: string | null;
+  displayName?: string | null;
+  mainContractLayoutKey?: string | null;
+  organization?: string | null;
+  legalName?: string | null;
+  contactEmail?: string | null;
   documentsSource?: string | null;
   sharedDocumentsFunderId?: string | null;
 }): string | null {
   const source = normalizeFunderDocumentsSource(profile.documentsSource);
+  if (isAllianceFunderProfile(profile)) {
+    if (source === 'shared') {
+      const sharedId = String(profile.sharedDocumentsFunderId || '').trim();
+      return sharedId || profile.id;
+    }
+    return profile.id;
+  }
   if (source === 'platform') return null;
   if (source === 'shared') {
     const sharedId = String(profile.sharedDocumentsFunderId || '').trim();

@@ -22,6 +22,23 @@ export function funderSupplementalLayoutKey(
   return `funder_${id}_${type}`;
 }
 
+/** Standalone ACH uses the same stored PDF/coords as ach_authorization. */
+export function resolveFunderSupplementalStorageType(layoutKey: string): string {
+  const key = String(layoutKey || '').trim();
+  if (key === 'ach_authorization_standalone') return 'ach_authorization';
+  return key;
+}
+
+export function funderSupplementalLayoutKeyForDocument(
+  funderId: string,
+  documentLayoutKey: string,
+): string {
+  return funderSupplementalLayoutKey(
+    funderId,
+    resolveFunderSupplementalStorageType(documentLayoutKey),
+  );
+}
+
 export function funderDisclosureLayoutKey(funderId: string): string {
   return `funder_${String(funderId || '').trim()}_disclosure`;
 }
