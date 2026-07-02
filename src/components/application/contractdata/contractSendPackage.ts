@@ -13,11 +13,23 @@ export type ContractSendPackageSelection = {
 
 export function contractSendPackageFingerprint(
     selection: ContractSendPackageSelection,
+    funderName?: string | null,
+    addendumLayoutKey?: string | null,
+    funderProfileId?: string | null,
 ): string {
     const parts: string[] = [];
     if (selection.includeMainContract) parts.push("contract");
     if (selection.includeAddendum) parts.push("addendum");
     if (selection.includeDisclosure) parts.push("disclosure");
+    const funderId = String(funderProfileId ?? "").trim();
+    if (funderId) {
+        parts.push(`funderId:${funderId}`);
+    } else {
+        const funder = String(funderName ?? "").trim().toLowerCase();
+        if (funder) parts.push(`funder:${funder}`);
+    }
+    const addendum = String(addendumLayoutKey ?? "").trim();
+    if (addendum) parts.push(`add:${addendum}`);
     return parts.join("+") || "none";
 }
 

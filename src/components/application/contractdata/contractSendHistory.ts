@@ -12,6 +12,7 @@ import {
     type StandalonePackageDocuSignCapsuleStatus,
 } from "./standalonePackageDocuSign";
 import { formatDateTimeUS } from "@/lib/utils";
+import type { DateInput } from "@/lib/dateTime";
 
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
@@ -269,8 +270,24 @@ function isPackageRowVisibleInSendTable(
 
 /** Disambiguate repeated send rows with sent date/time instead of "send N". */
 function buildSendHistoryRowLabel(baseLabel: string, sentAt: unknown): string {
-    const when = formatDateTimeUS(sentAt, "");
+    const when = formatDateTimeUS(sentAt as DateInput, "");
     return when ? `${baseLabel} (${when})` : baseLabel;
+}
+
+/** Strip disambiguation date suffix from send-table labels (e.g. action buttons). */
+export function stripSendHistoryRowDateSuffix(label: string): string {
+    return (
+        label
+            .replace(/\s*\(\d{2}\/\d{2}\/\d{4}\s+\d{1,2}:\d{2}\s+[AP]M\)\s*$/i, "")
+            .trim() || label
+    );
+}
+
+export function getContractSendTableRowVoidButtonLabel(
+    row: ContractSendTableRow | null | undefined,
+): string {
+    const base = stripSendHistoryRowDateSuffix(String(row?.label ?? "").trim()) || "document";
+    return `Void ${base}`;
 }
 
 function applySendRowDateLabels(

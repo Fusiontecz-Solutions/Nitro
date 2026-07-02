@@ -20,6 +20,7 @@ import {
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasAddendumPrefillFieldMap,
     isAchAuthorizationPrefillTemplate,
+    normalizeAddendumSavedFieldValuesForPersistence,
 } from "./documentTemplateMappingPrefill";
 import { KATAN_ACH_AUTHORIZATION_PREFILL_FIELD_IDS } from "./KATAN_ACH_AUTHORIZATION_ADDENDUM";
 import { cn } from "@/lib/utils";
@@ -89,8 +90,8 @@ type TemplateMappingPrefillEditDialogProps = {
     documentTemplatePrefillByMappingId: Record<string, Record<string, string>>;
     /** Main contract prefill overrides (without document mapping blob); merged on save. */
     mainPrefillOverrides: Partial<BuildContractPrefillFieldsArgs> | null;
-    /** After a successful save, parent refreshes contract + mapping list. */
-    onSaved: () => void;
+    /** After a successful save, parent refreshes contract + mapping list (may sync DocuSign). */
+    onSaved: () => void | Promise<void>;
     /** Supplemental-doc flow: edit field values only (hide template GUID editor). */
     addendumOnly?: boolean;
     /** When set with `addendumOnly`, controls dialog copy (ACH form vs addendum). */
@@ -227,9 +228,21 @@ export function TemplateMappingPrefillEditDialog({
                 });
             }
 
+            const scopedAddendumFields =
+                addendumOnly && prefillDocumentKind === "addendum"
+                    ? normalizeAddendumSavedFieldValuesForPersistence(
+                          {
+                              templateId: row.template?.templateId ?? row.templateId ?? null,
+                              templateName: row.template?.name ?? null,
+                              templateLayoutKey: row.template?.layoutKey ?? null,
+                          },
+                          fieldValues,
+                      )
+                    : fieldValues;
+
             const nextBlob = {
                 ...documentTemplatePrefillByMappingId,
-                [row.id]: { ...fieldValues },
+                [row.id]: { ...scopedAddendumFields },
             };
 
             const main = { ...(mainPrefillOverrides ?? {}) } as Record<string, unknown>;
@@ -269,7 +282,7 @@ export function TemplateMappingPrefillEditDialog({
                     ? supplementalPrefillSavedToast
                     : "Template mapping and DocuSign field overrides saved.",
             );
-            onSaved();
+            await Promise.resolve(onSaved());
             onOpenChange(false);
         } catch (e: unknown) {
             console.error(e);
@@ -371,6 +384,9 @@ export function TemplateMappingPrefillEditDialog({
                                                 className="text-xs font-medium"
                                             >
                                                 {r.label}
+                                                <span className="text-muted-foreground ml-1 font-mono font-normal">
+                                                    ({r.id})
+                                                </span>
                                             </Label>
                                             <Input
                                                 id={`tmpl-field-${r.id}`}

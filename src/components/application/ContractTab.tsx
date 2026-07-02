@@ -372,7 +372,7 @@ export default function ContractTab({
     const contractStateForFunders = String(
         (fetchedContract as { state?: string | null } | null)?.state ?? "",
     ).trim();
-    const { resolveLayoutKey } = useFunderProfiles(contractStateForFunders || null);
+    const { resolveLayoutKey, funders } = useFunderProfiles(contractStateForFunders || null);
     const [viewingAchDocument, setViewingAchDocument] = useState(false);
     const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
     const [contractSyncError, setContractSyncError] = useState<string | null>(null);
@@ -380,6 +380,7 @@ export default function ContractTab({
     const [packageSyncError, setPackageSyncError] = useState<string | null>(null);
     const [achViewerOpen, setAchViewerOpen] = useState(false);
     const [achViewerInitialTab, setAchViewerInitialTab] = useState<"template" | "filled">("template");
+    const [preparingAchViewer, setPreparingAchViewer] = useState(false);
 
     const appId =
         applicationId ??
@@ -1390,23 +1391,138 @@ export default function ContractTab({
         });
     }, [selectedContractId, ensureAchTemplateLinked]);
 
-    const openAchViewer = async (initialTab: "template" | "filled" = "template") => {
-        if (!hasGeneratedContract) {
-            toast.error("Generate a contract before sending the ACH form.");
-            return;
+    const ensureContractRecordForAch = useCallback(async (): Promise<number> => {
+        const fromSelection = Number(selectedContractId);
+        if (Number.isFinite(fromSelection) && fromSelection > 0) return fromSelection;
+
+        const fromFetched = Number((fetchedContract as { id?: unknown } | null)?.id);
+        if (Number.isFinite(fromFetched) && fromFetched > 0) {
+            setSelectedContractId(fromFetched);
+            return fromFetched;
         }
-        const contractId = Number(selectedContractId);
+
+        if (!applicationUuid) {
+            throw new Error("Application is required to send the ACH form.");
+        }
+
+        const anyApp = applicationData as unknown as Record<string, unknown>;
+        const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
+        const userFromStorage = (() => {
+            if (typeof window === "undefined") return null;
+            try {
+                return JSON.parse(localStorage.getItem("user") || "null") as {
+                    _id?: string;
+                    id?: string;
+                } | null;
+            } catch {
+                return null;
+            }
+        })();
+        const createdById =
+            userFromRedux?._id ||
+            userFromRedux?.id ||
+            userFromStorage?._id ||
+            userFromStorage?.id ||
+            "";
+        const offerIdRaw =
+            (offerDecision as { id?: unknown; _id?: unknown } | null)?.id ??
+            (offerDecision as { id?: unknown; _id?: unknown } | null)?._id ??
+            latestTermsOffer?._id;
+        const referringIsoId = parseMaybeNumber(
+            anyApp?.referringIsoId ??
+                (anyApp?.referringISO as { id?: unknown } | undefined)?.id ??
+                (anyApp?.referringIso as { id?: unknown } | undefined)?.id,
+        );
+        const paymentTermsId = parseMaybeNumber(
+            (offerDecision as { paymentTermsId?: unknown } | null)?.paymentTermsId ??
+                anyApp?.paymentTermsId,
+        );
+        const paymentBankIdRaw =
+            anyApp?.paymentBankId ??
+            (anyApp?.paymentBank as { id?: unknown } | undefined)?.id ??
+            (anyApp?.bankDetail as { id?: unknown } | undefined)?.id;
+
+        const createRes = await dispatch(
+            createContract({
+                applicationId: String(applicationUuid),
+                clientId:
+                    (anyApp?.clientId as string | undefined) ??
+                    ((anyApp?.client as { _id?: string; id?: string } | undefined)?._id ||
+                        (anyApp?.client as { _id?: string; id?: string } | undefined)?.id),
+                referringIsoId: referringIsoId ?? undefined,
+                salesRepId: parseMaybeNumber(anyApp?.salesRepId) ?? undefined,
+                offerId: offerIdRaw ? String(offerIdRaw) : undefined,
+                contractLenght: termLength != null ? Number(termLength) : undefined,
+                approvedAmount: approvedAmount != null ? Number(approvedAmount) : undefined,
+                totalAmount:
+                    estimatedTotalPayment != null ? Number(estimatedTotalPayment) : undefined,
+                status: "DRAFT",
+                createdById: createdById || undefined,
+                paymentTermsId: paymentTermsId ?? undefined,
+                paymentBankId: paymentBankIdRaw ? String(paymentBankIdRaw) : undefined,
+            }),
+        ).unwrap();
+
+        const createdContract =
+            (createRes as { data?: Record<string, unknown> } | null)?.data ??
+            (createRes as Record<string, unknown> | null);
+        let contractId = Number((createdContract as { id?: unknown } | null)?.id);
         if (!Number.isFinite(contractId) || contractId <= 0) {
-            toast.error("No contract found for this application.");
+            const byApp = await dispatch(
+                getByApplicationIdContract(String(applicationUuid)),
+            ).unwrap();
+            const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
+            contractId = Number((contract as { id?: unknown } | null)?.id);
+            if (contract && typeof contract === "object") {
+                setFetchedContract(contract);
+            }
+        } else if (createdContract && typeof createdContract === "object") {
+            setFetchedContract(createdContract);
+        }
+
+        if (!Number.isFinite(contractId) || contractId <= 0) {
+            throw new Error("Could not create a contract record for this application.");
+        }
+
+        setSelectedContractId(contractId);
+        return contractId;
+    }, [
+        applicationData,
+        applicationUuid,
+        approvedAmount,
+        dispatch,
+        estimatedTotalPayment,
+        fetchedContract,
+        latestTermsOffer?._id,
+        loginData?.user,
+        offerDecision,
+        selectedContractId,
+        termLength,
+    ]);
+
+    const openAchViewer = async (initialTab: "template" | "filled" = "template") => {
+        if (!applicationUuid) {
+            toast.error("Application is required to send the ACH form.");
             return;
         }
+        setPreparingAchViewer(true);
         try {
+            const contractId = await ensureContractRecordForAch();
             await ensureAchTemplateLinked(contractId);
             setAchViewerInitialTab(initialTab);
             setAchViewerOpen(true);
         } catch (error) {
             console.error("Failed to prepare ACH viewer:", error);
-            toast.error("Could not open ACH form viewer.");
+            const message =
+                typeof error === "string"
+                    ? error
+                    : (error as { response?: { data?: { message?: string } }; message?: string })
+                          ?.response?.data?.message ||
+                      (error as { message?: string })?.message ||
+                      "Could not open ACH form viewer.";
+            toast.error(String(message));
+        } finally {
+            setPreparingAchViewer(false);
         }
     };
 
@@ -1639,6 +1755,10 @@ export default function ContractTab({
             includeMainContract?: boolean;
             /** Current funder from contract modal (may not be persisted yet). */
             funderName?: string | null;
+            /** CRM funder profile id — resolves funder-specific addendum PDFs. */
+            funderProfileId?: string | null;
+            /** Contract state from modal (may not be persisted yet). */
+            contractState?: string | null;
             /** Main contract layout key (Katan vs Alliance Bridge). */
             mainContractLayoutKey?: string | null;
             /** CRM recipient overrides for this send (does not edit DocuSign template). */
@@ -1674,7 +1794,19 @@ export default function ContractTab({
             failDocuSignEnvelope("Application is required to send via DocuSign.");
         }
 
-        const effectiveCcEmails = mergeContractCcEmailList(sendPayload.ccEmails);
+        const effectiveCcEmails = mergeContractCcEmailList(
+            sendPayload.ccEmails,
+            sendPayload.funderName ??
+                (fetchedContract as { funderName?: string | null })?.funderName ??
+                null,
+            funders,
+            String(
+                sendPayload.contractState ??
+                    (fetchedContract as { state?: string | null })?.state ??
+                    contractStateForFunders ??
+                    "",
+            ).trim() || null,
+        );
         const supplementalLayoutKey = String(sendPayload.supplementalLayoutKey ?? "").trim();
         const supplementalLayoutKeys = [
             ...new Set(
@@ -1976,6 +2108,10 @@ export default function ContractTab({
                 sendPayload.funderName ??
                 (latestContract as { funderName?: string | null })?.funderName ??
                 null;
+            const contractStateForSend =
+                String(sendPayload.contractState ?? "").trim() ||
+                String((latestContract as { state?: string | null })?.state ?? "").trim() ||
+                undefined;
             const mainContractLayoutKey =
                 String(sendPayload.mainContractLayoutKey ?? "").trim() ||
                 resolveLayoutKey(resolvedFunderName);
@@ -1984,6 +2120,10 @@ export default function ContractTab({
                 includeMainContract,
                 mainContractLayoutKey,
                 funderName: resolvedFunderName ? String(resolvedFunderName).trim() : undefined,
+                funderProfileId: sendPayload.funderProfileId
+                    ? String(sendPayload.funderProfileId).trim()
+                    : undefined,
+                contractState: contractStateForSend,
                 sendPackage: sendPackageSelection,
                 ownerCount,
                 roles,
@@ -2263,6 +2403,8 @@ export default function ContractTab({
         supplementalDocumentRefs?: string[];
         includeMainContract?: boolean;
         funderName?: string | null;
+        funderProfileId?: string | null;
+        contractState?: string | null;
         mainContractLayoutKey?: string | null;
         signerRoles?: DocuSignTemplateRolePayload[];
         prefillFields?: Array<{ id: string; value: string }>;
@@ -2688,16 +2830,18 @@ export default function ContractTab({
                                         : "template",
                                 )
                             }
-                            disabled={!hasGeneratedContract}
-                            title={
-                                !hasGeneratedContract
-                                    ? "Generate a contract before sending the ACH form."
-                                    : undefined
-                            }
+                            disabled={preparingAchViewer || creatingEnvelope}
                             variant="default"
                             className="h-10 px-6 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
                         >
-                            Send ACH Form
+                            {preparingAchViewer ? (
+                                <span className="inline-flex items-center gap-2">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Opening ACH form...
+                                </span>
+                            ) : (
+                                "Send ACH Form"
+                            )}
                         </Button>
 
                     </div>

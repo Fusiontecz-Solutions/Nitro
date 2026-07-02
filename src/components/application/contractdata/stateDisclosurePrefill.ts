@@ -189,7 +189,7 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     daily_connecticut: (ctx) =>
         buildDailyConnecticutContractPrefillFields({
-            totalCommericalFinancing: ctx.totalRepayment,
+            totalCommericalFinancing: ctx.fundingDisbursed,
             deductedAtDisbursement: ctx.feesDeducted,
             totalAmountCommercialFinancing: ctx.fundingProvided,
             financeCharge: ctx.financeCharge,
@@ -212,7 +212,7 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     weekly_connecticut: (ctx) =>
         buildDailyConnecticutContractPrefillFields({
-            totalCommericalFinancing: ctx.totalRepayment,
+            totalCommericalFinancing: ctx.fundingDisbursed,
             deductedAtDisbursement: ctx.feesDeducted,
             totalAmountCommercialFinancing: ctx.fundingProvided,
             financeCharge: ctx.financeCharge,

@@ -9,6 +9,7 @@ import {
   fetchDocuSignAccountOptions,
   fetchFunderProfiles,
   updateFunderProfile,
+  type FunderProfileFiles,
 } from "@/redux/actions/integrationSettingsActions";
 import type { FunderProfile, FunderProfileInput } from "@/types/integrationSettingsTypes";
 import FunderProfileModal from "./FunderProfileModal";
@@ -52,14 +53,14 @@ export default function FundersSettings() {
     void load();
   }, [load]);
 
-  const handleSave = async (payload: FunderProfileInput, contractFile?: File | null) => {
+  const handleSave = async (payload: FunderProfileInput, files?: FunderProfileFiles | null) => {
     setSaving(true);
     try {
       if (editing) {
-        await updateFunderProfile(editing.id, payload, contractFile);
+        await updateFunderProfile(editing.id, payload, files);
         toast.success("Funder updated");
       } else {
-        await createFunderProfile(payload, contractFile);
+        await createFunderProfile(payload, files);
         toast.success("Funder added");
       }
       setModalOpen(false);
@@ -167,6 +168,7 @@ export default function FundersSettings() {
         open={modalOpen}
         saving={saving}
         initial={editing}
+        allFunders={rows}
         docusignOptions={docusignOptions}
         onClose={() => {
           setModalOpen(false);

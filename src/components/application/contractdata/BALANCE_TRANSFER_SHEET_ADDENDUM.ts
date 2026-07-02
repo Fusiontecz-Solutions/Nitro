@@ -1,4 +1,5 @@
 import type { ContractPrefillField } from "./Contract";
+import { BALANCE_TRANSFER_SCOPE } from "./documentPrefillScope";
 
 /** DocuSign Data Labels on `KATAN LLC - BALANCE TRANSFER SHEET` (one id per tab). */
 export interface BalanceTransferSheetContractPrefillFields {
@@ -39,18 +40,18 @@ export const BALANCE_TRANSFER_SHEET_TAB_LABEL_BY_KEY: Record<
     keyof BalanceTransferSheetContractPrefillFields,
     string
 > = {
-    dateOfNewSecuredAgreement: "date_of_new_secured_agreement",
-    dateOfPreviousSecuredAgreement: "date_of_previous_secured_agreement",
-    remainingRtrBalance: "remaining_rtr_balance",
-    merchantLegalName: "merchant_legal_name",
-    businessLegalName: "business_legal_name",
-    dba: "dba",
-    clientNameBy: "client_name_by",
-    clientLegalName: "balance_transfer_client_legal_name",
-    businessAddress: "business_address",
-    businessAddressCity: "business_address_city",
-    businessAddressState: "business_address_state",
-    businessAddressZip: "business_address_zip",
+    dateOfNewSecuredAgreement: `${BALANCE_TRANSFER_SCOPE}date_of_new_secured_agreement`,
+    dateOfPreviousSecuredAgreement: `${BALANCE_TRANSFER_SCOPE}date_of_previous_secured_agreement`,
+    remainingRtrBalance: `${BALANCE_TRANSFER_SCOPE}remaining_rtr_balance`,
+    merchantLegalName: `${BALANCE_TRANSFER_SCOPE}merchant_legal_name`,
+    businessLegalName: `${BALANCE_TRANSFER_SCOPE}business_legal_name`,
+    dba: `${BALANCE_TRANSFER_SCOPE}dba`,
+    clientNameBy: `${BALANCE_TRANSFER_SCOPE}client_name_by`,
+    clientLegalName: `${BALANCE_TRANSFER_SCOPE}client_legal_name`,
+    businessAddress: `${BALANCE_TRANSFER_SCOPE}business_address`,
+    businessAddressCity: `${BALANCE_TRANSFER_SCOPE}business_address_city`,
+    businessAddressState: `${BALANCE_TRANSFER_SCOPE}business_address_state`,
+    businessAddressZip: `${BALANCE_TRANSFER_SCOPE}business_address_zip`,
 };
 
 export function buildBalanceTransferSheetContractPrefillFields(

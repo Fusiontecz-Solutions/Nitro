@@ -14,6 +14,54 @@ export type PlatformLayoutKey =
 /** Legal funder name on state disclosure forms (not Contract.funderName Katan II / III). */
 export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Katan Capital LLC";
 
+function isKatanBrandedDocumentName(value?: string | null): boolean {
+    return /katan/i.test(String(value ?? "").trim());
+}
+
+function funderBrandingLabel(profile?: {
+    displayName?: string | null;
+    name?: string | null;
+} | null): string {
+    return String(profile?.displayName || profile?.name || "").trim();
+}
+
+/**
+ * Human-readable label for a supplemental doc (addendum / balance transfer).
+ * Platform template rows are Katan-branded; non-platform funders get their own name.
+ */
+export function resolveFunderSupplementalDocumentLabel(
+    layoutKey: string,
+    options?: {
+        funderProfile?: {
+            displayName?: string | null;
+            name?: string | null;
+            documentsSource?: string | null;
+        } | null;
+        storedTemplateName?: string | null;
+    },
+): string {
+    const key = String(layoutKey || "").trim();
+    const genericLabel = supplementalOptionLabel(key);
+    const storedName = String(options?.storedTemplateName ?? "").trim();
+    const profile = options?.funderProfile;
+    const usesPlatformDocs =
+        !profile ||
+        String(profile.documentsSource ?? "")
+            .trim()
+            .toLowerCase() === "platform";
+
+    if (usesPlatformDocs) {
+        return storedName || genericLabel;
+    }
+
+    if (storedName && !isKatanBrandedDocumentName(storedName)) {
+        return storedName;
+    }
+
+    const funderLabel = funderBrandingLabel(profile);
+    return funderLabel ? `${funderLabel} ${genericLabel}` : genericLabel;
+}
+
 /** DocuSign envelope role names — must match backend platform-document-registry slots. */
 export const PLATFORM_PRIMARY_SIGNER_ROLE = "Signer";
 export const PLATFORM_SECONDARY_SIGNER_ROLE = "Owner 2";

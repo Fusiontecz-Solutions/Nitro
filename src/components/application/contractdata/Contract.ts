@@ -4,6 +4,10 @@ import {
     resolveOfferFactorRate,
     resolveOfferPayback,
 } from "@/lib/offerRepaymentCalculations";
+import {
+    applyAllianceBridgeContractPrefillToFields,
+    isAllianceBridgeContractLayoutKey,
+} from "./allianceContractPrefill";
 import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
 import {
     clearParty2PrefillPartial,
@@ -3624,6 +3628,7 @@ export function buildContractPrefillFieldsFromApplication(
         contractRecords?: ContractPrefillContractRecords;
         overrides?: Partial<BuildContractPrefillFieldsArgs> | null;
         offerDecision?: Record<string, unknown> | null;
+        mainContractLayoutKey?: string | null;
     },
 ): ContractPrefillField[] {
     const rec = options?.contractRecords;
@@ -3726,9 +3731,13 @@ export function buildContractPrefillFieldsFromApplication(
         legalName,
     });
 
-    return mergePrefillFieldsPreferFirst(
+    const prefillFields = mergePrefillFieldsPreferFirst(
         fromCore,
         addendumSlotExtraFields(rec?.addendum ?? null),
         epoExtraFields(rec?.epo ?? null),
     );
+    if (isAllianceBridgeContractLayoutKey(options?.mainContractLayoutKey)) {
+        return applyAllianceBridgeContractPrefillToFields(prefillFields, moneySources);
+    }
+    return prefillFields;
 }
