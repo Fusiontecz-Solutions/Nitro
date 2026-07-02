@@ -12,6 +12,7 @@ import BackgroundCheckItemCard from "@/components/application/BackgroundCheckIte
 import BackgroundCheckSidebar from "@/components/application/BackgroundCheckSidebar";
 import NyCourtEvidenceSections from "@/components/application/NyCourtEvidenceSections";
 import DataMerchPanel from "@/components/application/DataMerchPanel";
+import OpenCorporatesPanel from "@/components/application/OpenCorporatesPanel";
 import {
   apiCheckToFormState,
   buildItemIdMap,
@@ -34,6 +35,11 @@ import {
   updateCheckItem,
 } from "@/redux/actions/backgroundCheckActions";
 import type { BackgroundCheck } from "@/redux/slices/backgroundCheckSlice";
+import {
+  buildOpenCorporatesQueryKey,
+  loadOpenCorporatesCache,
+  type OpenCorporatesLookupData,
+} from "@/components/application/opencorporatesTypes";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
@@ -71,6 +77,15 @@ function loadDataMerchForExport(
   } catch {
     return null;
   }
+}
+
+function loadOpenCorporatesForExport(
+  applicationId: string,
+  queryKey: string,
+): { result: OpenCorporatesLookupData; searchedAt: string } | null {
+  const cached = loadOpenCorporatesCache(applicationId, queryKey);
+  if (!cached) return null;
+  return { result: cached.result, searchedAt: cached.searchedAt };
 }
 
 export default function BackgroundCheckTab() {
@@ -131,9 +146,11 @@ export default function BackgroundCheckTab() {
   const linkContext = useMemo(() => {
     const client = applicationData?.client as Record<string, unknown> | undefined;
     const business = client?.business as Record<string, unknown> | undefined;
+    const address = business?.address as Record<string, unknown> | undefined;
     const businessName = String(
       business?.name ?? client?.businessName ?? applicationData?.businessName ?? "",
     ).trim();
+    const state = String(address?.state ?? client?.state ?? "").trim();
     const ein = String(
       business?.einNumber ??
         business?.ein ??
@@ -160,7 +177,7 @@ export default function BackgroundCheckTab() {
     );
     const offerAmountLabel =
       offerAmount != null && offerAmount > 0 ? formatCurrency(offerAmount) : "";
-    return { businessName, ein, dealId, ownerName, ownerSsn, offerAmountLabel };
+    return { businessName, ein, state, dealId, ownerName, ownerSsn, offerAmountLabel };
   }, [applicationData, offerDecisionData, termsOffers]);
 
   const savedByName = useMemo(() => {
@@ -324,6 +341,13 @@ export default function BackgroundCheckTab() {
     const datamerchExport = applicationId
       ? loadDataMerchForExport(applicationId, datamerchQueryKey)
       : null;
+    const opencorporatesQueryKey = buildOpenCorporatesQueryKey(
+      linkContext.businessName,
+      linkContext.state,
+    );
+    const opencorporatesExport = applicationId
+      ? loadOpenCorporatesForExport(applicationId, opencorporatesQueryKey)
+      : null;
 
     return {
       logoUrl: defaultBackgroundCheckLogoUrl(),
@@ -338,6 +362,8 @@ export default function BackgroundCheckTab() {
       savedAt,
       datamerch: datamerchExport?.result ?? null,
       datamerchSearchedAt: datamerchExport?.searchedAt ?? null,
+      opencorporates: opencorporatesExport?.result ?? null,
+      opencorporatesSearchedAt: opencorporatesExport?.searchedAt ?? null,
     };
   }, [applicationId, checks, linkContext, savedAt, savedByName]);
 
@@ -465,6 +491,7 @@ export default function BackgroundCheckTab() {
           {BACKGROUND_CHECK_RESOURCES.map((resource) => {
             const state = checks[resource.id] ?? { notes: "", optional: false };
             const isDataMerch = resource.isApi === true;
+            const isOpenCorporates = resource.hasPanel === true;
             const isNyCourt = resource.id === "nyscef";
 
             return (
@@ -530,6 +557,12 @@ export default function BackgroundCheckTab() {
                 }
               >
                 {isDataMerch ? <DataMerchPanel manualSearch embedded /> : null}
+                {isOpenCorporates ? (
+                  <OpenCorporatesPanel
+                    embedded
+                    onApplyToNotes={(notes) => markCheckDirty(resource.id, { notes })}
+                  />
+                ) : null}
               </BackgroundCheckItemCard>
             );
           })}

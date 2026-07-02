@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "CRM OpenCorporates Bridge",
+  "version": "1.0.2",
+  "description": "Send OpenCorporates company search results back to Hardrock/Katan background check.",
+  "permissions": ["activeTab", "tabs"],
+  "host_permissions": ["https://opencorporates.com/*", "https://*.opencorporates.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://opencorporates.com/*", "https://*.opencorporates.com/*"],
+      "js": ["extract.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "CRM OpenCorporates Bridge",
+    "default_popup": "popup.html"
+  }
+}
