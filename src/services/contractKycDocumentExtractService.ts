@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import { getPdfExtractionService } from './pdf-extraction/pdfExtraction.context';
+import { resolveMimeTypeFromBuffer } from '../utils/mimeTypeFromBuffer';
 import {
   type KycDocumentType,
   type KycExtractionMapped,
@@ -24,14 +25,15 @@ async function readFileBuffer(file: UploadedFileLike): Promise<Buffer> {
   throw new Error('Uploaded file has no readable data');
 }
 
-function mimeFromFile(file: UploadedFileLike): string {
+function declaredMimeFromFile(file: UploadedFileLike): string {
   const mt = String(file.mimetype || '').toLowerCase().trim();
   if (mt) return mt;
   const name = String(file.name || '').toLowerCase();
   if (name.endsWith('.pdf')) return 'application/pdf';
   if (name.endsWith('.png')) return 'image/png';
   if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  return 'application/octet-stream';
+  if (name.endsWith('.webp')) return 'image/webp';
+  return '';
 }
 
 class ContractKycDocumentExtractService {
@@ -50,7 +52,7 @@ class ContractKycDocumentExtractService {
     documentType: KycDocumentType,
   ): Promise<KycExtractionMapped> {
     const buffer = await readFileBuffer(file);
-    const mimeType = mimeFromFile(file);
+    const mimeType = resolveMimeTypeFromBuffer(declaredMimeFromFile(file), buffer);
     return this.extractFromBuffer(buffer, mimeType, documentType);
   }
 
