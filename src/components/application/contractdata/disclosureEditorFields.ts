@@ -12,6 +12,7 @@ import {
     isUtahDisclosureState,
     mapUtahDisclosureCalculatorToPdfFields,
 } from "./daily_utah";
+import { fromDisclosureScopedPrefillId } from "./documentPrefillScope";
 import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
 import type { StateDisclosureContext } from "./stateDisclosurePrefill";
 
@@ -71,6 +72,12 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "total_amount_fund_disbursed",
         "disbursement_amount",
         "net_to_merchant",
+        "total_commerical_financing",
+    ],
+    disclosure_fees_deducted: [
+        "deducted_at_disbursement",
+        "fees_deducted",
+        "disclosure_origination_fee",
     ],
     disclosure_apr: ["disclosure_apr", "estimated_annual_percentage_rate"],
     disclosure_finance_charge: [
@@ -86,7 +93,6 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
         "total_amount_to_be_paid",
         "amount_required_to_trigger_prepayment_discount",
         "total_repayment_amount",
-        "total_commerical_financing",
         "total_of_payments",
         "purchase_price",
         "purchasePrice",
@@ -129,6 +135,12 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     disclosure_page3_subtotal: ["disclosure_page3_subtotal"],
     disclosure_page3_net: ["disclosure_page3_net"],
     client_name: ["client_name", "recipient_name", "disclosure_name", "disclosure_merchant_name"],
+    disclosure_recipient_address: [
+        "recipient_address",
+        "recipient_address1",
+        "recipient_address2",
+        "business_address",
+    ],
     funder_name: ["funder_name"],
     disclosure_date: [
         "disclosure_date",
@@ -181,7 +193,9 @@ export function collapsePdfFieldsToDisclosureEditorValues(
     for (const [key, value] of Object.entries(raw)) {
         const v = String(value ?? "").trim();
         if (!v) continue;
-        const editorId = PDF_TO_EDITOR_FIELD_ID.get(key) ?? key;
+        const scopedPdfId = fromDisclosureScopedPrefillId(key);
+        const lookupKey = scopedPdfId ?? key;
+        const editorId = PDF_TO_EDITOR_FIELD_ID.get(lookupKey) ?? lookupKey;
         // Utah broker fee: never let legacy `appendix_underwriting_fees` (origination) clobber explicit broker fee.
         if (
             editorId === "disclosure_broker_fee" &&
@@ -247,8 +261,9 @@ export function buildDisclosureEditorFieldsFromContext(
 
     const values: Record<string, string> = {
         disclosure_avg_monthly_revenue: ctx.averageMonthlyIncome ?? "",
-        disclosure_amount_financed: ctx.amountBusinessFund || ctx.fundingProvided || "",
-        disclosure_recipient_funds: ctx.fundingDisbursed || "",
+        disclosure_amount_financed: ctx.fundingProvided || ctx.amountBusinessFund || "",
+        disclosure_recipient_funds: ctx.fundingDisbursed || ctx.amountBusinessFund || "",
+        disclosure_fees_deducted: ctx.feesDeducted ?? "",
         disclosure_apr: ctx.estimatedAnnualPercentageRate ?? "",
         disclosure_finance_charge: ctx.financeCharge || ctx.totalDollarCost || "",
         disclosure_total_payment: ctx.totalRepayment ?? "",
@@ -261,6 +276,7 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_page3_line_1: "0.00",
         disclosure_page3_line_2: "0.00",
         client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
+        disclosure_recipient_address: String(ctx.recipientAddress ?? "").trim(),
         funder_name: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         disclosure_date: disclosureDate,
     };

@@ -54,6 +54,7 @@ import {
     getDocumentTemplatePrefillFieldRowsForEditor,
     hasAddendumPrefillFieldMap,
     hasStateDisclosurePrefillFieldMap,
+    normalizeAddendumSavedFieldValuesForPersistence,
     stripDocumentTemplateBlobFromPrefillOverrides,
 } from "./documentTemplateMappingPrefill";
 import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./docusignAddendumTemplates";
@@ -1765,7 +1766,18 @@ export function ContractPrefillEditForm({
                     linkedAddendumHasFieldMap &&
                     addendumEditorRows.length > 0
                 ) {
-                    priorBlob[linkedAddendumMapping.id] = { ...addendumFieldValues };
+                    priorBlob[linkedAddendumMapping.id] =
+                        normalizeAddendumSavedFieldValuesForPersistence(
+                            {
+                                templateId:
+                                    linkedAddendumMapping.template?.templateId ??
+                                    linkedAddendumMapping.templateId ??
+                                    null,
+                                templateName: linkedAddendumMapping.template?.name ?? null,
+                                templateLayoutKey: linkedAddendumMapping.template?.layoutKey ?? null,
+                            },
+                            { ...addendumFieldValues },
+                        );
                 }
                 if (
                     linkedDisclosureMapping?.id &&
@@ -2234,6 +2246,9 @@ export function ContractPrefillEditForm({
                                                             className="text-xs font-medium"
                                                         >
                                                             {r.label}
+                                                            <span className="text-muted-foreground ml-1 font-mono font-normal">
+                                                                ({r.id})
+                                                            </span>
                                                         </Label>
                                                         <Input
                                                             id={`addendum-prefill-${r.id}`}

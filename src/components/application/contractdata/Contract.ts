@@ -4,6 +4,10 @@ import {
     resolveOfferFactorRate,
     resolveOfferPayback,
 } from "@/lib/offerRepaymentCalculations";
+import {
+    applyAllianceBridgeContractPrefillToFields,
+    isAllianceBridgeContractLayoutKey,
+} from "./allianceContractPrefill";
 import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
 import {
     clearParty2PrefillPartial,
@@ -3437,14 +3441,29 @@ export function resolveBalanceTransferMerchantContext(
         str(c.securityDoingBusinessAs) ||
         str(overrides.securityDoingBusinessAs);
 
+    const businessNorm = businessName.trim().toLowerCase();
+    const isDistinctFromBusiness = (name: string) => {
+        const n = name.trim();
+        if (!n) return false;
+        return !businessNorm || n.toLowerCase() !== businessNorm;
+    };
+
+    const ownerMerchantCandidates = [
+        ownerName,
+        linkedOwnerName,
+        str(c.customerName),
+        str(overrides.customerName),
+        str(c.owner1GuarantorName),
+        str(overrides.owner1GuarantorName),
+        str(c.guarantyClientName),
+        str(overrides.guarantyClientName),
+        str(c.guarantyOwner1Name),
+        str(overrides.guarantyOwner1Name),
+        recipientFallback,
+    ];
+
     const clientNameBy =
-        str(c.customerName) ||
-        ownerName ||
-        linkedOwnerName ||
-        str(c.clientName) ||
-        str(overrides.clientName) ||
-        str(app.clientName) ||
-        recipientFallback;
+        ownerMerchantCandidates.find(isDistinctFromBusiness) || ownerName || recipientFallback;
 
     const clientName =
         str(c.clientName) ||
@@ -3453,7 +3472,8 @@ export function resolveBalanceTransferMerchantContext(
         clientNameBy ||
         recipientFallback;
 
-    const clientLegalName = businessName || clientName || recipientFallback;
+    const clientLegalName =
+        ownerMerchantCandidates.find(isDistinctFromBusiness) || ownerName || linkedOwnerName || recipientFallback;
 
     const contractLine = [
         str(c.businessAddress) || str(overrides.businessAddress),
@@ -3608,6 +3628,7 @@ export function buildContractPrefillFieldsFromApplication(
         contractRecords?: ContractPrefillContractRecords;
         overrides?: Partial<BuildContractPrefillFieldsArgs> | null;
         offerDecision?: Record<string, unknown> | null;
+        mainContractLayoutKey?: string | null;
     },
 ): ContractPrefillField[] {
     const rec = options?.contractRecords;
@@ -3710,9 +3731,13 @@ export function buildContractPrefillFieldsFromApplication(
         legalName,
     });
 
-    return mergePrefillFieldsPreferFirst(
+    const prefillFields = mergePrefillFieldsPreferFirst(
         fromCore,
         addendumSlotExtraFields(rec?.addendum ?? null),
         epoExtraFields(rec?.epo ?? null),
     );
+    if (isAllianceBridgeContractLayoutKey(options?.mainContractLayoutKey)) {
+        return applyAllianceBridgeContractPrefillToFields(prefillFields, moneySources);
+    }
+    return prefillFields;
 }

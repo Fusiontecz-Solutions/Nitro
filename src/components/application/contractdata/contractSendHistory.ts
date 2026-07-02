@@ -10,8 +10,9 @@ import {
     parseStandalonePackageDocuSignFromPrefill,
     parseStandalonePackageSendHistoryFromPrefill,
     type StandalonePackageDocuSignCapsuleStatus,
-    type StandalonePackageDocuSignMeta,
 } from "./standalonePackageDocuSign";
+import { formatDateTimeUS } from "@/lib/utils";
+import type { DateInput } from "@/lib/dateTime";
 
 /** Prior main-contract DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
 export const CONTRACT_SEND_HISTORY_KEY = "contractSendHistory";
@@ -292,14 +293,38 @@ function isPackageRowVisibleInSendTable(
     return Boolean(status && status !== "DRAFT");
 }
 
-function buildStandalonePackageHistoryLabel(
-    packageMeta: StandalonePackageDocuSignMeta["package"] | undefined,
-    historyCount: number,
-    sendNumber: number,
+/** Disambiguate repeated send rows with sent date/time instead of "send N". */
+function buildSendHistoryRowLabel(baseLabel: string, sentAt: unknown): string {
+    const when = formatDateTimeUS(sentAt as DateInput, "");
+    return when ? `${baseLabel} (${when})` : baseLabel;
+}
+
+/** Strip disambiguation date suffix from send-table labels (e.g. action buttons). */
+export function stripSendHistoryRowDateSuffix(label: string): string {
+    return (
+        label
+            .replace(/\s*\(\d{2}\/\d{2}\/\d{4}\s+\d{1,2}:\d{2}\s+[AP]M\)\s*$/i, "")
+            .trim() || label
+    );
+}
+
+export function getContractSendTableRowVoidButtonLabel(
+    row: ContractSendTableRow | null | undefined,
 ): string {
-    const base = formatStandalonePackageSendLabel(packageMeta);
-    if (historyCount <= 1) return `${base} (prior send)`;
-    return `${base} (send ${sendNumber})`;
+    const base = stripSendHistoryRowDateSuffix(String(row?.label ?? "").trim()) || "document";
+    return `Void ${base}`;
+}
+
+function applySendRowDateLabels(
+    rows: ContractSendTableRow[],
+    rowType: ContractSendTableRowKind,
+    resolveBaseLabel: (row: ContractSendTableRow) => string,
+): void {
+    const matching = rows.filter((row) => row.rowType === rowType);
+    if (matching.length <= 1) return;
+    for (const row of matching) {
+        row.label = buildSendHistoryRowLabel(resolveBaseLabel(row), row.sentAt);
+    }
 }
 
 export function getContractSendTableRowStatusLabel(row: ContractSendTableRow): string {
@@ -343,15 +368,16 @@ export function isContractSendTableRowVoided(row: ContractSendTableRow): boolean
     return isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
 }
 
-export function canVoidContractSendTableRow(
-    contract: Record<string, unknown> | null | undefined,
-    row: ContractSendTableRow | null | undefined,
-    sessionSentAt?: Date | null,
-): boolean {
-    if (!row?.isCurrent || !String(row.envelopeId ?? "").trim()) return false;
-    if (row.rowType === "contract") {
-        return canVoidMainContract(contract, sessionSentAt);
+/**
+ * Row-level "out for signature" — uses the send-table row status, not only the live contract record.
+ * Covers Sent / Viewed envelopes (main contract, ACH, standalone package) before they are signed or voided.
+ */
+export function isSendTableRowOutForSignature(row: ContractSendTableRow): boolean {
+    if (!String(row.envelopeId ?? "").trim()) return false;
+    if (isContractSendTableRowFullySigned(row) || isContractSendTableRowVoided(row)) {
+        return false;
     }
+
     if (row.rowType === "ach") {
         const status = row.achStatus ?? "DRAFT";
         return status === "DRAFT" || status === "SENT" || status === "VIEWED";
@@ -360,6 +386,29 @@ export function canVoidContractSendTableRow(
         const status = row.packageStatus ?? "DRAFT";
         return status === "DRAFT" || status === "SENT" || status === "VIEWED";
     }
+
+    const ds = String(row.documentStatus ?? "").trim().toLowerCase();
+    const cs = String(row.contractStatus ?? "").trim().toUpperCase();
+    if (["SENT", "VIEWED"].includes(cs)) return true;
+    if (["sent", "viewed", "delivered"].includes(ds)) return true;
+    if (row.sentAt) return true;
+    return false;
+}
+
+export function canVoidContractSendTableRow(
+    contract: Record<string, unknown> | null | undefined,
+    row: ContractSendTableRow | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    if (!row || !String(row.envelopeId ?? "").trim()) return false;
+
+    if (isSendTableRowOutForSignature(row)) return true;
+
+    // CRM row status may lag DocuSign — fall back to live contract for the current main envelope.
+    if (row.rowType === "contract" && row.isCurrent) {
+        return canVoidMainContract(contract, sessionSentAt);
+    }
+
     return false;
 }
 
@@ -430,19 +479,16 @@ export function buildContractSendTableRows(
     }
 
     const contractHistoryNewestFirst = [...contractHistory].reverse();
-    contractHistoryNewestFirst.forEach((entry, index) => {
+    contractHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
         if (!isContractRowVisibleInSendTable(entry.status, entry.status, entry.envelopeId)) {
             return;
         }
         seenEnvelopeIds.add(entry.envelopeId);
-        const sendNumber = contractHistory.length - index;
         rows.push({
             rowType: "contract",
             key: `history-contract-${entry.envelopeId}`,
-            label:
-                contractHistory.length > 1
-                    ? `Contract (send ${sendNumber})`
+            label: "Contract",
                     : "Old Contract",
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
@@ -488,19 +534,14 @@ export function buildContractSendTableRows(
     }
 
     const packageHistoryNewestFirst = [...packageHistory].reverse();
-    packageHistoryNewestFirst.forEach((entry, index) => {
+    packageHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
         if (!isPackageRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
         seenEnvelopeIds.add(entry.envelopeId);
-        const sendNumber = packageHistory.length - index;
         rows.push({
             rowType: "package",
             key: `history-package-${entry.envelopeId}`,
-            label: buildStandalonePackageHistoryLabel(
-                entry.package,
-                packageHistory.length,
-                sendNumber,
-            ),
+            label: formatStandalonePackageSendLabel(entry.package),
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
             documentStatus: entry.status,
@@ -511,18 +552,14 @@ export function buildContractSendTableRows(
     });
 
     const achHistoryNewestFirst = [...achHistory].reverse();
-    achHistoryNewestFirst.forEach((entry, index) => {
+    achHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
         if (!isAchRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
         seenEnvelopeIds.add(entry.envelopeId);
-        const sendNumber = achHistory.length - index;
         rows.push({
             rowType: "ach",
             key: `history-ach-${entry.envelopeId}`,
-            label:
-                achHistory.length > 1
-                    ? `ACH Authorization (send ${sendNumber})`
-                    : "ACH Authorization (prior send)",
+            label: "ACH Authorization",
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
             documentStatus: entry.status,
@@ -531,6 +568,10 @@ export function buildContractSendTableRows(
             achStatus: entry.status,
         });
     });
+
+    applySendRowDateLabels(rows, "contract", () => "Contract");
+    applySendRowDateLabels(rows, "ach", () => "ACH Authorization");
+    applySendRowDateLabels(rows, "package", (row) => row.label);
 
     return rows;
 }

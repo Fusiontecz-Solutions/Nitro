@@ -31,6 +31,7 @@ export type SyncDocuSignEnvelopeStatusOptions = {
     /** Used in user-facing error text. */
     envelopeLabel?: string;
     ccEmails?: string[];
+    funderName?: string;
 };
 
 export type SyncDocuSignEnvelopeStatusResult = {
@@ -71,12 +72,14 @@ export async function syncDocuSignEnvelopeStatus(
     }
 
     const contractIdNum = Number(options?.contractId);
+    const funderName = String(options?.funderName ?? "").trim();
     const request = axiosPost("/docusign/sync-envelope-status", {
         envelopeId: eid,
         ...(options?.applicationId ? { applicationId: String(options.applicationId) } : {}),
         ...(Number.isFinite(contractIdNum) && contractIdNum > 0
             ? { contractId: contractIdNum }
             : {}),
+        ...(funderName ? { funderName } : {}),
         ...(options?.force ? { force: true } : {}),
         ...(options?.ccEmails?.length ? { ccEmails: options.ccEmails } : {}),
     })

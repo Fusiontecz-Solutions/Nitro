@@ -70,6 +70,12 @@ import {
 
 import { ACH_AUTHORIZATION_DOCUSIGN_KEY } from "./achAuthorizationDocuSign";
 import { isPlatformLayoutKey, PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
+import {
+    normalizeBalanceTransferScopedSavedOverrides,
+    normalizeFlexAddendumSavedOverrides,
+    stripUnscopedAddendumOverrideKeys,
+    toDisclosureScopedPrefillId,
+} from "./documentPrefillScope";
 import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
 
 /** Stored on `Contract.contractPrefillOverrides` alongside main prefill keys. */
@@ -122,13 +128,14 @@ function resolveDisclosureBusinessNameFromPrefillMap(
 ): string {
     return (
         resolveDisclosureBusinessNamePrefill(contract, application) ||
-        readPrefillMapValue(byId, "disclosure_merchant_name") ||
+        readPrefillMapValue(byId, toDisclosureScopedPrefillId("client_name")) ||
+        readPrefillMapValue(byId, toDisclosureScopedPrefillId("disclosure_merchant_name")) ||
         readPrefillMapValue(byId, "client_legal_name") ||
         readPrefillMapValue(byId, "business_legal_name") ||
         readPrefillMapValue(byId, "merchant_legal_name") ||
         readPrefillMapValue(byId, "legal_name") ||
-        readPrefillMapValue(byId, "recipient_name") ||
-        readPrefillMapValue(byId, "disclosure_name") ||
+        readPrefillMapValue(byId, toDisclosureScopedPrefillId("recipient_name")) ||
+        readPrefillMapValue(byId, toDisclosureScopedPrefillId("disclosure_name")) ||
         ""
     );
 }
@@ -139,12 +146,14 @@ function applyDisclosureMerchantNameFields(
 ): void {
     const name = String(businessName ?? "").trim();
     if (!name) return;
-    for (const id of [
+    for (const pdfId of [
+        "client_name",
         "recipient_name",
         "recipient_name2",
         "disclosure_name",
         "disclosure_merchant_name",
     ] as const) {
+        const id = toDisclosureScopedPrefillId(pdfId);
         byId.set(id, { id, value: name });
     }
 }
@@ -416,7 +425,7 @@ function buildBalanceTransferComputed(
         dateOfNewSecuredAgreement: agreementDate,
         dateOfPreviousSecuredAgreement: agreementDate,
         remainingRtrBalance: remainingRtr,
-        merchantLegalName: merchant.clientName,
+        merchantLegalName: merchant.clientLegalName,
         businessLegalName: merchant.businessName,
         dba: merchant.clientDba,
         clientNameBy: merchant.clientNameBy,
@@ -532,11 +541,20 @@ function buildKatanFlexComputed(
         str(c.receivable_purchase_2) ||
         str(c.receivablePurchase2) ||
         receivablePurchase1;
+    const businessName2 =
+        str(c.flex_addendum_business_name_2) ||
+        str(c.business_name_2) ||
+        str(c.merchant2Name) ||
+        str(c.owner2GuarantorName) ||
+        str(c.merchant2_name) ||
+        str(c.owner2_guarantor_name) ||
+        "";
     return buildKatanFlexAddendumContractPrefillFields({
         addendumDate,
         agreementDate,
         merchantName: legal,
         clientName,
+        businessName2,
         dailyPayment1,
         receivablePurchase1,
         dailyPayment2,
@@ -724,8 +742,15 @@ type AddendumKind =
 
 function resolveAddendumKindFromLayoutKey(layoutKey?: string | null): AddendumKind | null {
     const key = normalizeDocusignTemplateId(layoutKey);
-    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
-    if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) return "katan_flex";
+    if (key.endsWith("_flex_addendum") || key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.FLEX_ADDENDUM) {
+        return "katan_flex";
+    }
+    if (
+        key.endsWith("_balance_transfer") ||
+        key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.BALANCE_TRANSFER_SHEET
+    ) {
+        return "balance_transfer_sheet";
+    }
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION) return "katan_ach_authorization";
     if (key === DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE) {
         return "katan_ach_authorization";
@@ -877,7 +902,38 @@ function tryAddendumPrefillFieldRowsForEditor(options: {
         sctx,
         options.application ?? null,
     );
-    return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+    const savedOverrides =
+        addendum === "balance_transfer_sheet"
+            ? normalizeBalanceTransferScopedSavedOverrides(options.savedOverridesForMapping)
+            : addendum === "katan_flex"
+              ? normalizeFlexAddendumSavedOverrides(options.savedOverridesForMapping)
+              : options.savedOverridesForMapping;
+    return mergeFieldRows(all, computed, savedOverrides);
+}
+
+/** Normalize addendum editor values before persisting (scoped keys only). */
+export function normalizeAddendumSavedFieldValuesForPersistence(
+    options: {
+        templateId?: string | null;
+        templateName?: string | null;
+        templateLayoutKey?: string | null;
+    },
+    fields: Record<string, string>,
+): Record<string, string> {
+    const kind = resolveTemplateRefsForAddendumKind(options);
+    if (kind === "balance_transfer_sheet") {
+        return stripUnscopedAddendumOverrideKeys(
+            normalizeBalanceTransferScopedSavedOverrides(fields),
+            "balance_transfer_sheet",
+        );
+    }
+    if (kind === "katan_flex") {
+        return stripUnscopedAddendumOverrideKeys(
+            normalizeFlexAddendumSavedOverrides(fields),
+            "katan_flex",
+        );
+    }
+    return fields;
 }
 
 /** Whether the addendum prefill editor has registered fields for this document layout. */
@@ -1382,11 +1438,14 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
     });
 
     return Object.entries(expanded)
-        .map(([id, value]) => ({ id, value: String(value ?? "").trim() }))
+        .map(([id, value]) => ({
+            id: toDisclosureScopedPrefillId(id),
+            value: String(value ?? "").trim(),
+        }))
         .filter((f) => f.id && f.value);
 }
 
-/** Merge expanded disclosure PDF fields into a DocuSign prefill payload (by field id). */
+/** Merge scoped disclosure PDF fields into a DocuSign prefill payload (by field id). */
 export function mergeExpandedDisclosurePrefillIntoPayload(
     payload: Array<{ id: string; value: string }>,
     disclosureFields: Array<{ id: string; value: string }>,
@@ -1396,23 +1455,6 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
     for (const field of disclosureFields) {
         const v = String(field.value ?? "").trim();
         if (!v) continue;
-        // Contract page 1 offer amount must stay gross advance — never overwrite from disclosure net fields.
-        if (field.id === "purchase_amount") continue;
-        const existing = byId.get(field.id);
-        const existingNum = parsePrefillMoneyForMerge(existing?.value);
-        const incomingNum = parsePrefillMoneyForMerge(v);
-        // Main contract origination fee — never replace with disclosure broker fee defaults (0.00).
-        if (field.id === "appendix_underwriting_fees" && incomingNum === 0) {
-            continue;
-        }
-        if (
-            existingNum !== undefined &&
-            existingNum > 0 &&
-            incomingNum !== undefined &&
-            incomingNum === 0
-        ) {
-            continue;
-        }
         byId.set(field.id, { id: field.id, value: v });
     }
     return Array.from(byId.values());
@@ -1494,10 +1536,33 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
                       expanded,
                       raw: (perMap ?? {}) as Record<string, string>,
                   });
-                  return expanded;
+                  const scoped: Record<string, string> = {};
+                  for (const [pdfId, val] of Object.entries(expanded)) {
+                      const v = String(val ?? "").trim();
+                      if (!v) continue;
+                      scoped[toDisclosureScopedPrefillId(pdfId)] = v;
+                  }
+                  return scoped;
               })()
             : editorValues;
-        for (const [id, value] of Object.entries(fieldsToMerge)) {
+        const addendumKind = resolveTemplateRefsForAddendumKind({
+            templateId: templateId || tid || layoutKey,
+            templateName: row.template?.name ?? null,
+            templateLayoutKey: layoutKey || null,
+        });
+        const normalizedAddendumFields =
+            addendumKind === "balance_transfer_sheet"
+                ? stripUnscopedAddendumOverrideKeys(
+                      normalizeBalanceTransferScopedSavedOverrides(fieldsToMerge),
+                      "balance_transfer_sheet",
+                  )
+                : addendumKind === "katan_flex"
+                  ? stripUnscopedAddendumOverrideKeys(
+                        normalizeFlexAddendumSavedOverrides(fieldsToMerge),
+                        "katan_flex",
+                    )
+                  : fieldsToMerge;
+        for (const [id, value] of Object.entries(normalizedAddendumFields)) {
             const v = String(value ?? "").trim();
             if (!v) continue;
             if (id === "client_name" && shouldSkipClientNamePrefillOverwrite(byId, v)) continue;

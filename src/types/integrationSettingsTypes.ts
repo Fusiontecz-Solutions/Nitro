@@ -37,6 +37,9 @@ export type FunderProfile = {
   docusignAccountName?: string | null;
   sortOrder: number;
   isActive: boolean;
+  documentsSource?: "platform" | "own" | "shared";
+  sharedDocumentsFunderId?: string | null;
+  sharedDocumentsFunderName?: string | null;
 };
 
 export type DocuSignAccountProfileInput = {
@@ -70,4 +73,6 @@ export type FunderProfileInput = {
   docusignAccountProfileId?: string | null;
   sortOrder?: number;
   isActive?: boolean;
+  documentsSource?: "platform" | "own" | "shared";
+  sharedDocumentsFunderId?: string | null;
 };

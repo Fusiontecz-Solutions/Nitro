@@ -76,7 +76,37 @@ function extractErrorMessage(payload: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function fetchDataMerchForApplication(applicationId: string) {
+/** DataMerch returns HTTP 404 when the merchant is not in their database. */
+function isDataMerchMerchantNotFoundError(message: string, httpStatus?: number): boolean {
+  if (httpStatus === 404) return true;
+  const normalized = String(message ?? "").toLowerCase();
+  return (
+    normalized.includes("request failed (404)") ||
+    (normalized.includes("datamerch") && normalized.includes("404"))
+  );
+}
+
+function buildEmptyDataMerchLookup(hints?: {
+  businessName?: string;
+  ein?: string;
+}): DataMerchLookupData {
+  const einDigits = String(hints?.ein ?? "").replace(/\D/g, "");
+  const hasEin = einDigits.length === 9;
+  const businessName = String(hints?.businessName ?? "").trim();
+  return {
+    searchQuery: hasEin ? einDigits : businessName,
+    searchType: hasEin ? "ein" : "name",
+    businessName: businessName || null,
+    ein: hasEin ? einDigits : null,
+    merchants: [],
+    raw: null,
+  };
+}
+
+export async function fetchDataMerchForApplication(
+  applicationId: string,
+  hints?: { businessName?: string; ein?: string },
+) {
   const id = String(applicationId ?? "").trim();
   if (!id) {
     return { success: false as const, message: "Application id is required." };
@@ -90,13 +120,20 @@ export async function fetchDataMerchForApplication(applicationId: string) {
     }
     return { success: true as const, data };
   } catch (error: unknown) {
-    const err = error as { response?: { data?: unknown }; message?: string };
+    const err = error as { response?: { data?: unknown; status?: number }; message?: string };
+    const message = extractErrorMessage(
+      err.response?.data,
+      err.message || "Failed to load DataMerch results.",
+    );
+    if (isDataMerchMerchantNotFoundError(message, err.response?.status)) {
+      return {
+        success: true as const,
+        data: buildEmptyDataMerchLookup(hints),
+      };
+    }
     return {
       success: false as const,
-      message: extractErrorMessage(
-        err.response?.data,
-        err.message || "Failed to load DataMerch results.",
-      ),
+      message,
     };
   }
 }

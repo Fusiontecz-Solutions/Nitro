@@ -40,6 +40,10 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   }
   if (payload.sortOrder != null) formData.append("sortOrder", String(payload.sortOrder));
   if (payload.isActive != null) formData.append("isActive", String(payload.isActive));
+  if (payload.documentsSource) formData.append("documentsSource", payload.documentsSource);
+  if (payload.sharedDocumentsFunderId !== undefined) {
+    formData.append("sharedDocumentsFunderId", payload.sharedDocumentsFunderId || "");
+  }
 }
 
 export async function fetchFunderProfiles(
@@ -82,14 +86,60 @@ export async function deleteDocuSignAccountProfile(id: string): Promise<void> {
   await axiosDelete(`/integration-settings/docusign-accounts/${id}`);
 }
 
+export type FunderProfileFiles = {
+  contractFile?: File | null;
+};
+
+function appendFunderFiles(formData: FormData, files?: FunderProfileFiles | null) {
+  if (files?.contractFile) formData.append("contract", files.contractFile);
+}
+
+export type FunderDocumentTemplateRow = import("@/utils/funderLayoutKeys").FunderDocumentTemplateRow;
+
+export async function fetchFunderDocuments(funderId: string): Promise<FunderDocumentTemplateRow[]> {
+  const res = await axiosGet(`/integration-settings/funders/${funderId}/documents`);
+  return (res as { data?: { data?: FunderDocumentTemplateRow[] } })?.data?.data ?? [];
+}
+
+export async function uploadFunderDisclosureDocument(
+  funderId: string,
+  args: { state: string; frequency: string; file: File },
+): Promise<void> {
+  const formData = new FormData();
+  formData.append("state", args.state);
+  formData.append("frequency", args.frequency);
+  formData.append("file", args.file);
+  await axiosPostFormData(`/integration-settings/funders/${funderId}/disclosures`, formData);
+}
+
+export async function uploadFunderAddendumDocument(
+  funderId: string,
+  args: { name: string; coordinateLayoutKey: string; file: File },
+): Promise<void> {
+  const formData = new FormData();
+  formData.append("name", args.name);
+  formData.append("coordinateLayoutKey", args.coordinateLayoutKey);
+  formData.append("file", args.file);
+  await axiosPostFormData(`/integration-settings/funders/${funderId}/addendums`, formData);
+}
+
+export async function deleteFunderDocument(funderId: string, templateId: string): Promise<void> {
+  await axiosDelete(`/integration-settings/funders/${funderId}/documents/${templateId}`);
+}
+
 export async function createFunderProfile(
   payload: FunderProfileInput,
-  contractFile?: File | null,
+  files?: FunderProfileFiles | File | null,
 ): Promise<FunderProfile> {
-  if (contractFile) {
+  const normalizedFiles =
+    files && files instanceof File
+      ? { contractFile: files }
+      : (files as FunderProfileFiles | null | undefined);
+  const hasUploads = normalizedFiles?.contractFile;
+  if (hasUploads) {
     const formData = new FormData();
     appendFunderFormFields(formData, payload);
-    formData.append("contract", contractFile);
+    appendFunderFiles(formData, normalizedFiles);
     const res = await axiosPostFormData("/integration-settings/funders", formData);
     return (res as { data?: { data?: FunderProfile } })?.data?.data as FunderProfile;
   }
@@ -100,12 +150,17 @@ export async function createFunderProfile(
 export async function updateFunderProfile(
   id: string,
   payload: Partial<FunderProfileInput>,
-  contractFile?: File | null,
+  files?: FunderProfileFiles | File | null,
 ): Promise<FunderProfile> {
-  if (contractFile) {
+  const normalizedFiles =
+    files && files instanceof File
+      ? { contractFile: files }
+      : (files as FunderProfileFiles | null | undefined);
+  const hasUploads = normalizedFiles?.contractFile;
+  if (hasUploads) {
     const formData = new FormData();
     appendFunderFormFields(formData, payload as FunderProfileInput);
-    formData.append("contract", contractFile);
+    appendFunderFiles(formData, normalizedFiles);
     const res = await axiosPatchFormData(`/integration-settings/funders/${id}`, formData);
     return (res as { data?: { data?: FunderProfile } })?.data?.data as FunderProfile;
   }

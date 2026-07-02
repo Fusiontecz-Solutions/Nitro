@@ -33,6 +33,10 @@ export type BoldSignMergeAndSendPayload = {
   mainContractLayoutKey?: string | null;
   /** Funder name — selects DocuSign account profile when linked. */
   funderName?: string | null;
+  /** CRM funder profile id — resolves funder-specific addendum/disclosure PDFs. */
+  funderProfileId?: string | null;
+  /** Contract state — disambiguates funders with the same display name. */
+  contractState?: string | null;
   /** @deprecated Use supplementalLayoutKeys — accepts layout keys or legacy CRM row ids. */
   supplementalDocumentRefs?: string[];
   ownerCount?: number;

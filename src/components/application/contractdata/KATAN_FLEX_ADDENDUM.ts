@@ -1,12 +1,13 @@
 import type { ContractPrefillField } from "./Contract";
 import { formatUSD } from "@/utils/formatCurrency";
+import { FLEX_ADDENDUM_SCOPE } from "./documentPrefillScope";
 
 /** Tab ids for payment schedule money cells — formatted as USD on PDF output. */
 export const FLEX_ADDENDUM_MONEY_TAB_IDS = new Set([
-    "daily_payment_1",
-    "receivable_purchase_1",
-    "daily_payment_2",
-    "receivable_purchase_2",
+    `${FLEX_ADDENDUM_SCOPE}daily_payment_1`,
+    `${FLEX_ADDENDUM_SCOPE}receivable_purchase_1`,
+    `${FLEX_ADDENDUM_SCOPE}daily_payment_2`,
+    `${FLEX_ADDENDUM_SCOPE}receivable_purchase_2`,
 ]);
 
 /** Format flex addendum payment / receivable values as $X,XXX.XX (empty when not numeric). */
@@ -26,6 +27,8 @@ export interface KatanFlexAddendumContractPrefillFields {
     agreementDate?: string;
     merchantName?: string;
     clientName?: string;
+    /** Second merchant / owner print name (page 2) when two signers. */
+    businessName2?: string;
     /** Day of month — first installment (default Day 1). */
     installmentDay1?: string;
     /** Day of month — second installment (default Day 16). */
@@ -46,6 +49,7 @@ const EDITOR_FIELD_DEFS: Array<{ id: keyof KatanFlexAddendumContractPrefillField
         { id: "agreementDate", label: "Agreement date" },
         { id: "merchantName", label: "Merchant legal name" },
         { id: "clientName", label: "Client name" },
+        { id: "businessName2", label: "Merchant 2 / owner 2 name" },
         { id: "installmentDay1", label: "Installment day — 1st payment" },
         { id: "installmentDay2", label: "Installment day — 2nd payment" },
         { id: "dailyPayment1", label: "Payment amount — 1st installment (Day 1)" },
@@ -58,16 +62,17 @@ export const FLEX_ADDENDUM_TAB_LABEL_BY_KEY: Record<
     keyof KatanFlexAddendumContractPrefillFields,
     string
 > = {
-    addendumDate: "addendum_date",
-    agreementDate: "agreement_date",
-    merchantName: "client_legal_name",
-    clientName: "client_name",
-    installmentDay1: "installment_day_1",
-    installmentDay2: "installment_day_2",
-    dailyPayment1: "daily_payment_1",
-    receivablePurchase1: "receivable_purchase_1",
-    dailyPayment2: "daily_payment_2",
-    receivablePurchase2: "receivable_purchase_2",
+    addendumDate: `${FLEX_ADDENDUM_SCOPE}addendum_date`,
+    agreementDate: `${FLEX_ADDENDUM_SCOPE}agreement_date`,
+    merchantName: `${FLEX_ADDENDUM_SCOPE}merchant_legal_name`,
+    clientName: `${FLEX_ADDENDUM_SCOPE}client_name`,
+    businessName2: `${FLEX_ADDENDUM_SCOPE}business_name_2`,
+    installmentDay1: `${FLEX_ADDENDUM_SCOPE}installment_day_1`,
+    installmentDay2: `${FLEX_ADDENDUM_SCOPE}installment_day_2`,
+    dailyPayment1: `${FLEX_ADDENDUM_SCOPE}daily_payment_1`,
+    receivablePurchase1: `${FLEX_ADDENDUM_SCOPE}receivable_purchase_1`,
+    dailyPayment2: `${FLEX_ADDENDUM_SCOPE}daily_payment_2`,
+    receivablePurchase2: `${FLEX_ADDENDUM_SCOPE}receivable_purchase_2`,
 };
 
 export function buildKatanFlexAddendumContractPrefillFields(

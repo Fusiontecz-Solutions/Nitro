@@ -20,9 +20,10 @@ export interface BackgroundCheckItem {
     status: BgItemStatus;
     result: BgCheckResult | null;
     notes: string | null;
+    metadata?: Record<string, unknown> | null;
     performedById: string | null;
     performedAt: string | null;
-    attachments: { id: string; url: string; originalName: string | null }[];
+    attachments: { id: string; url: string; originalName: string | null; publicId?: string | null }[];
 }
 
 export interface BackgroundCheck {
