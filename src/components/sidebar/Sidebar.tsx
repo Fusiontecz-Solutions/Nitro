@@ -306,7 +306,7 @@ const dealPipelineSection: SidebarNavSection = {
           pipelineAccent: "approved-by-uw",
         },
         {
-          label: operationsDashboardStatusTitle("Approval_Sent"),
+          label: "Approval sent to Broker",
           operationsStatus: "Approval_Sent",
           pipelineAccent: "approval-sent",
         },
@@ -334,7 +334,7 @@ const dealPipelineSection: SidebarNavSection = {
           pipelineAccent: "contract-signed",
         },
         {
-          label: operationsDashboardStatusTitle("Reinitiate_Contract"),
+          label: "Re-Initiate",
           operationsStatus: "Reinitiate_Contract",
           pipelineAccent: "contract-signed",
         },
@@ -446,7 +446,7 @@ const operationsSections: SidebarNavSection[] = [
       { label: "Reports", url: "/reports", icon: Description },
       { label: "Syndicators", url: "/syndicators/dashboard", icon: SyndicatorsSidebarIcon },
       { label: "Commissions", url: "/commission-portal", icon: BarChart },
-      { label: "Accountant", url: "/payments", icon: Payments },
+      { label: "All Deals", url: "/payments", icon: Payments },
     ],
   },
   {
@@ -464,7 +464,7 @@ const accountsSections: SidebarNavSection[] = [
   {
     title: "",
     items: [
-      { label: "Accountant", url: "/payments", icon: Payments },
+      { label: "All Deals", url: "/payments", icon: Payments },
     ],
   },
 ];
@@ -577,7 +577,7 @@ const superAdminSections: SidebarNavSection[] = [
   {
     title: "OPERATIONS",
     items: [
-      { label: "Accountant", url: "/payments", icon: Payments },
+      { label: "All Deals", url: "/payments", icon: Payments },
       { label: "Commission", url: "/commission-portal", icon: BarChart },
       { label: "Reports", url: "/reports", icon: Description },
     ],
@@ -1044,6 +1044,7 @@ const Sidebar = () => {
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton
+
                   onClick={handleLogout}
                   className={logoutButtonClass}
                 >

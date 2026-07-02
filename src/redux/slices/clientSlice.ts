@@ -206,6 +206,25 @@ export const clientDetailSlice = createSlice({
                 state.currentClientId = null;
                 state.error = action.payload as string;
                 state.success = false;
+            })
+            .addCase(updateClient.fulfilled, (state, action) => {
+                const updated = action.payload.data || action.payload;
+                if (!updated) return;
+                const updatedId = String(updated.id ?? updated._id ?? "");
+                const currentId = String(
+                    state.data?._id ?? (state.data as { id?: string } | null)?.id ?? ""
+                );
+                const currentClientId = String(state.currentClientId ?? "");
+                const updatedClientId = String(updated.clientId ?? "");
+                const matchesCurrent =
+                    (currentId && updatedId && currentId === updatedId) ||
+                    (currentClientId && updatedClientId && currentClientId === updatedClientId) ||
+                    (currentClientId && updatedId && currentClientId === updatedId);
+                if (matchesCurrent || !state.data) {
+                    state.data = updated;
+                    if (updatedClientId) state.currentClientId = updatedClientId;
+                    else if (updatedId) state.currentClientId = updatedId;
+                }
             });
     },
 });

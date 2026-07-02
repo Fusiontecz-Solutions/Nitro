@@ -5,13 +5,22 @@ import type { AppDispatch, RootState } from "@/redux/store";
 import { useTheme } from "@/context/ThemeContext";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
-import { updateClient } from "@/redux/actions/clientActions";
+import {
+    getClientByClientId,
+    getClientById,
+    updateClient,
+} from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
-import { updateApplication } from "@/redux/actions/applicationActions";
+import { getApplicationById, getApplicationByApplicationId, updateApplication } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
 import { Pencil, ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
+import {
+    getClientFetchArg,
+    getClientFetchKeyFromApplicationClient,
+} from "@/lib/clientOwners";
+import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch";
 
 interface ApplicationBasicDetailsProps {
     /** When provided (e.g. on application-detail overview for agent), only show data for this application — no static values */
@@ -143,8 +152,13 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
     const data = applicationData as any;
     const applicationClient = data?.client;
     const clientId = String(applicationClient?.id ?? applicationClient?._id ?? "");
-    const targetApplicationId = String(applicationId || data?.id || data?.applicationId || "");
-    const { owners: resolvedOwnerRecords } = useApplicationClientOwners(applicationClient);
+    const applicationUuid = String(data?.id ?? data?._id ?? "");
+    const routeApplicationRef = String(
+        applicationId || data?.applicationId || applicationUuid || "",
+    );
+    const updateApplicationId = applicationUuid || routeApplicationRef;
+    const { owners: resolvedOwnerRecords, ownerSourceClient } =
+        useApplicationClientOwners(applicationClient);
 
     const [form, setForm] = useState({
         businessName: "",
@@ -166,35 +180,53 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
     const [owners, setOwners] = useState<OwnerForm[]>([{ ...emptyOwnerForm }]);
     const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0);
 
-    const buildBusinessForm = (app: any) => ({
-        businessName: String(app?.client?.business?.name ?? ""),
-        businessEmail: String(app?.client?.business?.email ?? ""),
-        businessNumber: String(app?.client?.business?.number ?? ""),
-        incorporationDate: toDateInput(app?.client?.business?.incorporationDate),
-        businessEntityType: String(app?.client?.business?.businessEntityType ?? ""),
-        website: String(app?.client?.business?.website ?? ""),
-        incorporationState: String(app?.client?.business?.incorporationState ?? ""),
-        monthlyRevenue: String(app?.client?.business?.monthlyRevenue ?? ""),
-        einNumber: String(app?.client?.business?.einNumber ?? ""),
-        businessAddress1: String(app?.client?.business?.address?.address1 ?? ""),
-        businessCity: String(app?.client?.business?.address?.city ?? ""),
-        businessState: String(app?.client?.business?.address?.state ?? ""),
-        businessZipCode: String(app?.client?.business?.address?.zipCode ?? ""),
-        loanAmount: String(app?.loanAmount ?? ""),
-        note: stripStructuredSections(String(app?.note ?? "")),
-    });
+    const buildBusinessForm = (app: any, clientSource?: unknown) => {
+        const business =
+            (clientSource as { business?: Record<string, unknown> } | null | undefined)?.business ??
+            app?.client?.business ??
+            {};
+
+        return {
+            businessName: String(business?.name ?? ""),
+            businessEmail: String(business?.email ?? ""),
+            businessNumber: String(business?.number ?? ""),
+            incorporationDate: toDateInput(business?.incorporationDate),
+            businessEntityType: String(business?.businessEntityType ?? ""),
+            website: String(business?.website ?? ""),
+            incorporationState: String(business?.incorporationState ?? ""),
+            monthlyRevenue: String(business?.monthlyRevenue ?? ""),
+            einNumber: String(business?.einNumber ?? ""),
+            businessAddress1: String(
+                (business?.address as { address1?: string } | undefined)?.address1 ?? "",
+            ),
+            businessCity: String(
+                (business?.address as { city?: string } | undefined)?.city ?? "",
+            ),
+            businessState: String(
+                (business?.address as { state?: string } | undefined)?.state ?? "",
+            ),
+            businessZipCode: String(
+                (business?.address as { zipCode?: string } | undefined)?.zipCode ?? "",
+            ),
+            loanAmount: String(app?.loanAmount ?? ""),
+            note: stripStructuredSections(String(app?.note ?? "")),
+        };
+    };
+
+    const syncFormFromSource = () => {
+        const app = applicationData as any;
+        setForm(buildBusinessForm(app, ownerSourceClient));
+        const nextOwners = resolvedOwnerRecords.length
+            ? resolvedOwnerRecords.map(mapOwnerToForm)
+            : [{ ...emptyOwnerForm }];
+        setOwners(nextOwners);
+        setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+    };
 
     useEffect(() => {
-        const app = applicationData as any;
-        setForm(buildBusinessForm(app));
-        if (!isEditMode) {
-            const nextOwners = resolvedOwnerRecords.length
-                ? resolvedOwnerRecords.map(mapOwnerToForm)
-                : [{ ...emptyOwnerForm }];
-            setOwners(nextOwners);
-            setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
-        }
-    }, [applicationData, resolvedOwnerRecords, isEditMode]);
+        if (isEditMode) return;
+        syncFormFromSource();
+    }, [applicationData, resolvedOwnerRecords, ownerSourceClient, isEditMode]);
 
     const updateField = (key: keyof typeof form, value: string) =>
         setForm((prev) => ({ ...prev, [key]: value }));
@@ -281,7 +313,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
             toast.error("Client ID not found for this application.");
             return;
         }
-        if (!targetApplicationId) {
+        if (!updateApplicationId) {
             toast.error("Application ID not found.");
             return;
         }
@@ -317,7 +349,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
 
             await dispatch(
                 updateApplication({
-                    id: targetApplicationId,
+                    id: updateApplicationId,
                     data: {
                         loanAmount: form.loanAmount === "" ? null : Number(form.loanAmount),
                         note: mergeUserNoteWithStructuredSections(
@@ -327,6 +359,24 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
                     } as any,
                 })
             ).unwrap();
+
+            if (routeApplicationRef) {
+                if (isNumericApplicationRouteParam(routeApplicationRef)) {
+                    await dispatch(getApplicationByApplicationId(routeApplicationRef)).unwrap();
+                } else {
+                    await dispatch(getApplicationById(routeApplicationRef)).unwrap();
+                }
+            }
+
+            const fetchKey = getClientFetchKeyFromApplicationClient(applicationClient);
+            const fetchArg = getClientFetchArg(fetchKey);
+            if (fetchArg) {
+                if (fetchKey?.startsWith("clientId:")) {
+                    await dispatch(getClientByClientId(fetchArg)).unwrap();
+                } else {
+                    await dispatch(getClientById(fetchArg)).unwrap();
+                }
+            }
 
             toast.success("Application details updated successfully.");
             setIsEditMode(false);
@@ -340,13 +390,7 @@ const ApplicationBasicDetails = ({ applicationId }: ApplicationBasicDetailsProps
 
     const cancelEdit = () => {
         setIsEditMode(false);
-        const app = applicationData as any;
-        setForm(buildBusinessForm(app));
-        const nextOwners = resolvedOwnerRecords.length
-            ? resolvedOwnerRecords.map(mapOwnerToForm)
-            : [{ ...emptyOwnerForm }];
-        setOwners(nextOwners);
-        setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
+        syncFormFromSource();
     };
 
     return (

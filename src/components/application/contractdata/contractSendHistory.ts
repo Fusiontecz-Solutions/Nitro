@@ -488,8 +488,7 @@ export function buildContractSendTableRows(
         rows.push({
             rowType: "contract",
             key: `history-contract-${entry.envelopeId}`,
-            label: "Contract",
-                    : "Old Contract",
+            label: "Old Contract",
             envelopeId: entry.envelopeId,
             contractStatus: entry.status,
             documentStatus: entry.status,
