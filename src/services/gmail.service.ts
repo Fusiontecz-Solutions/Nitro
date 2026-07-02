@@ -22,6 +22,23 @@ const IN_CRM_GMAIL_LABEL_NAME = 'in-crm';
 const inFlightAutoCreateMessageIds = new Set<string>();
 const inCrmLabelIdByUserId = new Map<string, string>();
 
+/** True when Gmail API rejected the OAuth access token (expired, revoked, or wrong token). */
+export function isGmailAuthError(error: unknown): boolean {
+    const err = error as {
+        message?: string;
+        response?: { status?: number; data?: { error?: { message?: string; status?: string } } };
+    };
+    const status = err?.response?.status;
+    if (status === 401 || status === 403) return true;
+    const apiMessage = String(err?.response?.data?.error?.message || err?.message || '').toLowerCase();
+    return (
+        apiMessage.includes('invalid authentication credentials') ||
+        apiMessage.includes('invalid_grant') ||
+        apiMessage.includes('token has been expired') ||
+        apiMessage.includes('token has been revoked')
+    );
+}
+
 interface GmailLabelRecord {
     id: string;
     name: string;

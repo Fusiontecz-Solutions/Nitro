@@ -6,7 +6,7 @@ dotenv.config();
 function getRedirectUri(): string {
   return (
     process.env.GOOGLE_REDIRECT_URI ||
-    'https://www.katan.finexusai.com/backend/api/v1'
+    'https://www.katan.finexusai.com/backend/api/v1/google/callback'
   );
 }
 
@@ -25,6 +25,14 @@ type CachedAccessToken = { token: string; expiresAt: number };
 const accessTokenCache = new Map<string, CachedAccessToken>();
 const TOKEN_CACHE_TTL_MS = 50 * 60 * 1000;
 
+export function invalidateAccessTokenCache(cacheKey?: string): void {
+  if (cacheKey) {
+    accessTokenCache.delete(cacheKey);
+    return;
+  }
+  accessTokenCache.clear();
+}
+
 /** Mint a short-lived access token using an isolated client (safe for concurrent use). */
 export async function getAccessTokenForRefreshToken(
   refreshToken: string,
@@ -38,16 +46,27 @@ export async function getAccessTokenForRefreshToken(
   }
 
   const client = createOAuth2Client();
-  client.setCredentials({ refresh_token: refreshToken });
-  const response = await client.getAccessToken();
-  const token = response?.token ?? null;
+  client.setCredentials({ refresh_token: refreshToken.trim() });
+  try {
+    const response = await client.getAccessToken();
+    const token = response?.token ?? null;
 
-  if (cacheKey && token) {
-    accessTokenCache.set(cacheKey, {
-      token,
-      expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
-    });
+    if (cacheKey && token) {
+      accessTokenCache.set(cacheKey, {
+        token,
+        expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
+      });
+    }
+
+    return token;
+  } catch (error: unknown) {
+    if (cacheKey) {
+      accessTokenCache.delete(cacheKey);
+    }
+    const err = error as { response?: { data?: { error?: string } } };
+    if (err?.response?.data?.error === 'invalid_grant') {
+      console.warn(`[gmail] refresh token invalid for cacheKey=${cacheKey || 'unknown'}`);
+    }
+    throw error;
   }
-
-  return token;
 }

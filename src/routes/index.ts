@@ -26,8 +26,11 @@ import notificationRoutes from './notificationRoutes';
 import chatRoutes from './chatRoutes';
 import { connectGoogle, googleCallback } from './gmailRoutes';
 import commissionRequestRoutes from './commissionRequestRoutes';
-import { getAccessTokenForRefreshToken } from '../config/gmail';
-import prisma from '../config/prismaClient';
+import {
+    findUserForGmailAccess,
+    getGoogleRefreshTokenForUser,
+    mintGmailAccessToken,
+} from '../services/googleToken.service';
 import { authenticateToken } from '../middleware/authMiddleware';
 import gmailServiceRoutes from './gmailServiceRoutes';
 import docusignRoutes from '../services/docusign/docusign.routes';
@@ -208,10 +211,7 @@ router.get('/google/test', authenticateToken, async (req, res) => {
       });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, email: true, googleRefreshToken: true },
-    });
+    const user = await findUserForGmailAccess({ authUserId: userId });
 
     if (!user) {
       return res.status(404).json({
@@ -220,31 +220,29 @@ router.get('/google/test', authenticateToken, async (req, res) => {
       });
     }
 
-    if (!user.googleRefreshToken) {
+    const refreshToken = getGoogleRefreshTokenForUser(user);
+    if (!refreshToken) {
       return res.status(400).json({
         success: false,
-        message: 'googleRefreshToken is missing for this user',
+        message:
+          'Gmail is not connected for this user. Connect Google from the Gmail page.',
       });
     }
 
-    const accessToken = await getAccessTokenForRefreshToken(user.googleRefreshToken, userId);
-
-    if (!accessToken) {
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to generate access token',
-      });
-    }
+    const accessToken = await mintGmailAccessToken(refreshToken);
 
     return res.json({
       success: true,
       accessToken,
+      email: user.email,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Token error:', error);
+    const message =
+      error instanceof Error ? error.message : 'Failed to generate access token';
     return res.status(500).json({
       success: false,
-      message: 'Failed to generate access token',
+      message,
     });
   }
 });
