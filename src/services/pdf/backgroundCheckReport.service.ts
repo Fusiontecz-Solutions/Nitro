@@ -254,11 +254,35 @@ function countByRisk(
   return checkIds.filter((id) => normalizeCheckRisk(checks[id]?.risk) === risk).length;
 }
 
+function formatStructuredNotesForPdf(html: string): string {
+  const cleaned = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/\son\w+="[^"]*"/gi, '')
+    .replace(/\son\w+='[^']*'/gi, '');
+  return `<div class="bc-pdf-structured-notes">${cleaned}</div>`;
+}
+
 function formatFindings(
   notes: string | undefined,
   noteImages?: CheckItemState['noteImages'],
 ): string {
   const trimmed = String(notes || '').trim();
+  if (trimmed.includes('data-crm-bg-notes')) {
+    const structured = formatStructuredNotesForPdf(trimmed);
+    const images = (noteImages ?? [])
+      .map(
+        (image) => `
+        <div style="margin-top:6px;">
+          <a href="${esc(image.url)}" style="color:#2563eb;text-decoration:underline;font-size:10px;">${esc(image.name)}</a>
+          <div style="margin-top:4px;border:1px solid #e2e8f0;border-radius:6px;padding:6px;background:#fff;">
+            <img src="${esc(image.url)}" alt="${esc(image.name)}" style="display:block;width:100%;max-height:260px;object-fit:contain;object-position:top center;" />
+          </div>
+        </div>`,
+      )
+      .join('');
+    return `${structured}${images}`;
+  }
+
   const textHtml = trimmed ? `<div>${esc(trimmed).replace(/\n/g, '<br/>')}</div>` : '';
   const images = (noteImages ?? [])
     .map(
@@ -936,6 +960,105 @@ function buildHtml(payload: BackgroundCheckReportPayload): string {
           break-inside: avoid;
           page-break-inside: avoid;
         }
+      }
+      .bc-pdf-structured-notes .crm-bg-notes {
+        font-size: 10px;
+        line-height: 1.45;
+        color: #334155;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 8px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__source {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__source--oc {
+        background: #eef2ff;
+        color: #4338ca;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__source--court {
+        background: #ccfbf1;
+        color: #0f766e;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__summary,
+      .bc-pdf-structured-notes .crm-bg-notes__searched {
+        font-size: 9px;
+        color: #6b7280;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__stack {
+        display: block;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__entity,
+      .bc-pdf-structured-notes .crm-bg-notes__case {
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        background: #fff;
+        padding: 8px 10px;
+        margin-bottom: 6px;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__title,
+      .bc-pdf-structured-notes .crm-bg-notes__case-title {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 700;
+        color: #111827;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__chips {
+        margin-top: 4px;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__chip {
+        display: inline-block;
+        margin: 0 4px 4px 0;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: #f3f4f6;
+        color: #4b5563;
+        font-size: 8px;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__chip--status {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__details {
+        margin: 6px 0 0;
+        padding: 0;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__row {
+        margin-bottom: 4px;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__row dt {
+        font-size: 7px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: #9ca3af;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__row dd {
+        margin: 0;
+        font-size: 9px;
+        color: #374151;
+      }
+      .bc-pdf-structured-notes .crm-bg-notes__link {
+        display: inline-block;
+        margin-top: 6px;
+        font-size: 9px;
+        font-weight: 600;
+        color: #2563eb;
+        text-decoration: none;
       }
     </style>
     <div style="font-family:Arial,Helvetica,sans-serif;color:#0f172a;background:#fff;font-size:12px;line-height:1.35;">

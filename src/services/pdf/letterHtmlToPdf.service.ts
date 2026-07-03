@@ -1,4 +1,5 @@
 import { randomBytes } from 'crypto';
+import { existsSync } from 'fs';
 import puppeteer, { type Browser, type Page } from 'puppeteer';
 
 const LOG_PREFIX = '[letter-html-pdf]';
@@ -250,18 +251,70 @@ function wrapHtmlForA4Pdf(html: string): string {
     return buildA4PdfDocument(inner);
 }
 
+function resolveLetterPdfExecutablePaths(): Array<string | undefined> {
+  const candidates: Array<string | undefined> = [];
+  const envPath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
+  if (envPath) candidates.push(envPath);
+
+  if (process.platform === 'darwin') {
+    candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+    candidates.push('/Applications/Chromium.app/Contents/MacOS/Chromium');
+  }
+
+  try {
+    const bundled = puppeteer.executablePath();
+    if (bundled) candidates.push(bundled);
+  } catch {
+    // Bundled Chromium unavailable — try other candidates.
+  }
+
+  const seen = new Set<string>();
+  const resolved: Array<string | undefined> = [];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (existsSync(candidate)) resolved.push(candidate);
+  }
+
+  if (resolved.length === 0) {
+    resolved.push(undefined);
+  }
+  return resolved;
+}
+
 async function launchLetterPdfBrowser(): Promise<Browser> {
-    return puppeteer.launch({
+  const launchArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--font-render-hinting=none',
+    '--force-color-profile=srgb',
+  ];
+
+  const executablePaths = resolveLetterPdfExecutablePaths();
+  let lastError: unknown;
+
+  for (const executablePath of executablePaths) {
+    try {
+      return await puppeteer.launch({
         headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--font-render-hinting=none',
-            '--force-color-profile=srgb',
-        ],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH?.trim() || undefined,
-    });
+        args: launchArgs,
+        executablePath,
+      });
+    } catch (error) {
+      lastError = error;
+      console.warn(
+        `${LOG_PREFIX} browser launch failed${executablePath ? ` (${executablePath})` : ''}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Failed to launch PDF browser');
 }
 
 async function waitForImages(page: Page): Promise<void> {

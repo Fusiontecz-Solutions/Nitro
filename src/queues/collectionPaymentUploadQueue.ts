@@ -1,5 +1,6 @@
 import { Queue, type ConnectionOptions } from 'bullmq';
 import Redis from 'ioredis';
+import { isRedisAvailable } from '../config/redis';
 
 export const COLLECTION_PAYMENT_UPLOAD_QUEUE = 'collection-payment-upload';
 
@@ -23,7 +24,8 @@ const createRedisConnection = (): ConnectionOptions =>
     },
   }) as ConnectionOptions;
 
-export const isCollectionPaymentUploadQueueEnabled = (): boolean => Boolean(redisUrl());
+export const isCollectionPaymentUploadQueueEnabled = (): boolean =>
+  Boolean(redisUrl()) && isRedisAvailable();
 
 export const getCollectionPaymentUploadQueue = (): Queue<CollectionPaymentUploadJobData> => {
   if (!isCollectionPaymentUploadQueueEnabled()) {
