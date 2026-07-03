@@ -2,6 +2,7 @@ import {
   appendCrmBridgeHash,
   buildCrmBackgroundCheckReturnUrl,
   splitOwnerName,
+  bridgeImportApplicationIdMatches,
   type CrmBridgeSearchMode,
 } from "./crmBridgeTypes";
 
@@ -142,12 +143,18 @@ export function formatNyscefNotes(
 export function isNyscefImportMessage(
   data: unknown,
   expectedApplicationId?: string,
+  applicationData?: Record<string, unknown> | null,
 ): data is NyscefImportMessage {
   if (!data || typeof data !== "object") return false;
   const msg = data as NyscefImportMessage;
   if (msg.type !== NYSCEF_IMPORT_MESSAGE_TYPE) return false;
   if (!msg.applicationId || !Array.isArray(msg.cases)) return false;
-  if (expectedApplicationId && msg.applicationId !== expectedApplicationId) return false;
+  if (
+    expectedApplicationId &&
+    !bridgeImportApplicationIdMatches(expectedApplicationId, msg.applicationId, applicationData)
+  ) {
+    return false;
+  }
   return msg.cases.every((item) => Boolean(item?.caseName || item?.indexNumber));
 }
 

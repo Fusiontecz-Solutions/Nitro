@@ -1,3 +1,5 @@
+import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch";
+
 export const CRM_BRIDGE_RETURN_MESSAGE_TYPE = "crm:bridge-return";
 
 export type CrmBridgeSectionId = "opencorporates" | "nyscef";
@@ -34,6 +36,57 @@ export function resolveCrmBridgeOrigin(): string {
   );
 }
 
+/** Prefer the URL route segment — it is the canonical id for bridge storage keys. */
+export function resolveBridgeApplicationId(
+  routeApplicationId: string | undefined,
+  applicationData?: Record<string, unknown> | null,
+): string {
+  const route = String(routeApplicationId ?? "").trim();
+  if (route) return route;
+  const data = applicationData ?? {};
+  return String(data._id ?? data.id ?? data.applicationId ?? "").trim();
+}
+
+export function readRouteApplicationIdFromLocation(): string {
+  if (typeof window === "undefined") return "";
+  const match = window.location.pathname.match(/\/application-details\/([^/]+)/i);
+  return match?.[1] ? String(match[1]).trim() : "";
+}
+
+/** Import messages may carry UUID, numeric deal id, or legacy id for the same application. */
+export function bridgeImportApplicationIdMatches(
+  expectedApplicationId: string,
+  messageApplicationId: string,
+  applicationData?: Record<string, unknown> | null,
+): boolean {
+  const expected = String(expectedApplicationId ?? "").trim();
+  const message = String(messageApplicationId ?? "").trim();
+  if (!expected || !message) return false;
+  if (expected === message) return true;
+  if (!applicationData) return false;
+
+  const candidates = new Set(
+    [
+      expected,
+      message,
+      applicationData._id,
+      applicationData.id,
+      applicationData.applicationId,
+    ]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean),
+  );
+
+  if (candidates.has(expected) && candidates.has(message)) return true;
+
+  return (
+    routeParamMatchesApplication(expected, applicationData) &&
+    (message === String(applicationData.applicationId ?? "") ||
+      message === String(applicationData._id ?? "") ||
+      message === String(applicationData.id ?? ""))
+  );
+}
+
 export function buildCrmBackgroundCheckReturnUrl(
   applicationId: string,
   sectionId: CrmBridgeSectionId,
@@ -52,18 +105,25 @@ export type CrmBridgeInboxPayload = {
 };
 
 export function loadCrmBridgeInbox(applicationId: string): CrmBridgeInboxPayload | null {
-  if (!applicationId) return null;
-  try {
-    const raw = localStorage.getItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
-    if (!raw) return null;
-    localStorage.removeItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
-    const parsed = JSON.parse(raw) as CrmBridgeInboxPayload;
-    if (!parsed?.importPayload || !parsed?.returnMessage) return null;
-    if (Date.now() - (parsed.savedAt || 0) > 5 * 60 * 1000) return null;
-    return parsed;
-  } catch {
-    return null;
+  const ids = [
+    String(applicationId ?? "").trim(),
+    readRouteApplicationIdFromLocation(),
+  ].filter(Boolean);
+
+  for (const id of [...new Set(ids)]) {
+    try {
+      const raw = localStorage.getItem(`${CRM_BRIDGE_INBOX_PREFIX}${id}`);
+      if (!raw) continue;
+      localStorage.removeItem(`${CRM_BRIDGE_INBOX_PREFIX}${id}`);
+      const parsed = JSON.parse(raw) as CrmBridgeInboxPayload;
+      if (!parsed?.importPayload || !parsed?.returnMessage) continue;
+      if (Date.now() - (parsed.savedAt || 0) > 5 * 60 * 1000) continue;
+      return parsed;
+    } catch {
+      // Try next id alias.
+    }
   }
+  return null;
 }
 
 export function splitOwnerName(fullName: string): {

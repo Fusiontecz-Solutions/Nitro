@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
-import { loadCrmBridgeInbox, type CrmBridgeInboxPayload } from "./crmBridgeTypes";
+import {
+  loadCrmBridgeInbox,
+  readRouteApplicationIdFromLocation,
+  type CrmBridgeInboxPayload,
+} from "./crmBridgeTypes";
 
 export function useCrmBridgeInbox(
   applicationId: string | undefined,
@@ -9,10 +13,12 @@ export function useCrmBridgeInbox(
   onInboxRef.current = onInbox;
 
   useEffect(() => {
-    if (!applicationId) return;
+    const routeApplicationId = readRouteApplicationIdFromLocation();
+    const resolvedId = applicationId || routeApplicationId;
+    if (!resolvedId) return;
 
     const consume = () => {
-      const inbox = loadCrmBridgeInbox(applicationId);
+      const inbox = loadCrmBridgeInbox(resolvedId);
       if (inbox) {
         onInboxRef.current(inbox);
       }

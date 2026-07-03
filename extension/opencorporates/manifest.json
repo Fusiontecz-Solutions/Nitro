@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CRM Background Check Bridge",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Send OpenCorporates and NY Court (NYSCEF) search results back to Hardrock/Katan background check.",
   "permissions": ["activeTab", "tabs", "storage"],
   "background": {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router";
 import { ChevronDown, ExternalLink, Loader2, Search } from "lucide-react";
 import { useSelector } from "react-redux";
 import { toast } from "react-toastify";
@@ -9,6 +10,7 @@ import {
   handleCrmBridgeReturn,
   isCrmBridgeReturnMessage,
   resolveCrmBridgeOrigin,
+  resolveBridgeApplicationId,
   splitOwnerName,
   type CrmBridgeSearchMode,
 } from "./crmBridgeTypes";
@@ -160,19 +162,14 @@ export default function NyCourtPanel({
   embedded = false,
   onApplyToNotes,
 }: NyCourtPanelProps) {
+  const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>();
   const applicationData = useSelector(
     (state: RootState) => state.applicationDetail.data as Record<string, unknown> | null,
   );
 
   const applicationId = useMemo(
-    () =>
-      String(
-        applicationData?._id ??
-          applicationData?.id ??
-          applicationData?.applicationId ??
-          "",
-      ).trim(),
-    [applicationData],
+    () => resolveBridgeApplicationId(routeApplicationId, applicationData),
+    [routeApplicationId, applicationData],
   );
 
   const dealClient = useMemo(
@@ -276,7 +273,7 @@ export default function NyCourtPanel({
 
   const processNyscefImport = useCallback(
     (data: Parameters<typeof isNyscefImportMessage>[0]) => {
-      if (!applicationId || !isNyscefImportMessage(data, applicationId)) return;
+      if (!applicationId || !isNyscefImportMessage(data, applicationId, applicationData)) return;
 
       const lookup: NyscefLookupData = {
         searchQuery: data.searchQuery,
@@ -303,7 +300,7 @@ export default function NyCourtPanel({
         sectionId: "nyscef",
       });
     },
-    [applicationId, applyLookup, finishBridgeImport],
+    [applicationId, applicationData, applyLookup, finishBridgeImport],
   );
 
   const handleBridgeMessage = useCallback(

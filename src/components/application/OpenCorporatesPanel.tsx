@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router";
 import { ChevronDown, ExternalLink, Loader2, Search } from "lucide-react";
 import { useSelector } from "react-redux";
 import { toast } from "react-toastify";
@@ -22,6 +23,7 @@ import {
   handleCrmBridgeReturn,
   isCrmBridgeReturnMessage,
   resolveCrmBridgeOrigin,
+  resolveBridgeApplicationId,
 } from "./crmBridgeTypes";
 import { useCrmBridgeInbox } from "./useCrmBridgeInbox";
 
@@ -212,19 +214,14 @@ export default function OpenCorporatesPanel({
   embedded = false,
   onApplyToNotes,
 }: OpenCorporatesPanelProps) {
+  const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>();
   const applicationData = useSelector(
     (state: RootState) => state.applicationDetail.data as Record<string, unknown> | null,
   );
 
   const applicationId = useMemo(
-    () =>
-      String(
-        applicationData?._id ??
-          applicationData?.id ??
-          applicationData?.applicationId ??
-          "",
-      ).trim(),
-    [applicationData],
+    () => resolveBridgeApplicationId(routeApplicationId, applicationData),
+    [routeApplicationId, applicationData],
   );
 
   const dealClient = useMemo(
@@ -333,7 +330,7 @@ export default function OpenCorporatesPanel({
 
   const processOpenCorporatesImport = useCallback(
     (data: Parameters<typeof isOpenCorporatesImportMessage>[0]) => {
-      if (!applicationId || !isOpenCorporatesImportMessage(data, applicationId)) return;
+      if (!applicationId || !isOpenCorporatesImportMessage(data, applicationId, applicationData)) return;
 
       const lookup: OpenCorporatesLookupData = {
         searchQuery: dealClient.businessName,
@@ -359,7 +356,7 @@ export default function OpenCorporatesPanel({
         sectionId: "opencorporates",
       });
     },
-    [applicationId, applyLookup, dealClient.businessName, dealClient.state, finishBridgeImport],
+    [applicationId, applicationData, applyLookup, dealClient.businessName, dealClient.state, finishBridgeImport],
   );
 
   const handleBridgeMessage = useCallback(
