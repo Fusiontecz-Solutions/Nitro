@@ -114,28 +114,55 @@ function readBridgeContext() {
 function sendPayloadToCrm(importPayload, source) {
   const context = readBridgeContext();
   const targetOrigin = context.targetOrigin;
+  const returnMessage = {
+    type: RETURN_MESSAGE_TYPE,
+    applicationId: context.applicationId,
+    source,
+    returnUrl: context.returnUrl,
+    sectionId: context.sectionId,
+  };
 
   if (window.opener && !window.opener.closed && targetOrigin) {
-    window.opener.postMessage(importPayload, targetOrigin);
-    window.opener.postMessage(
+    try {
+      window.opener.postMessage(importPayload, targetOrigin);
+      window.opener.postMessage(returnMessage, targetOrigin);
+      window.opener.focus();
+      window.setTimeout(() => {
+        try {
+          window.close();
+        } catch {
+          // Popup may be blocked from closing; CRM tab is already focused.
+        }
+      }, 700);
+      return { mode: "opener", applicationId: context.applicationId, targetOrigin };
+    } catch {
+      // COOP / cross-origin isolation can sever opener — fall through to redirect.
+    }
+  }
+
+  if (
+    context.returnUrl &&
+    context.applicationId &&
+    typeof chrome !== "undefined" &&
+    chrome.storage &&
+    chrome.storage.local
+  ) {
+    const storageKey = `crm_bridge_pending_${context.applicationId}`;
+    chrome.storage.local.set(
       {
-        type: RETURN_MESSAGE_TYPE,
-        applicationId: context.applicationId,
-        source,
-        returnUrl: context.returnUrl,
-        sectionId: context.sectionId,
+        [storageKey]: {
+          source,
+          importPayload,
+          returnMessage,
+          savedAt: Date.now(),
+        },
       },
-      targetOrigin,
+      () => {
+        const joiner = context.returnUrl.includes("#") ? "&" : "#";
+        window.location.href = `${context.returnUrl}${joiner}crm_bridge_pending=1`;
+      },
     );
-    window.opener.focus();
-    window.setTimeout(() => {
-      try {
-        window.close();
-      } catch {
-        // Popup may be blocked from closing; CRM tab is already focused.
-      }
-    }, 700);
-    return { mode: "opener", applicationId: context.applicationId, targetOrigin };
+    return { mode: "redirect", applicationId: context.applicationId, targetOrigin };
   }
 
   return { mode: "clipboard", applicationId: context.applicationId, targetOrigin };

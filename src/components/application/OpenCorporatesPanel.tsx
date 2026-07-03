@@ -21,7 +21,9 @@ import { buildOpenCorporatesNotesHtml } from "./backgroundCheckNotesHtml";
 import {
   handleCrmBridgeReturn,
   isCrmBridgeReturnMessage,
+  resolveCrmBridgeOrigin,
 } from "./crmBridgeTypes";
+import { useCrmBridgeInbox } from "./useCrmBridgeInbox";
 
 type OpenCorporatesPanelProps = {
   embedded?: boolean;
@@ -320,42 +322,36 @@ export default function OpenCorporatesPanel({
     setResultsExpanded(true);
   }, [applicationId, queryKey]);
 
-  const handleBridgeMessage = useCallback(
-    (event: MessageEvent) => {
-      if (!applicationId) return;
-      if (isCrmBridgeReturnMessage(event.data) && event.data.applicationId === applicationId) {
-        handleCrmBridgeReturn(event.data);
-        setWaitingForImport(false);
-        if (importTimeoutRef.current) {
-          window.clearTimeout(importTimeoutRef.current);
-          importTimeoutRef.current = null;
-        }
-        popupRef.current = null;
-        return;
-      }
-      if (!isAllowedOpenCorporatesMessageOrigin(event.origin)) {
-        return;
-      }
-      if (!isOpenCorporatesImportMessage(event.data, applicationId)) return;
+  const finishBridgeImport = useCallback(() => {
+    setWaitingForImport(false);
+    if (importTimeoutRef.current) {
+      window.clearTimeout(importTimeoutRef.current);
+      importTimeoutRef.current = null;
+    }
+    popupRef.current = null;
+  }, []);
+
+  const processOpenCorporatesImport = useCallback(
+    (data: Parameters<typeof isOpenCorporatesImportMessage>[0]) => {
+      if (!applicationId || !isOpenCorporatesImportMessage(data, applicationId)) return;
 
       const lookup: OpenCorporatesLookupData = {
         searchQuery: dealClient.businessName,
         jurisdictionCode: dealClient.state || undefined,
-        companies: event.data.companies,
-        sourceUrl: event.data.sourceUrl,
+        companies: data.companies,
+        sourceUrl: data.sourceUrl,
       };
 
-      void applyLookup(lookup, {
-        searchedAt: event.data.searchedAt || new Date().toISOString(),
-        sourceUrl: event.data.sourceUrl,
-      }, { announce: true });
+      void applyLookup(
+        lookup,
+        {
+          searchedAt: data.searchedAt || new Date().toISOString(),
+          sourceUrl: data.sourceUrl,
+        },
+        { announce: true },
+      );
 
-      setWaitingForImport(false);
-      if (importTimeoutRef.current) {
-        window.clearTimeout(importTimeoutRef.current);
-        importTimeoutRef.current = null;
-      }
-      popupRef.current = null;
+      finishBridgeImport();
       handleCrmBridgeReturn({
         type: "crm:bridge-return",
         applicationId,
@@ -363,7 +359,34 @@ export default function OpenCorporatesPanel({
         sectionId: "opencorporates",
       });
     },
-    [applicationId, applyLookup, dealClient.businessName, dealClient.state],
+    [applicationId, applyLookup, dealClient.businessName, dealClient.state, finishBridgeImport],
+  );
+
+  const handleBridgeMessage = useCallback(
+    (event: MessageEvent) => {
+      if (!applicationId) return;
+      if (isCrmBridgeReturnMessage(event.data) && event.data.applicationId === applicationId) {
+        handleCrmBridgeReturn(event.data);
+        finishBridgeImport();
+        return;
+      }
+      if (!isAllowedOpenCorporatesMessageOrigin(event.origin)) {
+        return;
+      }
+      processOpenCorporatesImport(event.data);
+    },
+    [applicationId, finishBridgeImport, processOpenCorporatesImport],
+  );
+
+  useCrmBridgeInbox(
+    applicationId,
+    useCallback(
+      (inbox) => {
+        if (inbox.source !== "opencorporates") return;
+        processOpenCorporatesImport(inbox.importPayload);
+      },
+      [processOpenCorporatesImport],
+    ),
   );
 
   useEffect(() => {
@@ -389,7 +412,7 @@ export default function OpenCorporatesPanel({
       businessName: dealClient.businessName,
       state: dealClient.state,
       applicationId,
-      origin: window.location.origin,
+      origin: resolveCrmBridgeOrigin(),
     });
 
     popupRef.current = window.open(url, "crm_opencorporates_bridge");

@@ -8,9 +8,11 @@ import type { RootState } from "@/redux/store";
 import {
   handleCrmBridgeReturn,
   isCrmBridgeReturnMessage,
+  resolveCrmBridgeOrigin,
   splitOwnerName,
   type CrmBridgeSearchMode,
 } from "./crmBridgeTypes";
+import { useCrmBridgeInbox } from "./useCrmBridgeInbox";
 import {
   buildNyscefQueryKey,
   buildNyscefSearchUrl,
@@ -263,41 +265,37 @@ export default function NyCourtPanel({
     setResultsExpanded(true);
   }, [applicationId, activeSearchQuery, queryKey]);
 
-  const handleBridgeMessage = useCallback(
-    (event: MessageEvent) => {
-      if (!applicationId) return;
-      if (isCrmBridgeReturnMessage(event.data) && event.data.applicationId === applicationId) {
-        handleCrmBridgeReturn(event.data);
-        setWaitingForImport(false);
-        if (importTimeoutRef.current) {
-          window.clearTimeout(importTimeoutRef.current);
-          importTimeoutRef.current = null;
-        }
-        popupRef.current = null;
-        return;
-      }
-      if (!isAllowedNyscefMessageOrigin(event.origin)) return;
-      if (!isNyscefImportMessage(event.data, applicationId)) return;
+  const finishBridgeImport = useCallback(() => {
+    setWaitingForImport(false);
+    if (importTimeoutRef.current) {
+      window.clearTimeout(importTimeoutRef.current);
+      importTimeoutRef.current = null;
+    }
+    popupRef.current = null;
+  }, []);
+
+  const processNyscefImport = useCallback(
+    (data: Parameters<typeof isNyscefImportMessage>[0]) => {
+      if (!applicationId || !isNyscefImportMessage(data, applicationId)) return;
 
       const lookup: NyscefLookupData = {
-        searchQuery: event.data.searchQuery,
-        searchMode: event.data.searchMode,
-        cases: event.data.cases,
-        sourceUrl: event.data.sourceUrl,
+        searchQuery: data.searchQuery,
+        searchMode: data.searchMode,
+        cases: data.cases,
+        sourceUrl: data.sourceUrl,
       };
 
-      applyLookup(lookup, {
-        searchedAt: event.data.searchedAt || new Date().toISOString(),
-        sourceUrl: event.data.sourceUrl,
-      }, { announce: true });
+      applyLookup(
+        lookup,
+        {
+          searchedAt: data.searchedAt || new Date().toISOString(),
+          sourceUrl: data.sourceUrl,
+        },
+        { announce: true },
+      );
 
-      setSearchMode(event.data.searchMode);
-      setWaitingForImport(false);
-      if (importTimeoutRef.current) {
-        window.clearTimeout(importTimeoutRef.current);
-        importTimeoutRef.current = null;
-      }
-      popupRef.current = null;
+      setSearchMode(data.searchMode);
+      finishBridgeImport();
       handleCrmBridgeReturn({
         type: "crm:bridge-return",
         applicationId,
@@ -305,7 +303,32 @@ export default function NyCourtPanel({
         sectionId: "nyscef",
       });
     },
-    [applicationId, applyLookup],
+    [applicationId, applyLookup, finishBridgeImport],
+  );
+
+  const handleBridgeMessage = useCallback(
+    (event: MessageEvent) => {
+      if (!applicationId) return;
+      if (isCrmBridgeReturnMessage(event.data) && event.data.applicationId === applicationId) {
+        handleCrmBridgeReturn(event.data);
+        finishBridgeImport();
+        return;
+      }
+      if (!isAllowedNyscefMessageOrigin(event.origin)) return;
+      processNyscefImport(event.data);
+    },
+    [applicationId, finishBridgeImport, processNyscefImport],
+  );
+
+  useCrmBridgeInbox(
+    applicationId,
+    useCallback(
+      (inbox) => {
+        if (inbox.source !== "nyscef") return;
+        processNyscefImport(inbox.importPayload);
+      },
+      [processNyscefImport],
+    ),
   );
 
   useEffect(() => {
@@ -337,7 +360,7 @@ export default function NyCourtPanel({
 
     const url = buildNyscefSearchUrl({
       applicationId,
-      origin: window.location.origin,
+      origin: resolveCrmBridgeOrigin(),
       businessName: dealClient.businessName,
       ownerName: dealClient.ownerName,
       searchMode,

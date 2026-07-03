@@ -1,13 +1,16 @@
 {
   "manifest_version": 3,
   "name": "CRM Background Check Bridge",
-  "version": "1.1.6",
+  "version": "1.2.0",
   "description": "Send OpenCorporates and NY Court (NYSCEF) search results back to Hardrock/Katan background check.",
-  "permissions": ["activeTab", "tabs"],
+  "permissions": ["activeTab", "tabs", "storage"],
   "host_permissions": [
     "https://opencorporates.com/*",
     "https://*.opencorporates.com/*",
-    "https://iapps.courts.state.ny.us/*"
+    "https://iapps.courts.state.ny.us/*",
+    "https://*.finexusai.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "content_scripts": [
     {
@@ -18,6 +21,15 @@
     {
       "matches": ["https://iapps.courts.state.ny.us/nyscef/*"],
       "js": ["bridge.js", "nyscef-extract.js", "content-nyscef.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.finexusai.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": ["crm-receiver.js"],
       "run_at": "document_idle"
     }
   ],

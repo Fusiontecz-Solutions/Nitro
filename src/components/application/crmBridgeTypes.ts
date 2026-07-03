@@ -24,14 +24,46 @@ export type CrmBridgeReturnMessage = {
   sectionId?: string;
 };
 
+/** Must match the live CRM tab origin exactly (postMessage + redirect fallback). */
+export function resolveCrmBridgeOrigin(): string {
+  if (typeof window !== "undefined" && window.location.origin) {
+    return window.location.origin;
+  }
+  return (
+    (import.meta.env.VITE_PUBLIC_APP_URL as string | undefined)?.replace(/\/$/, "") || ""
+  );
+}
+
 export function buildCrmBackgroundCheckReturnUrl(
   applicationId: string,
   sectionId: CrmBridgeSectionId,
 ): string {
-  const origin =
-    (import.meta.env.VITE_PUBLIC_APP_URL as string | undefined)?.replace(/\/$/, "") ||
-    window.location.origin;
+  const origin = resolveCrmBridgeOrigin();
   return `${origin}/application-details/${applicationId}/background-check#bg-check-${sectionId}`;
+}
+
+export const CRM_BRIDGE_INBOX_PREFIX = "crm_bridge_inbox_";
+
+export type CrmBridgeInboxPayload = {
+  source: CrmBridgeSectionId;
+  importPayload: unknown;
+  returnMessage: CrmBridgeReturnMessage;
+  savedAt: number;
+};
+
+export function loadCrmBridgeInbox(applicationId: string): CrmBridgeInboxPayload | null {
+  if (!applicationId) return null;
+  try {
+    const raw = sessionStorage.getItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
+    if (!raw) return null;
+    sessionStorage.removeItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
+    const parsed = JSON.parse(raw) as CrmBridgeInboxPayload;
+    if (!parsed?.importPayload || !parsed?.returnMessage) return null;
+    if (Date.now() - (parsed.savedAt || 0) > 5 * 60 * 1000) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export function splitOwnerName(fullName: string): {

@@ -99,8 +99,8 @@
       }
 
       const result = api.sendToOpener(companies);
-      if (result.mode === "opener") {
-        button.textContent = `Sent ${result.count} to CRM`;
+      if (result.mode === "opener" || result.mode === "redirect") {
+        button.textContent = result.mode === "redirect" ? "Returning to CRM…" : `Sent ${result.count} to CRM`;
         button.style.background = "#15803d";
         return;
       }
