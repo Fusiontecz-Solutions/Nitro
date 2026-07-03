@@ -1,3 +1,8 @@
+import {
+  appendCrmBridgeParams,
+  buildCrmBackgroundCheckReturnUrl,
+} from "./crmBridgeTypes";
+
 export const OPENCORPORATES_IMPORT_MESSAGE_TYPE = "crm:opencorporates-import";
 
 export type OpenCorporatesOfficer = {
@@ -33,6 +38,7 @@ export type OpenCorporatesCompanyHit = {
   opencorporatesUrl: string;
   registryUrl?: string;
   officers?: OpenCorporatesOfficer[];
+  directors?: OpenCorporatesOfficer[];
   inactiveOfficers?: OpenCorporatesOfficer[];
   identifiers?: OpenCorporatesIdentifier[];
   dataSource?: string;
@@ -120,9 +126,14 @@ export function buildOpenCorporatesSearchUrl(params: {
   if (jurisdiction) {
     url.searchParams.set("jurisdiction_code", jurisdiction);
   }
-  url.searchParams.set("hardrock_app_id", params.applicationId);
-  url.searchParams.set("hardrock_origin", params.origin);
-  return url.toString();
+  return appendCrmBridgeParams(url.toString(), {
+    applicationId: params.applicationId,
+    origin: params.origin,
+    returnUrl: buildCrmBackgroundCheckReturnUrl(params.applicationId, "opencorporates"),
+    sectionId: "opencorporates",
+    searchMode: "business",
+    businessName: params.businessName,
+  });
 }
 
 export function formatOpenCorporatesSearchedAt(iso: string): string {
@@ -180,6 +191,15 @@ export function formatOpenCorporatesNotes(
     lines.push(
       "Officers:",
       ...company.officers.map((o) =>
+        o.position ? `  • ${o.name} (${o.position})` : `  • ${o.name}`,
+      ),
+    );
+  }
+
+  if (company.directors && company.directors.length > 0) {
+    lines.push(
+      "Directors:",
+      ...company.directors.map((o) =>
         o.position ? `  • ${o.name} (${o.position})` : `  • ${o.name}`,
       ),
     );

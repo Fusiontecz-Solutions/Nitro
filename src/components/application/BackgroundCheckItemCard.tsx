@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { CheckCircle2, ExternalLink, Eye, Loader2, Paperclip, Trash2 } from "lucide-react";
 import { toast } from "react-toastify";
-import { Textarea } from "@/components/ui/textarea";
+import BackgroundCheckNotesField from "./BackgroundCheckNotesField";
 import { cn } from "@/lib/utils";
 import type {
   BackgroundCheckAttachment,
@@ -45,6 +45,7 @@ type BackgroundCheckItemCardProps = {
   onAttachmentRemove?: () => void;
   belowNotes?: ReactNode;
   children?: ReactNode;
+  anchorId?: string;
 };
 
 export default function BackgroundCheckItemCard({
@@ -72,6 +73,7 @@ export default function BackgroundCheckItemCard({
   onAttachmentRemove,
   belowNotes,
   children,
+  anchorId,
 }: BackgroundCheckItemCardProps) {
   const fileInputId = useId();
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
@@ -269,7 +271,10 @@ export default function BackgroundCheckItemCard({
     "border-[#D1D5DB] bg-white text-[#6B7280]";
 
   return (
-    <div className="rounded-lg border border-[#E8EAED] bg-white px-4 py-3.5 shadow-[0px_2px_12px_0px_rgba(0,0,0,0.04)]">
+    <div
+      id={anchorId}
+      className="rounded-lg border border-[#E8EAED] bg-white px-4 py-3.5 shadow-[0px_2px_12px_0px_rgba(0,0,0,0.04)]"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-3 pt-0.5">
           <div className="min-w-0 flex-1">
@@ -383,12 +388,10 @@ export default function BackgroundCheckItemCard({
         </div>
       </div>
 
-      <Textarea
-        value={notes}
-        onChange={(e) => onNotesChange(e.target.value)}
+      <BackgroundCheckNotesField
+        notes={notes}
+        onNotesChange={onNotesChange}
         onPaste={(e) => void handleNotesPaste(e)}
-        placeholder="What did you find? Add notes or paste a screenshot (Ctrl+V)..."
-        className="mt-3 min-h-[76px] resize-y border-[#E5E7EB] bg-[#FAFBFC] text-sm placeholder:text-[#9CA3AF]"
       />
 
       {uploadingNoteImage ? (

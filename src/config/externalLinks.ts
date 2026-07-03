@@ -42,7 +42,8 @@ export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
     id: "nyscef",
     title: "NY Court",
     description: "Civil / judgment search",
-    href: "https://iapps.courts.state.ny.us/nyscef/CaseSearch",
+    hasPanel: true,
+    href: "https://iapps.courts.state.ny.us/nyscef/CaseSearch?TAB=name",
   },
   {
     id: "google",

@@ -1,39 +1,72 @@
 /* global window */
 
-const IMPORT_MESSAGE_TYPE = "crm:opencorporates-import";
-const BRIDGE_STORAGE_KEY = "crm_opencorporates_bridge";
-const LOGIN_GATED_RE = /please\s+(log\s*in|sign\s*in)\s+to\s+see/i;
+(function initOpenCorporatesExtract() {
+  if (window.CrmOpenCorporatesExtract) return;
+
+  const IMPORT_MESSAGE_TYPE = "crm:opencorporates-import";
+  const OC_LEGACY_BRIDGE_STORAGE_KEY = "crm_opencorporates_bridge";
+  const LOGIN_GATED_RE = /please\s+(log\s*in|sign\s*in)\s+to\s+see/i;
+
+function getBridge() {
+  return window.CrmBackgroundCheckBridge;
+}
 
 function persistBridgeContext(context) {
+  const bridge = getBridge();
+  if (bridge) {
+    bridge.persistBridgeContext({
+      applicationId: context.applicationId,
+      targetOrigin: context.targetOrigin,
+      returnUrl: context.returnUrl,
+      sectionId: context.sectionId,
+      searchMode: context.searchMode,
+      businessName: context.businessName,
+      ownerFirstName: context.ownerFirstName,
+      ownerMiddleName: context.ownerMiddleName,
+      ownerLastName: context.ownerLastName,
+    });
+    return;
+  }
   if (!context.applicationId && !context.targetOrigin) return;
   try {
-    sessionStorage.setItem(BRIDGE_STORAGE_KEY, JSON.stringify(context));
+    sessionStorage.setItem(OC_LEGACY_BRIDGE_STORAGE_KEY, JSON.stringify(context));
   } catch {
     // Ignore quota / private-mode errors.
   }
 }
 
 function loadBridgeContext() {
+  const bridge = getBridge();
+  if (bridge) return bridge.readBridgeContext();
   try {
-    const raw = sessionStorage.getItem(BRIDGE_STORAGE_KEY);
-    if (!raw) return { applicationId: "", targetOrigin: "" };
+    const raw = sessionStorage.getItem(OC_LEGACY_BRIDGE_STORAGE_KEY);
+    if (!raw) return { applicationId: "", targetOrigin: "", returnUrl: "", sectionId: "" };
     const parsed = JSON.parse(raw);
     return {
       applicationId: String(parsed.applicationId || ""),
       targetOrigin: String(parsed.targetOrigin || ""),
+      returnUrl: String(parsed.returnUrl || ""),
+      sectionId: String(parsed.sectionId || ""),
     };
   } catch {
-    return { applicationId: "", targetOrigin: "" };
+    return { applicationId: "", targetOrigin: "", returnUrl: "", sectionId: "" };
   }
 }
 
 function readContextFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const fromUrl = {
-    applicationId: params.get("hardrock_app_id") || "",
-    targetOrigin: params.get("hardrock_origin") || "",
+    applicationId: params.get("crm_app_id") || params.get("hardrock_app_id") || "",
+    targetOrigin: params.get("crm_origin") || params.get("hardrock_origin") || "",
+    returnUrl: params.get("crm_return_url") || "",
+    sectionId: params.get("crm_section") || "",
+    searchMode: params.get("crm_search_mode") || "",
+    businessName: params.get("crm_business_name") || "",
+    ownerFirstName: params.get("crm_owner_first") || "",
+    ownerMiddleName: params.get("crm_owner_middle") || "",
+    ownerLastName: params.get("crm_owner_last") || "",
   };
-  if (fromUrl.applicationId || fromUrl.targetOrigin) {
+  if (fromUrl.applicationId || fromUrl.targetOrigin || fromUrl.returnUrl) {
     persistBridgeContext(fromUrl);
     return fromUrl;
   }
@@ -290,6 +323,9 @@ function extractCompanyFromDetailPage() {
   const { active: headingOfficers, inactive: inactiveOfficers } = extractOfficersByHeading();
   const tableOfficers = extractOfficersFromTables();
   const officers = headingOfficers.length > 0 ? headingOfficers : tableOfficers;
+  const directors = officers.filter((officer) =>
+    /director/i.test(officer.position || ""),
+  );
   const identifiers = extractIdentifiers();
   const addresses = extractAddresses(fields);
 
@@ -320,6 +356,7 @@ function extractCompanyFromDetailPage() {
       document.querySelector('a[href*="companieshouse"], a[href*="sos."], a[href*="sunbiz"]')
         ?.href || undefined,
     officers: officers.length > 0 ? officers : undefined,
+    directors: directors.length > 0 ? directors : undefined,
     inactiveOfficers: inactiveOfficers.length > 0 ? inactiveOfficers : undefined,
     identifiers: identifiers.length > 0 ? identifiers : undefined,
     dataSource: pickField(fields, ["source", "data source"]),
@@ -327,6 +364,39 @@ function extractCompanyFromDetailPage() {
     lastChangeRecorded: pickField(fields, ["last change recorded"]),
     nextUpdateFromSource: pickField(fields, ["next update from source"]),
   };
+}
+
+function extractOfficersFromSearchContainer(container) {
+  const officers = [];
+  const seen = new Set();
+
+  container?.querySelectorAll?.(".officer, [class*='officer'], [class*='director']")?.forEach((node) => {
+    const officer = parseOfficerListItem(node);
+    if (!officer) return;
+    const key = `${officer.name}|${officer.position || ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    officers.push(officer);
+  });
+
+  const text = cleanText(container?.textContent || "");
+  const directorPattern =
+    /([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)+)\s*[,–-]\s*(Director|Officer|Agent|President|CEO|Managing Member|Secretary|Member)/gi;
+  let match = directorPattern.exec(text);
+  while (match) {
+    const name = sanitizeField(match[1]);
+    const position = sanitizeField(match[2]);
+    if (name) {
+      const key = `${name}|${position || ""}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        officers.push({ name, ...(position ? { position } : {}) });
+      }
+    }
+    match = directorPattern.exec(text);
+  }
+
+  return officers;
 }
 
 function extractCompaniesFromSearchPage() {
@@ -356,12 +426,19 @@ function extractCompaniesFromSearchPage() {
     );
     if (statusMatch) currentStatus = statusMatch[1];
 
+    const officers = extractOfficersFromSearchContainer(container);
+    const directors = officers.filter((officer) =>
+      /director|officer|agent|president|ceo|secretary|member/i.test(officer.position || ""),
+    );
+
     companies.push({
       name,
       companyNumber: path.companyNumber,
       jurisdictionCode: path.jurisdictionCode,
       currentStatus,
       opencorporatesUrl: href.split("?")[0],
+      officers: officers.length > 0 ? officers : undefined,
+      directors: directors.length > 0 ? directors : undefined,
     });
   });
 
@@ -396,9 +473,23 @@ function copyPayloadToClipboard(payload) {
 
 function sendToOpener(companies) {
   const { payload, targetOrigin, applicationId } = buildImportPayload(companies);
+  const bridge = getBridge();
+
+  if (bridge && window.opener && !window.opener.closed && targetOrigin) {
+    bridge.sendPayloadToCrm(payload, "opencorporates");
+    return { mode: "opener", applicationId, count: companies.length };
+  }
 
   if (window.opener && !window.opener.closed && targetOrigin) {
     window.opener.postMessage(payload, targetOrigin);
+    window.opener.focus();
+    window.setTimeout(() => {
+      try {
+        window.close();
+      } catch {
+        // Ignore close failures.
+      }
+    }, 700);
     return { mode: "opener", applicationId, count: companies.length };
   }
 
@@ -413,3 +504,4 @@ window.CrmOpenCorporatesExtract = {
   buildImportPayload,
   copyPayloadToClipboard,
 };
+})();

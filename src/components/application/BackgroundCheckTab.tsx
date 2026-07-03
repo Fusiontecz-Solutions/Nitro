@@ -13,6 +13,7 @@ import BackgroundCheckSidebar from "@/components/application/BackgroundCheckSide
 import NyCourtEvidenceSections from "@/components/application/NyCourtEvidenceSections";
 import DataMerchPanel from "@/components/application/DataMerchPanel";
 import OpenCorporatesPanel from "@/components/application/OpenCorporatesPanel";
+import NyCourtPanel from "@/components/application/NyCourtPanel";
 import {
   apiCheckToFormState,
   buildItemIdMap,
@@ -22,6 +23,7 @@ import {
 import {
   backgroundCheckPdfFilename,
   defaultBackgroundCheckLogoUrl,
+  getBackgroundCheckPdfErrorMessage,
   downloadBackgroundCheckPdf,
   fetchBackgroundCheckPdfBlob,
   formatBackgroundCheckEin,
@@ -372,8 +374,9 @@ export default function BackgroundCheckTab() {
     try {
       await downloadBackgroundCheckPdf(buildPdfInput());
       toast.success("Background check PDF downloaded.");
-    } catch {
-      toast.error("Could not generate the background check PDF.");
+    } catch (error) {
+      const message = await getBackgroundCheckPdfErrorMessage(error);
+      toast.error(message);
     } finally {
       setDownloadingPdf(false);
     }
@@ -391,8 +394,9 @@ export default function BackgroundCheckTab() {
       });
       setPdfPreviewName(filename);
       setIsPdfPreviewOpen(true);
-    } catch {
-      toast.error("Could not generate the background check PDF.");
+    } catch (error) {
+      const message = await getBackgroundCheckPdfErrorMessage(error);
+      toast.error(message);
     } finally {
       setViewingPdf(false);
     }
@@ -491,12 +495,13 @@ export default function BackgroundCheckTab() {
           {BACKGROUND_CHECK_RESOURCES.map((resource) => {
             const state = checks[resource.id] ?? { notes: "", optional: false };
             const isDataMerch = resource.isApi === true;
-            const isOpenCorporates = resource.hasPanel === true;
+            const isOpenCorporates = resource.hasPanel === true && resource.id === "opencorporates";
             const isNyCourt = resource.id === "nyscef";
 
             return (
               <BackgroundCheckItemCard
                 key={resource.id}
+                anchorId={`bg-check-${resource.id}`}
                 title={resource.title}
                 description={resource.description}
                 href={resolveBackgroundCheckHref(resource, linkContext)}
@@ -559,6 +564,12 @@ export default function BackgroundCheckTab() {
                 {isDataMerch ? <DataMerchPanel manualSearch embedded /> : null}
                 {isOpenCorporates ? (
                   <OpenCorporatesPanel
+                    embedded
+                    onApplyToNotes={(notes) => markCheckDirty(resource.id, { notes })}
+                  />
+                ) : null}
+                {isNyCourt ? (
+                  <NyCourtPanel
                     embedded
                     onApplyToNotes={(notes) => markCheckDirty(resource.id, { notes })}
                   />

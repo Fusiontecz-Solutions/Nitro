@@ -1,27 +1,55 @@
-/* global window, document */
+/* global window, document, history */
 
 (function initOpenCorporatesBridge() {
-  const api = window.CrmOpenCorporatesExtract;
-  if (!api) return;
+  const BUTTON_ID = "crm-opencorporates-send-btn";
+  const HINT_ID = "crm-opencorporates-captcha-hint";
 
-  const { applicationId, targetOrigin } = (function readContext() {
+  function getApi() {
+    return window.CrmOpenCorporatesExtract;
+  }
+
+  function readContext() {
+    const bridge = window.CrmBackgroundCheckBridge;
+    if (bridge) {
+      const ctx = bridge.readBridgeContext();
+      return {
+        applicationId: ctx.applicationId || "",
+        targetOrigin: ctx.targetOrigin || "",
+      };
+    }
+
     const params = new URLSearchParams(window.location.search);
     return {
-      applicationId: params.get("hardrock_app_id") || "",
-      targetOrigin: params.get("hardrock_origin") || "",
+      applicationId: params.get("crm_app_id") || params.get("hardrock_app_id") || "",
+      targetOrigin: params.get("crm_origin") || params.get("hardrock_origin") || "",
     };
-  })();
+  }
 
-  const isCaptchaPage =
-    document.title.includes("HAProxy Challenge") || Boolean(document.querySelector(".h-captcha"));
+  function isCompaniesPage() {
+    return /\/companies(\/|$)/i.test(window.location.pathname);
+  }
 
-  const isCompaniesPage = /\/companies(\/|$)/i.test(window.location.pathname);
+  function isCaptchaPage() {
+    return (
+      document.title.includes("HAProxy Challenge") ||
+      Boolean(document.querySelector(".h-captcha"))
+    );
+  }
+
+  function shouldShowButton(context) {
+    if (isCaptchaPage()) return false;
+    return (
+      isCompaniesPage() ||
+      Boolean(window.opener) ||
+      Boolean(context.applicationId || context.targetOrigin)
+    );
+  }
 
   function createCaptchaHint() {
-    if (document.getElementById("crm-opencorporates-captcha-hint")) return;
+    if (document.getElementById(HINT_ID) || !document.body) return;
 
     const hint = document.createElement("div");
-    hint.id = "crm-opencorporates-captcha-hint";
+    hint.id = HINT_ID;
     hint.textContent =
       "CRM extension: solve the captcha above. After the page reloads, use Send to CRM (bottom-right).";
     hint.style.cssText = [
@@ -40,11 +68,11 @@
     document.body.appendChild(hint);
   }
 
-  function createButton() {
-    if (document.getElementById("crm-opencorporates-send-btn")) return;
+  function createButton(api) {
+    if (document.getElementById(BUTTON_ID) || !document.body) return;
 
     const button = document.createElement("button");
-    button.id = "crm-opencorporates-send-btn";
+    button.id = BUTTON_ID;
     button.type = "button";
     button.textContent = "Send to CRM";
     button.title = "Send extracted company data back to the CRM background check tab";
@@ -74,30 +102,90 @@
       if (result.mode === "opener") {
         button.textContent = `Sent ${result.count} to CRM`;
         button.style.background = "#15803d";
-        window.setTimeout(() => window.close(), 800);
         return;
       }
 
       button.textContent = "Copied JSON — paste in CRM";
       button.style.background = "#a16207";
       window.alert(
-        `Copied ${result.count} companies as JSON to your clipboard.\n\nIn Hardrock: OpenCorporates → Paste JSON.`,
+        `Copied ${result.count} companies as JSON to your clipboard.\n\nIn CRM: OpenCorporates → Paste JSON.`,
       );
     });
 
     document.body.appendChild(button);
   }
 
-  if (isCaptchaPage) {
-    createCaptchaHint();
-    return;
+  function mountUi() {
+    const api = getApi();
+    if (!api || !document.body) return;
+
+    const context = readContext();
+
+    if (isCaptchaPage()) {
+      createCaptchaHint();
+      return;
+    }
+
+    const hint = document.getElementById(HINT_ID);
+    if (hint) hint.remove();
+
+    if (shouldShowButton(context)) {
+      createButton(api);
+    }
   }
 
-  if (isCompaniesPage || window.opener || applicationId) {
-    createButton();
+  function ensureButton() {
+    mountUi();
   }
+
+  function watchNavigation() {
+    const rerun = () => window.setTimeout(ensureButton, 100);
+
+    window.addEventListener("popstate", rerun);
+
+    const originalPushState = history.pushState;
+    const originalReplaceState = history.replaceState;
+
+    history.pushState = function pushStateWrapper(...args) {
+      originalPushState.apply(this, args);
+      rerun();
+    };
+
+    history.replaceState = function replaceStateWrapper(...args) {
+      originalReplaceState.apply(this, args);
+      rerun();
+    };
+  }
+
+  function watchDom() {
+    if (!document.body) return;
+
+    const observer = new MutationObserver(() => {
+      const api = getApi();
+      if (!api) return;
+      if (shouldShowButton(readContext()) && !document.getElementById(BUTTON_ID)) {
+        createButton(api);
+      }
+    });
+
+    observer.observe(document.body, { childList: true });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ensureButton, { once: true });
+  } else {
+    ensureButton();
+  }
+
+  watchNavigation();
+  watchDom();
 
   window.CrmOpenCorporatesBookmarklet = function bookmarklet() {
+    const api = getApi();
+    if (!api) {
+      window.alert("CRM extension is not loaded on this page.");
+      return;
+    }
     const companies = api.extractPageCompanies();
     if (!companies.length) {
       window.alert("No companies found on this page.");
