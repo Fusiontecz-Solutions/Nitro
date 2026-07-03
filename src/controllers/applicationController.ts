@@ -330,6 +330,8 @@ const verbatimApplicationStateByInput: Record<string, string> = {
     ISO_Approved: 'ISO Approved',
     Approved_By_ISO: 'ISO Approved',
     'Contract Out': 'Contract Out',
+    'On Hold': 'On Hold',
+    On_Hold: 'On Hold',
     Contract_Generated: 'CONTRACT_GENERATED',
     CONTRACT_GENERATED: 'CONTRACT_GENERATED',
     'Contract Generated': 'CONTRACT_GENERATED',
@@ -450,7 +452,8 @@ type WorkflowTransition = {
         | typeof FINAL_UNDERWRITER_APPROVED_STATE
         | typeof APPROVAL_SENT_STATE
         | typeof FINAL_APPROVAL_STATE
-        | 'ISO Approved';
+        | 'ISO Approved'
+        | 'On Hold';
     action?: 'SEND_TO_UNDERWRITER' | 'SEND_TO_FINAL_UNDERWRITER' | 'SEND_FOR_FINAL_APPROVAL' | 'APPROVED';
 };
 
@@ -672,6 +675,10 @@ const resolveWorkflowQueueTransition = (targetQueue: string, actorRole?: string 
 
     if (normalizedQueue === 'CONTRACT_PENDING' || normalizedQueue === 'CONTRACTPENDING') {
         return { queue: 'Contract Pending', state: ApplicationState.CONTRACT_PENDING };
+    }
+
+    if (normalizedQueue === 'ON_HOLD' || normalizedQueue === 'ONHOLD') {
+        return { queue: 'On Hold', state: 'On Hold' };
     }
 
     return { queue: targetQueue };
@@ -4336,6 +4343,11 @@ class ApplicationController {
         try {
             const { id } = req.params;
             const authUser = getAuthenticatedUser(req);
+            const sourceRaw = (req.body as { source?: unknown } | undefined)?.source;
+            const finalApprovalSource =
+                sourceRaw === 'Decision Logic' || sourceRaw === 'Funding Call'
+                    ? sourceRaw
+                    : null;
             const roleUpper = authUser?.role
                 ? String(authUser.role).toUpperCase().replace(/-/g, '_')
                 : '';
@@ -4421,6 +4433,7 @@ class ApplicationController {
                     currentQueue: FINAL_APPROVAL_QUEUE,
                     currentState: FINAL_APPROVAL_STATE,
                     assignedUnderwriter: { connect: { id: approvingUnderwriterId } },
+                    ...(finalApprovalSource ? { finalApprovalSource } : {}),
                 },
                 include,
             });
@@ -4434,7 +4447,10 @@ class ApplicationController {
                     actionDescription: `${actorName} sent application to ${targetName} for final Underwriter approval.`,
                     previousStatus: `${previousQueue} / ${previousState}`,
                     currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
-                    metadata: { assignedUnderwriterId: approvingUnderwriterId },
+                    metadata: {
+                        assignedUnderwriterId: approvingUnderwriterId,
+                        ...(finalApprovalSource ? { finalApprovalSource } : {}),
+                    },
                 });
             } catch (logErr) {
                 console.error('Failed to log final Underwriter approval send:', logErr);

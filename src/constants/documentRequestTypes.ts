@@ -106,6 +106,7 @@ type ApplicationFileRow = {
   requestedDocumentSlug?: string | null;
   url?: string | null;
   id?: string;
+  mimeType?: string | null;
 };
 
 type ContractFileRow = {
@@ -129,14 +130,20 @@ export function findFulfilledDocumentForRequest(
     applicationFiles?: ApplicationFileRow[];
     contractFiles?: ContractFileRow[];
   },
-): { source: 'application' | 'contract'; url?: string; fileId?: string } | null {
+): { source: 'application' | 'contract'; url?: string; fileId?: string; originalName?: string; mimeType?: string } | null {
   const config = getDocumentRequestConfig(slug);
   if (!config) return null;
 
   const appFiles = context.applicationFiles || [];
   for (const file of appFiles) {
     if (String(file.requestedDocumentSlug || '').trim().toLowerCase() === config.slug) {
-      return { source: 'application', url: file.url || undefined, fileId: file.id };
+      return {
+        source: 'application',
+        url: file.url || undefined,
+        fileId: file.id,
+        originalName: file.originalName || undefined,
+        mimeType: file.mimeType || undefined,
+      };
     }
   }
 
@@ -144,7 +151,13 @@ export function findFulfilledDocumentForRequest(
     const name = normalizeMatchText(file.originalName);
     if (!name) continue;
     if (config.matchKeywords.some((kw) => name.includes(kw))) {
-      return { source: 'application', url: file.url || undefined, fileId: file.id };
+      return {
+        source: 'application',
+        url: file.url || undefined,
+        fileId: file.id,
+        originalName: file.originalName || undefined,
+        mimeType: file.mimeType || undefined,
+      };
     }
   }
 
@@ -158,6 +171,7 @@ export function findFulfilledDocumentForRequest(
           source: 'contract',
           url: file.fileUrl || file.downloadUrl || undefined,
           fileId: file.id,
+          originalName: file.fileName || undefined,
         };
       }
     }

@@ -10,6 +10,10 @@ import {
 import { buildDocumentRequestListForApplication } from '../services/documentRequestListService';
 import uploadService from '../services/uploadService';
 import { notifyRequestersDocumentReceived } from '../services/documentRequestFulfillmentService';
+import {
+  assertAllowedCloudinaryUrl,
+  streamCloudinaryInlinePreview,
+} from '../services/cloudinaryInlinePreviewService';
 
 // For public pages we only return the minimal fields Approval needs.
 const mapApplicationForApproval = (app: any) => {
@@ -511,6 +515,81 @@ class PublicApprovalController {
       });
     } catch (error) {
       console.error('PublicApprovalController.getDocumentRequestPortalByToken error:', error);
+      return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+  }
+
+  /** Public: inline preview for uploaded documents (token-scoped; no CRM login). */
+  async streamDocumentRequestPreview(req: Request, res: Response) {
+    try {
+      const token = req.params.token;
+      const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+      const nameParam = typeof req.query.name === 'string' ? req.query.name.trim() : '';
+
+      if (!token) {
+        return res.status(400).json({ success: false, message: 'Token is required' });
+      }
+
+      const validationError = assertAllowedCloudinaryUrl(rawUrl);
+      if (validationError) {
+        return res.status(validationError.includes('required') ? 400 : 500).json({
+          success: false,
+          message: validationError,
+        });
+      }
+
+      const resolved = await resolvePortalToken(token);
+      if (!resolved) {
+        const tokenHash = sha256Hex(token);
+        const tokenRecord = await prisma.publicApprovalToken.findUnique({
+          where: { tokenHash },
+        });
+        if (tokenRecord?.expiresAt && tokenRecord.expiresAt < new Date()) {
+          return res.status(410).json({
+            success: false,
+            code: 'TOKEN_EXPIRED',
+            message: 'Link expired',
+            expiresAt: tokenRecord.expiresAt,
+          });
+        }
+        return res.status(404).json({
+          success: false,
+          code: 'TOKEN_NOT_FOUND',
+          message: 'Link not found',
+        });
+      }
+
+      const ownedFile = await prisma.applicationFile.findFirst({
+        where: { applicationId: resolved.applicationId, url: rawUrl },
+        select: { originalName: true, mimeType: true },
+      });
+
+      let originalName = ownedFile?.originalName || undefined;
+      let mimeType = ownedFile?.mimeType || undefined;
+
+      if (!ownedFile) {
+        const contractDoc = await prisma.fileMetadata.findFirst({
+          where: {
+            OR: [{ fileUrl: rawUrl }, { downloadUrl: rawUrl }],
+            contract: { applicationId: resolved.applicationId },
+          },
+          select: { fileName: true, contentType: true },
+        });
+        if (!contractDoc) {
+          return res.status(403).json({
+            success: false,
+            message: 'File not found for this application',
+          });
+        }
+        originalName = contractDoc.fileName || undefined;
+        mimeType = contractDoc.contentType || undefined;
+      }
+
+      const displayName = nameParam || originalName || 'document';
+      await streamCloudinaryInlinePreview(res, rawUrl, displayName, mimeType || undefined);
+      return;
+    } catch (error) {
+      console.error('PublicApprovalController.streamDocumentRequestPreview error:', error);
       return res.status(500).json({ success: false, message: 'Internal server error' });
     }
   }

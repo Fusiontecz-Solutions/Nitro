@@ -4668,14 +4668,31 @@ export class DocusignService {
       where: { envelopeId },
       select: { applicationId: true },
     });
-    await prisma.document.updateMany({
+    const updateResult = await prisma.document.updateMany({
       where: { envelopeId },
       data: { status: 'revoked' },
     });
-    const appId = existingDoc?.applicationId
+
+    let appId = existingDoc?.applicationId
       ? String(existingDoc.applicationId).trim()
       : '';
-    if (appId) {
+    if (!appId && options?.applicationId) {
+      appId = String(options.applicationId).trim();
+    }
+    if (!appId && options?.contractId) {
+      const contractRow = await prisma.contract.findUnique({
+        where: { id: options.contractId },
+        select: { applicationId: true },
+      });
+      appId = contractRow?.applicationId ? String(contractRow.applicationId).trim() : '';
+    }
+
+    if (updateResult.count === 0) {
+      // Reinitiated deals archive the prior envelope to send history without a Document row.
+      if (appId) {
+        await updateArchivedContractSendHistoryStatus(appId, envelopeId, 'revoked');
+      }
+    } else if (appId) {
       await this.syncContractSigningStatus(appId, 'revoked');
     }
     return { success: true, achAuthorization: false };

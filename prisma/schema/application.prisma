@@ -242,6 +242,8 @@ model Application {
   isoUpdatedOfferApproved    Boolean                       @default(false)
   /// Underwriter marked the ISO comment thread as resolved — hides deal from ISO Query pipeline until a new ISO comment arrives.
   isoQueryResolved           Boolean                       @default(false)
+  /// Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call".
+  finalApprovalSource        String?
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
   approvedByUnderwriter    User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
   assignedUnderwriter      User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])

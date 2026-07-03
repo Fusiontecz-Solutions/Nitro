@@ -161,6 +161,7 @@ export const dashboardStateQueueAliases: Record<string, string[]> = {
     'Funding Call': ['Funding Call', 'Funding_Call'],
     Disbursment: ['Disbursment', 'Disbursement'],
     Funded: ['Funded', 'Completed'],
+    On_Hold: ['On Hold', 'On_Hold'],
 };
 
 export const normalizeOperationsStatusKey = (value: string): string => {
@@ -260,21 +261,21 @@ const CONTRACT_CANCELLED_QUEUE_STRICT = [
 const CONTRACT_OUT_QUEUE_STRICT = CONTRACT_SENT_QUEUE_STRICT;
 
 export function contractPendingStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_PENDING') } },
             { currentQueue: { in: CONTRACT_PENDING_QUEUE_STRICT } },
         ],
-    };
+    });
 }
 
 export function contractGeneratedStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_GENERATED') } },
             { currentQueue: { in: CONTRACT_GENERATED_QUEUE_STRICT } },
         ],
-    };
+    });
 }
 
 /**
@@ -282,22 +283,22 @@ export function contractGeneratedStrictMatchWhere(): Prisma.ApplicationWhereInpu
  * Includes legacy Contract Out / Contracts Out rows.
  */
 export function contractSentStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_SENT') } },
             { currentState: { in: expandStoredCurrentStateValues('CONTRACTS_OUT') } },
             { currentQueue: { in: CONTRACT_SENT_QUEUE_STRICT } },
         ],
-    };
+    });
 }
 
 export function contractCancelledStrictMatchWhere(): Prisma.ApplicationWhereInput {
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_CANCELLED') } },
             { currentQueue: { in: CONTRACT_CANCELLED_QUEUE_STRICT } },
         ],
-    };
+    });
 }
 
 /** @deprecated Use {@link contractSentStrictMatchWhere}. */
@@ -361,12 +362,12 @@ function signedContractsBroadMatchWhere(): Prisma.ApplicationWhereInput {
     const queueValues = Array.from(
         new Set([canonical, canonical.replace(/_/g, ' '), ...aliases]),
     );
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('SIGNED_CONTRACTS') } },
             { currentQueue: { in: queueValues } },
         ],
-    };
+    });
 }
 
 /**
@@ -382,12 +383,12 @@ function contractsOutBroadMatchWhere(): Prisma.ApplicationWhereInput {
     const queueValues = Array.from(
         new Set([canonical, canonical.replace(/_/g, ' '), ...aliases]),
     );
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACTS_OUT') } },
             { currentQueue: { in: queueValues } },
         ],
-    };
+    });
 }
 
 /** Merged deal-pipeline stage: Final + Funding Call queues/states. */
@@ -697,7 +698,7 @@ export function approvedCombinedMatchWhere(): Prisma.ApplicationWhereInput {
  * through signed (includes legacy Contracted / Contract Out spellings).
  */
 export function contractedCombinedMatchWhere(): Prisma.ApplicationWhereInput {
-    return {
+    return andExcludeNeedsContractReinitiation({
         OR: [
             { currentState: { in: expandStoredCurrentStateValues('CONTRACT_PENDING') } },
             { currentQueue: { in: CONTRACT_PENDING_QUEUE_STRICT } },
@@ -714,7 +715,7 @@ export function contractedCombinedMatchWhere(): Prisma.ApplicationWhereInput {
             { currentQueue: { in: CONTRACT_SIGNED_QUEUE_STRICT } },
             { currentQueue: 'Contracted' },
         ],
-    };
+    });
 }
 
 /** DB `currentState` may store Prisma enum strings, API labels, or legacy spellings. */
@@ -746,6 +747,17 @@ export type OperationsStatusFilterMode = 'legacy' | 'state' | 'queue';
  *   (e.g. Agent, Scrubbing) fall back to `currentQueue` so `/applications` matches operations dashboard stage counts.
  * - `queue`: SUPER_ADMIN — counts and lists by `currentQueue` only.
  */
+/** Deals paused from the funding-call workflow. */
+export function onHoldMatchWhere(): Prisma.ApplicationWhereInput {
+    const holdValues = ['On Hold', 'On_Hold'];
+    return {
+        OR: [
+            { currentQueue: { in: holdValues } },
+            { currentState: { in: holdValues } },
+        ],
+    };
+}
+
 export function buildOperationsStatusFilterWhere(
     rawValue: string,
     mode: OperationsStatusFilterMode,
@@ -756,6 +768,9 @@ export function buildOperationsStatusFilterWhere(
     }
     if (canonical === 'Declined' || canonical === 'Rejected') {
         return declinedMatchWhere();
+    }
+    if (canonical === 'On_Hold') {
+        return onHoldMatchWhere();
     }
     if (canonical === 'Contract_Pending') {
         return contractPendingStrictMatchWhere();

@@ -11,7 +11,8 @@ import {
     humanizeDocumentRequestLabels,
 } from '../constants/documentRequestTypes';
 import { loadDocumentRequestFulfillmentContext } from '../services/documentRequestFulfillmentService';
-import { resolveCrmFrontendBaseUrl } from '../utils/crmFrontendUrl';
+import { resolveCrmFrontendBaseUrl, buildPublicDocumentRequestPortalUrl } from '../utils/crmFrontendUrl';
+import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import {
     deriveCategory,
     deriveActionUrl,
@@ -458,10 +459,23 @@ class NotificationController {
 
             if (isIsoEmailRequest && uniqueEmailTo.length > 0) {
                 const crmBase = resolveCrmFrontendBaseUrl();
-                const businessApplicationId = app.applicationId ?? applicationIdNumber;
-                const viewApplicationUrl = crmBase
-                    ? `${crmBase.replace(/\/$/, '')}/application-details/${businessApplicationId}/documents`
-                    : undefined;
+                let viewApplicationUrl: string | undefined;
+                try {
+                    const portalToken = await createPublicPortalToken(application.id, {
+                        expiresInDays: 90,
+                    });
+                    if (portalToken && crmBase) {
+                        viewApplicationUrl = buildPublicDocumentRequestPortalUrl(
+                            crmBase,
+                            portalToken,
+                        );
+                    }
+                } catch (tokenErr) {
+                    console.error(
+                        'Document request: public portal token generation failed:',
+                        tokenErr,
+                    );
+                }
                 const emailResult = await sendDocumentRequestEmail({
                     to: uniqueEmailTo,
                     cc: emailCcList,

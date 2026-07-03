@@ -16,6 +16,7 @@ export const UNDERWRITER_PIPELINE_FILTERS = [
     'final-approval',
     'final-approved-by-uw',
     'iso-query',
+    'on-hold',
 ] as const;
 
 /** Comment type posted by ISO from the approval portal. */
@@ -95,6 +96,18 @@ export function buildUnderwriterPipelineWhere(
                             },
                         },
                     },
+                ],
+            };
+        case 'on-hold':
+            return {
+                AND: [
+                    {
+                        OR: [
+                            { currentQueue: { in: ['On Hold', 'On_Hold'] } },
+                            { currentState: { in: ['On Hold', 'On_Hold'] } },
+                        ],
+                    },
+                    linkedToUnderwriter(viewerId),
                 ],
             };
         default:

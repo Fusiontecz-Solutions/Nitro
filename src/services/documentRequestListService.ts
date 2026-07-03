@@ -19,6 +19,8 @@ export type DocumentRequestListItem = {
   message?: string;
   fileUrl?: string;
   fileId?: string;
+  originalFileName?: string;
+  mimeType?: string;
   contractUploadKey?: string;
 };
 
@@ -60,6 +62,8 @@ export async function buildDocumentRequestListForApplication(
       fileUrl?: string;
       fileId?: string;
       contractUploadKey?: string;
+      originalFileName?: string;
+      mimeType?: string;
     }
   >();
   const generalRequests: DocumentRequestListItem[] = [];
@@ -89,6 +93,8 @@ export async function buildDocumentRequestListForApplication(
           fileUrl: fulfilled?.url,
           fileId: fulfilled?.fileId,
           contractUploadKey: config?.contractUploadKey,
+          originalFileName: fulfilled?.originalName,
+          mimeType: fulfilled?.mimeType,
         });
       }
     });
@@ -111,6 +117,8 @@ export async function buildDocumentRequestListForApplication(
           label: 'Additional documents (as discussed)',
           fileUrl: fulfilled?.url,
           fileId: fulfilled?.fileId,
+          originalFileName: fulfilled?.originalName,
+          mimeType: fulfilled?.mimeType,
         });
       }
     }
@@ -137,6 +145,8 @@ export async function buildDocumentRequestListForApplication(
       fileUrl: data.fileUrl,
       fileId: data.fileId,
       contractUploadKey: data.contractUploadKey,
+      originalFileName: data.originalFileName,
+      mimeType: data.mimeType,
     }),
   );
 
