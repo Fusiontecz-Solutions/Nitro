@@ -53,22 +53,16 @@ function loadBridgeContext() {
   }
 }
 
+function readBridgeContext() {
+  const bridge = getBridge();
+  if (bridge) return bridge.readBridgeContext();
+  return loadBridgeContext();
+}
+
 function readContextFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  const fromUrl = {
-    applicationId: params.get("crm_app_id") || params.get("hardrock_app_id") || "",
-    targetOrigin: params.get("crm_origin") || params.get("hardrock_origin") || "",
-    returnUrl: params.get("crm_return_url") || "",
-    sectionId: params.get("crm_section") || "",
-    searchMode: params.get("crm_search_mode") || "",
-    businessName: params.get("crm_business_name") || "",
-    ownerFirstName: params.get("crm_owner_first") || "",
-    ownerMiddleName: params.get("crm_owner_middle") || "",
-    ownerLastName: params.get("crm_owner_last") || "",
-  };
-  if (fromUrl.applicationId || fromUrl.targetOrigin || fromUrl.returnUrl) {
-    persistBridgeContext(fromUrl);
-    return fromUrl;
+  const context = readBridgeContext();
+  if (context.applicationId || context.targetOrigin || context.returnUrl) {
+    return context;
   }
   return loadBridgeContext();
 }
@@ -452,17 +446,18 @@ function extractPageCompanies() {
 }
 
 function buildImportPayload(companies) {
-  const { applicationId, targetOrigin } = readContextFromUrl();
+  const context = readBridgeContext();
   return {
     payload: {
       type: IMPORT_MESSAGE_TYPE,
-      applicationId,
+      applicationId: context.applicationId,
       sourceUrl: window.location.href,
       searchedAt: new Date().toISOString(),
       companies,
     },
-    targetOrigin,
-    applicationId,
+    context,
+    targetOrigin: context.targetOrigin,
+    applicationId: context.applicationId,
   };
 }
 
@@ -472,29 +467,19 @@ function copyPayloadToClipboard(payload) {
 }
 
 function sendToOpener(companies) {
-  const { payload, targetOrigin, applicationId } = buildImportPayload(companies);
+  const { payload, context } = buildImportPayload(companies);
   const bridge = getBridge();
-
-  if (bridge && window.opener && !window.opener.closed && targetOrigin) {
-    bridge.sendPayloadToCrm(payload, "opencorporates");
-    return { mode: "opener", applicationId, count: companies.length };
-  }
-
-  if (window.opener && !window.opener.closed && targetOrigin) {
-    window.opener.postMessage(payload, targetOrigin);
-    window.opener.focus();
-    window.setTimeout(() => {
-      try {
-        window.close();
-      } catch {
-        // Ignore close failures.
-      }
-    }, 700);
-    return { mode: "opener", applicationId, count: companies.length };
+  const bridgeResult = bridge?.sendPayloadToCrm(payload, "opencorporates");
+  if (bridgeResult?.mode === "opener") {
+    return {
+      mode: "opener",
+      applicationId: bridgeResult.applicationId || context.applicationId,
+      count: companies.length,
+    };
   }
 
   void copyPayloadToClipboard({ companies: payload.companies });
-  return { mode: "clipboard", applicationId, count: companies.length };
+  return { mode: "clipboard", applicationId: context.applicationId, count: companies.length };
 }
 
 window.CrmOpenCorporatesExtract = {

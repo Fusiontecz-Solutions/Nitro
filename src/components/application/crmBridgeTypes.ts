@@ -92,7 +92,7 @@ export function appendCrmBridgeParams(
   return url.toString();
 }
 
-/** NYSCEF rejects unknown query params — pass bridge context in the URL hash instead. */
+/** External sites strip unknown query params — pass bridge context in the URL hash instead. */
 export function appendCrmBridgeHash(
   baseUrl: string,
   context: CrmBridgeLaunchContext,

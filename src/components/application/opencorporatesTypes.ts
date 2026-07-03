@@ -1,5 +1,5 @@
 import {
-  appendCrmBridgeParams,
+  appendCrmBridgeHash,
   buildCrmBackgroundCheckReturnUrl,
 } from "./crmBridgeTypes";
 
@@ -126,7 +126,7 @@ export function buildOpenCorporatesSearchUrl(params: {
   if (jurisdiction) {
     url.searchParams.set("jurisdiction_code", jurisdiction);
   }
-  return appendCrmBridgeParams(url.toString(), {
+  return appendCrmBridgeHash(url.toString(), {
     applicationId: params.applicationId,
     origin: params.origin,
     returnUrl: buildCrmBackgroundCheckReturnUrl(params.applicationId, "opencorporates"),
