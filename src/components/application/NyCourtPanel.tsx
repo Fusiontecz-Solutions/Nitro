@@ -366,7 +366,7 @@ export default function NyCourtPanel({
       searchMode,
     });
 
-    popupRef.current = window.open(url, "crm_nyscef_bridge");
+    popupRef.current = window.open(url, `crm_nyscef_${applicationId}`);
     if (!popupRef.current) {
       toast.error(
         "Browser blocked the new tab. Allow popups for this site, then click Search NY Court again.",

@@ -415,7 +415,7 @@ export default function OpenCorporatesPanel({
       origin: resolveCrmBridgeOrigin(),
     });
 
-    popupRef.current = window.open(url, "crm_opencorporates_bridge");
+    popupRef.current = window.open(url, `crm_opencorporates_${applicationId}`);
     if (!popupRef.current) {
       toast.error(
         "Browser blocked the new tab. Allow popups for this site, then click Search OpenCorporates again.",

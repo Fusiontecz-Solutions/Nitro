@@ -111,21 +111,34 @@ function readBridgeContext() {
   return loadBridgeContext();
 }
 
-function sendPayloadToCrm(importPayload, source) {
-  const context = readBridgeContext();
-  const targetOrigin = context.targetOrigin;
-  const returnMessage = {
-    type: RETURN_MESSAGE_TYPE,
-    applicationId: context.applicationId,
-    source,
-    returnUrl: context.returnUrl,
-    sectionId: context.sectionId,
-  };
+function buildOriginVariants(origin) {
+  const variants = [];
+  const cleaned = cleanText(origin);
+  if (!cleaned) return variants;
+  variants.push(cleaned);
+  try {
+    const url = new URL(cleaned);
+    if (url.hostname.startsWith("www.")) {
+      variants.push(`${url.protocol}//${url.hostname.slice(4)}`);
+    } else {
+      variants.push(`${url.protocol}//www.${url.hostname}`);
+    }
+  } catch {
+    // Ignore invalid origin.
+  }
+  return [...new Set(variants.filter(Boolean))];
+}
 
-  if (window.opener && !window.opener.closed && targetOrigin) {
+function postMessageToOpener(context, importPayload, returnMessage) {
+  if (!window.opener || window.opener.closed) return false;
+
+  const origins = buildOriginVariants(context.targetOrigin);
+  if (!origins.length) return false;
+
+  for (const origin of origins) {
     try {
-      window.opener.postMessage(importPayload, targetOrigin);
-      window.opener.postMessage(returnMessage, targetOrigin);
+      window.opener.postMessage(importPayload, origin);
+      window.opener.postMessage(returnMessage, origin);
       window.opener.focus();
       window.setTimeout(() => {
         try {
@@ -134,38 +147,84 @@ function sendPayloadToCrm(importPayload, source) {
           // Popup may be blocked from closing; CRM tab is already focused.
         }
       }, 700);
-      return { mode: "opener", applicationId: context.applicationId, targetOrigin };
+      return true;
     } catch {
-      // COOP / cross-origin isolation can sever opener — fall through to redirect.
+      // Try next origin variant (www vs non-www).
     }
   }
+  return false;
+}
 
+function deliverViaExtensionStorage(context, importPayload, source, returnMessage) {
   if (
-    context.returnUrl &&
-    context.applicationId &&
-    typeof chrome !== "undefined" &&
-    chrome.storage &&
-    chrome.storage.local
+    !context.applicationId ||
+    typeof chrome === "undefined" ||
+    !chrome.storage ||
+    !chrome.storage.local
   ) {
-    const storageKey = `crm_bridge_pending_${context.applicationId}`;
-    chrome.storage.local.set(
-      {
-        [storageKey]: {
-          source,
-          importPayload,
-          returnMessage,
-          savedAt: Date.now(),
-        },
-      },
-      () => {
-        const joiner = context.returnUrl.includes("#") ? "&" : "#";
-        window.location.href = `${context.returnUrl}${joiner}crm_bridge_pending=1`;
-      },
-    );
-    return { mode: "redirect", applicationId: context.applicationId, targetOrigin };
+    return false;
   }
 
-  return { mode: "clipboard", applicationId: context.applicationId, targetOrigin };
+  const storageKey = `crm_bridge_pending_${context.applicationId}`;
+  const pending = {
+    source,
+    importPayload,
+    returnMessage,
+    savedAt: Date.now(),
+  };
+
+  chrome.storage.local.set({ [storageKey]: pending }, () => {
+    if (chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage(
+        {
+          type: "crm:bridge-deliver",
+          applicationId: context.applicationId,
+          returnUrl: context.returnUrl,
+        },
+        () => {
+          window.setTimeout(() => {
+            try {
+              window.close();
+            } catch {
+              if (context.returnUrl) {
+                const joiner = context.returnUrl.includes("#") ? "&" : "#";
+                window.location.href = `${context.returnUrl}${joiner}crm_bridge_pending=1`;
+              }
+            }
+          }, 400);
+        },
+      );
+      return;
+    }
+
+    if (context.returnUrl) {
+      const joiner = context.returnUrl.includes("#") ? "&" : "#";
+      window.location.href = `${context.returnUrl}${joiner}crm_bridge_pending=1`;
+    }
+  });
+
+  return true;
+}
+
+function sendPayloadToCrm(importPayload, source) {
+  const context = readBridgeContext();
+  const returnMessage = {
+    type: RETURN_MESSAGE_TYPE,
+    applicationId: context.applicationId,
+    source,
+    returnUrl: context.returnUrl,
+    sectionId: context.sectionId,
+  };
+
+  if (postMessageToOpener(context, importPayload, returnMessage)) {
+    return { mode: "opener", applicationId: context.applicationId, targetOrigin: context.targetOrigin };
+  }
+
+  if (deliverViaExtensionStorage(context, importPayload, source, returnMessage)) {
+    return { mode: "redirect", applicationId: context.applicationId, targetOrigin: context.targetOrigin };
+  }
+
+  return { mode: "clipboard", applicationId: context.applicationId, targetOrigin: context.targetOrigin };
 }
 
 window.CrmBackgroundCheckBridge = {

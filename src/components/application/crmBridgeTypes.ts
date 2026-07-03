@@ -54,9 +54,9 @@ export type CrmBridgeInboxPayload = {
 export function loadCrmBridgeInbox(applicationId: string): CrmBridgeInboxPayload | null {
   if (!applicationId) return null;
   try {
-    const raw = sessionStorage.getItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
+    const raw = localStorage.getItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
     if (!raw) return null;
-    sessionStorage.removeItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
+    localStorage.removeItem(`${CRM_BRIDGE_INBOX_PREFIX}${applicationId}`);
     const parsed = JSON.parse(raw) as CrmBridgeInboxPayload;
     if (!parsed?.importPayload || !parsed?.returnMessage) return null;
     if (Date.now() - (parsed.savedAt || 0) > 5 * 60 * 1000) return null;

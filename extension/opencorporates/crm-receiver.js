@@ -1,4 +1,4 @@
-/* global window, sessionStorage, chrome */
+/* global window, localStorage, chrome */
 
 (function initCrmBridgeReceiver() {
   const PENDING_STORAGE_PREFIX = "crm_bridge_pending_";
@@ -36,7 +36,7 @@
     if (Date.now() - (pending.savedAt || 0) > MAX_AGE_MS) return;
 
     try {
-      sessionStorage.setItem(
+      localStorage.setItem(
         `${INBOX_PREFIX}${applicationId}`,
         JSON.stringify({
           source: pending.source,
@@ -56,13 +56,8 @@
     window.focus();
   }
 
-  function consumePendingBridge() {
-    if (!hashHasBridgePending()) return;
-
-    const applicationId = readApplicationIdFromPath();
-    if (!applicationId) return;
-
-    if (!chrome?.storage?.local) return;
+  function consumePendingFromStorage(applicationId) {
+    if (!applicationId || !chrome?.storage?.local) return;
 
     const storageKey = `${PENDING_STORAGE_PREFIX}${applicationId}`;
     chrome.storage.local.get([storageKey], (result) => {
@@ -73,6 +68,12 @@
     });
   }
 
+  function consumePendingBridge() {
+    const applicationId = readApplicationIdFromPath();
+    if (!applicationId) return;
+    consumePendingFromStorage(applicationId);
+  }
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", consumePendingBridge, { once: true });
   } else {
@@ -80,4 +81,22 @@
   }
 
   window.addEventListener("hashchange", consumePendingBridge);
+  window.addEventListener("popstate", consumePendingBridge);
+
+  if (chrome?.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local") return;
+      const applicationId = readApplicationIdFromPath();
+      if (!applicationId) return;
+      const key = `${PENDING_STORAGE_PREFIX}${applicationId}`;
+      if (changes[key]?.newValue) {
+        deliverInbox(applicationId, changes[key].newValue);
+        chrome.storage.local.remove([key]);
+      }
+    });
+  }
+
+  if (hashHasBridgePending()) {
+    consumePendingBridge();
+  }
 })();
