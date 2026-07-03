@@ -144,32 +144,26 @@ function OpenCorporatesCompanyCard({ company }: { company: OpenCorporatesCompany
           </ul>
         </div>
       ) : null}
-      {company.directors && company.directors.length > 0 ? (
-        <div className="text-[11px] text-[#6B7280]">
-          <p className="font-medium text-[#374151]">Directors</p>
-          <ul className="mt-1 list-disc pl-4 space-y-0.5">
-            {company.directors.map((officer, index) => (
-              <li key={`director-${officer.name}-${index}`}>
-                {officer.name}
-                {officer.position ? ` (${officer.position})` : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {company.officers && company.officers.length > 0 ? (
-        <div className="text-[11px] text-[#6B7280]">
-          <p className="font-medium text-[#374151]">Officers</p>
-          <ul className="mt-1 list-disc pl-4 space-y-0.5">
-            {company.officers.map((officer, index) => (
-              <li key={`${officer.name}-${index}`}>
-                {officer.name}
-                {officer.position ? ` (${officer.position})` : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      {(() => {
+        const directorsAndOfficers =
+          company.directors && company.directors.length > 0
+            ? company.directors
+            : company.officers;
+        if (!directorsAndOfficers || directorsAndOfficers.length === 0) return null;
+        return (
+          <div className="text-[11px] text-[#6B7280]">
+            <p className="font-medium text-[#374151]">Directors / officers</p>
+            <ul className="mt-1 list-disc pl-4 space-y-0.5">
+              {directorsAndOfficers.map((officer, index) => (
+                <li key={`director-officer-${officer.name}-${index}`}>
+                  {officer.name}
+                  {officer.position ? ` (${officer.position})` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
       {company.inactiveOfficers && company.inactiveOfficers.length > 0 ? (
         <div className="text-[11px] text-[#6B7280]">
           <p className="font-medium text-[#374151]">Inactive officers</p>
