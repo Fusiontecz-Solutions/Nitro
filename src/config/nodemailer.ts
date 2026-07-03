@@ -486,23 +486,21 @@ const sendMail = async (
     }
 };
 
-/** Send mail via SendGrid SMTP only (never Gmail OAuth or Gmail SMTP). */
-export async function sendSendGridMail(options: SendMailOptions) {
-    if (!sendgridApiKey) {
-        throw new Error(
-            'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
-        );
-    }
+function resolveSendGridFromAddress(from?: string): string | undefined {
+    return (
+        from ||
+        process.env.SENDGRID_FROM_EMAIL?.trim() ||
+        process.env.SENDGRID_AUTH_USER?.trim()
+    );
+}
 
+/** Deliver one SendGrid message (no CC/BCC/multi-To split). */
+async function deliverSendGridMailOnce(options: SendMailOptions): Promise<SendMailResult> {
     // Tracked sends use the HTTP API so `custom_args.ocid` is present on webhooks.
-    // When CC/BCC are present, prefer SMTP relay — CC delivery is unreliable on HTTP API.
     if (shouldUseSendGridHttpApi(options)) {
         return sendViaSendGridHttpApi({
             ...options,
-            from:
-                options.from ||
-                process.env.SENDGRID_FROM_EMAIL?.trim() ||
-                process.env.SENDGRID_AUTH_USER?.trim(),
+            from: resolveSendGridFromAddress(options.from),
         });
     }
 
@@ -532,11 +530,7 @@ export async function sendSendGridMail(options: SendMailOptions) {
     });
 
     const mailOptions = {
-        from: buildMailFrom(
-            from ||
-                process.env.SENDGRID_FROM_EMAIL?.trim() ||
-                process.env.SENDGRID_AUTH_USER?.trim(),
-        ),
+        from: buildMailFrom(resolveSendGridFromAddress(from)),
         to,
         subject,
         html,
@@ -553,8 +547,61 @@ export async function sendSendGridMail(options: SendMailOptions) {
               }
             : {}),
     };
-    const result = await transporter.sendMail(mailOptions);
-    return result;
+    return transporter.sendMail(mailOptions) as Promise<SendMailResult>;
+}
+
+/**
+ * When CC/BCC/extra To would force SMTP relay, webhook `ocid` matching is unreliable.
+ * Send the primary recipient via the HTTP API with tracking; deliver copies separately.
+ */
+function shouldSplitTrackedSendGridDelivery(options: SendMailOptions): boolean {
+    const trackingId = options.trackingId?.trim();
+    if (!trackingId) return false;
+    const toCount = listRecipientEmails(options.to).length;
+    const hasCc = listRecipientEmails(options.cc).length > 0;
+    const hasBcc = listRecipientEmails(options.bcc).length > 0;
+    return toCount > 1 || hasCc || hasBcc;
+}
+
+/** Send mail via SendGrid SMTP only (never Gmail OAuth or Gmail SMTP). */
+export async function sendSendGridMail(options: SendMailOptions): Promise<SendMailResult> {
+    if (!sendgridApiKey) {
+        throw new Error(
+            'SendGrid is not configured. Set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL on the server.',
+        );
+    }
+
+    if (shouldSplitTrackedSendGridDelivery(options)) {
+        const toList = listRecipientEmails(options.to);
+        const ccList = listRecipientEmails(options.cc);
+        const bccList = listRecipientEmails(options.bcc);
+        const [primaryTo, ...extraTo] = toList;
+        if (!primaryTo) {
+            throw new Error('At least one recipient (to) is required');
+        }
+
+        const primaryResult = await deliverSendGridMailOnce({
+            ...options,
+            to: primaryTo,
+            cc: undefined,
+            bcc: undefined,
+        });
+
+        const copyRecipients = [...extraTo, ...ccList, ...bccList];
+        for (const recipient of copyRecipients) {
+            const { trackingId: _trackingId, ...copyOptions } = options;
+            await deliverSendGridMailOnce({
+                ...copyOptions,
+                to: recipient,
+                cc: undefined,
+                bcc: undefined,
+            });
+        }
+
+        return primaryResult;
+    }
+
+    return deliverSendGridMailOnce(options);
 }
 
 export default sendMail;

@@ -1,17 +1,8 @@
 import { Request, Response } from 'express';
 
-import {
-
-    getSendGridMailFrom,
-
-    isSendGridConfigured,
-
-    sendSendGridMail,
-
-} from '../config/nodemailer';
+import { isSendGridConfigured } from '../config/nodemailer';
 
 import { sendTrackedPaymentTemplateMail } from '../services/paymentMailSendService';
-
 
 
 /**
@@ -114,132 +105,55 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
 
 
 
-        if (applicationId) {
-
-            if (!dealKey || !templateName || !category) {
-
-                res.status(400).json({
-
-                    success: false,
-
-                    message:
-
-                        'dealKey, templateName, and category are required when applicationId is provided',
-
-                });
-
-                return;
-
-            }
-
-
-
-            const tracked = await sendTrackedPaymentTemplateMail(req, {
-
-                to,
-
-                subject: subject || '',
-
-                body: htmlBody,
-
-                cc,
-
-                bcc,
-
-                replyTo,
-
-                applicationId,
-
-                dealKey,
-
-                templateName,
-
-                category,
-
-                attachLetterPdf,
-
-                letterPdfFilename,
-
+        if (!applicationId) {
+            res.status(400).json({
+                success: false,
+                message:
+                    'applicationId, dealKey, templateName, and category are required for tracked template email delivery',
             });
-
-
-
-            if (!tracked.ok) {
-
-                res.status(tracked.status).json({
-
-                    success: false,
-
-                    message: tracked.message,
-
-                });
-
-                return;
-
-            }
-
-
-
-            res.status(200).json({
-
-                success: true,
-
-                message: 'Email sent successfully',
-
-                data: {
-
-                    paymentMailLog: tracked.paymentMailLog,
-
-                    sgMessageId: tracked.sgMessageId ?? null,
-
-                },
-
-            });
-
             return;
-
         }
 
+        if (!dealKey || !templateName || !category) {
+            res.status(400).json({
+                success: false,
+                message: 'dealKey, templateName, and category are required when applicationId is provided',
+            });
+            return;
+        }
 
-
-        const result = await sendSendGridMail({
-
+        const tracked = await sendTrackedPaymentTemplateMail(req, {
             to,
-
             subject: subject || '',
-
-            html: htmlBody,
-
+            body: htmlBody,
             cc,
-
             bcc,
-
             replyTo,
-
-            from: getSendGridMailFrom(),
-
+            applicationId,
+            dealKey,
+            templateName,
+            category,
+            attachLetterPdf,
+            letterPdfFilename,
         });
 
-
-
-        if (!result) {
-
-            throw new Error('Failed to send email via SMTP');
-
+        if (!tracked.ok) {
+            res.status(tracked.status).json({
+                success: false,
+                message: tracked.message,
+            });
+            return;
         }
-
-
 
         res.status(200).json({
-
             success: true,
-
             message: 'Email sent successfully',
-
-            data: result,
-
+            data: {
+                paymentMailLog: tracked.paymentMailLog,
+                sgMessageId: tracked.sgMessageId ?? null,
+            },
         });
-
+        return;
     } catch (error: any) {
 
         console.error('Payment mail send error:', error);

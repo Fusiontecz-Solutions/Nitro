@@ -115,6 +115,8 @@ export async function aggregateOperationsDashboardSummary(
         finalApprovalCount,
         finalCount,
         reinitiateContractCount,
+        contractPendingCount,
+        contractSentCount,
         signedContractCount,
         onHoldCount,
     ] = await Promise.all([
@@ -127,12 +129,16 @@ export async function aggregateOperationsDashboardSummary(
         countApplicationsForPipelineStage(authUser, 'Final_Approval'),
         countApplicationsForPipelineStage(authUser, 'Final'),
         countApplicationsForPipelineStage(authUser, 'Reinitiate_Contract'),
+        countApplicationsForPipelineStage(authUser, 'Contract_Pending'),
+        countApplicationsForPipelineStage(authUser, 'Contract_Sent'),
         countApplicationsForPipelineStage(authUser, 'Contract_Signed'),
         countApplicationsForPipelineStage(authUser, 'On_Hold'),
     ]);
 
-    const contractPending = counts.Contract_Pending;
-    const contractsOut = counts.Contract_Sent;
+    // Use the same strict pipeline matchers as GET /applications?operationsStatus=…
+    // so sidebar badges match the filtered list (queue-only metrics can over-count).
+    const contractPending = contractPendingCount;
+    const contractsOut = contractSentCount;
     const signedContracts = signedContractCount;
     const fundingCall = counts['Funding Call'];
     const disbursment = counts.Disbursment;

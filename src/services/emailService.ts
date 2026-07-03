@@ -5,6 +5,7 @@ import sendMail, {
     isOutboundSmtpConfigured,
     isSendGridConfigured,
     sendSendGridMail,
+    type SendMailResult,
 } from '../config/nodemailer';
 import prisma from '../config/prismaClient';
 import { resolveEmailBrandDisplayName } from '../constants/emailBrand';
@@ -928,6 +929,7 @@ export type ApplicationRejectionEmailResult = {
     emailedTo: string[];
     emailedCc: string[];
     ccErrors: string[];
+    sgMessageId?: string;
 };
 
 function cloneMailAttachments(attachments: MailAttachment[]) {
@@ -1248,7 +1250,7 @@ export async function sendApplicationRejectionEmail({
         mailTo: string | string[],
         options: { threaded: boolean; withTracking: boolean },
         attachments: MailAttachment[],
-    ) => {
+    ): Promise<SendMailResult | undefined> => {
         const payload = {
             inReplyTo: options.threaded
                 ? String(inReplyTo || '').trim() || undefined
@@ -1265,19 +1267,26 @@ export async function sendApplicationRejectionEmail({
         };
 
         if (isSendGridConfigured()) {
-            await sendSendGridMail(payload);
-            return;
+            return sendSendGridMail({
+                ...payload,
+                from: getSendGridMailFrom(),
+            });
         }
 
-        await sendMail(payload);
+        return sendMail(payload) as Promise<SendMailResult>;
     };
 
     try {
         const attachments = buildIsoBrandedEmailAttachments();
 
         // ISO: reply in the original submission thread when headers are available.
-        await dispatchRejectionMail(toTrimmed, { threaded: true, withTracking: true }, attachments);
+        const primaryResult = await dispatchRejectionMail(
+            toTrimmed,
+            { threaded: true, withTracking: true },
+            attachments,
+        );
         emailedTo.push(toTrimmed);
+        const sgMessageId = readSendGridMessageId(primaryResult);
 
         // CC: each address gets a fresh standalone message (no In-Reply-To / References).
         for (const ccAddress of uniqueCc) {
@@ -1310,6 +1319,7 @@ export async function sendApplicationRejectionEmail({
             emailedTo,
             emailedCc,
             ccErrors,
+            sgMessageId,
         };
     } catch (error) {
         // eslint-disable-next-line no-console
@@ -1501,15 +1511,21 @@ export async function sendApplicationOfferUpdatedEmail({
 
     try {
         const attachments = buildIsoBrandedEmailAttachments();
-        const result = await sendMail({
+        const mailOptions = {
             to: toTrimmed,
             cc: uniqueCc.length ? uniqueCc : undefined,
             subject,
             html,
             attachments,
             trackingId,
-            categories: ['offer-updated'],
-        });
+            categories: ['offer-updated'] as string[],
+        };
+        const result = isSendGridConfigured()
+            ? await sendSendGridMail({
+                  ...mailOptions,
+                  from: getSendGridMailFrom(),
+              })
+            : await sendMail(mailOptions);
         return { sent: true, sgMessageId: readSendGridMessageId(result) };
     } catch (error) {
         // eslint-disable-next-line no-console
@@ -2475,7 +2491,13 @@ export async function sendDocumentRequestEmail(
     const ccList = (params.cc || []).map((e) => String(e || '').trim()).filter(Boolean);
     const subject =
         String(params.subject || '').trim() ||
-        `Document request — Application #${params.applicationNumber}`;
+        (() => {
+            const num = String(params.applicationNumber || '').trim() || 'N/A';
+            const client = String(params.clientName || '').trim();
+            const parts = [`Document request — Application #${num}`];
+            if (client) parts.push(client);
+            return parts.join(' — ');
+        })();
     const html = params.html?.trim()
         ? injectDocumentRequestUploadUrl(params.html.trim(), params.viewApplicationUrl)
         : buildDocumentRequestEmailHtml(params);

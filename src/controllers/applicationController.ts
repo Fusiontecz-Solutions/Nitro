@@ -3074,6 +3074,7 @@ class ApplicationController {
                 underwriterCommissionAmount,
                 brokerCommissionAmount,
                 brokerName,
+                underwriterCommissionName,
                 category,
                 isoQueryResolved,
             } = req.body;
@@ -3387,6 +3388,16 @@ class ApplicationController {
                 data.brokerName = trimmedBrokerName.length > 0 ? trimmedBrokerName : null;
             }
 
+            if (underwriterCommissionName !== undefined) {
+                const trimmedUnderwriterCommissionName = String(
+                    underwriterCommissionName ?? '',
+                ).trim();
+                data.underwriterCommissionName =
+                    trimmedUnderwriterCommissionName.length > 0
+                        ? trimmedUnderwriterCommissionName
+                        : null;
+            }
+
             if (category !== undefined) {
                 if (category === null) {
                     data.category = null;
@@ -3670,15 +3681,16 @@ class ApplicationController {
                 Object.assign(updateData, scrubberClaimPatch);
             }
 
-            // Final approval: Underwriter signs off the deal out of the Final Approval
-            // stage and into Contract Pending. Persist the action for the deal record.
+            // Final approval: Underwriter signs off out of Final Approval — either into
+            // Contract Pending (Decision Logic path) or Final (Funding Call path).
             const movingToContractPending =
                 normalizeQueueToken(transition.queue) === 'CONTRACT_PENDING';
+            const movingToFinal = normalizeQueueToken(transition.queue) === 'FINAL';
             const previousWasFinalApproval =
                 normalizeQueueToken(previousQueue) === 'FINAL_APPROVAL' ||
                 normalizeQueueToken(existingApplication.currentState) === 'FINAL_APPROVAL';
             if (
-                movingToContractPending &&
+                (movingToContractPending || movingToFinal) &&
                 previousWasFinalApproval &&
                 isUnderwriterApproverRole(authUser?.role)
             ) {
@@ -4854,6 +4866,7 @@ class ApplicationController {
                 emailedTo: string[];
                 emailedCc: string[];
                 ccErrors: string[];
+                sgMessageId?: string;
             } = {
                 sent: false,
                 emailedTo: [],
@@ -4911,52 +4924,49 @@ class ApplicationController {
                         typeof emailHtml === 'string' && emailHtml.trim() ? emailHtml.trim() : undefined;
                     const clientEmailSubject =
                         emailThreadContext?.replySubject || properRejectionSubject;
-                    let trackingId: string | undefined;
+                    const trackingId = randomUUID();
 
-                    if (clientEmailHtml) {
-                        trackingId = randomUUID();
-                        try {
-                            await recordCommunicationAudit(req, {
-                                outboundCommunicationId: trackingId,
-                                applicationId: applicationRecord.id,
-                                channel: 'EMAIL',
-                                recipientType: 'ISO',
-                                recipient: isoEmail,
-                                subject: clientEmailSubject || 'Application Rejected',
-                                body: clientEmailHtml,
-                                templateName: 'Application declined template',
-                                actionType: 'APPLICATION_REJECTED',
-                                actionDescription:
-                                    `${roleLabel} ${actorName}`.trim() +
-                                    ` rejected the application and sent the decline template to the ISO. Reason: ${reasonText}`,
-                                currentStatus: `${applicationRecord.currentQueue} / ${applicationRecord.currentState}`,
-                                user: authUserForLog,
-                                metadata: {
-                                    reason: reasonText,
-                                    additionalComments: additionalCommentsText,
-                                    template: 'rejection',
+                    try {
+                        await recordCommunicationAudit(req, {
+                            outboundCommunicationId: trackingId,
+                            applicationId: applicationRecord.id,
+                            channel: 'EMAIL',
+                            recipientType: 'ISO',
+                            recipient: isoEmail,
+                            subject: clientEmailSubject || 'Application Rejected',
+                            body: clientEmailHtml,
+                            templateName: 'Application declined template',
+                            actionType: 'APPLICATION_REJECTED',
+                            actionDescription:
+                                `${roleLabel} ${actorName}`.trim() +
+                                ` rejected the application and sent the decline template to the ISO. Reason: ${reasonText}`,
+                            currentStatus: `${applicationRecord.currentQueue} / ${applicationRecord.currentState}`,
+                            user: authUserForLog,
+                            metadata: {
+                                reason: reasonText,
+                                additionalComments: additionalCommentsText,
+                                template: 'rejection',
+                                status: 'sent',
+                                ccEmails: uniqueCcList,
+                                emailThread: emailThreadContext
+                                    ? {
+                                          gmailMessageId: emailThreadContext.gmailMessageId,
+                                          gmailThreadId: emailThreadContext.gmailThreadId,
+                                          inReplyTo: emailThreadContext.inReplyTo,
+                                      }
+                                    : undefined,
+                                delivery: {
                                     status: 'sent',
-                                    ccEmails: uniqueCcList,
-                                    emailThread: emailThreadContext
-                                        ? {
-                                              gmailMessageId: emailThreadContext.gmailMessageId,
-                                              gmailThreadId: emailThreadContext.gmailThreadId,
-                                              inReplyTo: emailThreadContext.inReplyTo,
-                                          }
-                                        : undefined,
-                                    delivery: {
-                                        status: 'sent',
-                                        sentAt: new Date().toISOString(),
-                                    },
+                                    sentAt: new Date().toISOString(),
                                 },
-                            });
-                            rejectionCommunicationLogged = true;
-                        } catch (auditErr) {
-                            console.error(
-                                'Failed to create communication audit for rejection email:',
-                                auditErr,
-                            );
-                        }
+                            },
+                        });
+                        rejectionCommunicationLogged = true;
+                    } catch (auditErr) {
+                        console.error(
+                            'Failed to create communication audit for rejection email:',
+                            auditErr,
+                        );
                     }
 
                     rejectionEmailDelivery = await sendApplicationRejectionEmail({
@@ -4972,6 +4982,20 @@ class ApplicationController {
                         freshSubject: properRejectionSubject,
                         trackingId,
                     });
+
+                    if (rejectionEmailDelivery.sent && rejectionEmailDelivery.sgMessageId) {
+                        try {
+                            await storeSgMessageIdOnOutbound(
+                                trackingId,
+                                rejectionEmailDelivery.sgMessageId,
+                            );
+                        } catch (metaErr) {
+                            console.error(
+                                'Failed to store SendGrid message id for rejection email:',
+                                metaErr,
+                            );
+                        }
+                    }
                 } else {
                     console.warn(
                         '[reject] Skipped ISO decline email — no linked ISO email on application',

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import prisma from '../config/prismaClient';
 import { buildAgentApplicationVisibilityWhere } from '../services/applicationService';
 import {
@@ -19,6 +20,8 @@ import {
     NOTIFICATION_CATEGORIES,
 } from '../services/notificationCategory';
 import { notifyApplicationStageChange } from '../services/applicationStageNotificationService';
+import { recordCommunicationAudit } from '../services/systemActivityLogService';
+import { storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
 
 // Allowed user-set triage values (validated on PATCH).
 const NOTIFICATION_BUCKETS = ['inbox', 'todo', 'follow_up', 'snoozed', 'done'] as const;
@@ -476,6 +479,63 @@ class NotificationController {
                         tokenErr,
                     );
                 }
+
+                const resolvedEmailHtml =
+                    typeof emailHtml === 'string' && emailHtml.trim()
+                        ? emailHtml.trim()
+                        : undefined;
+                const resolvedEmailSubject =
+                    typeof emailSubject === 'string' && emailSubject.trim()
+                        ? emailSubject.trim()
+                        : undefined;
+                const trackingId = randomUUID();
+                const authUserForEmail = {
+                    id: createdBy,
+                    role: (req as any).user?.role,
+                };
+                const roleLabelForEmail = authUserForEmail?.role
+                    ? String(authUserForEmail.role).toUpperCase().replace(/_/g, ' ')
+                    : 'User';
+                const actorNameForEmail = (req as any).user?.name || '';
+
+                try {
+                    await recordCommunicationAudit(req, {
+                        outboundCommunicationId: trackingId,
+                        applicationId: application.id,
+                        channel: 'EMAIL',
+                        recipientType: 'ISO',
+                        recipient: uniqueEmailTo.join(', '),
+                        subject: resolvedEmailSubject,
+                        body: resolvedEmailHtml,
+                        templateName: 'Document request template',
+                        actionType: 'DOCUMENT_REQUESTED',
+                        user: authUserForEmail,
+                        currentStatus: `${app.currentQueue} / ${app.currentState}`,
+                        actionDescription:
+                            `${roleLabelForEmail} ${actorNameForEmail}`.trim() +
+                            ' sent the document request template to the ISO.',
+                        metadata: {
+                            requestedDocuments: documentsArray,
+                            requestAdditional: requestAdditional || false,
+                            reason: reasonText,
+                            additionalComments: additionalCommentsText,
+                            emailedTo: uniqueEmailTo,
+                            emailedCc: emailCcList,
+                            template: 'document-request',
+                            status: 'sent',
+                            delivery: {
+                                status: 'sent',
+                                sentAt: new Date().toISOString(),
+                            },
+                        },
+                    });
+                } catch (auditErr) {
+                    console.error(
+                        'Failed to create communication audit for document request email:',
+                        auditErr,
+                    );
+                }
+
                 const emailResult = await sendDocumentRequestEmail({
                     to: uniqueEmailTo,
                     cc: emailCcList,
@@ -486,65 +546,72 @@ class NotificationController {
                     requestAdditional: Boolean(requestAdditional),
                     note: reasonText || undefined,
                     viewApplicationUrl,
-                    html:
-                        typeof emailHtml === 'string' && emailHtml.trim()
-                            ? emailHtml.trim()
-                            : undefined,
-                    subject:
-                        typeof emailSubject === 'string' && emailSubject.trim()
-                            ? emailSubject.trim()
-                            : undefined,
+                    html: resolvedEmailHtml,
+                    subject: resolvedEmailSubject,
+                    trackingId,
                 });
                 emailSent = emailResult.sent;
                 emailError = emailResult.error;
                 if (emailSent) {
                     emailedTo.push(...uniqueEmailTo);
                     emailedCc.push(...emailCcList);
+                    if (emailResult.sgMessageId) {
+                        try {
+                            await storeSgMessageIdOnOutbound(trackingId, emailResult.sgMessageId);
+                        } catch (metaErr) {
+                            console.error(
+                                'Failed to store SendGrid message id for document request email:',
+                                metaErr,
+                            );
+                        }
+                    }
                 }
             }
 
-            try {
-                const authUserForLog = {
-                    id: createdBy,
-                    role: (req as any).user?.role,
-                } as any;
-                const roleLabel = authUserForLog?.role
-                    ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
-                    : 'User';
-                const actorName = (req as any).user?.name || '';
-                const recipientLabel = isIsoEmailRequest ? 'the ISO' : 'the client';
+            if (!emailSent) {
+                try {
+                    const authUserForLog = {
+                        id: createdBy,
+                        role: (req as any).user?.role,
+                    } as any;
+                    const roleLabel = authUserForLog?.role
+                        ? String(authUserForLog.role).toUpperCase().replace(/_/g, ' ')
+                        : 'User';
+                    const actorName = (req as any).user?.name || '';
+                    const recipientLabel = isIsoEmailRequest ? 'the ISO' : 'the client';
 
-                const refreshedForLog = await prisma.application.findUnique({
-                    where: { id: application.id },
-                    select: { currentQueue: true, currentState: true },
-                });
+                    const refreshedForLog = await prisma.application.findUnique({
+                        where: { id: application.id },
+                        select: { currentQueue: true, currentState: true },
+                    });
 
-                await prisma.applicationActivityLog.create({
-                    data: {
-                        applicationId: application.id,
-                        userId: createdBy,
-                        userRole: authUserForLog.role as any,
-                        actionType: 'DOCUMENT_REQUESTED',
-                        actionDescription:
-                            `${roleLabel} ${actorName}`.trim() +
-                            ` requested additional documents from ${recipientLabel}.`,
-                        previousStatus: `${app.currentQueue} / ${app.currentState}`,
-                        currentStatus: `${refreshedForLog?.currentQueue ?? app.currentQueue} / ${
-                            refreshedForLog?.currentState ?? app.currentState
-                        }`,
-                        metadata: {
-                            requestedDocuments: documentsArray,
-                            requestAdditional: requestAdditional || false,
-                            reason: reasonText,
-                            additionalComments: additionalCommentsText,
-                            emailedTo,
-                            emailedCc,
-                            documentRequestEmailSent: emailSent,
-                        } as any,
-                    },
-                });
-            } catch (logError) {
-                console.error('Failed to create application activity log for document request:', logError);
+                    await prisma.applicationActivityLog.create({
+                        data: {
+                            applicationId: application.id,
+                            userId: createdBy,
+                            userRole: authUserForLog.role as any,
+                            actionType: 'DOCUMENT_REQUESTED',
+                            actionDescription:
+                                `${roleLabel} ${actorName}`.trim() +
+                                ` requested additional documents from ${recipientLabel}.`,
+                            previousStatus: `${app.currentQueue} / ${app.currentState}`,
+                            currentStatus: `${refreshedForLog?.currentQueue ?? app.currentQueue} / ${
+                                refreshedForLog?.currentState ?? app.currentState
+                            }`,
+                            metadata: {
+                                requestedDocuments: documentsArray,
+                                requestAdditional: requestAdditional || false,
+                                reason: reasonText,
+                                additionalComments: additionalCommentsText,
+                                emailedTo,
+                                emailedCc,
+                                documentRequestEmailSent: emailSent,
+                            } as any,
+                        },
+                    });
+                } catch (logError) {
+                    console.error('Failed to create application activity log for document request:', logError);
+                }
             }
 
             const updatedApplicationRecord = await prisma.application.findUnique({
