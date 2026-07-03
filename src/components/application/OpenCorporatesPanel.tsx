@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ClipboardPaste, ExternalLink, Loader2, Search } from "lucide-react";
+import { ChevronDown, ExternalLink, Loader2, Search } from "lucide-react";
 import { useSelector } from "react-redux";
 import { toast } from "react-toastify";
 import { Button } from "@/components/ui/button";
@@ -9,16 +9,21 @@ import { importOpenCorporatesForApplication } from "@/redux/actions/opencorporat
 import {
   buildOpenCorporatesQueryKey,
   buildOpenCorporatesSearchUrl,
-  formatOpenCorporatesNotesFromLookup,
   formatOpenCorporatesSearchedAt,
   isOpenCorporatesImportMessage,
   isAllowedOpenCorporatesMessageOrigin,
   loadOpenCorporatesCache,
-  parseOpenCorporatesImportJson,
   saveOpenCorporatesCache,
   type OpenCorporatesCompanyHit,
   type OpenCorporatesLookupData,
 } from "./opencorporatesTypes";
+import { buildOpenCorporatesNotesHtml } from "./backgroundCheckNotesHtml";
+import {
+  handleCrmBridgeReturn,
+  isCrmBridgeReturnMessage,
+  resolveCrmBridgeOrigin,
+} from "./crmBridgeTypes";
+import { useCrmBridgeInbox } from "./useCrmBridgeInbox";
 
 type OpenCorporatesPanelProps = {
   embedded?: boolean;
@@ -137,6 +142,19 @@ function OpenCorporatesCompanyCard({ company }: { company: OpenCorporatesCompany
           </ul>
         </div>
       ) : null}
+      {company.directors && company.directors.length > 0 ? (
+        <div className="text-[11px] text-[#6B7280]">
+          <p className="font-medium text-[#374151]">Directors</p>
+          <ul className="mt-1 list-disc pl-4 space-y-0.5">
+            {company.directors.map((officer, index) => (
+              <li key={`director-${officer.name}-${index}`}>
+                {officer.name}
+                {officer.position ? ` (${officer.position})` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {company.officers && company.officers.length > 0 ? (
         <div className="text-[11px] text-[#6B7280]">
           <p className="font-medium text-[#374151]">Officers</p>
@@ -224,7 +242,6 @@ export default function OpenCorporatesPanel({
   const [searchedAt, setSearchedAt] = useState<string | null>(null);
   const [resultsExpanded, setResultsExpanded] = useState(true);
   const [waitingForImport, setWaitingForImport] = useState(false);
-  const [pastingJson, setPastingJson] = useState(false);
   const [savingImport, setSavingImport] = useState(false);
   const popupRef = useRef<Window | null>(null);
   const importTimeoutRef = useRef<number | null>(null);
@@ -305,40 +322,77 @@ export default function OpenCorporatesPanel({
     setResultsExpanded(true);
   }, [applicationId, queryKey]);
 
-  const handleImportMessage = useCallback(
-    (event: MessageEvent) => {
-      if (!applicationId) return;
-      if (!isAllowedOpenCorporatesMessageOrigin(event.origin)) {
-        return;
-      }
-      if (!isOpenCorporatesImportMessage(event.data, applicationId)) return;
+  const finishBridgeImport = useCallback(() => {
+    setWaitingForImport(false);
+    if (importTimeoutRef.current) {
+      window.clearTimeout(importTimeoutRef.current);
+      importTimeoutRef.current = null;
+    }
+    popupRef.current = null;
+  }, []);
+
+  const processOpenCorporatesImport = useCallback(
+    (data: Parameters<typeof isOpenCorporatesImportMessage>[0]) => {
+      if (!applicationId || !isOpenCorporatesImportMessage(data, applicationId)) return;
 
       const lookup: OpenCorporatesLookupData = {
         searchQuery: dealClient.businessName,
         jurisdictionCode: dealClient.state || undefined,
-        companies: event.data.companies,
-        sourceUrl: event.data.sourceUrl,
+        companies: data.companies,
+        sourceUrl: data.sourceUrl,
       };
 
-      void applyLookup(lookup, {
-        searchedAt: event.data.searchedAt || new Date().toISOString(),
-        sourceUrl: event.data.sourceUrl,
-      }, { announce: true });
+      void applyLookup(
+        lookup,
+        {
+          searchedAt: data.searchedAt || new Date().toISOString(),
+          sourceUrl: data.sourceUrl,
+        },
+        { announce: true },
+      );
 
-      setWaitingForImport(false);
-      if (importTimeoutRef.current) {
-        window.clearTimeout(importTimeoutRef.current);
-        importTimeoutRef.current = null;
-      }
-      popupRef.current = null;
+      finishBridgeImport();
+      handleCrmBridgeReturn({
+        type: "crm:bridge-return",
+        applicationId,
+        source: "opencorporates",
+        sectionId: "opencorporates",
+      });
     },
-    [applicationId, applyLookup, dealClient.businessName, dealClient.state],
+    [applicationId, applyLookup, dealClient.businessName, dealClient.state, finishBridgeImport],
+  );
+
+  const handleBridgeMessage = useCallback(
+    (event: MessageEvent) => {
+      if (!applicationId) return;
+      if (isCrmBridgeReturnMessage(event.data) && event.data.applicationId === applicationId) {
+        handleCrmBridgeReturn(event.data);
+        finishBridgeImport();
+        return;
+      }
+      if (!isAllowedOpenCorporatesMessageOrigin(event.origin)) {
+        return;
+      }
+      processOpenCorporatesImport(event.data);
+    },
+    [applicationId, finishBridgeImport, processOpenCorporatesImport],
+  );
+
+  useCrmBridgeInbox(
+    applicationId,
+    useCallback(
+      (inbox) => {
+        if (inbox.source !== "opencorporates") return;
+        processOpenCorporatesImport(inbox.importPayload);
+      },
+      [processOpenCorporatesImport],
+    ),
   );
 
   useEffect(() => {
-    window.addEventListener("message", handleImportMessage);
-    return () => window.removeEventListener("message", handleImportMessage);
-  }, [handleImportMessage]);
+    window.addEventListener("message", handleBridgeMessage);
+    return () => window.removeEventListener("message", handleBridgeMessage);
+  }, [handleBridgeMessage]);
 
   useEffect(() => {
     return () => {
@@ -358,10 +412,10 @@ export default function OpenCorporatesPanel({
       businessName: dealClient.businessName,
       state: dealClient.state,
       applicationId,
-      origin: window.location.origin,
+      origin: resolveCrmBridgeOrigin(),
     });
 
-    popupRef.current = window.open(url, "crm_opencorporates_bridge");
+    popupRef.current = window.open(url, `crm_opencorporates_${applicationId}`);
     if (!popupRef.current) {
       toast.error(
         "Browser blocked the new tab. Allow popups for this site, then click Search OpenCorporates again.",
@@ -380,35 +434,9 @@ export default function OpenCorporatesPanel({
     }, 30_000);
   };
 
-  const handlePasteJson = async () => {
-    setPastingJson(true);
-    try {
-      if (!navigator.clipboard?.readText) {
-        throw new Error("Clipboard access is not available in this browser.");
-      }
-      const text = (await navigator.clipboard.readText()).trim();
-      const companies = parseOpenCorporatesImportJson(text);
-      const searchedAtIso = new Date().toISOString();
-      const lookup: OpenCorporatesLookupData = {
-        searchQuery: dealClient.businessName,
-        jurisdictionCode: dealClient.state || undefined,
-        companies,
-      };
-      await applyLookup(lookup, { searchedAt: searchedAtIso }, { announce: true });
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Could not paste OpenCorporates JSON from clipboard.";
-      toast.error(message);
-    } finally {
-      setPastingJson(false);
-    }
-  };
-
   const handleApplyToNotes = () => {
     if (!result) return;
-    const notes = formatOpenCorporatesNotesFromLookup(result, searchedAt ?? undefined);
+    const notes = buildOpenCorporatesNotesHtml(result, searchedAt ?? undefined);
     onApplyToNotes?.(notes);
     toast.success("OpenCorporates summary applied to notes.");
   };
@@ -425,24 +453,6 @@ export default function OpenCorporatesPanel({
 
   const companyCount = result?.companies.length ?? 0;
   const canApplyToNotes = Boolean(onApplyToNotes && result && companyCount > 0);
-
-  const pasteJsonButton = (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      className="h-8 text-xs"
-      disabled={pastingJson || savingImport}
-      onClick={() => void handlePasteJson()}
-    >
-      {pastingJson ? (
-        <Loader2 className="mr-1.5 h-3 w-3 animate-spin" aria-hidden />
-      ) : (
-        <ClipboardPaste className="mr-1.5 h-3 w-3" aria-hidden />
-      )}
-      Paste JSON
-    </Button>
-  );
 
   const applyToNotesButton = canApplyToNotes ? (
     <Button
@@ -482,7 +492,6 @@ export default function OpenCorporatesPanel({
               </p>
             ) : null}
             {applyToNotesButton}
-            {pasteJsonButton}
             {searchButton}
           </div>
         </div>
@@ -500,7 +509,6 @@ export default function OpenCorporatesPanel({
                 </p>
               ) : null}
               {applyToNotesButton}
-              {pasteJsonButton}
               {searchButton}
             </div>
           </div>
@@ -515,8 +523,7 @@ export default function OpenCorporatesPanel({
             <p className="font-medium">Waiting for import from OpenCorporates tab…</p>
             <p className="mt-1 text-blue-800/90">
               Solve the captcha if prompted, review results, then click{" "}
-              <strong>Send to CRM</strong> on OpenCorporates. If that tab cannot connect back,
-              click <strong>Paste JSON</strong> here after Send to CRM copies data to your clipboard.
+              <strong>Send to CRM</strong> on OpenCorporates.
             </p>
           </div>
         </div>
@@ -525,8 +532,7 @@ export default function OpenCorporatesPanel({
       {!hasSearched && !waitingForImport ? (
         <p className="rounded-md border border-dashed border-[#D1D5DB] bg-[#F9FAFB] px-3 py-3 text-xs text-[#6B7280]">
           Click <strong>Search OpenCorporates</strong> to open the registry, then use{" "}
-          <strong>Send to CRM</strong> on the company page. Or click <strong>Paste JSON</strong> after
-          Send to CRM copies results to your clipboard.
+          <strong>Send to CRM</strong> on the company page.
         </p>
       ) : null}
 

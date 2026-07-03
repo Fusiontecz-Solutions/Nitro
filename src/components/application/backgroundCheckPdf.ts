@@ -3,8 +3,60 @@ import { BACKGROUND_CHECK_RESOURCES } from "@/config/externalLinks";
 import { axiosPost } from "@/redux/axios";
 import type { DataMerchLookupData } from "@/redux/actions/datamerch-actions";
 import type { OpenCorporatesLookupData } from "@/components/application/opencorporatesTypes";
-import { resolveCheckAttachmentPreviews } from "./backgroundCheckAttachmentPreview";
+import {
+  resolveCheckAttachmentPreviews,
+  type AttachmentPreview,
+} from "./backgroundCheckAttachmentPreview";
 import type { BackgroundCheckFormState } from "./backgroundCheckTypes";
+
+const MAX_ATTACHMENT_PREVIEW_CHARS = 1_500_000;
+
+function compactAttachmentPreviews(
+  previews: Record<string, AttachmentPreview | null>,
+): Record<string, AttachmentPreview | null> {
+  const compact: Record<string, AttachmentPreview | null> = {};
+  for (const [id, preview] of Object.entries(previews)) {
+    if (!preview?.dataUrl || preview.dataUrl.length <= MAX_ATTACHMENT_PREVIEW_CHARS) {
+      compact[id] = preview;
+      continue;
+    }
+    compact[id] = null;
+  }
+  return compact;
+}
+
+async function parsePdfErrorMessage(error: unknown): Promise<string> {
+  if (!error || typeof error !== "object") {
+    return "Could not generate the background check PDF.";
+  }
+  const axiosError = error as {
+    response?: { data?: Blob; status?: number };
+    message?: string;
+  };
+  const data = axiosError.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text();
+      const parsed = JSON.parse(text) as { message?: string };
+      if (parsed.message) return parsed.message;
+    } catch {
+      // Response was not JSON.
+    }
+  }
+  if (axiosError.message?.trim()) {
+    return axiosError.message;
+  }
+  return "Could not generate the background check PDF.";
+}
+
+function assertPdfBlob(blob: Blob): void {
+  if (blob.type && blob.type !== "application/pdf") {
+    throw new Error("Server did not return a PDF file.");
+  }
+  if (blob.size < 128) {
+    throw new Error("Generated PDF was empty.");
+  }
+}
 
 function formatEinDisplay(ein: string): string {
   const digits = ein.replace(/\D/g, "");
@@ -45,7 +97,9 @@ export async function fetchBackgroundCheckPdfBlob(
   input: BackgroundCheckPdfInput,
 ): Promise<Blob> {
   const checkIds = BACKGROUND_CHECK_RESOURCES.map((resource) => resource.id);
-  const attachmentPreviews = await resolveCheckAttachmentPreviews(input.checks, checkIds);
+  const attachmentPreviews = compactAttachmentPreviews(
+    await resolveCheckAttachmentPreviews(input.checks, checkIds),
+  );
 
   const response = await axiosPost(
     "/background-check-report/pdf",
@@ -66,7 +120,13 @@ export async function fetchBackgroundCheckPdfBlob(
     { responseType: "blob" },
   );
 
-  return new Blob([response.data], { type: "application/pdf" });
+  const blob = new Blob([response.data], { type: "application/pdf" });
+  assertPdfBlob(blob);
+  return blob;
+}
+
+export async function getBackgroundCheckPdfErrorMessage(error: unknown): Promise<string> {
+  return parsePdfErrorMessage(error);
 }
 
 export async function downloadBackgroundCheckPdf(input: BackgroundCheckPdfInput): Promise<void> {
