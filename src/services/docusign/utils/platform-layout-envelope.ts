@@ -16,6 +16,7 @@ import {
   buildEnvelopeFromLayouts,
   prefillFieldsToValueMap,
   renderFlattenedLayoutPdf,
+  shouldFlattenLayoutPdf,
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
@@ -26,9 +27,18 @@ import {
 } from './resolve-main-contract-layout';
 import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
 import { maybeAppendReverseDisbursementToMainContractLayout } from '../../pdf/reverseDisbursementSchedule.service';
-import { resolveFunderProfile, type SerializedFunderProfile } from '../../funderProfileService';
+import {
+  isPersistedFunderProfileId,
+  resolveFunderProfile,
+  type SerializedFunderProfile,
+} from '../../funderProfileService';
 import { resolveDocumentsLayoutFunderId, resolveFunderSupplementalDocumentDisplayName } from '../../../utils/funderDocumentSource';
 import { isAllianceFunderProfile } from '../../../utils/funderProfileResolver';
+import {
+  applyAllianceBridgeContractPrefillToFieldList,
+  applyAllianceBridgeContractPrefillValues,
+  shouldApplyAllianceBridgeContractPrefillForSend,
+} from './alliance-contract-prefill';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
   process.env.DOCUSIGN_SECONDARY_ROLE_NAME || PLATFORM_SIGNER_SLOTS[1].roleName;
@@ -427,7 +437,13 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
     contractState: options.contractState,
   });
   const funderContext: FunderLayoutContext = {
-    funderProfileId: funderProfile?.id ?? options.funderProfileId,
+    funderProfileId:
+      (funderProfile?.id && isPersistedFunderProfileId(funderProfile.id)
+        ? funderProfile.id
+        : null) ??
+      (isPersistedFunderProfileId(options.funderProfileId)
+        ? String(options.funderProfileId).trim()
+        : null),
     funderName: funderProfile?.name ?? options.funderName,
     contractState: options.contractState,
   };
@@ -462,22 +478,45 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   const guarantorCount =
     options.guarantorCount ??
     (ownerCount >= 2 ? 2 : countGuarantorsFromRoles(options.roles));
-  const values = prefillFieldsToValueMap(options.prefillFields || []);
+  const mainContractLayoutKey =
+    String(options.mainContractLayoutKey || '').trim() || DOCUMENT_LAYOUT_KEYS.contract;
+  const allianceBridgePrefill = await shouldApplyAllianceBridgeContractPrefillForSend({
+    mainContractLayoutKey,
+    funderName: funderContext.funderName,
+    contractState: options.contractState,
+  });
+  let prefillFields = options.prefillFields || [];
+  if (allianceBridgePrefill) {
+    prefillFields = applyAllianceBridgeContractPrefillToFieldList(prefillFields);
+  }
+  const values = prefillFieldsToValueMap(prefillFields);
+  if (allianceBridgePrefill) {
+    applyAllianceBridgeContractPrefillValues(values);
+  }
   const partyCounts = { ownerCount, guarantorCount };
 
   const shouldFlatten = options.flattenPrefillInPdf === true;
   const flattenedLayouts: DocumentLayoutWithBase64[] = [];
-  let flattenedLayoutCount = 0;
+  const flattenedLayoutKeys = new Set<string>();
   if (shouldFlatten) {
     for (const layout of layouts) {
+      if (!shouldFlattenLayoutPdf(layout)) {
+        flattenedLayouts.push(layout);
+        continue;
+      }
       try {
-        const buf = await renderFlattenedLayoutPdf(layout, values, partyCounts);
+        const buf = await renderFlattenedLayoutPdf(
+          layout,
+          values,
+          partyCounts,
+          allianceBridgePrefill,
+        );
         if (buf?.length) {
           flattenedLayouts.push({
             ...layout,
             documentBase64: buf.toString('base64'),
           });
-          flattenedLayoutCount += 1;
+          flattenedLayoutKeys.add(layout.key);
           continue;
         }
       } catch (err) {
@@ -491,8 +530,7 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   } else {
     flattenedLayouts.push(...layouts);
   }
-  const prefillFlattenedInPdf =
-    shouldFlatten && layouts.length > 0 && flattenedLayoutCount === layouts.length;
+  const prefillFlattenedInPdf = flattenedLayoutKeys.size > 0;
 
   let mergedDocument: { name: string; documentBase64: string } | undefined;
   let pageOffsetByLayoutKey: Map<string, number> | undefined;
@@ -520,8 +558,9 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
     ownerCount,
     guarantorCount,
     primaryDocumentName: options.documentName,
-    skipTextDateTabs: prefillFlattenedInPdf,
+    flattenedLayoutKeys,
     lockDataTabs: options.lockDataTabs === true,
+    allianceBridgePrefill,
     mergedDocument,
     pageOffsetByLayoutKey,
   });

@@ -1,12 +1,68 @@
+import prisma from '../../../config/prismaClient';
+import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
 import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
+import {
+  buildLayoutPrefillValueRecord,
+  CRM_ID_TO_LAYOUT_VARIABLE,
+} from './prefill-layout-bridge';
+import { normalizeFieldKey } from './docusign-prefill';
+import {
+  isAllianceBridgeFunder,
+  isTexasContractState,
+  resolveMainContractCoordinateLayoutKey,
+} from './resolve-main-contract-layout';
 
-const ALLIANCE_CONTRACT_MONEY_TAB_IDS = new Set([
+export const ALLIANCE_CONTRACT_MONEY_TAB_IDS = new Set([
   'purchase_amount',
   'finance_charge',
   'purchase_price',
   'appendix_underwriting_fees',
   'net_to_merchant',
   'remittance',
+]);
+
+/** CRM / BoldSign ids that map to Alliance page-1 money tabs. */
+export const ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES: Record<string, readonly string[]> = {
+  purchase_amount: [
+    'purchaseamount',
+    'receivable_purchase',
+    'receivable_purchase_1',
+    'receivable_purchase_2',
+  ],
+  purchase_price: [
+    'purchaseprice',
+    'total_repayment_amount',
+    'disclosure_total_payment',
+    'estimatedtotalpaymentamount',
+  ],
+  finance_charge: [
+    'financecharge',
+    'total_dollar_cost',
+    'disclosure_finance_charge',
+  ],
+  appendix_underwriting_fees: [
+    'underwriter_fee',
+    'underwriterfee',
+    'underwriter_fees',
+  ],
+  net_to_merchant: ['netfundprovided', 'net_fund_provided', 'NetFundProvided'],
+  remittance: [
+    'daily_payment',
+    'dailypayment',
+    'estimated_payment',
+    'estimated_payment_amount',
+    'estimatedremittance',
+  ],
+};
+
+/** Page 1 city / state / ZIP lines — must render Arial 9 (not size7 from legacy 14px tabs). */
+export const ALLIANCE_CONTRACT_PAGE1_SUBADDRESS_TAB_IDS = new Set([
+  'business_address_city',
+  'business_address_state',
+  'business_address_zip',
+  'business_address_contract_city',
+  'business_address_contract_state',
+  'business_address_contract_zip',
 ]);
 
 const BUSINESS_DAYS_PER_WEEK = 5;
@@ -20,15 +76,67 @@ function parseMoney(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function formatAllianceUsd(value: unknown): string {
+export function formatAllianceUsd(value: unknown): string {
   const n = parseMoney(value);
-  if (n === null) return String(value ?? '').trim();
+  if (n === null) {
+    const raw = String(value ?? '').trim();
+    return raw;
+  }
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(n);
+}
+
+function toAllianceMoneyFieldKey(fieldId?: string | null): string | null {
+  const raw = String(fieldId ?? '').trim();
+  if (!raw) return null;
+  const snake = raw
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/[\s-]+/g, '_')
+    .toLowerCase();
+  const norm = normalizeFieldKey(raw);
+  if (ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(snake)) return snake;
+  if (ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(norm)) return norm;
+  const layoutVar = CRM_ID_TO_LAYOUT_VARIABLE[norm] || CRM_ID_TO_LAYOUT_VARIABLE[snake];
+  if (layoutVar && ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(layoutVar)) return layoutVar;
+  for (const canonical of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
+    const aliases = ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES[canonical] || [];
+    if (aliases.some((alias) => normalizeFieldKey(alias) === norm)) return canonical;
+  }
+  return null;
+}
+
+function hydrateAllianceMoneyCanonicalValues(values: Record<string, string>): void {
+  for (const canonical of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
+    if (String(values[canonical] ?? '').trim()) continue;
+    for (const alias of ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES[canonical] || []) {
+      const raw = String(values[alias] ?? '').trim();
+      if (raw) {
+        values[canonical] = raw;
+        break;
+      }
+    }
+    if (String(values[canonical] ?? '').trim()) continue;
+    for (const [key, val] of Object.entries(values)) {
+      if (toAllianceMoneyFieldKey(key) === canonical && String(val ?? '').trim()) {
+        values[canonical] = String(val).trim();
+        break;
+      }
+    }
+  }
+}
+
+function propagateAllianceMoneyFormattedValues(values: Record<string, string>): void {
+  for (const canonical of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
+    const formatted = String(values[canonical] ?? '').trim();
+    if (!formatted) continue;
+    for (const alias of ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES[canonical] || []) {
+      values[alias] = formatted;
+    }
+  }
 }
 
 function normalizeFrequencyKey(frequency: string): string {
@@ -146,12 +254,195 @@ export function isAllianceBridgeContractLayoutKey(layoutKey?: string | null): bo
   return String(layoutKey ?? '').trim() === DOCUMENT_LAYOUT_KEYS.allianceBridgeContract;
 }
 
+export type AllianceBridgePrefillContext = {
+  /** Storage / send layout key (may be `funder_<uuid>` in production). */
+  layoutKey?: string | null;
+  /** Coordinate layout used for tab placements (often `alliance_bridge_contract`). */
+  coordinateLayoutKey?: string | null;
+  funderName?: string | null;
+  contractState?: string | null;
+};
+
+/** True when Alliance Texas contract prefill ($ amounts, address split, term weeks) should run. */
+export function shouldApplyAllianceBridgeContractPrefill(
+  context?: AllianceBridgePrefillContext,
+): boolean {
+  const layoutKey = String(context?.layoutKey ?? '').trim();
+  const coordinateLayoutKey = String(context?.coordinateLayoutKey ?? '').trim();
+  if (isAllianceBridgeContractLayoutKey(layoutKey)) return true;
+  if (coordinateLayoutKey && isAllianceBridgeContractLayoutKey(coordinateLayoutKey)) {
+    return true;
+  }
+  if (!isTexasContractState(context?.contractState)) return false;
+  const funderName = String(context?.funderName ?? '').trim();
+  if (funderName && isAllianceBridgeFunder(funderName)) {
+    return isFunderContractLayoutKey(layoutKey) || isAllianceBridgeContractLayoutKey(layoutKey);
+  }
+  return false;
+}
+
+/** Resolve coordinate layout key for a main contract send (handles production `funder_*` PDF keys). */
+export async function resolveAllianceBridgeCoordinateLayoutKey(options: {
+  mainContractLayoutKey?: string | null;
+  funderName?: string | null;
+  contractState?: string | null;
+}): Promise<string | null> {
+  const layoutKey = String(options.mainContractLayoutKey ?? '').trim();
+  if (isAllianceBridgeContractLayoutKey(layoutKey)) {
+    return DOCUMENT_LAYOUT_KEYS.allianceBridgeContract;
+  }
+  if (isFunderContractLayoutKey(layoutKey)) {
+    const funderId = layoutKey.replace(/^funder_/i, '');
+    if (funderId) {
+      const row = await prisma.funderProfile.findUnique({
+        where: { id: funderId },
+        select: {
+          name: true,
+          displayName: true,
+          mainContractLayoutKey: true,
+          organization: true,
+          legalName: true,
+          contactEmail: true,
+        },
+      });
+      if (row) {
+        return resolveMainContractCoordinateLayoutKey({
+          funderName: row.name,
+          state: options.contractState,
+          mainContractLayoutKey: row.mainContractLayoutKey,
+        });
+      }
+    }
+  }
+  const funderName = String(options.funderName ?? '').trim();
+  if (funderName) {
+    return resolveMainContractCoordinateLayoutKey({
+      funderName,
+      state: options.contractState,
+    });
+  }
+  return null;
+}
+
+/** Authoritative gate for DocuSign send / prefill sync (production uses `funder_*` storage keys). */
+export async function shouldApplyAllianceBridgeContractPrefillForSend(options: {
+  mainContractLayoutKey?: string | null;
+  funderName?: string | null;
+  contractState?: string | null;
+}): Promise<boolean> {
+  const layoutKey = String(options.mainContractLayoutKey ?? '').trim();
+  const coordinateLayoutKey = await resolveAllianceBridgeCoordinateLayoutKey(options);
+  return shouldApplyAllianceBridgeContractPrefill({
+    layoutKey,
+    coordinateLayoutKey,
+    funderName: options.funderName,
+    contractState: options.contractState,
+  });
+}
+
+export function isAllianceContractPage1SubaddressTab(variable?: string | null): boolean {
+  return ALLIANCE_CONTRACT_PAGE1_SUBADDRESS_TAB_IDS.has(String(variable ?? '').trim());
+}
+
+/** DocuSign tab styling for Alliance Texas contract (Arial 9 on page-1 address + amount fields). */
+export function resolveAllianceBridgePrefillTabStyleOptions(
+  layoutKey: string | undefined,
+  variable: string | undefined,
+  height?: string | number,
+  alliancePrefillActive?: boolean,
+): { height?: string | number; fontSize?: string } {
+  const active =
+    alliancePrefillActive === true ||
+    shouldApplyAllianceBridgeContractPrefill({
+      layoutKey,
+      coordinateLayoutKey: layoutKey,
+    });
+  if (!active) {
+    return { height };
+  }
+  const tabId = String(variable ?? '').trim();
+  if (isAllianceContractPage1SubaddressTab(tabId) || ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(tabId)) {
+    return { height: '19', fontSize: 'size9' };
+  }
+  const h = parseFloat(String(height ?? '19')) || 19;
+  if (h >= 19 && h < 24) {
+    return { height, fontSize: 'size9' };
+  }
+  return { height };
+}
+
+/** Flattened PDF point size for Alliance layout text placements. */
+export function resolveAllianceBridgeFlattenedFontSizePt(
+  layoutKey: string | undefined,
+  placement: { variable?: string; height?: string | number },
+  fallback: number,
+  alliancePrefillActive?: boolean,
+): number {
+  const active =
+    alliancePrefillActive === true ||
+    shouldApplyAllianceBridgeContractPrefill({
+      layoutKey,
+      coordinateLayoutKey: layoutKey,
+    });
+  if (!active) return fallback;
+  const tabId = String(placement.variable ?? '').trim();
+  if (isAllianceContractPage1SubaddressTab(tabId) || ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(tabId)) {
+    return 9;
+  }
+  const h = parseFloat(String(placement.height ?? '19')) || 19;
+  if (h >= 19 && h < 24) return 9;
+  return fallback;
+}
+
+/** Apply Alliance money / address / term formatting to CRM prefill field rows (Texas contract only). */
+export function applyAllianceBridgeContractPrefillToFieldList<
+  T extends { id: string; value: string },
+>(fields: T[]): T[] {
+  if (!fields.length) return fields;
+  const values = buildLayoutPrefillValueRecord(fields);
+  applyAllianceBridgeContractPrefillValues(values);
+
+  const allianceManagedKeys = new Set<string>([
+    ...ALLIANCE_CONTRACT_MONEY_TAB_IDS,
+    ...ALLIANCE_CONTRACT_PAGE1_SUBADDRESS_TAB_IDS,
+    'business_address',
+    'business_address_contract',
+    'addendum_dated',
+    ...Array.from({ length: 10 }, (_, i) => `exhibit_company_name_${i + 1}`),
+    ...Array.from({ length: 10 }, (_, i) => `exhibit_a_value_${i + 1}`),
+  ]);
+
+  return fields.map((field) => {
+    const id = String(field.id ?? '').trim();
+    if (!id) return field;
+    const moneyKey = toAllianceMoneyFieldKey(id);
+    if (moneyKey) {
+      const updated = String(values[moneyKey] ?? '').trim();
+      return updated ? { ...field, value: updated } : field;
+    }
+    const snake = id
+      .replace(/([a-z])([A-Z])/g, '$1_$2')
+      .replace(/[\s-]+/g, '_')
+      .toLowerCase();
+    const layoutVar = CRM_ID_TO_LAYOUT_VARIABLE[id] || snake;
+    if (!allianceManagedKeys.has(snake) && !allianceManagedKeys.has(layoutVar)) {
+      return field;
+    }
+    const updated =
+      String(values[layoutVar] ?? values[snake] ?? values[id] ?? '').trim();
+    return updated ? { ...field, value: updated } : field;
+  });
+}
+
 /** Alliance Texas contract: USD amounts with $ and page-1 addendum_dated as term weeks. */
 export function applyAllianceBridgeContractPrefillValues(values: Record<string, string>): void {
+  hydrateAllianceMoneyCanonicalValues(values);
   for (const id of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
     const raw = String(values[id] || '').trim();
-    if (raw) values[id] = formatAllianceUsd(raw);
+    if (!raw) continue;
+    values[id] = formatAllianceUsd(raw);
   }
+  propagateAllianceMoneyFormattedValues(values);
 
   const offer = parseMoney(values.purchase_amount);
   const payback = parseMoney(values.purchase_price);

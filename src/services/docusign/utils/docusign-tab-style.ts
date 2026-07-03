@@ -10,15 +10,37 @@ export function docuSignFontSizeFromTabHeight(height?: string | number): string 
   return 'size9';
 }
 
+const DOCUSIGN_FONT_SIZE_PT: Record<string, number> = {
+  size7: 7,
+  size8: 8,
+  size9: 9,
+  size10: 10,
+  size11: 11,
+};
+
+/** Point size for flattened PDF text — prefers explicit DocuSign fontSize token when set. */
+export function docuSignPrefillFontSizePoints(options?: {
+  fontSize?: string;
+  height?: string | number;
+}): number {
+  const token = String(options?.fontSize ?? '').trim();
+  if (token && DOCUSIGN_FONT_SIZE_PT[token] != null) {
+    return DOCUSIGN_FONT_SIZE_PT[token];
+  }
+  const h = parseFloat(String(options?.height ?? '19')) || 19;
+  return Math.min(11, Math.max(7, Math.round(h * 0.55)));
+}
+
 export function applyDocuSignPrefillTabStyle<T extends Record<string, string | undefined>>(
   tab: T,
-  options?: { height?: string | number },
+  options?: { height?: string | number; fontSize?: string },
 ): T & { font: string; fontColor: string; fontSize: string } {
   return {
     ...tab,
     font: DOCUSIGN_PREFILL_FONT,
     fontColor: DOCUSIGN_PREFILL_FONT_COLOR,
-    fontSize: docuSignFontSizeFromTabHeight(options?.height),
+    fontSize:
+      String(options?.fontSize ?? '').trim() || docuSignFontSizeFromTabHeight(options?.height),
   };
 }
 
