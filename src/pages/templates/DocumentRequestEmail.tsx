@@ -11,6 +11,24 @@ export const DOCUMENT_REQUEST_EMAIL_VARIABLES: TemplateVariable[] = [
     defaultValue: "Acme Funding Partners",
   },
   {
+    key: "client_name",
+    label: "Client name",
+    placeholder: "Katan Capital LLC",
+    defaultValue: "Katan Capital LLC",
+  },
+  {
+    key: "application_owner_name",
+    label: "Application Owner name",
+    placeholder: "John Smith",
+    defaultValue: "John Smith",
+  },
+  {
+    key: "application_number",
+    label: "Application number",
+    placeholder: "2511",
+    defaultValue: "2511",
+  },
+  {
     key: "requested_documents",
     label: "Requested documents (one per line)",
     placeholder: "Voided check\nDriver's license\nBank statements",

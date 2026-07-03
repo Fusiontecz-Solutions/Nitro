@@ -71,7 +71,7 @@ import {
     type AchAuthorizationDocuSignCapsuleStatus,
 } from "./contractdata/achAuthorizationDocuSign";
 import {
-    buildContractSendTableRows,
+    buildContractsGeneratedTableRows,
     canVoidContractSendTableRow,
     formatAchTableStatusLabel,
     isAchSigningFinished,
@@ -597,7 +597,7 @@ export default function ContractTab({
 
     const contractSendTableRows = useMemo(
         () =>
-            buildContractSendTableRows(
+            buildContractsGeneratedTableRows(
                 fetchedContract && typeof fetchedContract === "object"
                     ? (fetchedContract as Record<string, unknown>)
                     : null,
@@ -2657,12 +2657,8 @@ export default function ContractTab({
         const isAchRow = row.rowType === "ach";
         const isPackageRow = row.rowType === "package";
         const isSupplementalRow = isAchRow || isPackageRow;
-        const isPriorMainContractRow =
-            row.rowType === "contract" &&
-            (!row.isCurrent || (needsContractReinitiation && row.isCurrent));
         const rowTerms = row.termsSnapshot ?? null;
-        const rowDisplayLabel =
-            isPriorMainContractRow && !isSupplementalRow ? "Old Contract" : row.label;
+        const rowDisplayLabel = row.label;
         const rowStatusLabel = isAchRow
             ? formatAchTableStatusLabel({
                   envelopeId: row.envelopeId,
@@ -2918,75 +2914,6 @@ export default function ContractTab({
                     className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
                 >
                     {rowSentAtDisplay}
-                </TableCell>
-            </TableRow>
-        );
-    };
-
-    const renderGeneratedContractDraftRow = () => {
-        const contract = fetchedContract as Record<string, unknown> | null;
-        if (!contract) return null;
-
-        const offer =
-            contract.offer != null && typeof contract.offer === "object"
-                ? (contract.offer as Record<string, unknown>)
-                : null;
-        const contractLength =
-            parseMaybeNumber(contract.contractLenght) ??
-            parseMaybeNumber(contract.contractLength) ??
-            termLength;
-        const draftStatusLabel = mainContractEnvelopeId
-            ? formatContractTableStatusLabel(
-                  contract.status,
-                  contractEnvelopeDocument?.status,
-                  true,
-              )
-            : "Generated";
-
-        return (
-            <TableRow key="generated-contract-draft" className={tableRowClass}>
-                <TableCell className={tableCellClass}>
-                    <span className="inline-flex items-center gap-1.5">
-                        <FileText
-                            className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] dark:text-[#C07BE0]"
-                            aria-hidden
-                        />
-                        Contract
-                    </span>
-                </TableCell>
-                <TableCell className={tableCellClass}>
-                    {offer?.term != null
-                        ? String(offer.term)
-                        : contractLength != null
-                          ? String(contractLength)
-                          : "—"}
-                </TableCell>
-                <TableCell className={tableCellClass}>
-                    {offer?.position != null ? String(offer.position) : "1"}
-                </TableCell>
-                <TableCell className={tableCellClass}>
-                    {formatContractCurrency(parseMaybeNumber(contract.approvedAmount))}
-                </TableCell>
-                <TableCell className={tableCellClass}>
-                    {formatContractCurrency(
-                        parseMaybeNumber(contract.totalAmount) ??
-                            parseMaybeNumber(offer?.totalRemit) ??
-                            parseMaybeNumber(offer?.paybackAmount),
-                    )}
-                </TableCell>
-                <TableCell className={tableCellClass}>
-                    {formatContractCurrency(contractTableMetrics.perPeriodPayment)}
-                </TableCell>
-                <TableCell className={tableCellClass}>{contractTableMetrics.buyRate}</TableCell>
-                <TableCell className={tableCellClass}>{contractTableMetrics.upsell}</TableCell>
-                <TableCell className={tableCellClass}>{contractTableMetrics.factor}</TableCell>
-                <TableCell>
-                    <span className={statusBadgeClass}>{draftStatusLabel}</span>
-                </TableCell>
-                <TableCell
-                    className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
-                >
-                    —
                 </TableCell>
             </TableRow>
         );
@@ -3515,17 +3442,6 @@ export default function ContractTab({
                         <TableBody>
                             {contractSendTableRows.length > 0 ? (
                                 contractSendTableRows.map(renderContractSendTableRow)
-                            ) : hasGeneratedContract ? (
-                                renderGeneratedContractDraftRow() ?? (
-                                    <TableRow className={tableRowClass}>
-                                        <TableCell
-                                            colSpan={11}
-                                            className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
-                                        >
-                                            No contracts generated yet.
-                                        </TableCell>
-                                    </TableRow>
-                                )
                             ) : (
                                 <TableRow className={tableRowClass}>
                                     <TableCell

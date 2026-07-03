@@ -513,6 +513,7 @@ export const Disbursement = ({
         </div>
       </div>
 
+      {/* Commission is edited inside DealReviewDialog only */}
       <DealReviewDialog
         open={showDealReviewDialog}
         onOpenChange={setShowDealReviewDialog}

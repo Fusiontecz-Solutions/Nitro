@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useTheme } from "@/context/ThemeContext";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { updateApplicationQueue, updateApplication, sendApprovalEmail, getApplicationById, reinitiateContract } from "@/redux/actions/applicationActions";
+import { updateApplicationQueue, updateApplication, sendApprovalEmail, getApplicationById, reinitiateContract as reinitiateContractAction } from "@/redux/actions/applicationActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
@@ -829,7 +829,7 @@ const ApprovedApplicationModal = ({
                 }),
             ).unwrap();
             if (showReinitiateContractOption && reinitiateContractChecked) {
-                await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
+                await dispatch(reinitiateContractAction(String(applicationUuid))).unwrap();
             }
             await dispatch(getApplicationById(String(applicationId ?? applicationUuid)));
             toast.update(toastId, {

@@ -1,15 +1,25 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useDispatch, useSelector } from "react-redux";
+import { shallowEqual, useDispatch, useSelector } from "react-redux";
 import { toast } from "react-toastify";
 import { Coins, Loader2, Save } from "lucide-react";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { Button } from "@/components/ui/button";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   getApplicationByApplicationId,
   updateApplication,
 } from "@/redux/actions/applicationActions";
+import { getIsos } from "@/redux/actions/isoActions";
+import { fetchUsersByRole } from "@/redux/actions/settingsUserActions";
+import { selectUsersByRole } from "@/redux/selectors/settingsUsersSelectors";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import {
   formatCurrency,
@@ -18,6 +28,7 @@ import {
   parseNumberUS,
 } from "@/lib/utils";
 import type { UpdateApplicationPayload } from "@/types/applicationTypes";
+import type { User } from "@/types/userTypes";
 
 type DisbursementCommissionSectionProps = {
   applicationRecordId: string | null;
@@ -80,6 +91,28 @@ function getStoredBrokerName(app: Record<string, unknown> | null | undefined): s
   const name = app.brokerName;
   if (name != null && String(name).trim()) return String(name).trim();
   return "";
+}
+
+function getLinkedIsoId(app: Record<string, unknown> | null | undefined): string {
+  if (!app) return "";
+  const iso = app.iso as Record<string, unknown> | undefined;
+  if (iso && typeof iso === "object") {
+    if (iso.id != null && String(iso.id).trim()) return String(iso.id).trim();
+    if (iso._id != null && String(iso._id).trim()) return String(iso._id).trim();
+  }
+  const isoIdRaw = app.isoId;
+  return isoIdRaw != null && String(isoIdRaw).trim() !== ""
+    ? String(isoIdRaw).trim()
+    : "";
+}
+
+function getStoredUnderwriterName(
+  app: Record<string, unknown> | null | undefined,
+): string {
+  if (!app) return "";
+  const stored = app.underwriterCommissionName;
+  if (stored != null && String(stored).trim()) return String(stored).trim();
+  return getApprovingUnderwriterName(app);
 }
 
 function getApprovingUnderwriterName(
@@ -253,6 +286,92 @@ function CurrencyAmountInput({
   );
 }
 
+type PartyNameOption = {
+  id: string;
+  label: string;
+};
+
+function resolvePartyOptionByLabel(
+  options: PartyNameOption[],
+  label: string,
+): PartyNameOption | null {
+  const trimmed = label.trim().toLowerCase();
+  if (!trimmed) return null;
+  return (
+    options.find((option) => option.label.trim().toLowerCase() === trimmed) ??
+    null
+  );
+}
+
+type CommissionPartyNameFieldProps = {
+  id: string;
+  value: string;
+  onChange: (next: string) => void;
+  options: PartyNameOption[];
+  placeholder?: string;
+  disabled?: boolean;
+};
+
+function CommissionPartyNameField({
+  id,
+  value,
+  onChange,
+  options,
+  placeholder = "Select a name",
+  disabled,
+}: CommissionPartyNameFieldProps) {
+  const normalizedValue = value.trim();
+  const matched = resolvePartyOptionByLabel(options, normalizedValue);
+
+  const displayOptions = useMemo(() => {
+    if (!normalizedValue || matched) return options;
+    return [{ id: `__current__:${normalizedValue}`, label: normalizedValue }, ...options];
+  }, [options, normalizedValue, matched]);
+
+  const selectValue =
+    matched?.id ??
+    (normalizedValue ? `__current__:${normalizedValue}` : undefined);
+
+  return (
+    <Select
+      value={selectValue}
+      onValueChange={(optionId: string) => {
+        const option = displayOptions.find((entry) => entry.id === optionId);
+        if (option) onChange(option.label);
+      }}
+      disabled={disabled}
+    >
+      <SelectTrigger
+        id={id}
+        className="h-auto w-full rounded-md border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 shadow-none focus:border-[#1e60a3] focus:ring-2 focus:ring-[#1e60a3]/20 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200"
+      >
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent
+        enableSearch
+        searchPlaceholder="Search..."
+        className="z-[10060] min-w-[var(--radix-select-trigger-width)]"
+      >
+        {displayOptions.map((option) => (
+          <SelectItem
+            key={option.id}
+            value={option.id}
+            textValue={option.label}
+            className="cursor-pointer"
+          >
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function formatUserDisplayName(user: User): string {
+  const full = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
+  return full || String(user.email ?? "").trim() || "Unnamed underwriter";
+}
+
 function CommissionSectionHeading({ title }: { title: string }) {
   return (
     <div className="flex items-center justify-between gap-3 border-b border-slate-100/90 px-5 py-3.5 dark:border-slate-800">
@@ -324,11 +443,48 @@ export function DisbursementCommissionSection({
   const appRecord = applicationDetail as Record<string, unknown> | null;
 
   const isoName = useMemo(() => getIsoDisplayName(appRecord), [appRecord]);
+  const linkedIsoId = useMemo(() => getLinkedIsoId(appRecord), [appRecord]);
   const storedBrokerName = useMemo(() => getStoredBrokerName(appRecord), [appRecord]);
-  const underwriterName = useMemo(
-    () => getApprovingUnderwriterName(appRecord),
+  const storedUnderwriterName = useMemo(
+    () => getStoredUnderwriterName(appRecord),
     [appRecord],
   );
+
+  const { list: isoList, listLoading: isoListLoading } = useSelector(
+    (state: RootState) => state.iso,
+  );
+  const underwriters: User[] = useSelector(
+    (state: RootState) => selectUsersByRole(state, "UNDERWRITER"),
+    shallowEqual,
+  );
+
+  useEffect(() => {
+    void dispatch(getIsos());
+    void dispatch(fetchUsersByRole("UNDERWRITER"));
+  }, [dispatch]);
+
+  const isoNameOptions = useMemo<PartyNameOption[]>(() => {
+    return [...isoList]
+      .map((iso) => ({
+        id: String(iso.id),
+        label: String(iso.name || "Unnamed ISO").trim() || "Unnamed ISO",
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+  }, [isoList]);
+
+  const brokerNameOptions = useMemo<PartyNameOption[]>(() => isoNameOptions, [isoNameOptions]);
+
+  const underwriterNameOptions = useMemo<PartyNameOption[]>(() => {
+    return underwriters
+      .filter((user) => user.isActive !== false)
+      .map((user) => {
+        const id = String(user._id ?? (user as { id?: string }).id ?? "").trim();
+        if (!id) return null;
+        return { id, label: formatUserDisplayName(user) };
+      })
+      .filter((option): option is PartyNameOption => option !== null)
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+  }, [underwriters]);
 
   const resolvedOfferAmount = useMemo(
     () => resolveOfferAmount(appRecord),
@@ -380,6 +536,11 @@ export function DisbursementCommissionSection({
   const [underwriterPercentBaseline, setUnderwriterPercentBaseline] = useState<number | null>(null);
   const [brokerNameDraft, setBrokerNameDraft] = useState("");
   const [brokerNameBaseline, setBrokerNameBaseline] = useState("");
+  const [isoNameDraft, setIsoNameDraft] = useState("");
+  const [isoNameBaseline, setIsoNameBaseline] = useState("");
+  const [isoIdBaseline, setIsoIdBaseline] = useState("");
+  const [underwriterNameDraft, setUnderwriterNameDraft] = useState("");
+  const [underwriterNameBaseline, setUnderwriterNameBaseline] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -395,8 +556,17 @@ export function DisbursementCommissionSection({
     setUnderwriterBaseline(storedUnderwriterAmount);
     setUnderwriterPercentDraft(formatPercentDraft(storedUnderwriterPercent));
     setUnderwriterPercentBaseline(storedUnderwriterPercent);
+    setIsoNameDraft(isoName === "—" ? "" : isoName);
+    setIsoNameBaseline(isoName === "—" ? "" : isoName);
+    setIsoIdBaseline(linkedIsoId);
     setBrokerNameDraft(storedBrokerName);
     setBrokerNameBaseline(storedBrokerName);
+    setUnderwriterNameDraft(
+      storedUnderwriterName === "—" ? "" : storedUnderwriterName,
+    );
+    setUnderwriterNameBaseline(
+      storedUnderwriterName === "—" ? "" : storedUnderwriterName,
+    );
   }, [
     storedIsoAmount,
     storedBrokerAmount,
@@ -405,6 +575,9 @@ export function DisbursementCommissionSection({
     storedBrokerPercent,
     storedUnderwriterPercent,
     storedBrokerName,
+    isoName,
+    linkedIsoId,
+    storedUnderwriterName,
     applicationRecordId,
   ]);
 
@@ -548,7 +721,14 @@ export function DisbursementCommissionSection({
       valueChanged(draftIsoPercent, isoPercentBaseline) ||
       valueChanged(draftBrokerPercent, brokerPercentBaseline) ||
       valueChanged(draftUnderwriterPercent, underwriterPercentBaseline) ||
-      brokerNameDraft.trim() !== brokerNameBaseline.trim()
+      brokerNameDraft.trim() !== brokerNameBaseline.trim() ||
+      isoNameDraft.trim() !== isoNameBaseline.trim() ||
+      underwriterNameDraft.trim() !== underwriterNameBaseline.trim() ||
+      (() => {
+        const matchedIso = resolvePartyOptionByLabel(isoNameOptions, isoNameDraft);
+        const nextIsoId = matchedIso?.id ?? isoIdBaseline;
+        return nextIsoId !== isoIdBaseline;
+      })()
     );
   }, [
     draftIsoAmount,
@@ -565,6 +745,12 @@ export function DisbursementCommissionSection({
     underwriterPercentBaseline,
     brokerNameDraft,
     brokerNameBaseline,
+    isoNameDraft,
+    isoNameBaseline,
+    isoIdBaseline,
+    isoNameOptions,
+    underwriterNameDraft,
+    underwriterNameBaseline,
   ]);
 
   const canSave = useMemo(() => {
@@ -710,6 +896,17 @@ export function DisbursementCommissionSection({
       payload.brokerName = trimmedBrokerName || null;
     }
 
+    const trimmedUnderwriterName = underwriterNameDraft.trim();
+    if (trimmedUnderwriterName !== underwriterNameBaseline.trim()) {
+      payload.underwriterCommissionName = trimmedUnderwriterName || null;
+    }
+
+    const matchedIso = resolvePartyOptionByLabel(isoNameOptions, isoNameDraft);
+    const nextIsoId = matchedIso?.id ?? isoIdBaseline;
+    if (nextIsoId !== isoIdBaseline) {
+      payload.isoId = nextIsoId || null;
+    }
+
     if (Object.keys(payload).length === 0) {
       toast.info("No commission changes to save.");
       return;
@@ -732,6 +929,15 @@ export function DisbursementCommissionSection({
       setUnderwriterPercentBaseline(resolvedUnderwriterPercent);
       setBrokerNameBaseline(trimmedBrokerName);
       setBrokerNameDraft(trimmedBrokerName);
+      setUnderwriterNameBaseline(trimmedUnderwriterName);
+      setUnderwriterNameDraft(trimmedUnderwriterName);
+      if (matchedIso) {
+        setIsoNameBaseline(matchedIso.label);
+        setIsoNameDraft(matchedIso.label);
+        setIsoIdBaseline(matchedIso.id);
+      } else if (isoNameDraft.trim()) {
+        setIsoNameBaseline(isoNameDraft.trim());
+      }
       if (resolvedIsoAmount != null) {
         setIsoAmountDraft(formatNumberUS(resolvedIsoAmount));
       }
@@ -810,7 +1016,7 @@ export function DisbursementCommissionSection({
           />
           <CommissionReadOnlyParty
             role="Underwriter"
-            name={underwriterName}
+            name={storedUnderwriterName === "—" ? "—" : storedUnderwriterName}
             amount={storedUnderwriterAmount}
             percent={
               storedUnderwriterPercent ??
@@ -860,12 +1066,24 @@ export function DisbursementCommissionSection({
         }
       >
         <div className="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
-          <label className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300">
+          <label
+            htmlFor="disbursement-iso-name"
+            className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300"
+          >
             ISO
           </label>
-          <div className="w-full border border-slate-200 rounded-md py-2.5 px-3 text-sm font-medium bg-white text-slate-700 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200">
-            {isoName}
-          </div>
+          <CommissionPartyNameField
+            id="disbursement-iso-name"
+            value={isoNameDraft}
+            onChange={setIsoNameDraft}
+            options={isoNameOptions}
+            disabled={isoListLoading && isoNameOptions.length === 0}
+            placeholder={
+              isoListLoading && isoNameOptions.length === 0
+                ? "Loading ISO partners…"
+                : "Select ISO name"
+            }
+          />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <label
@@ -928,13 +1146,12 @@ export function DisbursementCommissionSection({
           >
             Broker
           </label>
-          <input
+          <CommissionPartyNameField
             id="disbursement-broker-name"
-            type="text"
-            placeholder="Enter broker name"
             value={brokerNameDraft}
-            onChange={(e) => setBrokerNameDraft(e.target.value)}
-            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-[#1e60a3]/20 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200"
+            onChange={setBrokerNameDraft}
+            options={brokerNameOptions}
+            placeholder="Select broker name"
           />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
@@ -992,12 +1209,19 @@ export function DisbursementCommissionSection({
         </div>
 
         <div className="space-y-3 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
-          <label className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300">
+          <label
+            htmlFor="disbursement-underwriter-name"
+            className="text-xs font-semibold text-slate-700 block uppercase tracking-wide dark:text-slate-300"
+          >
             Underwriter
           </label>
-          <div className="w-full border border-slate-200 rounded-md py-2.5 px-3 text-sm font-medium bg-white text-slate-700 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200">
-            {underwriterName}
-          </div>
+          <CommissionPartyNameField
+            id="disbursement-underwriter-name"
+            value={underwriterNameDraft}
+            onChange={setUnderwriterNameDraft}
+            options={underwriterNameOptions}
+            placeholder="Select underwriter name"
+          />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <label

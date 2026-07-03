@@ -24,6 +24,7 @@ import {
 } from "@/lib/offerDecisionSync";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
+import type { Application } from "@/types/applicationTypes";
 // import { Button } from "../ui/button";
 
 interface ApplicationSummaryProps {
@@ -184,7 +185,7 @@ const ApplicationSummary = ({
         : false;
     const finalApprovalSource = showDynamicData
         ? (
-              (applicationData as { finalApprovalSource?: string | null })
+              (applicationData as { finalApprovalSource?: Application["finalApprovalSource"] })
                   ?.finalApprovalSource ?? null
           )
         : null;

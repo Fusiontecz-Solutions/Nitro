@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { getApplications } from "@/redux/actions/applicationActions";
-import { hydrateApplicationsListFromCache } from "@/redux/slices/applicationSlice";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
 import { listFetchKeyFromGetApplicationsParams } from "@/lib/applicationsListCache";
 
@@ -26,12 +25,12 @@ export function useApplicationsListQuery(
     queryKey: ["applications-list", fetchKey],
     enabled: options.enabled ?? true,
     queryFn: async () => {
-      const result = await dispatch(
+      // Redux updates via `getApplications.fulfilled` (requestId guard). Do not
+      // hydrate again here — a slower, older in-flight response would overwrite
+      // the latest list and desync sidebar counts from the table.
+      return dispatch(
         getApplications({ ...params, skipListCacheRead: true }),
       ).unwrap();
-      // Always sync Redux from the query result (guards against reset/request races).
-      dispatch(hydrateApplicationsListFromCache(result));
-      return result;
     },
     staleTime: 0,
     refetchOnMount: "always",

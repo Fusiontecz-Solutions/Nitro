@@ -68,12 +68,15 @@ type MailLogRow = {
 
 function isCommunicationLog(log: ApplicationActivityLog): boolean {
   const meta = log.metadata ?? {};
-  const hasEmailMeta = Boolean(meta.emailSentTo || meta.template);
+  const templateKey = typeof meta.template === 'string' ? meta.template.trim().toLowerCase() : '';
+  const hasEmailMeta = Boolean(meta.emailSentTo || meta.template || meta.outboundCommunicationId);
   return (
     log.category === 'COMMUNICATION' ||
     log.actionType?.startsWith('PAYMENT_MAIL_') ||
     log.action === 'SEND' ||
     (log.actionType === 'APPROVED' && hasEmailMeta) ||
+    (log.actionType === 'APPLICATION_REJECTED' && templateKey === 'rejection') ||
+    (log.actionType === 'DOCUMENT_REQUESTED' && templateKey === 'document-request') ||
     Boolean(log.canView && (log.channel || log.recipientName))
   );
 }
@@ -159,6 +162,13 @@ function resolveMailLogHeading(row: MailLogRow): string {
     templateKey === 'approval' ||
     templateKey === 'application-approved' ||
     templateKey === 'offer-updated';
+
+  if (templateKey === 'rejection') {
+    return 'Application declined template';
+  }
+  if (templateKey === 'document-request') {
+    return 'Document request template';
+  }
 
   if (isIsoApprovalEmail) {
     if (templateKey === 'offer-updated' || meta.resend === true) {

@@ -91,6 +91,10 @@ export interface Application {
     commissionAmount?: number | null;
     underwriterCommissionAmount?: number | null;
     brokerCommissionAmount?: number | null;
+    /** Ops-entered broker name at disbursement. */
+    brokerName?: string | null;
+    /** Ops-entered underwriter name at disbursement. */
+    underwriterCommissionName?: string | null;
     /** Set on `GET /applications?statsBucket=funded`: collection payback/repaid/balance (same logic as `/collection-payments/balances`). */
     collectionPaybackAmount?: number | null;
     collectionSumOfRepaid?: number | null;
@@ -171,6 +175,8 @@ export interface UpdateApplicationPayload {
     brokerCommissionAmount?: number | null;
     /** Ops-entered broker display name at disbursement. */
     brokerName?: string | null;
+    /** Ops-entered underwriter display name at disbursement. */
+    underwriterCommissionName?: string | null;
     /** Links the deal to an ISO; backend validates and syncs commission from the ISO record. */
     isoId?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"); pass null/"" to clear. */

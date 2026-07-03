@@ -2418,6 +2418,50 @@ const PDFViewerModal = ({
         contractSignersValidationError,
     ]);
 
+    /** One primary action — resend, replace out-for-signature envelope, or first-time review & send. */
+    const showUnifiedReviewSendButton = useMemo(() => {
+        if (docuSignOpenUrl) return false;
+        if (showReplaceOldContractSendButton) return true;
+        if (showSendContractAgainButton) return true;
+        return canReviewAndSendCurrentPackage;
+    }, [
+        docuSignOpenUrl,
+        showReplaceOldContractSendButton,
+        showSendContractAgainButton,
+        canReviewAndSendCurrentPackage,
+    ]);
+
+    const unifiedReviewSendLabel = useMemo(() => {
+        if (isSending) return "Preparing DocuSign…";
+        if (isCancellingContract) return "Voiding old contract…";
+        if (
+            showSendContractAgainButton ||
+            (showReplaceOldContractSendButton && mainContractSendAgainEligible)
+        ) {
+            return sendContractAgainLabel;
+        }
+        if (
+            contractNeedsNewEnvelope &&
+            (includeMainContractInSend || !canSendWithoutContract)
+        ) {
+            return "Send contract in DocuSign";
+        }
+        if (includeMainContractInSend || !canSendWithoutContract) {
+            return "Review & send in DocuSign";
+        }
+        return "Review & send documents in DocuSign";
+    }, [
+        isSending,
+        isCancellingContract,
+        showSendContractAgainButton,
+        showReplaceOldContractSendButton,
+        mainContractSendAgainEligible,
+        sendContractAgainLabel,
+        contractNeedsNewEnvelope,
+        includeMainContractInSend,
+        canSendWithoutContract,
+    ]);
+
     const docuSignPdfCacheSuffix = useMemo(
         () => getDocuSignPdfCacheSuffix(resolvedContract, sentAt),
         [resolvedContract, sentAt],
@@ -9495,7 +9539,7 @@ const PDFViewerModal = ({
                             ) : null}
                             {activeStep === "sent" &&
                             !canCancelSentContract &&
-                            !showSendContractAgainButton ? (
+                            !showUnifiedReviewSendButton ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -9505,7 +9549,7 @@ const PDFViewerModal = ({
                                     Done
                                 </Button>
                             ) : null}
-                            {showSendContractAgainButton ? (
+                            {showUnifiedReviewSendButton ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -9516,31 +9560,15 @@ const PDFViewerModal = ({
                                         Boolean(contractSignersValidationError)
                                     }
                                     onClick={() =>
-                                        handleReviewInDocuSignClick({ forceNewEnvelope: true })
+                                        handleReviewInDocuSignClick(
+                                            showSendContractAgainButton ||
+                                                showReplaceOldContractSendButton
+                                                ? { forceNewEnvelope: true }
+                                                : undefined,
+                                        )
                                     }
                                 >
-                                    {isSending ? "Preparing DocuSign…" : sendContractAgainLabel}
-                                </Button>
-                            ) : null}
-                            {showReplaceOldContractSendButton ? (
-                                <Button
-                                    type="button"
-                                    variant="default"
-                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
-                                    onClick={() =>
-                                        handleReviewInDocuSignClick({ forceNewEnvelope: true })
-                                    }
-                                    disabled={
-                                        isSending ||
-                                        isCancellingContract ||
-                                        Boolean(contractSignersValidationError)
-                                    }
-                                >
-                                    {isSending
-                                        ? "Preparing DocuSign…"
-                                        : isCancellingContract
-                                          ? "Voiding old contract…"
-                                          : "Review & send in DocuSign"}
+                                    {unifiedReviewSendLabel}
                                 </Button>
                             ) : null}
                             {canReviewAndSendCurrentPackage && docuSignOpenUrl ? (
@@ -9574,31 +9602,6 @@ const PDFViewerModal = ({
                                     }}
                                 >
                                     Open DocuSign
-                                </Button>
-                            ) : null}
-                            {canReviewAndSendCurrentPackage &&
-                            !docuSignOpenUrl &&
-                            !showSendContractAgainButton &&
-                            !showReplaceOldContractSendButton ? (
-                                <Button
-                                    type="button"
-                                    variant="default"
-                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
-                                    onClick={() => handleReviewInDocuSignClick()}
-                                    disabled={
-                                        isSending ||
-                                        isCancellingContract ||
-                                        Boolean(contractSignersValidationError)
-                                    }
-                                >
-                                    {isSending
-                                        ? "Preparing DocuSign…"
-                                        : contractNeedsNewEnvelope &&
-                                            (includeMainContractInSend || !canSendWithoutContract)
-                                          ? "Send contract in DocuSign"
-                                          : includeMainContractInSend || !canSendWithoutContract
-                                            ? "Review & send in DocuSign"
-                                            : "Review & send documents in DocuSign"}
                                 </Button>
                             ) : null}
                             </div>

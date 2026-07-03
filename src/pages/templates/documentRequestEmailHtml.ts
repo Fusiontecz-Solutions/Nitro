@@ -83,6 +83,51 @@ function renderDocumentList(labels: string[]): string {
     </table>`;
 }
 
+function renderApplicationInfoBlock(
+  clientName: string,
+  applicationOwnerName: string,
+  applicationNumber: string,
+): string {
+  const rows: string[] = [];
+  if (clientName) {
+    rows.push(`
+      <tr>
+        <td style="padding:0 8px 6px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#888888;white-space:nowrap;vertical-align:top;">Client name:</td>
+        <td style="padding:0 0 6px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;line-height:1.4;color:#333333;vertical-align:top;">${escapeHtml(clientName)}</td>
+      </tr>`);
+  }
+  if (applicationOwnerName) {
+    rows.push(`
+      <tr>
+        <td style="padding:0 8px 6px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#888888;white-space:nowrap;vertical-align:top;">Application Owner:</td>
+        <td style="padding:0 0 6px 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;line-height:1.4;color:#333333;vertical-align:top;">${escapeHtml(applicationOwnerName)}</td>
+      </tr>`);
+  }
+  if (applicationNumber && applicationNumber !== "N/A") {
+    rows.push(`
+      <tr>
+        <td style="padding:0 8px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.4;color:#888888;white-space:nowrap;vertical-align:top;">Application #:</td>
+        <td style="padding:0;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;line-height:1.4;color:#333333;vertical-align:top;">${escapeHtml(applicationNumber)}</td>
+      </tr>`);
+  }
+  if (rows.length === 0) return "";
+
+  return `
+                      <tr>
+                        <td style="padding:0 0 20px 0;">
+                          <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#f9fafb" style="background-color:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;">
+                            <tr>
+                              <td style="padding:12px 14px;">
+                                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+                                  ${rows.join("")}
+                                </table>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>`;
+}
+
 function renderNoteBlock(note: string): string {
   if (!note) return "";
   return `
@@ -115,6 +160,11 @@ export function renderDocumentRequestEmailHtml(
   const documentIconSrc = escapeHtml(DOCUMENT_REQUEST_EMAIL_ICON_SRC);
   const watermarkSrc = escapeHtml(DOCUMENT_REQUEST_EMAIL_WATERMARK_SRC);
   const documentList = renderDocumentList(fields.requestedDocumentLabels);
+  const applicationInfoBlock = renderApplicationInfoBlock(
+    fields.clientName,
+    fields.applicationOwnerName,
+    fields.applicationNumber,
+  );
   const noteBlock = renderNoteBlock(fields.note);
 
   return `<!DOCTYPE html>
@@ -187,7 +237,7 @@ export function renderDocumentRequestEmailHtml(
                         <td style="padding:0 0 25px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:#777777;">
                           To continue processing your application, please upload the required documents listed below.
                         </td>
-                      </tr>
+                      </tr>${applicationInfoBlock}
                       <tr>
                         <td style="padding:0 0 25px 0;">
                           <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:separate;border-spacing:0;">

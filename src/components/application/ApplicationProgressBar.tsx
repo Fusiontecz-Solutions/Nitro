@@ -18,6 +18,8 @@ interface ApplicationProgressBarProps {
         state?: string | null;
         statsCurrentState?: string | null;
         status?: string | null;
+        underwriterAction?: string | null;
+        finalApprovalSource?: string | null;
       }
     | null
     | undefined;

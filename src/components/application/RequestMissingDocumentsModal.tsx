@@ -182,8 +182,21 @@ const RequestMissingDocumentsModal = ({
                 data.isoEmail?.trim() ||
                 "ISO Partner";
 
+            const clientBusinessName =
+                (applicationData as any)?.client?.business?.name?.trim() || "";
+            const ownerFirst = (applicationData as any)?.client?.owner?.firstName?.trim() || "";
+            const ownerLast = (applicationData as any)?.client?.owner?.lastName?.trim() || "";
+            const applicationOwnerName =
+                ownerFirst || ownerLast
+                    ? `${ownerFirst} ${ownerLast}`.trim()
+                    : "";
+            const clientName = clientBusinessName || applicationOwnerName;
+
             const emailHtml = renderDocumentRequestEmailHtml({
                 iso_name: recipientName,
+                client_name: clientName,
+                application_owner_name: applicationOwnerName,
+                application_number: String(applicationId),
                 requested_documents: requestedLabels.join("\n"),
                 note: data.reason?.trim() || "",
                 upload_documents_url: DOCUMENT_REQUEST_UPLOAD_URL_PLACEHOLDER,
@@ -196,7 +209,11 @@ const RequestMissingDocumentsModal = ({
                 reason: data.reason?.trim() || undefined,
                 isoEmail: data.isoEmail?.trim() || "",
                 emailHtml,
-                emailSubject: documentRequestEmailSubject(applicationId),
+                emailSubject: documentRequestEmailSubject(
+                    applicationId,
+                    clientName,
+                    applicationOwnerName,
+                ),
             };
 
             if (additionalToEmails.length > 0) {
@@ -322,13 +339,13 @@ const RequestMissingDocumentsModal = ({
                                 </p>
                             </div>
                             <div>
-                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mb-1`}>Business</p>
+                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mb-1`}>Client name</p>
                                 <p className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
                                     {businessName}
                                 </p>
                             </div>
                             <div>
-                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mb-1`}>Borrower</p>
+                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mb-1`}>Application Owner name</p>
                                 <p className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
                                     {borrowerName}
                                 </p>

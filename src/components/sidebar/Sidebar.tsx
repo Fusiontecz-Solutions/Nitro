@@ -303,12 +303,12 @@ const dealPipelineSection: SidebarNavSection = {
       icon: VerifiedUser,
       children: [
         {
-          label: operationsDashboardStatusTitle("Approved_By_UW"),
+          label: "By Underwriter",
           operationsStatus: "Approved_By_UW",
           pipelineAccent: "approved-by-uw",
         },
         {
-          label: "Approval sent to Broker",
+          label: "Sent to Broker",
           operationsStatus: "Approval_Sent",
           pipelineAccent: "approval-sent",
         },
@@ -321,17 +321,17 @@ const dealPipelineSection: SidebarNavSection = {
       icon: Article,
       children: [
         {
-          label: operationsDashboardStatusTitle("Contract_Pending"),
+          label: "Pending",
           operationsStatus: "Contract_Pending",
           pipelineAccent: "contract-pending",
         },
         {
-          label: operationsDashboardStatusTitle("Contract_Sent"),
+          label: "Sent",
           operationsStatus: "Contract_Sent",
           pipelineAccent: "contract-sent",
         },
         {
-          label: operationsDashboardStatusTitle("Contract_Signed"),
+          label: "Signed",
           operationsStatus: "Contract_Signed",
           pipelineAccent: "contract-signed",
         },
