@@ -23,7 +23,8 @@ export function isAllianceBridgeFunder(funderName?: string | null): boolean {
   return (
     normalized === 'alliance bridge capital' ||
     normalized === 'alliance bridge' ||
-    normalized.includes('alliance bridge')
+    normalized.includes('alliance bridge') ||
+    normalized.includes('alliance capital')
   );
 }
 

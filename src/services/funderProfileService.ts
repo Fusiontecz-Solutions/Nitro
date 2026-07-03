@@ -24,6 +24,14 @@ import {
   canManageFunderDocuments,
 } from '../utils/funderDocumentSource';
 
+/** Client-side fallback profile ids (e.g. `fallback-alliance-bridge`) are not DB UUIDs. */
+const PERSISTED_FUNDER_PROFILE_ID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isPersistedFunderProfileId(id?: string | null): boolean {
+  return PERSISTED_FUNDER_PROFILE_ID_REGEX.test(String(id ?? '').trim());
+}
+
 function toStatesJson(
   states?: string[] | null,
 ): Prisma.InputJsonValue | typeof Prisma.JsonNull {
@@ -214,7 +222,7 @@ export async function resolveFunderProfile(options: {
   state?: string | null;
 }): Promise<SerializedFunderProfile | null> {
   const funderProfileId = String(options.funderProfileId ?? '').trim();
-  if (funderProfileId) {
+  if (funderProfileId && isPersistedFunderProfileId(funderProfileId)) {
     const row = await prisma.funderProfile.findUnique({
       where: { id: funderProfileId },
       include: { docusignAccountProfile: true },
@@ -296,6 +304,7 @@ export async function getFunderProfileByName(name: string, state?: string | null
 }
 
 export async function getFunderProfileById(id: string) {
+  if (!isPersistedFunderProfileId(id)) return null;
   const row = await prisma.funderProfile.findUnique({
     where: { id },
     include: { docusignAccountProfile: { select: { id: true, name: true, isActive: true } } },
@@ -327,6 +336,10 @@ export async function getFunderWithDocuSignCredentials(
 ) {
   const profile = await resolveFunderProfile({ funderName, state });
   if (!profile) return null;
+
+  if (!isPersistedFunderProfileId(profile.id)) {
+    return { funder: profile, docusignProfile: null };
+  }
 
   const row = await prisma.funderProfile.findUnique({
     where: { id: profile.id },

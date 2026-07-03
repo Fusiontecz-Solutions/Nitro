@@ -1,5 +1,6 @@
 import {
   funderAvailableForState,
+  isPersistedFunderProfileId,
   pickFunderProfileFromList,
   resolveFunderProfile,
   type SerializedFunderProfile,
@@ -29,6 +30,8 @@ export function isAllianceFunderProfile(profile: {
     isAllianceBridgeFunder(profile.displayName) ||
     isAllianceBridgeFunder(profile.organization) ||
     isAllianceBridgeFunder(profile.legalName) ||
+    String(profile.name ?? '').toLowerCase().includes('alliance capital') ||
+    String(profile.displayName ?? '').toLowerCase().includes('alliance capital') ||
     String(profile.contactEmail ?? '')
       .toLowerCase()
       .includes('@alliancebridgecapital.com') ||
@@ -140,6 +143,10 @@ export async function getFunderWithDocuSignCredentialsResolved(options: {
 }) {
   const profile = await resolveFunderProfile(options);
   if (!profile) return null;
+
+  if (!isPersistedFunderProfileId(profile.id)) {
+    return { funder: profile, docusignProfile: null };
+  }
 
   const row = await prisma.funderProfile.findUnique({
     where: { id: profile.id },

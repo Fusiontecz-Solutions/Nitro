@@ -3818,6 +3818,7 @@ export class DocusignService {
       funderName?: string | null;
       funderProfileId?: string | null;
       contractState?: string | null;
+      mainContractLayoutKey?: string | null;
       client: AxiosInstance;
       accountId: string;
     },
@@ -3871,13 +3872,40 @@ export class DocusignService {
       atPostCreate: 0,
     };
     if (options.prefillFields?.length && !options.prefillFlattenedInPdf) {
+      let prefillFieldsForEnvelope = options.prefillFields;
+      try {
+        const { resolveMainContractLayoutKeyForSend } = await import(
+          './utils/resolve-main-contract-layout'
+        );
+        const {
+          applyAllianceBridgeContractPrefillToFieldList,
+          shouldApplyAllianceBridgeContractPrefillForSend,
+        } = await import('./utils/alliance-contract-prefill');
+        const layoutKeyForPrefill = await resolveMainContractLayoutKeyForSend({
+          mainContractLayoutKey: options.mainContractLayoutKey,
+          funderName: options.funderName,
+          state: contractState || undefined,
+        });
+        const alliancePrefill = await shouldApplyAllianceBridgeContractPrefillForSend({
+          mainContractLayoutKey: layoutKeyForPrefill,
+          funderName: options.funderName,
+          contractState: contractState || undefined,
+        });
+        if (alliancePrefill) {
+          prefillFieldsForEnvelope = applyAllianceBridgeContractPrefillToFieldList(
+            prefillFieldsForEnvelope,
+          );
+        }
+      } catch (err) {
+        console.warn('[DocuSign] Alliance prefill normalization before post-create apply failed:', err);
+      }
       const post = await this.applyPrefillToEnvelope(
         userId,
         options.client,
         options.accountId,
         envelopeId,
         options.templateId,
-        options.prefillFields,
+        prefillFieldsForEnvelope,
       );
       prefillApplied = {
         applied: Math.max(post.applied, options.createTimePrefillTabCount ?? 0),
@@ -4258,6 +4286,7 @@ export class DocusignService {
         funderName: options.funderName,
         funderProfileId: options.funderProfileId,
         contractState,
+        mainContractLayoutKey: built.layoutKeys?.[0],
         client,
         accountId,
       });
@@ -4503,7 +4532,13 @@ export class DocusignService {
     userId: string,
     documentId: string,
     fields: PrefillField[],
-    options?: { funderName?: string | null; applicationId?: string; contractId?: number },
+    options?: {
+      funderName?: string | null;
+      applicationId?: string;
+      contractId?: number;
+      contractState?: string | null;
+      mainContractLayoutKey?: string | null;
+    },
   ) {
     const eid = String(documentId || '').trim();
     if (!eid) {
@@ -4518,13 +4553,48 @@ export class DocusignService {
     await this.assertEnvelopeDraftOrThrow(client, accountId, eid);
     const templateId =
       (await this.getTemplateIdFromEnvelope(client, accountId, eid)) || undefined;
+    let fieldsForEnvelope = fields;
+    try {
+      const funderName =
+        String(options?.funderName ?? '').trim() ||
+        (await this.resolveFunderNameForEnvelopeAuth({
+          contractId: options?.contractId,
+          envelopeId: eid,
+          applicationId: options?.applicationId,
+        }));
+      const contractState =
+        String(options?.contractState ?? '').trim() ||
+        (await this.resolveContractStateForAuth(options?.contractId));
+      const { resolveMainContractLayoutKeyForSend } = await import(
+        './utils/resolve-main-contract-layout'
+      );
+      const {
+        applyAllianceBridgeContractPrefillToFieldList,
+        shouldApplyAllianceBridgeContractPrefillForSend,
+      } = await import('./utils/alliance-contract-prefill');
+      const layoutKeyForPrefill = await resolveMainContractLayoutKeyForSend({
+        mainContractLayoutKey: options?.mainContractLayoutKey,
+        funderName,
+        state: contractState || undefined,
+      });
+      const alliancePrefill = await shouldApplyAllianceBridgeContractPrefillForSend({
+        mainContractLayoutKey: layoutKeyForPrefill,
+        funderName,
+        contractState: contractState || undefined,
+      });
+      if (alliancePrefill) {
+        fieldsForEnvelope = applyAllianceBridgeContractPrefillToFieldList(fieldsForEnvelope);
+      }
+    } catch (err) {
+      console.warn('[DocuSign] Alliance prefill normalization before patch apply failed:', err);
+    }
     const result = await this.applyPrefillToEnvelope(
       userId,
       client,
       accountId,
       eid,
       templateId,
-      fields,
+      fieldsForEnvelope,
     );
     if (!result.applied && result.attempted) {
       console.warn(

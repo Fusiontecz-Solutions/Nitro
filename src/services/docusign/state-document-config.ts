@@ -198,16 +198,8 @@ const UTAH_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'frequency', x: '403', y: '559' },
 ];
 
-/** Kansas disclosure page-1 header — daily + weekly share recipient / funder positions. */
-const KANSAS_DISCLOSURE_PAGE1_HEADER_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
-  { tabLabel: 'client_name', x: '246', y: '99' },
-  { tabLabel: 'client_name', x: '247', y: '150' },
-  { tabLabel: 'funder_name', x: '163', y: '201' },
-];
-
 /** Kansas disclosure page-1 coordinates — daily layout. */
 const KANSAS_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
-  ...KANSAS_DISCLOSURE_PAGE1_HEADER_TEXT_TABS,
   { tabLabel: 'total_amount_of_fund_provided', x: '434', y: '103' },
   { tabLabel: 'total_amount_fund_disbursed', x: '435', y: '153' },
   { tabLabel: 'total_of_payments', x: '437', y: '204' },
@@ -218,7 +210,6 @@ const KANSAS_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTab
 
 /** Kansas disclosure page-1 coordinates — weekly layout. */
 const KANSAS_WEEKLY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
-  ...KANSAS_DISCLOSURE_PAGE1_HEADER_TEXT_TABS,
   { tabLabel: 'total_amount_of_fund_provided', x: '434', y: '103' },
   { tabLabel: 'total_amount_fund_disbursed', x: '433', y: '136' },
   { tabLabel: 'total_of_payments', x: '434', y: '172' },
@@ -519,8 +510,7 @@ const NEW_YORK_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'funding_provided', x: '345', y: '139' },
   { tabLabel: 'funder_name', x: '415', y: '95' },
   { tabLabel: 'estimated_annual_percentage_rate', x: '178', y: '280' },
-  { tabLabel: 'avarage_monthly_income', x: '331', y: '359' },
-  { tabLabel: 'disclosure_avg_monthly_revenue', x: '331', y: '360' },
+  { tabLabel: 'avarage_monthly_income', x: '331', y: '360' },
   { tabLabel: 'disclosure_merchant_name', x: '420', y: '344' },
   { tabLabel: 'funder_name', x: '432', y: '418' },
   { tabLabel: 'finance_charge', x: '183', y: '465' },
@@ -561,16 +551,16 @@ const NEW_YORK_DISCLOSURE_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
     optional: true,
     lockedForSigner: true,
   },
-  { tabLabel: 'disclosure_page3_subtotal', x: '448', y: '164', pageNumber: '3' },
+  { tabLabel: 'disclosure_page3_subtotal', x: '443', y: '161', pageNumber: '3' },
   { tabLabel: 'disclosure_broker_fee', x: '448', y: '183', pageNumber: '3' },
-  { tabLabel: 'disclosure_page3_net', x: '447', y: '206', pageNumber: '3' },
+  { tabLabel: 'disclosure_page3_net', x: '444', y: '204', pageNumber: '3' },
 ];
 
 /** Louisiana disclosure (La. R.S. 3138.4) — daily + weekly share page 1 amounts and page 2 signatures. */
 const LOUISIANA_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
-  { tabLabel: 'client_name', x: '247', y: '99' },
-  { tabLabel: 'client_name', x: '249', y: '150' },
-  { tabLabel: 'funder_name', x: '207', y: '185' },
+  { tabLabel: 'client_name', x: '244', y: '98' },
+  { tabLabel: 'client_name', x: '250', y: '137' },
+  { tabLabel: 'funder_name', x: '162', y: '172' },
   { tabLabel: 'total_amount_business_fund', x: '427', y: '106' },
   { tabLabel: 'total_amount_of_fund_disbursed', x: '427', y: '150' },
   { tabLabel: 'total_amount_tobe_paid_to_provider', x: '427', y: '188' },
@@ -596,7 +586,7 @@ const LOUISIANA_DISCLOSURE_SIGN_AND_DATE: Pick<
   ],
 };
 
-/** Texas disclosure — 3-page layout (daily + weekly). */
+/** Texas disclosure — 3-page PDF (page 2 summary, page 3 fee block + signatures). */
 const TEXAS_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'total_amount_business_fund', x: '430', y: '101' },
   { tabLabel: 'total_amount_of_fund_disbursed', x: '431', y: '138' },

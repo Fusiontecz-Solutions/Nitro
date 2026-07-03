@@ -12,6 +12,7 @@ import type { PrefillFieldInput } from './docusign-prefill';
 import { DOCUSIGN_DEFAULT_ROLE_NAME, normalizeDocuSignSignerRoleName } from './docusign-client';
 import {
   applyDocuSignPrefillTabStyle,
+  docuSignPrefillFontSizePoints,
   resolveDocuSignPrefillTabWidth,
 } from './docusign-tab-style';
 import { embedArialPdfFont } from './embed-arial-pdf-font';
@@ -23,8 +24,12 @@ import {
   toDisclosureScopedPrefillId,
 } from './layout-prefill-scope';
 import {
+  ALLIANCE_CONTRACT_MONEY_TAB_IDS,
   applyAllianceBridgeContractPrefillValues,
-  isAllianceBridgeContractLayoutKey,
+  formatAllianceUsd,
+  resolveAllianceBridgeFlattenedFontSizePt,
+  resolveAllianceBridgePrefillTabStyleOptions,
+  shouldApplyAllianceBridgeContractPrefill,
 } from './alliance-contract-prefill';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME =
@@ -56,10 +61,15 @@ export type BuildEnvelopeFromLayoutOptions = {
   /**
    * When true, text/date values are already burned into document PDFs — only signature /
    * initial / attachment tabs are attached (visible to all recipients including CC).
+   * @deprecated Prefer `flattenedLayoutKeys` when only some documents were flattened.
    */
   skipTextDateTabs?: boolean;
+  /** Layout keys whose text/date prefill was burned into the PDF (skip tabs for those only). */
+  flattenedLayoutKeys?: ReadonlySet<string>;
   /** When true, text/date tabs are created locked (use only when sending immediately). */
   lockDataTabs?: boolean;
+  /** Alliance Texas contract prefill (money $, address, term weeks) — incl. prod `funder_*` keys. */
+  allianceBridgePrefill?: boolean;
   /** Merged PDF bytes when multiple layouts are combined into one DocuSign document. */
   mergedDocument?: { name: string; documentBase64: string };
   /** Page offset per layout key (0-based) inside `mergedDocument`. */
@@ -1030,12 +1040,31 @@ function placementAllowed(
   return true;
 }
 
-function shouldIncludeEmptyTextPlacement(placement: DocumentLayoutPlacement): boolean {
+function shouldIncludeEmptyTextPlacement(
+  placement: DocumentLayoutPlacement,
+  layoutKey?: string,
+): boolean {
   if (placement.type !== 'text') return false;
+  if (String(layoutKey || '').startsWith('state_disclosure_')) return true;
   if (isSignerEditableTextPlacement(placement)) return true;
   if (placement.lockedForSigner) return true;
   if (placement.optional) return true;
   return false;
+}
+
+/** State disclosure PDFs often fail DocuSign validation after pdf-lib rewrite. */
+export function shouldFlattenLayoutPdf(layout: DocumentLayout): boolean {
+  return !String(layout.key || '').startsWith('state_disclosure_');
+}
+
+function layoutPrefillBurnedIntoPdf(
+  layoutKey: string,
+  options: BuildEnvelopeFromLayoutOptions,
+): boolean {
+  if (options.flattenedLayoutKeys) {
+    return options.flattenedLayoutKeys.has(layoutKey);
+  }
+  return options.skipTextDateTabs === true;
 }
 
 function resolveEnvelopeTextTabLabel(
@@ -1060,10 +1089,24 @@ function toTextTab(
   value: string,
   envelopeDocumentId: string,
   layoutKey?: string,
+  allianceBridgePrefill?: boolean,
 ): DocuSignTab {
   const signerEditable = isSignerEditableTextPlacement(placement);
-  const tabValue = clearsValueAtSend(placement) ? '' : value;
+  let tabValue = clearsValueAtSend(placement) ? '' : value;
   const variable = String(placement.variable || '').trim();
+  const alliancePrefillActive =
+    allianceBridgePrefill === true ||
+    shouldApplyAllianceBridgeContractPrefill({
+      layoutKey,
+      coordinateLayoutKey: layoutKey,
+    });
+  if (
+    tabValue &&
+    alliancePrefillActive &&
+    ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(variable)
+  ) {
+    tabValue = formatAllianceUsd(tabValue);
+  }
   const displayLabel =
     getPrefillDisplayLabel(variable) ||
     String(placement.sourceTabLabel || '').trim() ||
@@ -1099,7 +1142,16 @@ function toTextTab(
   if (tabValue) {
     tabPayload.value = tabValue;
   }
-  return applyDocuSignPrefillTabStyle(tabPayload, { height: placement.height });
+  const tabStyle = resolveAllianceBridgePrefillTabStyleOptions(
+    layoutKey,
+    variable,
+    placement.height,
+    alliancePrefillActive,
+  );
+  if (tabStyle.height) {
+    tabPayload.height = String(tabStyle.height);
+  }
+  return applyDocuSignPrefillTabStyle(tabPayload, tabStyle);
 }
 
 /** Stamp layout text/date values onto the base PDF for CC email (DocuSign download is often blank). */
@@ -1107,6 +1159,7 @@ export async function renderFlattenedLayoutPdf(
   layout: DocumentLayout & { documentBase64: string },
   values: Record<string, string>,
   counts: LayoutPartyCounts,
+  allianceBridgePrefill?: boolean,
 ): Promise<Buffer> {
   const { PDFDocument, rgb } = await import('pdf-lib');
   const pdfDoc = await PDFDocument.load(Buffer.from(layout.documentBase64, 'base64'));
@@ -1116,7 +1169,14 @@ export async function renderFlattenedLayoutPdf(
   if (isMainContractLayoutKey(String(layout.key || ''))) {
     layoutValues = expandPrefillValues(layoutValues);
   }
-  if (isAllianceBridgeContractLayoutKey(String(layout.key || ''))) {
+  const layoutKey = String(layout.key || '');
+  const alliancePrefillActive =
+    allianceBridgePrefill === true ||
+    shouldApplyAllianceBridgeContractPrefill({
+      layoutKey,
+      coordinateLayoutKey: layoutKey,
+    });
+  if (alliancePrefillActive) {
     applyAllianceBridgeContractPrefillValues(layoutValues);
   }
   const expanded = layoutValues;
@@ -1134,7 +1194,13 @@ export async function renderFlattenedLayoutPdf(
     if (!page) continue;
 
     const tabHeight = parseFloat(String(placement.height || '19')) || 19;
-    const fontSize = Math.min(11, Math.max(7, Math.round(tabHeight * 0.55)));
+    const layoutKey = String(layout.key || '');
+    const fontSize = resolveAllianceBridgeFlattenedFontSizePt(
+      layoutKey,
+      placement,
+      docuSignPrefillFontSizePoints({ height: tabHeight }),
+      alliancePrefillActive,
+    );
     const { height: pageHeight } = page.getSize();
     const x = parseFloat(String(placement.x || '0')) || 0;
     const yTop = parseFloat(String(placement.y || '0')) || 0;
@@ -1262,7 +1328,7 @@ export function buildRecipientTabsByRoleForLayout(
       const variable = placement.variable || '';
       const value = resolveTextPlacementValue(variable, values, placement);
       if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
-      if (!value && !shouldIncludeEmptyTextPlacement(placement)) {
+      if (!value && !shouldIncludeEmptyTextPlacement(placement, layout.key)) {
         continue;
       }
       bucket.textTabs.push(toTextTab(placement, value, envelopeDocumentId));
@@ -1364,6 +1430,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   };
 
   const expandedLayouts = expandLayoutsWithOwner2Initials(options.layouts, counts.ownerCount);
+  const envelopeAlliancePrefill = options.allianceBridgePrefill === true;
 
   for (const layout of expandedLayouts) {
     const envelopeDocId = layoutKeyToEnvelopeDocId.get(layout.key) || '1';
@@ -1373,7 +1440,12 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
       layoutValues = expandPrefillValues(layoutValues);
       isolateBalanceTransferMerchantLegalName(layoutValues);
     }
-    if (isAllianceBridgeContractLayoutKey(String(layout.key || ''))) {
+    const layoutAlliancePrefill =
+      envelopeAlliancePrefill ||
+      shouldApplyAllianceBridgeContractPrefill({
+        layoutKey: layout.key,
+      });
+    if (layoutAlliancePrefill) {
       applyAllianceBridgeContractPrefillValues(layoutValues);
     }
 
@@ -1392,8 +1464,8 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
 
       if (placement.type === 'text') {
         if (
-          options.skipTextDateTabs &&
-          !shouldIncludeEmptyTextPlacement(placement)
+          layoutPrefillBurnedIntoPdf(layout.key, options) &&
+          !shouldIncludeEmptyTextPlacement(placement, layout.key)
         ) {
           continue;
         }
@@ -1401,8 +1473,10 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
         const resolved = resolveTextPlacementValue(variable, layoutValues, tabPlacement);
         const value = isFillAtSigningPlacement(placement) ? '' : resolved;
         if (isExhibitPrefillPlacement(placement) && !String(value || '').trim()) continue;
-        if (!value && !shouldIncludeEmptyTextPlacement(placement)) continue;
-        bucket.textTabs.push(toTextTab(tabPlacement, value, envelopeDocId, layout.key));
+        if (!value && !shouldIncludeEmptyTextPlacement(placement, layout.key)) continue;
+        bucket.textTabs.push(
+          toTextTab(tabPlacement, value, envelopeDocId, layout.key, layoutAlliancePrefill),
+        );
         continue;
       }
 
