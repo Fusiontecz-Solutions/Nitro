@@ -90,10 +90,13 @@ if (sendgridWebhookBase) {
 console.log('Starting CRM Email Bot...');
 startCronJob();
 startSuperAdminPlatformCronJob();
-// Test Redis connection
-testRedisConnection().catch(console.error);
-startCollectionPaymentUploadWorker();
-startApplicationApprovalWorker();
+// Test Redis connection, then start workers only when Redis is reachable.
+void testRedisConnection()
+  .catch(console.error)
+  .finally(() => {
+    startCollectionPaymentUploadWorker();
+    startApplicationApprovalWorker();
+  });
 
 // Initialize Socket.IO
 initializeSocketIO(httpServer);

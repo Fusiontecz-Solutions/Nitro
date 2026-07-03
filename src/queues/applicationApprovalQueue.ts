@@ -1,5 +1,6 @@
 import { Queue, type ConnectionOptions } from 'bullmq';
 import Redis from 'ioredis';
+import { isRedisAvailable } from '../config/redis';
 // Type-only import: keeps the runtime module graph acyclic
 // (applicationApprovalService imports this queue module for value).
 import type { ApprovalSideEffectPayload } from '../services/business/applicationApprovalService';
@@ -40,7 +41,8 @@ const createRedisConnection = (): ConnectionOptions =>
         },
     }) as ConnectionOptions;
 
-export const isApplicationApprovalQueueEnabled = (): boolean => Boolean(redisUrl());
+export const isApplicationApprovalQueueEnabled = (): boolean =>
+    Boolean(redisUrl()) && isRedisAvailable();
 
 export const getApplicationApprovalQueue = (): Queue<ApplicationApprovalJobData> | null => {
     if (!isApplicationApprovalQueueEnabled()) return null;
