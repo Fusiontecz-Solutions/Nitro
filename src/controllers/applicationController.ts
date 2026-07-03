@@ -26,6 +26,7 @@ import { getApplicationStageAccessForUser } from '../services/applicationStageAc
 import {
     aggregateApplicationStats,
     aggregateApplicationMonthlyTrend,
+    type UnderwriterClaimScope,
 } from '../services/applicationStatsService';
 import { classifyFundedApprovedRejected } from '../services/applicationStatsPredicates';
 import {
@@ -67,9 +68,6 @@ import {
     injectApplicationApprovalEmailValues,
     sendApplicationApprovalEmail,
     sendApplicationRejectionEmail,
-    APPROVAL_EMAIL_PDF_FILENAME,
-    OFFER_UPDATED_EMAIL_PDF_FILENAME,
-    REJECTION_EMAIL_PDF_FILENAME,
     resolveMerchantContactForOfferEmail,
     sendApplicationOfferUpdatedEmail,
     sendUnderwriterNewApplicationEmail,
@@ -1740,13 +1738,15 @@ class ApplicationController {
             if (statsBucket) {
                 let uwBucketOpts: ApplicationStatsBucketWhereOptions | undefined;
                 if (
-                    (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
+                    (uwClaimNorm === 'unclaimed' ||
+                        uwClaimNorm === 'claimed' ||
+                        uwClaimNorm === 'mine') &&
                     authRoleUpper === 'SCRUBBING' &&
                     authUser?.id
                 ) {
                     uwBucketOpts = {
                         uwInbox: {
-                            tab: uwClaimNorm as 'mine' | 'unclaimed',
+                            tab: uwClaimNorm as 'unclaimed' | 'claimed' | 'mine',
                             viewerId: authUser.id,
                             stage: 'scrubbing',
                         },
@@ -1846,7 +1846,9 @@ class ApplicationController {
                     ],
                 };
             } else if (
-                (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
+                (uwClaimNorm === 'unclaimed' ||
+                    uwClaimNorm === 'claimed' ||
+                    uwClaimNorm === 'mine') &&
                 authRoleUpper === 'SCRUBBING' &&
                 authUser?.id
             ) {
@@ -1855,17 +1857,37 @@ class ApplicationController {
                         ? where.AND
                         : [where.AND]
                     : [];
-                const claimFilter: Prisma.ApplicationWhereInput =
-                    uwClaimNorm === 'unclaimed'
-                        ? { claimedByUnderwriterId: null }
-                        : { claimedByUnderwriterId: authUser.id };
+                const scrubbingQueueFilter: Prisma.ApplicationWhereInput = {
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
+                };
+                const pastScrubbingFilter: Prisma.ApplicationWhereInput = {
+                    NOT: {
+                        currentQueue: {
+                            equals: WORKFLOW_QUEUES.SCRUBBING,
+                            mode: 'insensitive',
+                        },
+                    },
+                };
+                let scrubbingInboxFilters: Prisma.ApplicationWhereInput[];
+                if (uwClaimNorm === 'unclaimed') {
+                    scrubbingInboxFilters = [
+                        scrubbingQueueFilter,
+                        { claimedByUnderwriterId: null },
+                    ];
+                } else if (uwClaimNorm === 'claimed') {
+                    scrubbingInboxFilters = [
+                        scrubbingQueueFilter,
+                        { claimedByUnderwriterId: authUser.id },
+                    ];
+                } else {
+                    scrubbingInboxFilters = [
+                        { claimedByUnderwriterId: authUser.id },
+                        pastScrubbingFilter,
+                    ];
+                }
                 where = {
                     ...where,
-                    AND: [
-                        ...existingAnd,
-                        { currentQueue: WORKFLOW_QUEUES.SCRUBBING },
-                        claimFilter,
-                    ],
+                    AND: [...existingAnd, ...scrubbingInboxFilters],
                 };
             } else if (
                 (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') &&
@@ -2267,8 +2289,12 @@ class ApplicationController {
                         .trim()
                         .toLowerCase()
                     : '';
-            let underwriterClaimParam: 'unclaimed' | 'mine' | null = null;
-            if (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') {
+            let underwriterClaimParam: UnderwriterClaimScope | null = null;
+            if (
+                uwClaimNorm === 'unclaimed' ||
+                uwClaimNorm === 'claimed' ||
+                uwClaimNorm === 'mine'
+            ) {
                 const roleUpper = String(currentUserRole ?? '')
                     .trim()
                     .toUpperCase()
@@ -2279,13 +2305,19 @@ class ApplicationController {
                         message: 'underwriterClaim stats are only available for the Scrubbing or Underwriter role',
                     });
                 }
+                if (roleUpper === 'UNDERWRITER' && uwClaimNorm === 'claimed') {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'underwriterClaim=claimed is only available for the Scrubbing role',
+                    });
+                }
                 if (!authUser?.id) {
                     return res.status(401).json({
                         success: false,
                         message: 'Unauthorized',
                     });
                 }
-                underwriterClaimParam = uwClaimNorm as 'unclaimed' | 'mine';
+                underwriterClaimParam = uwClaimNorm as UnderwriterClaimScope;
             }
 
             const cacheKey = [
@@ -4888,8 +4920,6 @@ class ApplicationController {
                                     additionalComments: additionalCommentsText,
                                     template: 'rejection',
                                     status: 'sent',
-                                    hasLetterPdf: true,
-                                    attachments: [REJECTION_EMAIL_PDF_FILENAME],
                                     ccEmails: uniqueCcList,
                                     emailThread: emailThreadContext
                                         ? {
@@ -6583,9 +6613,6 @@ class ApplicationController {
             const emailSubject =
                 clientEmailSubject ||
                 (resend ? 'Your Offer Values Have Been Updated' : 'Your Application Has Been Approved');
-            const approvalPdfFilename = resend
-                ? OFFER_UPDATED_EMAIL_PDF_FILENAME
-                : APPROVAL_EMAIL_PDF_FILENAME;
 
             /**
              * Prefer the frontend-rendered branded template (the approval/update-offer HTML is now
@@ -6648,8 +6675,6 @@ class ApplicationController {
                         resend: !!resend,
                         template: resend ? 'offer-updated' : 'approval',
                         status: 'sent',
-                        hasLetterPdf: true,
-                        attachments: [approvalPdfFilename],
                         delivery: {
                             status: 'sent',
                             sentAt: new Date().toISOString(),
@@ -7246,9 +7271,13 @@ class ApplicationController {
                           .trim()
                           .toLowerCase()
                     : '';
-            let underwriterClaimParam: 'unclaimed' | 'mine' | null = null;
-            if (uwClaimNorm === 'unclaimed' || uwClaimNorm === 'mine') {
-                underwriterClaimParam = uwClaimNorm;
+            let underwriterClaimParam: UnderwriterClaimScope | null = null;
+            if (
+                uwClaimNorm === 'unclaimed' ||
+                uwClaimNorm === 'claimed' ||
+                uwClaimNorm === 'mine'
+            ) {
+                underwriterClaimParam = uwClaimNorm as UnderwriterClaimScope;
             }
 
             const trendCacheKey = [

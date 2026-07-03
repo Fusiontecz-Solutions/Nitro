@@ -22,7 +22,6 @@ import {
     buildApplicationApprovedEmailInjectValues,
     buildApplicationApprovedEmailHtml,
     injectApplicationApprovalEmailValues,
-    APPROVAL_EMAIL_PDF_FILENAME,
 } from '../services/emailService';
 import { createOutboundCommunication, storeSgMessageIdOnOutbound } from '../services/outboundCommunicationService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
@@ -698,8 +697,6 @@ class FundingCallController {
               fundingCallDisbursement: true,
               template: 'approval',
               status: 'sent',
-              hasLetterPdf: true,
-              attachments: [APPROVAL_EMAIL_PDF_FILENAME],
               delivery: {
                 status: 'sent',
                 sentAt: new Date().toISOString(),

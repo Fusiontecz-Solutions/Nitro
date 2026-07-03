@@ -112,8 +112,12 @@ const uwInboxQueueNorms = (stage: 'scrubbing' | 'underwriter') =>
  * When SCRUBBING / UNDERWRITER stats are scoped by `underwriterClaim`, Agent-centric workflow predicates are wrong:
  * queue-scoped rows split by claim vs backlog vs active workflow state.
  */
+export type UnderwriterClaimScope = 'unclaimed' | 'claimed' | 'mine';
+
+const scrubbingQueueNotSql = Prisma.sql`LOWER(TRIM(COALESCE(a."currentQueue", ''))) <> 'scrubbing'`;
+
 function buildUwInboxWorkflowBucketPredicatesSql(
-    claim: 'unclaimed' | 'mine',
+    claim: UnderwriterClaimScope,
     viewerId: string,
     stage: 'scrubbing' | 'underwriter' = 'scrubbing',
 ): { pendingSql: Prisma.Sql; inProgressSql: Prisma.Sql } {
@@ -135,22 +139,28 @@ function buildUwInboxWorkflowBucketPredicatesSql(
     };
 }
 
-/** Optional scope for SCRUBBING “Queue” vs “My deals” dashboards (matches list `underwriterClaim`). */
+/** Optional scope for SCRUBBING Queue / Claimed / My deals dashboards (matches list `underwriterClaim`). */
 export function buildUnderwriterStatsClaimSql(
     roleRaw: string | null | undefined,
-    underwriterClaim: 'unclaimed' | 'mine' | null | undefined,
+    underwriterClaim: UnderwriterClaimScope | null | undefined,
     viewerId: string | null | undefined,
 ): Prisma.Sql {
     const r = normalizeRoleKey(roleRaw);
     if (
-        (underwriterClaim === 'unclaimed' || underwriterClaim === 'mine') &&
+        (underwriterClaim === 'unclaimed' ||
+            underwriterClaim === 'claimed' ||
+            underwriterClaim === 'mine') &&
         r === 'SCRUBBING' &&
         viewerId
     ) {
         if (underwriterClaim === 'unclaimed') {
             return Prisma.sql`(a."currentQueue" = 'Scrubbing' AND a."claimedByUnderwriterId" IS NULL)`;
         }
-        return Prisma.sql`(a."currentQueue" = 'Scrubbing' AND a."claimedByUnderwriterId" = ${viewerId})`;
+        if (underwriterClaim === 'claimed') {
+            return Prisma.sql`(a."currentQueue" = 'Scrubbing' AND a."claimedByUnderwriterId" = ${viewerId})`;
+        }
+        // My deals: scrubbed by this user and advanced past Scrubbing (any downstream stage).
+        return Prisma.sql`(a."claimedByUnderwriterId" = ${viewerId} AND ${scrubbingQueueNotSql})`;
     }
     if (
         (underwriterClaim === 'unclaimed' || underwriterClaim === 'mine') &&
@@ -271,7 +281,7 @@ export async function aggregateApplicationStats(params: {
     role: string | null | undefined;
     startDate: Date | null;
     endDate: Date | null;
-    underwriterClaim?: 'unclaimed' | 'mine' | null;
+    underwriterClaim?: UnderwriterClaimScope | null;
 }): Promise<ApplicationStatsPayload> {
     const whereScopedBase = buildStatsWhereSql(params.role, params.startDate, params.endDate, 'a');
     const uwClaimPred = buildUnderwriterStatsClaimSql(
@@ -297,7 +307,7 @@ export async function aggregateApplicationStats(params: {
     if (
         normalizeRoleKey(params.role) === 'SCRUBBING' &&
         uwViewerId &&
-        (uwTab === 'unclaimed' || uwTab === 'mine')
+        (uwTab === 'unclaimed' || uwTab === 'claimed')
     ) {
         uwWf = buildUwInboxWorkflowBucketPredicatesSql(uwTab, uwViewerId, 'scrubbing');
     }

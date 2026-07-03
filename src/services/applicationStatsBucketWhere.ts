@@ -1,8 +1,12 @@
 import type { Prisma } from '@prisma/client';
 
 export type ApplicationStatsBucketWhereOptions = {
-    /** SCRUBBING / UNDERWRITER inbox: align `statsBucket` list filters with Queue / My scoped stats cards. */
-    uwInbox?: { tab: 'unclaimed' | 'mine'; viewerId: string; stage?: 'scrubbing' | 'underwriter' };
+    /** SCRUBBING / UNDERWRITER inbox: align `statsBucket` list filters with Queue / Claimed / My scoped stats cards. */
+    uwInbox?: {
+        tab: 'unclaimed' | 'claimed' | 'mine';
+        viewerId: string;
+        stage?: 'scrubbing' | 'underwriter';
+    };
 };
 
 function icEq(
@@ -45,14 +49,32 @@ export function buildApplicationStatsBucketWhere(
         ],
     };
 
+    const scrubberMineClaimPart = (): Prisma.ApplicationWhereInput | undefined => {
+        if (opts?.uwInbox?.tab !== 'mine' || opts.uwInbox.stage === 'underwriter') {
+            return undefined;
+        }
+        return { claimedByUnderwriterId: opts.uwInbox.viewerId };
+    };
+
+    const withScrubberMineClaim = (
+        base: Prisma.ApplicationWhereInput,
+    ): Prisma.ApplicationWhereInput => {
+        const claimPart = scrubberMineClaimPart();
+        if (!claimPart) return base;
+        return { AND: [base, claimPart] };
+    };
+
     switch (key) {
         case 'funded':
-            return fundedWhere;
+            return withScrubberMineClaim(fundedWhere);
         case 'rejected':
-            return icEq('currentQueue', 'Declined');
+            return withScrubberMineClaim(icEq('currentQueue', 'Declined'));
         case 'workflow_pending':
             if (opts?.uwInbox) {
                 const isFinalUw = opts.uwInbox.stage === 'underwriter';
+                if (!isFinalUw && opts.uwInbox.tab === 'mine') {
+                    return undefined;
+                }
                 const claimPart: Prisma.ApplicationWhereInput =
                     opts.uwInbox.tab === 'unclaimed'
                         ? isFinalUw
@@ -85,6 +107,9 @@ export function buildApplicationStatsBucketWhere(
         case 'workflow_in_progress':
             if (opts?.uwInbox) {
                 const isFinalUw = opts.uwInbox.stage === 'underwriter';
+                if (!isFinalUw && opts.uwInbox.tab === 'mine') {
+                    return undefined;
+                }
                 const claimPart: Prisma.ApplicationWhereInput =
                     opts.uwInbox.tab === 'unclaimed'
                         ? isFinalUw
@@ -161,14 +186,14 @@ export function buildApplicationStatsBucketWhere(
         }
         case 'approved':
             /** Matches `/applications/stats` approved bucket: `currentState` = Approved only (not CONTRACTS_OUT / Contracted). */
-            return {
+            return withScrubberMineClaim({
                 OR: [
                     icEq('currentState', 'Underwriter Approved'),
                     icEq('currentState', 'UNDERWRITER_APPROVED'),
                     icEq('currentState', 'Approved'),
                     icEq('currentState', 'APPROVED'),
                 ],
-            };
+            });
         default:
             return undefined;
     }

@@ -763,38 +763,8 @@ type MailAttachment = {
     contentDisposition?: 'inline' | 'attachment';
 };
 
-async function buildEmailHtmlPdfAttachment(
-    html: string,
-    pdfFilename: string,
-): Promise<{
-    filename: string;
-    content: Buffer;
-    contentType: string;
-    contentDisposition: 'attachment';
-} | null> {
-    try {
-        const { renderLetterHtmlToPdfBuffer, sanitizeLetterPdfFilename } = await import(
-            './pdf/letterHtmlToPdf.service'
-        );
-        const content = await renderLetterHtmlToPdfBuffer(html);
-        return {
-            filename: sanitizeLetterPdfFilename(pdfFilename),
-            content,
-            contentType: 'application/pdf',
-            contentDisposition: 'attachment',
-        };
-    } catch (error) {
-        // eslint-disable-next-line no-console
-        console.error('[email] HTML to PDF attachment failed:', { pdfFilename, error });
-        return null;
-    }
-}
-
-async function buildIsoBrandedEmailAttachments(html: string, pdfFilename: string): Promise<MailAttachment[]> {
-    const attachments: MailAttachment[] = [...buildBrandLogoAttachments()];
-    const pdfAttachment = await buildEmailHtmlPdfAttachment(html, pdfFilename);
-    if (pdfAttachment) attachments.push(pdfAttachment);
-    return attachments;
+function buildIsoBrandedEmailAttachments(): MailAttachment[] {
+    return [...buildBrandLogoAttachments()];
 }
 
 export const buildApplicationApprovalEmailHtml = ({
@@ -892,8 +862,7 @@ export async function sendApplicationApprovalEmail({
         .filter((e) => e.toLowerCase() !== toTrimmed.toLowerCase());
 
     try {
-        const attachments = await buildIsoBrandedEmailAttachments(html, APPROVAL_EMAIL_PDF_FILENAME);
-        const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
+        const attachments = buildIsoBrandedEmailAttachments();
         const mailOptions = {
             to: toTrimmed,
             cc: uniqueCc.length ? uniqueCc : undefined,
@@ -917,10 +886,6 @@ export async function sendApplicationApprovalEmail({
                 '[email] Application approval sent without trackingId — SendGrid webhook delivery status will not be recorded',
                 { to: toTrimmed },
             );
-        }
-        if (!hasPdf) {
-            // eslint-disable-next-line no-console
-            console.warn('[email] Application approval sent without PDF attachment (PDF generation failed)');
         }
         return { sent: true, sgMessageId: readSendGridMessageId(result) };
     } catch (error) {
@@ -965,9 +930,7 @@ export type ApplicationRejectionEmailResult = {
     ccErrors: string[];
 };
 
-function cloneMailAttachments(
-    attachments: Awaited<ReturnType<typeof buildIsoBrandedEmailAttachments>>,
-) {
+function cloneMailAttachments(attachments: MailAttachment[]) {
     return attachments.map((attachment) => ({
         ...attachment,
         content:
@@ -1284,7 +1247,7 @@ export async function sendApplicationRejectionEmail({
     const dispatchRejectionMail = async (
         mailTo: string | string[],
         options: { threaded: boolean; withTracking: boolean },
-        attachments: Awaited<ReturnType<typeof buildIsoBrandedEmailAttachments>>,
+        attachments: MailAttachment[],
     ) => {
         const payload = {
             inReplyTo: options.threaded
@@ -1310,8 +1273,7 @@ export async function sendApplicationRejectionEmail({
     };
 
     try {
-        const attachments = await buildIsoBrandedEmailAttachments(html, REJECTION_EMAIL_PDF_FILENAME);
-        const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
+        const attachments = buildIsoBrandedEmailAttachments();
 
         // ISO: reply in the original submission thread when headers are available.
         await dispatchRejectionMail(toTrimmed, { threaded: true, withTracking: true }, attachments);
@@ -1342,10 +1304,6 @@ export async function sendApplicationRejectionEmail({
                 cc: emailedCc,
                 ccErrors,
             });
-        }
-        if (!hasPdf) {
-            // eslint-disable-next-line no-console
-            console.warn('[email] Application rejection sent without PDF attachment (PDF generation failed)');
         }
         return {
             sent: emailedTo.length > 0,
@@ -1542,8 +1500,7 @@ export async function sendApplicationOfferUpdatedEmail({
         .filter((e) => e.toLowerCase() !== toTrimmed.toLowerCase());
 
     try {
-        const attachments = await buildIsoBrandedEmailAttachments(html, OFFER_UPDATED_EMAIL_PDF_FILENAME);
-        const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
+        const attachments = buildIsoBrandedEmailAttachments();
         const result = await sendMail({
             to: toTrimmed,
             cc: uniqueCc.length ? uniqueCc : undefined,
@@ -1553,10 +1510,6 @@ export async function sendApplicationOfferUpdatedEmail({
             trackingId,
             categories: ['offer-updated'],
         });
-        if (!hasPdf) {
-            // eslint-disable-next-line no-console
-            console.warn('[email] Offer update sent without PDF attachment (PDF generation failed)');
-        }
         return { sent: true, sgMessageId: readSendGridMessageId(result) };
     } catch (error) {
         // eslint-disable-next-line no-console
@@ -2528,11 +2481,7 @@ export async function sendDocumentRequestEmail(
         : buildDocumentRequestEmailHtml(params);
 
     try {
-        const attachments = await buildIsoBrandedEmailAttachments(
-            html,
-            DOCUMENT_REQUEST_EMAIL_PDF_FILENAME,
-        );
-        const hasPdf = attachments.some((a) => a.contentDisposition === 'attachment');
+        const attachments = buildIsoBrandedEmailAttachments();
         const result = await sendSendGridMail({
             to: toList,
             cc: ccList.length ? ccList : undefined,
@@ -2542,10 +2491,6 @@ export async function sendDocumentRequestEmail(
             categories: params.trackingId ? ['document-request'] : undefined,
             attachments,
         });
-        if (!hasPdf) {
-            // eslint-disable-next-line no-console
-            console.warn('[email] Document request sent without PDF attachment (PDF generation failed)');
-        }
         const sgMessageId =
             typeof (result as { messageId?: string })?.messageId === 'string'
                 ? (result as { messageId: string }).messageId

@@ -28,6 +28,7 @@ import {
     inferRecipientTypeFromCategory,
 } from '../services/outboundCommunicationService';
 import { recordCommunicationAudit } from '../services/systemActivityLogService';
+import { isPayoffOrZeroBalanceLetterTemplate } from '../utils/payoffOrZeroBalanceLetter';
 
 /**
  * Manually trigger Gmail sync
@@ -437,13 +438,17 @@ export async function sendCompose(req: Request, res: Response): Promise<void> {
             references,
             attachLetterPdf,
             letterPdfFilename,
+            templateName,
         } = req.body;
 
-        const wantLetterPdf =
+        const requestedLetterPdf =
             attachLetterPdf === true ||
             attachLetterPdf === 'true' ||
             attachLetterPdf === 1 ||
             attachLetterPdf === '1';
+        const wantLetterPdf =
+            requestedLetterPdf &&
+            isPayoffOrZeroBalanceLetterTemplate(String(templateName || ''));
 
         let letterPdfBuffer: Buffer | undefined;
         let letterPdfName: string | undefined;

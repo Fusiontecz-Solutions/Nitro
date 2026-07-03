@@ -150,7 +150,7 @@ export async function aggregateApplicationTrendChart(params: {
     startDate: Date | null;
     endDate: Date | null;
     trendView: 'monthly' | 'weekly' | 'yearly';
-    underwriterClaim?: 'unclaimed' | 'mine' | null;
+    underwriterClaim?: import('./applicationStatsService').UnderwriterClaimScope | null;
 }): Promise<DashboardTrendChartPoint[]> {
     const whereScopedBase = buildStatsWhereSql(params.role, params.startDate, params.endDate, 'a');
     const uwClaimPred = buildUnderwriterStatsClaimSql(

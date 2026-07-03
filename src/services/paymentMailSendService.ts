@@ -15,6 +15,7 @@ import {
   inferRecipientTypeFromCategory,
   storeSgMessageIdOnOutbound,
 } from './outboundCommunicationService';
+import { isPayoffOrZeroBalanceLetterTemplate } from '../utils/payoffOrZeroBalanceLetter';
 
 export interface SendPaymentTemplateMailInput {
   to: string;
@@ -27,7 +28,7 @@ export interface SendPaymentTemplateMailInput {
   dealKey: string;
   templateName: string;
   category: string;
-  /** When true (or when category is `email`), renders the HTML body to a PDF and attaches it. */
+  /** Ignored unless {@link templateName} is a Payoff or Zero Balance letter. */
   attachLetterPdf?: boolean;
   letterPdfFilename?: string;
 }
@@ -71,9 +72,7 @@ export async function sendTrackedPaymentTemplateMail(
     contentDisposition?: 'attachment' | 'inline';
   }> = [];
 
-  const shouldAttachPdf =
-    Boolean(input.attachLetterPdf) ||
-    String(input.category || '').trim().toLowerCase() === 'email';
+  const shouldAttachPdf = isPayoffOrZeroBalanceLetterTemplate(input.templateName);
 
   if (shouldAttachPdf) {
     const { renderLetterHtmlToPdfBuffer, sanitizeLetterPdfFilename } = await import(
