@@ -72,6 +72,19 @@ export function loadNyscefCache(
   }
 }
 
+/** Load the saved NY Court result for an application regardless of active query key. */
+export function loadLatestNyscefCache(applicationId: string): PersistedNyscefCache | null {
+  try {
+    const raw = localStorage.getItem(nyscefStorageKey(applicationId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedNyscefCache;
+    if (!parsed.result || !parsed.searchedAt) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function saveNyscefCache(applicationId: string, cache: PersistedNyscefCache): void {
   localStorage.setItem(nyscefStorageKey(applicationId), JSON.stringify(cache));
 }
@@ -155,7 +168,9 @@ export function isNyscefImportMessage(
   ) {
     return false;
   }
-  return msg.cases.every((item) => Boolean(item?.caseName || item?.indexNumber));
+  return msg.cases.every(
+    (item) => Boolean(item?.caseName || item?.indexNumber || item?.detailUrl),
+  );
 }
 
 export function isAllowedNyscefMessageOrigin(origin: string): boolean {

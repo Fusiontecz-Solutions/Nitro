@@ -104,20 +104,28 @@ export type CrmBridgeInboxPayload = {
   savedAt: number;
 };
 
-export function loadCrmBridgeInbox(applicationId: string): CrmBridgeInboxPayload | null {
+export function loadCrmBridgeInbox(
+  applicationId: string,
+  options?: { source?: CrmBridgeSectionId },
+): CrmBridgeInboxPayload | null {
   const ids = [
     String(applicationId ?? "").trim(),
     readRouteApplicationIdFromLocation(),
   ].filter(Boolean);
 
   for (const id of [...new Set(ids)]) {
+    const storageKey = `${CRM_BRIDGE_INBOX_PREFIX}${id}`;
     try {
-      const raw = localStorage.getItem(`${CRM_BRIDGE_INBOX_PREFIX}${id}`);
+      const raw = localStorage.getItem(storageKey);
       if (!raw) continue;
-      localStorage.removeItem(`${CRM_BRIDGE_INBOX_PREFIX}${id}`);
       const parsed = JSON.parse(raw) as CrmBridgeInboxPayload;
       if (!parsed?.importPayload || !parsed?.returnMessage) continue;
-      if (Date.now() - (parsed.savedAt || 0) > 5 * 60 * 1000) continue;
+      if (Date.now() - (parsed.savedAt || 0) > 5 * 60 * 1000) {
+        localStorage.removeItem(storageKey);
+        continue;
+      }
+      if (options?.source && parsed.source !== options.source) continue;
+      localStorage.removeItem(storageKey);
       return parsed;
     } catch {
       // Try next id alias.

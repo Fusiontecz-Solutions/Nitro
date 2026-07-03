@@ -377,9 +377,9 @@ export default function OpenCorporatesPanel({
 
   useCrmBridgeInbox(
     applicationId,
+    "opencorporates",
     useCallback(
       (inbox) => {
-        if (inbox.source !== "opencorporates") return;
         processOpenCorporatesImport(inbox.importPayload);
       },
       [processOpenCorporatesImport],

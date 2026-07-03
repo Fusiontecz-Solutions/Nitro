@@ -3,10 +3,12 @@ import {
   loadCrmBridgeInbox,
   readRouteApplicationIdFromLocation,
   type CrmBridgeInboxPayload,
+  type CrmBridgeSectionId,
 } from "./crmBridgeTypes";
 
 export function useCrmBridgeInbox(
   applicationId: string | undefined,
+  source: CrmBridgeSectionId,
   onInbox: (payload: CrmBridgeInboxPayload) => void,
 ): void {
   const onInboxRef = useRef(onInbox);
@@ -18,7 +20,7 @@ export function useCrmBridgeInbox(
     if (!resolvedId) return;
 
     const consume = () => {
-      const inbox = loadCrmBridgeInbox(resolvedId);
+      const inbox = loadCrmBridgeInbox(resolvedId, { source });
       if (inbox) {
         onInboxRef.current(inbox);
       }
@@ -37,5 +39,5 @@ export function useCrmBridgeInbox(
       window.clearInterval(pollInterval);
       window.clearTimeout(stopPoll);
     };
-  }, [applicationId]);
+  }, [applicationId, source]);
 }
