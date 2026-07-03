@@ -92,13 +92,38 @@ export function parseUnderwriterPipelineFromSearch(
   return normalizeUnderwriterPipelineParam(raw);
 }
 
-/** URL → underwriter deal-pool tab (`/applications?underwriterClaim=`). */
+/** URL → scrubber / underwriter deal-pool tab (`/applications?underwriterClaim=`). */
+export type UnderwriterClaimParam = "unclaimed" | "claimed" | "mine";
+
+export type ScrubberPoolTab = "queue" | "claimed" | "my";
+
 export function parseUnderwriterClaimFromSearch(
   search: string,
-): "unclaimed" | "mine" | undefined {
+): UnderwriterClaimParam | undefined {
   const raw = new URLSearchParams(search).get("underwriterClaim")?.trim().toLowerCase();
-  if (raw === "unclaimed" || raw === "mine") return raw;
+  if (raw === "unclaimed" || raw === "claimed" || raw === "mine") return raw;
   return undefined;
+}
+
+export function poolTabFromUnderwriterClaim(
+  claim: UnderwriterClaimParam | undefined,
+): ScrubberPoolTab {
+  if (claim === "claimed") return "claimed";
+  if (claim === "mine") return "my";
+  return "queue";
+}
+
+export function underwriterClaimFromPoolTab(
+  tab: ScrubberPoolTab,
+  roleKey: string,
+): UnderwriterClaimParam {
+  const normalizedRole = roleKey.toUpperCase().replace(/-/g, "_");
+  if (normalizedRole === "SCRUBBING") {
+    if (tab === "claimed") return "claimed";
+    if (tab === "my") return "mine";
+    return "unclaimed";
+  }
+  return tab === "my" ? "mine" : "unclaimed";
 }
 
 /** URL → list filters (operations dashboard drill-down). */
@@ -164,8 +189,8 @@ export function buildApplicationsListParams(options: {
   priorityFilter?: string;
   /** `all` or organization value (Katan II, Katan III). */
   organizationFilter?: string;
-    /** SCRUBBING / UNDERWRITER: narrow list to pool vs my claimed deals. Overrides queue dropdown. */
-    underwriterClaim?: "unclaimed" | "mine";
+    /** SCRUBBING / UNDERWRITER: narrow list to pool vs claimed vs completed deals. */
+    underwriterClaim?: UnderwriterClaimParam;
     /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
     underwriterPipeline?: string;
   /** SUPER_ADMIN / OPERATIONS: scrubbing-stage claim user id. */

@@ -689,11 +689,6 @@ const ChecksAndDecision = ({
                     !isIsoApprovalMailModalOpen
                 }
                 showIsoRecipientFields={isIsoApprovalMailModalOpen}
-                showComplianceChecks={
-                    canSendApprovalMailToIso && !isFinalUnderwriter
-                        ? true
-                        : undefined
-                }
                 onProceedToContract={onProceedToContract}
                 resendApprovalEmail={shouldResendApprovalMail}
                 reinitiateContract={needsContractReinitiation}

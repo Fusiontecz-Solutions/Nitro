@@ -233,8 +233,8 @@ export interface GetApplicationsParams {
     sortOrder?: 'asc' | 'desc';
     /** When true, backend returns list-optimized payload (smaller includes, faster response). */
     lite?: boolean;
-    /** SCRUBBING / UNDERWRITER: narrow list to pool vs my claimed deals. */
-    underwriterClaim?: 'unclaimed' | 'mine';
+    /** SCRUBBING / UNDERWRITER: narrow list to Queue / Claimed / My deals. */
+    underwriterClaim?: 'unclaimed' | 'claimed' | 'mine';
     /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
     underwriterPipeline?: string;
     /** Organization filter for list table (e.g. "Katan II", "Katan III"). */

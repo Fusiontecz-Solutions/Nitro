@@ -326,6 +326,7 @@ export default function DecisionMakeFinalValues({
         onRegisterSaveAll={
           useDeferredSave ? handleRegisterSaveAllPositions : undefined
         }
+        autoSave={useDeferredSave && !componentsReadOnly}
       />
     </div>
   );

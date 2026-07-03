@@ -15,7 +15,7 @@ import type { RootState } from "@/redux/store";
 import { axiosGet, axiosPost, axiosPut, axiosDelete } from "@/redux/axios";
 import type { BankAnalysis } from "@/types/bankAnalysisTypes";
 import { toast } from "react-toastify";
-import { formatNumberUS, normalizeApiDateToYyyyMmDd } from "@/lib/utils";
+import { formatInt, formatNumberUS, formatNumberUSForInput, normalizeApiDateToYyyyMmDd } from "@/lib/utils";
 import BankTotalTable from "@/components/application/BankTotalTable";
 import type {
   BankTotalTableAverageCells,
@@ -91,6 +91,10 @@ interface BankAnalysisTableProps {
   hideToolbarSave?: boolean;
   /** Registers a bulk-save hook for the parent Approve & Save flow. */
   onRegisterSaveAll?: (saveAll: () => Promise<boolean>) => void;
+  /** When true, debounce-save bank rows/account after edits (Scrubbing tab). */
+  autoSave?: boolean;
+  /** Debounce delay for {@link autoSave} (ms). */
+  autoSaveDelayMs?: number;
 }
 
 const parseCurrency = (value: string): number => {
@@ -128,7 +132,6 @@ const hasAnyValue = (row: MonthlyData): boolean => {
   );
 };
 
-/** After save/load: show currency inputs with two fraction digits (e.g. 900.00). */
 const formatMoneyRowDisplay = (row: MonthlyData): MonthlyData => ({
   ...row,
   totalCredit: hasEnteredNumericValue(row.totalCredit)
@@ -146,7 +149,37 @@ const formatMoneyRowDisplay = (row: MonthlyData): MonthlyData => ({
   avgDailyBlc: hasEnteredNumericValue(row.avgDailyBlc)
     ? formatNumberUS(parseCurrency(row.avgDailyBlc))
     : row.avgDailyBlc,
+  nsfNegDays: hasEnteredNumericValue(row.nsfNegDays)
+    ? formatInt(parseCurrency(row.nsfNegDays))
+    : row.nsfNegDays,
+  lowBlcDays: hasEnteredNumericValue(row.lowBlcDays)
+    ? formatInt(parseCurrency(row.lowBlcDays))
+    : row.lowBlcDays,
 });
+
+/** Parsed snapshot for auto-save debounce — ignores display formatting churn. */
+function buildBanksPersistSignature(banks: BankAnalysisInstance[]): string {
+  return JSON.stringify(
+    banks.map((b) => ({
+      id: b.id,
+      backendId: b.backendId ?? "",
+      accountNumber: (b.accountNumber ?? "").trim(),
+      rows: b.rows
+        .filter(hasAnyValue)
+        .map((r) => ({
+          month: r.month,
+          rowBackendId: r.rowBackendId ?? "",
+          totalCredit: parseCurrency(r.totalCredit),
+          loanTransfer: parseCurrency(r.loanTransfer),
+          deposit: parseCurrency(r.deposit),
+          other: parseCurrency(r.other),
+          nsfNegDays: parseCurrency(r.nsfNegDays),
+          lowBlcDays: parseCurrency(r.lowBlcDays),
+          avgDailyBlc: parseCurrency(r.avgDailyBlc),
+        })),
+    })),
+  );
+}
 
 const computeBankTotalForMonth = (bucket: MonthSummaryBucket): BankTotalMonth => {
   const totalCredit = bucket.totalCredit;
@@ -304,6 +337,8 @@ const BankAnalysisTable = ({
   onBanksMetaChange,
   hideToolbarSave = false,
   onRegisterSaveAll,
+  autoSave = false,
+  autoSaveDelayMs = 1500,
 }: BankAnalysisTableProps) => {
   const isReadOnly = !!readOnly;
   /** Hide per-bank Save when bulk save is wired (e.g. Offer "Approve & Save"). */
@@ -323,6 +358,9 @@ const BankAnalysisTable = ({
   const [deletingRow, setDeletingRow] = useState<{ bankId: number; rowIndex: number } | null>(null);
   /** Blocks duplicate API saves when save is triggered faster than React re-renders. */
   const saveBankInFlightRef = useRef<Set<number>>(new Set());
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoSavedBanksSigRef = useRef<string>("");
+  const banksAutoSaveBootstrappedRef = useRef(false);
 
   const { data: applicationData } = useSelector(
     (state: RootState) => state.applicationDetail,
@@ -663,8 +701,8 @@ const BankAnalysisTable = ({
           : hasData && totals && totals.avgDailyBlc !== null
             ? `$ ${formatNumberUS(totals.avgDailyBlc)}`
             : "-",
-        nsfNegDays: L ? "Loading..." : hasData && totals ? String(totals.nsfNegDays) : "-",
-        lowBalDays: L ? "Loading..." : hasData && totals ? String(totals.lowBlcDays) : "-",
+        nsfNegDays: L ? "Loading..." : hasData && totals ? formatInt(totals.nsfNegDays) : "-",
+        lowBalDays: L ? "Loading..." : hasData && totals ? formatInt(totals.lowBlcDays) : "-",
       };
     });
 
@@ -702,8 +740,8 @@ const BankAnalysisTable = ({
             !Number.isNaN(avgDailyBlcAvg)
           ? `$ ${formatNumberUS(avgDailyBlcAvg)}`
           : "-",
-      nsfNegDays: L ? "Loading..." : H && nsfAvg !== null ? String(Math.round(nsfAvg)) : "-",
-      lowBalDays: L ? "Loading..." : H && lowBlcAvg !== null ? String(Math.round(lowBlcAvg)) : "-",
+      nsfNegDays: L ? "Loading..." : H && nsfAvg !== null ? formatInt(Math.round(nsfAvg)) : "-",
+      lowBalDays: L ? "Loading..." : H && lowBlcAvg !== null ? formatInt(Math.round(lowBlcAvg)) : "-",
     };
 
     return { rows, average };
@@ -898,9 +936,12 @@ const BankAnalysisTable = ({
     return { bank, row };
   }, [fundingBreakdownModal, banks]);
 
-  const saveBank = async (
+  const saveBank = useCallback(async (
     bank: BankAnalysisInstance,
+    opts?: { lockAfterSave?: boolean; silent?: boolean },
   ): Promise<"saved" | "failed" | "skipped"> => {
+    const lockAfterSave = opts?.lockAfterSave !== false;
+    const silent = !!opts?.silent;
     if (!applicationId) {
       console.error("Cannot save bank analysis without applicationId");
       return "failed";
@@ -962,7 +1003,7 @@ const BankAnalysisTable = ({
             return formatMoneyRowDisplay({
               ...r,
               rowBackendId: rowBackendId ?? r.rowBackendId,
-              isLocked: hasAnyValue(r),
+              isLocked: lockAfterSave ? hasAnyValue(r) : r.isLocked,
             });
           });
           return {
@@ -976,17 +1017,19 @@ const BankAnalysisTable = ({
       return "saved";
     } catch (error) {
       console.error("Failed to save bank analysis", error);
-      toast.error("Failed to save bank analysis. Please try again.");
+      if (!silent) {
+        toast.error("Failed to save bank analysis. Please try again.");
+      }
       return "failed";
     } finally {
       saveBankInFlightRef.current.delete(bank.id);
     }
-  };
+  }, [applicationId]);
 
   const handleBulkSaveBank = async (bank: BankAnalysisInstance) => {
     setBulkSavingBankId(bank.id);
     try {
-      const result = await saveBank(bank);
+      const result = await saveBank(bank, { lockAfterSave: true });
       if (result === "saved") {
         toast.success("Bank analysis saved.");
       }
@@ -1025,11 +1068,68 @@ const BankAnalysisTable = ({
       }
     }
     return allOk;
-  }, [applicationId, banks]);
+  }, [applicationId, banks, saveBank]);
 
   useEffect(() => {
     onRegisterSaveAll?.(saveAll);
   }, [onRegisterSaveAll, saveAll]);
+
+  useEffect(() => {
+    banksAutoSaveBootstrappedRef.current = false;
+    lastAutoSavedBanksSigRef.current = "";
+  }, [applicationId]);
+
+  /** Debounced auto-save for Scrubbing — persists without re-locking rows. */
+  useEffect(() => {
+    if (!autoSave || isReadOnly || isInitialLoading || !applicationId) return;
+
+    const sig = buildBanksPersistSignature(banks);
+    if (!banksAutoSaveBootstrappedRef.current) {
+      banksAutoSaveBootstrappedRef.current = true;
+      lastAutoSavedBanksSigRef.current = sig;
+      return;
+    }
+    if (sig === lastAutoSavedBanksSigRef.current) return;
+
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      void (async () => {
+        let savedAny = false;
+        for (const bank of banks) {
+          if (!bankNeedsPersist(bank)) continue;
+          const hasUnlockedData = bank.rows.some(
+            (row) => !row.isLocked && hasAnyValue(row),
+          );
+          if (!hasUnlockedData && !deferToolbarSave) continue;
+
+          const result = await saveBank(bank, {
+            lockAfterSave: false,
+            silent: true,
+          });
+          if (result === "saved") savedAny = true;
+        }
+        if (savedAny) {
+          lastAutoSavedBanksSigRef.current = sig;
+        }
+      })();
+    }, autoSaveDelayMs);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    banks,
+    autoSave,
+    autoSaveDelayMs,
+    isReadOnly,
+    isInitialLoading,
+    applicationId,
+    saveBank,
+    deferToolbarSave,
+  ]);
 
   /** Persist account number only. Backend update skips rows when `rows` is omitted, so row edits stay local until full save. */
   const saveAccountHeaderOnly = async (
@@ -1097,7 +1197,7 @@ const BankAnalysisTable = ({
               {!isReadOnly && bank.rows.length > 0 && (
                 <>
                   {deferToolbarSave ? (
-                    bank.rows.every((r) => r.isLocked) ? (
+                    bank.rows.some((r) => r.isLocked) ? (
                       <Button
                         type="button"
                         variant="outline"
@@ -1114,7 +1214,7 @@ const BankAnalysisTable = ({
                         Edit rows
                       </Button>
                     ) : null
-                  ) : bank.rows.every((r) => r.isLocked) ? (
+                  ) : bank.rows.some((r) => r.isLocked) ? (
                     <Button
                       type="button"
                       variant="outline"
@@ -1371,7 +1471,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "totalCredit",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1449,7 +1549,7 @@ const BankAnalysisTable = ({
                                       bank.id,
                                       rowIndex,
                                       "loanTransfer",
-                                      e.target.value,
+                                      formatNumberUSForInput(e.target.value),
                                     )
                                   }
                                 />
@@ -1482,7 +1582,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "deposit",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1514,7 +1614,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "other",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1552,7 +1652,7 @@ const BankAnalysisTable = ({
                               {isInitialLoading
                                 ? "Loading..."
                                 : hasEnteredNumericValue(row.nsfNegDays)
-                                  ? row.nsfNegDays
+                                  ? formatInt(parseCurrency(row.nsfNegDays))
                                   : "-"}
                             </div>
                           ) : (
@@ -1567,7 +1667,7 @@ const BankAnalysisTable = ({
                                   bank.id,
                                   rowIndex,
                                   "nsfNegDays",
-                                  e.target.value,
+                                  formatNumberUSForInput(e.target.value),
                                 )
                               }
                             />
@@ -1579,7 +1679,7 @@ const BankAnalysisTable = ({
                               {isInitialLoading
                                 ? "Loading..."
                                 : hasEnteredNumericValue(row.lowBlcDays)
-                                  ? row.lowBlcDays
+                                  ? formatInt(parseCurrency(row.lowBlcDays))
                                   : "-"}
                             </div>
                           ) : (
@@ -1594,7 +1694,7 @@ const BankAnalysisTable = ({
                                   bank.id,
                                   rowIndex,
                                   "lowBlcDays",
-                                  e.target.value,
+                                  formatNumberUSForInput(e.target.value),
                                 )
                               }
                             />
@@ -1625,7 +1725,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "avgDailyBlc",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1800,14 +1900,14 @@ const BankAnalysisTable = ({
                         {isInitialLoading
                           ? "Loading..."
                           : hasData && nsfAvg !== null
-                            ? Math.round(nsfAvg)
+                            ? formatInt(Math.round(nsfAvg))
                             : "-"}
                       </td>
                       <td className="px-4 py-3 text-left">
                         {isInitialLoading
                           ? "Loading..."
                           : hasData && lowAvg !== null
-                            ? Math.round(lowAvg)
+                            ? formatInt(Math.round(lowAvg))
                             : "-"}
                       </td>
                       <td className="px-4 py-3 text-left">
@@ -1872,7 +1972,7 @@ const BankAnalysisTable = ({
                     fundingBreakdownModal.bankId,
                     fundingBreakdownModal.rowIndex,
                     "loanTransfer",
-                    e.target.value,
+                    formatNumberUSForInput(e.target.value),
                   )
                 }
               />

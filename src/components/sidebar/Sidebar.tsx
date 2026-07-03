@@ -110,7 +110,7 @@ type SidebarNavItem = {
   /** When set, links to `/applications``fromDashboard=operations` and this `operationsStatus`. */
   operationsStatus?: string;
   /** Underwriter deal-pool inbox tab (`/applications?underwriterClaim=`). */
-  underwriterClaim?: "unclaimed" | "mine";
+  underwriterClaim?: "unclaimed" | "claimed" | "mine";
   /** Underwriter sidebar pipeline (`/applications?underwriterPipeline=`). */
   underwriterPipeline?: string;
   /** Underwriter count badge when the link URL differs from the count bucket. */
@@ -207,7 +207,7 @@ function isOperationsPipelineItemActive(
 function isUnderwriterClaimPipelineItemActive(
   pathname: string,
   searchParams: URLSearchParams,
-  underwriterClaim: "unclaimed" | "mine" | undefined,
+  underwriterClaim: "unclaimed" | "claimed" | "mine" | undefined,
 ): boolean {
   if (!underwriterClaim) return false;
   return (
