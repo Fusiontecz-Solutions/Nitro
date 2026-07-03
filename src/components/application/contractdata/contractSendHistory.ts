@@ -215,7 +215,44 @@ export function canSendMainContractAgain(
         if (isContractSendTableRowFullySigned(mainRow)) return true;
         if (isContractSendTableRowVoided(mainRow)) return true;
     }
+
+    const historyRows = buildContractSendTableRows(contract).filter(
+        (row) => row.rowType === "contract",
+    );
+    if (
+        historyRows.some(
+            (row) =>
+                isContractSendTableRowFullySigned(row) || isContractSendTableRowVoided(row),
+        )
+    ) {
+        return true;
+    }
+
+    if (isPreparingFreshMainContractSend(contract) && historyRows.length > 0) {
+        return true;
+    }
     return false;
+}
+
+/** True when the CRM contract row has a linked main-contract DocuSign envelope. */
+export function hasActiveMainContractEnvelope(
+    contract: Record<string, unknown> | null | undefined,
+): boolean {
+    const doc = pickContractEnvelopeDocument(contract);
+    return Boolean(String(doc?.envelopeId ?? "").trim());
+}
+
+/**
+ * Reinitiated or never-sent main contract — DRAFT with no live envelope on the contract record.
+ * Prior sends may still appear in send history.
+ */
+export function isPreparingFreshMainContractSend(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt?: Date | null,
+): boolean {
+    if (!contract) return false;
+    if (!canSendMainContract(contract, sessionSentAt)) return false;
+    return !hasActiveMainContractEnvelope(contract);
 }
 
 /** True when the main contract envelope is still out for signature (void before resend). */
@@ -410,6 +447,18 @@ export function canVoidContractSendTableRow(
     }
 
     return false;
+}
+
+/** Main-contract send-history rows still out for signature (e.g. after reinitiate). */
+export function resolveOutForSignatureMainContractRows(
+    contract: Record<string, unknown> | null | undefined,
+    sessionSentAt?: Date | null,
+): ContractSendTableRow[] {
+    return buildContractSendTableRows(contract).filter(
+        (row) =>
+            row.rowType === "contract" &&
+            canVoidContractSendTableRow(contract, row, sessionSentAt),
+    );
 }
 
 /** True when at least one envelope left DocuSign draft (main, ACH, or standalone package). */

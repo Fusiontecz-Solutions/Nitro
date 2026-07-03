@@ -119,6 +119,8 @@ export interface Application {
     isoUpdatedOfferApproved?: boolean;
     /** Underwriter marked ISO comments as resolved — removes deal from ISO Query pipeline. */
     isoQueryResolved?: boolean;
+    /** Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call". */
+    finalApprovalSource?: 'Decision Logic' | 'Funding Call' | null;
     createdAt?: string;
     updatedAt?: string;
 }

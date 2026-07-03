@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useTheme } from "@/context/ThemeContext";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { updateApplicationQueue, updateApplication, sendApprovalEmail, getApplicationById } from "@/redux/actions/applicationActions";
+import { updateApplicationQueue, updateApplication, sendApprovalEmail, getApplicationById, reinitiateContract } from "@/redux/actions/applicationActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
@@ -314,6 +314,8 @@ export interface ApprovedApplicationModalProps {
     resendApprovalEmail?: boolean;
     /** Pre-check reinitiate contract when resending (user can toggle in the modal). */
     reinitiateContract?: boolean;
+    /** Underwriter role — show reinitiate contract in approval modals. */
+    showReinitiateContractCheckbox?: boolean;
     /** Called after offer-decision is saved (e.g. Underwriter refresh for resend-mail state). */
     onOfferUpdated?: () => void;
     /** Underwriter ISO mail flow — editable To/CC recipients below offer details. */
@@ -414,6 +416,7 @@ const ApprovedApplicationModal = ({
     onProceedToContract,
     resendApprovalEmail,
     reinitiateContract,
+    showReinitiateContractCheckbox,
     onOfferUpdated,
     showIsoRecipientFields,
 }: ApprovedApplicationModalProps) => {
@@ -464,6 +467,10 @@ const ApprovedApplicationModal = ({
     const isoEmailTouchedRef = useRef(false);
     const isoRecipientWasOpenRef = useRef(false);
     const reinitiateContractTouchedRef = useRef(false);
+    const showReinitiateContractOption = Boolean(showReinitiateContractCheckbox);
+    const effectiveResendApprovalEmail =
+        Boolean(resendApprovalEmail) ||
+        (showReinitiateContractOption && reinitiateContractChecked);
 
     const linkedIso = (applicationData as { iso?: { name?: string; email?: string; phone?: string } | null })
         ?.iso;
@@ -551,7 +558,7 @@ const ApprovedApplicationModal = ({
             reinitiateContractTouchedRef.current = false;
             return;
         }
-        if (!resendApprovalEmail) {
+        if (!showReinitiateContractOption) {
             setReinitiateContractChecked(false);
             reinitiateContractTouchedRef.current = false;
             return;
@@ -563,7 +570,7 @@ const ApprovedApplicationModal = ({
                     applicationData as Record<string, unknown> | null,
                 ),
         );
-    }, [open, resendApprovalEmail, reinitiateContract, applicationData]);
+    }, [open, showReinitiateContractOption, reinitiateContract, applicationData]);
 
     useEffect(() => {
         if (!showIsoRecipientFields) {
@@ -821,9 +828,15 @@ const ApprovedApplicationModal = ({
                     data: { currentQueue: UNDERWRITER_APPROVED_STAGE },
                 }),
             ).unwrap();
+            if (showReinitiateContractOption && reinitiateContractChecked) {
+                await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
+            }
             await dispatch(getApplicationById(String(applicationId ?? applicationUuid)));
             toast.update(toastId, {
-                render: "Application set to Underwriter Approved.",
+                render:
+                    showReinitiateContractOption && reinitiateContractChecked
+                        ? "Application set to Underwriter Approved and contract reinitiated for regeneration."
+                        : "Application set to Underwriter Approved.",
                 type: "success",
                 isLoading: false,
                 autoClose: 3000,
@@ -867,13 +880,13 @@ const ApprovedApplicationModal = ({
 
             setIsSubmitting(true);
             const toastId = toast.loading(
-                resendApprovalEmail
+                effectiveResendApprovalEmail
                     ? "Sending updated offer email to ISO..."
                     : "Sending approval email to ISO...",
             );
             try {
                 await persistOfferDecisionFromForm(data);
-                const approvalEmailHtml = resendApprovalEmail
+                const approvalEmailHtml = effectiveResendApprovalEmail
                     ? renderOfferUpdatedEmailHtml({
                           client_name: APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
                           company_name: APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
@@ -889,10 +902,10 @@ const ApprovedApplicationModal = ({
                 await dispatch(
                     sendApprovalEmail({
                         applicationId: applicationUuid,
-                        resend: !!resendApprovalEmail,
+                        resend: effectiveResendApprovalEmail,
                         reinitiateContract: reinitiateContractChecked,
                         emailHtml: approvalEmailHtml,
-                        emailSubject: resendApprovalEmail
+                        emailSubject: effectiveResendApprovalEmail
                             ? OFFER_UPDATED_EMAIL_SUBJECT
                             : APPLICATION_APPROVAL_EMAIL_SUBJECT,
                         isoEmail: recipientEmail,
@@ -907,7 +920,7 @@ const ApprovedApplicationModal = ({
                 toast.update(toastId, {
                     render: reinitiateContractChecked
                         ? "Updated offer email sent to the ISO and contract reinitiated for regeneration."
-                        : resendApprovalEmail
+                        : effectiveResendApprovalEmail
                           ? "Updated offer email sent to the ISO. Application marked as approved by you."
                           : "Approval email sent to the ISO. Application marked as approved by you.",
                     type: "success",
@@ -930,7 +943,7 @@ const ApprovedApplicationModal = ({
                 toast.update(toastId, {
                     render:
                         backendMessage ||
-                        (resendApprovalEmail
+                        (effectiveResendApprovalEmail
                             ? "The ISO updated-offer email could not be sent."
                             : "The ISO approval email could not be sent."),
                     type: "error",
@@ -945,14 +958,14 @@ const ApprovedApplicationModal = ({
 
         setIsSubmitting(true);
         const toastId = toast.loading(
-            resendApprovalEmail
+            effectiveResendApprovalEmail
                 ? "Sending updated offer email to ISO..."
                 : "Sending approval email to ISO...",
         );
         try {
             try {
                 await persistOfferDecisionFromForm(data);
-                const approvalEmailHtml = resendApprovalEmail
+                const approvalEmailHtml = effectiveResendApprovalEmail
                     ? renderOfferUpdatedEmailHtml({
                           client_name: APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
                           company_name: APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
@@ -968,10 +981,10 @@ const ApprovedApplicationModal = ({
                 await dispatch(
                     sendApprovalEmail({
                         applicationId: applicationUuid,
-                        resend: !!resendApprovalEmail,
+                        resend: effectiveResendApprovalEmail,
                         reinitiateContract: reinitiateContractChecked,
                         emailHtml: approvalEmailHtml,
-                        emailSubject: resendApprovalEmail
+                        emailSubject: effectiveResendApprovalEmail
                             ? OFFER_UPDATED_EMAIL_SUBJECT
                             : APPLICATION_APPROVAL_EMAIL_SUBJECT,
                     }),
@@ -984,7 +997,7 @@ const ApprovedApplicationModal = ({
                 toast.update(toastId, {
                     render: reinitiateContractChecked
                         ? "Updated offer email sent to the ISO and contract reinitiated for regeneration."
-                        : resendApprovalEmail
+                        : effectiveResendApprovalEmail
                           ? "Updated offer email sent to the linked ISO when that ISO has an email on file."
                           : "Approval email sent to the linked ISO when that ISO has an email on file.",
                     type: "success",
@@ -1004,7 +1017,7 @@ const ApprovedApplicationModal = ({
                 toast.update(toastId, {
                     render:
                         backendMessage ||
-                        (resendApprovalEmail
+                        (effectiveResendApprovalEmail
                             ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
                             : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again)."),
                     type: "warning",
@@ -1132,6 +1145,46 @@ const ApprovedApplicationModal = ({
     const frequencyPeriodLabel = getFrequencyPeriodLabel(
         formValues.achFrequency ?? watchedAchFrequency ?? "",
     );
+
+    const reinitiateContractCheckbox = showReinitiateContractOption ? (
+        <div
+            className={`flex items-start gap-3 rounded-lg border px-4 py-3 ${
+                isDark
+                    ? "border-gray-700 bg-muted/30"
+                    : "border-gray-200 bg-[#F9FAFD]"
+            }`}
+        >
+            <Checkbox
+                id="reinitiate-contract-on-resend"
+                checked={reinitiateContractChecked}
+                onCheckedChange={(checked: boolean | "indeterminate") => {
+                    reinitiateContractTouchedRef.current = true;
+                    setReinitiateContractChecked(checked === true);
+                }}
+                disabled={isSubmitting}
+                className="mt-0.5"
+            />
+            <div className="min-w-0">
+                <Label
+                    htmlFor="reinitiate-contract-on-resend"
+                    className={`cursor-pointer text-sm font-semibold ${
+                        isDark ? "text-gray-200" : "text-gray-900"
+                    }`}
+                >
+                    Reinitiate contract
+                </Label>
+                <p
+                    className={`mt-1 text-xs leading-snug ${
+                        isDark ? "text-gray-400" : "text-gray-600"
+                    }`}
+                >
+                    Archive the prior contract envelope and reset the deal so
+                    Operations can regenerate the contract after the ISO
+                    re-approves the updated offer.
+                </p>
+            </div>
+        </div>
+    ) : null;
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1678,49 +1731,15 @@ const ApprovedApplicationModal = ({
                                     Press Enter or Add for each CC address. Any valid address left in the field is included when you send.
                                 </p>
                             </div>
+
+                            {reinitiateContractCheckbox}
                         </div>
                     ) : null}
-                </div>
 
-                {resendApprovalEmail ? (
-                    <div
-                        className={`flex shrink-0 items-start gap-3 rounded-lg border px-4 py-3 ${
-                            isDark
-                                ? "border-gray-700 bg-muted/30"
-                                : "border-gray-200 bg-[#F9FAFD]"
-                        }`}
-                    >
-                        <Checkbox
-                            id="reinitiate-contract-on-resend"
-                            checked={reinitiateContractChecked}
-                            onCheckedChange={(checked: boolean | "indeterminate") => {
-                                reinitiateContractTouchedRef.current = true;
-                                setReinitiateContractChecked(checked === true);
-                            }}
-                            disabled={isSubmitting}
-                            className="mt-0.5"
-                        />
-                        <div className="min-w-0">
-                            <Label
-                                htmlFor="reinitiate-contract-on-resend"
-                                className={`cursor-pointer text-sm font-semibold ${
-                                    isDark ? "text-gray-200" : "text-gray-900"
-                                }`}
-                            >
-                                Reinitiate contract
-                            </Label>
-                            <p
-                                className={`mt-1 text-xs leading-snug ${
-                                    isDark ? "text-gray-400" : "text-gray-600"
-                                }`}
-                            >
-                                Archive the prior contract envelope and reset the deal so
-                                Operations can regenerate the contract after the ISO
-                                re-approves the updated offer.
-                            </p>
-                        </div>
-                    </div>
-                ) : null}
+                    {showReinitiateContractOption && !showIsoRecipientFields
+                        ? reinitiateContractCheckbox
+                        : null}
+                </div>
 
                 {/* Action Buttons */}
                 <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/60 pt-4">

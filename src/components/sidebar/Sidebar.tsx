@@ -83,6 +83,7 @@ import PersonAddAlt1Icon from '@mui/icons-material/PersonAddAlt1';
 import PersonIcon from '@mui/icons-material/Person';
 import VerifiedUser from "@mui/icons-material/VerifiedUser";
 import QuestionAnswer from "@mui/icons-material/QuestionAnswer";
+import PauseCircle from "@mui/icons-material/PauseCircle";
 type SidebarNavIcon = ComponentType<SvgIconProps>;
 
 type PipelineAccent =
@@ -94,6 +95,7 @@ type PipelineAccent =
   | "final"
   | "finals-and-funding-call"
   | "disbursement"
+  | "on-hold"
   | "funded"
   | "rejected";
 
@@ -354,6 +356,13 @@ const dealPipelineSection: SidebarNavSection = {
       icon: AccountBalance,
       pipelineAccent: "disbursement",
     },
+    {
+      label: operationsDashboardStatusTitle("On_Hold"),
+      url: "/applications",
+      operationsStatus: "On_Hold",
+      icon: PauseCircle,
+      pipelineAccent: "on-hold",
+    },
     { label: "Funded", url: "/applications", operationsStatus: "Funded", icon: Paid, pipelineAccent: "funded" },
     { label: "Decline", url: "/applications", operationsStatus: "Declined", icon: HighlightOff, pipelineAccent: "rejected" },
   ],
@@ -408,6 +417,13 @@ const underwriterDealPipelineSection: SidebarNavSection = {
       icon: CheckCircle,
       underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.FINAL_APPROVED_BY_UW,
       pipelineAccent: "contract-pending",
+    },
+    {
+      label: operationsDashboardStatusTitle("On_Hold"),
+      url: "/applications",
+      icon: PauseCircle,
+      underwriterPipeline: UNDERWRITER_PIPELINE_FILTERS.ON_HOLD,
+      pipelineAccent: "on-hold",
     },
   ],
 };

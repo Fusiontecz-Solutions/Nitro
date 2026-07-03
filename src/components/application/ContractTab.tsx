@@ -532,7 +532,6 @@ export default function ContractTab({
         );
     }, [latestTermsOffer, fetchedContract]);
 
-    const contractsForTable = termsOffers ?? [];
     const needsContractReinitiation = applicationNeedsContractReinitiation(
         applicationData as Record<string, unknown> | null,
     );
@@ -1111,6 +1110,11 @@ export default function ContractTab({
                 voidBoldSignDocument({
                     documentId: envelopeId,
                     reason: "Voided by user from CRM",
+                    applicationId: applicationUuid ? String(applicationUuid) : undefined,
+                    contractId: selectedContractId ?? undefined,
+                    funderName:
+                        (fetchedContract as { funderName?: string | null } | null)?.funderName ??
+                        undefined,
                 }),
             ).unwrap();
             await refreshSigningStatusesOnContractTab(false, { force: true });
@@ -1640,7 +1644,7 @@ export default function ContractTab({
     const showRegenerateContractButton =
         isOpsOrSuperAdmin &&
         !isReadOnly &&
-        (needsContractReinitiation || hasGeneratedContract);
+        needsContractReinitiation;
 
     const handleRegenerateContract = async () => {
         if (!applicationUuid) {
@@ -2919,6 +2923,75 @@ export default function ContractTab({
         );
     };
 
+    const renderGeneratedContractDraftRow = () => {
+        const contract = fetchedContract as Record<string, unknown> | null;
+        if (!contract) return null;
+
+        const offer =
+            contract.offer != null && typeof contract.offer === "object"
+                ? (contract.offer as Record<string, unknown>)
+                : null;
+        const contractLength =
+            parseMaybeNumber(contract.contractLenght) ??
+            parseMaybeNumber(contract.contractLength) ??
+            termLength;
+        const draftStatusLabel = mainContractEnvelopeId
+            ? formatContractTableStatusLabel(
+                  contract.status,
+                  contractEnvelopeDocument?.status,
+                  true,
+              )
+            : "Generated";
+
+        return (
+            <TableRow key="generated-contract-draft" className={tableRowClass}>
+                <TableCell className={tableCellClass}>
+                    <span className="inline-flex items-center gap-1.5">
+                        <FileText
+                            className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] dark:text-[#C07BE0]"
+                            aria-hidden
+                        />
+                        Contract
+                    </span>
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {offer?.term != null
+                        ? String(offer.term)
+                        : contractLength != null
+                          ? String(contractLength)
+                          : "—"}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {offer?.position != null ? String(offer.position) : "1"}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {formatContractCurrency(parseMaybeNumber(contract.approvedAmount))}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {formatContractCurrency(
+                        parseMaybeNumber(contract.totalAmount) ??
+                            parseMaybeNumber(offer?.totalRemit) ??
+                            parseMaybeNumber(offer?.paybackAmount),
+                    )}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {formatContractCurrency(contractTableMetrics.perPeriodPayment)}
+                </TableCell>
+                <TableCell className={tableCellClass}>{contractTableMetrics.buyRate}</TableCell>
+                <TableCell className={tableCellClass}>{contractTableMetrics.upsell}</TableCell>
+                <TableCell className={tableCellClass}>{contractTableMetrics.factor}</TableCell>
+                <TableCell>
+                    <span className={statusBadgeClass}>{draftStatusLabel}</span>
+                </TableCell>
+                <TableCell
+                    className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
+                >
+                    —
+                </TableCell>
+            </TableRow>
+        );
+    };
+
     const calculationSummaryFields = [
         { label: "Amount Financed", value: amountFinancedInput },
         { label: "Recipient Funds", value: recipientFundsInput },
@@ -3442,7 +3515,18 @@ export default function ContractTab({
                         <TableBody>
                             {contractSendTableRows.length > 0 ? (
                                 contractSendTableRows.map(renderContractSendTableRow)
-                            ) : !hasGeneratedContract && contractsForTable.length === 0 ? (
+                            ) : hasGeneratedContract ? (
+                                renderGeneratedContractDraftRow() ?? (
+                                    <TableRow className={tableRowClass}>
+                                        <TableCell
+                                            colSpan={11}
+                                            className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
+                                        >
+                                            No contracts generated yet.
+                                        </TableCell>
+                                    </TableRow>
+                                )
+                            ) : (
                                 <TableRow className={tableRowClass}>
                                     <TableCell
                                         colSpan={11}
@@ -3451,67 +3535,6 @@ export default function ContractTab({
                                         No contracts generated yet.
                                     </TableCell>
                                 </TableRow>
-                            ) : hasGeneratedContract ? (
-                                <TableRow className={tableRowClass}>
-                                    <TableCell
-                                        colSpan={11}
-                                        className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
-                                    >
-                                        No DocuSign sends yet. Rows appear here after a
-                                        contract, addendum, disclosure, or ACH form is sent from
-                                        DocuSign (not while still in draft).
-                                    </TableCell>
-                                </TableRow>
-                            ) : (
-                                contractsForTable.map((offer) => (
-                                    <TableRow
-                                        key={offer._id}
-                                        className={tableRowClass}
-                                    >
-                                        <TableCell className={tableCellClass}>
-                                            {offer.position || "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.termLength ?? "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            1
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(offer.approvedAmount)}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(offer.paybackAmount)}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {formatContractCurrency(
-                                                offer.paymentAmount ??
-                                                    contractTableMetrics.perPeriodPayment,
-                                            )}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.buyRate != null
-                                                ? `${offer.buyRate}%`
-                                                : contractTableMetrics.buyRate}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.percentOfGross != null
-                                                ? `${offer.percentOfGross}%`
-                                                : contractTableMetrics.upsell}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {offer.factorRate != null
-                                                ? String(offer.factorRate)
-                                                : contractTableMetrics.factor}
-                                        </TableCell>
-                                        <TableCell>
-                                            <span className={statusBadgeClass}>
-                                                Generated
-                                            </span>
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>—</TableCell>
-                                    </TableRow>
-                                ))
                             )}
                         </TableBody>
                     </Table>

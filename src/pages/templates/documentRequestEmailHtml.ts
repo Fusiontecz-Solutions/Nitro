@@ -109,7 +109,6 @@ export function renderDocumentRequestEmailHtml(
   values: TemplateValues,
 ): string {
   const fields = resolveDocumentRequestEmailFields(values);
-  const isoName = escapeHtml(fields.isoName);
   const uploadUrl = escapeHtml(fields.uploadUrl);
   const teamName = escapeHtml(fields.teamName);
   const logoSrc = escapeHtml(DOCUMENT_REQUEST_EMAIL_LOGO_SRC);
@@ -181,7 +180,7 @@ export function renderDocumentRequestEmailHtml(
                     <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
                       <tr>
                         <td style="padding:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:1.3;color:#333333;">
-                          Hi ${isoName},
+                          Hi,
                         </td>
                       </tr>
                       <tr>
@@ -226,7 +225,7 @@ export function renderDocumentRequestEmailHtml(
                       </tr>${noteBlock}
                       <tr>
                         <td style="padding:5px 0 20px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.4;color:#666666;">
-                          Please upload the documents using the button below. No CRM login is required — you can upload everything from one page.
+                          Please upload the documents using the button below. You can upload everything from one page.
                         </td>
                       </tr>
                       <tr>

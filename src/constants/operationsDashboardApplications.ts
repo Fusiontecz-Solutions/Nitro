@@ -30,6 +30,7 @@ export const OPERATIONS_DASHBOARD_APPLICATION_STATUSES = [
   "Funding Call",
   "Finals_And_Funding_Call",
   "Disbursment",
+  "On_Hold",
   "Funded",
   "Declined",
 ] as const;
@@ -75,6 +76,7 @@ const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   "Funding Call": "Funding Call",
   Finals_And_Funding_Call: "Finals and Funding Call",
   Disbursment: "Disbursement",
+  On_Hold: "On Hold",
   Funded: "Funded",
   Declined: "Rejected",
   Agent: "Agent",
@@ -142,6 +144,8 @@ export function normalizeOperationsDashboardStatusParam(
     finals_and_funding_call: "Finals_And_Funding_Call",
     disbursment: "Disbursment",
     disbursement: "Disbursment",
+    on_hold: "On_Hold",
+    hold: "On_Hold",
     funded: "Funded",
     declined: "Declined",
     rejected: "Declined",
@@ -193,6 +197,7 @@ export function inferOperationsListStatusFromApplication(
   if (q === "fundingcall" || (q.includes("funding") && q.includes("call"))) {
     return "Funding Call";
   }
+  if (q === "onhold") return "On_Hold";
   if (q === "final" && !q.includes("scrubbing")) return "Final";
   if (q === "underwriter" || q === "finalreview") return "Underwriter";
   if (q === "finalapproval" || state === "finalapproval") return "Final_Approval";

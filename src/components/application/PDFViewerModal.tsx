@@ -132,6 +132,7 @@ import {
     canSendMainContractAgain,
     canVoidContractSendTableRow,
     isMainContractOutForSignature,
+    isPreparingFreshMainContractSend,
     resolveMainContractSendTableRow,
     getContractSendTableRowStatusLabel,
     hasVisibleContractSendTableRows,
@@ -141,6 +142,7 @@ import {
     isContractSigningFinished,
     isContractVoidedOrTerminal,
     pickContractEnvelopeDocument,
+    resolveOutForSignatureMainContractRows,
     type ContractSendTableRow,
 } from "./contractdata/contractSendHistory";
 import { DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS } from "./contractdata/docusignPolling";
@@ -851,6 +853,9 @@ function isContractAlreadySent(
     sessionSentAt: Date | null,
     sentStepUnlocked = false,
 ): boolean {
+    if (isPreparingFreshMainContractSend(contract, sessionSentAt)) {
+        return false;
+    }
     if (isContractVoidedOrTerminal(
         contract?.status,
         pickContractEnvelopeDocument(contract)?.status,
@@ -896,6 +901,8 @@ function canReviewAndSendToDocuSign(
         return true;
     }
     if (!canSendMainContract(contract, sessionSentAt)) return false;
+    // Reinitiated / first send — no live envelope on the contract row yet.
+    if (isPreparingFreshMainContractSend(contract, sessionSentAt)) return true;
     if (isContractAlreadySent(contract, sessionSentAt, sentStepUnlocked)) return false;
     return true;
 }
@@ -1127,6 +1134,8 @@ const PDFViewerModal = ({
     const [lastSigningStatusSyncAt, setLastSigningStatusSyncAt] = useState<Date | null>(null);
     /** After user explicitly opens Documents during this modal session, stop auto-switching Documents → Sent. */
     const didSuggestSentTabThisOpenRef = useRef(false);
+    /** One-time wizard landing step per modal open (after contract row loads). */
+    const initialWizardStepSetRef = useRef(false);
     const stepSequence: ContractWizardStep[] = ["documents", "info", "summary", "sent"];
     const activeStepIndex = stepSequence.indexOf(activeStep);
     const canGoPreviousStep = activeStepIndex > 0;
@@ -2088,6 +2097,12 @@ const PDFViewerModal = ({
             setDocuSignOpenUrl(null);
             setContractSignerOverrides(null);
             setShowRecipientEditor(false);
+            setActiveStep("documents");
+            setSentAt(null);
+            sentStepUnlockedRef.current = false;
+            setSentStepUnlocked(false);
+            initialWizardStepSetRef.current = false;
+            didSuggestSentTabThisOpenRef.current = false;
             draftPreparedAddendumIdRef.current = undefined;
             draftPreparedCcRef.current = null;
             draftPreparedPrefillFingerprintRef.current = null;
@@ -2282,6 +2297,28 @@ const PDFViewerModal = ({
     const canCancelSentContract = useMemo(
         () => canVoidContractSendTableRow(resolvedContract, selectedSentRow, sentAt),
         [resolvedContract, selectedSentRow, sentAt],
+    );
+
+    const outForSignatureMainContractRows = useMemo(
+        () => resolveOutForSignatureMainContractRows(resolvedContract, sentAt),
+        [resolvedContract, sentAt],
+    );
+
+    /** Old main-contract envelope still live in DocuSign — void it automatically when sending the new one. */
+    const showReplaceOldContractSendButton = useMemo(() => {
+        if (!onPrepareDocuSignDraft || !outForSignatureMainContractRows.length) return false;
+        return canSendMainContract(resolvedContract, sentAt) || canCancelSentContract;
+    }, [
+        onPrepareDocuSignDraft,
+        outForSignatureMainContractRows.length,
+        resolvedContract,
+        sentAt,
+        canCancelSentContract,
+    ]);
+
+    const preparingFreshMainContractSend = useMemo(
+        () => isPreparingFreshMainContractSend(resolvedContract, sentAt),
+        [resolvedContract, sentAt],
     );
     const canReviewAndSendDocuSign = useMemo(
         () => canReviewAndSendToDocuSign(resolvedContract, sentAt, sentStepUnlocked),
@@ -3391,17 +3428,19 @@ const PDFViewerModal = ({
     }
 
     const handleReviewInDocuSignClick = (options?: { forceNewEnvelope?: boolean }) => {
-        if (!fileUrl || isSending || docuSignSendInFlightRef.current) return;
+        if (!fileUrl || isSending || isCancellingContract || docuSignSendInFlightRef.current) return;
         const forceNewEnvelope =
             options?.forceNewEnvelope === true || contractNeedsNewEnvelope;
         const packageIncludesMainContract =
             !canSendWithoutContract || includeMainContractInSendRef.current;
+        const replaceOldMainContract =
+            showReplaceOldContractSendButton && packageIncludesMainContract;
         const mayStartNewMainContractEnvelope =
             mainContractSendAgainEligible ||
             contractNeedsNewEnvelope ||
             canSendMainContract(resolvedContract, sentAt);
-        if (forceNewEnvelope) {
-            if (packageIncludesMainContract && !mayStartNewMainContractEnvelope) {
+        if (forceNewEnvelope || replaceOldMainContract) {
+            if (packageIncludesMainContract && !mayStartNewMainContractEnvelope && !replaceOldMainContract) {
                 toast.error("This contract cannot be sent yet.");
                 return;
             }
@@ -3427,10 +3466,33 @@ const PDFViewerModal = ({
                 { autoClose: 8000 },
             );
         }
-        void finishDocuSignReviewSend(docuSignTab, {
-            forceNewEnvelope:
-                options?.forceNewEnvelope === true || contractNeedsNewEnvelope,
-        });
+
+        void (async () => {
+            if (replaceOldMainContract) {
+                setIsCancellingContract(true);
+                try {
+                    await voidOutForSignatureMainContractEnvelopes();
+                } catch (err: unknown) {
+                    const msg =
+                        typeof err === "string"
+                            ? err
+                            : String(
+                                  (err as { message?: string })?.message ||
+                                      "Failed to void the prior contract.",
+                              );
+                    toast.error(msg);
+                    showDocuSignTabMessage(docuSignTab, "Could not void the prior contract", msg);
+                    docuSignSendInFlightRef.current = false;
+                    setIsCancellingContract(false);
+                    return;
+                }
+                setIsCancellingContract(false);
+            }
+
+            await finishDocuSignReviewSend(docuSignTab, {
+                forceNewEnvelope: forceNewEnvelope || replaceOldMainContract,
+            });
+        })();
     };
 
     /**
@@ -4234,11 +4296,18 @@ const PDFViewerModal = ({
             }
             return;
         }
-        const persisted = readPersistedSentStepUnlocked(sentStepPersistKey);
-        if (persisted) {
-            sentStepUnlockedRef.current = true;
-            setSentStepUnlocked(true);
-            if (!sentAt) setSentAt(new Date());
+        if (!preparingFreshMainContractSend) {
+            const persisted = readPersistedSentStepUnlocked(sentStepPersistKey);
+            if (persisted) {
+                sentStepUnlockedRef.current = true;
+                setSentStepUnlocked(true);
+                if (!sentAt) setSentAt(new Date());
+            }
+        } else {
+            sentStepUnlockedRef.current = false;
+            setSentStepUnlocked(false);
+            setSentAt(null);
+            clearPersistedSentStepUnlocked(sentStepPersistKey);
         }
         if (contractModalWasOpenRef.current) return;
         contractModalWasOpenRef.current = true;
@@ -4257,7 +4326,14 @@ const PDFViewerModal = ({
             .trim()
             .toUpperCase();
         void refreshContractSigningState(true, { syncDocuSign: true, forceDocuSignSync: true });
-    }, [isOpen, refreshContractSigningState, resolvedContract, sentAt, sentStepPersistKey]);
+    }, [
+        isOpen,
+        refreshContractSigningState,
+        resolvedContract,
+        sentAt,
+        sentStepPersistKey,
+        preparingFreshMainContractSend,
+    ]);
 
     const invalidateDocuSignPdfCache = useCallback(() => {
         prefilledPdfCachedForEnvelopeRef.current = null;
@@ -4571,6 +4647,9 @@ const PDFViewerModal = ({
                 voidBoldSignDocument({
                     documentId: envelopeId,
                     reason: "Cancelled by user from CRM",
+                    applicationId: applicationIdForLookup ?? undefined,
+                    contractId: effectiveContractId ?? undefined,
+                    funderName: selectedFunder.trim() || undefined,
                 }),
             ).unwrap();
 
@@ -4623,6 +4702,63 @@ const PDFViewerModal = ({
         invalidateDocuSignPdfCache,
         refreshContractSigningState,
         sentStepPersistKey,
+        applicationIdForLookup,
+        effectiveContractId,
+        selectedFunder,
+    ]);
+
+    const voidOutForSignatureMainContractEnvelopes = useCallback(async () => {
+        const rows = resolveOutForSignatureMainContractRows(
+            resolvedContractRef.current,
+            sentAtRef.current,
+        );
+        const envelopeIds = [
+            ...new Set(
+                rows.map((row) => String(row.envelopeId ?? "").trim()).filter(Boolean),
+            ),
+        ];
+        if (!envelopeIds.length) return;
+
+        for (const envelopeId of envelopeIds) {
+            await dispatch(
+                voidBoldSignDocument({
+                    documentId: envelopeId,
+                    reason: "Replaced with a new contract from CRM",
+                    applicationId: applicationIdForLookupRef.current ?? undefined,
+                    contractId: effectiveContractId ?? undefined,
+                    funderName: selectedFunderRef.current?.trim() || undefined,
+                }),
+            ).unwrap();
+        }
+
+        invalidateDocuSignDraftSession();
+        setDocuSignOpenUrl(null);
+        setSentAt(null);
+        sentStepUnlockedRef.current = false;
+        setSentStepUnlocked(false);
+        clearPersistedSentStepUnlocked(sentStepPersistKey);
+        contractWasSentRef.current = false;
+        pendingCcForSentRef.current = [];
+        setSessionEnvelopeId(null);
+        linkedEnvelopeIdRef.current = null;
+        invalidateDocuSignPdfCache();
+        setPrefilledBoldSignPdfUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return null;
+        });
+        setPrefilledBoldSignPdfHint(null);
+
+        await refreshContractSigningState(false, {
+            syncDocuSign: true,
+            forceDocuSignSync: true,
+        });
+    }, [
+        dispatch,
+        effectiveContractId,
+        invalidateDocuSignDraftSession,
+        invalidateDocuSignPdfCache,
+        refreshContractSigningState,
+        sentStepPersistKey,
     ]);
 
     const forceReloadDocuSignPdfPreview = useCallback(() => {
@@ -4652,16 +4788,54 @@ const PDFViewerModal = ({
     ]);
 
     useEffect(() => {
-        if (!isOpen) {
-            didSuggestSentTabThisOpenRef.current = false;
+        if (!isOpen || !contractPrefillLoaded || initialWizardStepSetRef.current) return;
+
+        const hasPriorSends = sentEnvelopeRows.length > 0;
+        const preparingNewMainSend =
+            canSendMainContract(resolvedContract, sentAt) ||
+            contractNeedsNewEnvelope ||
+            outForSignatureMainContractRows.length > 0;
+
+        if (hasPriorSends && preparingNewMainSend) {
+            if (isPreparingFreshMainContractSend(resolvedContract, sentAt)) {
+                sentStepUnlockedRef.current = false;
+                setSentStepUnlocked(false);
+                setSentAt(null);
+                clearPersistedSentStepUnlocked(sentStepPersistKey);
+            }
+            setActiveStep("summary");
+            didSuggestSentTabThisOpenRef.current = true;
+            initialWizardStepSetRef.current = true;
             return;
         }
-        if (!canOpenSentStepAny) return;
-        if (didSuggestSentTabThisOpenRef.current) return;
-        if (activeStep !== "documents") return;
-        setActiveStep("sent");
-        didSuggestSentTabThisOpenRef.current = true;
-    }, [isOpen, activeStep, canOpenSentStepAny]);
+
+        if (canOpenSentStepAny && !preparingNewMainSend) {
+            setActiveStep("sent");
+            didSuggestSentTabThisOpenRef.current = true;
+            initialWizardStepSetRef.current = true;
+            return;
+        }
+
+        initialWizardStepSetRef.current = true;
+    }, [
+        isOpen,
+        contractPrefillLoaded,
+        sentEnvelopeRows,
+        resolvedContract,
+        sentAt,
+        contractNeedsNewEnvelope,
+        outForSignatureMainContractRows.length,
+        canOpenSentStepAny,
+        sentStepPersistKey,
+    ]);
+
+    useEffect(() => {
+        if (!isOpen || !contractPrefillLoaded || !preparingFreshMainContractSend) return;
+        sentStepUnlockedRef.current = false;
+        setSentStepUnlocked(false);
+        setSentAt(null);
+        clearPersistedSentStepUnlocked(sentStepPersistKey);
+    }, [isOpen, contractPrefillLoaded, preparingFreshMainContractSend, sentStepPersistKey]);
 
     useEffect(() => {
         if (!isOpen || !applicationIdForLookup) return;
@@ -9306,13 +9480,13 @@ const PDFViewerModal = ({
                             <Button variant="ghost" className="h-9" onClick={onClose}>
                                 Close
                             </Button>
-                            {canCancelSentContract ? (
+                            {canCancelSentContract && !showReplaceOldContractSendButton ? (
                                 <Button
                                     type="button"
-                                    variant="default"
-                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    variant="outline"
+                                    className="h-9 shrink-0 cursor-pointer border-[var(--brand)]/30 px-6 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                     onClick={() => void handleCancelContract()}
-                                    disabled={isCancellingContract || !selectedSentRow?.envelopeId}
+                                    disabled={isCancellingContract || isSending || !selectedSentRow?.envelopeId}
                                 >
                                     {isCancellingContract
                                         ? "Voiding…"
@@ -9346,6 +9520,27 @@ const PDFViewerModal = ({
                                     }
                                 >
                                     {isSending ? "Preparing DocuSign…" : sendContractAgainLabel}
+                                </Button>
+                            ) : null}
+                            {showReplaceOldContractSendButton ? (
+                                <Button
+                                    type="button"
+                                    variant="default"
+                                    className={DOCUSIGN_PRIMARY_BTN_CLASS}
+                                    onClick={() =>
+                                        handleReviewInDocuSignClick({ forceNewEnvelope: true })
+                                    }
+                                    disabled={
+                                        isSending ||
+                                        isCancellingContract ||
+                                        Boolean(contractSignersValidationError)
+                                    }
+                                >
+                                    {isSending
+                                        ? "Preparing DocuSign…"
+                                        : isCancellingContract
+                                          ? "Voiding old contract…"
+                                          : "Review & send in DocuSign"}
                                 </Button>
                             ) : null}
                             {canReviewAndSendCurrentPackage && docuSignOpenUrl ? (
@@ -9383,7 +9578,8 @@ const PDFViewerModal = ({
                             ) : null}
                             {canReviewAndSendCurrentPackage &&
                             !docuSignOpenUrl &&
-                            !showSendContractAgainButton ? (
+                            !showSendContractAgainButton &&
+                            !showReplaceOldContractSendButton ? (
                                 <Button
                                     type="button"
                                     variant="default"

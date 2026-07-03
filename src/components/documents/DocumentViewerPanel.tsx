@@ -19,6 +19,8 @@ type DocumentViewerPanelProps = {
     className?: string;
     minHeightClassName?: string;
     preferDirectUrl?: boolean;
+    publicPortalToken?: string;
+    mimeTypeHint?: string;
 };
 
 function PdfPages({ fileUrl, minHeightClassName }: { fileUrl: string; minHeightClassName: string }) {
@@ -82,6 +84,8 @@ export function DocumentViewerPanel({
     className = "",
     minHeightClassName = "min-h-[300px]",
     preferDirectUrl = false,
+    publicPortalToken,
+    mimeTypeHint,
 }: DocumentViewerPanelProps) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -107,7 +111,11 @@ export function DocumentViewerPanel({
         setTextContent(null);
         revoke();
 
-        void resolveDocumentPreview(fileUrl, fileName, { preferDirectUrl })
+        void resolveDocumentPreview(fileUrl, fileName, {
+            preferDirectUrl,
+            publicPortalToken,
+            mimeTypeHint,
+        })
             .then(async (resolved) => {
                 if (cancelled) {
                     if (resolved.revokeOnCleanup) URL.revokeObjectURL(resolved.blobUrl);
@@ -140,7 +148,7 @@ export function DocumentViewerPanel({
             cancelled = true;
             revoke();
         };
-    }, [fileName, fileUrl, preferDirectUrl]);
+    }, [fileName, fileUrl, mimeTypeHint, preferDirectUrl, publicPortalToken]);
 
     const handleDownload = () => {
         if (!previewUrl) return;

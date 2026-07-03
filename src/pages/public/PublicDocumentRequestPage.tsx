@@ -47,7 +47,11 @@ const PublicDocumentRequestPage = () => {
   } | null>(null);
   const [documents, setDocuments] = useState<DocumentRequestRow[]>([]);
   const [uploadingSlug, setUploadingSlug] = useState<string | null>(null);
-  const [previewModal, setPreviewModal] = useState<{ url: string; name: string } | null>(null);
+  const [previewModal, setPreviewModal] = useState<{
+    url: string;
+    name: string;
+    mimeType?: string;
+  } | null>(null);
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const loadPortal = useCallback(async () => {
@@ -260,7 +264,10 @@ const PublicDocumentRequestPage = () => {
                             onClick={() =>
                               setPreviewModal({
                                 url: String(doc.fileUrl),
-                                name: label,
+                                name:
+                                  doc.originalFileName?.trim() ||
+                                  documentRequestDisplayLabel(doc),
+                                mimeType: doc.mimeType,
                               })
                             }
                           >
@@ -326,7 +333,8 @@ const PublicDocumentRequestPage = () => {
         onClose={() => setPreviewModal(null)}
         fileUrl={previewModal?.url}
         fileName={previewModal?.name}
-        preferDirectUrl
+        mimeTypeHint={previewModal?.mimeType}
+        publicPortalToken={token}
       />
     </div>
   );

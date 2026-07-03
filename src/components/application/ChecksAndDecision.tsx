@@ -311,13 +311,17 @@ const ChecksAndDecision = ({
         })
         : false;
 
-    // Once the approval mail has been sent for this application it must NEVER revert
-    // to "Send Approval Mail to ISO". The activity-log slice is shared and can be
-    // overwritten (or briefly empty) by other fetches, so we also treat any
-    // application that has already advanced past approval as "mail already sent",
-    // and we keep a sticky flag so a transient empty log list can't flip it back.
-    const applicationAlreadyApproved =
-        isApprovedStatus || isApprovedQueue || isCompletedStatus || isContractedQueue;
+    // Once the ISO approval mail has been sent it must NEVER revert to "Send Approval
+    // Mail to ISO". The activity-log slice is shared and can be overwritten (or briefly
+    // empty) by other fetches, so we also treat workflow stages that only occur after
+    // the mail was sent, and keep a sticky flag so a transient empty log list can't
+    // flip it back. Underwriter approval alone does NOT count — Super Admin may still
+    // need to send the first ISO mail.
+    const hasApprovalMailBeenSentByWorkflow =
+        isApprovalSentStage ||
+        isIsoApprovedStage ||
+        isContractedQueue ||
+        isCompletedStatus;
 
     const [approvalMailSentSticky, setApprovalMailSentSticky] = useState(false);
 
@@ -327,14 +331,16 @@ const ChecksAndDecision = ({
     }, [applicationUuid]);
 
     useEffect(() => {
-        if (hasSentApprovalMailOnce || applicationAlreadyApproved) {
+        if (hasSentApprovalMailOnce || hasApprovalMailBeenSentByWorkflow) {
             setApprovalMailSentSticky(true);
         }
-    }, [hasSentApprovalMailOnce, applicationAlreadyApproved]);
+    }, [hasSentApprovalMailOnce, hasApprovalMailBeenSentByWorkflow]);
 
     const shouldResendApprovalMail =
         needsIsoApprovalMailTracking &&
-        (hasSentApprovalMailOnce || applicationAlreadyApproved || approvalMailSentSticky);
+        (hasSentApprovalMailOnce ||
+            hasApprovalMailBeenSentByWorkflow ||
+            approvalMailSentSticky);
 
     const needsContractReinitiation = applicationNeedsContractReinitiation(
         applicationData as Record<string, unknown> | null,
@@ -394,6 +400,7 @@ const ChecksAndDecision = ({
             ),
         [comments],
     );
+    const showReinitiateContractCheckbox = isUnderwriterRole;
 
     useEffect(() => {
         if (!applicationUuid) return;
@@ -689,6 +696,7 @@ const ChecksAndDecision = ({
                     !isIsoApprovalMailModalOpen
                 }
                 showIsoRecipientFields={isIsoApprovalMailModalOpen}
+                showReinitiateContractCheckbox={showReinitiateContractCheckbox}
                 onProceedToContract={onProceedToContract}
                 resendApprovalEmail={shouldResendApprovalMail}
                 reinitiateContract={needsContractReinitiation}

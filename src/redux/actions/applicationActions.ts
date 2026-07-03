@@ -235,11 +235,20 @@ export const assignApplicationToUnderwriter = createAsyncThunk(
 
 export const sendApplicationForFinalUnderwriterApproval = createAsyncThunk(
     'application/sendFinalUnderwriterApproval',
-    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
+    async (
+        {
+            applicationId,
+            source,
+        }: {
+            applicationId: string;
+            source?: 'Decision Logic' | 'Funding Call';
+        },
+        { rejectWithValue },
+    ) => {
         try {
             const response = await axiosPost(
                 `/applications/${encodeURIComponent(applicationId)}/send-final-underwriter-approval`,
-                {},
+                source ? { source } : {},
             );
             await invalidateApplicationsListCache();
             return response.data;

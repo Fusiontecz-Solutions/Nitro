@@ -29,12 +29,41 @@ export function extensionFromFileNameOrUrl(name: string, url = ""): string {
     }
 }
 
+const SHORT_FORMAT_TO_MIME: Record<string, string> = {
+    pdf: "application/pdf",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    svg: "image/svg+xml",
+    txt: "text/plain; charset=utf-8",
+    csv: "text/csv; charset=utf-8",
+};
+
+function normalizeMimeHint(mimeTypeHint: string): string {
+    const hint = String(mimeTypeHint ?? "")
+        .split(";")[0]
+        ?.trim()
+        .toLowerCase();
+    if (!hint) return "";
+    if (SHORT_FORMAT_TO_MIME[hint]) return SHORT_FORMAT_TO_MIME[hint];
+    return hint;
+}
+
 export function resolveClientPreviewMime(
     name: string,
     url: string,
     blobType = "",
     headerCt?: string,
+    mimeTypeHint = "",
 ): string {
+    const hint = normalizeMimeHint(mimeTypeHint);
+    if (hint && hint !== "application/octet-stream") {
+        return hint;
+    }
+
     const ext = extensionFromFileNameOrUrl(name, url);
     if (ext && PREVIEW_EXT_TO_MIME[ext]) {
         return PREVIEW_EXT_TO_MIME[ext];
@@ -90,28 +119,62 @@ export type ResolvedDocumentPreview = {
 export async function resolveDocumentPreview(
     fileUrl: string,
     fileName: string,
-    options?: { preferDirectUrl?: boolean },
+    options?: {
+        preferDirectUrl?: boolean;
+        publicPortalToken?: string;
+        mimeTypeHint?: string;
+    },
 ): Promise<ResolvedDocumentPreview> {
     const url = String(fileUrl ?? "").trim();
     const name = String(fileName ?? "document").trim() || "document";
     const preferDirectUrl = options?.preferDirectUrl === true;
+    const publicPortalToken = String(options?.publicPortalToken ?? "").trim();
+    const mimeTypeHint = String(options?.mimeTypeHint ?? "").trim();
 
     if (!url) {
         throw new Error("No file URL provided.");
     }
 
-    if (isBlobOrDataUrl(url) || (preferDirectUrl && !isCloudinaryAssetUrl(url))) {
+    if (isBlobOrDataUrl(url) || (preferDirectUrl && !isCloudinaryAssetUrl(url) && !publicPortalToken)) {
         return {
             blobUrl: url,
-            mimeType: resolveClientPreviewMime(name, url),
+            mimeType: resolveClientPreviewMime(name, url, "", undefined, mimeTypeHint),
             revokeOnCleanup: false,
+        };
+    }
+
+    if (publicPortalToken && isCloudinaryAssetUrl(url)) {
+        const response = await axiosGet(
+            `/public/application/${encodeURIComponent(publicPortalToken)}/document-request/preview`,
+            {
+                params: { url, name },
+                responseType: "blob",
+            },
+        );
+        const rawBlob = response.data as Blob;
+        const headerCt =
+            typeof response.headers["content-type"] === "string"
+                ? response.headers["content-type"]
+                : undefined;
+        const mimeType = resolveClientPreviewMime(
+            name,
+            url,
+            rawBlob.type,
+            headerCt,
+            mimeTypeHint,
+        );
+        const blob = new Blob([rawBlob], { type: mimeType });
+        return {
+            blobUrl: URL.createObjectURL(blob),
+            mimeType,
+            revokeOnCleanup: true,
         };
     }
 
     if (preferDirectUrl && isCloudinaryAssetUrl(url)) {
         return {
             blobUrl: url,
-            mimeType: resolveClientPreviewMime(name, url),
+            mimeType: resolveClientPreviewMime(name, url, "", undefined, mimeTypeHint),
             revokeOnCleanup: false,
         };
     }
@@ -126,7 +189,13 @@ export async function resolveDocumentPreview(
             typeof response.headers["content-type"] === "string"
                 ? response.headers["content-type"]
                 : undefined;
-        const mimeType = resolveClientPreviewMime(name, url, rawBlob.type, headerCt);
+        const mimeType = resolveClientPreviewMime(
+            name,
+            url,
+            rawBlob.type,
+            headerCt,
+            mimeTypeHint,
+        );
         const blob = new Blob([rawBlob], { type: mimeType });
         return {
             blobUrl: URL.createObjectURL(blob),
@@ -137,7 +206,7 @@ export async function resolveDocumentPreview(
 
     return {
         blobUrl: url,
-        mimeType: resolveClientPreviewMime(name, url),
+        mimeType: resolveClientPreviewMime(name, url, "", undefined, mimeTypeHint),
         revokeOnCleanup: false,
     };
 }

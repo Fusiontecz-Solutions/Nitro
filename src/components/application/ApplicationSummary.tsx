@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import { useDispatch, useSelector } from "react-redux";
 import { Card, CardContent } from "../ui/card"
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -7,8 +8,10 @@ import { useTheme } from "@/context/ThemeContext";
 import { ChevronLeft } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import { formatActionRequired } from "@/lib/formatActionRequired";
+import { isApplicationInFinalApprovalStage } from "@/lib/applicationWorkflowState";
 import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel";
 import ApprovedByUnderwriterBadge from "./ApprovedByUnderwriterBadge";
+import FinalApprovalSourceBadge from "./FinalApprovalSourceBadge";
 import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
 import {
     getApplicationSummaryStatusLabel,
@@ -66,6 +69,12 @@ const ApplicationSummary = ({
     );
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
+    const loginUser = useSelector((state: RootState) => state.login.data?.user);
+    const viewerRoleKey = useMemo(
+        () => normalizeRoleKey(resolveEffectiveRole(loginUser)),
+        [loginUser],
+    );
+    const isUnderwriterViewer = viewerRoleKey === "UNDERWRITER";
 
     // When applicationId is provided (e.g. agent on overview), only use data that matches the current application
     const normalizedApplicationId =
@@ -173,6 +182,17 @@ const ApplicationSummary = ({
     const isUnderwriterApproved = showDynamicData
         ? isUnderwriterApprovedApplication(applicationData)
         : false;
+    const finalApprovalSource = showDynamicData
+        ? (
+              (applicationData as { finalApprovalSource?: string | null })
+                  ?.finalApprovalSource ?? null
+          )
+        : null;
+    const showFinalApprovalSourceBadge =
+        showDynamicData &&
+        Boolean(finalApprovalSource) &&
+        isApplicationInFinalApprovalStage(applicationData) &&
+        isUnderwriterViewer;
     const scrubberRecommendation = showDynamicData
         ? (
               (applicationData as { scrubberRecommendation?: string | null })
@@ -332,6 +352,9 @@ const ApplicationSummary = ({
                             }
                             fallback="—"
                         />
+                    ) : null}
+                    {showFinalApprovalSourceBadge ? (
+                        <FinalApprovalSourceBadge source={finalApprovalSource} />
                     ) : null}
                 </div>
                 <div className={innerPanelClass}>

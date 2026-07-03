@@ -223,7 +223,7 @@ const MyNotes = ({
 
     return (
         <Card className={`gap-2 w-full border shadow-[0px_4px_20px_0px_#00000005] p-0 rounded-b-md flex flex-col ${
-            compact ? (tall ? 'h-[420px] pb-2' : 'h-auto pb-2') : 'pb-3 h-[500px]'
+            compact ? (tall ? 'h-[560px] pb-2' : 'h-auto pb-2') : 'pb-3 h-[500px]'
         } ${
             isDark ? 'bg-[#141517] border-[#374151]' : 'border-[#FDFDFD]'
         }`}>
@@ -311,7 +311,7 @@ const MyNotes = ({
                         border: 2px solid rgba(20, 21, 23, 0.7);
                     }
                 `}</style>
-                <div className={`notes-scroll space-y-2 ${compact ? (tall ? 'mt-2 max-h-[260px]' : 'mt-2 max-h-[180px]') : 'mt-6 flex-1'} min-h-0 overflow-y-auto pr-2`}>
+                <div className={`notes-scroll space-y-2 ${compact ? (tall ? 'mt-2 max-h-[400px]' : 'mt-2 max-h-[180px]') : 'mt-6 flex-1'} min-h-0 overflow-y-auto pr-2`}>
                     {notesLoading ? (
                         <div className={`text-center ${compact ? 'py-3' : 'py-8'}`}>
                             <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />

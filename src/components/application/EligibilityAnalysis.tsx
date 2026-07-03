@@ -29,6 +29,7 @@ import {
   getApplicationById,
   sendApplicationForFinalUnderwriterApproval,
 } from "@/redux/actions/applicationActions";
+import { FINAL_APPROVAL_SOURCE_DECISION_LOGIC } from "@/lib/finalApprovalSource";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
 import { isContractSignedApplication } from "@/lib/applicationWorkflowState";
 import {
@@ -314,6 +315,7 @@ export default function EligibilityAnalysis() {
       await dispatch(
         sendApplicationForFinalUnderwriterApproval({
           applicationId: applicationRecordId,
+          source: FINAL_APPROVAL_SOURCE_DECISION_LOGIC,
         }),
       ).unwrap();
       await dispatch(getApplicationById(paramApplicationId ?? applicationRecordId));

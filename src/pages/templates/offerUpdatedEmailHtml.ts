@@ -53,7 +53,6 @@ function buildStyledCtaButton(
  */
 export function renderOfferUpdatedEmailHtml(values: TemplateValues): string {
   const fields = resolveApplicationApprovalEmailFields(values);
-  const clientName = escapeHtml(fields.clientName);
   const companyName = escapeHtml(fields.companyName);
   const brandName = escapeHtml(fields.companyNameBrand);
   const crmName = escapeHtml(fields.crmName);
@@ -141,7 +140,7 @@ export function renderOfferUpdatedEmailHtml(values: TemplateValues): string {
 
                       <tr>
                         <td align="left" style="padding:32px 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;line-height:1.4;color:#1f2937;text-align:left;">
-                          Hi ${clientName}
+                          Hi
                         </td>
                       </tr>
 
@@ -159,7 +158,7 @@ export function renderOfferUpdatedEmailHtml(values: TemplateValues): string {
 
                       <tr>
                         <td align="left" style="padding:0 0 24px 0;text-align:left;">
-                          ${buildStyledCtaButton(calculateHref, "Review Updated Offer", 0)}
+                          ${buildStyledCtaButton(calculateHref, "Review Approval", 0)}
                         </td>
                       </tr>
 

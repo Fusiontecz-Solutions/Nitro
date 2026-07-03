@@ -1,5 +1,4 @@
 import type { Application, ApplicationUserLite } from "@/types/applicationTypes";
-import { isApplicationInFinalApprovalStage } from "@/lib/applicationWorkflowState";
 
 export const normalizeWorkflowLabel = (value: string): string =>
     value.replace(/[\s_-]+/g, "").toLowerCase();
@@ -9,6 +8,9 @@ const isUnderwriterApprovedToken = (value: string): boolean =>
 
 const isIsoApprovedToken = (value: string): boolean =>
     normalizeWorkflowLabel(value) === "isoapproved";
+
+const isFinalApprovalToken = (value: string): boolean =>
+    normalizeWorkflowLabel(value) === "finalapproval";
 
 /** True when the deal is in the Underwriter Approved stage (queue is source of truth). */
 export function isUnderwriterApprovedApplication(
@@ -22,9 +24,6 @@ export function isUnderwriterApprovedApplication(
         | undefined,
 ): boolean {
     if (!app) return false;
-    if (isApplicationInFinalApprovalStage(app as Record<string, unknown>)) {
-        return false;
-    }
     const record = app as Record<string, unknown>;
     const queueNorm = normalizeWorkflowLabel(
         String(record.currentQueue ?? record.queue ?? ""),
@@ -32,6 +31,16 @@ export function isUnderwriterApprovedApplication(
     const stateNorm = normalizeWorkflowLabel(
         String(record.currentState ?? record.status ?? ""),
     );
+    const rawStateNorm = normalizeWorkflowLabel(
+        String(record.statsCurrentState ?? record.currentState ?? record.status ?? ""),
+    );
+    if (
+        isFinalApprovalToken(queueNorm) ||
+        isFinalApprovalToken(stateNorm) ||
+        isFinalApprovalToken(rawStateNorm)
+    ) {
+        return false;
+    }
     if (isUnderwriterApprovedToken(queueNorm)) return true;
     if (isUnderwriterApprovedToken(stateNorm)) return true;
     return false;

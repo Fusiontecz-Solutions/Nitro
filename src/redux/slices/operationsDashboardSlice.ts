@@ -42,6 +42,7 @@ const defaultCaseStageCounts: Record<string, number> = {
   Reinitiate_Contract: 0,
   Final: 0,
   "Funding Call": 0,
+  On_Hold: 0,
   Declined: 0,
 };
 

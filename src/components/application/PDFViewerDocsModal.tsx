@@ -16,6 +16,9 @@ interface PDFViewerDocsModalProps {
     onSendToDocusign?: (ccEmails: string[]) => void;
     /** Use direct Cloudinary URLs (e.g. public portal without auth). */
     preferDirectUrl?: boolean;
+    /** Public document portal token — fetches inline preview without CRM login. */
+    publicPortalToken?: string;
+    mimeTypeHint?: string;
 }
 
 const PDFViewerDocsModal = ({
@@ -28,6 +31,8 @@ const PDFViewerDocsModal = ({
     prefillFieldsPreview = [],
     onSendToDocusign,
     preferDirectUrl = false,
+    publicPortalToken,
+    mimeTypeHint,
 }: PDFViewerDocsModalProps) => {
     void onSendToBoldSign;
     void prefillFieldsPreview;
@@ -39,7 +44,7 @@ const PDFViewerDocsModal = ({
         typeof fileName === "string" && fileName.trim() !== ""
             ? fileName.trim()
             : "Document Viewer";
-    const mimeType = resolveClientPreviewMime(safeFileName, safeUrl);
+    const mimeType = resolveClientPreviewMime(safeFileName, safeUrl, "", undefined, mimeTypeHint ?? "");
     const canPrint = showPrintButton && isPdfMimeOrName(mimeType, safeFileName);
 
     const handlePrint = () => {
@@ -98,6 +103,8 @@ const PDFViewerDocsModal = ({
                         className="h-full"
                         minHeightClassName="min-h-[calc(95vh-6rem)]"
                         preferDirectUrl={preferDirectUrl}
+                        publicPortalToken={publicPortalToken}
+                        mimeTypeHint={mimeTypeHint}
                     />
                 </div>
             </DialogContent>

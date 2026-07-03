@@ -4,6 +4,7 @@ import RejectApplicationModal from '@/components/application/RejectApplicationMo
 import RequestMissingDocumentsModal from '@/components/application/RequestMissingDocumentsModal';
 import ApproveForDisbursementModal from '@/components/application/ApproveForDisbursementModal';
 import ApprovedApplicationModal from '@/components/application/ApprovedApplicationModal';
+import ApprovedByUnderwriterBadge from '@/components/application/ApprovedByUnderwriterBadge';
 import { Button } from '@/components/ui/button';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
@@ -15,7 +16,9 @@ import {
 import {
   getApplicationById,
   sendApplicationForFinalUnderwriterApproval,
+  updateApplicationQueue,
 } from '@/redux/actions/applicationActions';
+import { FINAL_APPROVAL_SOURCE_FUNDING_CALL } from '@/lib/finalApprovalSource';
 import { resetCreateFundingCall } from '@/redux/slices/fundingCallSlice';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
@@ -76,7 +79,10 @@ const resolveLinkedClientEmail = (application: unknown): string => {
 };
 
 const decisionButtonBase =
-  'rounded-md text-white h-auto min-h-[4.5rem] py-3.5 px-3 box-border cursor-pointer flex flex-col gap-1 items-center justify-center text-center w-full overflow-hidden transition-colors outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#276D9C] disabled:opacity-50 disabled:cursor-not-allowed';
+  'rounded-md text-white h-auto min-h-[3.75rem] py-2.5 px-3 box-border cursor-pointer flex flex-col gap-1 items-center justify-center text-center w-full overflow-hidden transition-colors outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#276D9C] disabled:opacity-50 disabled:cursor-not-allowed';
+
+/** Shared height for MyNotes + decision sidebar when shown side-by-side. */
+const DECISION_PANEL_HEIGHT_CLASS = 'h-[560px]';
 
 type FundingCallProps = {
   applicationId?: string;
@@ -140,10 +146,21 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
 
   const roleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
   const isSuperAdmin = roleKey === 'SUPER_ADMIN';
+  const isOperations = roleKey === 'OPERATIONS';
+  const isUnderwriter = roleKey === 'UNDERWRITER';
+  /** Super Admin, Operations and Underwriter can put a deal on hold from the funding-call sidebar. */
+  const canHoldDeal = isSuperAdmin || isOperations || isUnderwriter;
+  /** The decision sidebar renders for any role allowed to act on the deal here. */
+  const showDecisionSidebar = isSuperAdmin || isOperations || isUnderwriter;
 
   const applicationQueue = useMemo(() => {
     const data = applicationDetail as { currentQueue?: string; queue?: string } | null;
     return data?.currentQueue ?? data?.queue ?? '';
+  }, [applicationDetail]);
+
+  const applicationState = useMemo(() => {
+    const data = applicationDetail as { currentState?: string; state?: string } | null;
+    return data?.currentState ?? data?.state ?? '';
   }, [applicationDetail]);
 
   const normalizeQueueKey = (value: string | null | undefined) =>
@@ -156,6 +173,12 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     const q = normalizeQueueKey(applicationQueue);
     return q === 'disbursement' || q === 'disbursment';
   }, [applicationQueue]);
+
+  const isAtHoldQueue = useMemo(() => {
+    const queueHeld = normalizeQueueKey(applicationQueue) === 'onhold';
+    const stateHeld = normalizeQueueKey(applicationState) === 'onhold';
+    return queueHeld || stateHeld;
+  }, [applicationQueue, applicationState]);
 
   const [form, setForm] = useState<CallFormState>({
     callStatus: '',
@@ -181,6 +204,8 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const [offerUpdated, setOfferUpdated] = useState(false);
   const [isSendingFinalApproval, setIsSendingFinalApproval] = useState(false);
   const [approveForDisbursementPending, setApproveForDisbursementPending] = useState(false);
+  const [holdingDeal, setHoldingDeal] = useState(false);
+  const [dealOnHold, setDealOnHold] = useState(false);
   const [disbursementApproved, setDisbursementApproved] = useState(false);
   const [disbursementEmailSent, setDisbursementEmailSent] = useState<boolean | null>(null);
   const [disbursementEmailSkippedReason, setDisbursementEmailSkippedReason] = useState<string | null>(
@@ -191,7 +216,11 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const options = ["Call Done", "Not Reachable", "Call Back Later", "Rejected", "Interested"];
 
   const isBusy =
-    saving || fetchingExistingCalls || approveForDisbursementPending || isSendingFinalApproval;
+    saving ||
+    fetchingExistingCalls ||
+    approveForDisbursementPending ||
+    isSendingFinalApproval ||
+    holdingDeal;
 
   const latestFromCalls = useMemo(() => {
     if (!existingCalls?.length) return '';
@@ -456,6 +485,55 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     refreshApplicationDetail();
   }, [refreshApplicationDetail]);
 
+  /** Move the application's currentQueue and currentState to "On Hold". */
+  const handleHoldDeal = useCallback(async () => {
+    const recordId = applicationUuid ?? applicationId;
+    if (!recordId) {
+      toast.error('Application ID is missing for this funding call.');
+      return;
+    }
+    setHoldingDeal(true);
+    const toastId = toast.loading('Putting the deal on hold...');
+    try {
+      await dispatch(
+        updateApplicationQueue({
+          id: String(recordId),
+          data: { currentQueue: 'On Hold' },
+        }),
+      ).unwrap();
+      setDealOnHold(true);
+      onCallStatusChange?.('On Hold');
+      refreshApplicationDetail();
+      toast.update(toastId, {
+        render: 'Deal placed on hold.',
+        type: 'success',
+        isLoading: false,
+        autoClose: 3000,
+      });
+      onSaved?.();
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string'
+          ? err
+          : (err as { message?: string })?.message || 'Failed to put the deal on hold.';
+      toast.update(toastId, {
+        render: message,
+        type: 'error',
+        isLoading: false,
+        autoClose: 4000,
+      });
+    } finally {
+      setHoldingDeal(false);
+    }
+  }, [
+    applicationId,
+    applicationUuid,
+    dispatch,
+    onCallStatusChange,
+    onSaved,
+    refreshApplicationDetail,
+  ]);
+
   const finalApprovalTarget = useMemo(
     () =>
       resolveFinalApprovalTargetUnderwriter(
@@ -500,6 +578,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
       await dispatch(
         sendApplicationForFinalUnderwriterApproval({
           applicationId: String(recordId),
+          source: FINAL_APPROVAL_SOURCE_FUNDING_CALL,
         }),
       ).unwrap();
       refreshApplicationDetail();
@@ -539,7 +618,10 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   // Reset the local offer-updated flag when switching applications.
   useEffect(() => {
     setOfferUpdated(false);
+    setDealOnHold(false);
   }, [offerApplicationId]);
+
+  const isDealHeld = dealOnHold || isAtHoldQueue;
 
   // Offer edits made elsewhere (e.g. contract tab) also unlock the final-approval CTA.
   useEffect(() => {
@@ -819,34 +901,47 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
       <div
         className={cn(
           'w-full',
-          isSuperAdmin && 'flex flex-row items-stretch gap-4',
+          showDecisionSidebar && 'flex flex-row items-stretch gap-4',
         )}
       >
-        <div className={cn('flex min-w-0 flex-col', isSuperAdmin && 'flex-[7]')}>
+        <div className={cn('flex min-w-0 flex-col', showDecisionSidebar && 'flex-[7]')}>
           <MyNotes applicationId={applicationId} compact tall />
         </div>
 
-        {isSuperAdmin && (
+        {showDecisionSidebar && (
           <div className="flex min-w-0 flex-[3] flex-col">
             <div
               className={cn(
-                'flex h-[420px] w-full flex-col gap-4 overflow-hidden rounded-lg border border-[#FDFDFD] pt-0 shadow-[0px_4px_20px_0px_#00000005]',
+                'flex w-full flex-col overflow-hidden rounded-lg border border-[#FDFDFD] pt-0 shadow-[0px_4px_20px_0px_#00000005]',
+                DECISION_PANEL_HEIGHT_CLASS,
                 isDark ? 'border-white bg-card' : 'bg-white',
               )}
             >
               <h2
                 className={cn(
-                  'w-full px-6 py-2 font-roboto text-base font-semibold',
+                  'w-full shrink-0 px-6 py-2 font-roboto text-base font-semibold',
                   isDark ? 'bg-card text-gray-200' : 'bg-[#F9FAFD] text-[#374151]',
                 )}
               >
-                Approve for Disbursement
+                {isSuperAdmin ? 'Approve for Disbursement' : 'Deal Actions'}
               </h2>
 
-              {isApprovedForDisbursement && (
+              {isSuperAdmin && (
+                <ApprovedByUnderwriterBadge
+                  app={
+                    (applicationDetail ?? {}) as Parameters<
+                      typeof ApprovedByUnderwriterBadge
+                    >[0]['app']
+                  }
+                  fallback="an underwriter"
+                  className="mx-4 shrink-0"
+                />
+              )}
+
+              {isSuperAdmin && isApprovedForDisbursement && (
                 <div
                   className={cn(
-                    'mx-4 flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs',
+                    'mx-4 flex shrink-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-xs',
                     disbursementEmailSent === false
                       ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200'
                       : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
@@ -864,10 +959,11 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
 
               <div
                 className={cn(
-                  'flex flex-1 flex-col gap-5 overflow-y-auto px-4 pb-4',
-                  showResendApprovalMailToIso ? 'justify-start' : 'justify-center',
+                  'flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3',
                 )}
               >
+                {isSuperAdmin && (
+                  <>
                 <button
                   type="button"
                   onClick={() => setApproveModalOpen(true)}
@@ -946,22 +1042,58 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                     Decline this application
                   </span>
                 </button>
+                  </>
+                )}
+
+                {canHoldDeal && (
+                  <button
+                    type="button"
+                    onClick={handleHoldDeal}
+                    disabled={isBusy || isDealHeld}
+                    className={cn(
+                      decisionButtonBase,
+                      'bg-[#64748B] shadow-md shadow-slate-700/25 hover:bg-[#475569]',
+                    )}
+                  >
+                    <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                      {holdingDeal ? 'Putting on hold…' : isDealHeld ? 'On Hold' : 'Hold the deal'}
+                    </span>
+                    <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                      {isDealHeld
+                        ? 'This deal is currently on hold'
+                        : 'Pause this deal and set its queue to On Hold'}
+                    </span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
         )}
       </div>
 
-      <div className="mt-3 flex justify-end">
-        <Button
-          type="button"
-          variant="default"
-          onClick={handleSave}
-          disabled={isBusy}
-          className="min-w-[9rem] px-6 py-2 text-sm font-semibold disabled:opacity-60"
+      <div
+        className={cn(
+          'mt-4 shrink-0 border-t border-slate-200/80 pt-4 dark:border-slate-700',
+          showDecisionSidebar && 'flex flex-row gap-4',
+        )}
+      >
+        {showDecisionSidebar && <div className="min-w-0 flex-[7]" aria-hidden="true" />}
+        <div
+          className={cn(
+            'flex justify-end',
+            showDecisionSidebar ? 'min-w-0 flex-[3]' : 'w-full',
+          )}
         >
-          {saving ? 'Saving...' : 'Send for Disbursement'}
-        </Button>
+          <Button
+            type="button"
+            variant="default"
+            onClick={handleSave}
+            disabled={isBusy}
+            className="min-w-[10rem] px-6 py-2.5 text-sm font-semibold disabled:opacity-60"
+          >
+            {saving ? 'Saving...' : 'Send for Disbursement'}
+          </Button>
+        </div>
       </div>
 
       {isBusy && (

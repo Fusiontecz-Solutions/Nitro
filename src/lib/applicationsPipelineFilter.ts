@@ -8,6 +8,7 @@ import AccountBalance from "@mui/icons-material/AccountBalance";
 import Paid from "@mui/icons-material/Paid";
 import HighlightOff from "@mui/icons-material/HighlightOff";
 import VerifiedUser from "@mui/icons-material/VerifiedUser";
+import PauseCircle from "@mui/icons-material/PauseCircle";
 import { operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
 
 export type ApplicationsPipelineFilterIcon = ComponentType<SvgIconProps>;
@@ -96,6 +97,12 @@ export const APPLICATIONS_PIPELINE_FILTER_ITEMS: ApplicationsPipelineFilterItem[
       showCount: true,
     },
     {
+      label: operationsDashboardStatusTitle("On_Hold"),
+      filterValue: "On_Hold",
+      icon: PauseCircle,
+      showCount: true,
+    },
+    {
       label: "Funded",
       filterValue: "Funded",
       icon: Paid,
@@ -148,6 +155,7 @@ export const APPLICATIONS_STATUS_FILTER_OPTIONS: ApplicationsPipelineFilterChild
       filterValue: "Finals_And_Funding_Call",
     },
     { label: "Disbursement", filterValue: "Disbursment" },
+    { label: operationsDashboardStatusTitle("On_Hold"), filterValue: "On_Hold" },
     { label: "Funded", filterValue: "Funded" },
     { label: "Rejected", filterValue: "Declined" },
   ];
@@ -248,6 +256,8 @@ export function resolveApplicationsPipelineCount(
       );
     case "Disbursment":
       return summaryCounts.disbursment;
+    case "On_Hold":
+      return caseStageCounts.On_Hold ?? 0;
     case "Funded":
       return summaryCounts.funded;
     case "Declined":
