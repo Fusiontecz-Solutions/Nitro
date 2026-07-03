@@ -1,6 +1,7 @@
 import {
   appendCrmBridgeHash,
   buildCrmBackgroundCheckReturnUrl,
+  bridgeImportApplicationIdMatches,
 } from "./crmBridgeTypes";
 
 export const OPENCORPORATES_IMPORT_MESSAGE_TYPE = "crm:opencorporates-import";
@@ -242,12 +243,18 @@ export function formatOpenCorporatesNotesFromLookup(
 export function isOpenCorporatesImportMessage(
   data: unknown,
   expectedApplicationId?: string,
+  applicationData?: Record<string, unknown> | null,
 ): data is OpenCorporatesImportMessage {
   if (!data || typeof data !== "object") return false;
   const msg = data as OpenCorporatesImportMessage;
   if (msg.type !== OPENCORPORATES_IMPORT_MESSAGE_TYPE) return false;
   if (!msg.applicationId || !Array.isArray(msg.companies)) return false;
-  if (expectedApplicationId && msg.applicationId !== expectedApplicationId) return false;
+  if (
+    expectedApplicationId &&
+    !bridgeImportApplicationIdMatches(expectedApplicationId, msg.applicationId, applicationData)
+  ) {
+    return false;
+  }
   return msg.companies.every(
     (company) =>
       Boolean(company?.name) &&

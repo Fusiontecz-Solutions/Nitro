@@ -35,16 +35,22 @@
     if (!applicationId || !pending?.importPayload || !pending?.returnMessage) return;
     if (Date.now() - (pending.savedAt || 0) > MAX_AGE_MS) return;
 
+    const inboxPayload = JSON.stringify({
+      source: pending.source,
+      importPayload: pending.importPayload,
+      returnMessage: pending.returnMessage,
+      savedAt: pending.savedAt || Date.now(),
+    });
+
+    const routeId = readApplicationIdFromPath() || applicationId;
+    const ids = new Set([routeId, applicationId]);
+    const messageId = pending?.importPayload?.applicationId;
+    if (messageId) ids.add(String(messageId));
+
     try {
-      localStorage.setItem(
-        `${INBOX_PREFIX}${applicationId}`,
-        JSON.stringify({
-          source: pending.source,
-          importPayload: pending.importPayload,
-          returnMessage: pending.returnMessage,
-          savedAt: pending.savedAt || Date.now(),
-        }),
-      );
+      ids.forEach((id) => {
+        if (id) localStorage.setItem(`${INBOX_PREFIX}${id}`, inboxPayload);
+      });
     } catch {
       return;
     }
@@ -57,14 +63,46 @@
   }
 
   function consumePendingFromStorage(applicationId) {
-    if (!applicationId || !chrome?.storage?.local) return;
+    if (!chrome?.storage?.local) return;
 
-    const storageKey = `${PENDING_STORAGE_PREFIX}${applicationId}`;
-    chrome.storage.local.get([storageKey], (result) => {
-      const pending = result?.[storageKey];
-      if (!pending) return;
-      deliverInbox(applicationId, pending);
-      chrome.storage.local.remove([storageKey]);
+    const tryDeliver = (id, pending, keysToRemove) => {
+      if (!pending) return false;
+      deliverInbox(id, pending);
+      if (keysToRemove?.length) {
+        chrome.storage.local.remove(keysToRemove);
+      }
+      return true;
+    };
+
+    const routeId = readApplicationIdFromPath();
+    const idsToTry = [...new Set([applicationId, routeId].filter(Boolean))];
+
+    idsToTry.forEach((id) => {
+      const storageKey = `${PENDING_STORAGE_PREFIX}${id}`;
+      chrome.storage.local.get([storageKey], (result) => {
+        const pending = result?.[storageKey];
+        if (pending) {
+          tryDeliver(routeId || id, pending, [storageKey]);
+        }
+      });
+    });
+
+    chrome.storage.local.get(null, (all) => {
+      if (!all || typeof all !== "object") return;
+      const currentPath = `${window.location.pathname}${window.location.search}`;
+      Object.entries(all).forEach(([key, pending]) => {
+        if (!key.startsWith(PENDING_STORAGE_PREFIX)) return;
+        const returnUrl = pending?.returnMessage?.returnUrl || pending?.returnUrl;
+        if (!returnUrl) return;
+        try {
+          const returnPath = new URL(returnUrl).pathname;
+          if (currentPath.startsWith(returnPath)) {
+            tryDeliver(routeId || readApplicationIdFromPath(), pending, [key]);
+          }
+        } catch {
+          // Ignore invalid return URL.
+        }
+      });
     });
   }
 
@@ -86,13 +124,22 @@
   if (chrome?.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
-      const applicationId = readApplicationIdFromPath();
-      if (!applicationId) return;
-      const key = `${PENDING_STORAGE_PREFIX}${applicationId}`;
-      if (changes[key]?.newValue) {
-        deliverInbox(applicationId, changes[key].newValue);
-        chrome.storage.local.remove([key]);
-      }
+      const routeId = readApplicationIdFromPath();
+      if (!routeId) return;
+
+      Object.entries(changes).forEach(([key, change]) => {
+        if (!key.startsWith(PENDING_STORAGE_PREFIX) || !change?.newValue) return;
+        const pending = change.newValue;
+        const ids = [
+          routeId,
+          key.slice(PENDING_STORAGE_PREFIX.length),
+          pending?.returnMessage?.applicationId,
+        ].filter(Boolean);
+        if (ids.some((id) => key === `${PENDING_STORAGE_PREFIX}${id}` || id === routeId)) {
+          deliverInbox(routeId, pending);
+          chrome.storage.local.remove([key]);
+        }
+      });
     });
   }
 

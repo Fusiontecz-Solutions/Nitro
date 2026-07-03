@@ -431,8 +431,12 @@ function copyPayloadToClipboard(cases) {
 function sendToCrm(cases) {
   const { payload } = buildImportPayload(cases);
   const bridgeResult = getBridge()?.sendPayloadToCrm(payload, "nyscef");
-  if (bridgeResult?.mode === "opener") {
-    return { mode: "opener", count: cases.length, applicationId: bridgeResult.applicationId };
+  if (bridgeResult?.mode === "opener" || bridgeResult?.mode === "redirect") {
+    return {
+      mode: bridgeResult.mode,
+      count: cases.length,
+      applicationId: bridgeResult.applicationId,
+    };
   }
 
   void copyPayloadToClipboard(cases);

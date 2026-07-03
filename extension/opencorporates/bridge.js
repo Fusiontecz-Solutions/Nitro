@@ -155,9 +155,21 @@ function postMessageToOpener(context, importPayload, returnMessage) {
   return false;
 }
 
+function applicationIdFromReturnUrl(returnUrl) {
+  const match = String(returnUrl || "").match(/\/application-details\/([^/?#]+)/i);
+  return match?.[1] ? cleanText(match[1]) : "";
+}
+
+function bridgeStorageIds(context) {
+  const ids = new Set();
+  const fromReturn = applicationIdFromReturnUrl(context.returnUrl);
+  if (fromReturn) ids.add(fromReturn);
+  if (context.applicationId) ids.add(cleanText(context.applicationId));
+  return [...ids];
+}
+
 function deliverViaExtensionStorage(context, importPayload, source, returnMessage) {
   if (
-    !context.applicationId ||
     typeof chrome === "undefined" ||
     !chrome.storage ||
     !chrome.storage.local
@@ -165,20 +177,35 @@ function deliverViaExtensionStorage(context, importPayload, source, returnMessag
     return false;
   }
 
-  const storageKey = `crm_bridge_pending_${context.applicationId}`;
+  const storageIds = bridgeStorageIds(context);
+  if (!storageIds.length) return false;
+
+  const primaryId = storageIds[0];
   const pending = {
     source,
-    importPayload,
-    returnMessage,
+    importPayload: {
+      ...importPayload,
+      applicationId: primaryId,
+    },
+    returnMessage: {
+      ...returnMessage,
+      applicationId: primaryId,
+    },
     savedAt: Date.now(),
   };
 
-  chrome.storage.local.set({ [storageKey]: pending }, () => {
+  const storagePayload = {};
+  storageIds.forEach((id) => {
+    storagePayload[`crm_bridge_pending_${id}`] = pending;
+  });
+
+  chrome.storage.local.set(storagePayload, () => {
     if (chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage(
         {
           type: "crm:bridge-deliver",
-          applicationId: context.applicationId,
+          applicationId: primaryId,
+          applicationIds: storageIds,
           returnUrl: context.returnUrl,
         },
         () => {

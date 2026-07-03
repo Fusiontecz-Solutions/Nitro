@@ -1,18 +1,26 @@
 import { useEffect, useRef } from "react";
-import { loadCrmBridgeInbox, type CrmBridgeInboxPayload } from "./crmBridgeTypes";
+import {
+  loadCrmBridgeInbox,
+  readRouteApplicationIdFromLocation,
+  type CrmBridgeInboxPayload,
+  type CrmBridgeSectionId,
+} from "./crmBridgeTypes";
 
 export function useCrmBridgeInbox(
   applicationId: string | undefined,
+  source: CrmBridgeSectionId,
   onInbox: (payload: CrmBridgeInboxPayload) => void,
 ): void {
   const onInboxRef = useRef(onInbox);
   onInboxRef.current = onInbox;
 
   useEffect(() => {
-    if (!applicationId) return;
+    const routeApplicationId = readRouteApplicationIdFromLocation();
+    const resolvedId = applicationId || routeApplicationId;
+    if (!resolvedId) return;
 
     const consume = () => {
-      const inbox = loadCrmBridgeInbox(applicationId);
+      const inbox = loadCrmBridgeInbox(resolvedId, { source });
       if (inbox) {
         onInboxRef.current(inbox);
       }
@@ -31,5 +39,5 @@ export function useCrmBridgeInbox(
       window.clearInterval(pollInterval);
       window.clearTimeout(stopPoll);
     };
-  }, [applicationId]);
+  }, [applicationId, source]);
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router";
 import { ChevronDown, ExternalLink, Loader2, Search } from "lucide-react";
 import { useSelector } from "react-redux";
 import { toast } from "react-toastify";
@@ -22,6 +23,7 @@ import {
   handleCrmBridgeReturn,
   isCrmBridgeReturnMessage,
   resolveCrmBridgeOrigin,
+  resolveBridgeApplicationId,
 } from "./crmBridgeTypes";
 import { useCrmBridgeInbox } from "./useCrmBridgeInbox";
 
@@ -142,32 +144,26 @@ function OpenCorporatesCompanyCard({ company }: { company: OpenCorporatesCompany
           </ul>
         </div>
       ) : null}
-      {company.directors && company.directors.length > 0 ? (
-        <div className="text-[11px] text-[#6B7280]">
-          <p className="font-medium text-[#374151]">Directors</p>
-          <ul className="mt-1 list-disc pl-4 space-y-0.5">
-            {company.directors.map((officer, index) => (
-              <li key={`director-${officer.name}-${index}`}>
-                {officer.name}
-                {officer.position ? ` (${officer.position})` : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {company.officers && company.officers.length > 0 ? (
-        <div className="text-[11px] text-[#6B7280]">
-          <p className="font-medium text-[#374151]">Officers</p>
-          <ul className="mt-1 list-disc pl-4 space-y-0.5">
-            {company.officers.map((officer, index) => (
-              <li key={`${officer.name}-${index}`}>
-                {officer.name}
-                {officer.position ? ` (${officer.position})` : ""}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      {(() => {
+        const directorsAndOfficers =
+          company.directors && company.directors.length > 0
+            ? company.directors
+            : company.officers;
+        if (!directorsAndOfficers || directorsAndOfficers.length === 0) return null;
+        return (
+          <div className="text-[11px] text-[#6B7280]">
+            <p className="font-medium text-[#374151]">Directors / officers</p>
+            <ul className="mt-1 list-disc pl-4 space-y-0.5">
+              {directorsAndOfficers.map((officer, index) => (
+                <li key={`director-officer-${officer.name}-${index}`}>
+                  {officer.name}
+                  {officer.position ? ` (${officer.position})` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
       {company.inactiveOfficers && company.inactiveOfficers.length > 0 ? (
         <div className="text-[11px] text-[#6B7280]">
           <p className="font-medium text-[#374151]">Inactive officers</p>
@@ -212,19 +208,14 @@ export default function OpenCorporatesPanel({
   embedded = false,
   onApplyToNotes,
 }: OpenCorporatesPanelProps) {
+  const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>();
   const applicationData = useSelector(
     (state: RootState) => state.applicationDetail.data as Record<string, unknown> | null,
   );
 
   const applicationId = useMemo(
-    () =>
-      String(
-        applicationData?._id ??
-          applicationData?.id ??
-          applicationData?.applicationId ??
-          "",
-      ).trim(),
-    [applicationData],
+    () => resolveBridgeApplicationId(routeApplicationId, applicationData),
+    [routeApplicationId, applicationData],
   );
 
   const dealClient = useMemo(
@@ -333,7 +324,7 @@ export default function OpenCorporatesPanel({
 
   const processOpenCorporatesImport = useCallback(
     (data: Parameters<typeof isOpenCorporatesImportMessage>[0]) => {
-      if (!applicationId || !isOpenCorporatesImportMessage(data, applicationId)) return;
+      if (!applicationId || !isOpenCorporatesImportMessage(data, applicationId, applicationData)) return;
 
       const lookup: OpenCorporatesLookupData = {
         searchQuery: dealClient.businessName,
@@ -359,7 +350,7 @@ export default function OpenCorporatesPanel({
         sectionId: "opencorporates",
       });
     },
-    [applicationId, applyLookup, dealClient.businessName, dealClient.state, finishBridgeImport],
+    [applicationId, applicationData, applyLookup, dealClient.businessName, dealClient.state, finishBridgeImport],
   );
 
   const handleBridgeMessage = useCallback(
@@ -380,9 +371,9 @@ export default function OpenCorporatesPanel({
 
   useCrmBridgeInbox(
     applicationId,
+    "opencorporates",
     useCallback(
       (inbox) => {
-        if (inbox.source !== "opencorporates") return;
         processOpenCorporatesImport(inbox.importPayload);
       },
       [processOpenCorporatesImport],

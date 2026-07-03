@@ -9,12 +9,31 @@ function pathIncludesApplicationId(url, applicationId) {
   }
 }
 
+function applicationIdsFromMessage(message) {
+  const ids = new Set();
+  if (message?.applicationId) ids.add(String(message.applicationId));
+  if (Array.isArray(message?.applicationIds)) {
+    message.applicationIds.forEach((id) => {
+      if (id) ids.add(String(id));
+    });
+  }
+  const match = String(message?.returnUrl || "").match(/\/application-details\/([^/?#]+)/i);
+  if (match?.[1]) ids.add(match[1]);
+  return [...ids];
+}
+
+function tabMatchesApplicationIds(tab, applicationIds) {
+  if (!tab?.url) return false;
+  return applicationIds.some((id) => pathIncludesApplicationId(tab.url, id));
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== "crm:bridge-deliver") return;
 
-  const { applicationId, returnUrl } = message;
+  const applicationIds = applicationIdsFromMessage(message);
+  const { returnUrl } = message;
   const senderTabId = sender?.tab?.id;
-  if (!applicationId) {
+  if (!applicationIds.length) {
     sendResponse({ ok: false });
     return;
   }
@@ -24,7 +43,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       (tab) =>
         tab.id &&
         tab.id !== senderTabId &&
-        pathIncludesApplicationId(tab.url, applicationId),
+        tabMatchesApplicationIds(tab, applicationIds),
     );
 
     const target = matches[0] || null;

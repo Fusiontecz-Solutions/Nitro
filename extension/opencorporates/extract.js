@@ -125,13 +125,25 @@ function parseOfficerListItem(li) {
   const text = cleanText(li.textContent);
   if (!text || isLoginGated(text)) return null;
 
-  const link = li.querySelector("a[href]");
+  const link = li.querySelector("a[href*='/officers/'], a[href]");
   const positionEl = li.querySelector(
-    ".position, .officer-position, .role, em, small, span.officer-role",
+    ".position, .officer-position, .role, em, small, span.officer-role, span[class*='position']",
   );
 
   let name = sanitizeField(link?.textContent || "");
   let position = sanitizeField(positionEl?.textContent || "");
+
+  if (name && !position) {
+    const nameIdx = text.indexOf(name);
+    if (nameIdx >= 0) {
+      const remainder = cleanText(
+        text.slice(nameIdx + name.length).replace(/^[\s,;:–\-]+/, ""),
+      );
+      if (remainder && remainder.length <= 50) {
+        position = sanitizeField(remainder);
+      }
+    }
+  }
 
   if (!name) {
     const commaIdx = text.indexOf(",");
@@ -148,6 +160,76 @@ function parseOfficerListItem(li) {
     name,
     ...(position ? { position } : {}),
   };
+}
+
+function extractOfficerFromAnchor(anchor) {
+  const name = sanitizeField(anchor.textContent);
+  if (!name) return null;
+
+  const container =
+    anchor.closest("li, tr, .officer, [class*='officer'], td, .person, .item") ||
+    anchor.parentElement;
+
+  let position;
+  const positionEl =
+    container?.querySelector?.(
+      ".position, .officer-position, .role, em, small, span.officer-role, span[class*='position']",
+    ) || (anchor.nextElementSibling && anchor.nextElementSibling !== container
+      ? anchor.nextElementSibling
+      : null);
+
+  if (positionEl && positionEl !== anchor) {
+    position = sanitizeField(positionEl.textContent);
+  }
+
+  if (!position && container) {
+    const fullText = cleanText(container.textContent || "");
+    const nameIdx = fullText.indexOf(name);
+    if (nameIdx >= 0) {
+      const remainder = cleanText(
+        fullText.slice(nameIdx + name.length).replace(/^[\s,;:–\-]+/, ""),
+      );
+      if (remainder && remainder.length <= 50) {
+        position = sanitizeField(remainder);
+      }
+    }
+  }
+
+  return {
+    name,
+    ...(position ? { position } : {}),
+  };
+}
+
+function mergeUniqueOfficers(...groups) {
+  const merged = [];
+  const seen = new Set();
+
+  groups.flat().forEach((officer) => {
+    if (!officer?.name) return;
+    const key = `${officer.name}|${officer.position || ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(officer);
+  });
+
+  return merged;
+}
+
+function extractOfficersFromOfficerLinks() {
+  const officers = [];
+  const seen = new Set();
+
+  document.querySelectorAll("a[href*='/officers/']").forEach((anchor) => {
+    const officer = extractOfficerFromAnchor(anchor);
+    if (!officer) return;
+    const key = `${officer.name}|${officer.position || ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    officers.push(officer);
+  });
+
+  return officers;
 }
 
 function extractOfficersFromListNodes(nodes) {
@@ -197,14 +279,17 @@ function extractOfficersFromTables() {
 function extractOfficersByHeading() {
   const active = [];
   const inactive = [];
+  const directors = [];
   const activeSeen = new Set();
   const inactiveSeen = new Set();
+  const directorSeen = new Set();
 
   document.querySelectorAll("h1, h2, h3, h4, .section-heading, .heading").forEach((heading) => {
     const title = cleanText(heading.textContent).toLowerCase();
-    const isOfficerHeading =
-      title.includes("director") || title.includes("officer") || title.includes("agent");
-    if (!isOfficerHeading) return;
+    const isDirectorSection =
+      title.includes("director") ||
+      (title.includes("officer") && !title.includes("inactive"));
+    if (!isDirectorSection) return;
 
     const isInactive = title.includes("inactive");
     const nodes = [heading.parentElement, ...sectionNodesAfterHeading(heading)].filter(Boolean);
@@ -216,15 +301,19 @@ function extractOfficersByHeading() {
         if (inactiveSeen.has(key)) return;
         inactiveSeen.add(key);
         inactive.push({ ...officer, status: "inactive" });
-      } else if (!title.includes("inactive")) {
+      } else {
         if (activeSeen.has(key)) return;
         activeSeen.add(key);
         active.push({ ...officer, status: "active" });
+        if (!directorSeen.has(key)) {
+          directorSeen.add(key);
+          directors.push({ ...officer, status: "active" });
+        }
       }
     });
   });
 
-  return { active, inactive };
+  return { active, inactive, directors };
 }
 
 function extractIdentifiers() {
@@ -314,11 +403,14 @@ function extractCompanyFromDetailPage() {
     sanitizeField(document.querySelector(".company_name")?.textContent) ||
     sanitizeField(document.title.replace(/\s+\|\s+OpenCorporates.*$/i, ""));
 
-  const { active: headingOfficers, inactive: inactiveOfficers } = extractOfficersByHeading();
+  const { active: headingOfficers, inactive: inactiveOfficers, directors: headingDirectors } =
+    extractOfficersByHeading();
   const tableOfficers = extractOfficersFromTables();
-  const officers = headingOfficers.length > 0 ? headingOfficers : tableOfficers;
-  const directors = officers.filter((officer) =>
-    /director/i.test(officer.position || ""),
+  const linkOfficers = extractOfficersFromOfficerLinks();
+  const officers = mergeUniqueOfficers(headingOfficers, tableOfficers, linkOfficers);
+  const directors = mergeUniqueOfficers(
+    headingDirectors,
+    linkOfficers.length > 0 ? linkOfficers : [],
   );
   const identifiers = extractIdentifiers();
   const addresses = extractAddresses(fields);

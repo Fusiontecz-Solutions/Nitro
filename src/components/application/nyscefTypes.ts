@@ -2,6 +2,7 @@ import {
   appendCrmBridgeHash,
   buildCrmBackgroundCheckReturnUrl,
   splitOwnerName,
+  bridgeImportApplicationIdMatches,
   type CrmBridgeSearchMode,
 } from "./crmBridgeTypes";
 
@@ -65,6 +66,19 @@ export function loadNyscefCache(
     if (parsed.queryKey !== queryKey || !parsed.result || !parsed.searchedAt) {
       return null;
     }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Load the saved NY Court result for an application regardless of active query key. */
+export function loadLatestNyscefCache(applicationId: string): PersistedNyscefCache | null {
+  try {
+    const raw = localStorage.getItem(nyscefStorageKey(applicationId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedNyscefCache;
+    if (!parsed.result || !parsed.searchedAt) return null;
     return parsed;
   } catch {
     return null;
@@ -142,13 +156,21 @@ export function formatNyscefNotes(
 export function isNyscefImportMessage(
   data: unknown,
   expectedApplicationId?: string,
+  applicationData?: Record<string, unknown> | null,
 ): data is NyscefImportMessage {
   if (!data || typeof data !== "object") return false;
   const msg = data as NyscefImportMessage;
   if (msg.type !== NYSCEF_IMPORT_MESSAGE_TYPE) return false;
   if (!msg.applicationId || !Array.isArray(msg.cases)) return false;
-  if (expectedApplicationId && msg.applicationId !== expectedApplicationId) return false;
-  return msg.cases.every((item) => Boolean(item?.caseName || item?.indexNumber));
+  if (
+    expectedApplicationId &&
+    !bridgeImportApplicationIdMatches(expectedApplicationId, msg.applicationId, applicationData)
+  ) {
+    return false;
+  }
+  return msg.cases.every(
+    (item) => Boolean(item?.caseName || item?.indexNumber || item?.detailUrl),
+  );
 }
 
 export function isAllowedNyscefMessageOrigin(origin: string): boolean {

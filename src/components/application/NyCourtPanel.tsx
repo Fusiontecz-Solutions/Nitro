@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router";
 import { ChevronDown, ExternalLink, Loader2, Search } from "lucide-react";
 import { useSelector } from "react-redux";
 import { toast } from "react-toastify";
@@ -9,6 +10,8 @@ import {
   handleCrmBridgeReturn,
   isCrmBridgeReturnMessage,
   resolveCrmBridgeOrigin,
+  bridgeImportApplicationIdMatches,
+  resolveBridgeApplicationId,
   splitOwnerName,
   type CrmBridgeSearchMode,
 } from "./crmBridgeTypes";
@@ -20,6 +23,7 @@ import {
   isAllowedNyscefMessageOrigin,
   isNyscefImportMessage,
   loadNyscefCache,
+  loadLatestNyscefCache,
   saveNyscefCache,
   type NyscefCaseHit,
   type NyscefLookupData,
@@ -160,19 +164,14 @@ export default function NyCourtPanel({
   embedded = false,
   onApplyToNotes,
 }: NyCourtPanelProps) {
+  const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>();
   const applicationData = useSelector(
     (state: RootState) => state.applicationDetail.data as Record<string, unknown> | null,
   );
 
   const applicationId = useMemo(
-    () =>
-      String(
-        applicationData?._id ??
-          applicationData?.id ??
-          applicationData?.applicationId ??
-          "",
-      ).trim(),
-    [applicationData],
+    () => resolveBridgeApplicationId(routeApplicationId, applicationData),
+    [routeApplicationId, applicationData],
   );
 
   const dealClient = useMemo(
@@ -188,6 +187,7 @@ export default function NyCourtPanel({
   const [waitingForImport, setWaitingForImport] = useState(false);
   const popupRef = useRef<Window | null>(null);
   const importTimeoutRef = useRef<number | null>(null);
+  const pendingImportRef = useRef<Parameters<typeof isNyscefImportMessage>[0] | null>(null);
 
   const activeSearchQuery = useMemo(() => {
     if (searchMode === "owner") return dealClient.ownerName;
@@ -206,14 +206,15 @@ export default function NyCourtPanel({
   const persistResult = useCallback(
     (lookup: NyscefLookupData, searchedAtIso: string, expanded = resultsExpanded) => {
       if (!applicationId) return;
+      const storageKey = buildNyscefQueryKey(lookup.searchQuery, lookup.searchMode);
       saveNyscefCache(applicationId, {
-        queryKey,
+        queryKey: storageKey,
         searchedAt: searchedAtIso,
         resultsExpanded: expanded,
         result: lookup,
       });
     },
-    [applicationId, queryKey, resultsExpanded],
+    [applicationId, resultsExpanded],
   );
 
   const applyLookup = useCallback(
@@ -222,6 +223,7 @@ export default function NyCourtPanel({
       meta: { searchedAt: string; sourceUrl?: string },
       options?: { announce?: boolean },
     ) => {
+      setSearchMode(lookup.searchMode);
       setResult(lookup);
       setHasSearched(true);
       setSearchedAt(meta.searchedAt);
@@ -249,7 +251,8 @@ export default function NyCourtPanel({
 
     if (!activeSearchQuery) return;
 
-    const cached = loadNyscefCache(applicationId, queryKey);
+    const cached =
+      loadNyscefCache(applicationId, queryKey) ?? loadLatestNyscefCache(applicationId);
     if (cached) {
       setResult(cached.result);
       setHasSearched(true);
@@ -259,11 +262,13 @@ export default function NyCourtPanel({
       return;
     }
 
+    if (waitingForImport) return;
+
     setResult(null);
     setHasSearched(false);
     setSearchedAt(null);
     setResultsExpanded(true);
-  }, [applicationId, activeSearchQuery, queryKey]);
+  }, [applicationId, activeSearchQuery, queryKey, waitingForImport]);
 
   const finishBridgeImport = useCallback(() => {
     setWaitingForImport(false);
@@ -276,11 +281,22 @@ export default function NyCourtPanel({
 
   const processNyscefImport = useCallback(
     (data: Parameters<typeof isNyscefImportMessage>[0]) => {
-      if (!applicationId || !isNyscefImportMessage(data, applicationId)) return;
+      if (!applicationId) return;
+
+      if (!isNyscefImportMessage(data, applicationId, applicationData)) {
+        if (!applicationData) {
+          pendingImportRef.current = data;
+          return;
+        }
+        toast.warn("Could not import NY Court results for this application.");
+        return;
+      }
+
+      pendingImportRef.current = null;
 
       const lookup: NyscefLookupData = {
-        searchQuery: data.searchQuery,
-        searchMode: data.searchMode,
+        searchQuery: data.searchQuery || activeSearchQuery,
+        searchMode: data.searchMode || searchMode,
         cases: data.cases,
         sourceUrl: data.sourceUrl,
       };
@@ -294,7 +310,6 @@ export default function NyCourtPanel({
         { announce: true },
       );
 
-      setSearchMode(data.searchMode);
       finishBridgeImport();
       handleCrmBridgeReturn({
         type: "crm:bridge-return",
@@ -303,13 +318,28 @@ export default function NyCourtPanel({
         sectionId: "nyscef",
       });
     },
-    [applicationId, applyLookup, finishBridgeImport],
+    [
+      applicationId,
+      applicationData,
+      activeSearchQuery,
+      searchMode,
+      applyLookup,
+      finishBridgeImport,
+    ],
   );
+
+  useEffect(() => {
+    if (!applicationId || !applicationData || !pendingImportRef.current) return;
+    processNyscefImport(pendingImportRef.current);
+  }, [applicationId, applicationData, processNyscefImport]);
 
   const handleBridgeMessage = useCallback(
     (event: MessageEvent) => {
       if (!applicationId) return;
-      if (isCrmBridgeReturnMessage(event.data) && event.data.applicationId === applicationId) {
+      if (
+        isCrmBridgeReturnMessage(event.data) &&
+        bridgeImportApplicationIdMatches(applicationId, event.data.applicationId, applicationData)
+      ) {
         handleCrmBridgeReturn(event.data);
         finishBridgeImport();
         return;
@@ -317,14 +347,14 @@ export default function NyCourtPanel({
       if (!isAllowedNyscefMessageOrigin(event.origin)) return;
       processNyscefImport(event.data);
     },
-    [applicationId, finishBridgeImport, processNyscefImport],
+    [applicationId, applicationData, finishBridgeImport, processNyscefImport],
   );
 
   useCrmBridgeInbox(
     applicationId,
+    "nyscef",
     useCallback(
       (inbox) => {
-        if (inbox.source !== "nyscef") return;
         processNyscefImport(inbox.importPayload);
       },
       [processNyscefImport],
