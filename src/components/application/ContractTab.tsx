@@ -2633,9 +2633,7 @@ export default function ContractTab({
               (viewingSignedEnvelopeId
                   ? viewingSignedEnvelopeId === rowEnvelopeId
                   : row.isCurrent);
-        const rowCanViewDocument =
-            Boolean(rowEnvelopeId) &&
-            (rowFullySigned || isSupplementalRow || !row.isCurrent);
+        const rowCanViewDocument = Boolean(rowEnvelopeId) && !rowIsVoided;
 
         return (
             <TableRow key={row.key} className={tableRowClass}>
@@ -2742,11 +2740,7 @@ export default function ContractTab({
                                                     ? void (row.isCurrent
                                                           ? handleViewAchDocument()
                                                           : handleViewSignedContract(rowEnvelopeId))
-                                                    : void handleViewSignedContract(
-                                                          row.isCurrent && !isPackageRow
-                                                              ? undefined
-                                                              : rowEnvelopeId,
-                                                      )
+                                                    : void handleViewSignedContract(rowEnvelopeId)
                                             }
                                             disabled={isViewingRow}
                                             className={`h-7 w-7 shrink-0 ${isDark
@@ -2930,8 +2924,26 @@ export default function ContractTab({
         setContractValuesSaved(true);
     };
 
+    const handleViewContract = async () => {
+        if (!applicationUuid) {
+            toast.error("Missing application ID.");
+            return;
+        }
+        const opened = await tryOpenExistingDraftViewer();
+        if (opened) return;
+        if (mainContractEnvelopeId) {
+            await handleViewSignedContract(mainContractEnvelopeId);
+            return;
+        }
+        toast.info("No contract is available to view.");
+    };
+
     const handlePrimaryContractAction = () => {
         if (!showRegenerateContractButton) {
+            if (isReadOnly || hasGeneratedContract) {
+                void handleViewContract();
+                return;
+            }
             void handleGenerateContract();
             return;
         }
@@ -2953,6 +2965,31 @@ export default function ContractTab({
 
                     </div>
                     <div className="flex items-center gap-3">
+                        {hasGeneratedContract && showRegenerateContractButton ? (
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => void handleViewContract()}
+                                disabled={
+                                    creatingEnvelope ||
+                                    regeneratingContract ||
+                                    viewingSignedContract
+                                }
+                                className={`h-10 px-6 font-medium disabled:opacity-70 disabled:cursor-not-allowed ${isDark
+                                    ? "border-[#C07BE0] text-[#C07BE0] hover:bg-[#C07BE0]/10"
+                                    : "border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                                    }`}
+                            >
+                                {viewingSignedContract ? (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Opening contract...
+                                    </span>
+                                ) : (
+                                    "View Contract"
+                                )}
+                            </Button>
+                        ) : null}
                         <Button
                             type="button"
                             variant="default"

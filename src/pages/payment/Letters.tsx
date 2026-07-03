@@ -856,14 +856,10 @@ export default function Letters() {
           dealKey: dealLabel,
           templateName: selectedTemplate.name,
           category: selectedTemplate.category,
-          attachLetterPdf:
-            selectedTemplate.category === "letter" ||
-            selectedTemplate.category === "email",
-          letterPdfFilename:
-            selectedTemplate.category === "letter" ||
-            selectedTemplate.category === "email"
-              ? `${selectedTemplate.name}.pdf`
-              : undefined,
+          attachLetterPdf: isPayoffOrZeroBalanceLetter(selectedTemplate.name),
+          letterPdfFilename: isPayoffOrZeroBalanceLetter(selectedTemplate.name)
+            ? `${selectedTemplate.name}.pdf`
+            : undefined,
         })
       ).unwrap();
 

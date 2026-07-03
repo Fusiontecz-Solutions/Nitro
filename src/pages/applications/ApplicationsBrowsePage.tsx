@@ -98,7 +98,7 @@ export default function ApplicationsBrowsePage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [statsBucketFilter, setStatsBucketFilter] = useState("");
   const [underwriterClaimFilter, setUnderwriterClaimFilter] = useState<
-    "" | "unclaimed" | "mine"
+    "" | "unclaimed" | "claimed" | "mine"
   >("");
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(false);
 
@@ -541,7 +541,7 @@ export default function ApplicationsBrowsePage() {
     const currentQueueRaw = query.get("currentQueue")?.trim() ?? "";
     const uwRaw = query.get("underwriterClaim")?.trim().toLowerCase() ?? "";
     setUnderwriterClaimFilter(
-      uwRaw === "unclaimed" || uwRaw === "mine" ? uwRaw : "",
+      uwRaw === "unclaimed" || uwRaw === "claimed" || uwRaw === "mine" ? uwRaw : "",
     );
 
     if (statsBucketRaw) {

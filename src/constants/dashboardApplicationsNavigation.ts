@@ -15,7 +15,7 @@ export function buildOperationsPipelineApplicationsUrl(
 /** Underwriter sidebar pipeline — deal pool, action history, or queue drill-down. */
 export function buildUnderwriterPipelineApplicationsUrl(options: {
   operationsStatus?: string;
-  underwriterClaim?: "unclaimed" | "mine";
+  underwriterClaim?: "unclaimed" | "claimed" | "mine";
   underwriterPipeline?: string;
 }): string {
   if (options.underwriterPipeline?.trim()) {
@@ -55,8 +55,8 @@ export function buildApplicationsBrowseUrl(options: {
   statsBucket?: DashboardApplicationStatsBucket | string;
   currentQueue?: string;
   viewOnly?: boolean;
-  /** SCRUBBING: scope drill-down to Queue (unclaimed) vs My deals (claimed by viewer). */
-  underwriterClaim?: "unclaimed" | "mine";
+  /** SCRUBBING: scope drill-down to Queue / Claimed / My deals. */
+  underwriterClaim?: "unclaimed" | "claimed" | "mine";
 }): string {
   const qs = new URLSearchParams();
   if (options.statsBucket) {

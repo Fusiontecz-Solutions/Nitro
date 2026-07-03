@@ -90,6 +90,10 @@ import {
   parseApplicationsListRouteFilters,
   parseUnderwriterClaimFromSearch,
   parseUnderwriterPipelineFromSearch,
+  poolTabFromUnderwriterClaim,
+  underwriterClaimFromPoolTab,
+  type ScrubberPoolTab,
+  type UnderwriterClaimParam,
   buildApplicationsListParams,
   applicationsListSortFromTable,
   APPLICATIONS_LIST_DEFAULT_SORT,
@@ -250,11 +254,13 @@ const Applications = () => {
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(true);
-  /** Primary scrubbing inbox: unclaimed pool vs deals you claimed (Scrubbing queue only). */
-  const [underwriterPoolTab, setUnderwriterPoolTab] = useState<"queue" | "my">(
-    () =>
-      parseUnderwriterClaimFromSearch(location.search) === "mine" ? "my" : "queue",
+  /** Scrubber inbox: Queue / Claimed / My deals; underwriter keeps Queue / My deals. */
+  const [underwriterPoolTab, setUnderwriterPoolTab] = useState<ScrubberPoolTab>(
+    () => poolTabFromUnderwriterClaim(parseUnderwriterClaimFromSearch(location.search)),
   );
+  const resolveUwClaimParam = useCallback((): UnderwriterClaimParam => {
+    return underwriterClaimFromPoolTab(underwriterPoolTab, sessionRoleKey);
+  }, [sessionRoleKey, underwriterPoolTab]);
   const [claimBusyAppId, setClaimBusyAppId] = useState<string | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [isExtractingPDF, setIsExtractingPDF] = useState(false);
@@ -356,7 +362,7 @@ const Applications = () => {
   const fetchUwDealPoolStats = useCallback(
     async (signal?: AbortSignal) => {
       if (!showUwDealPoolUi) return;
-      const claim = underwriterPoolTab === "queue" ? "unclaimed" : "mine";
+      const claim = resolveUwClaimParam();
       const { startDate, endDate } = getPreviousCalendarMonthDateBoundaries();
       const config = signal ? { signal } : undefined;
       const [curRes, prevRes] = await Promise.all([
@@ -380,7 +386,7 @@ const Applications = () => {
         normalizeApplicationStatsData(prevRaw?.data ?? prevRes.data),
       );
     },
-    [showUwDealPoolUi, underwriterPoolTab],
+    [showUwDealPoolUi, underwriterPoolTab, resolveUwClaimParam],
   );
 
   useEffect(() => {
@@ -1182,8 +1188,7 @@ const Applications = () => {
         searchTerm: debouncedSearchTerm,
         dashboardStateFilter: "",
         statusFilter: "all",
-        underwriterClaim:
-          underwriterPoolTab === "queue" ? "unclaimed" : "mine",
+        underwriterClaim: resolveUwClaimParam(),
         ...sort,
       });
     }
@@ -1211,6 +1216,7 @@ const Applications = () => {
     showUnderwriterPipelineView,
     underwriterPipelineFilter,
     underwriterPoolTab,
+    resolveUwClaimParam,
     pagination.pageIndex,
     pagination.pageSize,
     debouncedSearchTerm,
@@ -1305,8 +1311,8 @@ const Applications = () => {
     }
 
     const uwClaim = query.get("underwriterClaim");
-    if (uwClaim === "unclaimed" || uwClaim === "mine") {
-      setUnderwriterPoolTab(uwClaim === "mine" ? "my" : "queue");
+    if (uwClaim === "unclaimed" || uwClaim === "claimed" || uwClaim === "mine") {
+      setUnderwriterPoolTab(poolTabFromUnderwriterClaim(uwClaim));
       setDashboardStateFilter("");
       setStatusFilter("all");
 
@@ -1754,7 +1760,7 @@ const Applications = () => {
     ): {
       statsBucket?: string;
       currentQueue?: string;
-      underwriterClaim?: "unclaimed" | "mine";
+      underwriterClaim?: UnderwriterClaimParam;
     } => {
       let q: { statsBucket?: string; currentQueue?: string };
 
@@ -1773,13 +1779,12 @@ const Applications = () => {
       if (showUwDealPoolUi) {
         return {
           ...q,
-          underwriterClaim:
-            underwriterPoolTab === "queue" ? "unclaimed" : "mine",
+          underwriterClaim: resolveUwClaimParam(),
         };
       }
       return q;
     },
-    [roleKey, showUwDealPoolUi, underwriterPoolTab],
+    [roleKey, showUwDealPoolUi, resolveUwClaimParam],
   );
 
   const prefetchBrowseFromStatCard = useCallback(
@@ -2186,6 +2191,30 @@ const Applications = () => {
               >
                 <span className="text-xs font-medium sm:text-sm">Queue</span>
               </Button>
+              {sessionRoleKey === "SCRUBBING" ? (
+                <Button
+                  type="button"
+                  variant={underwriterPoolTab === "claimed" ? "default" : "ghost"}
+                  className={cn(
+                    "h-9 min-w-[5.5rem] rounded-sm px-3 shadow-none gap-1.5",
+                    underwriterPoolTab !== "claimed" &&
+                      "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => {
+                    setUnderwriterPoolTab("claimed");
+                    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                    navigate(
+                      buildUnderwriterPipelineApplicationsUrl({
+                        underwriterClaim: "claimed",
+                      }),
+                      { replace: true },
+                    );
+                  }}
+                  aria-pressed={underwriterPoolTab === "claimed"}
+                >
+                  <span className="text-xs font-medium sm:text-sm">Claimed</span>
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant={underwriterPoolTab === "my" ? "default" : "ghost"}
@@ -2206,7 +2235,7 @@ const Applications = () => {
                 }}
                 aria-pressed={underwriterPoolTab === "my"}
               >
-                <span className="text-xs font-medium sm:text-sm">My deals</span>
+                <span className="text-xs font-medium sm:text-sm">My Deals</span>
               </Button>
             </div>
           ) : null}

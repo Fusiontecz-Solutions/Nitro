@@ -1226,6 +1226,16 @@ const ApplicationDetails = () => {
                                                                         isOperationsReadOnlyPipelineTab))
                                                             }
                                                             onRegisterSaveAll={onRegisterBankSaveAll}
+                                                            autoSave={
+                                                                !(
+                                                                    componentsReadOnly ||
+                                                                    (!superAdminPipelineEditOverride &&
+                                                                        !plainUnderwriterWorkflowEdit &&
+                                                                        !operationsValueEditOverride &&
+                                                                        (pipelineStageReadOnly ||
+                                                                            isOperationsReadOnlyPipelineTab))
+                                                                )
+                                                            }
                                                         />
                                                     ) : (
                                                         <BankAnalysisTable

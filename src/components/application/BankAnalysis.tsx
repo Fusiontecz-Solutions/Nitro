@@ -41,7 +41,7 @@ import {
     uploadAndDownloadCsv,
 } from "@/redux/actions/automatedBankStatementActions";
 import { updateApplication } from "@/redux/actions/applicationActions";
-import { normalizeApiDateToYyyyMmDd } from "@/lib/utils";
+import { normalizeApiDateToYyyyMmDd, formatNumberUSForInput } from "@/lib/utils";
 import type { Application } from "@/types/applicationTypes";
 import { toast } from "react-toastify";
 
@@ -234,14 +234,21 @@ const BankAnalysis = ({
      * flow. Best-effort and quiet: skips when empty/unchanged, surfaces only
      * hard failures. Returns false when an entered amount is invalid.
      */
-    const persistRequestedLoanAmount = useCallback(async (): Promise<boolean> => {
+    const persistRequestedLoanAmount = useCallback(async (opts?: {
+        silent?: boolean;
+        keepEditing?: boolean;
+    }): Promise<boolean> => {
+        const silent = !!opts?.silent;
+        const keepEditing = opts?.keepEditing ?? !silent;
         const updateId = applicationUpdateRouteId(applicationData);
         if (!updateId) return true;
         const raw = String(requestedLoanAmountInput ?? "").trim();
         if (!raw) return true;
         const parsed = parseFloat(raw.replace(/[^0-9.-]+/g, ""));
         if (Number.isNaN(parsed) || parsed <= 0) {
-            toast.error("Enter a valid requested amount greater than zero.");
+            if (!silent) {
+                toast.error("Enter a valid requested amount greater than zero.");
+            }
             return false;
         }
         const prevStr = loanAmountToInputString(
@@ -259,14 +266,20 @@ const BankAnalysis = ({
                     data: { loanAmount: parsed },
                 }),
             ).unwrap();
-            setEditingLoanAmount(false);
+            if (keepEditing) {
+                setEditingLoanAmount(true);
+            } else {
+                setEditingLoanAmount(false);
+            }
             return true;
         } catch (e: unknown) {
             const msg =
                 e && typeof e === "object" && "message" in e
                     ? String((e as { message?: string }).message)
                     : "Failed to save requested amount.";
-            toast.error(msg);
+            if (!silent) {
+                toast.error(msg);
+            }
             return false;
         } finally {
             setSavingRequestedLoanAmount(false);
@@ -321,6 +334,32 @@ const BankAnalysis = ({
     const [offerDecisionState, setOfferDecisionState] = useState<"approved" | "declined" | null>(null);
     const [isPreviewMode, setIsPreviewMode] = useState(false);
     const componentsReadOnly = readOnly || isPreviewMode;
+    const scrubbingAutoSave = !componentsReadOnly;
+
+    /** Debounced auto-save for requested loan amount on the Scrubbing tab. */
+    useEffect(() => {
+        if (!scrubbingAutoSave || readOnly || savingRequestedLoanAmount) return;
+        const raw = String(requestedLoanAmountInput ?? "").trim();
+        if (!raw) return;
+        const parsed = parseFloat(raw.replace(/[^0-9.-]+/g, ""));
+        if (Number.isNaN(parsed) || parsed <= 0) return;
+        const prevStr = loanAmountToInputString(serverLoanAmount).replace(/[^0-9.-]+/g, "");
+        const prev = prevStr === "" ? NaN : parseFloat(prevStr);
+        if (!Number.isNaN(prev) && Math.abs(parsed - prev) < 0.005) return;
+
+        const timer = setTimeout(() => {
+            void persistRequestedLoanAmount({ silent: true, keepEditing: true });
+        }, 1500);
+        return () => clearTimeout(timer);
+    }, [
+        scrubbingAutoSave,
+        readOnly,
+        savingRequestedLoanAmount,
+        requestedLoanAmountInput,
+        serverLoanAmount,
+        persistRequestedLoanAmount,
+    ]);
+
     const [uploadedBankFiles, setUploadedBankFiles] = useState<string[]>([]);
     const [livePositions, setLivePositions] = useState<any[]>([]);
     const [bankAllocationOptions, setBankAllocationOptions] = useState<Array<{ id: number; label: string }>>([]);
@@ -1299,9 +1338,9 @@ const BankAnalysis = ({
                                                         inputMode="decimal"
                                                         autoComplete="off"
                                                         placeholder="e.g. 50000"
-                                                        value={requestedLoanAmountInput}
+                                                        value={formatNumberUSForInput(requestedLoanAmountInput)}
                                                         onChange={(e) =>
-                                                            setRequestedLoanAmountInput(e.target.value)
+                                                            setRequestedLoanAmountInput(formatNumberUSForInput(e.target.value))
                                                         }
                                                         disabled={savingRequestedLoanAmount}
                                                         className="h-9 w-full bg-background"
@@ -1326,9 +1365,9 @@ const BankAnalysis = ({
                                                         inputMode="decimal"
                                                         autoComplete="off"
                                                         placeholder="0"
-                                                        value={requestedLoanAmountInput}
+                                                        value={formatNumberUSForInput(requestedLoanAmountInput)}
                                                         onChange={(e) =>
-                                                            setRequestedLoanAmountInput(e.target.value)
+                                                            setRequestedLoanAmountInput(formatNumberUSForInput(e.target.value))
                                                         }
                                                         disabled={savingRequestedLoanAmount}
                                                         className="h-9 w-full"
@@ -1535,6 +1574,7 @@ const BankAnalysis = ({
                             onBanksMetaChange={handleBanksMetaChange}
                             hideToolbarSave={!readOnly}
                             onRegisterSaveAll={readOnly ? undefined : handleRegisterSaveAllBanks}
+                            autoSave={scrubbingAutoSave}
                         />
                     </div>
                  
@@ -1550,6 +1590,7 @@ const BankAnalysis = ({
                             disableCreate={componentsReadOnly || !enableCreate}
                             hideRowSave
                             onRegisterSaveAll={handleRegisterSaveAllPositions}
+                            autoSave={scrubbingAutoSave}
                         />
                     </div>
                 </div>

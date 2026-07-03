@@ -34,9 +34,6 @@ import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
 import { feesPercentToDollarsFromFunded } from "@/lib/offerDecisionFees";
 import { AlertTriangle, DollarSign, Mail, Pencil, Phone, X } from "lucide-react";
 import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
-import ComplianceChecksQuestionnaire, {
-    type ComplianceChecksProgress,
-} from "./ComplianceChecksQuestionnaire";
 import AgentDealIsoTag from "./AgentDealIsoTag";
 import {
     APPLICATION_APPROVAL_EMAIL_SUBJECT,
@@ -311,8 +308,6 @@ export interface ApprovedApplicationModalProps {
     isFinalUnderwriter?: boolean;
     /** UNDERWRITER role: review/edit offer terms, then mark as Underwriter Approved. */
     isUnderwriterDirectApprove?: boolean;
-    /** When true, show compliance checks in the right column (Super Admin approval flow). */
-    showComplianceChecks?: boolean;
     /** Called when UNDERWRITER clicks Proceed to Generate Contract */
     onProceedToContract?: () => void;
     /** When true, send the "offer updated" resend template to ISO. */
@@ -416,7 +411,6 @@ const ApprovedApplicationModal = ({
     isPlainUnderwriter,
     isFinalUnderwriter,
     isUnderwriterDirectApprove,
-    showComplianceChecks: showComplianceChecksProp,
     onProceedToContract,
     resendApprovalEmail,
     reinitiateContract,
@@ -463,12 +457,6 @@ const ApprovedApplicationModal = ({
         position: string | null;
         ourRemit: number | null;
     }>({ position: null, ourRemit: null });
-    const [checksProgress, setChecksProgress] = useState<ComplianceChecksProgress>({
-        completed: 0,
-        total: 6,
-        flagsRaised: 0,
-        allComplete: false,
-    });
     const [isoRecipientEmail, setIsoRecipientEmail] = useState("");
     const [ccEmails, setCcEmails] = useState<string[]>([]);
     const [ccDraft, setCcDraft] = useState("");
@@ -495,10 +483,7 @@ const ApprovedApplicationModal = ({
         (applicationData as { applicationId?: string | number })?.applicationId?.toString() ??
         (applicationId != null ? String(applicationId) : null);
 
-    const showComplianceChecks =
-        showComplianceChecksProp ??
-        (!isFinalUnderwriter && !isUnderwriterDirectApprove);
-    const useWideApprovalLayout = showComplianceChecks;
+    const useWideApprovalLayout = false;
 
     const loadOfferDecision = async () => {
         if (!open || !applicationId) return;
@@ -958,13 +943,6 @@ const ApprovedApplicationModal = ({
             return;
         }
 
-        if (!checksProgress.allComplete) {
-            toast.error(
-                `Please complete all compliance checks (${checksProgress.completed} of ${checksProgress.total} answered).`,
-            );
-            return;
-        }
-
         setIsSubmitting(true);
         const toastId = toast.loading(
             resendApprovalEmail
@@ -1049,12 +1027,6 @@ const ApprovedApplicationModal = ({
         if (!applicationUuid || !applicationId) {
             console.error("No application ID available");
             onOpenChange(false);
-            return;
-        }
-        if (!checksProgress.allComplete) {
-            toast.error(
-                `Please complete all compliance checks (${checksProgress.completed} of ${checksProgress.total} answered).`,
-            );
             return;
         }
         const isDeclineRecommendation =
@@ -1192,12 +1164,10 @@ const ApprovedApplicationModal = ({
                             : isUnderwriterDirectApprove
                             ? "Review loan terms, update the offer if needed, then approve this application."
                             : isFinalUnderwriter
-                              ? showComplianceChecks
-                                  ? "Review loan terms, complete compliance checks, then send the approval email to the ISO."
-                                  : "Review loan terms, update the offer if needed, then send the approval email to the ISO."
+                              ? "Review loan terms, update the offer if needed, then send the approval email to the ISO."
                               : isPlainUnderwriter
-                                ? "Review loan terms, complete compliance checks, then send this application to the Underwriter queue for review."
-                                : "Review loan terms, complete compliance checks, then send this application to the Underwriter."}
+                                ? "Review loan terms, then send this application to the Underwriter queue for review."
+                                : "Review loan terms, then send this application to the Underwriter."}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -1587,36 +1557,6 @@ const ApprovedApplicationModal = ({
                         )}
                     </div>
 
-                    {showComplianceChecks ? (
-                        <div
-                            className={`rounded-lg p-5 ${
-                                isDark
-                                    ? "bg-[#262827] lg:border-l lg:border-gray-700"
-                                    : "bg-white lg:border-l lg:border-gray-200 shadow-sm"
-                            }`}
-                        >
-                            <h3
-                                className={`text-sm font-semibold mb-1 ${
-                                    isDark ? "text-gray-200" : "text-black"
-                                }`}
-                            >
-                                Compliance Checks
-                            </h3>
-                            <p
-                                className={`text-xs mb-4 shrink-0 ${
-                                    isDark ? "text-gray-400" : "text-gray-600"
-                                }`}
-                            >
-                                Answer each question before sending. Selecting
-                                &quot;Yes&quot; requires details.
-                            </p>
-                            <ComplianceChecksQuestionnaire
-                                applicationId={complianceApplicationId}
-                                compact
-                                onProgressChange={setChecksProgress}
-                            />
-                        </div>
-                    ) : null}
                     </div>
 
                     {showIsoRecipientFields ? (
@@ -1818,8 +1758,7 @@ const ApprovedApplicationModal = ({
                                 offerDecisionLoading ||
                                 isSubmitting ||
                                 isEditMode ||
-                                isUpdatingOffer ||
-                                (showComplianceChecks && !checksProgress.allComplete)
+                                isUpdatingOffer
                             }
                             className="bg-green-600 hover:bg-green-700 text-white px-6"
                         >
@@ -1829,11 +1768,9 @@ const ApprovedApplicationModal = ({
                                   ? "Updating…"
                                   : isEditMode
                                     ? "Save offer changes first"
-                                    : showComplianceChecks && !checksProgress.allComplete
-                                      ? `Complete checks (${checksProgress.completed}/${checksProgress.total})`
-                                      : resendApprovalEmail
-                                        ? "Resend approval mail"
-                                        : "Send approval mail"}
+                                    : resendApprovalEmail
+                                      ? "Resend approval mail"
+                                      : "Send approval mail"}
                         </Button>
                     ) : isPlainUnderwriter ? (
                         (() => {
@@ -1841,10 +1778,9 @@ const ApprovedApplicationModal = ({
                                 offerDecisionLoading ||
                                 isSubmitting ||
                                 isEditMode ||
-                                isUpdatingOffer ||
-                                !checksProgress.allComplete;
-                            // Before checks are complete, keep the guided single-button
-                            // state; once complete, reveal the two recommendation choices.
+                                isUpdatingOffer;
+                            // While the offer is loading/saving keep a single guided
+                            // button; otherwise reveal the two recommendation choices.
                             if (recommendDisabled) {
                                 return (
                                     <Button
@@ -1858,7 +1794,7 @@ const ApprovedApplicationModal = ({
                                               ? "Loading…"
                                               : isEditMode
                                                 ? "Save offer changes first"
-                                                : `Complete checks (${checksProgress.completed}/${checksProgress.total})`}
+                                                : "Updating…"}
                                     </Button>
                                 );
                             }
@@ -1893,8 +1829,7 @@ const ApprovedApplicationModal = ({
                                 offerDecisionLoading ||
                                 isSubmitting ||
                                 isEditMode ||
-                                isUpdatingOffer ||
-                                !checksProgress.allComplete
+                                isUpdatingOffer
                             }
                             className="bg-green-600 hover:bg-green-700 cursor-pointer text-white px-6"
                         >
@@ -1902,9 +1837,7 @@ const ApprovedApplicationModal = ({
                                 ? "Sending…"
                                 : offerDecisionLoading
                                     ? "Loading…"
-                                    : !checksProgress.allComplete
-                                      ? `Complete checks (${checksProgress.completed}/${checksProgress.total})`
-                                      : "Send to Final-Scrubbing"}
+                                    : "Send to Final-Scrubbing"}
                         </Button>
                     )}
                 </div>

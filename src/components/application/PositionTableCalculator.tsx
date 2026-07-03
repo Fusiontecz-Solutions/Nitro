@@ -86,6 +86,10 @@ interface PositionsTableProps {
    * Offer "Approve & Save" without per-row save buttons.
    */
   onRegisterSaveAll?: (saveAll: () => Promise<boolean>) => void;
+  /** When true, debounce-save unlocked rows after edits (Scrubbing tab). */
+  autoSave?: boolean;
+  /** Debounce delay for {@link autoSave} (ms). */
+  autoSaveDelayMs?: number;
 }
 
 const ACTIVE_STATUSES = ["ACTIVE", "REFI", "PIF", "REVERSE"] as const;
@@ -879,6 +883,8 @@ export default function PositionTableCalculator({
   onRowsChange,
   hideRowSave,
   onRegisterSaveAll,
+  autoSave = false,
+  autoSaveDelayMs = 1500,
 }: PositionsTableProps) {
   /** Stable: do not default to `createPlaceholderRows()` here — a new array every render breaks effects. */
   const positions = positionsProp;
@@ -921,6 +927,11 @@ export default function PositionTableCalculator({
   const [hasUserAddedRow, setHasUserAddedRow] = useState(false);
   const lastKeyWasEnterRef = useRef(false);
   const lastRowsEmitSignatureRef = useRef<string>("");
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoSavedRowsSigRef = useRef<string>("");
+  const rowsAutoSaveBootstrappedRef = useRef(false);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const [allocationModal, setAllocationModal] = useState<{
     open: boolean;
     rowIndex: number;
@@ -1270,10 +1281,11 @@ export default function PositionTableCalculator({
   const persistRow = async (
     index: number,
     row: IPosition,
-    opts?: { silent?: boolean },
+    opts?: { silent?: boolean; lockAfterSave?: boolean },
   ): Promise<"saved" | "invalid" | "error"> => {
     if (!row) return "invalid";
     const silent = !!opts?.silent;
+    const lockAfterSave = opts?.lockAfterSave !== false;
     const fail = (msg: string) => {
       if (!silent) toast.error(msg);
     };
@@ -1404,7 +1416,7 @@ export default function PositionTableCalculator({
         const cur = next[index];
         const withIds: IPosition = {
           ...cur,
-          isLocked: true,
+          isLocked: lockAfterSave,
           _id: savedId,
           amountFunded: formatMoneyInputCommit(cur.amountFunded),
           installment: formatMoneyInputCommit(cur.installment),
@@ -1457,11 +1469,70 @@ export default function PositionTableCalculator({
       if (result !== "saved") allOk = false;
     }
     return allOk;
-  }, [rows]);
+  }, [rows, persistRow]);
+
+  const persistRowRef = useRef(persistRow);
+  persistRowRef.current = persistRow;
 
   useEffect(() => {
     onRegisterSaveAll?.(saveAll);
   }, [onRegisterSaveAll, saveAll]);
+
+  useEffect(() => {
+    rowsAutoSaveBootstrappedRef.current = false;
+    lastAutoSavedRowsSigRef.current = "";
+  }, [normalizedEffectiveApplicationId]);
+
+  /** Debounced auto-save for Scrubbing — persists unlocked rows without re-locking. */
+  useEffect(() => {
+    if (!autoSave || isReadOnly || !normalizedEffectiveApplicationId) return;
+
+    const sig = buildRowsEmitSignature(rows);
+    if (!rowsAutoSaveBootstrappedRef.current) {
+      rowsAutoSaveBootstrappedRef.current = true;
+      lastAutoSavedRowsSigRef.current = sig;
+      return;
+    }
+    if (sig === lastAutoSavedRowsSigRef.current) return;
+
+    const hasUnlockedEditable = rows.some(
+      (row) => !row.isLocked && rowHasMeaningfulData(row),
+    );
+    if (!hasUnlockedEditable) return;
+
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      void (async () => {
+        let savedAny = false;
+        const snapshot = rowsRef.current;
+        for (let i = 0; i < snapshot.length; i++) {
+          const row = snapshot[i];
+          if (!row || row.isLocked || !rowHasMeaningfulData(row)) continue;
+          const result = await persistRowRef.current(i, row, {
+            silent: true,
+            lockAfterSave: false,
+          });
+          if (result === "saved") savedAny = true;
+        }
+        if (savedAny) {
+          lastAutoSavedRowsSigRef.current = sig;
+        }
+      })();
+    }, autoSaveDelayMs);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    rows,
+    autoSave,
+    autoSaveDelayMs,
+    isReadOnly,
+    normalizedEffectiveApplicationId,
+  ]);
 
   const handleUnlockRow = (index: number) => {
     if (isReadOnly) return;
