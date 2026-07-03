@@ -107,7 +107,7 @@ import {
 import {
     applyAllianceBridgeContractPrefillToFields,
     applyAllianceBridgeContractPrefillToPayload,
-    isAllianceBridgeContractLayoutKey,
+    shouldApplyAllianceBridgeContractPrefill,
 } from "./contractdata/allianceContractPrefill";
 import {
     applyKycPanelsToAchEntries,
@@ -209,6 +209,7 @@ import {
     funderAvailableForContractState,
     isAllianceFunderProfile,
     isTexasContractState,
+    persistedFunderProfileIdForApi,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
 import { funderDisclosureLayoutKeyForState, isPlatformScopedBoldSignTemplateRow } from "@/utils/funderLayoutKeys";
@@ -1203,7 +1204,7 @@ const PDFViewerModal = ({
         const funderName = selectedFunder.trim();
         const state = pickUsStateForSelect(selectedState) || undefined;
         const profile = findFunder(selectedFunder);
-        const funderProfileId = profile?.id ? String(profile.id).trim() : "";
+        const funderProfileId = persistedFunderProfileIdForApi(profile);
         let cancelled = false;
         void (async () => {
             setLoadingContractPreview(true);
@@ -1974,7 +1975,16 @@ const PDFViewerModal = ({
             },
         );
         const displayed = prepareDealReviewPrefillDisplay(withSavedFees);
-        if (!isAllianceBridgeContractLayoutKey(resolveLayoutKey(selectedFunder))) {
+        const layoutKey = resolveLayoutKey(selectedFunder);
+        const funderProfile = findFunder(selectedFunder);
+        if (
+            !shouldApplyAllianceBridgeContractPrefill({
+                layoutKey,
+                funderName: selectedFunder,
+                state: selectedState,
+                profile: funderProfile,
+            })
+        ) {
             return displayed;
         }
         return applyAllianceBridgeContractPrefillToFields(displayed, {
@@ -1991,7 +2001,9 @@ const PDFViewerModal = ({
         contractPrefillLoaded,
         offerDecisionData,
         selectedFunder,
+        selectedState,
         resolveLayoutKey,
+        findFunder,
     ]);
 
     const offerDecisionSummaryRows = useMemo(() => {
@@ -2708,7 +2720,7 @@ const PDFViewerModal = ({
 
     const selectedFunderProfileId = useMemo(() => {
         const profile = findFunder(selectedFunder);
-        return profile?.id ? String(profile.id).trim() : "";
+        return persistedFunderProfileIdForApi(profile) ?? "";
     }, [findFunder, selectedFunder]);
 
     const sendPackageFingerprint = useMemo(
@@ -4294,13 +4306,25 @@ const PDFViewerModal = ({
             [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: effectiveMappingBlob,
         };
 
+        const activeFunder = String(selectedFunderRef.current || "").trim();
+        const contractForDisclosure: Record<string, unknown> = {
+            ...((resolvedContract as Record<string, unknown> | null) ?? {}),
+        };
+        if (activeFunder) {
+            contractForDisclosure.funderName = activeFunder;
+            const profile = findFunder(activeFunder);
+            if (profile) contractForDisclosure.funderProfile = profile;
+            const layoutKey = resolveLayoutKey(activeFunder);
+            if (layoutKey) contractForDisclosure.mainContractLayoutKey = layoutKey;
+        }
+
         let payload = applyDocumentTemplateMappingPrefillOverrides({
             prefillFieldsPayload: base,
             mergedTemplateIds,
             mergedLayoutKeys,
             templateMappingRows: templateMappings,
             contractPrefillOverridesRaw,
-            contract: resolvedContract as Record<string, unknown> | null,
+            contract: contractForDisclosure,
             application: applicationData as unknown as Record<string, unknown> | null,
             offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
             agreementDate: formatDate(new Date()),
@@ -4316,7 +4340,7 @@ const PDFViewerModal = ({
             ? buildExpandedDisclosurePrefillFieldsForMapping({
                   mappingRow: linkedDisclosureMapping,
                   savedOverridesForMapping: savedOverrides,
-                  contract: resolvedContract as Record<string, unknown> | null,
+                  contract: contractForDisclosure,
                   application: applicationData as unknown as Record<string, unknown> | null,
                   offerDecision:
                       (offerDecisionData as Record<string, unknown> | null) ?? null,
@@ -4328,10 +4352,17 @@ const PDFViewerModal = ({
             mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields),
             activeOwnerCount,
         );
-        if (isAllianceBridgeContractLayoutKey(resolveLayoutKey(selectedFunder))) {
+        if (
+            shouldApplyAllianceBridgeContractPrefill({
+                layoutKey: resolveLayoutKey(selectedFunder),
+                funderName: selectedFunder,
+                state: selectedState,
+                profile: findFunder(selectedFunder),
+            })
+        ) {
             result = applyAllianceBridgeContractPrefillToPayload(result, {
                 application: applicationData as Record<string, unknown> | undefined,
-                contract: resolvedContract as Record<string, unknown> | null,
+                contract: contractForDisclosure,
                 offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
             });
         }
@@ -4354,7 +4385,9 @@ const PDFViewerModal = ({
         linkedDisclosureMapping,
         offerDecisionData,
         selectedFunder,
+        selectedState,
         resolveLayoutKey,
+        findFunder,
     ]);
 
     const syncPrefillToDraftEnvelope = useCallback(async (snapshot?: DocuSignPrefillSnapshot) => {
@@ -4436,6 +4469,11 @@ const PDFViewerModal = ({
                     undefined,
                 signatureDate: args.inputs.disbursementDate,
                 state: args.inputs.state,
+                funderName:
+                    String(selectedFunderRef.current || "").trim() ||
+                    String((resolvedContract as Record<string, unknown> | null)?.funderName ?? "").trim() ||
+                    undefined,
+                mainContractLayoutKey: resolveLayoutKey(selectedFunderRef.current),
                 inputs: args.inputs,
             });
 
@@ -4916,7 +4954,7 @@ const PDFViewerModal = ({
             const preview = await fetchMainContractTemplatePreview({
                 layoutKey,
                 funderName,
-                funderProfileId: profile?.id ? String(profile.id) : null,
+                funderProfileId: persistedFunderProfileIdForApi(profile),
                 state,
                 previewName: previewNameFor(funderName),
                 fallbackUrl: fileUrl,
@@ -4975,7 +5013,7 @@ const PDFViewerModal = ({
             if (!layoutKey || !isPlatformLayoutKey(layoutKey)) return false;
             const funderName = String(selectedFunderRef.current || "").trim();
             const funderProfile = findFunder(funderName);
-            const funderProfileId = funderProfile?.id ? String(funderProfile.id).trim() : "";
+            const funderProfileId = persistedFunderProfileIdForApi(funderProfile) ?? "";
             const contractState = pickUsStateForSelect(selectedState) || undefined;
             try {
                 const response = await axiosGet(

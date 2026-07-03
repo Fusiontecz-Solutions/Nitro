@@ -1,5 +1,5 @@
 import { axiosGet } from "@/redux/axios";
-import { isAllianceFunderProfile } from "@/hooks/useFunderProfiles";
+import { isAllianceFunderProfile, persistedFunderProfileIdForApi } from "@/hooks/useFunderProfiles";
 import type { FunderProfile } from "@/types/integrationSettingsTypes";
 import { PLATFORM_LAYOUT_KEYS } from "./platformDocumentConfig";
 
@@ -24,8 +24,12 @@ export async function fetchMainContractTemplatePreview(options: {
     const layoutKey = String(options.layoutKey || "").trim() || PLATFORM_LAYOUT_KEYS.contract;
     const funderName = String(options.funderName ?? "").trim();
     const state = String(options.state ?? "").trim() || undefined;
-    const funderProfileId = String(options.funderProfileId ?? "").trim() || undefined;
+    const funderProfileId = String(options.funderProfileId ?? "").trim();
     const profile = options.findFunder?.(funderName);
+    const persistedProfileId =
+        funderProfileId && !funderProfileId.startsWith("fallback-")
+            ? funderProfileId
+            : persistedFunderProfileIdForApi(profile);
     const allianceFunder =
         Boolean(profile && isAllianceFunderProfile(profile)) ||
         layoutKey === PLATFORM_LAYOUT_KEYS.allianceBridgeContract;
@@ -59,7 +63,7 @@ export async function fetchMainContractTemplatePreview(options: {
                 responseType: "blob",
                 params: {
                     ...(funderName ? { funderName } : {}),
-                    ...(funderProfileId ? { funderProfileId } : {}),
+                    ...(persistedProfileId ? { funderProfileId: persistedProfileId } : {}),
                     ...(state ? { state } : {}),
                 },
             },

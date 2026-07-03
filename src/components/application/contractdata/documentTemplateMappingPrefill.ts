@@ -69,7 +69,14 @@ import {
 } from "./new_york_disclosure";
 
 import { ACH_AUTHORIZATION_DOCUSIGN_KEY } from "./achAuthorizationDocuSign";
-import { isPlatformLayoutKey, PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
+import {
+    extractContractFunderNameForDisclosure,
+    extractContractFunderProfileForDisclosure,
+    formatDisclosureFunderNameForPdf,
+    isPlatformLayoutKey,
+    PLATFORM_DISCLOSURE_FUNDER_NAME,
+    resolveDisclosureFunderNamePrefill,
+} from "./platformDocumentConfig";
 import {
     normalizeBalanceTransferScopedSavedOverrides,
     normalizeFlexAddendumSavedOverrides,
@@ -249,11 +256,25 @@ function buildEffectiveContractForTemplatePrefill(options: {
     };
 }
 
-function applyPlatformDisclosureFunderName(fields: ContractPrefillField[]): ContractPrefillField[] {
+function resolveDisclosureFunderNameFromContract(
+    contract?: Record<string, unknown> | null,
+): string {
+    return formatDisclosureFunderNameForPdf(
+        resolveDisclosureFunderNamePrefill({
+            funderName: extractContractFunderNameForDisclosure(contract),
+            mainContractLayoutKey: str(contract?.mainContractLayoutKey),
+            funderProfile: extractContractFunderProfileForDisclosure(contract),
+        }),
+    );
+}
+
+function applyPlatformDisclosureFunderName(
+    fields: ContractPrefillField[],
+    contract?: Record<string, unknown> | null,
+): ContractPrefillField[] {
+    const funderName = resolveDisclosureFunderNameFromContract(contract);
     return fields.map((field) =>
-        field.id === "funder_name"
-            ? { ...field, value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase() }
-            : field,
+        field.id === "funder_name" ? { ...field, value: funderName } : field,
     );
 }
 
@@ -321,9 +342,14 @@ function stateDisclosureComputed(
     state: string | null | undefined,
     frequency: string | null | undefined,
     context: StateDisclosureContext,
+    contract?: Record<string, unknown> | null,
 ): ContractPrefillField[] {
     const key = resolveStateDisclosureRegistryKey(name, state, frequency);
-    if (key) return buildDisclosureEditorFieldsFromContext(context);
+    if (key) {
+        return buildDisclosureEditorFieldsFromContext(context, {
+            mainContractLayoutKey: str(contract?.mainContractLayoutKey),
+        });
+    }
 
     const byName = getStateDisclosurePrefillFieldsByName(name, context);
     if (byName.length > 0) return byName;
@@ -1108,24 +1134,26 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     if (isDisclosureDoc) {
         const stAll = stateDisclosureAllDefs(name, state, frequency);
         if (stAll.length > 0) {
-            const computed = stateDisclosureComputed(name, state, frequency, sctx);
+            const computed = stateDisclosureComputed(name, state, frequency, sctx, effectiveContract);
             const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
                 options.savedOverridesForMapping,
             );
             return applyPlatformDisclosureFunderName(
                 mergeFieldRows(stAll, computed, savedCollapsed),
+                effectiveContract,
             );
         }
     }
 
     const fromEditor = getStateDisclosureEditorFieldDefinitions(name, state, frequency);
     if (fromEditor.length > 0) {
-        const computed = stateDisclosureComputed(name, state, frequency, sctx);
+        const computed = stateDisclosureComputed(name, state, frequency, sctx, effectiveContract);
         const savedCollapsed = collapsePdfFieldsToDisclosureEditorValues(
             options.savedOverridesForMapping,
         );
         return applyPlatformDisclosureFunderName(
             mergeFieldRows(fromEditor, computed, savedCollapsed),
+            effectiveContract,
         );
     }
 
@@ -1204,7 +1232,7 @@ export function mergeStateDisclosurePrefillFallback(args: {
     }
     byId.set("funder_name", {
         id: "funder_name",
-        value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        value: resolveDisclosureFunderNameFromContract(effectiveContract),
     });
     const businessName = String(
         sctx.recipientName ||
@@ -1395,17 +1423,22 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
         bankDetail: args.bankDetail ?? null,
     });
 
+    const disclosureFunderName = resolveDisclosureFunderNameFromContract(args.contract ?? null);
     const editorValues: Record<string, string> = {};
     for (const field of computedRows) {
         const v =
             field.id === "funder_name"
-                ? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase()
+                ? disclosureFunderName
                 : String(field.value ?? "").trim();
         if (!v) continue;
         editorValues[field.id] = v;
     }
 
-    const expanded = expandDisclosureEditorValuesToPdfFields(editorValues);
+    const expanded = expandDisclosureEditorValuesToPdfFields(editorValues, {
+        funderName: disclosureFunderName,
+        mainContractLayoutKey: str(args.contract?.mainContractLayoutKey),
+        funderProfile: extractContractFunderProfileForDisclosure(args.contract ?? null),
+    });
 
     const templateState = String(row.template?.state ?? "").trim();
     const raw = args.savedOverridesForMapping ?? {};
@@ -1519,18 +1552,23 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         });
         const isDisclosureRow =
             String(row.documentType || "").toLowerCase() === "disclosure";
+        const disclosureFunderName = resolveDisclosureFunderNameFromContract(args.contract ?? null);
         const editorValues: Record<string, string> = {};
         for (const field of computedRows) {
             const v =
                 field.id === "funder_name"
-                    ? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase()
+                    ? disclosureFunderName
                     : String(field.value ?? "").trim();
             if (!v) continue;
             editorValues[field.id] = v;
         }
         const fieldsToMerge = isDisclosureRow
             ? (() => {
-                  const expanded = expandDisclosureEditorValuesToPdfFields(editorValues);
+                  const expanded = expandDisclosureEditorValuesToPdfFields(editorValues, {
+                      funderName: disclosureFunderName,
+                      mainContractLayoutKey: str(args.contract?.mainContractLayoutKey),
+                      funderProfile: extractContractFunderProfileForDisclosure(args.contract ?? null),
+                  });
                   applyCaliforniaNewYorkDisclosureExpandedOverrides({
                       templateState: String(row.template?.state ?? "").trim(),
                       expanded,
@@ -1580,7 +1618,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     if (disclosureMerged) {
         byId.set("funder_name", {
             id: "funder_name",
-            value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+            value: resolveDisclosureFunderNameFromContract(args.contract ?? null),
         });
         const businessName = String(
             resolveDisclosureBusinessNameFromPrefillMap(

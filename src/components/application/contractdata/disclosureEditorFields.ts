@@ -13,7 +13,16 @@ import {
     mapUtahDisclosureCalculatorToPdfFields,
 } from "./daily_utah";
 import { fromDisclosureScopedPrefillId } from "./documentPrefillScope";
-import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
+import {
+    PLATFORM_DISCLOSURE_FUNDER_NAME,
+    type DisclosureFunderProfileRef,
+    formatDisclosureFunderNameForPdf,
+    resolveDisclosureFunderNamePrefill,
+} from "./platformDocumentConfig";
+import {
+    buildNewYorkDisclosurePage3Amounts,
+    resolveNewYorkPage1LineAmount,
+} from "./new_york_disclosure";
 import type { StateDisclosureContext } from "./stateDisclosurePrefill";
 
 /**
@@ -222,7 +231,7 @@ export function collapsePdfFieldsToDisclosureEditorValues(
     }
 
     if (!out.funder_name) {
-        out.funder_name = PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase();
+        out.funder_name = formatDisclosureFunderNameForPdf(PLATFORM_DISCLOSURE_FUNDER_NAME);
     }
 
     return out;
@@ -231,6 +240,11 @@ export function collapsePdfFieldsToDisclosureEditorValues(
 /** Expand canonical editor values to every PDF tab label needed for DocuSign. */
 export function expandDisclosureEditorValuesToPdfFields(
     editorValues: Record<string, string>,
+    options?: {
+        funderName?: string | null;
+        mainContractLayoutKey?: string | null;
+        funderProfile?: DisclosureFunderProfileRef | null;
+    },
 ): Record<string, string> {
     const out: Record<string, string> = {};
 
@@ -243,7 +257,15 @@ export function expandDisclosureEditorValuesToPdfFields(
         }
     }
 
-    out.funder_name = PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase();
+    out.funder_name = formatDisclosureFunderNameForPdf(
+        options?.funderName ??
+            editorValues.funder_name ??
+            resolveDisclosureFunderNamePrefill({
+                funderName: options?.funderName,
+                mainContractLayoutKey: options?.mainContractLayoutKey,
+                funderProfile: options?.funderProfile,
+            }),
+    );
     const merchant = String(editorValues.client_name ?? out.client_name ?? "").trim();
     if (merchant) {
         for (const pdfId of EDITOR_TO_PDF_FIELD_IDS.client_name ?? ["client_name"]) {
@@ -256,8 +278,21 @@ export function expandDisclosureEditorValuesToPdfFields(
 
 export function buildDisclosureEditorFieldsFromContext(
     ctx: StateDisclosureContext,
+    options?: {
+        mainContractLayoutKey?: string | null;
+    },
 ): ContractPrefillField[] {
     const disclosureDate = formatDisclosureUsDate(ctx.signatureDate) || "";
+    const page3 = buildNewYorkDisclosurePage3Amounts({
+        recipientFunds: ctx.fundingDisbursed,
+        brokerFee: ctx.brokerFeePaidToBroker,
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
+    });
+    const resolvedFunderName = resolveDisclosureFunderNamePrefill({
+        funderName: ctx.funderName,
+        mainContractLayoutKey: options?.mainContractLayoutKey,
+    });
 
     const values: Record<string, string> = {
         disclosure_avg_monthly_revenue: ctx.averageMonthlyIncome ?? "",
@@ -272,12 +307,14 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_payment_terms: ctx.percentOfBusinessIncome || ctx.paymentExceededPercent || "",
         disclosure_term_days: ctx.estimatedTermDays || ctx.estimatedTerm || "",
         disclosure_broker_fee: ctx.brokerFeePaidToBroker ?? "0.00",
-        disclosure_page1_line_1: "0.00",
-        disclosure_page3_line_1: "0.00",
-        disclosure_page3_line_2: "0.00",
+        disclosure_page1_line_1: resolveNewYorkPage1LineAmount(undefined),
+        disclosure_page3_line_1: page3.page3Line1,
+        disclosure_page3_line_2: page3.page3Line2,
+        disclosure_page3_subtotal: page3.page3Subtotal,
+        disclosure_page3_net: page3.page3Net,
         client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
         disclosure_recipient_address: String(ctx.recipientAddress ?? "").trim(),
-        funder_name: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        funder_name: formatDisclosureFunderNameForPdf(ctx.funderName ?? resolvedFunderName),
         disclosure_date: disclosureDate,
     };
 
@@ -294,6 +331,8 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
         merchantName?: string;
         signatureDate?: string;
         state?: string | null;
+        funderName?: string | null;
+        mainContractLayoutKey?: string | null;
         inputs?: Pick<
             DisclosureCalculatorInputs,
             | "purchasePrice"
@@ -334,7 +373,12 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
                 (options?.inputs?.brokerFeePaidByMerchant ?? 0),
         ),
         ...(merchant ? { client_name: merchant } : {}),
-        funder_name: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        funder_name: formatDisclosureFunderNameForPdf(
+            resolveDisclosureFunderNamePrefill({
+                funderName: options?.funderName,
+                mainContractLayoutKey: options?.mainContractLayoutKey,
+            }),
+        ),
         ...(disclosureDate ? { disclosure_date: disclosureDate } : {}),
     };
 

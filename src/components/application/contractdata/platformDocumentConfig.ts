@@ -14,6 +14,101 @@ export type PlatformLayoutKey =
 /** Legal funder name on state disclosure forms (not Contract.funderName Katan II / III). */
 export const PLATFORM_DISCLOSURE_FUNDER_NAME = "Katan Capital LLC";
 
+/** Legal funder name on state disclosures when the deal funder is Alliance Bridge. */
+export const ALLIANCE_DISCLOSURE_FUNDER_NAME = "Alliance Bridge Capital LLC";
+
+export function isAllianceBridgeFunderName(value?: string | null): boolean {
+    return isAllianceDisclosureFunderName(value);
+}
+
+/** Alliance Bridge / Alliance Capital funders use the same disclosure legal name. */
+export function isAllianceDisclosureFunderName(value?: string | null): boolean {
+    const key = String(value ?? "")
+        .trim()
+        .toLowerCase();
+    if (!key) return false;
+    return key.includes("alliance bridge") || key.includes("alliance capital");
+}
+
+export type DisclosureFunderProfileRef = {
+    name?: string | null;
+    displayName?: string | null;
+    organization?: string | null;
+    legalName?: string | null;
+    mainContractLayoutKey?: string | null;
+    contactEmail?: string | null;
+};
+
+export function isAllianceDisclosureFunderProfile(
+    profile?: DisclosureFunderProfileRef | null,
+): boolean {
+    if (!profile) return false;
+    return (
+        isAllianceDisclosureFunderName(profile.name) ||
+        isAllianceDisclosureFunderName(profile.displayName) ||
+        isAllianceDisclosureFunderName(profile.organization) ||
+        isAllianceDisclosureFunderName(profile.legalName) ||
+        String(profile.contactEmail ?? "")
+            .toLowerCase()
+            .includes("@alliancebridgecapital.com") ||
+        String(profile.mainContractLayoutKey || "").trim() ===
+            PLATFORM_LAYOUT_KEYS.allianceBridgeContract
+    );
+}
+
+export function extractContractFunderNameForDisclosure(
+    contract?: Record<string, unknown> | null,
+): string {
+    const c = contract ?? {};
+    const profile = c.funderProfile;
+    const profileRecord =
+        profile && typeof profile === "object" && !Array.isArray(profile)
+            ? (profile as Record<string, unknown>)
+            : null;
+    const candidates = [
+        c.funderName,
+        c.selectedFunder,
+        c.funder,
+        profileRecord?.name,
+        profileRecord?.displayName,
+    ];
+    for (const raw of candidates) {
+        const value = String(raw ?? "").trim();
+        if (value) return value;
+    }
+    return "";
+}
+
+export function extractContractFunderProfileForDisclosure(
+    contract?: Record<string, unknown> | null,
+): DisclosureFunderProfileRef | null {
+    const profile = contract?.funderProfile;
+    if (!profile || typeof profile !== "object" || Array.isArray(profile)) return null;
+    return profile as DisclosureFunderProfileRef;
+}
+
+export function resolveDisclosureFunderNamePrefill(options?: {
+    funderName?: string | null;
+    mainContractLayoutKey?: string | null;
+    funderProfile?: DisclosureFunderProfileRef | null;
+}): string {
+    const layoutKey = String(options?.mainContractLayoutKey ?? "").trim();
+    const funderName = String(options?.funderName ?? "").trim();
+    if (
+        layoutKey === PLATFORM_LAYOUT_KEYS.allianceBridgeContract ||
+        isAllianceDisclosureFunderName(funderName) ||
+        isAllianceDisclosureFunderProfile(options?.funderProfile)
+    ) {
+        return ALLIANCE_DISCLOSURE_FUNDER_NAME;
+    }
+    return PLATFORM_DISCLOSURE_FUNDER_NAME;
+}
+
+/** Uppercase legal name for disclosure PDF / DocuSign tabs (matches existing Katan forms). */
+export function formatDisclosureFunderNameForPdf(name?: string | null): string {
+    return String(name ?? PLATFORM_DISCLOSURE_FUNDER_NAME).trim().toUpperCase();
+}
+
 function isKatanBrandedDocumentName(value?: string | null): boolean {
     return /katan/i.test(String(value ?? "").trim());
 }
