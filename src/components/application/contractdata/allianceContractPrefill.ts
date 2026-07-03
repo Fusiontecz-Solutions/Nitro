@@ -1,4 +1,6 @@
 import { formatUSD, parseMoneyInput } from "@/utils/formatCurrency";
+import type { FunderProfile } from "@/types/integrationSettingsTypes";
+import { isAllianceFunderProfile, isTexasContractState } from "@/hooks/useFunderProfiles";
 import {
     normalizeDisclosureTemplateFrequencyKey,
     resolveNumberOfPaymentsPrefillValue,
@@ -17,6 +19,79 @@ export const ALLIANCE_CONTRACT_MONEY_TAB_IDS = new Set([
     "net_to_merchant",
     "remittance",
 ]);
+
+const ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES: Record<string, readonly string[]> = {
+    purchase_amount: [
+        "purchaseamount",
+        "receivable_purchase",
+        "receivable_purchase_1",
+        "receivable_purchase_2",
+    ],
+    purchase_price: [
+        "purchaseprice",
+        "total_repayment_amount",
+        "disclosure_total_payment",
+        "estimatedtotalpaymentamount",
+    ],
+    finance_charge: ["financecharge", "total_dollar_cost", "disclosure_finance_charge"],
+    appendix_underwriting_fees: ["underwriter_fee", "underwriterfee", "underwriter_fees"],
+    net_to_merchant: ["netfundprovided", "net_fund_provided", "NetFundProvided"],
+    remittance: [
+        "daily_payment",
+        "dailypayment",
+        "estimated_payment",
+        "estimated_payment_amount",
+        "estimatedremittance",
+    ],
+};
+
+function normalizeAllianceMoneyFieldKey(fieldId?: string | null): string | null {
+    const raw = String(fieldId ?? "").trim();
+    if (!raw) return null;
+    const snake = raw
+        .replace(/([a-z])([A-Z])/g, "$1_$2")
+        .replace(/[\s-]+/g, "_")
+        .toLowerCase();
+    if (ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(raw)) return raw;
+    if (ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(snake)) return snake;
+    for (const canonical of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
+        const aliases = ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES[canonical] || [];
+        if (aliases.some((alias) => alias.toLowerCase() === snake || alias === raw)) {
+            return canonical;
+        }
+    }
+    return null;
+}
+
+function hydrateAllianceMoneyCanonicalValues(values: Record<string, string>): void {
+    for (const canonical of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
+        if (String(values[canonical] ?? "").trim()) continue;
+        for (const alias of ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES[canonical] || []) {
+            const raw = String(values[alias] ?? "").trim();
+            if (raw) {
+                values[canonical] = raw;
+                break;
+            }
+        }
+        if (String(values[canonical] ?? "").trim()) continue;
+        for (const [key, val] of Object.entries(values)) {
+            if (normalizeAllianceMoneyFieldKey(key) === canonical && String(val ?? "").trim()) {
+                values[canonical] = String(val).trim();
+                break;
+            }
+        }
+    }
+}
+
+function propagateAllianceMoneyFormattedValues(values: Record<string, string>): void {
+    for (const canonical of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
+        const formatted = String(values[canonical] ?? "").trim();
+        if (!formatted) continue;
+        for (const alias of ALLIANCE_CONTRACT_MONEY_FIELD_ALIASES[canonical] || []) {
+            values[alias] = formatted;
+        }
+    }
+}
 
 const ALLIANCE_CONTRACT_ADDRESS_TAB_GROUPS: Array<[string, string, string, string]> = [
     ["business_address", "business_address_city", "business_address_state", "business_address_zip"],
@@ -119,10 +194,33 @@ export function isAllianceBridgeContractLayoutKey(layoutKey?: string | null): bo
     return String(layoutKey ?? "").trim() === PLATFORM_LAYOUT_KEYS.allianceBridgeContract;
 }
 
+/** True when Alliance Texas prefill should run (incl. production `funder_*` storage keys). */
+export function shouldApplyAllianceBridgeContractPrefill(args: {
+    layoutKey?: string | null;
+    funderName?: string | null;
+    state?: string | null;
+    profile?: Pick<FunderProfile, "name" | "displayName" | "mainContractLayoutKey" | "organization" | "legalName" | "contactEmail"> | null;
+}): boolean {
+    const layoutKey = String(args.layoutKey ?? "").trim();
+    if (isAllianceBridgeContractLayoutKey(layoutKey)) return true;
+    if (!isTexasContractState(args.state)) return false;
+    const profile = args.profile;
+    const allianceFunder =
+        (profile && isAllianceFunderProfile(profile)) ||
+        (args.funderName &&
+            isAllianceFunderProfile({
+                name: args.funderName,
+                mainContractLayoutKey: layoutKey,
+            }));
+    if (!allianceFunder) return false;
+    return layoutKey.startsWith("funder_") || isAllianceBridgeContractLayoutKey(layoutKey);
+}
+
 export function formatAllianceContractMoneyValue(value: unknown): string {
     const trimmed = String(value ?? "").trim();
     if (!trimmed) return "";
-    return formatUSD(trimmed, { fallback: trimmed });
+    const formatted = formatUSD(trimmed, { fallback: "" });
+    return formatted || trimmed;
 }
 
 export function formatAllianceContractWeeksLabel(weeks: number): string {
@@ -196,15 +294,41 @@ export function applyAllianceBridgeContractPrefillToFields(
     sources: NetToMerchantPrefillSources,
 ): AlliancePrefillField[] {
     const byId = new Map(fields.map((f) => [f.id, f]));
+    const valueRecord: Record<string, string> = {};
+    for (const field of fields) {
+        const value = String(field.value ?? "").trim();
+        if (!value) continue;
+        valueRecord[field.id] = value;
+        const snake = field.id
+            .replace(/([a-z])([A-Z])/g, "$1_$2")
+            .replace(/[\s-]+/g, "_")
+            .toLowerCase();
+        if (snake !== field.id) valueRecord[snake] = value;
+    }
+    hydrateAllianceMoneyCanonicalValues(valueRecord);
     const weeksLabel = resolveAllianceContractTermWeeksLabel(sources);
-    const financeCharge = resolveAllianceFinanceChargeValue(byId, sources);
+    const financeCharge = resolveAllianceFinanceChargeValue(
+        new Map(
+            Object.entries(valueRecord).map(([id, value]) => [
+                id,
+                { id, label: id, value },
+            ]),
+        ),
+        sources,
+    );
+    if (financeCharge) valueRecord.finance_charge = financeCharge;
+
+    for (const id of ALLIANCE_CONTRACT_MONEY_TAB_IDS) {
+        const raw = String(valueRecord[id] ?? "").trim();
+        if (!raw) continue;
+        valueRecord[id] = formatAllianceContractMoneyValue(raw);
+    }
+    propagateAllianceMoneyFormattedValues(valueRecord);
 
     const updated = fields.map((field) => {
-        if (ALLIANCE_CONTRACT_MONEY_TAB_IDS.has(field.id)) {
-            return { ...field, value: formatAllianceContractMoneyValue(field.value) };
-        }
-        if (field.id === "finance_charge") {
-            const value = financeCharge || formatAllianceContractMoneyValue(field.value);
+        const moneyKey = normalizeAllianceMoneyFieldKey(field.id);
+        if (moneyKey) {
+            const value = String(valueRecord[moneyKey] ?? "").trim();
             return value ? { ...field, value } : field;
         }
         if (field.id === "addendum_dated" && weeksLabel) {
@@ -213,7 +337,7 @@ export function applyAllianceBridgeContractPrefillToFields(
         return field;
     });
 
-    if (financeCharge && !byId.has("finance_charge")) {
+    if (financeCharge && !byId.has("finance_charge") && !updated.some((f) => f.id === "finance_charge")) {
         updated.push({
             id: "finance_charge",
             label: "Finance Charge",

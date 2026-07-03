@@ -70,7 +70,7 @@ import {
     normalizeContractPrefillOverrides,
 } from "./contractdata/Contract";
 import { resolveFunderSupplementalDocumentLabel } from "./contractdata/platformDocumentConfig";
-import { findFunderProfile, useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { findFunderProfile, persistedFunderProfileIdForApi, useFunderProfiles } from "@/hooks/useFunderProfiles";
 import {
     ACH_FUNDER_BRAND_OPTIONS,
     type AchFunderBrand,
@@ -288,7 +288,7 @@ export default function ACHViewerModal({
         const profile =
             findFunder(resolvedAchFunderName) ??
             findFunderProfile(funders, resolvedAchFunderName, null);
-        return profile?.id ? String(profile.id).trim() : "";
+        return persistedFunderProfileIdForApi(profile) ?? "";
     }, [findFunder, funders, resolvedAchFunderName]);
 
     const achPreviewLayoutKey = DOCUSIGN_ADDENDUM_LAYOUT_KEYS.ACH_AUTHORIZATION_STANDALONE;

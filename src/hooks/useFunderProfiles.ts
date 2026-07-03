@@ -29,6 +29,7 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     organization: "Katan II",
     sortOrder: 1,
     isActive: true,
+    documentsSource: "platform",
   },
   {
     id: "fallback-katan-iii",
@@ -43,6 +44,7 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     organization: "Katan III",
     sortOrder: 2,
     isActive: true,
+    documentsSource: "platform",
   },
   {
     id: "fallback-alliance-bridge",
@@ -62,6 +64,15 @@ function normalizeFunderName(value?: string | null): string {
   return String(value ?? "")
     .trim()
     .toLowerCase();
+}
+
+/** Omit client-only fallback ids — backend funder profiles use UUID primary keys. */
+export function persistedFunderProfileIdForApi(
+  profile?: Pick<FunderProfile, "id"> | null,
+): string | null {
+  const id = String(profile?.id ?? "").trim();
+  if (!id || id.startsWith("fallback-")) return null;
+  return id;
 }
 
 export function funderNamesEquivalent(
@@ -110,6 +121,10 @@ export function isAllianceFunderProfile(
     display.includes("alliance bridge") ||
     org.includes("alliance bridge") ||
     legal.includes("alliance bridge") ||
+    name.includes("alliance capital") ||
+    display.includes("alliance capital") ||
+    org.includes("alliance capital") ||
+    legal.includes("alliance capital") ||
     email.includes("@alliancebridgecapital.com") ||
     String(funder.mainContractLayoutKey || "").trim() ===
       PLATFORM_LAYOUT_KEYS.allianceBridgeContract

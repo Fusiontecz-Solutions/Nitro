@@ -10,6 +10,10 @@ import {
 import { buildDailyCaliforniaContractPrefillFields } from "./daily_california";
 import { buildCaliforniaDisclosurePage3Amounts, resolveCaliforniaEstimatedTermDays } from "./california_disclosure";
 import {
+    buildNewYorkDisclosurePage3Amounts,
+    resolveNewYorkPage1LineAmount,
+} from "./new_york_disclosure";
+import {
     buildDisclosureCalculatorInputsFromSources,
     calculateDisclosureMetrics,
     mergeLiveOfferDecision,
@@ -23,7 +27,13 @@ import { buildDailyKansasContractPrefillFields } from "./Daily_kansas";
 import { buildDisclosureCalculatorEditorFieldDefinitions } from "./disclosureEditorFields";
 import { buildDailyVirginiaContractPrefillFields, formatVirginiaDisclosureRecipientAddress } from "./daily_virginia";
 import { buildDailyUtahContractPrefillFields } from "./daily_utah";
-import { PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
+import {
+    extractContractFunderNameForDisclosure,
+    extractContractFunderProfileForDisclosure,
+    formatDisclosureFunderNameForPdf,
+    PLATFORM_DISCLOSURE_FUNDER_NAME,
+    resolveDisclosureFunderNamePrefill,
+} from "./platformDocumentConfig";
 
 /**
  * Unified, concept-level inputs derived from CRM contract / offer / application data.
@@ -89,6 +99,9 @@ export interface StateDisclosureContext {
     prepaymentReceivedByDate?: string;
     /** Amount required to trigger prepayment discount. */
     prepaymentDiscountAmount?: string;
+    /** New York itemization page-3 optional line amounts. */
+    page3Line1?: string;
+    page3Line2?: string;
 }
 
 type StateDisclosureBuilder = (ctx: StateDisclosureContext) => ContractPrefillField[];
@@ -115,7 +128,12 @@ function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): Contract
         payementExceededPercent: ctx.paymentExceededPercent,
         monthlyIncome: ctx.averageMonthlyIncome,
         financeCharge: ctx.financeCharge,
-        funderName: ctx.funderName?.toUpperCase() ?? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        funderName: formatDisclosureFunderNameForPdf(
+            ctx.funderName ??
+                resolveDisclosureFunderNamePrefill({
+                    funderName: ctx.funderName,
+                }),
+        ),
         recipientName: ctx.recipientName?.toUpperCase(),
         recipientFunds: ctx.fundingDisbursed,
         brokerFee: ctx.brokerFeePaidToBroker,
@@ -126,13 +144,11 @@ function buildCaliforniaDisclosurePrefill(ctx: StateDisclosureContext): Contract
 }
 
 function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPrefillField[] {
-    const page3 = buildCaliforniaDisclosurePage3Amounts({
+    const page3 = buildNewYorkDisclosurePage3Amounts({
         recipientFunds: ctx.fundingDisbursed,
         brokerFee: ctx.brokerFeePaidToBroker,
-        fundingProvided: ctx.fundingProvided,
-        fundingDisbursed: ctx.fundingDisbursed,
-        page3Line1: "0.00",
-        page3Line2: "0.00",
+        page3Line1: ctx.page3Line1,
+        page3Line2: ctx.page3Line2,
     });
     return [
         ...buildDailyCaliforniaContractPrefillFields({
@@ -141,21 +157,22 @@ function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPre
             estimatedPayment: ctx.estimatedPayment,
             estimatedMonthlyCost: ctx.estimatedMonthlyCost,
             paymentTotal: ctx.totalRepayment,
-            estimatedTerm: resolveCaliforniaEstimatedTermDays({
-                estimatedTermDays: ctx.estimatedTermDays,
-                estimatedNumberOfPayments: ctx.estimatedNumberOfPayments,
-                frequency: ctx.frequency || ctx.paymentFrequency,
-            }),
+            estimatedTerm: ctx.estimatedTermDays ?? "",
             avarageMonthlyIncome: ctx.averageMonthlyIncome,
             payementExceededPercent: ctx.paymentExceededPercent,
             monthlyIncome: ctx.averageMonthlyIncome,
             financeCharge: ctx.financeCharge,
-            funderName: ctx.funderName?.toUpperCase() ?? PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+            funderName: formatDisclosureFunderNameForPdf(
+                ctx.funderName ??
+                    resolveDisclosureFunderNamePrefill({
+                        funderName: ctx.funderName,
+                    }),
+            ),
             recipientName: ctx.recipientName?.toUpperCase(),
             recipientFunds: ctx.fundingDisbursed,
             brokerFee: ctx.brokerFeePaidToBroker,
-            page3Line1: "0.00",
-            page3Line2: "0.00",
+            page3Line1: page3.page3Line1,
+            page3Line2: page3.page3Line2,
             page3Subtotal: page3.page3Subtotal,
             page3Net: page3.page3Net,
             signatureDate: ctx.signatureDate,
@@ -163,7 +180,7 @@ function buildNewYorkDisclosurePrefill(ctx: StateDisclosureContext): ContractPre
         {
             id: "disclosure_page1_line_1",
             label: "Page 1 line 1 amount",
-            value: "0.00",
+            value: resolveNewYorkPage1LineAmount(undefined),
         },
     ];
 }
@@ -788,7 +805,13 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
         prepayment: "",
         recipientName: customerName,
         ownerName,
-        funderName: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        funderName: formatDisclosureFunderNameForPdf(
+            resolveDisclosureFunderNamePrefill({
+                funderName: extractContractFunderNameForDisclosure(contract),
+                mainContractLayoutKey: str(contract.mainContractLayoutKey),
+                funderProfile: extractContractFunderProfileForDisclosure(contract),
+            }),
+        ),
         recipientAddress: businessAddressLine,
         recipientAddressMultiline: virginiaRecipientAddressMultiline,
         signatureDate,
@@ -894,7 +917,7 @@ export function stateDisclosureEditorPlaceholderContext(): StateDisclosureContex
         prepayment: d(),
         recipientName: d(),
         ownerName: d(),
-        funderName: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        funderName: formatDisclosureFunderNameForPdf(PLATFORM_DISCLOSURE_FUNDER_NAME),
         recipientAddress: d(),
         signatureDate: d(),
         prepaymentReceivedByDate: d(),

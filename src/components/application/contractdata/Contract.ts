@@ -6,7 +6,7 @@ import {
 } from "@/lib/offerRepaymentCalculations";
 import {
     applyAllianceBridgeContractPrefillToFields,
-    isAllianceBridgeContractLayoutKey,
+    shouldApplyAllianceBridgeContractPrefill,
 } from "./allianceContractPrefill";
 import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
 import {
@@ -3629,6 +3629,8 @@ export function buildContractPrefillFieldsFromApplication(
         overrides?: Partial<BuildContractPrefillFieldsArgs> | null;
         offerDecision?: Record<string, unknown> | null;
         mainContractLayoutKey?: string | null;
+        funderName?: string | null;
+        contractState?: string | null;
     },
 ): ContractPrefillField[] {
     const rec = options?.contractRecords;
@@ -3736,7 +3738,18 @@ export function buildContractPrefillFieldsFromApplication(
         addendumSlotExtraFields(rec?.addendum ?? null),
         epoExtraFields(rec?.epo ?? null),
     );
-    if (isAllianceBridgeContractLayoutKey(options?.mainContractLayoutKey)) {
+    if (
+        shouldApplyAllianceBridgeContractPrefill({
+            layoutKey: options?.mainContractLayoutKey,
+            funderName:
+                String(options?.funderName ?? "").trim() ||
+                str(rec?.contract?.funder) ||
+                str((rec?.contract as { funderName?: string } | null)?.funderName),
+            state:
+                String(options?.contractState ?? "").trim() ||
+                str(rec?.contract?.state),
+        })
+    ) {
         return applyAllianceBridgeContractPrefillToFields(prefillFields, moneySources);
     }
     return prefillFields;

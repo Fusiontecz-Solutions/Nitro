@@ -1461,6 +1461,7 @@ export function ContractPrefillEditForm({
             seededAddendumMappingIdRef.current = null;
             return;
         }
+        if (addendumEditorRows.length === 0) return;
         if (seededAddendumMappingIdRef.current === linkedAddendumMapping.id) return;
         seededAddendumMappingIdRef.current = linkedAddendumMapping.id;
         setAddendumFieldValues(Object.fromEntries(addendumEditorRows.map((r) => [r.id, r.value ?? ""])));
@@ -1476,6 +1477,7 @@ export function ContractPrefillEditForm({
             seededDisclosureMappingIdRef.current = null;
             return;
         }
+        if (disclosureEditorRows.length === 0) return;
         if (seededDisclosureMappingIdRef.current === disclosureSeedKey) return;
         seededDisclosureMappingIdRef.current = disclosureSeedKey;
         setDisclosureFieldValues(
@@ -1582,6 +1584,8 @@ export function ContractPrefillEditForm({
      */
     const wasOpenRef = useRef(false);
     const hydratePersistAfterLoadRef = useRef(false);
+    const skipNextOfferSyncRef = useRef(false);
+    const offerSyncAppliedKeyRef = useRef<string | null>(null);
     const formReady = prefillOverridesReady && persistedPrefillOverrides !== undefined;
 
     useEffect(() => {
@@ -1602,10 +1606,18 @@ export function ContractPrefillEditForm({
 
         if (justOpened || hydratePersistAfterLoadRef.current) {
             hydratePersistAfterLoadRef.current = false;
+            skipNextOfferSyncRef.current = true;
             resetFromSourcesRef.current();
         }
         // Intentionally omit `persistedPrefillOverrides` — re-hydrating on parent updates resets in-progress edits.
     }, [open, formReady]);
+
+    useEffect(() => {
+        if (!open) {
+            offerSyncAppliedKeyRef.current = null;
+            skipNextOfferSyncRef.current = false;
+        }
+    }, [open]);
 
     const offerDecisionSyncKey = useMemo(() => {
         const root =
@@ -1658,7 +1670,14 @@ export function ContractPrefillEditForm({
 
     /** When the live offer arrives or changes after open, refresh offer-derived fields without wiping other edits. */
     useEffect(() => {
-        if (!open || !offerDecisionSyncKey) return;
+        if (!open || !formReady || !offerDecisionSyncKey) return;
+        if (skipNextOfferSyncRef.current) {
+            skipNextOfferSyncRef.current = false;
+            offerSyncAppliedKeyRef.current = offerDecisionSyncKey;
+            return;
+        }
+        if (offerSyncAppliedKeyRef.current === offerDecisionSyncKey) return;
+        offerSyncAppliedKeyRef.current = offerDecisionSyncKey;
         setValues((prev) =>
             mergeFormState(
                 applyLiveOfferSyncToPrefillPartial(
@@ -1668,7 +1687,7 @@ export function ContractPrefillEditForm({
                 ),
             ),
         );
-    }, [open, offerDecisionSyncKey, applicationData, offerDecision]);
+    }, [open, formReady, offerDecisionSyncKey, applicationData, offerDecision]);
 
     useEffect(() => {
         if (!open) {

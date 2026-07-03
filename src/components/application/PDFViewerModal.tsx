@@ -107,7 +107,7 @@ import {
 import {
     applyAllianceBridgeContractPrefillToFields,
     applyAllianceBridgeContractPrefillToPayload,
-    isAllianceBridgeContractLayoutKey,
+    shouldApplyAllianceBridgeContractPrefill,
 } from "./contractdata/allianceContractPrefill";
 import {
     applyKycPanelsToAchEntries,
@@ -203,14 +203,16 @@ import {
     isPlatformLayoutKey,
     resolveFunderSupplementalDocumentLabel,
 } from "./contractdata/platformDocumentConfig";
+import { fetchMainContractTemplatePreview } from "./contractdata/contractTemplatePreview";
 import {
     findFunderProfile,
     funderAvailableForContractState,
     isAllianceFunderProfile,
     isTexasContractState,
+    persistedFunderProfileIdForApi,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
-import { funderDisclosureLayoutKeyForState } from "@/utils/funderLayoutKeys";
+import { funderDisclosureLayoutKeyForState, isPlatformScopedBoldSignTemplateRow } from "@/utils/funderLayoutKeys";
 import { resolveDocumentsLayoutFunderId } from "@/utils/funderDocumentSource";
 import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 import { clearParty2PrefillFieldPayload, resolveActiveOwnerCount } from "./contractdata/contractPartyCounts";
@@ -464,6 +466,7 @@ type DisclosureTemplateLookupRow = {
     id?: string;
     name?: string | null;
     frequency?: string | null;
+    layoutKey?: string | null;
     pdfUrl?: string | null;
 };
 
@@ -1182,48 +1185,74 @@ const PDFViewerModal = ({
     }, [funderSelectEntries, selectedFunder]);
     const [contractPreviewUrl, setContractPreviewUrl] = useState<string | null>(null);
     const [contractPreviewName, setContractPreviewName] = useState<string>("Contract.pdf");
+    const [loadingContractPreview, setLoadingContractPreview] = useState(false);
+    const contractPreviewBlobRef = useRef<string | null>(null);
     const effectiveContractPreviewUrl = contractPreviewUrl || fileUrl;
     const effectiveContractPreviewName = contractPreviewName || fileName || "Contract.pdf";
 
     useEffect(() => {
         if (!isOpen) {
+            if (contractPreviewBlobRef.current) {
+                URL.revokeObjectURL(contractPreviewBlobRef.current);
+                contractPreviewBlobRef.current = null;
+            }
             setContractPreviewUrl(null);
+            setLoadingContractPreview(false);
             return;
         }
         const layoutKey = resolveLayoutKey(selectedFunder);
+        const funderName = selectedFunder.trim();
+        const state = pickUsStateForSelect(selectedState) || undefined;
+        const profile = findFunder(selectedFunder);
+        const funderProfileId = persistedFunderProfileIdForApi(profile);
         let cancelled = false;
         void (async () => {
-            try {
-                const res = await axiosGet("/contract-templates/latest", {
-                    params: {
-                        layoutKey,
-                        funderName: selectedFunder.trim() || undefined,
-                        state: pickUsStateForSelect(selectedState) || undefined,
-                    },
-                });
-                const data = (
-                    res as { data?: { data?: { url?: string; originalName?: string } } }
-                )?.data?.data;
-                if (cancelled) return;
-                if (data?.url) {
-                    setContractPreviewUrl(data.url);
-                    setContractPreviewName(
-                        data.originalName || previewNameFor(selectedFunder),
-                    );
-                    return;
+            setLoadingContractPreview(true);
+            const preview = await fetchMainContractTemplatePreview({
+                layoutKey,
+                funderName,
+                funderProfileId: funderProfileId || null,
+                state,
+                previewName: previewNameFor(selectedFunder),
+                fallbackUrl: fileUrl,
+                fallbackName: fileName,
+                findFunder,
+            });
+            if (cancelled) {
+                if (preview?.source === "docusign-download") {
+                    URL.revokeObjectURL(preview.url);
                 }
-            } catch {
-                /* fall through */
+                return;
             }
-            if (!cancelled) {
-                setContractPreviewUrl(fileUrl);
-                setContractPreviewName(fileName || previewNameFor(selectedFunder));
+            if (contractPreviewBlobRef.current) {
+                URL.revokeObjectURL(contractPreviewBlobRef.current);
+                contractPreviewBlobRef.current = null;
             }
+            if (preview?.url) {
+                if (preview.source === "docusign-download") {
+                    contractPreviewBlobRef.current = preview.url;
+                }
+                setContractPreviewUrl(preview.url);
+                setContractPreviewName(preview.name);
+            } else {
+                setContractPreviewUrl(null);
+                setContractPreviewName(previewNameFor(selectedFunder));
+            }
+            setLoadingContractPreview(false);
         })();
         return () => {
             cancelled = true;
         };
-    }, [isOpen, selectedFunder, fileUrl, fileName, resolveLayoutKey, previewNameFor]);
+    }, [
+        isOpen,
+        selectedFunder,
+        selectedState,
+        fileUrl,
+        fileName,
+        resolveLayoutKey,
+        previewNameFor,
+        findFunder,
+    ]);
     /** Canonical contract id for this application (filled after lookup below). */
     const [resolvedContractId, setResolvedContractId] = useState<number | null>(null);
     /** Prefill overrides from `Contract.contractPrefillOverrides` (null = loaded, none stored). */
@@ -1234,6 +1263,8 @@ const PDFViewerModal = ({
     const [resolvedContract, setResolvedContract] = useState<Record<string, unknown> | null>(null);
     /** After the first contract meta fetch for this dialog open, prefer DB overrides over legacy application note. */
     const [contractPrefillLoaded, setContractPrefillLoaded] = useState(false);
+    /** Avoid re-entering the prefill loading state when unrelated application refetches occur. */
+    const contractPrefillLoadKeyRef = useRef<string | null>(null);
     const sessionEnvelopeHydratedRef = useRef(false);
 
     useEffect(() => {
@@ -1515,6 +1546,8 @@ const PDFViewerModal = ({
         (state: RootState) => state.uploadedContractDocuments,
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
+    const applicationDataRef = useRef(applicationData);
+    applicationDataRef.current = applicationData;
     const applicationClient = applicationData?.client;
     const { owners: fullClientOwners } = useApplicationClientOwners(applicationClient);
     const applicationForOwnerResolution = useMemo(
@@ -1942,7 +1975,16 @@ const PDFViewerModal = ({
             },
         );
         const displayed = prepareDealReviewPrefillDisplay(withSavedFees);
-        if (!isAllianceBridgeContractLayoutKey(resolveLayoutKey(selectedFunder))) {
+        const layoutKey = resolveLayoutKey(selectedFunder);
+        const funderProfile = findFunder(selectedFunder);
+        if (
+            !shouldApplyAllianceBridgeContractPrefill({
+                layoutKey,
+                funderName: selectedFunder,
+                state: selectedState,
+                profile: funderProfile,
+            })
+        ) {
             return displayed;
         }
         return applyAllianceBridgeContractPrefillToFields(displayed, {
@@ -1959,7 +2001,9 @@ const PDFViewerModal = ({
         contractPrefillLoaded,
         offerDecisionData,
         selectedFunder,
+        selectedState,
         resolveLayoutKey,
+        findFunder,
     ]);
 
     const offerDecisionSummaryRows = useMemo(() => {
@@ -2029,6 +2073,7 @@ const PDFViewerModal = ({
 
     useEffect(() => {
         if (!isOpen) {
+            contractPrefillLoadKeyRef.current = null;
             setResolvedContractId(null);
             setSelectedState("");
             setSelectedFunder("");
@@ -2053,15 +2098,21 @@ const PDFViewerModal = ({
             prefilledBoldSignPdfUrlRef.current = null;
             return;
         }
-        setContractPrefillLoaded(false);
         const propId = Number(contractId);
         const appId = applicationIdForLookup;
+        const loadKey = `${appId ?? ""}:${Number.isFinite(propId) ? propId : ""}`;
+        const isNewContractLoad = contractPrefillLoadKeyRef.current !== loadKey;
+        contractPrefillLoadKeyRef.current = loadKey;
+        if (isNewContractLoad) {
+            setContractPrefillLoaded(false);
+        }
         const applyContractMeta = (contract: unknown) => {
             const c = contract as { state?: unknown; funderName?: unknown; contractPrefillOverrides?: unknown } | null;
             setResolvedContract(c && typeof c === "object" ? (c as Record<string, unknown>) : null);
             let stateForSelect = pickUsStateForSelect(c?.state);
-            if (!stateForSelect && applicationData) {
-                const ad = applicationData as Record<string, unknown>;
+            const applicationDataSnapshot = applicationDataRef.current;
+            if (!stateForSelect && applicationDataSnapshot) {
+                const ad = applicationDataSnapshot as Record<string, unknown>;
                 const bi0 = Array.isArray(ad.businessInfo)
                     ? (ad.businessInfo[0] as Record<string, unknown>)
                     : undefined;
@@ -2161,7 +2212,7 @@ const PDFViewerModal = ({
         return () => {
             cancelled = true;
         };
-    }, [isOpen, contractId, applicationIdForLookup, applicationData, dispatch]);
+    }, [isOpen, contractId, applicationIdForLookup, dispatch]);
 
     const effectiveContractId = useMemo(() => {
         if (resolvedContractId != null && Number.isFinite(resolvedContractId)) {
@@ -2669,7 +2720,7 @@ const PDFViewerModal = ({
 
     const selectedFunderProfileId = useMemo(() => {
         const profile = findFunder(selectedFunder);
-        return profile?.id ? String(profile.id).trim() : "";
+        return persistedFunderProfileIdForApi(profile) ?? "";
     }, [findFunder, selectedFunder]);
 
     const sendPackageFingerprint = useMemo(
@@ -4255,13 +4306,25 @@ const PDFViewerModal = ({
             [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: effectiveMappingBlob,
         };
 
+        const activeFunder = String(selectedFunderRef.current || "").trim();
+        const contractForDisclosure: Record<string, unknown> = {
+            ...((resolvedContract as Record<string, unknown> | null) ?? {}),
+        };
+        if (activeFunder) {
+            contractForDisclosure.funderName = activeFunder;
+            const profile = findFunder(activeFunder);
+            if (profile) contractForDisclosure.funderProfile = profile;
+            const layoutKey = resolveLayoutKey(activeFunder);
+            if (layoutKey) contractForDisclosure.mainContractLayoutKey = layoutKey;
+        }
+
         let payload = applyDocumentTemplateMappingPrefillOverrides({
             prefillFieldsPayload: base,
             mergedTemplateIds,
             mergedLayoutKeys,
             templateMappingRows: templateMappings,
             contractPrefillOverridesRaw,
-            contract: resolvedContract as Record<string, unknown> | null,
+            contract: contractForDisclosure,
             application: applicationData as unknown as Record<string, unknown> | null,
             offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
             agreementDate: formatDate(new Date()),
@@ -4277,7 +4340,7 @@ const PDFViewerModal = ({
             ? buildExpandedDisclosurePrefillFieldsForMapping({
                   mappingRow: linkedDisclosureMapping,
                   savedOverridesForMapping: savedOverrides,
-                  contract: resolvedContract as Record<string, unknown> | null,
+                  contract: contractForDisclosure,
                   application: applicationData as unknown as Record<string, unknown> | null,
                   offerDecision:
                       (offerDecisionData as Record<string, unknown> | null) ?? null,
@@ -4289,10 +4352,17 @@ const PDFViewerModal = ({
             mergeExpandedDisclosurePrefillIntoPayload(payload, disclosureFields),
             activeOwnerCount,
         );
-        if (isAllianceBridgeContractLayoutKey(resolveLayoutKey(selectedFunder))) {
+        if (
+            shouldApplyAllianceBridgeContractPrefill({
+                layoutKey: resolveLayoutKey(selectedFunder),
+                funderName: selectedFunder,
+                state: selectedState,
+                profile: findFunder(selectedFunder),
+            })
+        ) {
             result = applyAllianceBridgeContractPrefillToPayload(result, {
                 application: applicationData as Record<string, unknown> | undefined,
-                contract: resolvedContract as Record<string, unknown> | null,
+                contract: contractForDisclosure,
                 offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
             });
         }
@@ -4315,7 +4385,9 @@ const PDFViewerModal = ({
         linkedDisclosureMapping,
         offerDecisionData,
         selectedFunder,
+        selectedState,
         resolveLayoutKey,
+        findFunder,
     ]);
 
     const syncPrefillToDraftEnvelope = useCallback(async (snapshot?: DocuSignPrefillSnapshot) => {
@@ -4397,6 +4469,11 @@ const PDFViewerModal = ({
                     undefined,
                 signatureDate: args.inputs.disbursementDate,
                 state: args.inputs.state,
+                funderName:
+                    String(selectedFunderRef.current || "").trim() ||
+                    String((resolvedContract as Record<string, unknown> | null)?.funderName ?? "").trim() ||
+                    undefined,
+                mainContractLayoutKey: resolveLayoutKey(selectedFunderRef.current),
                 inputs: args.inputs,
             });
 
@@ -4647,37 +4724,46 @@ const PDFViewerModal = ({
             const normalizedFrequency = normalizeFrequencyForTemplateLookup(frequency);
             const normalizedState = normalizeStateForTemplateLookup(state);
             const profile = findFunderProfile(funders, selectedFunder, normalizedState);
-            if (profile?.id) {
-                const docsFunderId = resolveDocumentsLayoutFunderId(profile);
-                if (docsFunderId) {
-                    const funderLayoutKey = funderDisclosureLayoutKeyForState(
-                        docsFunderId,
-                        normalizedState,
-                        normalizedFrequency,
-                    );
-                    const funderParams = new URLSearchParams({
-                        type: "disclosure",
-                        layoutKey: funderLayoutKey,
-                    });
-                    const funderRes = await axiosGet(`/contract/templates?${funderParams.toString()}`);
-                    const funderRows = (funderRes?.data?.data ?? []) as DisclosureTemplateLookupRow[];
-                    const funderMatch = Array.isArray(funderRows)
-                        ? funderRows.find((row) => String(row?.pdfUrl ?? "").trim())
-                        : undefined;
-                    if (funderMatch?.id) return String(funderMatch.id);
-                }
+            const docsFunderId = profile ? resolveDocumentsLayoutFunderId(profile) : null;
+
+            const lookupPlatformDisclosure = async (): Promise<string | null> => {
+                const params = new URLSearchParams({
+                    type: "disclosure",
+                    state: normalizedState,
+                    frequency: normalizedFrequency,
+                });
+                const res = await axiosGet(`/contract/templates?${params.toString()}`);
+                const rows = (res?.data?.data ?? []) as DisclosureTemplateLookupRow[];
+                const platformRows = Array.isArray(rows)
+                    ? rows.filter(isPlatformScopedBoldSignTemplateRow)
+                    : [];
+                const match = pickDisclosureTemplateForFrequency(
+                    platformRows,
+                    normalizedFrequency,
+                );
+                return match?.id ? String(match.id) : null;
+            };
+
+            if (docsFunderId) {
+                const funderLayoutKey = funderDisclosureLayoutKeyForState(
+                    docsFunderId,
+                    normalizedState,
+                    normalizedFrequency,
+                );
+                const funderParams = new URLSearchParams({
+                    type: "disclosure",
+                    layoutKey: funderLayoutKey,
+                });
+                const funderRes = await axiosGet(`/contract/templates?${funderParams.toString()}`);
+                const funderRows = (funderRes?.data?.data ?? []) as DisclosureTemplateLookupRow[];
+                const funderMatch = Array.isArray(funderRows)
+                    ? funderRows.find((row) => String(row?.pdfUrl ?? "").trim())
+                    : undefined;
+                if (funderMatch?.id) return String(funderMatch.id);
+                return null;
             }
-            const params = new URLSearchParams({
-                type: "disclosure",
-                state: normalizedState,
-                frequency: normalizedFrequency,
-            });
-            const res = await axiosGet(`/contract/templates?${params.toString()}`);
-            const rows = (res?.data?.data ?? []) as DisclosureTemplateLookupRow[];
-            const match = Array.isArray(rows)
-                ? pickDisclosureTemplateForFrequency(rows, normalizedFrequency)
-                : undefined;
-            return match?.id ? String(match.id) : null;
+
+            return lookupPlatformDisclosure();
         },
         [funders, selectedFunder],
     );
@@ -4856,6 +4942,68 @@ const PDFViewerModal = ({
         syncDisclosureTemplateForState,
     ]);
 
+    const [previewingMainContract, setPreviewingMainContract] = useState(false);
+
+    const handlePreviewMainContractTemplate = useCallback(async () => {
+        const layoutKey = resolveLayoutKey(selectedFunderRef.current);
+        const funderName = String(selectedFunderRef.current || "").trim();
+        const state = pickUsStateForSelect(selectedState) || undefined;
+        const profile = findFunder(funderName);
+        setPreviewingMainContract(true);
+        try {
+            const preview = await fetchMainContractTemplatePreview({
+                layoutKey,
+                funderName,
+                funderProfileId: persistedFunderProfileIdForApi(profile),
+                state,
+                previewName: previewNameFor(funderName),
+                fallbackUrl: fileUrl,
+                fallbackName: fileName,
+                findFunder,
+            });
+            if (!preview?.url) {
+                setDocumentUploadMessage(
+                    funderName
+                        ? `No contract PDF configured for ${funderName}.`
+                        : "Select a funder to preview the contract template.",
+                );
+                return;
+            }
+            if (templatePreviewBlobUrlRef.current) {
+                URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
+            }
+            const url =
+                preview.source === "docusign-download"
+                    ? preview.url
+                    : preview.url;
+            if (preview.source === "docusign-download") {
+                templatePreviewBlobUrlRef.current = url;
+            } else {
+                templatePreviewBlobUrlRef.current = null;
+            }
+            setActivePreview(null);
+            setUploadedPreviewUrl(url);
+            setPdfRightPaneTab("template");
+            const previewName = /\.pdf$/i.test(preview.name)
+                ? preview.name
+                : `${preview.name}.pdf`;
+            setUploadedPreviewName(previewName);
+            setDocumentUploadMessage(`Showing contract: ${formatDropdownLabel(preview.name)}`);
+        } catch (error: unknown) {
+            const err = error as {
+                response?: { data?: { message?: string } };
+                message?: string;
+            };
+            setDocumentUploadMessage(
+                err?.response?.data?.message ||
+                    err?.message ||
+                    "Failed to load contract template PDF.",
+            );
+        } finally {
+            setPreviewingMainContract(false);
+        }
+    }, [fileUrl, fileName, findFunder, previewNameFor, resolveLayoutKey, selectedState]);
+
     const downloadPlatformTemplatePreview = useCallback(
         async (
             platformKey: string,
@@ -4865,7 +5013,7 @@ const PDFViewerModal = ({
             if (!layoutKey || !isPlatformLayoutKey(layoutKey)) return false;
             const funderName = String(selectedFunderRef.current || "").trim();
             const funderProfile = findFunder(funderName);
-            const funderProfileId = funderProfile?.id ? String(funderProfile.id).trim() : "";
+            const funderProfileId = persistedFunderProfileIdForApi(funderProfile) ?? "";
             const contractState = pickUsStateForSelect(selectedState) || undefined;
             try {
                 const response = await axiosGet(
@@ -5978,7 +6126,7 @@ const PDFViewerModal = ({
         void handleSaveCurrentPanel();
     };
 
-    if (!isOpen || !effectiveContractPreviewUrl) return null;
+    if (!isOpen) return null;
 
     const currentPreviewUrl =
         (activeStep === "documents" || activeStep === "info" || activeStep === "summary") && uploadedPreviewUrl
@@ -6756,6 +6904,7 @@ const PDFViewerModal = ({
                                                         <Building2 className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Select Funder
                                                     </label>
+                                                    <div className="flex items-center gap-1.5">
                                                     <Select
                                                         value={selectedFunder || undefined}
                                                         disabled={savingContractMeta}
@@ -6789,7 +6938,7 @@ const PDFViewerModal = ({
                                                     >
                                                         <SelectTrigger
                                                             id="pdf-viewer-contract-funder-info"
-                                                            className="h-10 w-full rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600"
+                                                            className="h-10 min-w-0 flex-1 rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600"
                                                         >
                                                             <SelectValue placeholder="Select funder" />
                                                         </SelectTrigger>
@@ -6801,6 +6950,27 @@ const PDFViewerModal = ({
                                                             ))}
                                                         </SelectContent>
                                                     </Select>
+                                                    <Button
+                                                        type="button"
+                                                        size="icon"
+                                                        variant="outline"
+                                                        className="h-10 w-10 shrink-0 border-[var(--brand)]/20"
+                                                        title="View main contract template"
+                                                        disabled={!selectedFunder || previewingMainContract}
+                                                        onClick={() => void handlePreviewMainContractTemplate()}
+                                                    >
+                                                        {previewingMainContract ? (
+                                                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                                                        ) : (
+                                                            <Eye className="h-4 w-4" aria-hidden />
+                                                        )}
+                                                    </Button>
+                                                    </div>
+                                                    {selectedFunder ? (
+                                                        <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                                                            Template: {effectiveContractPreviewName}
+                                                        </p>
+                                                    ) : null}
                                                 </div>
                                             </div>
                                         </div>
@@ -8976,7 +9146,20 @@ const PDFViewerModal = ({
                             </div>
                             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
                                 {pdfRightPaneTab === "template" ? (
-                                    loadingInlinePreview ? (
+                                    loadingContractPreview && !currentPreviewUrl ? (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
+                                            <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
+                                            <span>Loading contract template…</span>
+                                        </div>
+                                    ) : !currentPreviewUrl ? (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
+                                            <span>
+                                                {selectedFunder
+                                                    ? `No contract PDF found for ${selectedFunder}.`
+                                                    : "Select a funder to load the contract template."}
+                                            </span>
+                                        </div>
+                                    ) : loadingInlinePreview ? (
                                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
                                             <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
                                             <span>Loading document preview…</span>

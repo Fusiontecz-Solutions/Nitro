@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -71,9 +71,15 @@ export function ExhibitACompaniesSummarySection({
     const dispatch = useDispatch<AppDispatch>();
     const [companies, setCompanies] = useState<string[]>([""]);
     const [saving, setSaving] = useState(false);
+    const companiesSeededRef = useRef(false);
 
     useEffect(() => {
-        if (!prefillOverridesReady) return;
+        if (!prefillOverridesReady) {
+            companiesSeededRef.current = false;
+            return;
+        }
+        if (companiesSeededRef.current) return;
+        companiesSeededRef.current = true;
         setCompanies(companiesFromPrefill(persistedPrefillOverrides));
     }, [prefillOverridesReady, persistedPrefillOverrides]);
 

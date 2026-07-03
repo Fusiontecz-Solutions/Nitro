@@ -165,15 +165,17 @@ export function TemplateMappingPrefillEditDialog({
         );
     }, [open, row]);
 
-    const seededMappingIdRef = useRef<string | null>(null);
+    const seededMappingIdRef = useRef<{ rowId: string; seeded: boolean } | null>(null);
 
     useEffect(() => {
         if (!open || !row) {
             seededMappingIdRef.current = null;
             return;
         }
-        if (seededMappingIdRef.current === row.id) return;
-        seededMappingIdRef.current = row.id;
+        if (editorRows.length === 0) return;
+        const prev = seededMappingIdRef.current;
+        if (prev?.rowId === row.id && prev.seeded) return;
+        seededMappingIdRef.current = { rowId: row.id, seeded: true };
         setFieldValues(Object.fromEntries(editorRows.map((r) => [r.id, r.value ?? ""])));
     }, [open, row, editorRows]);
 
