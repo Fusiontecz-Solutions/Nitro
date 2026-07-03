@@ -251,7 +251,7 @@ function wrapHtmlForA4Pdf(html: string): string {
     return buildA4PdfDocument(inner);
 }
 
-function resolveLetterPdfExecutablePaths(): Array<string | undefined> {
+async function resolveLetterPdfExecutablePaths(): Promise<Array<string | undefined>> {
   const candidates: Array<string | undefined> = [];
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
   if (envPath) candidates.push(envPath);
@@ -262,7 +262,7 @@ function resolveLetterPdfExecutablePaths(): Array<string | undefined> {
   }
 
   try {
-    const bundled = puppeteer.executablePath();
+    const bundled = await puppeteer.executablePath();
     if (bundled) candidates.push(bundled);
   } catch {
     // Bundled Chromium unavailable — try other candidates.
@@ -293,7 +293,7 @@ async function launchLetterPdfBrowser(): Promise<Browser> {
     '--force-color-profile=srgb',
   ];
 
-  const executablePaths = resolveLetterPdfExecutablePaths();
+  const executablePaths = await resolveLetterPdfExecutablePaths();
   let lastError: unknown;
 
   for (const executablePath of executablePaths) {
