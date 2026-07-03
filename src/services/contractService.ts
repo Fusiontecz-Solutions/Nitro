@@ -2281,6 +2281,14 @@ class ContractService {
     if (filters.layoutKey) {
       const layoutKey = String(filters.layoutKey).trim();
       where.OR = [{ layoutKey }, { templateId: layoutKey }];
+    } else if (filters.state || filters.frequency) {
+      // State/frequency lookup is for platform templates (Katan II/III). Exclude funder-owned rows.
+      where.AND = [
+        ...(where.AND ?? []),
+        {
+          OR: [{ layoutKey: null }, { NOT: { layoutKey: { startsWith: 'funder_' } } }],
+        },
+      ];
     }
     if (filters.state) {
       where.state = {
