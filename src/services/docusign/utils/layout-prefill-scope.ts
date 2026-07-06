@@ -72,10 +72,17 @@ export function buildScopedValuesForLayout(
     if (!pdfVar) continue;
 
     if (isStateDisclosureTextPlacement(placement)) {
+      const uniqueKey = String(placement.sourceTabLabel || '').trim();
+      const perPlacement = uniqueKey
+        ? String(globalValues[toDisclosureScopedPrefillId(uniqueKey)] ?? '').trim()
+        : '';
       const scoped = String(globalValues[toDisclosureScopedPrefillId(pdfVar)] ?? '').trim();
       const legacy = String(globalValues[pdfVar] ?? '').trim();
-      const val = scoped || legacy;
-      if (val) out[pdfVar] = val;
+      const val = perPlacement || scoped || legacy;
+      if (val) {
+        if (uniqueKey) out[uniqueKey] = val;
+        else out[pdfVar] = val;
+      }
       continue;
     }
 

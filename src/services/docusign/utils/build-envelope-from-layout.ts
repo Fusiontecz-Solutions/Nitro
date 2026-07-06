@@ -94,15 +94,8 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   funder_name: ['disclosure_funder_name'],
   /** Balance transfer only — do not alias contract business legal name into addendum fields. */
   business_legal_name: [],
-  /** Balance transfer signature block — merchant / owner name, not business entity. */
-  balance_transfer_client_legal_name: [
-    'merchant_legal_name',
-    'client_name_by',
-    'owner1_guarantor_name',
-    'customer_name',
-    'guaranty_owner1_name',
-    'guaranty_client_name',
-  ],
+  /** Balance transfer signature block — independent from merchant / business legal name. */
+  balance_transfer_client_legal_name: [],
   business_name_2: [
     'owner2_guarantor_name',
     'guaranty_owner2_name',
@@ -175,10 +168,10 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   disbursement_amount: ['disclosure_recipient_funds', 'total_amount_fund_disbursed', 'net_to_merchant'],
   total_repayment_amount: ['disclosure_total_payment', 'purchase_price', 'estimatedTotalPaymentAmount'],
   estimated_number_of_payement: ['disclosure_term_days', 'estimated_number_of_payments'],
-  disclosure_name: ['client_name', 'recipient_name'],
+  disclosure_name: [],
   disclosure_date2: ['disclosure_date', 'agreement_date', 'signature_date'],
-  recipient_name: ['client_name', 'disclosure_name'],
-  recipient_name2: ['client_name', 'recipient_name'],
+  recipient_name: [],
+  recipient_name2: [],
   recipient_address2: ['recipient_address', 'recipient_address1'],
   recipient_address: ['recipient_address1', 'business_address'],
   total_amount_commercial_financing: ['disclosure_amount_financed', 'funding_provided', 'total_amount_business_fund'],
@@ -481,51 +474,7 @@ export function isFillAtSigningTabRef(tab: {
   );
 }
 
-const DISCLOSURE_MERCHANT_NAME_TAB_VARIABLES = new Set([
-  'client_name',
-  'recipient_name',
-  'recipient_name2',
-  'disclosure_name',
-  'disclosure_merchant_name',
-]);
-
-function resolveOwnerMerchantLegalName(values: Record<string, string>): string {
-  const entityNorm = String(values.client_legal_name || values.business_legal_name || '')
-    .trim()
-    .toLowerCase();
-  const ownerKeys = [
-    'merchant_legal_name',
-    'owner1_guarantor_name',
-    'guaranty_owner1_name',
-    'guaranty_guarantor1_name',
-    'customer_name',
-    'client_name_by',
-    'guaranty_client_name',
-  ];
-  for (const key of ownerKeys) {
-    const name = String(values[key] || '').trim();
-    if (!name) continue;
-    if (entityNorm && name.toLowerCase() === entityNorm) continue;
-    return name;
-  }
-  const balanceTransfer = String(
-    values.balance_transfer_client_legal_name || '',
-  ).trim();
-  if (balanceTransfer && (!entityNorm || balanceTransfer.toLowerCase() !== entityNorm)) {
-    return balanceTransfer;
-  }
-  return '';
-}
-
 function isolateBalanceTransferMerchantLegalName(values: Record<string, string>): void {
-  const merchant = resolveOwnerMerchantLegalName(values);
-  if (merchant) {
-    values.balance_transfer_client_legal_name = merchant;
-    if (!String(values.merchant_legal_name || '').trim()) {
-      values.merchant_legal_name = merchant;
-    }
-    return;
-  }
   const entityLegal = String(values.client_legal_name || values.business_legal_name || '').trim();
   const balanceTransfer = String(values.balance_transfer_client_legal_name || '').trim();
   if (
@@ -537,23 +486,7 @@ function isolateBalanceTransferMerchantLegalName(values: Record<string, string>)
   }
 }
 
-function resolveDisclosureMerchantBusinessName(values: Record<string, string>): string {
-  return String(
-    values.disclosure_merchant_name ||
-      values.client_legal_name ||
-      values.business_legal_name ||
-      values.merchant_legal_name ||
-      values.legal_name ||
-      values.security_business_name ||
-      values.doing_business_as ||
-      values.recipient_name ||
-      values.disclosure_name ||
-      '',
-  ).trim();
-}
-
 function expandPrefillValues(values: Record<string, string>): Record<string, string> {
-  const savedDisclosureBusinessName = resolveDisclosureMerchantBusinessName(values);
   const out = { ...values };
   for (const [canonical, aliases] of Object.entries(PREFILL_VALUE_ALIASES)) {
     const v = String(out[canonical] || '').trim();
@@ -597,18 +530,6 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
   forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
   forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
   forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
-
-  const disclosureBusinessName = savedDisclosureBusinessName || resolveDisclosureMerchantBusinessName(out);
-  if (disclosureBusinessName) {
-    for (const key of [
-      'recipient_name',
-      'recipient_name2',
-      'disclosure_name',
-      'disclosure_merchant_name',
-    ] as const) {
-      out[key] = disclosureBusinessName;
-    }
-  }
 
   isolateBalanceTransferMerchantLegalName(out);
 
@@ -698,18 +619,6 @@ function enrichValuesFromSigners(
     forceMirrorIdentityFields(out, PARTY2_NAME_KEYS, PARTY2_NAME_PREFERRED);
     forceMirrorIdentityFields(out, PARTY2_SS_KEYS);
     forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
-  }
-
-  const disclosureBusinessName = resolveDisclosureMerchantBusinessName(out);
-  if (disclosureBusinessName) {
-    for (const key of [
-      'recipient_name',
-      'recipient_name2',
-      'disclosure_name',
-      'disclosure_merchant_name',
-    ] as const) {
-      out[key] = disclosureBusinessName;
-    }
   }
 
   return out;
@@ -952,31 +861,31 @@ function resolveTextPlacementValue(
 ): string {
   const key = String(variable || '').trim();
   if (!key) return '';
-  const disclosureScoped = String(
-    values[toDisclosureScopedPrefillId(key)] ?? '',
-  ).trim();
-  if (disclosureScoped) {
-    return FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
-      ? formatFlexAddendumMoneyUsd(disclosureScoped)
-      : disclosureScoped;
-  }
-  if (key === 'balance_transfer_client_legal_name') {
-    const merchant = resolveOwnerMerchantLegalName(values);
-    if (merchant) return merchant;
-    return '';
-  }
-  if (
-    isStateDisclosureTextPlacement(placement) &&
-    DISCLOSURE_MERCHANT_NAME_TAB_VARIABLES.has(key.toLowerCase())
-  ) {
-    const business = String(values[toDisclosureScopedPrefillId('client_name')] ?? '').trim()
-      || resolveDisclosureMerchantBusinessName(values);
-    if (business) return business;
-  }
   const formatIfMoney = (raw: string) =>
     FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
       ? formatFlexAddendumMoneyUsd(raw)
       : raw;
+
+  if (isStateDisclosureTextPlacement(placement)) {
+    const uniqueKey = String(placement?.sourceTabLabel || '').trim();
+    if (uniqueKey) {
+      const perPlacement = String(
+        values[toDisclosureScopedPrefillId(uniqueKey)] ?? values[uniqueKey] ?? '',
+      ).trim();
+      if (perPlacement) return formatIfMoney(perPlacement);
+    }
+    const sharedScoped = String(values[toDisclosureScopedPrefillId(key)] ?? '').trim();
+    if (sharedScoped) return formatIfMoney(sharedScoped);
+    const sharedDirect = String(values[key] ?? '').trim();
+    if (sharedDirect) return formatIfMoney(sharedDirect);
+  }
+
+  const disclosureScoped = String(
+    values[toDisclosureScopedPrefillId(key)] ?? '',
+  ).trim();
+  if (disclosureScoped) {
+    return formatIfMoney(disclosureScoped);
+  }
   const candidates = [
     key,
     key.toLowerCase(),
@@ -1076,6 +985,13 @@ function resolveEnvelopeTextTabLabel(
     ? resolveSupplementalEnvelopeTabLabel(layoutKey, placement, variable)
     : null;
   if (scoped) return scoped;
+
+  // State disclosure PDFs repeat tabLabel values (e.g. five `client_name` slots).
+  // Use the per-placement sourceTabLabel (`client_name_12`) so DocuSign tabs stay independent.
+  if (isStateDisclosureTextPlacement(placement)) {
+    const unique = String(placement.sourceTabLabel || '').trim();
+    if (unique) return unique;
+  }
 
   const source = String(placement.sourceTabLabel || '').trim();
   const v = String(variable || '').trim();
