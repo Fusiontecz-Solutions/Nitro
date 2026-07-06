@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import {
   syncApplicationToContractGenerated,
   syncApplicationWorkflowFromContractEnvelopeStatus,
+  shouldSkipContractEnvelopeWorkflowSync,
 } from '../contractApplicationWorkflowSync';
 import sendMail, { isOutboundSmtpConfigured } from '../../config/nodemailer';
 import {
@@ -3127,8 +3128,8 @@ export class DocusignService {
         return status;
       }
 
-      await this.syncContractSigningStatus(String(appId), status);
       if (priorStatus !== status) {
+        await this.syncContractSigningStatus(String(appId), status);
         const documentName =
           String(existingDoc?.originalName || existingDoc?.title || '').trim() || 'Contract.pdf';
         void handleContractSigningStatusTransition({
@@ -3155,6 +3156,15 @@ export class DocusignService {
       where: { applicationId: appId },
       data: { status: contractStatus as any },
     });
+
+    const app = await prisma.application.findUnique({
+      where: { id: appId },
+      select: { currentQueue: true, currentState: true },
+    });
+    if (app && shouldSkipContractEnvelopeWorkflowSync(app)) {
+      return;
+    }
+
     await this.syncApplicationWorkflowOnContractSigning(appId, internalStatus);
   }
 
@@ -3204,27 +3214,14 @@ export class DocusignService {
     const appId = String(applicationId || '').trim();
     if (!appId) return;
     const status = String(internalStatus || '').trim().toLowerCase();
+    const envelopeStatus =
+      internalEnvelopeStatusToContractStatusDbValue(status) ?? status.toUpperCase();
 
-    if (status === 'completed') {
-      await prisma.application.updateMany({
-        where: { id: appId },
-        data: {
-          currentQueue: 'Contract Signed',
-          currentState: 'SIGNED_CONTRACTS',
-        },
-      });
-      await clearNeedsContractReinitiation(appId);
-      return;
-    }
+    await syncApplicationWorkflowFromContractEnvelopeStatus(prisma, appId, envelopeStatus, {
+      source: 'docusign.syncApplicationWorkflowOnContractSigning',
+    });
 
-    if (['sent', 'viewed', 'signed'].includes(status)) {
-      await prisma.application.updateMany({
-        where: { id: appId },
-        data: {
-          currentQueue: 'Contract Out',
-          currentState: 'Contract Out',
-        },
-      });
+    if (status === 'completed' || ['sent', 'viewed', 'signed'].includes(status)) {
       await clearNeedsContractReinitiation(appId);
     }
   }
@@ -5191,21 +5188,19 @@ export class DocusignService {
       !isAchEnvelope && (await isStandalonePackageEnvelope(envelopeId, achHints));
     const isSupplementalEnvelope = isAchEnvelope || isPackageEnvelope;
 
-    if (!forceRefresh) {
-      const terminalPayload = await this.buildTerminalEnvelopeSyncPayload(
-        envelopeId,
-        applicationId,
-        isSupplementalEnvelope,
-        isAchEnvelope,
-        achHints,
-      );
-      if (terminalPayload) {
-        envelopeStatusSyncCache.set(envelopeId, {
-          syncedAt: Date.now(),
-          payload: terminalPayload,
-        });
-        return { ...terminalPayload, cached: true, skippedDocuSign: true };
-      }
+    const terminalPayload = await this.buildTerminalEnvelopeSyncPayload(
+      envelopeId,
+      applicationId,
+      isSupplementalEnvelope,
+      isAchEnvelope,
+      achHints,
+    );
+    if (terminalPayload) {
+      envelopeStatusSyncCache.set(envelopeId, {
+        syncedAt: Date.now(),
+        payload: terminalPayload,
+      });
+      return { ...terminalPayload, cached: true, skippedDocuSign: true };
     }
 
     const { client, accountId } = await this.getAuthContextForEnvelope(userId, authHints);

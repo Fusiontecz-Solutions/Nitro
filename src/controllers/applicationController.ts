@@ -15,6 +15,7 @@ import {
     applyPdfExtractToApplicationFromStoredFile,
     type AuthenticatedUser,
 } from '../services/applicationService';
+import { resolveFinalApprovalUnderwriterTarget } from '../services/finalApprovalTargetService';
 import { mapClientToApi, resolveClientOwners } from '../utils/clientMapper';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
 import {
@@ -509,6 +510,7 @@ const APPLICATION_USER_LITE_SELECT = {
     firstName: true,
     lastName: true,
     email: true,
+    role: true,
 } as const;
 
 const APPLICATION_DETAIL_INCLUDE = {
@@ -4403,40 +4405,26 @@ class ApplicationController {
                 return res.status(404).json({ success: false, message: 'Application not found' });
             }
 
-            const approvingUnderwriterId = String(
-                application.approvedByUnderwriterId ??
-                    application.assignedUnderwriterId ??
-                    application.claimedByUnderwriterId ??
-                    '',
-            ).trim();
-            if (!approvingUnderwriterId) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'This application has no recorded approving Underwriter yet.',
-                });
-            }
-
-            const targetUser = await prisma.user.findFirst({
-                where: {
-                    id: approvingUnderwriterId,
-                    role: 'UNDERWRITER',
-                    isActive: true,
-                },
-                select: { id: true, firstName: true, lastName: true, email: true },
+            const target = await resolveFinalApprovalUnderwriterTarget(prisma, {
+                approvedByUnderwriterId: application.approvedByUnderwriterId,
+                assignedUnderwriterId: application.assignedUnderwriterId,
+                claimedByUnderwriterId: application.claimedByUnderwriterId,
             });
-            if (!targetUser) {
+            if (!target) {
                 return res.status(400).json({
                     success: false,
-                    message: 'The approving Underwriter was not found or is inactive',
+                    message:
+                        'No active Underwriter is linked to this application. Assign or record an Underwriter approval before sending for final approval.',
                 });
             }
+            const approvingUnderwriterId = target.userId;
 
             const previousQueue = application.currentQueue;
             const previousState = application.currentState;
             const actorName = String((req as any).user?.name || '').trim() || 'Admin';
             const targetName =
-                `${targetUser.firstName || ''} ${targetUser.lastName || ''}`.trim() ||
-                targetUser.email ||
+                `${target.firstName || ''} ${target.lastName || ''}`.trim() ||
+                target.email ||
                 'Underwriter';
 
             const refreshed = await prisma.application.update({

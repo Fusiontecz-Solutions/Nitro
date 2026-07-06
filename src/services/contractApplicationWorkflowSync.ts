@@ -147,6 +147,10 @@ export function contractCancelledApplicationUpdateData(): {
 const POST_CONTRACT_SENT_QUEUE_KEYS = new Set([
   'contractsigned',
   'signedcontracts',
+  /** Ops sent deal back to UW for second sign-off — must not be downgraded by DocuSign replay. */
+  'finalapproval',
+  /** UW granted final approval (Decision Logic path) — past contract-signed stage. */
+  'contractpending',
   'final',
   'fundingcall',
   'disbursment',
@@ -166,6 +170,17 @@ function isApplicationPastContractSignedStage(app: {
   return (
     isApplicationAtContractSignedStage(app) || isPostContractSentQueue(app.currentQueue)
   );
+}
+
+/**
+ * When true, DocuSign polling/webhooks must not change application queue/state
+ * (deal is already Contract Signed or has advanced to Final Approval / beyond).
+ */
+export function shouldSkipContractEnvelopeWorkflowSync(app: {
+  currentQueue?: string | null;
+  currentState?: string | null;
+}): boolean {
+  return isApplicationPastContractSignedStage(app);
 }
 
 async function syncApplicationWorkflowStage(
