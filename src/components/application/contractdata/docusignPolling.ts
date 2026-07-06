@@ -1,6 +1,37 @@
 /** Client throttle for automatic sync only — manual Refresh uses `force: true` to bypass. */
 export const DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS = 60_000;
 
+const TERMINAL_ENVELOPE_STATUSES = new Set([
+    "completed",
+    "declined",
+    "voided",
+    "revoked",
+    "expired",
+]);
+
+/** Envelopes already known terminal in CRM — skip automatic sync entirely. */
+const terminalEnvelopeIds = new Set<string>();
+
+export function rememberTerminalEnvelope(envelopeId: string, data: unknown): void {
+    const record = data as {
+        internalStatus?: string;
+        docusignStatus?: string;
+        skippedDocuSign?: boolean;
+    } | null;
+    const status = String(
+        record?.internalStatus ?? record?.docusignStatus ?? "",
+    )
+        .trim()
+        .toLowerCase();
+    if (TERMINAL_ENVELOPE_STATUSES.has(status)) {
+        terminalEnvelopeIds.add(envelopeId);
+    }
+}
+
+export function isDocuSignEnvelopeSyncTerminal(envelopeId: string): boolean {
+    return terminalEnvelopeIds.has(String(envelopeId ?? "").trim());
+}
+
 export function isDocuSignPollingLimitError(message: string): boolean {
     return /burst_envelope_polling|hourly_envelope_polling|polling.?limit|rate.?limit|too many requests/i.test(
         message,

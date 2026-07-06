@@ -134,32 +134,43 @@ export function resolveApprovingUnderwriter(
     return null;
 }
 
+const isActiveUnderwriterRole = (role?: string | null): boolean =>
+    String(role ?? "")
+        .trim()
+        .toUpperCase()
+        .replace(/-/g, "_") === "UNDERWRITER";
+
+const resolveUnderwriterLink = (
+    id: string | null | undefined,
+    user?: ApplicationUserLite | null,
+): { id: string; user?: ApplicationUserLite | null } | null => {
+    const resolvedId = String(id ?? resolveUserLiteId(user) ?? "").trim();
+    if (!resolvedId) return null;
+    if (user?.role && !isActiveUnderwriterRole(user.role)) return null;
+    return { id: resolvedId, user };
+};
+
 /**
  * Underwriter who should receive the post-contract final approval send.
- * Prefer the recorded approver, then assigned / claimed on the deal.
+ * Skips scrubbers/admins recorded as approver when an assigned Underwriter exists.
  */
 export function resolveFinalApprovalTargetUnderwriter(
     app: UnderwriterApprovalAppFields,
 ): { id: string; user?: ApplicationUserLite | null } | null {
-    const approvedId = String(
-        app.approvedByUnderwriterId ?? resolveUserLiteId(app.approvedByUnderwriter) ?? "",
-    ).trim();
-    if (approvedId) {
-        return { id: approvedId, user: app.approvedByUnderwriter };
-    }
-    const assignedId = String(
-        app.assignedUnderwriterId ?? resolveUserLiteId(app.assignedUnderwriter) ?? "",
-    ).trim();
-    if (assignedId) {
-        return { id: assignedId, user: app.assignedUnderwriter };
-    }
-    const claimedId = String(
-        app.claimedByUnderwriterId ?? resolveUserLiteId(app.claimedByUnderwriter) ?? "",
-    ).trim();
-    if (claimedId) {
-        return { id: claimedId, user: app.claimedByUnderwriter };
-    }
-    return null;
+    return (
+        resolveUnderwriterLink(
+            app.approvedByUnderwriterId,
+            app.approvedByUnderwriter,
+        ) ??
+        resolveUnderwriterLink(
+            app.assignedUnderwriterId,
+            app.assignedUnderwriter,
+        ) ??
+        resolveUnderwriterLink(
+            app.claimedByUnderwriterId,
+            app.claimedByUnderwriter,
+        )
+    );
 }
 
 /** Populated from `GET /applications` include `approvedByUnderwriter` (name/email). */

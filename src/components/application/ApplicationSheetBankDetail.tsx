@@ -26,6 +26,8 @@ type ApplicationSheetBankDetailProps = {
     applicationId: string;
     /** When embedded in a dialog, closes the parent modal on Cancel. */
     onClose?: () => void;
+    /** When false, a successful save keeps the parent dialog open (e.g. add bank then initiate Decision Logic). */
+    closeOnSave?: boolean;
     /** Compact card layout for the application Overview tab. */
     variant?: "default" | "overview";
     className?: string;
@@ -34,6 +36,7 @@ type ApplicationSheetBankDetailProps = {
 export default function ApplicationSheetBankDetail({
     applicationId,
     onClose,
+    closeOnSave = true,
     variant = "default",
     className,
 }: ApplicationSheetBankDetailProps) {
@@ -174,7 +177,9 @@ export default function ApplicationSheetBankDetail({
             await dispatch(getBankDetails({ application: applicationId })).unwrap();
 
             resetForm();
-            onClose?.();
+            if (closeOnSave) {
+                onClose?.();
+            }
         } catch (error: unknown) {
             toast.error(
                 typeof error === "string" ? error : "Failed to save bank details.",

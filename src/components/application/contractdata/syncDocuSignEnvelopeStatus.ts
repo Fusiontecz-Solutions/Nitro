@@ -2,7 +2,9 @@ import { axiosPost } from "@/redux/axios";
 import {
     DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS,
     formatDocuSignSyncErrorMessage,
+    isDocuSignEnvelopeSyncTerminal,
     isDocuSignPollingLimitError,
+    rememberTerminalEnvelope,
 } from "./docusignPolling";
 
 const lastSyncedAtByEnvelope = new Map<string, number>();
@@ -52,6 +54,10 @@ export async function syncDocuSignEnvelopeStatus(
 
     const label = options?.envelopeLabel ?? "envelope";
 
+    if (!options?.force && isDocuSignEnvelopeSyncTerminal(eid)) {
+        return { skipped: true };
+    }
+
     const now = Date.now();
     const last = lastSyncedAtByEnvelope.get(eid) ?? 0;
     if (!options?.force && now - last < DOCUSIGN_STATUS_SYNC_MIN_INTERVAL_MS) {
@@ -85,7 +91,9 @@ export async function syncDocuSignEnvelopeStatus(
     })
         .then((res) => {
             lastSyncedAtByEnvelope.set(eid, Date.now());
-            return res?.data ?? res;
+            const data = res?.data ?? res;
+            rememberTerminalEnvelope(eid, data);
+            return data;
         })
         .finally(() => {
             inFlightByEnvelope.delete(eid);

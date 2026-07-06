@@ -24,6 +24,7 @@ import {
   isNyscefImportMessage,
   loadNyscefCache,
   loadLatestNyscefCache,
+  NYSCEF_IMPORT_MESSAGE_TYPE,
   saveNyscefCache,
   type NyscefCaseHit,
   type NyscefLookupData,
@@ -134,6 +135,17 @@ function NyCourtClientSummary({
   );
 }
 
+/** Stable key so postMessage + inbox polling do not re-toast the same failed import. */
+function buildNyscefImportDedupeKey(data: unknown): string {
+  if (!data || typeof data !== "object") return "unknown";
+  const msg = data as Record<string, unknown>;
+  if (msg.type !== NYSCEF_IMPORT_MESSAGE_TYPE) return "not-nyscef";
+  const appId = String(msg.applicationId ?? "");
+  const searchedAt = String(msg.searchedAt ?? "");
+  const caseCount = Array.isArray(msg.cases) ? msg.cases.length : -1;
+  return `${appId}|${searchedAt}|${caseCount}`;
+}
+
 function NyscefCaseCard({ item }: { item: NyscefCaseHit }) {
   return (
     <div className="rounded-md border border-[#E5E7EB] bg-white px-3 py-3 space-y-1.5">
@@ -188,6 +200,7 @@ export default function NyCourtPanel({
   const popupRef = useRef<Window | null>(null);
   const importTimeoutRef = useRef<number | null>(null);
   const pendingImportRef = useRef<Parameters<typeof isNyscefImportMessage>[0] | null>(null);
+  const rejectedImportKeysRef = useRef<Set<string>>(new Set());
 
   const activeSearchQuery = useMemo(() => {
     if (searchMode === "owner") return dealClient.ownerName;
@@ -230,15 +243,21 @@ export default function NyCourtPanel({
       setResultsExpanded(true);
       persistResult(lookup, meta.searchedAt, true);
       if (options?.announce) {
+        const toastId = applicationId ? `nyscef-import-success-${applicationId}` : undefined;
         toast.success(
           lookup.cases.length > 0
             ? `Imported ${lookup.cases.length} NY court case${lookup.cases.length === 1 ? "" : "s"}.`
             : "NY court search imported with no cases found.",
+          toastId ? { toastId } : undefined,
         );
       }
     },
-    [persistResult],
+    [applicationId, persistResult],
   );
+
+  useEffect(() => {
+    rejectedImportKeysRef.current.clear();
+  }, [applicationId]);
 
   useEffect(() => {
     if (!applicationId) {
@@ -288,11 +307,19 @@ export default function NyCourtPanel({
           pendingImportRef.current = data;
           return;
         }
-        toast.warn("Could not import NY Court results for this application.");
+        const dedupeKey = buildNyscefImportDedupeKey(data);
+        if (rejectedImportKeysRef.current.has(dedupeKey)) {
+          return;
+        }
+        rejectedImportKeysRef.current.add(dedupeKey);
+        toast.warn("Could not import NY Court results for this application.", {
+          toastId: `nyscef-import-failed-${applicationId}`,
+        });
         return;
       }
 
       pendingImportRef.current = null;
+      rejectedImportKeysRef.current.clear();
 
       const lookup: NyscefLookupData = {
         searchQuery: data.searchQuery || activeSearchQuery,

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { useParams } from "react-router";
-import { Loader2 } from "lucide-react";
+import { Landmark, Loader2 } from "lucide-react";
+import ApplicationSheetBankDetail from "@/components/application/ApplicationSheetBankDetail";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "react-toastify";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,6 +94,7 @@ export default function EligibilityAnalysis() {
   const bankDetailRows = useSelector(
     (state: RootState) => (state.bankDetails.data ?? []) as BankDetail[]
   );
+  const [bankDetailsDialogOpen, setBankDetailsDialogOpen] = useState(false);
   const [isDecisionLogicModalOpen, setIsDecisionLogicModalOpen] = useState(false);
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string>("");
   const [isSubmittingDecisionLogic, setIsSubmittingDecisionLogic] = useState(false);
@@ -259,6 +262,14 @@ export default function EligibilityAnalysis() {
     input.click();
   }, [applicationRecordId, dispatch]);
 
+  const openBankDetailsDialog = () => {
+    if (!applicationRecordId) {
+      toast.error("Missing application id. Please reload and try again.");
+      return;
+    }
+    setBankDetailsDialogOpen(true);
+  };
+
   const onInitiateDecisionLogic = () => {
     if (!owners.length) {
       toast.error("Owner profile is missing for this application.");
@@ -382,22 +393,9 @@ export default function EligibilityAnalysis() {
           </div>
         ) : null}
         <div className="rounded-md border border-[#E5E7EB] p-3 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-[#111827]">Decision Logic</h3>
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              {uploadedBankFiles.length > 0 ? (
-                <div className="flex max-w-[14rem] flex-wrap gap-1 text-[11px] text-[#6B7280]">
-                  {uploadedBankFiles.map((name, idx) => (
-                    <span
-                      key={`${name}-${idx}`}
-                      className="rounded-full border border-[#E5E7EB] bg-[#F9FAFB] px-2 py-0.5"
-                      title={name}
-                    >
-                      {name.length > 22 ? `${name.slice(0, 19)}…` : name}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
+          <div className="flex w-full items-start justify-between gap-3">
+            <h3 className="shrink-0 pt-1 text-sm font-semibold text-[#111827]">Decision Logic</h3>
+            <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
               <Button
                 type="button"
                 size="sm"
@@ -421,8 +419,36 @@ export default function EligibilityAnalysis() {
               >
                 Initiate Decision Logic
               </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    onClick={openBankDetailsDialog}
+                    aria-label="Add bank details"
+                  >
+                    <Landmark className="h-4 w-4" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Add bank details</TooltipContent>
+              </Tooltip>
             </div>
           </div>
+          {uploadedBankFiles.length > 0 ? (
+            <div className="flex flex-wrap justify-end gap-1 text-[11px] text-[#6B7280]">
+              {uploadedBankFiles.map((name, idx) => (
+                <span
+                  key={`${name}-${idx}`}
+                  className="rounded-full border border-[#E5E7EB] bg-[#F9FAFB] px-2 py-0.5"
+                  title={name}
+                >
+                  {name.length > 22 ? `${name.slice(0, 19)}…` : name}
+                </span>
+              ))}
+            </div>
+          ) : null}
           {uploadStatementError ? (
             <p className="text-[11px] text-red-600">{uploadStatementError}</p>
           ) : null}
@@ -500,17 +526,34 @@ export default function EligibilityAnalysis() {
           )}
         </div>
       </div>
+      <Dialog open={bankDetailsDialogOpen} onOpenChange={setBankDetailsDialogOpen}>
+        <DialogContent className="max-h-[90vh] max-w-lg gap-0 overflow-y-auto px-0 py-0 sm:max-w-2xl">
+          <DialogHeader className="border-b border-[#E5E7EB] px-4 py-3">
+            <DialogTitle className="text-sm font-semibold text-[#111827]">
+              Bank Details
+            </DialogTitle>
+          </DialogHeader>
+          <div className="px-4 py-3">
+            {applicationRecordId ? (
+              <ApplicationSheetBankDetail
+                applicationId={applicationRecordId}
+                onClose={() => setBankDetailsDialogOpen(false)}
+              />
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={isDecisionLogicModalOpen} onOpenChange={setIsDecisionLogicModalOpen}>
-        <DialogContent className="max-w-[440px] px-0 py-0 gap-0">
-          <DialogHeader className="px-4 py-3 border-b border-[#E5E7EB]">
+        <DialogContent className="max-w-[440px] gap-0 px-0 py-0">
+          <DialogHeader className="border-b border-[#E5E7EB] px-4 py-3">
             <DialogTitle className="text-sm font-semibold text-[#111827]">
               Decision Logic Request
             </DialogTitle>
           </DialogHeader>
-          <div className="px-4 py-3 space-y-2">
+          <div className="space-y-2 px-4 py-3">
             <label className="text-xs text-[#374151]">Selected Bank Account</label>
             <Select value={selectedBankAccountId} onValueChange={setSelectedBankAccountId}>
-              <SelectTrigger className="w-full h-8 text-xs">
+              <SelectTrigger className="h-8 w-full text-xs">
                 <SelectValue placeholder="Select Bank Account" />
               </SelectTrigger>
               <SelectContent>
@@ -522,7 +565,7 @@ export default function EligibilityAnalysis() {
               </SelectContent>
             </Select>
           </div>
-          <DialogFooter className="px-4 py-3 border-t border-[#E5E7EB] flex-row justify-end gap-2">
+          <DialogFooter className="flex-row justify-end gap-2 border-t border-[#E5E7EB] px-4 py-3">
             <Button
               type="button"
               variant="outline"
@@ -535,7 +578,7 @@ export default function EligibilityAnalysis() {
               type="button"
               size="sm"
               variant="default"
-              onClick={() => processDecisionLogicRequest(selectedBankAccountId)}
+              onClick={() => void processDecisionLogicRequest(selectedBankAccountId)}
               disabled={isSubmittingDecisionLogic || !selectedBankAccountId}
             >
               {isSubmittingDecisionLogic ? "Submitting..." : "Submit"}
