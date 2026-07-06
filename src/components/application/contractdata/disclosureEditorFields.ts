@@ -53,7 +53,14 @@ export const DISCLOSURE_EDITOR_FIELD_CATALOG: ReadonlyArray<{ id: string; label:
     { id: "disclosure_page3_line_2", label: "Page 3 line 2 amount" },
     { id: "disclosure_page3_subtotal", label: "Page 3 subtotal amount" },
     { id: "disclosure_page3_net", label: "Page 3 net amount" },
-    { id: "client_name", label: "Merchant / recipient name" },
+    { id: "client_name", label: "Merchant / recipient name (client_name)" },
+    { id: "recipient_name", label: "Recipient name (recipient_name)" },
+    { id: "recipient_name2", label: "Recipient name 2 (recipient_name2)" },
+    { id: "disclosure_name", label: "Disclosure name (disclosure_name)" },
+    {
+        id: "disclosure_merchant_name",
+        label: "Disclosure merchant / business name (disclosure_merchant_name)",
+    },
     { id: "funder_name", label: "Funder / provider name" },
     { id: "disclosure_date", label: "Disclosure date" },
 ];
@@ -143,7 +150,11 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     disclosure_page3_line_2: ["disclosure_page3_line_2"],
     disclosure_page3_subtotal: ["disclosure_page3_subtotal"],
     disclosure_page3_net: ["disclosure_page3_net"],
-    client_name: ["client_name", "recipient_name", "disclosure_name", "disclosure_merchant_name"],
+    client_name: ["client_name"],
+    recipient_name: ["recipient_name"],
+    recipient_name2: ["recipient_name2"],
+    disclosure_name: ["disclosure_name"],
+    disclosure_merchant_name: ["disclosure_merchant_name"],
     disclosure_recipient_address: [
         "recipient_address",
         "recipient_address1",
@@ -266,13 +277,6 @@ export function expandDisclosureEditorValuesToPdfFields(
                 funderProfile: options?.funderProfile,
             }),
     );
-    const merchant = String(editorValues.client_name ?? out.client_name ?? "").trim();
-    if (merchant) {
-        for (const pdfId of EDITOR_TO_PDF_FIELD_IDS.client_name ?? ["client_name"]) {
-            out[pdfId] = merchant;
-        }
-    }
-
     return out;
 }
 
@@ -293,6 +297,7 @@ export function buildDisclosureEditorFieldsFromContext(
         funderName: ctx.funderName,
         mainContractLayoutKey: options?.mainContractLayoutKey,
     });
+    const merchantName = String(ctx.recipientName ?? "").trim().toUpperCase();
 
     const values: Record<string, string> = {
         disclosure_avg_monthly_revenue: ctx.averageMonthlyIncome ?? "",
@@ -312,7 +317,11 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_page3_line_2: page3.page3Line2,
         disclosure_page3_subtotal: page3.page3Subtotal,
         disclosure_page3_net: page3.page3Net,
-        client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
+        client_name: merchantName,
+        recipient_name: merchantName,
+        recipient_name2: merchantName,
+        disclosure_name: merchantName,
+        disclosure_merchant_name: merchantName,
         disclosure_recipient_address: String(ctx.recipientAddress ?? "").trim(),
         funder_name: formatDisclosureFunderNameForPdf(ctx.funderName ?? resolvedFunderName),
         disclosure_date: disclosureDate,
@@ -372,7 +381,15 @@ export function mapDisclosureMetricsToEditorFieldOverrides(
             (options?.inputs?.brokerFeePaidByFunder ?? 0) +
                 (options?.inputs?.brokerFeePaidByMerchant ?? 0),
         ),
-        ...(merchant ? { client_name: merchant } : {}),
+        ...(merchant
+            ? {
+                  client_name: merchant,
+                  recipient_name: merchant,
+                  recipient_name2: merchant,
+                  disclosure_name: merchant,
+                  disclosure_merchant_name: merchant,
+              }
+            : {}),
         funder_name: formatDisclosureFunderNameForPdf(
             resolveDisclosureFunderNamePrefill({
                 funderName: options?.funderName,

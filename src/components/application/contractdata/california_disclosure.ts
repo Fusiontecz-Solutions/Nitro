@@ -176,7 +176,8 @@ export interface CaliforniaDisclosureContractPrefillFields {
     monthlyIncome?: string;
     financeCharge?: string;
     funderName?: string;
-    recipientName?: string;
+    clientName?: string;
+    disclosureMerchantName?: string;
     recipientFunds?: string;
     brokerFee?: string;
     page3Line1?: string;
@@ -198,7 +199,8 @@ const FIELD_IDS = {
     monthlyIncome: ["monthly_income"],
     financeCharge: ["finance_charge"],
     funderName: ["funder_name"],
-    recipientName: ["client_name", "disclosure_merchant_name"],
+    clientName: ["client_name"],
+    disclosureMerchantName: ["disclosure_merchant_name"],
     recipientFunds: ["disclosure_recipient_funds"],
     brokerFee: ["disclosure_broker_fee"],
     page3Line1: ["disclosure_page3_line_1"],
@@ -236,7 +238,8 @@ export function buildCaliforniaDisclosureContractPrefillFields({
     monthlyIncome = "",
     financeCharge = "",
     funderName = PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
-    recipientName = "",
+    clientName = "",
+    disclosureMerchantName = "",
     recipientFunds = "",
     brokerFee = "",
     page3Line1 = "",
@@ -265,7 +268,12 @@ export function buildCaliforniaDisclosureContractPrefillFields({
         ...mapIds(FIELD_IDS.monthlyIncome, "Monthly Income", monthlyIncome),
         ...mapIds(FIELD_IDS.financeCharge, "Finance Charge", financeCharge),
         ...mapIds(FIELD_IDS.funderName, "Funder Name", funderName),
-        ...mapIds(FIELD_IDS.recipientName, "Merchant Name", recipientName),
+        ...mapIds(FIELD_IDS.clientName, "Merchant Name", clientName),
+        ...mapIds(
+            FIELD_IDS.disclosureMerchantName,
+            "Disclosure Merchant Name",
+            disclosureMerchantName || clientName,
+        ),
         ...mapIds(FIELD_IDS.recipientFunds, "Recipient Funds", recipientFunds),
         ...mapIds(FIELD_IDS.brokerFee, "Broker Fee", brokerFee),
         ...mapIdsWithDefault(FIELD_IDS.page3Line1, "Page 3 Line 1", page3Line1, "0.00"),

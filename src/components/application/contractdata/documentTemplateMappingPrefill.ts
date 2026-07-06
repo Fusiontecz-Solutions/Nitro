@@ -147,22 +147,16 @@ function resolveDisclosureBusinessNameFromPrefillMap(
     );
 }
 
-function applyDisclosureMerchantNameFields(
+function applyDisclosureMerchantNameFieldIfEmpty(
     byId: Map<string, { id: string; value: string }>,
+    pdfId: string,
     businessName: string,
 ): void {
     const name = String(businessName ?? "").trim();
     if (!name) return;
-    for (const pdfId of [
-        "client_name",
-        "recipient_name",
-        "recipient_name2",
-        "disclosure_name",
-        "disclosure_merchant_name",
-    ] as const) {
-        const id = toDisclosureScopedPrefillId(pdfId);
-        byId.set(id, { id, value: name });
-    }
+    const id = toDisclosureScopedPrefillId(pdfId);
+    if (String(byId.get(id)?.value ?? "").trim()) return;
+    byId.set(id, { id, value: name });
 }
 
 function shouldSkipClientNamePrefillOverwrite(
@@ -1243,7 +1237,15 @@ export function mergeStateDisclosurePrefillFallback(args: {
             ) ||
             "",
     ).trim();
-    applyDisclosureMerchantNameFields(byId, businessName);
+    for (const pdfId of [
+        "client_name",
+        "recipient_name",
+        "recipient_name2",
+        "disclosure_name",
+        "disclosure_merchant_name",
+    ] as const) {
+        applyDisclosureMerchantNameFieldIfEmpty(byId, pdfId, businessName);
+    }
     return Array.from(byId.values());
 }
 
@@ -1630,7 +1632,15 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
                 readPrefillMapValue(byId, "disclosure_merchant_name") ||
                 "",
         ).trim();
-        applyDisclosureMerchantNameFields(byId, businessName);
+        for (const pdfId of [
+            "client_name",
+            "recipient_name",
+            "recipient_name2",
+            "disclosure_name",
+            "disclosure_merchant_name",
+        ] as const) {
+            applyDisclosureMerchantNameFieldIfEmpty(byId, pdfId, businessName);
+        }
     }
 
     if (!disclosureMerged) {
