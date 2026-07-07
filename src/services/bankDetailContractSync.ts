@@ -109,7 +109,32 @@ export async function syncContractPrefillToBankDetail(
     });
     bankDetailId = latest?.id;
   }
-  if (!bankDetailId) return;
+
+  if (!bankDetailId) {
+    if (!accountNumber) return;
+
+    const application = await prisma.application.findUnique({
+      where: { id: applicationId },
+      select: { id: true, createdById: true, salesRepresentativeId: true },
+    });
+    const createdById =
+      application?.createdById ?? application?.salesRepresentativeId ?? undefined;
+    if (!application || !createdById) return;
+
+    const created = await prisma.bankDetail.create({
+      data: {
+        bankName: bankName || 'Bank',
+        accountNumber: encryptField(accountNumber),
+        routingNumber: routingNumber ? encryptField(routingNumber) : null,
+        applicationId: application.id,
+        createdById,
+      },
+      select: { id: true },
+    });
+    bankDetailId = created.id;
+    await syncBankDetailToContractPrefill(applicationId, plainBank, { bankDetailId });
+    return;
+  }
 
   const data: Prisma.BankDetailUpdateInput = {};
   if (bankName) data.bankName = bankName;
@@ -122,4 +147,6 @@ export async function syncContractPrefillToBankDetail(
     where: { id: bankDetailId },
     data,
   });
+
+  await syncBankDetailToContractPrefill(applicationId, plainBank, { bankDetailId });
 }
