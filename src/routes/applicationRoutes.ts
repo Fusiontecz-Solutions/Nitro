@@ -157,6 +157,12 @@ router.post('/:id/files', applicationController.addFiles.bind(applicationControl
 // Remove file from application
 router.delete('/:id/files/:fileId', applicationController.removeFile.bind(applicationController));
 
+// Tag an existing file with a document-request slug (fulfillment from CRM uploads)
+router.patch(
+    '/:id/files/:fileId',
+    applicationController.updateFileDocumentType.bind(applicationController),
+);
+
 // Fill application client fields from a stored PDF (Claude / Document AI extraction)
 router.post(
     '/:id/files/:fileId/fill-from-pdf',

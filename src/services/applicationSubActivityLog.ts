@@ -278,8 +278,29 @@ async function buildRouteActivityPlan(
     details.preview = truncateForActivityLog(body.content);
     details.commentType = body.type ?? 'Internal Comment';
   } else if (resource === 'bank-analysis') {
-    details.bankName = body.bankName ?? null;
-    details.accountNumber = body.accountNumber ? '***' + String(body.accountNumber).slice(-4) : null;
+    const bankName = body.bankName ?? null;
+    const accountNumber = body.accountNumber
+      ? '***' + String(body.accountNumber).slice(-4)
+      : null;
+    details.bankName = bankName;
+    details.accountNumber = accountNumber;
+    const updatedParts: string[] = [];
+    if (bankName != null && String(bankName).trim()) updatedParts.push('bank name');
+    if (body.accountNumber != null && String(body.accountNumber).trim()) {
+      updatedParts.push('account number');
+    }
+    if (Array.isArray(body.rows)) {
+      updatedParts.push(`${body.rows.length} monthly row${body.rows.length === 1 ? '' : 's'}`);
+    }
+    if (method === 'POST') {
+      details.changeSummary = updatedParts.length
+        ? `Added ${updatedParts.join(', ')}`
+        : 'Added bank account';
+    } else if (updatedParts.length > 0) {
+      details.changeSummary = `Updated ${updatedParts.join(', ')}`;
+    } else {
+      details.changeSummary = 'Updated bank analysis data';
+    }
   } else if (resource === 'offer-decisions') {
     details.decision = parts[1] === 'decline' ? 'declined' : (body.decision ?? body.status ?? 'updated');
   } else if (resource === 'compliance-checks') {
