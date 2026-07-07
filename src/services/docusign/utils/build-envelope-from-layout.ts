@@ -126,6 +126,18 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'guaranty_guarantor1_name',
     'guaranty_client_name',
   ],
+  ach_authorization_account_holder_bank_state: ['achauthorizationaccountholderbankstate'],
+  ach_authorization_account_holder_bank_zip: ['achauthorizationaccountholderbankzip'],
+  ach_authorization_account_holder_bank_branch_city: [
+    'achauthorizationaccountholderbankbranchcity',
+  ],
+  ach_authorization_account_holder_bank_name: ['achauthorizationaccountholderbankname'],
+  ach_authorization_account_holder_bank_routing_number: [
+    'achauthorizationaccountholderbankroutingnumber',
+  ],
+  ach_authorization_account_holder_bank_account_number: [
+    'achauthorizationaccountholderbankaccountnumber',
+  ],
   entity_type: ['typeOfEntity1', 'typeofentity1'],
   typeofentity1: ['entity_type', 'typeOfEntity1'],
   typeOfEntity1: ['entity_type', 'typeofentity1'],

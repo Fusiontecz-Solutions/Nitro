@@ -107,14 +107,20 @@ export const decisionLogicService = {
         }
     },
 
-    async createAndVerifyRequest(businessOwnerId: number, bankAccountId: number) {
+    async createAndVerifyRequest(
+        businessOwnerId: number,
+        bankAccountId: number,
+        applicationId?: string | null,
+    ) {
         try {
+            const applicationRef = String(applicationId ?? "").trim() || null;
             const businessOwner =
-                await clientService.fetchBusinessOwner(businessOwnerId);
+                await clientService.fetchBusinessOwner(businessOwnerId, applicationRef);
 
             const bankAccount = await clientService.fetchBankAccount(
                 bankAccountId,
-                businessOwnerId
+                businessOwnerId,
+                applicationRef,
             );
 
             const serviceKey = process.env.SERVICE_KEY;

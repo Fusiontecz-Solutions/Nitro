@@ -1443,18 +1443,24 @@ class ContractService {
 
     const applicationId = String((row as { applicationId?: string | null }).applicationId ?? '').trim();
     const plainBank = extractPlainBankFromContractUpdate(data as Record<string, unknown>);
+    let rowToReturn = row;
     if (plainBank && applicationId) {
       const paymentBank = (row as { paymentBank?: { id?: string } | null }).paymentBank;
       try {
         await syncContractPrefillToBankDetail(applicationId, plainBank, {
           bankDetailId: paymentBank?.id,
         });
+        const refreshed = await prisma.contract.findUnique({
+          where: { id },
+          include: contractInclude,
+        });
+        if (refreshed) rowToReturn = refreshed;
       } catch (err) {
         console.error('syncContractPrefillToBankDetail failed:', err);
       }
     }
 
-    return mapContractRecordForApi(row as Record<string, unknown>);
+    return mapContractRecordForApi(rowToReturn as Record<string, unknown>);
   }
 
   /**

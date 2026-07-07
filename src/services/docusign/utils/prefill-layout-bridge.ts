@@ -154,6 +154,15 @@ export function buildLayoutPrefillValueRecord(
     if (norm !== key) out[norm] = v;
     const layoutFromNorm = CRM_ID_TO_LAYOUT_VARIABLE[norm];
     if (layoutFromNorm) out[layoutFromNorm] = v;
+
+    if (!key.includes('_')) {
+      for (const existingKey of Object.keys(out)) {
+        if (!existingKey.includes('_')) continue;
+        if (existingKey.replace(/_/g, '') === key && !out[existingKey]) {
+          out[existingKey] = v;
+        }
+      }
+    }
   }
 
   return out;

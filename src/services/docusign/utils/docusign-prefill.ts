@@ -119,6 +119,14 @@ export function normalizeFieldKey(raw: string): string {
     .replace(/[^a-z0-9_]/g, '');
 }
 
+/** camelCase CRM prefill id → snake_case (DocuSign data label). */
+function camelCasePrefillIdToSnakeCase(raw: string): string {
+  return String(raw ?? '')
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase();
+}
+
 export function buildPrefillValueMap(
   fields: PrefillFieldInput[],
 ): Map<string, string> {
@@ -131,6 +139,12 @@ export function buildPrefillValueMap(
     if (!map.has(key)) map.set(key, value);
     const alt = key.replace(/_/g, '');
     if (!map.has(alt)) map.set(alt, value);
+    if (/[a-z][A-Z]/.test(id)) {
+      const snakeKey = normalizeFieldKey(camelCasePrefillIdToSnakeCase(id));
+      if (!map.has(snakeKey)) map.set(snakeKey, value);
+      const snakeAlt = snakeKey.replace(/_/g, '');
+      if (!map.has(snakeAlt)) map.set(snakeAlt, value);
+    }
   }
   for (const [aliasKey, fieldId] of Object.entries(CRM_LABEL_TO_FIELD_ID)) {
     const val = map.get(normalizeFieldKey(fieldId));

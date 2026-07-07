@@ -45,12 +45,13 @@ export const decisionLogicController = {
         next: NextFunction
     ) {
         try {
-            const { businessOwnerId, bankAccountId } = request.body;
+            const { businessOwnerId, bankAccountId, applicationId } = request.body;
 
             const { requestCode } =
                 await decisionLogicService.createAndVerifyRequest(
                     businessOwnerId,
-                    bankAccountId
+                    bankAccountId,
+                    applicationId,
                 );
 
             response.status(200).json({
