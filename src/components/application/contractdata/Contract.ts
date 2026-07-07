@@ -399,7 +399,7 @@ export function collectDocuSignTabIdsForPrefillKey(key: string): string[] {
     if (trimmed in FIELD_IDS) {
         return [...FIELD_IDS[trimmed as keyof typeof FIELD_IDS]];
     }
-    for (const tabIds of Object.values(FIELD_IDS)) {
+    for (const tabIds of Object.values(FIELD_IDS) as ReadonlyArray<readonly string[]>) {
         if (tabIds.includes(trimmed)) return [...tabIds];
     }
     return [trimmed];

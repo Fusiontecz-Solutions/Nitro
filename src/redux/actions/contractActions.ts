@@ -55,6 +55,8 @@ export interface UpdateContractData {
     } | null;
     clientEmail?: string | null;
     clientName?: string | null;
+    /** Specified purchase percentage (SPA); stored on the contract as a string. */
+    purchasePercent?: string | number | null;
 
     // Optional columns for extended BoldSign prefill fields (stored as strings).
     owner1GuarantorName?: string;
