@@ -93,6 +93,10 @@ export function getOperationsTabsForDashboardEntry(
       const eligIdx = full.findIndex((t) => t.id === "eligibility-analysis");
       return eligIdx >= 0 ? full.slice(0, eligIdx + 1) : [...full];
     }
+    case "Final_Approval": {
+      const end = TAB_INDEX.finalsAndFundingCall;
+      return end >= 0 ? full.slice(0, end + 1) : [...full];
+    }
     case "Reinitiate_Contract": {
       const end = TAB_INDEX.contract;
       return end >= 0 ? full.slice(0, end + 1) : [...full];
@@ -135,6 +139,8 @@ export function getOperationsPipelineStageTabId(
       return "contract";
     case "Contract_Signed":
     case "Signed_Contracts":
+      return "eligibility-analysis";
+    case "Final_Approval":
       return "eligibility-analysis";
     case "Reinitiate_Contract":
       return "contract";

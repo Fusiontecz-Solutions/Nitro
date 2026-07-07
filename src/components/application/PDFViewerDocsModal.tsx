@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "react-toastify";
 import { DocumentViewerPanel } from "@/components/documents/DocumentViewerPanel";
 import { isPdfMimeOrName, resolveClientPreviewMime } from "@/lib/documentPreview";
+import { cn } from "@/lib/utils";
 
 interface PDFViewerDocsModalProps {
     isOpen: boolean;
@@ -19,6 +20,8 @@ interface PDFViewerDocsModalProps {
     /** Public document portal token — fetches inline preview without CRM login. */
     publicPortalToken?: string;
     mimeTypeHint?: string;
+    overlayClassName?: string;
+    contentClassName?: string;
 }
 
 const PDFViewerDocsModal = ({
@@ -33,6 +36,8 @@ const PDFViewerDocsModal = ({
     preferDirectUrl = false,
     publicPortalToken,
     mimeTypeHint,
+    overlayClassName,
+    contentClassName,
 }: PDFViewerDocsModalProps) => {
     void onSendToBoldSign;
     void prefillFieldsPreview;
@@ -76,7 +81,10 @@ const PDFViewerDocsModal = ({
                 if (!open) onClose();
             }}
         >
-            <DialogContent className="flex h-[95vh] max-w-5xl flex-col p-0">
+            <DialogContent
+                className={cn("flex h-[95vh] max-w-5xl flex-col p-0", contentClassName)}
+                overlayClassName={overlayClassName}
+            >
                 <DialogHeader className="flex-row items-center justify-between space-y-0 p-3 pb-0">
                     <DialogTitle className="truncate pr-2 text-black dark:text-white">
                         {safeFileName}

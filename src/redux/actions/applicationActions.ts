@@ -802,6 +802,31 @@ export const deleteApplicationFile = createAsyncThunk(
     }
 );
 
+// Assign a document-request slug to an existing uploaded file
+export const assignApplicationFileDocumentType = createAsyncThunk(
+    'application/assignFileDocumentType',
+    async (
+        {
+            applicationId,
+            fileId,
+            requestedDocumentSlug,
+        }: { applicationId: string; fileId: string; requestedDocumentSlug: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPatch(`/applications/${applicationId}/files/${fileId}`, {
+                requestedDocumentSlug: requestedDocumentSlug.trim() || null,
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error('Assign file document type error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to assign document type',
+            );
+        }
+    },
+);
+
 /** Run Claude/Document AI extraction on a stored application PDF and merge into client fields. */
 export const fillApplicationFromPdfFile = createAsyncThunk(
     'application/fillApplicationFromPdfFile',

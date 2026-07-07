@@ -264,11 +264,13 @@ const RequiredDocument = ({
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false);
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null);
     const [pdfFileName, setPdfFileName] = useState<string>("Document");
+    const [pdfMimeTypeHint, setPdfMimeTypeHint] = useState<string>("");
 
     const handleClosePDFModal = () => {
         setIsPDFModalOpen(false);
         setPdfFileUrl(null);
         setPdfFileName("Document");
+        setPdfMimeTypeHint("");
     };
 
     const [, setUser] = useState<user>()
@@ -791,6 +793,7 @@ const RequiredDocument = ({
                                                                         onClick={() => {
                                                                             setPdfFileUrl(file.url ?? null);
                                                                             setPdfFileName((file.originalName ?? "Document") as string);
+                                                                            setPdfMimeTypeHint(String(file.mimeType || "").trim());
                                                                             setIsPDFModalOpen(true);
                                                                         }}
                                                                         title="View"
@@ -1377,6 +1380,7 @@ const RequiredDocument = ({
                 onClose={handleClosePDFModal}
                 fileUrl={pdfFileUrl}
                 fileName={pdfFileName}
+                mimeTypeHint={pdfMimeTypeHint}
             />
         </div>
     );

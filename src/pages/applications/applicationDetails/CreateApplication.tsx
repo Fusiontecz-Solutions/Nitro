@@ -154,6 +154,7 @@ const CreateApplication = () => {
     const [isFormReset, setIsFormReset] = useState(false)
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false)
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
+    const [pdfMimeTypeHint, setPdfMimeTypeHint] = useState<string>("")
     const [pdfFileName, setPdfFileName] = useState<string>('')
     const [isAutoCreatingClient, setIsAutoCreatingClient] = useState(false)
 
@@ -461,6 +462,7 @@ const CreateApplication = () => {
             const fileUrl = URL.createObjectURL(file.file)
             setPdfFileUrl(fileUrl)
             setPdfFileName(file.name)
+            setPdfMimeTypeHint(file.file.type || file.type || "")
             setIsPDFModalOpen(true)
         }
     }, [])
@@ -473,6 +475,7 @@ const CreateApplication = () => {
         }
         setPdfFileUrl(null)
         setPdfFileName('')
+        setPdfMimeTypeHint("")
     }, [pdfFileUrl])
 
     // Handle document submit (for edit mode - upload files separately)
@@ -1142,6 +1145,7 @@ const CreateApplication = () => {
                 onClose={handleClosePDFModal}
                 fileUrl={pdfFileUrl}
                 fileName={pdfFileName}
+                mimeTypeHint={pdfMimeTypeHint}
             />
         </div>
     )

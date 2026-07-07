@@ -8,18 +8,30 @@ export const FINAL_APPROVAL_SOURCE_BADGE_CLASS =
 type FinalApprovalSourceBadgeProps = {
     source?: Application["finalApprovalSource"];
     className?: string;
+    /** List/table: short label only. Detail views: "Sent from …". */
+    variant?: "default" | "compact";
 };
 
 export default function FinalApprovalSourceBadge({
     source,
     className,
+    variant = "default",
 }: FinalApprovalSourceBadgeProps) {
     const label = formatFinalApprovalSourceLabel(source);
     if (!label) return null;
 
+    const text = variant === "compact" ? label : `Sent from ${label}`;
+
     return (
-        <span className={cn(FINAL_APPROVAL_SOURCE_BADGE_CLASS, "truncate", className)}>
-            Sent from {label}
+        <span
+            className={cn(
+                FINAL_APPROVAL_SOURCE_BADGE_CLASS,
+                variant === "compact" ? "whitespace-nowrap" : "truncate",
+                className,
+            )}
+            title={text}
+        >
+            {text}
         </span>
     );
 }

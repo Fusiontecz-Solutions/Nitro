@@ -290,13 +290,6 @@ const dealPipelineSection: SidebarNavSection = {
       icon: FactCheck,
     },
     {
-      label: operationsDashboardStatusTitle("Final_Approval"),
-      url: "/applications",
-      operationsStatus: "Final_Approval",
-      icon: VerifiedUser,
-      pipelineAccent: "final",
-    },
-    {
       label: "Approve",
       url: "/applications",
       operationsStatus: "Approved",
@@ -341,6 +334,13 @@ const dealPipelineSection: SidebarNavSection = {
           pipelineAccent: "contract-signed",
         },
       ],
+    },
+    {
+      label: operationsDashboardStatusTitle("Final_Approval"),
+      url: "/applications",
+      operationsStatus: "Final_Approval",
+      icon: VerifiedUser,
+      pipelineAccent: "final",
     },
     {
       label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
@@ -564,12 +564,7 @@ const adminSections: SidebarNavSection[] = [
   },
 ];
 
-const superAdminDealPipelineSection: SidebarNavSection = {
-  ...dealPipelineSection,
-  items: dealPipelineSection.items.filter(
-    (item) => item.operationsStatus !== "Final_Approval",
-  ),
-};
+const superAdminDealPipelineSection: SidebarNavSection = dealPipelineSection;
 
 const superAdminSections: SidebarNavSection[] = [
   {

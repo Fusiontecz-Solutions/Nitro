@@ -1821,19 +1821,21 @@ const ApprovedApplicationModal = ({
                                 <div className="flex items-center gap-3">
                                     <Button
                                         type="button"
+                                        variant="destructive"
                                         onClick={handleSubmit((data) =>
                                             onSubmit(data, "Recommend Decline"),
                                         )}
-                                        className="bg-[#DC331D] hover:bg-[#DC331D]/90 cursor-pointer text-white px-6"
+                                        className="cursor-pointer px-6"
                                     >
                                         Recommend Decline
                                     </Button>
                                     <Button
                                         type="button"
+                                        variant="success"
                                         onClick={handleSubmit((data) =>
                                             onSubmit(data, "Recommend Approval"),
                                         )}
-                                        className="bg-green-600 hover:bg-green-700 cursor-pointer text-white px-6"
+                                        className="cursor-pointer px-6"
                                     >
                                         Recommend Approval
                                     </Button>
