@@ -94,7 +94,8 @@ export async function verifyDecisionLogicToken(token: string) {
 
 export async function generateDecisionLogicRequestCode(
   businessOwnerId: number,
-  bankAccountId: number
+  bankAccountId: number,
+  applicationId?: string | null,
 ) {
   try {
     const response = await fetch(`${baseUrl}/request-code`, {
@@ -105,6 +106,7 @@ export async function generateDecisionLogicRequestCode(
       body: JSON.stringify({
         businessOwnerId,
         bankAccountId,
+        ...(applicationId ? { applicationId } : {}),
       }),
     });
 
@@ -144,7 +146,8 @@ export async function generateDecisionLogicRequestCode(
 export async function generateDecisionLogicReport(
   requestCode: string,
   businessOwnerId: number,
-  bankAccountId: number
+  bankAccountId: number,
+  applicationId?: string | null,
 ) {
   try {
     const response = await fetch(`${baseUrl}/generate-report`, {
@@ -156,6 +159,7 @@ export async function generateDecisionLogicReport(
         requestCode: requestCode,
         businessOwnerId: businessOwnerId,
         bankAccountId: bankAccountId,
+        ...(applicationId ? { applicationId } : {}),
       }),
     });
 
@@ -184,6 +188,7 @@ export async function generateDecisionLogicReportWithRetry(
   requestCode: string,
   businessOwnerId: number,
   bankAccountId: number,
+  applicationId?: string | null,
 ) {
   let last: Awaited<ReturnType<typeof generateDecisionLogicReport>> | undefined;
 
@@ -192,6 +197,7 @@ export async function generateDecisionLogicReportWithRetry(
       requestCode,
       businessOwnerId,
       bankAccountId,
+      applicationId,
     );
     const err =
       last &&
@@ -223,10 +229,12 @@ export async function generateDecisionLogicReportWithRetry(
 export async function runDecisionLogicVerificationInApp(
   businessOwnerId: number,
   bankAccountId: number,
+  applicationId?: string | null,
 ) {
   const requestCodeRes = await generateDecisionLogicRequestCode(
     businessOwnerId,
     bankAccountId,
+    applicationId,
   );
   if ((requestCodeRes as { error?: string })?.error) {
     return {
@@ -245,6 +253,7 @@ export async function runDecisionLogicVerificationInApp(
     requestCode,
     businessOwnerId,
     bankAccountId,
+    applicationId,
   );
   if ((reportRes as { error?: string })?.error) {
     return {

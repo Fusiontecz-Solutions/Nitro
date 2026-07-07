@@ -900,12 +900,19 @@ const ApplicationDetails = () => {
                                             allowOfferEdit
                                             allowPositionsEdit
                                             onSummaryMetricsChange={handleSummaryMetricsChange}
-                                            betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) => (
+                                            betweenOfferAndPositions={({
+                                                componentsReadOnly,
+                                                onRegisterBankSaveAll,
+                                                applicationId: bankAppId,
+                                                positionsForBankTable,
+                                            }) => (
                                                 <BankAnalysisTable
                                                     disableDelete
                                                     disableCreate
                                                     readOnly={componentsReadOnly}
                                                     onRegisterSaveAll={onRegisterBankSaveAll}
+                                                    applicationId={bankAppId}
+                                                    positions={positionsForBankTable as any}
                                                 />
                                             )}
                                         />
@@ -1202,7 +1209,12 @@ const ApplicationDetails = () => {
                                                         />
                                                     ) : undefined
                                                 }
-                                                betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) =>
+                                                betweenOfferAndPositions={({
+                                                    componentsReadOnly,
+                                                    onRegisterBankSaveAll,
+                                                    applicationId: bankAppId,
+                                                    positionsForBankTable,
+                                                }) =>
                                                     isUnderwriter ||
                                                     roleKey === "OPERATIONS" ||
                                                     superAdminPipelineEditOverride ? (
@@ -1226,6 +1238,8 @@ const ApplicationDetails = () => {
                                                                         isOperationsReadOnlyPipelineTab))
                                                             }
                                                             onRegisterSaveAll={onRegisterBankSaveAll}
+                                                            applicationId={bankAppId}
+                                                            positions={positionsForBankTable as any}
                                                             autoSave={
                                                                 !(
                                                                     componentsReadOnly ||

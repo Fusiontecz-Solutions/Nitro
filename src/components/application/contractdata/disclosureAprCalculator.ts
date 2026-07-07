@@ -326,6 +326,15 @@ export function extractMonthlyRevenuesFromBankAnalyses(
         const rows = (analysis as { rows?: unknown })?.rows;
         if (!Array.isArray(rows)) continue;
         for (const row of rows) {
+            const monthLabel = String(
+                (row as { monthLabel?: unknown; month?: unknown })?.monthLabel ??
+                    (row as { month?: unknown })?.month ??
+                    "",
+            )
+                .trim()
+                .toLowerCase();
+            if (!monthLabel || monthLabel.includes("mtd")) continue;
+
             const totalCredit = parseMoney((row as { totalCredit?: unknown })?.totalCredit);
             const loanTransfer = parseMoney((row as { loanTransfer?: unknown })?.loanTransfer);
             const deposit = parseMoney((row as { deposit?: unknown })?.deposit);

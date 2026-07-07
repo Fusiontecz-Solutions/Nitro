@@ -11,6 +11,7 @@ import {
     resolvePaybackAmountDollars,
     resolvePersonalClientNamePrefill,
     resolveRemittancePrefillValue,
+    expandPrefillFieldsForDocuSign,
 } from "./Contract";
 import {
     buildBalanceTransferSheetContractPrefillFields,
@@ -1659,5 +1660,5 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         }
     }
 
-    return Array.from(byId.values());
+    return expandPrefillFieldsForDocuSign(Array.from(byId.values()));
 }

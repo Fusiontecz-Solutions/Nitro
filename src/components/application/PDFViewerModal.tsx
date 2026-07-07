@@ -103,6 +103,7 @@ import {
     type ContractPrefillField,
     normalizeDisclosureTemplateFrequencyKey,
     resolveDealDisclosureFrequencyKey,
+    expandPrefillFieldsForDocuSign,
 } from "./contractdata/Contract";
 import {
     applyAllianceBridgeContractPrefillToFields,
@@ -171,6 +172,8 @@ import {
     type TemplateMappingPrefillEditRow,
 } from "./contractdata/TemplateMappingPrefillEditDialog";
 import { DisclosureCalculationModal } from "./contractdata/DisclosureCalculationModal";
+import { SpaCalculationModal } from "./contractdata/SpaCalculationModal";
+import { persistCalculatedPurchasePercent } from "./contractdata/spaPrefillSync";
 import {
     buildDisclosureCalculatorInputsFromSources,
     extractMonthlyRevenuesFromBankAnalyses,
@@ -1394,10 +1397,12 @@ const PDFViewerModal = ({
     const [loadingTemplateMappings, setLoadingTemplateMappings] = useState(false);
     const [linkingDisclosureTemplate, setLinkingDisclosureTemplate] = useState(false);
     const [disclosureCalcModalOpen, setDisclosureCalcModalOpen] = useState(false);
+    const [spaCalcModalOpen, setSpaCalcModalOpen] = useState(false);
     const [disclosureCalcBankAnalyses, setDisclosureCalcBankAnalyses] = useState<unknown>(null);
     const [loadingDisclosureCalcBankAnalysis, setLoadingDisclosureCalcBankAnalysis] =
         useState(false);
     const [savingDisclosureCalculation, setSavingDisclosureCalculation] = useState(false);
+    const [savingSpaCalculation, setSavingSpaCalculation] = useState(false);
     const [previewingTemplateId, setPreviewingTemplateId] = useState<string | null>(null);
     const templatePreviewBlobUrlRef = useRef<string | null>(null);
     const inlinePreviewBlobUrlRef = useRef<string | null>(null);
@@ -4491,7 +4496,7 @@ const PDFViewerModal = ({
                 offerDecision: (offerDecisionData as Record<string, unknown> | null) ?? null,
             });
         }
-        return result;
+        return expandPrefillFieldsForDocuSign(result);
     }, [
         dealReviewFields,
         activeOwnerCount,
@@ -4676,6 +4681,86 @@ const PDFViewerModal = ({
             resolvedContract,
             applicationData,
             dispatch,
+            syncPrefillToDraftEnvelope,
+        ],
+    );
+
+    const applySpaCalculation = useCallback(
+        async (spa: string) => {
+            setSavingSpaCalculation(true);
+            try {
+                const result = await persistCalculatedPurchasePercent({
+                    dispatch,
+                    contractId: effectiveContractId,
+                    spa,
+                    persistedPrefillOverrides: contractPrefillLoaded ? contractPrefillFromDb : null,
+                    additionalContractPrefillJson: {
+                        [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]:
+                            documentTemplatePrefillByMappingId,
+                    },
+                });
+                if (!result.saved || !result.mainSaved) {
+                    toast.warn(
+                        "SPA calculated but could not save. Open a contract record and try again.",
+                    );
+                    return;
+                }
+                const main = result.mainSaved;
+                setContractPrefillFromDb(main);
+                setResolvedContract((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              ...contractPrefillToContractColumnUpdate(main),
+                              contractPrefillOverrides:
+                                  result.fullSaved != null
+                                      ? {
+                                            ...(typeof prev.contractPrefillOverrides === "object" &&
+                                            prev.contractPrefillOverrides != null &&
+                                            !Array.isArray(prev.contractPrefillOverrides)
+                                                ? (prev.contractPrefillOverrides as Record<
+                                                      string,
+                                                      unknown
+                                                  >)
+                                                : {}),
+                                            ...result.fullSaved,
+                                        }
+                                      : prev.contractPrefillOverrides,
+                          }
+                        : prev,
+                );
+                draftPreparedPrefillFingerprintRef.current = docuSignPrefillDraftFingerprint({
+                    contractPrefillOverrides: main,
+                    documentTemplatePrefillByMappingId,
+                });
+                queueMicrotask(() => {
+                    void syncPrefillToDraftEnvelope({
+                        mainPrefillOverrides: main,
+                        documentTemplatePrefillByMappingId,
+                    });
+                });
+                toast.success(`Specified percentage calculated and saved: ${spa}%`);
+                setSpaCalcModalOpen(false);
+            } catch (err: unknown) {
+                const msg =
+                    typeof err === "string"
+                        ? err
+                        : String(
+                              (err as { message?: string })?.message ||
+                                  "Failed to save specified percentage.",
+                          );
+                toast.error(msg);
+                throw err;
+            } finally {
+                setSavingSpaCalculation(false);
+            }
+        },
+        [
+            dispatch,
+            effectiveContractId,
+            contractPrefillLoaded,
+            contractPrefillFromDb,
+            documentTemplatePrefillByMappingId,
             syncPrefillToDraftEnvelope,
         ],
     );
@@ -8763,6 +8848,41 @@ const PDFViewerModal = ({
                                         </div>
 
                                         <div className="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700">
+                                            <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
+                                                <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/90 px-4 py-3 dark:border-slate-700 dark:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between">
+                                                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                                                        Deal Review
+                                                    </h3>
+                                                    {canEditContractPrefill ? (
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <Button
+                                                                type="button"
+                                                                variant="outline"
+                                                                size="sm"
+                                                                className="h-8 whitespace-nowrap bg-white dark:bg-slate-950"
+                                                                onClick={() => setSpaCalcModalOpen(true)}
+                                                            >
+                                                                <Calculator className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                                                                Calculate SPA
+                                                            </Button>
+                                                            <Button
+                                                                type="button"
+                                                                size="sm"
+                                                                className="h-8 whitespace-nowrap"
+                                                                onClick={() => setContractPrefillEditOpen(true)}
+                                                            >
+                                                                <ScrollText className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                                                                Edit prefill fields
+                                                            </Button>
+                                                        </div>
+                                                    ) : null}
+                                                </div>
+                                                <div className="space-y-4 px-4 py-3">
+                                                    <p className="text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                                                        CRM values for your DocuSign field labels. Use Edit prefill fields to
+                                                        adjust contract and linked addendum values before Review &amp; send.
+                                                    </p>
+
                                         <div className="space-y-4 border p-4 rounded-lg">
                                             <div className="flex items-center justify-between mb-1">
                                                 <span className="text-blue-600 font-bold text-[11px] uppercase">Contract Details</span>
@@ -8916,21 +9036,8 @@ const PDFViewerModal = ({
                                             )}
                                         </div>
 
-                                        {canEditContractPrefill ? (
-                                            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200/90 pt-4 dark:border-slate-600">
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    size="sm"
-                                                    className="h-8 border-[var(--brand)]/30 bg-white hover:bg-[var(--brand)]/5 dark:bg-slate-950"
-                                                    onClick={() => setContractPrefillEditOpen(true)}
-                                                >
-                                                    <ScrollText className="mr-1.5 h-3.5 w-3.5" aria-hidden />
-                                                    Edit prefill fields
-                                                </Button>
+                                                </div>
                                             </div>
-                                        ) : null}
-
                                         </div>
 
                                     </section>
@@ -9748,6 +9855,14 @@ const PDFViewerModal = ({
                 }
                 saving={savingDisclosureCalculation}
                 onApply={applyDisclosureCalculation}
+            />
+            <SpaCalculationModal
+                open={spaCalcModalOpen}
+                onOpenChange={setSpaCalcModalOpen}
+                applicationUuid={applicationIdForLookup}
+                offerDecision={(offerDecisionData as Record<string, unknown> | null) ?? null}
+                saving={savingSpaCalculation}
+                onApply={applySpaCalculation}
             />
         </>
     );

@@ -12,7 +12,7 @@ import { updateClient } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { updateContractGuarantor } from "@/redux/actions/contractActions";
-import { getBankDetails, updateBankDetail, createBankDetail } from "@/redux/actions/bankDetailActions";
+import { getBankDetails, updateBankDetail } from "@/redux/actions/bankDetailActions";
 import { axiosPost } from "@/redux/axios";
 import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
 
@@ -474,19 +474,10 @@ export async function syncContractPrefillToSourceRecords({
                     .unwrap()
                     .then(() => dispatch(getBankDetails({ application: appUuid })).unwrap()),
             );
-        } else if (bankPayload.accountNumber) {
-            tasks.push(
-                dispatch(
-                    createBankDetail({
-                        application: appUuid,
-                        bankName: bankPayload.bankName || "Bank",
-                        accountNumber: bankPayload.accountNumber,
-                        routingNumber: bankPayload.routingNumber,
-                    }),
-                )
-                    .unwrap()
-                    .then(() => dispatch(getBankDetails({ application: appUuid })).unwrap()),
-            );
+        } else {
+            // BankDetail create is handled server-side by syncContractPrefillToBankDetail
+            // during updateContract; only refresh the list here to avoid duplicate rows.
+            tasks.push(dispatch(getBankDetails({ application: appUuid })).unwrap());
         }
     }
 

@@ -11,6 +11,8 @@ export type DecisionTabSectionContext = {
   componentsReadOnly: boolean;
   /** Bulk-save hook for bank cards — wired to Approve & Save. */
   onRegisterBankSaveAll?: (saveAll: () => Promise<boolean>) => void;
+  applicationId?: string;
+  positionsForBankTable?: unknown[];
 };
 
 type DecisionMakeFinalValuesProps = {
@@ -274,6 +276,8 @@ export default function DecisionMakeFinalValues({
     onRegisterBankSaveAll: useDeferredSave
       ? handleRegisterSaveAllBanks
       : undefined,
+    applicationId: effectiveApplicationId ?? undefined,
+    positionsForBankTable: positionsForCalculator,
   };
 
   const betweenSection =

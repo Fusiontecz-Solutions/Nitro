@@ -22,9 +22,24 @@ export type BankTotalTableProps = {
   rows: BankTotalTableRow[];
   /** Pre-formatted cells; use "-" when averages do not apply (e.g. no divisor months). */
   average: BankTotalTableAverageCells;
+  /** When set, labels the average row as last N months (scrubbing window). */
+  averageMonthWindow?: number;
+  /** When set without averageMonthWindow, labels as all N months. */
+  averageMonthCount?: number;
 };
 
-export default function BankTotalTable({ rows, average }: BankTotalTableProps) {
+export default function BankTotalTable({
+  rows,
+  average,
+  averageMonthWindow,
+  averageMonthCount,
+}: BankTotalTableProps) {
+  let averageSubtitle = "(MTD not counted)";
+  if (averageMonthWindow != null && averageMonthWindow > 0) {
+    averageSubtitle = `(last ${averageMonthWindow} months, MTD not counted)`;
+  } else if (averageMonthCount != null && averageMonthCount > 0) {
+    averageSubtitle = `(all ${averageMonthCount} months, MTD not counted)`;
+  }
   return (
     <div className="w-full overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm dark:border-slate-700 dark:bg-[#141517]">
       <div className="border-b border-[#E2E8F0] bg-[#D9E9F6] px-5 py-3 dark:border-slate-700 dark:bg-[#2A2B2F]">
@@ -73,7 +88,7 @@ export default function BankTotalTable({ rows, average }: BankTotalTableProps) {
                     Average
                   </span>
                   <span className="mt-0.5 text-[11px] font-medium text-[#1d5f8a] dark:text-sky-300">
-                    (MTD not counted)
+                    {averageSubtitle}
                   </span>
                 </div>
               </td>

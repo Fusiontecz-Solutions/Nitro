@@ -4,6 +4,7 @@ import {
     resolveOfferFactorRate,
     resolveOfferPayback,
 } from "@/lib/offerRepaymentCalculations";
+import { resolveSpecifiedPurchasePercentFromScrubbing } from "@/lib/scrubbingSpecifiedPercent";
 import {
     applyAllianceBridgeContractPrefillToFields,
     shouldApplyAllianceBridgeContractPrefill,
@@ -390,6 +391,39 @@ const mapIds = (ids: readonly string[], label: string, value: string): ContractP
         value: normalizePrefillValueForUsFormat(id, trimmed),
     }));
 };
+
+/** Resolve CRM camelCase / saved override keys to DocuSign data label tab ids. */
+export function collectDocuSignTabIdsForPrefillKey(key: string): string[] {
+    const trimmed = String(key ?? "").trim();
+    if (!trimmed) return [];
+    if (trimmed in FIELD_IDS) {
+        return [...FIELD_IDS[trimmed as keyof typeof FIELD_IDS]];
+    }
+    for (const tabIds of Object.values(FIELD_IDS)) {
+        if (tabIds.includes(trimmed)) return [...tabIds];
+    }
+    return [trimmed];
+}
+
+/**
+ * DocuSign tabs use snake_case data labels; CRM prefill saves camelCase keys.
+ * Duplicate each value onto every matching DocuSign tab id before send/prefill.
+ */
+export function expandPrefillFieldsForDocuSign(
+    fields: Array<{ id: string; value: string }>,
+): Array<{ id: string; value: string }> {
+    const byId = new Map<string, { id: string; value: string }>();
+    for (const field of fields) {
+        const value = String(field.value ?? "").trim();
+        const id = String(field.id ?? "").trim();
+        if (!id || !value) continue;
+        if (!byId.has(id)) byId.set(id, { id, value });
+        for (const tabId of collectDocuSignTabIdsForPrefillKey(id)) {
+            if (!byId.has(tabId)) byId.set(tabId, { id: tabId, value });
+        }
+    }
+    return Array.from(byId.values());
+}
 
 /** BoldSign dropdowns require exact option text; CRM stores short codes (e.g. LLC). */
 function normalizeEntityTypeKey(raw: string): string {
@@ -2344,12 +2378,32 @@ function expandPrefillOverrideAliases(
     partial: Partial<BuildContractPrefillFieldsArgs>,
 ): Partial<BuildContractPrefillFieldsArgs> {
     const out = { ...partial } as Record<string, unknown>;
-    if (str(out.appendixUnderwritingFees)) return out as Partial<BuildContractPrefillFieldsArgs>;
-    for (const key of APPENDIX_FEE_OVERRIDE_ALIASES) {
-        const fee = str(out[key]);
-        if (fee) {
-            out.appendixUnderwritingFees = fee;
-            break;
+    if (str(out.appendixUnderwritingFees)) {
+        // fall through — still mirror camelCase ↔ snake_case below
+    } else {
+        for (const key of APPENDIX_FEE_OVERRIDE_ALIASES) {
+            const fee = str(out[key]);
+            if (fee) {
+                out.appendixUnderwritingFees = fee;
+                break;
+            }
+        }
+    }
+    for (const [camelKey, tabIds] of Object.entries(FIELD_IDS)) {
+        const value = str(out[camelKey]);
+        if (!value) continue;
+        for (const tabId of tabIds) {
+            if (!str(out[tabId])) out[tabId] = value;
+        }
+    }
+    for (const [camelKey, tabIds] of Object.entries(FIELD_IDS)) {
+        if (str(out[camelKey])) continue;
+        for (const tabId of tabIds) {
+            const value = str(out[tabId]);
+            if (value) {
+                out[camelKey] = value;
+                break;
+            }
         }
     }
     return out as Partial<BuildContractPrefillFieldsArgs>;
@@ -3689,6 +3743,11 @@ export function buildContractPrefillFieldsFromApplication(
         mainContractLayoutKey?: string | null;
         funderName?: string | null;
         contractState?: string | null;
+        scrubbingContext?: {
+            banks?: Array<{ rows?: Array<Record<string, unknown>> | null }> | null;
+            positions?: Array<Record<string, unknown>> | null;
+            offerMonthlyPayment?: number | null;
+        } | null;
     },
 ): ContractPrefillField[] {
     const rec = options?.contractRecords;
@@ -3774,6 +3833,27 @@ export function buildContractPrefillFieldsFromApplication(
         );
     }
     coerceNumericPrefillMoneyStrings(merged);
+    const manualSpa = Boolean(
+        (savedOverrides as Record<string, unknown>)._manualPurchasePercent,
+    );
+    if (
+        !manualSpa &&
+        !str(savedOverrides.purchasePercent) &&
+        !str(merged.purchasePercent)
+    ) {
+        const od = options?.offerDecision ?? null;
+        const offerMonthlyNum = coerceToFiniteNumber(od?.monthlyPayment);
+        const auto = options?.scrubbingContext
+            ? resolveSpecifiedPurchasePercentFromScrubbing({
+                  banks: options.scrubbingContext.banks,
+                  positions: options.scrubbingContext.positions,
+                  offerMonthlyPayment:
+                      options.scrubbingContext.offerMonthlyPayment ??
+                      (offerMonthlyNum !== undefined ? offerMonthlyNum : null),
+              })
+            : null;
+        if (auto) merged.purchasePercent = auto;
+    }
     if (!str(savedOverrides.purchasePercent)) {
         stripImpliedPurchasePercentFromOffer(merged, options?.offerDecision ?? null);
     }

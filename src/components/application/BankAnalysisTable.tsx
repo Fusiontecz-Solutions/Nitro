@@ -17,6 +17,7 @@ import type { BankAnalysis } from "@/types/bankAnalysisTypes";
 import { toast } from "react-toastify";
 import { formatInt, formatNumberUS, formatNumberUSForInput, normalizeApiDateToYyyyMmDd } from "@/lib/utils";
 import BankTotalTable from "@/components/application/BankTotalTable";
+import { SPA_SCRUBBER_SYNCED_EVENT } from "@/components/application/contractdata/spaScrubberSync";
 import type {
   BankTotalTableAverageCells,
   BankTotalTableRow,
@@ -195,7 +196,7 @@ const computeBankTotalForMonth = (bucket: MonthSummaryBucket): BankTotalMonth =>
 
   let avgDailyBlc: number | null = null;
   if (bucket.avgDailyBlcPositiveCount > 0 && bucket.avgDailyBlcSum > 0) {
-    avgDailyBlc = bucket.avgDailyBlcSum;
+    avgDailyBlc = bucket.avgDailyBlcSum / bucket.avgDailyBlcPositiveCount;
   } else if (netCredit !== null && netCredit > 0) {
     avgDailyBlc = netCredit / 30;
   }
@@ -286,8 +287,6 @@ function monthLabelSortKey(label: string): number {
     : Number.NEGATIVE_INFINITY;
 }
 
-/** Scrubbing / EST. Lvg uses average net credit from the last N full months (MTD excluded). */
-const AVG_REVENUE_MONTH_WINDOW = 3;
 
 /** Newest month first (same convention as default rows: current MTD, then prior full months). */
 function sortMonthlyRowsByMonthDesc(rows: MonthlyData[]): MonthlyData[] {
@@ -313,8 +312,21 @@ function labelForMonthBeforeOldest(sortedRowsDesc: MonthlyData[]): string {
   return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-/** First cell for average footer rows: bold “AVERAGE” with blue “(MTD not counted)” subtitle. */
-function BankAnalysisAverageFooterLabelCell() {
+/** First cell for average footer rows: bold “AVERAGE” with blue subtitle. */
+function BankAnalysisAverageFooterLabelCell({
+  monthWindow,
+  monthCount,
+}: {
+  /** When set, labels the row as a last-N-month scrubbing average. */
+  monthWindow?: number;
+  monthCount?: number;
+}) {
+  let subtitle = "(MTD not counted)";
+  if (monthWindow != null && monthWindow > 0) {
+    subtitle = `(last ${monthWindow} months, MTD not counted)`;
+  } else if (monthCount != null && monthCount > 0) {
+    subtitle = `(all ${monthCount} months, MTD not counted)`;
+  }
   return (
     <td className="px-4 py-3 align-middle bg-inherit">
       <div className="flex flex-col leading-snug">
@@ -322,7 +334,7 @@ function BankAnalysisAverageFooterLabelCell() {
           Average
         </span>
         <span className="mt-0.5 text-[11px] font-medium text-[#1d5f8a] dark:text-sky-300">
-          (MTD not counted)
+          {subtitle}
         </span>
       </div>
     </td>
@@ -449,74 +461,89 @@ const BankAnalysisTable = ({
   };
 
   // Load existing bank analysis data for this application
-  useEffect(() => {
-    const load = async () => {
-      if (!applicationId) {
+  const loadBankAnalysis = useCallback(async () => {
+    if (!applicationId) {
+      setIsInitialLoading(false);
+      return;
+    }
+    try {
+      const resp = await axiosGet(
+        `/bank-analysis?${new URLSearchParams({ application: applicationId }).toString()}`,
+      );
+      const payload = resp.data;
+      const list: BankAnalysis[] = payload?.data ?? payload ?? [];
+      if (!Array.isArray(list) || list.length === 0) {
         setIsInitialLoading(false);
         return;
       }
-      try {
-        const resp = await axiosGet(
-          `/bank-analysis?${new URLSearchParams({ application: applicationId }).toString()}`,
-        );
-        const payload = resp.data;
-        const list: BankAnalysis[] = payload?.data ?? payload ?? [];
-        if (!Array.isArray(list) || list.length === 0) {
-          setIsInitialLoading(false);
-          return;
-        }
 
-        setBanks(
-          list.map((item, index) => ({
-            id: index + 1,
-            backendId: item._id,
-            accountNumber: item.accountNumber || "",
-            accountHeaderLocked: Boolean(item.accountNumber?.trim()),
-            rows:
-              item.rows && item.rows.length > 0
-                ? sortMonthlyRowsByMonthDesc(
-                    item.rows.map((r) => {
-                      const backendNetCredit =
-                        (r.totalCredit || 0) -
-                        ((r.loanTransfer || 0) +
-                          (r.deposit || 0) +
-                          (r.other || 0));
-                      const autoAvgDailyBlc =
-                        backendNetCredit > 0 ? backendNetCredit / 30 : 0;
+      setBanks(
+        list.map((item, index) => ({
+          id: index + 1,
+          backendId: item._id,
+          accountNumber: item.accountNumber || "",
+          accountHeaderLocked: Boolean(item.accountNumber?.trim()),
+          rows:
+            item.rows && item.rows.length > 0
+              ? sortMonthlyRowsByMonthDesc(
+                  item.rows.map((r) => {
+                    const backendNetCredit =
+                      (r.totalCredit || 0) -
+                      ((r.loanTransfer || 0) +
+                        (r.deposit || 0) +
+                        (r.other || 0));
+                    const autoAvgDailyBlc =
+                      backendNetCredit > 0 ? backendNetCredit / 30 : 0;
 
-                      const mr: MonthlyData = {
-                        month: r.monthLabel,
-                        totalCredit: r.totalCredit ? String(r.totalCredit) : "",
-                        loanTransfer: r.loanTransfer
-                          ? String(r.loanTransfer)
+                    const mr: MonthlyData = {
+                      month: r.monthLabel,
+                      totalCredit: r.totalCredit ? String(r.totalCredit) : "",
+                      loanTransfer: r.loanTransfer
+                        ? String(r.loanTransfer)
+                        : "",
+                      deposit: r.deposit ? String(r.deposit) : "",
+                      other: r.other ? String(r.other) : "",
+                      nsfNegDays: r.nsfNegDays ? String(r.nsfNegDays) : "",
+                      lowBlcDays: r.lowBlcDays ? String(r.lowBlcDays) : "",
+                      avgDailyBlc: r.avgDailyBlc
+                        ? String(r.avgDailyBlc)
+                        : autoAvgDailyBlc > 0
+                          ? formatNumberUS(autoAvgDailyBlc)
                           : "",
-                        deposit: r.deposit ? String(r.deposit) : "",
-                        other: r.other ? String(r.other) : "",
-                        nsfNegDays: r.nsfNegDays ? String(r.nsfNegDays) : "",
-                        lowBlcDays: r.lowBlcDays ? String(r.lowBlcDays) : "",
-                        avgDailyBlc: r.avgDailyBlc
-                          ? String(r.avgDailyBlc)
-                          : autoAvgDailyBlc > 0
-                            ? formatNumberUS(autoAvgDailyBlc)
-                            : "",
-                        rowBackendId: (r as { _id?: string; id?: string })._id ?? (r as { _id?: string; id?: string }).id,
-                      };
-                      const locked = { ...mr, isLocked: hasAnyValue(mr) };
-                      return formatMoneyRowDisplay(locked);
-                    }),
-                  )
-                : createDefaultRows(),
-          })),
-        );
-      } catch (error) {
-        console.error("Failed to load bank analysis", error);
-      } finally {
-        setIsInitialLoading(false);
-      }
-    };
-
-    void load();
+                      rowBackendId: (r as { _id?: string; id?: string })._id ?? (r as { _id?: string; id?: string }).id,
+                    };
+                    const locked = { ...mr, isLocked: hasAnyValue(mr) };
+                    return formatMoneyRowDisplay(locked);
+                  }),
+                )
+              : createDefaultRows(),
+        })),
+      );
+    } catch (error) {
+      console.error("Failed to load bank analysis", error);
+    } finally {
+      setIsInitialLoading(false);
+    }
   }, [applicationId]);
+
+  useEffect(() => {
+    void loadBankAnalysis();
+  }, [loadBankAnalysis]);
+
+  useEffect(() => {
+    if (!applicationId || typeof window === "undefined") return;
+    const onSpaScrubberSynced = (event: Event) => {
+      const detail = (event as CustomEvent<{ applicationUuid?: string }>).detail;
+      if (String(detail?.applicationUuid ?? "").trim() !== String(applicationId).trim()) {
+        return;
+      }
+      void loadBankAnalysis();
+    };
+    window.addEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaScrubberSynced);
+    return () => {
+      window.removeEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaScrubberSynced);
+    };
+  }, [applicationId, loadBankAnalysis]);
 
   const monthSummary = useMemo(() => {
     const summary: Record<string, MonthSummaryBucket> = {};
@@ -568,10 +595,18 @@ const BankAnalysisTable = ({
     return summary;
   }, [banks, loanTransferAllocatedByBankAndMonth]);
 
-  /** Bank Total footer: MTD excluded; divisor = last 3 non-MTD months with core data (positions-only months omitted). */
+  /** Scrubbing / EST. Lvg / footer display: all non-MTD months with data. */
   const bankTotalAverages = useMemo(() => {
+    return computeBankTotalAveragesForMonths(banks, monthSummary, undefined);
+  }, [banks, monthSummary]);
+
+  function computeBankTotalAveragesForMonths(
+    bankTables: BankAnalysisInstance[],
+    summary: Record<string, MonthSummaryBucket>,
+    monthLimit?: number,
+  ) {
     const activeMonthSet = new Set<string>();
-    banks.forEach((table) => {
+    bankTables.forEach((table) => {
       (table.rows || []).forEach((row) => {
         const monthLabel = normalizeMonthLabelKey(row.month);
         if (!monthLabel || monthLabel.includes("mtd")) return;
@@ -585,16 +620,18 @@ const BankAnalysisTable = ({
       });
     });
 
-    const firstBankMonths = banks[0]?.rows.length
-      ? sortMonthlyRowsByMonthDesc(banks[0].rows).map((r) => r.month)
+    const firstBankMonths = bankTables[0]?.rows.length
+      ? sortMonthlyRowsByMonthDesc(bankTables[0].rows).map((r) => r.month)
       : [];
-    const activeBankTotalMonths = firstBankMonths
-      .filter((m) => {
-        const ml = normalizeMonthLabelKey(m);
-        if (!ml || ml.includes("mtd")) return false;
-        return activeMonthSet.has(ml);
-      })
-      .slice(0, AVG_REVENUE_MONTH_WINDOW);
+    const filteredMonths = firstBankMonths.filter((m) => {
+      const ml = normalizeMonthLabelKey(m);
+      if (!ml || ml.includes("mtd")) return false;
+      return activeMonthSet.has(ml);
+    });
+    const activeBankTotalMonths =
+      monthLimit != null && monthLimit > 0
+        ? filteredMonths.slice(0, monthLimit)
+        : filteredMonths;
 
     const n = activeBankTotalMonths.length;
     const acc = {
@@ -620,7 +657,7 @@ const BankAnalysisTable = ({
         totals.lowBlcDays > 0);
 
     for (const month of activeBankTotalMonths) {
-      const bucket = monthSummary[month];
+      const bucket = summary[month];
       const totals = bucket ? computeBankTotalForMonth(bucket) : null;
       const rowHasData = bankTotalRowHasData(totals);
 
@@ -665,7 +702,7 @@ const BankAnalysisTable = ({
       lowBlcDays: finish(acc.lowBlcDays),
       divisorMonths: n,
     };
-  }, [banks, monthSummary]);
+  }
 
   const hasBankTotalAverageRow = bankTotalAverages.divisorMonths > 0;
 
@@ -752,6 +789,7 @@ const BankAnalysisTable = ({
     return { rows, average };
   }, [baseMonths, monthSummary, isInitialLoading, bankTotalAverages, hasBankTotalAverageRow]);
 
+  /** Scrubbing / EST. Lvg denominator — all non-MTD months (matches footer). */
   const netCreditAvg = bankTotalAverages.netCredit;
 
   const lastEmittedNetCreditAvgRef = useRef<number | null | undefined>(undefined);
@@ -1783,7 +1821,7 @@ const BankAnalysisTable = ({
                   };
                   const R = sortMonthlyRowsByMonthDesc(
                     bank.rows.filter(isActiveNonMtdRow),
-                  ).slice(0, AVG_REVENUE_MONTH_WINDOW);
+                  );
                   const n = R.length;
 
                   const acc = {
@@ -1867,7 +1905,7 @@ const BankAnalysisTable = ({
 
                   return (
                     <tr className="bg-slate-100/80 text-sm font-semibold text-slate-800 dark:bg-slate-800/80 dark:text-slate-100">
-                      <BankAnalysisAverageFooterLabelCell />
+                      <BankAnalysisAverageFooterLabelCell monthCount={n} />
                       <td className="px-4 py-3 text-left">
                         {isInitialLoading
                           ? "Loading..."
@@ -1947,7 +1985,11 @@ const BankAnalysisTable = ({
         </div>
       ))}
 
-      <BankTotalTable rows={bankTotalTablePayload.rows} average={bankTotalTablePayload.average} />
+      <BankTotalTable
+        rows={bankTotalTablePayload.rows}
+        average={bankTotalTablePayload.average}
+        averageMonthCount={bankTotalAverages.divisorMonths}
+      />
       {fundingBreakdownModal && selectedBreakdownRow && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"

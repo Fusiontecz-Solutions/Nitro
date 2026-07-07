@@ -286,7 +286,7 @@ const BankAnalysis = ({
         }
     }, [applicationData, dispatch, requestedLoanAmountInput]);
 
-    /** Save requested amount, bank rows, and positions — triggered by Offer "Approve & Save". */
+    /** Save requested amount, bank rows, and positions — Offer "Approve & Save". */
     const handleApproveSaveAll = useCallback(async (): Promise<boolean> => {
         const loanOk = await persistRequestedLoanAmount();
         if (!loanOk) return false;

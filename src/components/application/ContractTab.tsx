@@ -91,6 +91,7 @@ import {
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
     resolveBalanceTransferMerchantContext,
+    expandPrefillFieldsForDocuSign,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
 } from "./contractdata/Contract";
@@ -2266,6 +2267,7 @@ export default function ContractTab({
                 agreementDate: formatDate(new Date()),
                 mainPrefillOverrides: mainPrefillForTemplates,
             });
+            prefillFieldsPayload = expandPrefillFieldsForDocuSign(prefillFieldsPayload);
 
             const contractNumericIdForSend = Number((latestContract as { id?: unknown })?.id);
             const resolvedFunderName =

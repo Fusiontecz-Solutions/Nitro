@@ -42,6 +42,7 @@ import {
 } from "@/lib/underwriterApprovalLabel";
 import type { AppDispatch, RootState } from "@/redux/store";
 import type { BankDetail } from "@/types/bankDetailTypes";
+import { filterBankDetailsForApplication } from "@/lib/bankDetailUtils";
 
 type OwnerRow = { id: number; label: string };
 type BankRow = { id: number; label: string };
@@ -121,11 +122,24 @@ export default function EligibilityAnalysis() {
       ),
     [applicationData]
   );
+  const applicationKeys = useMemo(
+    () => [
+      applicationRecordId,
+      paramApplicationId,
+      applicationData?.applicationId,
+      applicationData?.application?.applicationId,
+    ],
+    [applicationRecordId, paramApplicationId, applicationData],
+  );
+  const scopedBankDetailRows = useMemo(
+    () => filterBankDetailsForApplication(bankDetailRows, applicationKeys),
+    [bankDetailRows, applicationKeys],
+  );
   const clientOwnerId = useMemo(
     () => Number(applicationData?.client?.clientId ?? 0),
     [applicationData]
   );
-  const banks = useMemo(() => normalizeBanks(bankDetailRows), [bankDetailRows]);
+  const banks = useMemo(() => normalizeBanks(scopedBankDetailRows), [scopedBankDetailRows]);
   const bankOptions = useMemo(
     () =>
       banks.length
@@ -304,6 +318,7 @@ export default function EligibilityAnalysis() {
       const requestCodeRes = await generateDecisionLogicRequestCode(
         ownerId,
         parsedBankId,
+        applicationRecordId || null,
       );
       if ((requestCodeRes as { error?: string })?.error) {
         toast.update(toastId, {
@@ -330,6 +345,7 @@ export default function EligibilityAnalysis() {
         requestCode,
         ownerId,
         parsedBankId,
+        applicationRecordId || null,
       );
       if (response?.error) {
         toast.update(toastId, {
@@ -568,7 +584,15 @@ export default function EligibilityAnalysis() {
           )}
         </div>
       </div>
-      <Dialog open={bankDetailsDialogOpen} onOpenChange={setBankDetailsDialogOpen}>
+      <Dialog
+        open={bankDetailsDialogOpen}
+        onOpenChange={(open: boolean) => {
+          setBankDetailsDialogOpen(open);
+          if (!open && applicationRecordId) {
+            void dispatch(getBankDetails({ application: applicationRecordId }));
+          }
+        }}
+      >
         <DialogContent className="max-h-[90vh] max-w-lg gap-0 overflow-y-auto px-0 py-0 sm:max-w-2xl">
           <DialogHeader className="border-b border-[#E5E7EB] px-4 py-3">
             <DialogTitle className="text-sm font-semibold text-[#111827]">
