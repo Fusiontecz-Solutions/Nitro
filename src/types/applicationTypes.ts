@@ -138,6 +138,8 @@ export interface ApplicationFiles {
     uploadedAt?: string;
     type?: string;
     mimeType?: string;
+    requestedDocumentSlug?: string | null;
+    documentType?: string | null;
 }
 
 export interface CreateApplicationPayload {

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DocumentViewerPanel } from "@/components/documents/DocumentViewerPanel";
-import { isPdfMimeOrName } from "@/lib/documentPreview";
+import { isPdfMimeOrName, resolveClientPreviewMime } from "@/lib/documentPreview";
+import { getApplicationFileForRequiredDocumentKey } from "@/lib/documentRequestFulfillment";
 import { flushSync } from "react-dom";
 import {
     AlertCircle,
@@ -81,7 +82,7 @@ import {
     getByIdContract,
     type UpdateContractData,
 } from "@/redux/actions/contractActions";
-import { getApplicationById } from "@/redux/actions/applicationActions";
+import { getApplicationByApplicationId, getApplicationById } from "@/redux/actions/applicationActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import { toast } from "react-toastify";
 import {
@@ -1332,6 +1333,8 @@ const PDFViewerModal = ({
     const [syncingKycKey, setSyncingKycKey] = useState<RequiredDocumentKey | null>(null);
     const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
     const [uploadedPreviewName, setUploadedPreviewName] = useState<string>("Document");
+    const [uploadedPreviewMime, setUploadedPreviewMime] = useState<string>("");
+    const lastAutoPreviewKeyRef = useRef<string | null>(null);
     const [updatingUploadedFileId, setUpdatingUploadedFileId] = useState<string | null>(null);
     const [deletingUploadedFileId, setDeletingUploadedFileId] = useState<string | null>(null);
     const [openDocumentActionMenuId, setOpenDocumentActionMenuId] = useState<string | null>(null);
@@ -1806,8 +1809,30 @@ const PDFViewerModal = ({
             const key = normalizeDocumentTypeKey(rawType);
             if (key && !map.has(key)) map.set(key, file);
         }
+
+        const appFiles = Array.isArray(applicationData?.files) ? applicationData.files : [];
+        const requiredKeys: RequiredDocumentKey[] = ["driverLicense", "voidedCheck"];
+        for (const contractKey of requiredKeys) {
+            const normalizedKey = normalizeDocumentTypeKey(documentTypeByKey[contractKey]);
+            if (!normalizedKey || map.has(normalizedKey)) continue;
+
+            const appFile = getApplicationFileForRequiredDocumentKey(appFiles, contractKey);
+            if (!appFile) continue;
+
+            const url = String(appFile.url || "").trim();
+            if (!url) continue;
+
+            map.set(normalizedKey, {
+                id: String(appFile._id || (appFile as { id?: string }).id || ""),
+                fileName: appFile.originalName || "Uploaded",
+                fileUrl: url,
+                downloadUrl: url,
+                source: "application",
+            });
+        }
+
         return map;
-    }, [uploadedDocs]);
+    }, [uploadedDocs, applicationData?.files]);
     const addendumTemplateOptions = CONTRACT_ADDENDUM_DOCUMENT_OPTIONS;
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
@@ -3852,6 +3877,8 @@ const PDFViewerModal = ({
             try {
                 setLoadingInlinePreview(true);
                 let previewUrl = url;
+                let previewMime = resolveClientPreviewMime(fileName, url);
+
                 if (isCloudinaryAssetUrl(url)) {
                     const res = await axiosGet("/uploads/inline-preview", {
                         params: { url, name: fileName },
@@ -3862,9 +3889,13 @@ const PDFViewerModal = ({
                         typeof res.headers["content-type"] === "string"
                             ? res.headers["content-type"].split(";")[0]?.trim()
                             : "";
-                    const blob = new Blob([rawBlob], {
-                        type: headerCt || "application/pdf",
-                    });
+                    previewMime = resolveClientPreviewMime(
+                        fileName,
+                        url,
+                        rawBlob.type,
+                        headerCt,
+                    );
+                    const blob = new Blob([rawBlob], { type: previewMime });
                     revokeInlinePreviewBlob();
                     previewUrl = URL.createObjectURL(blob);
                     inlinePreviewBlobUrlRef.current = previewUrl;
@@ -3873,6 +3904,7 @@ const PDFViewerModal = ({
                 }
                 setActivePreview(null);
                 setUploadedPreviewName(fileName);
+                setUploadedPreviewMime(previewMime);
                 setUploadedPreviewUrl(previewUrl);
                 setPdfRightPaneTab("template");
             } catch (error: any) {
@@ -3886,6 +3918,72 @@ const PDFViewerModal = ({
         },
         [revokeInlinePreviewBlob],
     );
+
+    const previewUploadedRowFile = useCallback(
+        (uploadedFile: { fileUrl?: string; downloadUrl?: string; url?: string; fileName?: string; originalName?: string } | null | undefined, label: string) => {
+            const previewUrl = String(
+                uploadedFile?.fileUrl || uploadedFile?.downloadUrl || uploadedFile?.url || "",
+            ).trim();
+            if (!previewUrl) {
+                setDocumentUploadMessage("No preview URL found for this document.");
+                return;
+            }
+            const name = String(
+                uploadedFile?.fileName || uploadedFile?.originalName || label,
+            ).trim();
+            void previewDocumentInPane(previewUrl, name);
+        },
+        [previewDocumentInPane],
+    );
+
+    const uploadedRequiredDocsKey = useMemo(() => {
+        return requiredDocumentRows
+            .map(({ key }) => {
+                const file = uploadedDocumentByTypeKey.get(
+                    normalizeDocumentTypeKey(documentTypeByKey[key]),
+                );
+                return file ? `${key}:${String(file.id)}` : null;
+            })
+            .filter(Boolean)
+            .join("|");
+    }, [uploadedDocumentByTypeKey]);
+
+    useEffect(() => {
+        if (!isOpen || activeStep !== "documents") {
+            lastAutoPreviewKeyRef.current = null;
+            return;
+        }
+        if (!uploadedRequiredDocsKey) return;
+        if (lastAutoPreviewKeyRef.current === uploadedRequiredDocsKey) return;
+
+        let targetFile: {
+            fileUrl?: string;
+            downloadUrl?: string;
+            url?: string;
+            fileName?: string;
+            originalName?: string;
+        } | null = null;
+        let targetLabel = "Document";
+        for (const { key, label } of requiredDocumentRows) {
+            const file = uploadedDocumentByTypeKey.get(
+                normalizeDocumentTypeKey(documentTypeByKey[key]),
+            );
+            if (file) {
+                targetFile = file;
+                targetLabel = label;
+            }
+        }
+        if (!targetFile) return;
+
+        lastAutoPreviewKeyRef.current = uploadedRequiredDocsKey;
+        previewUploadedRowFile(targetFile, targetLabel);
+    }, [
+        isOpen,
+        activeStep,
+        uploadedRequiredDocsKey,
+        uploadedDocumentByTypeKey,
+        previewUploadedRowFile,
+    ]);
 
     const handlePreviewUploadedDocument = async (fileId: string) => {
         if (effectiveContractId == null || !fileId) return;
@@ -6361,8 +6459,9 @@ const PDFViewerModal = ({
               : effectiveContractPreviewName || fileName || "Contract.pdf";
 
     const useMultiFormatPreview = currentPreviewUrl !== effectiveContractPreviewUrl;
-    const useDirectPdfPreview =
-        !useMultiFormatPreview || isPdfMimeOrName("application/pdf", currentPreviewFileName);
+    const useDirectPdfPreview = useMultiFormatPreview
+        ? isPdfMimeOrName(uploadedPreviewMime, currentPreviewFileName)
+        : true;
 
     return (
         <>
@@ -6579,7 +6678,11 @@ const PDFViewerModal = ({
                                                         tabIndex={!isUploaded && !isUploading && !disabled ? 0 : -1}
                                                         aria-label={!isUploaded && !isUploading ? `Upload ${label}` : undefined}
                                                         onClick={() => {
-                                                            if (isUploaded || isUploading || disabled) return;
+                                                            if (isUploaded) {
+                                                                previewUploadedRowFile(uploadedFile, label);
+                                                                return;
+                                                            }
+                                                            if (isUploading || disabled) return;
                                                             inputRef.current?.click();
                                                         }}
                                                         onKeyDown={(e) => {
@@ -6617,7 +6720,7 @@ const PDFViewerModal = ({
                                                         className={cn(
                                                             "relative flex items-center justify-between rounded-2xl border px-3 py-2.5 transition-colors",
                                                             isUploaded
-                                                                ? "border-emerald-200 bg-emerald-50"
+                                                                ? "border-emerald-200 bg-emerald-50 cursor-pointer hover:bg-emerald-100/80"
                                                                 : isUploading
                                                                     ? "border-blue-200 bg-blue-50"
                                                                     : isDragOver
@@ -6702,61 +6805,80 @@ const PDFViewerModal = ({
                                                             )}
                                                             {isUploaded && (
                                                                 <>
-                                                                    <Button
-                                                                        type="button"
-                                                                        variant="ghost"
-                                                                        size="icon"
-                                                                        className="h-7 w-7 text-slate-600 hover:bg-slate-200/70 cursor-pointer"
-                                                                        aria-label="Document actions"
-                                                                        onClick={(e) => {
-                                                                            e.stopPropagation();
-                                                                            const fileId = String(uploadedFile?.id || "");
-                                                                            setOpenDocumentActionMenuId((prev) => (prev === fileId ? null : fileId));
-                                                                        }}
-                                                                    >
-                                                                        <MoreVertical className="h-4 w-4" />
-                                                                    </Button>
-                                                                    {openDocumentActionMenuId === String(uploadedFile?.id || "") && (
-                                                                        <div className="absolute right-2 top-10 z-[10000] w-32 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
-                                                                            <button
+                                                                    {uploadedFile?.source === "application" ? (
+                                                                        <Button
+                                                                            type="button"
+                                                                            variant="ghost"
+                                                                            size="icon"
+                                                                            className="h-7 w-7 text-slate-600 hover:bg-slate-200/70 cursor-pointer"
+                                                                            aria-label={`View ${label}`}
+                                                                            title={`View ${label}`}
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                previewUploadedRowFile(uploadedFile, label);
+                                                                            }}
+                                                                        >
+                                                                            <Eye className="h-4 w-4" />
+                                                                        </Button>
+                                                                    ) : (
+                                                                        <>
+                                                                            <Button
                                                                                 type="button"
-                                                                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50 cursor-pointer"
+                                                                                variant="ghost"
+                                                                                size="icon"
+                                                                                className="h-7 w-7 text-slate-600 hover:bg-slate-200/70 cursor-pointer"
+                                                                                aria-label="Document actions"
                                                                                 onClick={(e) => {
                                                                                     e.stopPropagation();
-                                                                                    setOpenDocumentActionMenuId(null);
-                                                                                    void handlePreviewUploadedDocument(String(uploadedFile?.id || ""));
+                                                                                    const fileId = String(uploadedFile?.id || "");
+                                                                                    setOpenDocumentActionMenuId((prev) => (prev === fileId ? null : fileId));
                                                                                 }}
                                                                             >
-                                                                                <Eye className="h-3.5 w-3.5" />
-                                                                                View
-                                                                            </button>
-                                                                            <button
-                                                                                type="button"
-                                                                                disabled={updatingUploadedFileId === String(uploadedFile?.id || "")}
-                                                                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                                                                                onClick={(e) => {
-                                                                                    e.stopPropagation();
-                                                                                    setOpenDocumentActionMenuId(null);
-                                                                                    handleEditUploadedDocument(String(uploadedFile?.id || ""));
-                                                                                }}
-                                                                            >
-                                                                                <Pencil className="h-3.5 w-3.5" />
-                                                                                Edit
-                                                                            </button>
-                                                                            <button
-                                                                                type="button"
-                                                                                disabled={deletingUploadedFileId === String(uploadedFile?.id || "")}
-                                                                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
-                                                                                onClick={(e) => {
-                                                                                    e.stopPropagation();
-                                                                                    setOpenDocumentActionMenuId(null);
-                                                                                    void handleDeleteUploadedDocument(String(uploadedFile?.id || ""));
-                                                                                }}
-                                                                            >
-                                                                                <Trash2 className="h-3.5 w-3.5" />
-                                                                                Delete
-                                                                            </button>
-                                                                        </div>
+                                                                                <MoreVertical className="h-4 w-4" />
+                                                                            </Button>
+                                                                            {openDocumentActionMenuId === String(uploadedFile?.id || "") && (
+                                                                                <div className="absolute right-2 top-10 z-[10000] w-32 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg">
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50 cursor-pointer"
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            setOpenDocumentActionMenuId(null);
+                                                                                            void handlePreviewUploadedDocument(String(uploadedFile?.id || ""));
+                                                                                        }}
+                                                                                    >
+                                                                                        <Eye className="h-3.5 w-3.5" />
+                                                                                        View
+                                                                                    </button>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        disabled={updatingUploadedFileId === String(uploadedFile?.id || "")}
+                                                                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            setOpenDocumentActionMenuId(null);
+                                                                                            handleEditUploadedDocument(String(uploadedFile?.id || ""));
+                                                                                        }}
+                                                                                    >
+                                                                                        <Pencil className="h-3.5 w-3.5" />
+                                                                                        Edit
+                                                                                    </button>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        disabled={deletingUploadedFileId === String(uploadedFile?.id || "")}
+                                                                                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            setOpenDocumentActionMenuId(null);
+                                                                                            void handleDeleteUploadedDocument(String(uploadedFile?.id || ""));
+                                                                                        }}
+                                                                                    >
+                                                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                                                        Delete
+                                                                                    </button>
+                                                                                </div>
+                                                                            )}
+                                                                        </>
                                                                     )}
                                                                 </>
                                                             )}
@@ -9393,6 +9515,7 @@ const PDFViewerModal = ({
                                             key={`${currentPreviewUrl}-${currentPreviewFileName}`}
                                             fileUrl={currentPreviewUrl}
                                             fileName={currentPreviewFileName}
+                                            mimeTypeHint={uploadedPreviewMime}
                                             className="absolute inset-0"
                                             minHeightClassName="min-h-full"
                                         />
@@ -9725,12 +9848,14 @@ const PDFViewerModal = ({
                 open={requestDocumentsModalOpen}
                 onOpenChange={setRequestDocumentsModalOpen}
                 onSuccess={() => {
-                    if (applicationIdForLookup) {
-                        void dispatch(
-                            getDocumentRequestsByApplication(
-                                businessApplicationId ?? applicationIdForLookup,
-                            ),
-                        );
+                    const refreshKey = businessApplicationId ?? applicationIdForLookup;
+                    if (refreshKey != null) {
+                        void dispatch(getDocumentRequestsByApplication(refreshKey));
+                        if (businessApplicationId != null) {
+                            void dispatch(getApplicationByApplicationId(String(businessApplicationId)));
+                        } else if (applicationIdForLookup) {
+                            void dispatch(getApplicationById(applicationIdForLookup));
+                        }
                     }
                 }}
             />

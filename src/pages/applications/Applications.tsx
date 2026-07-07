@@ -74,6 +74,8 @@ import { getClientByClientId } from "@/redux/actions/clientActions";
 import {
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
+  OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS,
+  inferOperationsListStatusFromApplication,
   operationsDashboardStatusTitle,
 } from "@/constants/operationsDashboardApplications";
 import {
@@ -134,7 +136,13 @@ import {
   resolveEffectiveRole,
 } from "@/lib/sessionRole";
 import { getApplicationApprovedAmount } from "@/lib/applicationOfferAmount";
-import { getReinitiateContractIsoDecisionLabel, isIsoUpdatedOfferApproved, applicationAwaitingContractReinitiation } from "@/lib/contractReinitiation";
+import {
+  getReinitiateContractIsoDecisionLabel,
+  isIsoUpdatedOfferApproved,
+  applicationAwaitingContractReinitiation,
+} from "@/lib/contractReinitiation";
+import { formatFinalApprovalSourceLabel } from "@/lib/finalApprovalSource";
+import FinalApprovalSourceBadge from "@/components/application/FinalApprovalSourceBadge";
 
 /** List/table: imported `dealId` when set, otherwise business `applicationId`. */
 function getApplicationDealIdDisplay(app: Application): string {
@@ -681,6 +689,14 @@ const Applications = () => {
     );
   }, [dashboardStateFilter, effectiveRoleKey]);
 
+  const showFinalApprovalSourceColumn = useMemo(() => {
+    const normalizedStatus = normalizeOperationsDashboardStatusParam(dashboardStateFilter);
+    return (
+      (effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS") &&
+      normalizedStatus === "Final_Approval"
+    );
+  }, [dashboardStateFilter, effectiveRoleKey]);
+
   // Define columns
   const columns: ColumnDef<Application>[] = useMemo(() => {
     const selectColumn: ColumnDef<Application> = {
@@ -909,6 +925,37 @@ const Applications = () => {
           },
         ] satisfies ColumnDef<Application>[])
         : []),
+      ...(showFinalApprovalSourceColumn
+        ? ([
+          {
+            id: "finalApprovalSource",
+            size: 150,
+            minSize: 130,
+            accessorFn: (row) =>
+              formatFinalApprovalSourceLabel(row.finalApprovalSource) ?? "",
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
+                Source
+              </span>
+            ),
+            cell: ({ row }) => {
+              const label = formatFinalApprovalSourceLabel(
+                row.original.finalApprovalSource,
+              );
+              if (!label) {
+                return <span className="text-foreground">-</span>;
+              }
+              return (
+                <FinalApprovalSourceBadge
+                  source={row.original.finalApprovalSource}
+                  variant="compact"
+                />
+              );
+            },
+            enableSorting: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       // {
       //     accessorKey: 'priority',
       //     header: ({ column }) => (
@@ -956,7 +1003,31 @@ const Applications = () => {
           <DataTableSortHeader column={column} label="Current State" />
         ),
         cell: ({ row }) => {
-          const queueLabel = getApplicationQueueLabel(row.original);
+          let queueLabel = getApplicationQueueLabel(row.original);
+
+          if (isOperationsDashboardView && dashboardStateFilter) {
+            const normalized = normalizeOperationsDashboardStatusParam(
+              dashboardStateFilter,
+            );
+            if (
+              normalized &&
+              OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS.has(normalized)
+            ) {
+              const inferred = inferOperationsListStatusFromApplication(
+                row.original.currentQueue ?? row.original.queue,
+                {
+                  explicitStatus: row.original.status,
+                  currentState:
+                    row.original.currentState ?? row.original.state,
+                },
+              );
+              if (inferred) {
+                queueLabel = operationsDashboardStatusTitle(inferred);
+              }
+            } else if (normalized) {
+              queueLabel = operationsDashboardStatusTitle(normalized);
+            }
+          }
 
           return (
             <span
@@ -1119,10 +1190,14 @@ const Applications = () => {
     showClaimedByColumn,
     showApprovedAmountColumn,
     showReinitiateContractIsoDecisionColumn,
+    showFinalApprovalSourceColumn,
     underwriterPoolTab,
     claimBusyAppId,
     handleUwClaimDeal,
     sessionRoleKey,
+    effectiveRoleKey,
+    isOperationsDashboardView,
+    dashboardStateFilter,
   ]);
 
   const totalItems = apiPagination?.total ?? applications?.length ?? 0;
@@ -1224,7 +1299,10 @@ const Applications = () => {
   ]);
 
   const listFetchParams = useMemo(
-    (): GetApplicationsParams => listRequestParamsForKey,
+    (): GetApplicationsParams => ({
+      ...listRequestParamsForKey,
+      clearListOnFetch: true,
+    }),
     [listRequestParamsForKey],
   );
 
@@ -2572,6 +2650,19 @@ const Applications = () => {
                             >
                               {getReinitiateContractIsoDecisionLabel(app)}
                             </span>
+                          </p>
+                        ) : null}
+                        {showFinalApprovalSourceColumn ? (
+                          <p>
+                            <span className="text-foreground/80">Source: </span>
+                            {formatFinalApprovalSourceLabel(app.finalApprovalSource) ? (
+                              <FinalApprovalSourceBadge
+                                source={app.finalApprovalSource}
+                                variant="compact"
+                              />
+                            ) : (
+                              <span className="text-foreground">-</span>
+                            )}
                           </p>
                         ) : null}
                         <p>

@@ -40,6 +40,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false)
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
     const [pdfFileName, setPdfFileName] = useState<string>("")
+    const [pdfMimeTypeHint, setPdfMimeTypeHint] = useState<string>("")
     const [fillingFileId, setFillingFileId] = useState<string | null>(null)
     const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -164,6 +165,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
         if (file.url) {
             setPdfFileUrl(file.url)
             setPdfFileName(file.originalName || "Document")
+            setPdfMimeTypeHint(String(file.mimeType || "").trim())
             setIsPDFModalOpen(true)
         } else {
             toast.error("File URL not available")
@@ -174,6 +176,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
         setIsPDFModalOpen(false)
         setPdfFileUrl(null)
         setPdfFileName("")
+        setPdfMimeTypeHint("")
     }
 
     const handleFillApplicationFromPdf = async (file: ApplicationFiles) => {
@@ -465,6 +468,7 @@ const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocument
                 onClose={handleClosePDFModal}
                 fileUrl={pdfFileUrl}
                 fileName={pdfFileName}
+                mimeTypeHint={pdfMimeTypeHint}
             />
         </Card >
     )

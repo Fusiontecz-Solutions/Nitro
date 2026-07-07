@@ -147,7 +147,7 @@ export async function resolveDocumentPreview(
         const response = await axiosGet(
             `/public/application/${encodeURIComponent(publicPortalToken)}/document-request/preview`,
             {
-                params: { url, name },
+                params: { url, name, ...(mimeTypeHint ? { mimeType: mimeTypeHint } : {}) },
                 responseType: "blob",
             },
         );
@@ -181,7 +181,7 @@ export async function resolveDocumentPreview(
 
     if (isCloudinaryAssetUrl(url)) {
         const response = await axiosGet("/uploads/inline-preview", {
-            params: { url, name },
+            params: { url, name, ...(mimeTypeHint ? { mimeType: mimeTypeHint } : {}) },
             responseType: "blob",
         });
         const rawBlob = response.data as Blob;

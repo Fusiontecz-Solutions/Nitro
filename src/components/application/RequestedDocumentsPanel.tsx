@@ -46,7 +46,7 @@ export function RequestedDocumentsPanel({
         (state: RootState) => state.documentRequests,
     );
     const [uploadingSlug, setUploadingSlug] = useState<string | null>(null);
-    const [previewModal, setPreviewModal] = useState<{ url: string; name: string } | null>(null);
+    const [previewModal, setPreviewModal] = useState<{ url: string; name: string; mimeType?: string } | null>(null);
     const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
     const handleViewDocument = useCallback(
@@ -60,7 +60,7 @@ export function RequestedDocumentsPanel({
             if (onViewDocument) {
                 onViewDocument(url, name);
             } else {
-                setPreviewModal({ url, name });
+                setPreviewModal({ url, name, mimeType: doc.mimeType });
             }
         },
         [onViewDocument],
@@ -254,6 +254,7 @@ export function RequestedDocumentsPanel({
                 onClose={() => setPreviewModal(null)}
                 fileUrl={previewModal?.url}
                 fileName={previewModal?.name}
+                mimeTypeHint={previewModal?.mimeType}
             />
         </div>
     );
