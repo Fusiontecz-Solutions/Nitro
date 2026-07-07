@@ -108,6 +108,8 @@ class UploadController {
             const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
             const nameParam =
                 typeof req.query.name === 'string' ? req.query.name.trim() : '';
+            const mimeTypeHint =
+                typeof req.query.mimeType === 'string' ? req.query.mimeType.trim() : '';
 
             const validationError = assertAllowedCloudinaryUrl(rawUrl);
             if (validationError) {
@@ -117,7 +119,7 @@ class UploadController {
                 });
             }
 
-            await streamCloudinaryInlinePreview(res, rawUrl, nameParam);
+            await streamCloudinaryInlinePreview(res, rawUrl, nameParam, mimeTypeHint || undefined);
             return;
         } catch (error) {
             console.error('streamInlinePreview error:', error);

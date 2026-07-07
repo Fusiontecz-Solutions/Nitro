@@ -428,6 +428,21 @@ class NotificationController {
                     });
                     if (!firstNotification) firstNotification = created;
                 }
+            } else if (documentsArray.length > 0 || requestAdditional) {
+                // No distinct internal recipient (e.g. request emailed to an ISO for an
+                // application with no linked agent/rep). The public document-request portal
+                // builds its checklist from these notification records, so persist the
+                // request against the sender to avoid an empty "No document requests found"
+                // portal. Mark it read + archived so it stays out of the sender's inbox.
+                firstNotification = await prisma.notification.create({
+                    data: {
+                        ...notificationData,
+                        recipientId: String(createdBy),
+                        isRead: true,
+                        readAt: new Date(),
+                        isArchived: true,
+                    },
+                });
             }
 
             const appUpdateData: { note?: string; currentQueue?: string; currentState?: string } = {};

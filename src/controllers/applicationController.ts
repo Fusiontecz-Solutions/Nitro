@@ -104,6 +104,7 @@ import {
 import { createPublicPortalToken } from '../services/publicPortalTokenService';
 import { syncTermsOfferFromOfferDecision } from '../services/syncTermsOfferFromOfferDecision';
 import { fetchPaginatedApplicationsForList } from '../services/applicationListSort';
+import { buildApplicationListSearchWhere } from '../services/applicationListSearch';
 import {
     createApplicationActivityLog,
     getApplicationActivityLogsForUser,
@@ -1474,6 +1475,126 @@ class ApplicationController {
         }
     }
 
+    // Tag an uploaded file with a document-request slug (used when matching CRM uploads to requests).
+    async updateFileDocumentType(req: Request, res: Response) {
+        try {
+            const { id, fileId } = req.params;
+            const requestedDocumentSlug = String(
+                (req.body as { requestedDocumentSlug?: string | null })?.requestedDocumentSlug ?? '',
+            )
+                .trim()
+                .toLowerCase();
+
+            if (!fileId || !id) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'ID is required',
+                });
+            }
+
+            const { getDocumentRequestConfig } = await import('../constants/documentRequestTypes');
+            if (requestedDocumentSlug && !getDocumentRequestConfig(requestedDocumentSlug)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid document type',
+                });
+            }
+
+            const authUser = getAuthenticatedUser(req);
+            const { application, forbidden } = await getApplicationForUser(
+                { id },
+                authUser,
+                { files: true },
+            );
+
+            if (forbidden) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Forbidden: you do not have access to this application',
+                });
+            }
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (blockIfUnderwriterUnclaimedDeal(res, authUser, application)) {
+                return;
+            }
+
+            const file = application.files?.find((f: { id: string }) => f.id === fileId);
+            if (!file) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'File not found',
+                });
+            }
+
+            if (requestedDocumentSlug) {
+                await prisma.applicationFile.updateMany({
+                    where: {
+                        applicationId: application.id,
+                        requestedDocumentSlug,
+                        NOT: { id: fileId },
+                    },
+                    data: { requestedDocumentSlug: null },
+                });
+            }
+
+            await prisma.applicationFile.update({
+                where: { id: fileId },
+                data: {
+                    requestedDocumentSlug: requestedDocumentSlug || null,
+                },
+            });
+
+            if (requestedDocumentSlug && authUser?.id) {
+                try {
+                    const { notifyRequestersDocumentReceived } = await import(
+                        '../services/documentRequestFulfillmentService'
+                    );
+                    await notifyRequestersDocumentReceived({
+                        applicationUuid: application.id,
+                        documentSlug: requestedDocumentSlug,
+                        uploadedByUserId: String(authUser.id),
+                    });
+                } catch (notifyErr) {
+                    console.error('Failed to notify document request fulfillment:', notifyErr);
+                }
+            }
+
+            const applicationIdForLookup = /^\d+$/.test(id) ? { applicationId: Number(id) } : { id };
+            const updatedApplicationRecord = await prisma.application.findUnique({
+                where: applicationIdForLookup,
+                include: {
+                    referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+                    client: true,
+                    iso: true,
+                    files: true,
+                },
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: requestedDocumentSlug
+                    ? 'Document type assigned successfully'
+                    : 'Document type cleared',
+                data: updatedApplicationRecord ? mapApplicationToApi(updatedApplicationRecord) : null,
+            });
+        } catch (error: unknown) {
+            console.error('Update file document type error:', error);
+            return res.status(500).json({
+                success: false,
+                message: error instanceof Error ? error.message : 'Internal server error',
+            });
+        }
+    }
+
     // Remove file from application
     async removeFile(req: Request, res: Response) {
         try {
@@ -1816,22 +1937,18 @@ class ApplicationController {
             }
 
             if (search) {
-                const searchStr = String(search);
-                where.OR = [
-                    { type: { contains: searchStr, mode: 'insensitive' } },
-                    { note: { contains: searchStr, mode: 'insensitive' } },
-                    {
-                        client: {
-                            OR: [
-                                { businessName: { contains: searchStr, mode: 'insensitive' } },
-                                { businessEmail: { contains: searchStr, mode: 'insensitive' } },
-                                { ownerFirstName: { contains: searchStr, mode: 'insensitive' } },
-                                { ownerLastName: { contains: searchStr, mode: 'insensitive' } },
-                                { ownerEmail: { contains: searchStr, mode: 'insensitive' } },
-                            ],
-                        },
-                    },
-                ];
+                const searchWhere = buildApplicationListSearchWhere(String(search));
+                if (Object.keys(searchWhere).length > 0) {
+                    const existingAnd = where.AND
+                        ? Array.isArray(where.AND)
+                            ? where.AND
+                            : [where.AND]
+                        : [];
+                    where = {
+                        ...where,
+                        AND: [...existingAnd, searchWhere],
+                    };
+                }
             }
 
             if (

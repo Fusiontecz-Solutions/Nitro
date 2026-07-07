@@ -457,12 +457,21 @@ export function underwriterPipelineMatchWhere(): Prisma.ApplicationWhereInput {
     };
 }
 
-/** Final approval — underwriter must approve before contract automation. */
+/** Final approval — admin-sent from Decision Logic or Funding Call; awaiting UW sign-off. */
 export function finalApprovalPipelineMatchWhere(): Prisma.ApplicationWhereInput {
     return {
-        OR: [
-            { currentQueue: { in: [...FINAL_APPROVAL_QUEUE_STRICT] } },
-            { currentState: { in: FINAL_APPROVAL_STATE_STRICT } },
+        AND: [
+            {
+                finalApprovalSource: {
+                    in: ['Decision Logic', 'Funding Call'],
+                },
+            },
+            {
+                OR: [
+                    { currentQueue: { in: [...FINAL_APPROVAL_QUEUE_STRICT] } },
+                    { currentState: { in: FINAL_APPROVAL_STATE_STRICT } },
+                ],
+            },
         ],
     };
 }
