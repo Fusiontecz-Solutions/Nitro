@@ -386,9 +386,6 @@ export function TemplateMappingPrefillEditDialog({
                                                 className="text-xs font-medium"
                                             >
                                                 {r.label}
-                                                <span className="text-muted-foreground ml-1 font-mono font-normal">
-                                                    ({r.id})
-                                                </span>
                                             </Label>
                                             <Input
                                                 id={`tmpl-field-${r.id}`}

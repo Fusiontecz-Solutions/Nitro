@@ -39,6 +39,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import {
+    applyCanonicalBankFieldsToPrefill,
     applyLiveBankDetailsToPrefillMerge,
     applyLiveOfferSyncToPrefillPartial,
     applyOwnerRowsToPrefillMerge,
@@ -803,15 +804,26 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "securityGuarantor",
             "exhibitOwnerName",
             "addendumDatedPrincipalOwner",
+            "addendumDatedPrincipalOwner1Name",
             "owner1GuarantorName",
             "guarantyOwner1Name",
             "guarantyGuarantor1Name",
         ],
     },
     {
+        id: "clientEmail",
+        label: "Client / guarantor email",
+        keys: ["clientEmail", "guarantorEmail"],
+    },
+    {
         id: "businessPhone",
-        label: "Business phone",
-        keys: ["clientPhone", "authorizedBusinessPhone", "achAuthorizationAccountHolderPhone"],
+        label: "Business / guarantor phone",
+        keys: [
+            "clientPhone",
+            "authorizedBusinessPhone",
+            "achAuthorizationAccountHolderPhone",
+            "guarantorPhone",
+        ],
     },
     {
         id: "street",
@@ -821,6 +833,8 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "businessAddressContract",
             "securityBusinessAddress",
             "achAuthorizationAccountHolderAddress",
+            "guarantorAddress",
+            "addendumDatedBusinessLocation",
         ],
     },
     {
@@ -831,6 +845,7 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "businessAddressContractCity",
             "securityBusinessAddressCity",
             "achAuthorizationAccountHolderCity",
+            "guarantorAddressCity",
         ],
     },
     {
@@ -841,6 +856,8 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "businessAddressContractState",
             "securityBusinessAddressState",
             "achAuthorizationAccountHolderState",
+            "guarantorAddressState",
+            "addendumDatedPrincipalState",
         ],
     },
     {
@@ -851,6 +868,7 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "businessAddressContractZip",
             "securityBusinessAddressZip",
             "achAuthorizationAccountHolderZip",
+            "guarantorAddressZip",
         ],
     },
     {
@@ -862,19 +880,6 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
         id: "paybackAmount",
         label: "Payback amount",
         keys: ["purchasePrice", "addendumDatedPrincipalOwnerAmount2"],
-    },
-    {
-        id: "owner1Name",
-        label: "Owner 1 name",
-        keys: [
-            "owner1GuarantorName",
-            "guarantyClientName",
-            "guarantyOwner1Name",
-            "guarantyGuarantor1Name",
-            "addendumDatedPrincipalOwner1Name",
-            "customerName",
-            "clientName",
-        ],
     },
     {
         id: "owner2Name",
@@ -928,7 +933,6 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
 
 /** Owner-party groups mirrored on every keystroke (Client ↔ Owner ↔ Guarantor per index). */
 const OWNER_PARTY_REALTIME_MIRROR_GROUP_IDS = new Set([
-    "owner1Name",
     "owner2Name",
     "clientName",
     "ssn",
@@ -947,6 +951,18 @@ const PREFILL_REALTIME_MIRROR_BY_KEY = (() => {
     }
     return map;
 })();
+
+/** Prefer a filled field on the active stage; otherwise reuse any filled sibling in the group. */
+function resolvePrefillSyncSourceKey(
+    group: PrefillSyncGroup,
+    keysInSection: Set<string>,
+    values: Record<keyof BuildContractPrefillFieldsArgs, string>,
+): ContractPrefillFormFieldKey | undefined {
+    const isFilled = (k: ContractPrefillFormFieldKey) => String(values[k] ?? "").trim() !== "";
+    const inSection = group.keys.find((k) => keysInSection.has(k) && isFilled(k));
+    if (inSection) return inSection;
+    return group.keys.find((k) => isFilled(k));
+}
 
 function trimField(values: Record<keyof BuildContractPrefillFieldsArgs, string>, key: keyof BuildContractPrefillFieldsArgs) {
     return String(values[key] ?? "").trim();
@@ -1751,12 +1767,14 @@ export function ContractPrefillEditForm({
         setSaving(true);
         try {
             const rawPayload = toPayload(values);
-            const payload = finalizeContractPrefillMoneyFields(rawPayload, {
-                application: applicationData as Record<string, unknown> | undefined,
-                contract: contractRecords?.contract ?? null,
-                offerDecision: offerDecision ?? null,
-                prefill: rawPayload,
-            });
+            const payload = applyCanonicalBankFieldsToPrefill(
+                finalizeContractPrefillMoneyFields(rawPayload, {
+                    application: applicationData as Record<string, unknown> | undefined,
+                    contract: contractRecords?.contract ?? null,
+                    offerDecision: offerDecision ?? null,
+                    prefill: rawPayload,
+                }),
+            );
             const extras =
                 additionalContractPrefillJson && typeof additionalContractPrefillJson === "object"
                     ? { ...additionalContractPrefillJson }
@@ -1861,6 +1879,10 @@ export function ContractPrefillEditForm({
                     offerDecision,
                     contractGuarantors: contractRecords?.guarantors ?? null,
                     bankDetail: contractRecords?.bankDetail ?? null,
+                    contract:
+                        (updatedContract as Record<string, unknown> | null) ??
+                        contractRecords?.contract ??
+                        null,
                 });
                 onSourceRecordsSynced?.();
             } catch (syncErr) {
@@ -1985,8 +2007,8 @@ export function ContractPrefillEditForm({
     );
 
     /**
-     * Push the current stage's shared values (EIN, routing, address, names, …) to the matching
-     * fields on every other stage so the user does not retype the same value section by section.
+     * Push shared values (EIN, routing, address, names, …) across every contract stage.
+     * Uses the current stage when filled; otherwise reuses the best value found anywhere on the form.
      */
     const handleSyncSectionToAll = () => {
         if (readOnly || !activeSection) return;
@@ -1995,11 +2017,11 @@ export function ContractPrefillEditForm({
             !showSecondPartyFields && (owner2KeySet.has(k) || guarantor2KeySet.has(k));
         const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {};
         const syncedLabels: string[] = [];
+        const groupsWithSource: string[] = [];
         for (const group of PREFILL_SYNC_GROUPS) {
-            const sourceKey = group.keys.find(
-                (k) => keysInSection.has(k) && String(values[k] ?? "").trim() !== "",
-            );
+            const sourceKey = resolvePrefillSyncSourceKey(group, keysInSection, values);
             if (!sourceKey) continue;
+            groupsWithSource.push(group.label);
             const value = String(values[sourceKey] ?? "");
             let changed = false;
             for (const k of group.keys) {
@@ -2012,13 +2034,20 @@ export function ContractPrefillEditForm({
             if (changed) syncedLabels.push(group.label);
         }
         if (!syncedLabels.length) {
-            toast.info("Fill a shared field on this stage first, then sync.");
+            if (!groupsWithSource.length) {
+                toast.info("Fill at least one shared field (name, address, EIN, bank, …), then sync.");
+            } else {
+                toast.info("Shared fields are already synced across all stages.");
+            }
             return;
         }
-        setValues((prev) => ({ ...prev, ...updates }));
+        const normalizedUpdates = applyCanonicalBankFieldsToPrefill(
+            updates as Partial<BuildContractPrefillFieldsArgs>,
+        ) as Partial<Record<keyof BuildContractPrefillFieldsArgs, string>>;
+        setValues((prev) => ({ ...prev, ...normalizedUpdates }));
         setFieldErrors((prev) => {
             const next = { ...prev };
-            for (const k of Object.keys(updates) as (keyof BuildContractPrefillFieldsArgs)[]) {
+            for (const k of Object.keys(normalizedUpdates) as (keyof BuildContractPrefillFieldsArgs)[]) {
                 delete next[k];
             }
             return next;
@@ -2141,9 +2170,9 @@ export function ContractPrefillEditForm({
                                                 size="sm"
                                                 onClick={handleSyncSectionToAll}
                                                 disabled={saving}
-                                                title={`Copy this stage's shared fields (${activeSectionSyncGroups
+                                                title={`Copy shared fields (${activeSectionSyncGroups
                                                     .map((g) => g.label)
-                                                    .join(", ")}) to every other stage`}
+                                                    .join(", ")}) across every contract section`}
                                                 className="h-8 shrink-0 gap-1.5 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                             >
                                                 <CopyCheck className="h-3.5 w-3.5" aria-hidden />
@@ -2157,7 +2186,7 @@ export function ContractPrefillEditForm({
                                             <span className="font-medium text-slate-600 dark:text-slate-300">
                                                 {activeSectionSyncGroups.map((g) => g.label).join(", ")}
                                             </span>
-                                            . Fill them once here, then click “Sync to all”.
+                                            . Sync copies matching values across every section (uses data already on the form).
                                         </p>
                                     ) : null}
                                 </div>
@@ -2265,9 +2294,6 @@ export function ContractPrefillEditForm({
                                                             className="text-xs font-medium"
                                                         >
                                                             {r.label}
-                                                            <span className="text-muted-foreground ml-1 font-mono font-normal">
-                                                                ({r.id})
-                                                            </span>
                                                         </Label>
                                                         <Input
                                                             id={`addendum-prefill-${r.id}`}

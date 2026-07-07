@@ -3627,6 +3627,11 @@ const PDFViewerModal = ({
             const refreshTasks: Promise<unknown>[] = [];
             if (documentType === "voidedCheck") {
                 refreshTasks.push(dispatch(getAllACH({ contractId })).unwrap());
+                if (applicationIdForLookup) {
+                    refreshTasks.push(
+                        dispatch(getBankDetails({ application: applicationIdForLookup })).unwrap(),
+                    );
+                }
             }
             if (documentType === "driverLicense") {
                 refreshTasks.push(
@@ -3647,7 +3652,7 @@ const PDFViewerModal = ({
                 );
             }
         },
-        [dispatch],
+        [dispatch, applicationIdForLookup],
     );
 
     const handleSyncKycExtraction = useCallback(
@@ -8758,16 +8763,6 @@ const PDFViewerModal = ({
                                         </div>
 
                                         <div className="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700">
-                                            <div>
-                                                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                                                    Deal Review
-                                                </h3>
-                                                <p className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
-                                                    CRM values for your DocuSign field labels. Use Edit prefill fields to
-                                                    adjust contract and linked addendum values before Review &amp; send.
-                                                </p>
-                                            </div>
-
                                         <div className="space-y-4 border p-4 rounded-lg">
                                             <div className="flex items-center justify-between mb-1">
                                                 <span className="text-blue-600 font-bold text-[11px] uppercase">Contract Details</span>
@@ -9699,6 +9694,7 @@ const PDFViewerModal = ({
                 contractSignerOverrides={effectiveContractSignerRows}
                 onSourceRecordsSynced={() => {
                     if (applicationIdForLookup) {
+                        void dispatch(getApplicationById(applicationIdForLookup));
                         void dispatch(getBankDetails({ application: applicationIdForLookup }));
                     }
                 }}

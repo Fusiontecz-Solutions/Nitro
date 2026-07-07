@@ -24,7 +24,8 @@ import DecisionLogicInfo from "@/components/client/decision-logic/decision-logic
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import {
   fetchDecisionLogicReport,
-  initiateDecisionLogic,
+  generateDecisionLogicReportWithRetry,
+  generateDecisionLogicRequestCode,
 } from "@/redux/actions/decision-logic-actions";
 import { uploadAndDownloadCsv } from "@/redux/actions/automatedBankStatementActions";
 import {
@@ -287,24 +288,65 @@ export default function EligibilityAnalysis() {
     }
     setIsDecisionLogicModalOpen(false);
     if (parsedBankId === 0) {
-      toast.info("Using demo bank account for now.");
+      toast.info("Add a bank account in Bank Details before running Decision Logic.");
       return;
     }
 
+    const ownerId = clientOwnerId || owners[0]?.id || 0;
+    if (!ownerId) {
+      toast.error("Client id is missing for this application.");
+      return;
+    }
+
+    const toastId = toast.loading("Running Decision Logic verification…");
     try {
       setIsSubmittingDecisionLogic(true);
-      const ownerId = clientOwnerId || owners[0]?.id || 0;
-      if (!ownerId) {
-        toast.error("Client id is missing for this application.");
+      const requestCodeRes = await generateDecisionLogicRequestCode(
+        ownerId,
+        parsedBankId,
+      );
+      if ((requestCodeRes as { error?: string })?.error) {
+        toast.update(toastId, {
+          render: String((requestCodeRes as { error?: string }).error),
+          type: "error",
+          isLoading: false,
+          autoClose: 5000,
+        });
         return;
       }
-      const response: any = await initiateDecisionLogic(ownerId, ownerId, parsedBankId);
+      const requestCode = String(
+        (requestCodeRes as { requestCode?: string })?.requestCode ?? "",
+      ).trim();
+      if (!requestCode) {
+        toast.update(toastId, {
+          render: "Request code was not returned by the server.",
+          type: "error",
+          isLoading: false,
+          autoClose: 5000,
+        });
+        return;
+      }
+      const response = await generateDecisionLogicReportWithRetry(
+        requestCode,
+        ownerId,
+        parsedBankId,
+      );
       if (response?.error) {
-        toast.error(response.error);
+        toast.update(toastId, {
+          render: response.error,
+          type: "error",
+          isLoading: false,
+          autoClose: 5000,
+        });
         return;
       }
 
-      toast.success(response?.message || "Decision Logic initiated successfully.");
+      toast.update(toastId, {
+        render: "Decision Logic report loaded.",
+        type: "success",
+        isLoading: false,
+        autoClose: 3000,
+      });
       setReportFetchNonce((n) => n + 1);
     } finally {
       setIsSubmittingDecisionLogic(false);
@@ -547,10 +589,13 @@ export default function EligibilityAnalysis() {
         <DialogContent className="max-w-[440px] gap-0 px-0 py-0">
           <DialogHeader className="border-b border-[#E5E7EB] px-4 py-3">
             <DialogTitle className="text-sm font-semibold text-[#111827]">
-              Decision Logic Request
+              Run Decision Logic
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-2 px-4 py-3">
+            <p className="text-xs leading-relaxed text-[#6B7280]">
+              Uses the bank account on file to verify instantly. No email is sent to the client.
+            </p>
             <label className="text-xs text-[#374151]">Selected Bank Account</label>
             <Select value={selectedBankAccountId} onValueChange={setSelectedBankAccountId}>
               <SelectTrigger className="h-8 w-full text-xs">
@@ -581,7 +626,7 @@ export default function EligibilityAnalysis() {
               onClick={() => void processDecisionLogicRequest(selectedBankAccountId)}
               disabled={isSubmittingDecisionLogic || !selectedBankAccountId}
             >
-              {isSubmittingDecisionLogic ? "Submitting..." : "Submit"}
+              {isSubmittingDecisionLogic ? "Running…" : "Run verification"}
             </Button>
           </DialogFooter>
         </DialogContent>

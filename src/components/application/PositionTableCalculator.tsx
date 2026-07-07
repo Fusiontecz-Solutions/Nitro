@@ -1635,20 +1635,31 @@ export default function PositionTableCalculator({
       return false;
     });
 
-    const existingRemit = rowsForExistingRemitAndMonthly.reduce((sum, row) => {
-      const remitNum = parseNum(row.mcaRemit);
-      return sum + (Number.isNaN(remitNum) ? 0 : remitNum);
-    }, 0);
-
     const totalMonthlyFromPositions = rowsForExistingRemitAndMonthly.reduce(
       (sum, row) => {
-        const monthlyNum = parseNum(row.monthlyMcaPmts);
+        const monthlyNum = getMonthlyMcaPmtsForRemit(row);
         return sum + (Number.isNaN(monthlyNum) ? 0 : monthlyNum);
       },
       0,
     );
     const totalDailyFromPositions =
       totalMonthlyFromPositions > 0 ? totalMonthlyFromPositions / 22 : 0;
+
+    const avgNetCreditNum = parseAvgNetCredit(avgBankNetCredit);
+    const hasValidAvg =
+      !Number.isNaN(avgNetCreditNum) && avgNetCreditNum > 0;
+
+    const existingRemitFromRows = rowsForExistingRemitAndMonthly.reduce(
+      (sum, row) => {
+        const remitNum = parseNum(row.mcaRemit);
+        return sum + (Number.isNaN(remitNum) ? 0 : remitNum);
+      },
+      0,
+    );
+    const existingRemit =
+      hasValidAvg && totalMonthlyFromPositions > 0
+        ? (totalMonthlyFromPositions / avgNetCreditNum) * 100
+        : existingRemitFromRows;
 
     const positionsForTotals = rows.filter((row) => {
       const status = String(row.status || "")
@@ -1695,14 +1706,17 @@ export default function PositionTableCalculator({
       (sum, row) => sum + (parseNum(row.pmtsLeft) || 0),
       0,
     );
-    const mcaRemitSum = positionsForTotals.reduce(
-      (sum, row) => sum + (parseNum(row.mcaRemit) || 0),
-      0,
-    );
-    const monthlyMcaPmtsSum = positionsForTotals.reduce(
-      (sum, row) => sum + (parseNum(row.monthlyMcaPmts) || 0),
-      0,
-    );
+    const monthlyMcaPmtsSum = positionsForTotals.reduce((sum, row) => {
+      const monthlyNum = getMonthlyMcaPmtsForRemit(row);
+      return sum + (Number.isNaN(monthlyNum) ? 0 : monthlyNum);
+    }, 0);
+    const mcaRemitSum =
+      hasValidAvg && monthlyMcaPmtsSum > 0
+        ? (monthlyMcaPmtsSum / avgNetCreditNum) * 100
+        : positionsForTotals.reduce(
+            (sum, row) => sum + (parseNum(row.mcaRemit) || 0),
+            0,
+          );
 
     return {
       activeCount: rowsActiveForCount.length,
@@ -1720,7 +1734,7 @@ export default function PositionTableCalculator({
       mcaRemitSum,
       monthlyMcaPmtsSum,
     };
-  }, [rows]);
+  }, [rows, avgBankNetCredit]);
 
   // Surface metrics to parent if requested, but only when they actually change
   const lastMetricsRef = useRef<PositionTableMetrics | null>(null);

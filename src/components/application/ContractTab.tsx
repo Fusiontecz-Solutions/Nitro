@@ -3034,31 +3034,6 @@ export default function ContractTab({
 
                     </div>
                     <div className="flex items-center gap-3">
-                        {hasGeneratedContract && showRegenerateContractButton ? (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => void handleViewContract()}
-                                disabled={
-                                    creatingEnvelope ||
-                                    regeneratingContract ||
-                                    viewingSignedContract
-                                }
-                                className={`h-10 px-6 font-medium disabled:opacity-70 disabled:cursor-not-allowed ${isDark
-                                    ? "border-[#C07BE0] text-[#C07BE0] hover:bg-[#C07BE0]/10"
-                                    : "border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
-                                    }`}
-                            >
-                                {viewingSignedContract ? (
-                                    <span className="inline-flex items-center gap-2">
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                        Opening contract...
-                                    </span>
-                                ) : (
-                                    "View Contract"
-                                )}
-                            </Button>
-                        ) : null}
                         <Button
                             type="button"
                             variant="default"

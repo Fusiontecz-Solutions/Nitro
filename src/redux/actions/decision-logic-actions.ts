@@ -177,6 +177,88 @@ export async function generateDecisionLogicReport(
   }
 }
 
+const REPORT_FETCH_ATTEMPTS = 4;
+
+/** Retry when DL report is not ready immediately after request-code creation. */
+export async function generateDecisionLogicReportWithRetry(
+  requestCode: string,
+  businessOwnerId: number,
+  bankAccountId: number,
+) {
+  let last: Awaited<ReturnType<typeof generateDecisionLogicReport>> | undefined;
+
+  for (let attempt = 0; attempt < REPORT_FETCH_ATTEMPTS; attempt++) {
+    last = await generateDecisionLogicReport(
+      requestCode,
+      businessOwnerId,
+      bankAccountId,
+    );
+    const err =
+      last &&
+      typeof last === "object" &&
+      "error" in last &&
+      typeof (last as { error?: string }).error === "string"
+        ? (last as { error: string }).error
+        : "";
+    if (!err) {
+      return last;
+    }
+    const soft = /not ready|pending|timeout|429|502|503|504|temporar|try again|empty|network|fetch/i.test(
+      err.toLowerCase(),
+    );
+    if (!soft || attempt === REPORT_FETCH_ATTEMPTS - 1) {
+      return last;
+    }
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 1200 * (attempt + 1));
+    });
+  }
+  return last;
+}
+
+/**
+ * Ops-initiated flow: create request code from CRM bank details and fetch the report
+ * without emailing the client a hosted link.
+ */
+export async function runDecisionLogicVerificationInApp(
+  businessOwnerId: number,
+  bankAccountId: number,
+) {
+  const requestCodeRes = await generateDecisionLogicRequestCode(
+    businessOwnerId,
+    bankAccountId,
+  );
+  if ((requestCodeRes as { error?: string })?.error) {
+    return {
+      error: String((requestCodeRes as { error?: string }).error),
+    };
+  }
+
+  const requestCode = String(
+    (requestCodeRes as { requestCode?: string })?.requestCode ?? "",
+  ).trim();
+  if (!requestCode) {
+    return { error: "Request code was not returned by the server." };
+  }
+
+  const reportRes = await generateDecisionLogicReportWithRetry(
+    requestCode,
+    businessOwnerId,
+    bankAccountId,
+  );
+  if ((reportRes as { error?: string })?.error) {
+    return {
+      error: String((reportRes as { error?: string }).error),
+      requestCode,
+    };
+  }
+
+  return {
+    requestCode,
+    report: reportRes,
+  };
+}
+
 export async function fetchDecisionLogicReport(
   clientId: number,
   ownerId: number

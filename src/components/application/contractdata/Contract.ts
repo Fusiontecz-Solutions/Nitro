@@ -805,6 +805,60 @@ export const LIVE_BANK_PREFILL_KEYS = [
     "achAuthorizationAccountHolderBankRoutingNumber",
 ] as const;
 
+function coalescePlainBankField(...values: unknown[]): string {
+    for (const value of values) {
+        const s = str(value);
+        if (s && !s.startsWith("enc:v1:")) return s;
+    }
+    return "";
+}
+
+/**
+ * Resolve bank name / account / routing from Authorization or ACH prefill keys (whichever is filled).
+ */
+export function resolveCanonicalBankFromPrefill(
+    prefill: Partial<BuildContractPrefillFieldsArgs> | Record<string, unknown>,
+): { bankName: string; accountNumber: string; routingNumber: string } {
+    const row = prefill as Partial<BuildContractPrefillFieldsArgs>;
+    return {
+        bankName: coalescePlainBankField(
+            row.authorizationClientBankName,
+            row.achAuthorizationAccountHolderBankName,
+        ),
+        accountNumber: coalescePlainBankField(
+            row.authorizationClientBankAccount,
+            row.achAuthorizationAccountHolderBankAccountNumber,
+        ),
+        routingNumber: coalescePlainBankField(
+            row.authorizationClientBankRouting,
+            row.achAuthorizationAccountHolderBankRoutingNumber,
+        ),
+    };
+}
+
+/** Mirror canonical bank values onto every Authorization + ACH prefill key before save/sync. */
+export function applyCanonicalBankFieldsToPrefill(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const { bankName, accountNumber, routingNumber } = resolveCanonicalBankFromPrefill(partial);
+    if (!bankName && !accountNumber && !routingNumber) return partial;
+
+    const out = { ...partial };
+    if (bankName) {
+        out.authorizationClientBankName = bankName;
+        out.achAuthorizationAccountHolderBankName = bankName;
+    }
+    if (accountNumber) {
+        out.authorizationClientBankAccount = accountNumber;
+        out.achAuthorizationAccountHolderBankAccountNumber = accountNumber;
+    }
+    if (routingNumber) {
+        out.authorizationClientBankRouting = routingNumber;
+        out.achAuthorizationAccountHolderBankRoutingNumber = routingNumber;
+    }
+    return out;
+}
+
 export function applyLiveBankDetailsToPrefillMerge<T extends Record<string, unknown>>(
     defaults: Partial<BuildContractPrefillFieldsArgs>,
     merged: T,
@@ -3264,6 +3318,10 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         securityBusinessAddressCity: businessCity,
         securityBusinessAddressState: businessState,
         securityBusinessAddressZip: businessZip,
+        achAuthorizationAccountHolderAddress: businessAddress,
+        achAuthorizationAccountHolderCity: businessCity,
+        achAuthorizationAccountHolderState: businessState,
+        achAuthorizationAccountHolderZip: businessZip,
         securityGuarantor: ownerName || customerName || legalName,
         clientEmail: String(
             r.businessEmail ||

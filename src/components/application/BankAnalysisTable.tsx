@@ -286,6 +286,9 @@ function monthLabelSortKey(label: string): number {
     : Number.NEGATIVE_INFINITY;
 }
 
+/** Scrubbing / EST. Lvg uses average net credit from the last N full months (MTD excluded). */
+const AVG_REVENUE_MONTH_WINDOW = 3;
+
 /** Newest month first (same convention as default rows: current MTD, then prior full months). */
 function sortMonthlyRowsByMonthDesc(rows: MonthlyData[]): MonthlyData[] {
   return [...rows].sort((a, b) => {
@@ -565,7 +568,7 @@ const BankAnalysisTable = ({
     return summary;
   }, [banks, loanTransferAllocatedByBankAndMonth]);
 
-  /** Bank Total footer: MTD excluded; divisor = non-MTD months that have core data in at least one bank (positions-only months omitted). */
+  /** Bank Total footer: MTD excluded; divisor = last 3 non-MTD months with core data (positions-only months omitted). */
   const bankTotalAverages = useMemo(() => {
     const activeMonthSet = new Set<string>();
     banks.forEach((table) => {
@@ -585,11 +588,13 @@ const BankAnalysisTable = ({
     const firstBankMonths = banks[0]?.rows.length
       ? sortMonthlyRowsByMonthDesc(banks[0].rows).map((r) => r.month)
       : [];
-    const activeBankTotalMonths = firstBankMonths.filter((m) => {
-      const ml = normalizeMonthLabelKey(m);
-      if (!ml || ml.includes("mtd")) return false;
-      return activeMonthSet.has(ml);
-    });
+    const activeBankTotalMonths = firstBankMonths
+      .filter((m) => {
+        const ml = normalizeMonthLabelKey(m);
+        if (!ml || ml.includes("mtd")) return false;
+        return activeMonthSet.has(ml);
+      })
+      .slice(0, AVG_REVENUE_MONTH_WINDOW);
 
     const n = activeBankTotalMonths.length;
     const acc = {
@@ -1776,7 +1781,9 @@ const BankAnalysisTable = ({
                       hasEnteredNumericValue(row.avgDailyBlc)
                     );
                   };
-                  const R = bank.rows.filter(isActiveNonMtdRow);
+                  const R = sortMonthlyRowsByMonthDesc(
+                    bank.rows.filter(isActiveNonMtdRow),
+                  ).slice(0, AVG_REVENUE_MONTH_WINDOW);
                   const n = R.length;
 
                   const acc = {

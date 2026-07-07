@@ -1,5 +1,9 @@
 import type { ClientUpdatePayload, OwnerDetail } from "@/types/clientTypes";
 import type { BuildContractPrefillFieldsArgs } from "./Contract";
+import {
+    applyCanonicalBankFieldsToPrefill,
+    resolveCanonicalBankFromPrefill,
+} from "./Contract";
 import type { UpdateBankDetailPayload } from "@/types/bankDetailTypes";
 import { parseNumberUS } from "@/lib/utils";
 import type { AppDispatch } from "@/redux/store";
@@ -8,7 +12,7 @@ import { updateClient } from "@/redux/actions/clientActions";
 import { resetUpdateClient } from "@/redux/slices/clientSlice";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { updateContractGuarantor } from "@/redux/actions/contractActions";
-import { getBankDetails, updateBankDetail } from "@/redux/actions/bankDetailActions";
+import { getBankDetails, updateBankDetail, createBankDetail } from "@/redux/actions/bankDetailActions";
 import { axiosPost } from "@/redux/axios";
 import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
 
@@ -41,8 +45,13 @@ export function resolveClientIdFromApplication(anyApp: unknown): string | null {
     const a = anyApp as Record<string, unknown> | null | undefined;
     if (!a) return null;
     const client = a.client as Record<string, unknown> | undefined;
-    const id = client?.id ?? client?._id;
-    return id != null && str(id) ? String(id) : null;
+    const fromClient = client?.id ?? client?._id;
+    if (fromClient != null && str(fromClient)) return String(fromClient);
+    const fromApp = a.clientId;
+    if (fromApp != null && str(fromApp) && !/^\d+$/.test(String(fromApp))) {
+        return String(fromApp);
+    }
+    return null;
 }
 
 function splitPersonName(full: string): { firstName: string; lastName: string } {
@@ -110,10 +119,12 @@ function emptyOwnerDetail(): OwnerDetail {
 
 function resolveOwner1NameFromPrefill(prefill: Partial<BuildContractPrefillFieldsArgs>): string {
     return (
+        str(prefill.customerName) ||
+        str(prefill.clientName) ||
+        str(prefill.owner1GuarantorName) ||
         str(prefill.guarantyClientName) ||
         str(prefill.guarantyOwner1Name) ||
-        str(prefill.guarantyGuarantor1Name) ||
-        str(prefill.customerName)
+        str(prefill.guarantyGuarantor1Name)
     );
 }
 
@@ -226,7 +237,21 @@ export function buildClientUpdateFromPrefill(
         business.email = str(prefill.clientEmail);
         if (!str(owners[0]!.email)) owners[0]!.email = str(prefill.clientEmail);
     }
-    if (str(prefill.clientPhone)) business.number = str(prefill.clientPhone);
+    if (str(prefill.clientPhone)) {
+        business.number = str(prefill.clientPhone);
+        if (!str(owners[0]!.mobileNumber)) {
+            owners[0]!.mobileNumber = str(prefill.clientPhone);
+        }
+    }
+    if (str(prefill.authorizedBusinessPhone) && !str(business.number)) {
+        business.number = str(prefill.authorizedBusinessPhone);
+    }
+    if (str(prefill.guarantorPhone) && owners[0] && !str(owners[0].mobileNumber)) {
+        owners[0].mobileNumber = str(prefill.guarantorPhone);
+    }
+    if (str(prefill.guarantorEmail) && owners[0] && !str(owners[0].email)) {
+        owners[0].email = str(prefill.guarantorEmail);
+    }
     if (str(prefill.businessAddress)) business.address!.address1 = str(prefill.businessAddress);
     if (str(prefill.businessAddressCity)) business.address!.city = str(prefill.businessAddressCity);
     if (str(prefill.businessAddressState)) business.address!.state = str(prefill.businessAddressState);
@@ -283,10 +308,18 @@ export function buildOfferDecisionUpsertFromPrefill(
     return payload;
 }
 
-function resolveBankDetailId(bankDetail: Record<string, unknown> | null | undefined): string | null {
-    if (!bankDetail) return null;
-    const id = bankDetail._id ?? bankDetail.id;
-    return id != null && str(id) ? String(id) : null;
+function resolveBankDetailId(
+    bankDetail: Record<string, unknown> | null | undefined,
+    contract?: Record<string, unknown> | null,
+): string | null {
+    const fromRow = bankDetail?._id ?? bankDetail?.id;
+    if (fromRow != null && str(fromRow)) return String(fromRow);
+    const paymentBank = contract?.paymentBank as Record<string, unknown> | null | undefined;
+    const fromPayment = paymentBank?._id ?? paymentBank?.id;
+    if (fromPayment != null && str(fromPayment)) return String(fromPayment);
+    const fromContract = contract?.paymentBankId;
+    if (fromContract != null && str(fromContract)) return String(fromContract);
+    return null;
 }
 
 /**
@@ -296,15 +329,10 @@ function resolveBankDetailId(bankDetail: Record<string, unknown> | null | undefi
 export function buildBankDetailUpdateFromPrefill(
     prefill: Partial<BuildContractPrefillFieldsArgs>,
 ): UpdateBankDetailPayload | null {
-    const bankName =
-        str(prefill.authorizationClientBankName) ||
-        str(prefill.achAuthorizationAccountHolderBankName);
-    const accountNumber =
-        str(prefill.authorizationClientBankAccount) ||
-        str(prefill.achAuthorizationAccountHolderBankAccountNumber);
-    const routingNumber =
-        str(prefill.authorizationClientBankRouting) ||
-        str(prefill.achAuthorizationAccountHolderBankRoutingNumber);
+    const canonical = resolveCanonicalBankFromPrefill(
+        applyCanonicalBankFieldsToPrefill(prefill),
+    );
+    const { bankName, accountNumber, routingNumber } = canonical;
 
     if (!bankName && !accountNumber && !routingNumber) return null;
 
@@ -323,6 +351,7 @@ export type SyncContractPrefillSourceRecordsArgs = {
     offerDecision?: Record<string, unknown> | null;
     contractGuarantors?: Record<string, unknown>[] | null;
     bankDetail?: Record<string, unknown> | null;
+    contract?: Record<string, unknown> | null;
 };
 
 async function syncContractGuarantorsFromPrefill(
@@ -390,18 +419,20 @@ export async function syncContractPrefillToSourceRecords({
     offerDecision = null,
     contractGuarantors = null,
     bankDetail = null,
+    contract = null,
 }: SyncContractPrefillSourceRecordsArgs): Promise<void> {
+    const normalizedPrefill = applyCanonicalBankFieldsToPrefill(prefill);
     const offerAppId =
         resolveApplicationIdForOfferDecision(applicationData) ??
         (str(applicationUuid) || null);
     const appUuid =
         str(applicationUuid) || resolveApplicationUuidForUpdate(applicationData) || null;
     const clientId = resolveClientIdFromApplication(applicationData);
-    const bankDetailId = resolveBankDetailId(bankDetail);
+    const bankDetailId = resolveBankDetailId(bankDetail, contract);
 
     const tasks: Promise<unknown>[] = [];
 
-    const offerPayload = buildOfferDecisionUpsertFromPrefill(prefill, offerDecision);
+    const offerPayload = buildOfferDecisionUpsertFromPrefill(normalizedPrefill, offerDecision);
     if (offerPayload && offerAppId) {
         tasks.push(
             axiosPost("/offer-decisions", {
@@ -414,7 +445,7 @@ export async function syncContractPrefillToSourceRecords({
         );
     }
 
-    const clientPayload = buildClientUpdateFromPrefill(prefill, applicationData);
+    const clientPayload = buildClientUpdateFromPrefill(normalizedPrefill, applicationData);
     if (clientPayload && clientId) {
         tasks.push(
             dispatch(
@@ -422,40 +453,49 @@ export async function syncContractPrefillToSourceRecords({
                     id: clientId,
                     data: clientPayload,
                 }),
-            )
-                .unwrap()
-                .then(() => {
-                    dispatch(resetUpdateClient());
-                    if (appUuid) {
-                        return dispatch(getApplicationById(appUuid)).unwrap();
-                    }
-                }),
+            ).unwrap(),
         );
     }
 
     if (contractGuarantors?.length) {
-        tasks.push(syncContractGuarantorsFromPrefill(dispatch, contractGuarantors, prefill));
+        tasks.push(syncContractGuarantorsFromPrefill(dispatch, contractGuarantors, normalizedPrefill));
     }
 
-    const bankPayload = buildBankDetailUpdateFromPrefill(prefill);
-    if (bankPayload && bankDetailId) {
-        tasks.push(
-            dispatch(
-                updateBankDetail({
-                    id: bankDetailId,
-                    data: bankPayload,
-                }),
-            )
-                .unwrap()
-                .then(() => {
-                    if (appUuid) {
-                        return dispatch(getBankDetails({ application: appUuid })).unwrap();
-                    }
-                }),
-        );
+    const bankPayload = buildBankDetailUpdateFromPrefill(normalizedPrefill);
+    if (bankPayload && appUuid) {
+        if (bankDetailId) {
+            tasks.push(
+                dispatch(
+                    updateBankDetail({
+                        id: bankDetailId,
+                        data: bankPayload,
+                    }),
+                )
+                    .unwrap()
+                    .then(() => dispatch(getBankDetails({ application: appUuid })).unwrap()),
+            );
+        } else if (bankPayload.accountNumber) {
+            tasks.push(
+                dispatch(
+                    createBankDetail({
+                        application: appUuid,
+                        bankName: bankPayload.bankName || "Bank",
+                        accountNumber: bankPayload.accountNumber,
+                        routingNumber: bankPayload.routingNumber,
+                    }),
+                )
+                    .unwrap()
+                    .then(() => dispatch(getBankDetails({ application: appUuid })).unwrap()),
+            );
+        }
     }
 
-    if (tasks.length === 0) return;
+    if (tasks.length === 0) {
+        if (appUuid) {
+            await dispatch(getApplicationById(appUuid)).unwrap();
+        }
+        return;
+    }
 
     const results = await Promise.allSettled(tasks);
     const failures = results.filter((r) => r.status === "rejected");
@@ -464,5 +504,12 @@ export async function syncContractPrefillToSourceRecords({
         throw new Error(
             "Contract prefill saved, but some application or offer fields could not be synced. Refresh and try again.",
         );
+    }
+
+    if (clientId) {
+        dispatch(resetUpdateClient());
+    }
+    if (appUuid) {
+        await dispatch(getApplicationById(appUuid)).unwrap();
     }
 }
