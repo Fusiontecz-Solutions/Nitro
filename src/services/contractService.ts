@@ -2367,6 +2367,12 @@ class ContractService {
     contractId: number,
     scheduleOverride?: unknown,
   ): Promise<Buffer> {
+    const contract = await prisma.contract.findUnique({
+      where: { id: contractId },
+      select: { funderName: true },
+    });
+    const funderName = contract?.funderName ?? null;
+
     let schedule = normalizeReverseDisbursementScheduleData(scheduleOverride);
     if (!schedule) {
       const config = await loadContractReverseDisbursementConfig(contractId);
@@ -2377,7 +2383,7 @@ class ContractService {
         'No disbursement schedule rows found. Paste the table and save before previewing.',
       );
     }
-    return renderReverseDisbursementSchedulePdf(schedule);
+    return renderReverseDisbursementSchedulePdf(schedule, funderName);
   }
 
 }

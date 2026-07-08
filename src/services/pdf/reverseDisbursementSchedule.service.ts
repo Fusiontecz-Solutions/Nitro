@@ -9,9 +9,13 @@ import {
   type ReverseDisbursementScheduleRow,
   type ReverseDisbursementScheduleSummary,
 } from './reverseDisbursementSchedule.types';
+import { isAllianceBridgeFunder } from '../docusign/utils/resolve-main-contract-layout';
 
-const DEFAULT_LOGO_URL =
+const DEFAULT_KATAN_LOGO_URL =
   'https://res.cloudinary.com/dfy6ahsqz/image/upload/v1780324705/white_logo_d8bsb1.svg';
+
+const DEFAULT_ALLIANCE_LOGO_URL =
+  'https://res.cloudinary.com/dfy6ahsqz/image/upload/v1783517910/ALLIANCE_BRIDGE_CAPITAL_-_FLEX_ADDENDUM_x5utri.jpg';
 
 function escapeHtml(value: string): string {
   return String(value ?? '')
@@ -217,10 +221,15 @@ function formatCurrencyCell(value: string): string {
   return `$ ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function resolveLogoUrl(): string {
+function resolveLogoUrl(funderName?: string | null): string {
+  const isAlliance = isAllianceBridgeFunder(funderName ?? null);
+  const envLogoUrl = isAlliance
+    ? process.env.REVERSE_DISBURSEMENT_ALLIANCE_LOGO_URL
+    : process.env.REVERSE_DISBURSEMENT_LOGO_URL;
+
   return (
-    String(process.env.REVERSE_DISBURSEMENT_LOGO_URL || '').trim() ||
-    DEFAULT_LOGO_URL
+    String(envLogoUrl || '').trim() ||
+    (isAlliance ? DEFAULT_ALLIANCE_LOGO_URL : DEFAULT_KATAN_LOGO_URL)
   );
 }
 
@@ -241,8 +250,9 @@ function formatSummaryValue(
 
 export function buildReverseDisbursementScheduleHtml(
   data: ReverseDisbursementScheduleData,
+  options?: { funderName?: string | null },
 ): string {
-  const logoUrl = resolveLogoUrl();
+  const logoUrl = resolveLogoUrl(options?.funderName ?? null);
   const headerCells = REVERSE_DISBURSEMENT_COLUMNS.map(
     (col) => `<th>${escapeHtml(col.label)}</th>`,
   ).join('');
@@ -356,28 +366,32 @@ export function buildReverseDisbursementScheduleHtml(
 
 export async function renderReverseDisbursementSchedulePdf(
   data: ReverseDisbursementScheduleData,
+  funderName?: string | null,
 ): Promise<Buffer> {
-  const html = buildReverseDisbursementScheduleHtml(data);
+  const html = buildReverseDisbursementScheduleHtml(data, { funderName });
   return renderHtmlToA4PdfBuffer(html);
 }
 
 export async function loadContractReverseDisbursementConfig(contractId: number): Promise<{
   enabled: boolean;
   schedule: ReverseDisbursementScheduleData | null;
+  funderName: string | null;
 }> {
   const row = await prisma.contract.findUnique({
     where: { id: contractId },
     select: {
       reverseDisbursementEnabled: true,
       reverseDisbursementSchedule: true,
+      funderName: true,
     },
   });
   if (!row) {
-    return { enabled: false, schedule: null };
+    return { enabled: false, schedule: null, funderName: null };
   }
   return {
     enabled: row.reverseDisbursementEnabled === true,
     schedule: normalizeReverseDisbursementScheduleData(row.reverseDisbursementSchedule),
+    funderName: row.funderName,
   };
 }
 
@@ -385,7 +399,8 @@ export async function maybeAppendReverseDisbursementToMainContractLayout(
   layout: DocumentLayoutWithBase64,
   contractId: number,
 ): Promise<DocumentLayoutWithBase64> {
-  const { enabled, schedule } = await loadContractReverseDisbursementConfig(contractId);
+  const { enabled, schedule, funderName } =
+    await loadContractReverseDisbursementConfig(contractId);
   if (!enabled) {
     return layout;
   }
@@ -395,7 +410,7 @@ export async function maybeAppendReverseDisbursementToMainContractLayout(
     );
   }
 
-  const schedulePdf = await renderReverseDisbursementSchedulePdf(schedule);
+  const schedulePdf = await renderReverseDisbursementSchedulePdf(schedule, funderName);
   const documentBase64 = await appendPdfBuffersToBase64(layout.documentBase64, [schedulePdf]);
   return {
     ...layout,
