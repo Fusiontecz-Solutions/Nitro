@@ -91,25 +91,33 @@ export function buildPackageEnvelopeEmailSubject(
     businessName: string,
     selection: ContractSendPackageSelection,
     offerAmount?: number | string | null,
+    lenderName?: string | null,
 ): string {
     const business = String(businessName || "").trim() || "Business";
+    const lender =
+        String(lenderName ?? CONTRACT_ENVELOPE_LENDER_NAME).trim() ||
+        CONTRACT_ENVELOPE_LENDER_NAME;
     if (selection.includeMainContract) {
-        return buildContractEnvelopeEmailSubject(business, offerAmount);
+        return buildContractEnvelopeEmailSubject(business, offerAmount, lender);
     }
     const labels: string[] = [];
     if (selection.includeAddendum) labels.push("Addendum");
     if (selection.includeDisclosure) labels.push("Disclosure");
     const docLabel = labels.join(" & ") || "Documents";
-    return `${CONTRACT_ENVELOPE_LENDER_NAME} : ${business} - ${docLabel}`;
+    return `${lender} : ${business} - ${docLabel}`;
 }
 
 export function buildPackageEnvelopeEmailMessage(
     businessName: string,
     selection: ContractSendPackageSelection,
+    lenderName?: string | null,
 ): string {
     const business = String(businessName || "").trim() || "your business";
+    const lender =
+        String(lenderName ?? CONTRACT_ENVELOPE_LENDER_NAME).trim() ||
+        CONTRACT_ENVELOPE_LENDER_NAME;
     if (selection.includeMainContract) {
-        return `Please review and sign your agreement with ${CONTRACT_ENVELOPE_LENDER_NAME}.`;
+        return `Please review and sign your agreement with ${lender}.`;
     }
     if (selection.includeAddendum && selection.includeDisclosure) {
         return `Please review and sign the addendum and state disclosure for ${business}.`;

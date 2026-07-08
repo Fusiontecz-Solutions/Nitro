@@ -1,3 +1,5 @@
+import { isDecisionLogicReportPayloadComplete } from "@/lib/decisionLogicReportStatus";
+
 const baseUrl = `${import.meta.env.VITE_API_BASE_URL}/decision-logic`;
 
 function apiErrorMessage(body: unknown): string | undefined {
@@ -182,6 +184,14 @@ export async function generateDecisionLogicReport(
 }
 
 const REPORT_FETCH_ATTEMPTS = 4;
+const REPORT_UNTIL_COMPLETE_ATTEMPTS = 30;
+const REPORT_UNTIL_COMPLETE_INTERVAL_MS = 5000;
+
+function isSoftReportFetchError(message: string): boolean {
+  return /not ready|not complete|pending|timeout|429|502|503|504|temporar|try again|empty|network|fetch|verification is not complete/i.test(
+    message.toLowerCase(),
+  );
+}
 
 /** Retry when DL report is not ready immediately after request-code creation. */
 export async function generateDecisionLogicReportWithRetry(
@@ -206,12 +216,16 @@ export async function generateDecisionLogicReportWithRetry(
       typeof (last as { error?: string }).error === "string"
         ? (last as { error: string }).error
         : "";
-    if (!err) {
+    if (!err && isDecisionLogicReportPayloadComplete(last)) {
       return last;
     }
-    const soft = /not ready|pending|timeout|429|502|503|504|temporar|try again|empty|network|fetch/i.test(
-      err.toLowerCase(),
-    );
+    if (!err && !isDecisionLogicReportPayloadComplete(last)) {
+      last = {
+        error:
+          "Decision Logic verification is not complete yet. The customer must finish bank login in the widget.",
+      };
+    }
+    const soft = isSoftReportFetchError(err);
     if (!soft || attempt === REPORT_FETCH_ATTEMPTS - 1) {
       return last;
     }
@@ -219,6 +233,56 @@ export async function generateDecisionLogicReportWithRetry(
       window.setTimeout(resolve, 1200 * (attempt + 1));
     });
   }
+  return last;
+}
+
+/**
+ * Poll generate-report until Decision Logic returns a completed report with bank data.
+ * Used after the customer finishes the hosted widget flow.
+ */
+export async function generateDecisionLogicReportUntilComplete(
+  requestCode: string,
+  businessOwnerId: number,
+  bankAccountId: number,
+  applicationId?: string | null,
+) {
+  let last: Awaited<ReturnType<typeof generateDecisionLogicReport>> | undefined;
+
+  for (let attempt = 0; attempt < REPORT_UNTIL_COMPLETE_ATTEMPTS; attempt++) {
+    last = await generateDecisionLogicReport(
+      requestCode,
+      businessOwnerId,
+      bankAccountId,
+      applicationId,
+    );
+    const err =
+      last &&
+      typeof last === "object" &&
+      "error" in last &&
+      typeof (last as { error?: string }).error === "string"
+        ? (last as { error: string }).error
+        : "";
+
+    if (!err && isDecisionLogicReportPayloadComplete(last)) {
+      return last;
+    }
+
+    if (!err && !isDecisionLogicReportPayloadComplete(last)) {
+      last = {
+        error:
+          "Decision Logic verification is not complete yet. The customer must finish bank login in the widget.",
+      };
+    }
+
+    if (!isSoftReportFetchError(err) || attempt === REPORT_UNTIL_COMPLETE_ATTEMPTS - 1) {
+      return last;
+    }
+
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, REPORT_UNTIL_COMPLETE_INTERVAL_MS);
+    });
+  }
+
   return last;
 }
 

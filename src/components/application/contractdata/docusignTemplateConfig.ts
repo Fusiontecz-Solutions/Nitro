@@ -55,17 +55,46 @@ export const CONTRACT_ENVELOPE_LENDER_NAME = String(
         "KATAN CAPITAL",
 ).trim();
 
+/** Alliance Bridge contract envelope subject / PDF prefix (Texas and non-Texas). */
+export const ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME = "ALLIANCE BRIDGE CAPITAL";
+
 /** @deprecated Use CONTRACT_ENVELOPE_LENDER_NAME */
 export const DOCUSIGN_EMAIL_LENDER_NAME = CONTRACT_ENVELOPE_LENDER_NAME;
+
+export function isAllianceFunderNameForEnvelope(funderName?: string | null): boolean {
+    const key = String(funderName ?? "")
+        .trim()
+        .toLowerCase();
+    if (!key) return false;
+    return key.includes("alliance bridge") || key.includes("alliance capital");
+}
+
+/** Lender prefix for envelope subject / PDF name from selected funder. */
+export function resolveContractEnvelopeLenderName(options?: {
+    funderName?: string | null;
+    isAllianceProfile?: boolean;
+}): string {
+    if (
+        options?.isAllianceProfile ||
+        isAllianceFunderNameForEnvelope(options?.funderName)
+    ) {
+        return ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME;
+    }
+    return CONTRACT_ENVELOPE_LENDER_NAME;
+}
 
 /** Contract envelope email subject: KATAN CAPITAL : BusinessName - $Offer Amount */
 export function buildContractEnvelopeEmailSubject(
     businessName: string,
     offerAmount?: number | string | null,
+    lenderName?: string | null,
 ): string {
     const business = String(businessName || "").trim() || "Business";
     const amount = formatUSD(offerAmount, { fallback: "$0.00" });
-    return `${CONTRACT_ENVELOPE_LENDER_NAME} : ${business} - ${amount}`;
+    const lender =
+        String(lenderName ?? CONTRACT_ENVELOPE_LENDER_NAME).trim() ||
+        CONTRACT_ENVELOPE_LENDER_NAME;
+    return `${lender} : ${business} - ${amount}`;
 }
 
 /** ACH-only envelope email subject and PDF name: ACH FORM: BusinessName */

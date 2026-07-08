@@ -6,8 +6,20 @@ export type ReverseDisbursementScheduleRow = {
     receivablesPurchased: string;
 };
 
+export type ReverseDisbursementScheduleSummary = {
+    totalFundingAmount: string;
+    netFundingAmount: string;
+    dailyDebit: string;
+    totalTermLength: string;
+    reductionOnDailyRate: string;
+    originationFeePercent: string;
+    factorRate: string;
+};
+
 export type ReverseDisbursementScheduleData = {
+    /** @deprecated use summary.dailyDebit instead; kept for backward compatibility with existing saved contracts. */
     fixedDailyDebit?: string;
+    summary?: ReverseDisbursementScheduleSummary;
     rows: ReverseDisbursementScheduleRow[];
 };
 
@@ -18,6 +30,29 @@ export const REVERSE_DISBURSEMENT_COLUMN_LABELS = [
     "Total Period Credits",
     "Receivables Purchased",
 ] as const;
+
+export const REVERSE_DISBURSEMENT_SUMMARY_FIELDS: Array<{
+    key: keyof ReverseDisbursementScheduleSummary;
+    label: string;
+}> = [
+    { key: "totalFundingAmount", label: "Total Funding Amount" },
+    { key: "netFundingAmount", label: "Net Funding Amount" },
+    { key: "dailyDebit", label: "Daily Debit" },
+    { key: "totalTermLength", label: "Total Term Length" },
+    { key: "reductionOnDailyRate", label: "Reduction On daily Rate" },
+    { key: "originationFeePercent", label: "Origination Fee%" },
+    { key: "factorRate", label: "Factor Rate" },
+];
+
+export const EMPTY_REVERSE_DISBURSEMENT_SUMMARY = (): ReverseDisbursementScheduleSummary => ({
+    totalFundingAmount: "",
+    netFundingAmount: "",
+    dailyDebit: "",
+    totalTermLength: "",
+    reductionOnDailyRate: "",
+    originationFeePercent: "",
+    factorRate: "",
+});
 
 export const EMPTY_REVERSE_DISBURSEMENT_ROW = (): ReverseDisbursementScheduleRow => ({
     period: "",
@@ -124,8 +159,63 @@ export function parseFixedDailyDebitFromPaste(text: string): string | undefined 
     return `$ ${match[1]}`;
 }
 
+function extractCurrencyValueAfterLabel(text: string, labelRegex: string): string | undefined {
+    const match = String(text || "").match(
+        new RegExp(`${labelRegex}\\s*:?\\s*(?:\\(\\s*)?\\$?\\s*([\\d,]+(?:\\.\\d{1,2})?)\\s*\\)?`, "i"),
+    );
+    if (!match?.[1]) return undefined;
+    return `$ ${match[1]}`;
+}
+
+function extractPlainValueAfterLabel(text: string, labelRegex: string): string | undefined {
+    const match = String(text || "").match(
+        new RegExp(`${labelRegex}\\s*%?\\s*:?\\s*([\\d,]+(?:\\.\\d+)?\\s*%?)`, "i"),
+    );
+    if (!match?.[1]) return undefined;
+    return match[1].trim();
+}
+
+/** Pull the header summary fields (Total Funding Amount, Factor Rate, etc.) from pasted PDF/sheet text. */
+export function parseReverseDisbursementSummaryFromPaste(
+    text: string,
+): Partial<ReverseDisbursementScheduleSummary> {
+    const summary: Partial<ReverseDisbursementScheduleSummary> = {};
+
+    const totalFundingAmount = extractCurrencyValueAfterLabel(text, "total\\s+funding\\s+amount");
+    if (totalFundingAmount) summary.totalFundingAmount = totalFundingAmount;
+
+    const netFundingAmount = extractCurrencyValueAfterLabel(text, "net\\s+funding\\s+amount");
+    if (netFundingAmount) summary.netFundingAmount = netFundingAmount;
+
+    const dailyDebit = parseFixedDailyDebitFromPaste(text);
+    if (dailyDebit) summary.dailyDebit = dailyDebit;
+
+    const totalTermLength = extractPlainValueAfterLabel(text, "total\\s+term\\s+length");
+    if (totalTermLength) summary.totalTermLength = totalTermLength;
+
+    const reductionOnDailyRate = extractPlainValueAfterLabel(text, "reduction\\s+on\\s+daily\\s+rate");
+    if (reductionOnDailyRate) summary.reductionOnDailyRate = reductionOnDailyRate;
+
+    const originationFeePercent = extractPlainValueAfterLabel(text, "origination\\s+fee");
+    if (originationFeePercent) summary.originationFeePercent = originationFeePercent;
+
+    const factorRate = extractPlainValueAfterLabel(text, "factor\\s+rate");
+    if (factorRate) summary.factorRate = factorRate;
+
+    return summary;
+}
+
+/**
+ * When copied from a PDF, each "Day X - Day Y ..." row is sometimes pasted as one
+ * continuous line/paragraph instead of separate lines. Insert a line break before
+ * every "Day N - Day N" marker so each row can be parsed independently.
+ */
+function splitConcatenatedDayRows(text: string): string {
+    return String(text || "").replace(/\s+(?=Day\s+\d+\s*-\s*Day\s+\d+)/gi, "\n");
+}
+
 export function parsePastedReverseDisbursementTable(text: string): ReverseDisbursementScheduleRow[] {
-    const lines = String(text || "")
+    const lines = splitConcatenatedDayRows(text)
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
@@ -194,10 +284,31 @@ export function scheduleDataFromContract(
         return { enabled, schedule: null };
     }
 
+    const fixedDailyDebit = String(obj.fixedDailyDebit ?? "").trim() || undefined;
+    const summaryRaw =
+        obj.summary && typeof obj.summary === "object" && !Array.isArray(obj.summary)
+            ? (obj.summary as Record<string, unknown>)
+            : null;
+    const summary: ReverseDisbursementScheduleSummary = {
+        ...EMPTY_REVERSE_DISBURSEMENT_SUMMARY(),
+        ...(summaryRaw
+            ? Object.fromEntries(
+                  REVERSE_DISBURSEMENT_SUMMARY_FIELDS.map(({ key }) => [
+                      key,
+                      String(summaryRaw[key] ?? "").trim(),
+                  ]),
+              )
+            : {}),
+    };
+    if (!summary.dailyDebit && fixedDailyDebit) {
+        summary.dailyDebit = fixedDailyDebit;
+    }
+
     return {
         enabled,
         schedule: {
-            fixedDailyDebit: String(obj.fixedDailyDebit ?? "").trim() || undefined,
+            fixedDailyDebit,
+            summary,
             rows,
         },
     };

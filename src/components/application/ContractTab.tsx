@@ -103,7 +103,6 @@ import {
 import {
     buildContractEnvelopeEmailSubject,
     buildAchFormEnvelopeEmailSubject,
-    CONTRACT_ENVELOPE_LENDER_NAME,
 } from "./contractdata/docusignTemplateConfig";
 import {
     buildPackageEnvelopeEmailMessage,
@@ -378,7 +377,8 @@ export default function ContractTab({
     const contractStateForFunders = String(
         (fetchedContract as { state?: string | null } | null)?.state ?? "",
     ).trim();
-    const { resolveLayoutKey, funders, previewNameFor } = useFunderProfiles(contractStateForFunders || null);
+    const { resolveLayoutKey, funders, previewNameFor, resolveEnvelopeLenderName } =
+        useFunderProfiles(contractStateForFunders || null);
     const [viewingAchDocument, setViewingAchDocument] = useState(false);
     const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
     const [contractSyncError, setContractSyncError] = useState<string | null>(null);
@@ -2145,6 +2145,20 @@ export default function ContractTab({
                 merchantContext.businessName.trim() ||
                 merchantContext.clientLegalName.trim() ||
                 docuSignClientName;
+            const funderForEnvelope =
+                sendPayload.funderName ??
+                (latestContract as { funderName?: string | null })?.funderName ??
+                (fetchedContract as { funderName?: string | null })?.funderName ??
+                null;
+            const contractStateForSubject =
+                String(sendPayload.contractState ?? "").trim() ||
+                String((latestContract as { state?: string | null })?.state ?? "").trim() ||
+                contractStateForFunders ||
+                null;
+            const envelopeLenderName = resolveEnvelopeLenderName(
+                funderForEnvelope,
+                contractStateForSubject,
+            );
             const docuSignEmailSubject = isAchStandaloneSend
                 ? buildAchFormEnvelopeEmailSubject(docuSignBusinessName)
                 : sendPackageSelection
@@ -2152,13 +2166,22 @@ export default function ContractTab({
                         docuSignBusinessName,
                         sendPackageSelection,
                         approvedAmount,
+                        envelopeLenderName,
                     )
-                  : buildContractEnvelopeEmailSubject(docuSignBusinessName, approvedAmount);
+                  : buildContractEnvelopeEmailSubject(
+                        docuSignBusinessName,
+                        approvedAmount,
+                        envelopeLenderName,
+                    );
             const docuSignEmailMessage = isAchStandaloneSend
                 ? `Please review and sign the ACH authorization for ${docuSignBusinessName}.`
                 : sendPackageSelection
-                  ? buildPackageEnvelopeEmailMessage(docuSignBusinessName, sendPackageSelection)
-                  : `Please review and sign your agreement with ${CONTRACT_ENVELOPE_LENDER_NAME}.`;
+                  ? buildPackageEnvelopeEmailMessage(
+                        docuSignBusinessName,
+                        sendPackageSelection,
+                        envelopeLenderName,
+                    )
+                  : `Please review and sign your agreement with ${envelopeLenderName}.`;
 
             const firstOwnerFromDb = ownerRows[0] as {
                 firstName?: string;

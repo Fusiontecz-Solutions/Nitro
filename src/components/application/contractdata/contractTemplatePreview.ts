@@ -47,7 +47,9 @@ export async function fetchMainContractTemplatePreview(options: {
         if (data?.url) {
             return {
                 url: data.url,
-                name: data.originalName || options.previewName,
+                name: allianceFunder
+                    ? options.previewName
+                    : data.originalName || options.previewName,
                 layoutKey,
                 source: "contract-templates",
             };

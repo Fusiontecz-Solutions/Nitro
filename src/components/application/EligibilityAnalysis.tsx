@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { useParams } from "react-router";
-import { Landmark, Loader2 } from "lucide-react";
+import { Landmark, Loader2, Mail } from "lucide-react";
 import ApplicationSheetBankDetail from "@/components/application/ApplicationSheetBankDetail";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "react-toastify";
@@ -24,8 +24,7 @@ import DecisionLogicInfo from "@/components/client/decision-logic/decision-logic
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import {
   fetchDecisionLogicReport,
-  generateDecisionLogicReportWithRetry,
-  generateDecisionLogicRequestCode,
+  initiateDecisionLogic,
 } from "@/redux/actions/decision-logic-actions";
 import { uploadAndDownloadCsv } from "@/redux/actions/automatedBankStatementActions";
 import {
@@ -43,6 +42,10 @@ import {
 import type { AppDispatch, RootState } from "@/redux/store";
 import type { BankDetail } from "@/types/bankDetailTypes";
 import { filterBankDetailsForApplication } from "@/lib/bankDetailUtils";
+import {
+  isDecisionLogicVerificationIncomplete,
+  pickBestDecisionLogicReportRow,
+} from "@/lib/decisionLogicReportStatus";
 
 type OwnerRow = { id: number; label: string };
 type BankRow = { id: number; label: string };
@@ -54,25 +57,6 @@ function normalizeOwners(applicationData: any): OwnerRow[] {
   if (!owner) return [];
   const fullName = `${owner.firstName ?? ""} ${owner.lastName ?? ""}`.trim();
   return [{ id: ownerId, label: fullName || "Owner" }];
-}
-
-function pickBestReportRow(raw: unknown): Record<string, unknown> | null {
-  const rows = Array.isArray(raw) ? raw : [];
-  if (!rows.length) return null;
-  const checking = rows.find(
-    (r: unknown) =>
-      r != null &&
-      typeof r === "object" &&
-      String((r as { accountType?: string }).accountType ?? "").toUpperCase() ===
-        "CHECKING",
-  );
-  if (checking && typeof checking === "object") {
-    return checking as Record<string, unknown>;
-  }
-  const first = rows[0];
-  return first != null && typeof first === "object"
-    ? (first as Record<string, unknown>)
-    : null;
 }
 
 function normalizeBanks(rawBanks: BankDetail[]): BankRow[] {
@@ -88,6 +72,22 @@ function normalizeBanks(rawBanks: BankDetail[]): BankRow[] {
   });
 }
 
+function resolveOwnerEmailForDecisionLogic(applicationData: unknown): string {
+  const app = applicationData as {
+    client?: {
+      owner?: { email?: string | null };
+      businessEmail?: string | null;
+      ownerEmail?: string | null;
+    };
+  } | null;
+  return String(
+    app?.client?.owner?.email ??
+      app?.client?.ownerEmail ??
+      app?.client?.businessEmail ??
+      "",
+  ).trim();
+}
+
 export default function EligibilityAnalysis() {
   const { applicationId: paramApplicationId } = useParams<{ applicationId: string }>();
   const dispatch = useDispatch<AppDispatch>();
@@ -99,7 +99,7 @@ export default function EligibilityAnalysis() {
   const [bankDetailsDialogOpen, setBankDetailsDialogOpen] = useState(false);
   const [isDecisionLogicModalOpen, setIsDecisionLogicModalOpen] = useState(false);
   const [selectedBankAccountId, setSelectedBankAccountId] = useState<string>("");
-  const [isSubmittingDecisionLogic, setIsSubmittingDecisionLogic] = useState(false);
+  const [isSendingDecisionLogicEmail, setIsSendingDecisionLogicEmail] = useState(false);
   const [isSendingFinalApproval, setIsSendingFinalApproval] = useState(false);
   const [dlReportLoading, setDlReportLoading] = useState(false);
   const [dlReportError, setDlReportError] = useState("");
@@ -175,6 +175,14 @@ export default function EligibilityAnalysis() {
     canSendFinalUnderwriterApproval &&
     isContractSignedStage &&
     Boolean(approvingUnderwriterId);
+  const ownerEmailForDecisionLogic = useMemo(
+    () => resolveOwnerEmailForDecisionLogic(applicationData),
+    [applicationData],
+  );
+  const decisionLogicIncomplete = useMemo(
+    () => isDecisionLogicVerificationIncomplete(dlReportRow),
+    [dlReportRow],
+  );
 
   useEffect(() => {
     if (!applicationRecordId) return;
@@ -208,7 +216,7 @@ export default function EligibilityAnalysis() {
         return;
       }
       const rows = (response as { data?: unknown })?.data;
-      setDlReportRow(pickBestReportRow(rows));
+      setDlReportRow(pickBestDecisionLogicReportRow(rows));
       setDlReportLoading(false);
       setDlReportFetched(true);
     })();
@@ -294,15 +302,10 @@ export default function EligibilityAnalysis() {
     setIsDecisionLogicModalOpen(true);
   };
 
-  const processDecisionLogicRequest = async (bankAccountId: string) => {
+  const sendDecisionLogicEmailToCustomer = async (bankAccountId: string) => {
     const parsedBankId = parseInt(bankAccountId, 10);
-    if (!Number.isFinite(parsedBankId)) {
+    if (!Number.isFinite(parsedBankId) || parsedBankId <= 0) {
       toast.error("Please select a valid bank account.");
-      return;
-    }
-    setIsDecisionLogicModalOpen(false);
-    if (parsedBankId === 0) {
-      toast.info("Add a bank account in Bank Details before running Decision Logic.");
       return;
     }
 
@@ -312,60 +315,40 @@ export default function EligibilityAnalysis() {
       return;
     }
 
-    const toastId = toast.loading("Running Decision Logic verification…");
+    if (!ownerEmailForDecisionLogic) {
+      toast.error(
+        "Owner email is missing on this application. Add an email on the client record first.",
+      );
+      return;
+    }
+
+    setIsDecisionLogicModalOpen(false);
+    const toastId = toast.loading(
+      `Sending Decision Logic link to ${ownerEmailForDecisionLogic}…`,
+    );
     try {
-      setIsSubmittingDecisionLogic(true);
-      const requestCodeRes = await generateDecisionLogicRequestCode(
-        ownerId,
-        parsedBankId,
-        applicationRecordId || null,
-      );
-      if ((requestCodeRes as { error?: string })?.error) {
+      setIsSendingDecisionLogicEmail(true);
+      const response = await initiateDecisionLogic(ownerId, ownerId, parsedBankId);
+      if ((response as { error?: string })?.error) {
         toast.update(toastId, {
-          render: String((requestCodeRes as { error?: string }).error),
+          render: String((response as { error?: string }).error),
           type: "error",
           isLoading: false,
-          autoClose: 5000,
-        });
-        return;
-      }
-      const requestCode = String(
-        (requestCodeRes as { requestCode?: string })?.requestCode ?? "",
-      ).trim();
-      if (!requestCode) {
-        toast.update(toastId, {
-          render: "Request code was not returned by the server.",
-          type: "error",
-          isLoading: false,
-          autoClose: 5000,
-        });
-        return;
-      }
-      const response = await generateDecisionLogicReportWithRetry(
-        requestCode,
-        ownerId,
-        parsedBankId,
-        applicationRecordId || null,
-      );
-      if (response?.error) {
-        toast.update(toastId, {
-          render: response.error,
-          type: "error",
-          isLoading: false,
-          autoClose: 5000,
+          autoClose: 6000,
         });
         return;
       }
 
       toast.update(toastId, {
-        render: "Decision Logic report loaded.",
+        render:
+          `Verification email sent to ${ownerEmailForDecisionLogic}. ` +
+          "Ask the customer to open the link and complete bank login, then click Refresh report.",
         type: "success",
         isLoading: false,
-        autoClose: 3000,
+        autoClose: 8000,
       });
-      setReportFetchNonce((n) => n + 1);
     } finally {
-      setIsSubmittingDecisionLogic(false);
+      setIsSendingDecisionLogicEmail(false);
     }
   };
 
@@ -475,6 +458,7 @@ export default function EligibilityAnalysis() {
                 variant="default"
                 onClick={onInitiateDecisionLogic}
               >
+                <Mail className="mr-1.5 h-3.5 w-3.5" aria-hidden />
                 Initiate Decision Logic
               </Button>
               <Tooltip>
@@ -558,22 +542,58 @@ export default function EligibilityAnalysis() {
 
               {!dlReportLoading && !dlReportError && dlReportRow ? (
                 <>
-                  <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2.5">
-                    <p className="text-xs font-semibold text-green-800">
-                      Bank verification completed
-                    </p>
-                    <p className="mt-0.5 text-xs text-green-800">
-                      Decision Logic finished processing. Report data is shown below.
-                    </p>
-                  </div>
+                  {decisionLogicIncomplete ? (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 space-y-2">
+                      <p className="text-xs font-semibold text-amber-900">
+                        Bank verification not completed
+                      </p>
+                      <p className="text-xs text-amber-900">
+                        Status is &quot;
+                        {String(dlReportRow.statusText ?? "Not Started")}
+                        &quot; — the customer has not finished bank login yet. Click
+                        <strong>Initiate Decision Logic</strong> to send the secure Decision Logic link
+                        so bank data can be returned.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="default"
+                        className="h-7 bg-[var(--brand)] text-white hover:opacity-90"
+                        disabled={isSendingDecisionLogicEmail}
+                        onClick={onInitiateDecisionLogic}
+                      >
+                        {isSendingDecisionLogicEmail ? (
+                          <>
+                            <Loader2 className="mr-1.5 h-3 w-3 animate-spin" aria-hidden />
+                            Sending…
+                          </>
+                        ) : (
+                          <>
+                            <Mail className="mr-1.5 h-3 w-3" aria-hidden />
+                            Initiate Decision Logic
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2.5">
+                      <p className="text-xs font-semibold text-green-800">
+                        Bank verification completed
+                      </p>
+                      <p className="mt-0.5 text-xs text-green-800">
+                        Decision Logic finished processing. Report data is shown below.
+                      </p>
+                    </div>
+                  )}
                   <DecisionLogicInfo data={dlReportRow} />
                 </>
               ) : null}
 
               {dlReportFetched && !dlReportLoading && !dlReportError && !dlReportRow ? (
                 <p className="px-1 text-xs text-[#6B7280]">
-                  No saved Decision Logic report for this client yet. Initiate verification and
-                  complete the email link; then use &quot;Refresh report&quot;.
+                  No saved Decision Logic report for this client yet. Click{" "}
+                  <strong>Initiate Decision Logic</strong> to send the bank verification link, then
+                  use &quot;Refresh report&quot; after they complete it.
                 </p>
               ) : null}
             </div>
@@ -610,17 +630,30 @@ export default function EligibilityAnalysis() {
         </DialogContent>
       </Dialog>
       <Dialog open={isDecisionLogicModalOpen} onOpenChange={setIsDecisionLogicModalOpen}>
-        <DialogContent className="max-w-[440px] gap-0 px-0 py-0">
+        <DialogContent className="max-w-[480px] gap-0 px-0 py-0">
           <DialogHeader className="border-b border-[#E5E7EB] px-4 py-3">
             <DialogTitle className="text-sm font-semibold text-[#111827]">
-              Run Decision Logic
+              Decision Logic — Initiate
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-2 px-4 py-3">
+          <div className="space-y-3 px-4 py-3">
             <p className="text-xs leading-relaxed text-[#6B7280]">
-              Uses the bank account on file to verify instantly. No email is sent to the client.
+              Sends a secure link to the owner&apos;s email. They open it, log into their bank in
+              the Decision Logic widget, and bank data is saved here when finished.
             </p>
-            <label className="text-xs text-[#374151]">Selected Bank Account</label>
+            {ownerEmailForDecisionLogic ? (
+              <p className="text-xs text-[#374151]">
+                Email will be sent to{" "}
+                <span className="font-medium text-[#111827]">
+                  {ownerEmailForDecisionLogic}
+                </span>
+              </p>
+            ) : (
+              <p className="rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-xs text-red-800">
+                No owner email on file. Add an email on the client record before sending.
+              </p>
+            )}
+            <label className="text-xs text-[#374151]">Bank account on file</label>
             <Select value={selectedBankAccountId} onValueChange={setSelectedBankAccountId}>
               <SelectTrigger className="h-8 w-full text-xs">
                 <SelectValue placeholder="Select Bank Account" />
@@ -647,10 +680,24 @@ export default function EligibilityAnalysis() {
               type="button"
               size="sm"
               variant="default"
-              onClick={() => void processDecisionLogicRequest(selectedBankAccountId)}
-              disabled={isSubmittingDecisionLogic || !selectedBankAccountId}
+              onClick={() => void sendDecisionLogicEmailToCustomer(selectedBankAccountId)}
+              disabled={
+                isSendingDecisionLogicEmail ||
+                !selectedBankAccountId ||
+                !ownerEmailForDecisionLogic
+              }
             >
-              {isSubmittingDecisionLogic ? "Running…" : "Run verification"}
+              {isSendingDecisionLogicEmail ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3 w-3 animate-spin" aria-hidden />
+                  Sending…
+                </>
+              ) : (
+                <>
+                  <Mail className="mr-1.5 h-3 w-3" aria-hidden />
+                  Initiate Decision Logic
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

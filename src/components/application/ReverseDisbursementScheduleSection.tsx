@@ -12,12 +12,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
     EMPTY_REVERSE_DISBURSEMENT_ROW,
+    EMPTY_REVERSE_DISBURSEMENT_SUMMARY,
     REVERSE_DISBURSEMENT_COLUMN_LABELS,
-    parseFixedDailyDebitFromPaste,
+    REVERSE_DISBURSEMENT_SUMMARY_FIELDS,
     parsePastedReverseDisbursementTable,
+    parseReverseDisbursementSummaryFromPaste,
     scheduleDataFromContract,
     type ReverseDisbursementScheduleData,
     type ReverseDisbursementScheduleRow,
+    type ReverseDisbursementScheduleSummary,
 } from "./contractdata/reverseDisbursementSchedule";
 
 type ReverseDisbursementScheduleSectionProps = {
@@ -42,8 +45,8 @@ export default function ReverseDisbursementScheduleSection({
     );
 
     const [enabled, setEnabled] = useState(initial.enabled);
-    const [fixedDailyDebit, setFixedDailyDebit] = useState(
-        initial.schedule?.fixedDailyDebit ?? "",
+    const [summary, setSummary] = useState<ReverseDisbursementScheduleSummary>(
+        initial.schedule?.summary ?? EMPTY_REVERSE_DISBURSEMENT_SUMMARY(),
     );
     const [rows, setRows] = useState<ReverseDisbursementScheduleRow[]>(
         initial.schedule?.rows?.length
@@ -56,7 +59,7 @@ export default function ReverseDisbursementScheduleSection({
 
     useEffect(() => {
         setEnabled(initial.enabled);
-        setFixedDailyDebit(initial.schedule?.fixedDailyDebit ?? "");
+        setSummary(initial.schedule?.summary ?? EMPTY_REVERSE_DISBURSEMENT_SUMMARY());
         setRows(
             initial.schedule?.rows?.length
                 ? initial.schedule.rows
@@ -77,20 +80,34 @@ export default function ReverseDisbursementScheduleSection({
         [],
     );
 
+    const updateSummaryField = useCallback(
+        (key: keyof ReverseDisbursementScheduleSummary, value: string) => {
+            setSummary((prev) => ({ ...prev, [key]: value }));
+        },
+        [],
+    );
+
     const handlePasteIntoTable = () => {
         const parsed = parsePastedReverseDisbursementTable(pasteText);
-        if (!parsed.length) {
+        const parsedSummary = parseReverseDisbursementSummaryFromPaste(pasteText);
+        const hasSummary = Object.keys(parsedSummary).length > 0;
+
+        if (!parsed.length && !hasSummary) {
             toast.error(
                 "Could not parse rows. Paste the schedule table from the PDF (lines starting with Day 1…) or copy cells from Google Sheets.",
             );
             return;
         }
-        setRows(parsed);
-        const dailyDebit = parseFixedDailyDebitFromPaste(pasteText);
-        if (dailyDebit) {
-            setFixedDailyDebit(dailyDebit);
+        if (parsed.length) {
+            setRows(parsed);
         }
-        toast.success(`Loaded ${parsed.length} row(s) from paste area.`);
+        if (hasSummary) {
+            setSummary((prev) => ({ ...prev, ...parsedSummary }));
+        }
+        const parts = [];
+        if (parsed.length) parts.push(`${parsed.length} row(s)`);
+        if (hasSummary) parts.push("summary fields");
+        toast.success(`Loaded ${parts.join(" and ")} from paste area.`);
     };
 
     const buildSchedulePayload = (): ReverseDisbursementScheduleData => {
@@ -111,8 +128,14 @@ export default function ReverseDisbursementScheduleSection({
                     row.receivablesPurchased,
             );
 
+        const cleanedSummary = Object.fromEntries(
+            REVERSE_DISBURSEMENT_SUMMARY_FIELDS.map(({ key }) => [key, summary[key]?.trim() ?? ""]),
+        ) as ReverseDisbursementScheduleSummary;
+        const hasSummaryValue = Object.values(cleanedSummary).some(Boolean);
+
         return {
-            fixedDailyDebit: fixedDailyDebit.trim() || undefined,
+            fixedDailyDebit: cleanedSummary.dailyDebit || undefined,
+            summary: hasSummaryValue ? cleanedSummary : undefined,
             rows: cleanedRows,
         };
     };
@@ -195,10 +218,6 @@ export default function ReverseDisbursementScheduleSection({
                     >
                         Reverse Disbursement Schedule
                     </h3>
-                    <p className={`mt-1 text-xs ${isDark ? "text-gray-400" : "text-[#687182]"}`}>
-                        Optional. When enabled, a branded disbursement page is appended as the last
-                        page of the contract PDF on DocuSign send.
-                    </p>
                 </div>
                 <label className="flex items-center gap-2 text-sm">
                     <Checkbox
@@ -216,16 +235,29 @@ export default function ReverseDisbursementScheduleSection({
 
             {enabled ? (
                 <div className="space-y-4">
-                    <div className="space-y-1.5 max-w-sm">
-                        <Label className={isDark ? "text-gray-400" : "text-[#687182]"}>
-                            Fixed Daily Debit
-                        </Label>
-                        <Input
-                            value={fixedDailyDebit}
-                            onChange={(e) => setFixedDailyDebit(e.target.value)}
-                            placeholder="$ 1,071.25"
-                            disabled={readOnly}
-                        />
+                    <div
+                        className={`overflow-hidden rounded-lg border max-w-md ${isDark ? "border-[#374151]" : "border-[#D1D5DB]"}`}
+                    >
+                        {REVERSE_DISBURSEMENT_SUMMARY_FIELDS.map(({ key, label }, idx) => (
+                            <div
+                                key={key}
+                                className={`flex items-center gap-3 px-3 py-1.5 ${
+                                    idx > 0 ? (isDark ? "border-t border-[#374151]" : "border-t border-[#E5E7EB]") : ""
+                                } ${isDark ? "even:bg-[#111827]" : "even:bg-[#F9FAFB]"}`}
+                            >
+                                <Label
+                                    className={`w-44 shrink-0 text-xs font-medium ${isDark ? "text-gray-300" : "text-[#374151]"}`}
+                                >
+                                    {label}:
+                                </Label>
+                                <Input
+                                    value={summary[key]}
+                                    onChange={(e) => updateSummaryField(key, e.target.value)}
+                                    disabled={readOnly}
+                                    className="h-8 text-xs"
+                                />
+                            </div>
+                        ))}
                     </div>
 
                     {!readOnly ? (

@@ -7340,6 +7340,9 @@ const PDFViewerModal = ({
                                                         disabled={savingContractMeta}
                                                         onValueChange={(v: string) => {
                                                             setSelectedFunder(v);
+                                                            setContractPreviewName(
+                                                                previewNameFor(v),
+                                                            );
                                                             invalidateDocuSignDraftSession();
                                                             invalidateDocuSignPdfCache();
                                                             setUploadedPreviewUrl(null);

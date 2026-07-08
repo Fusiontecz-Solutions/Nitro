@@ -3,6 +3,11 @@ import { fetchFunderProfiles } from "@/redux/actions/integrationSettingsActions"
 import type { FunderProfile } from "@/types/integrationSettingsTypes";
 import { PLATFORM_LAYOUT_KEYS } from "@/components/application/contractdata/platformDocumentConfig";
 import {
+  ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME,
+  CONTRACT_ENVELOPE_LENDER_NAME,
+  resolveContractEnvelopeLenderName,
+} from "@/components/application/contractdata/docusignTemplateConfig";
+import {
   funderStateListIncludes,
   isTexasContractState,
   normalizeContractStateToken,
@@ -326,13 +331,31 @@ export function contractPreviewNameForFunder(
   state?: string | null,
 ): string {
   const profile = findFunderProfile(funders, funderName, state);
+  if (profile && isAllianceFunderProfile(profile)) {
+    const fromProfile = String(profile.contractPdfFileName ?? "").trim();
+    return fromProfile || `${ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME}.pdf`;
+  }
   if (profile?.contractPdfFileName) return profile.contractPdfFileName;
   const layoutKey = resolveMainContractLayoutKeyFromFunders(funders, funderName, state);
   if (layoutKey === PLATFORM_LAYOUT_KEYS.allianceBridgeContract) {
-    return "ALLIANCE BRIDGE CAPITAL.pdf";
+    return `${ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME}.pdf`;
   }
   return "Contract.pdf";
 }
+
+export function resolveContractEnvelopeLenderNameForFunder(
+  funders: FunderProfile[],
+  funderName?: string | null,
+  state?: string | null,
+): string {
+  const profile = findFunderProfile(funders, funderName, state);
+  return resolveContractEnvelopeLenderName({
+    funderName,
+    isAllianceProfile: profile ? isAllianceFunderProfile(profile) : false,
+  });
+}
+
+export { ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME, CONTRACT_ENVELOPE_LENDER_NAME };
 
 export function funderAssignsDealId(
   funders: FunderProfile[],
@@ -389,6 +412,12 @@ export function useFunderProfiles(contractState?: string | null) {
       resolveMainContractLayoutKeyFromFunders(funders, name, contractState),
     previewNameFor: (name?: string | null) =>
       contractPreviewNameForFunder(funders, name, contractState),
+    resolveEnvelopeLenderName: (name?: string | null, state?: string | null) =>
+      resolveContractEnvelopeLenderNameForFunder(
+        funders,
+        name,
+        state ?? contractState,
+      ),
     assignsDealId: (name?: string | null) =>
       funderAssignsDealId(funders, name, contractState),
     resolveDefaultFunder: () =>
