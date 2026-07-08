@@ -95,18 +95,12 @@ function rowMonthLabel(row: BankMonthRow): string {
 type BankTableLike = { rows?: BankMonthRow[] | null };
 
 function rowNetCredit(row: BankMonthRow): number | null {
+    // SPA revenue denominator should follow the Scrubbing tab logic:
+    // use the Bank Analysis "Credits" column directly (no netting against transfers/deposits/other).
     const totalCredit = parseCurrency(String(row.totalCredit ?? ""));
-    const loanTransfer = parseCurrency(String(row.loanTransfer ?? ""));
-    const deposit = parseCurrency(String(row.deposit ?? ""));
-    const other = parseCurrency(String(row.other ?? ""));
-    const hasCore =
-        hasEnteredNumericValue(String(row.totalCredit ?? "")) ||
-        hasEnteredNumericValue(String(row.loanTransfer ?? "")) ||
-        hasEnteredNumericValue(String(row.deposit ?? "")) ||
-        hasEnteredNumericValue(String(row.other ?? "")) ||
-        hasEnteredNumericValue(String(row.avgDailyBlc ?? ""));
-    if (!hasCore) return null;
-    return totalCredit - loanTransfer - deposit - other;
+    const hasCredits = hasEnteredNumericValue(String(row.totalCredit ?? ""));
+    if (!hasCredits) return null;
+    return totalCredit;
 }
 
 /**
@@ -185,17 +179,11 @@ function getMonthlyMcaPmtsForPosition(row: Record<string, unknown>): number {
         const p = parseNum(manual);
         if (!Number.isNaN(p) && p >= 0) return p;
     }
+    // For SPA we now align with Scrubbing tab guidance:
+    // the Positions "Repayment" column total is treated as the monthly payment.
     const installment = parseNum(row.installment);
-    if (Number.isNaN(installment) || installment < 0) return 0;
-    const freq = String(row.frequency ?? row.paymentFrequency ?? "")
-        .trim()
-        .toLowerCase();
-    let perMonth = 1;
-    if (freq.includes("week") && freq.includes("bi")) perMonth = 2;
-    else if (freq.includes("week")) perMonth = 4;
-    else if (freq.includes("month")) perMonth = 1;
-    else if (freq.includes("day")) perMonth = 22;
-    return installment * perMonth;
+    if (Number.isNaN(installment) || installment <= 0) return 0;
+    return installment;
 }
 
 function isActivePositionForTotals(row: Record<string, unknown>): boolean {

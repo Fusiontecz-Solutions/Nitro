@@ -90,6 +90,7 @@ import {
     getApplicationPrimaryRecipientName,
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
+    resolveRecipientFundsDollarsForContractTab,
     resolveBalanceTransferMerchantContext,
     expandPrefillFieldsForDocuSign,
     type BuildContractPrefillFieldsArgs,
@@ -164,6 +165,22 @@ import {
     isApplicationUuid,
     resolvePrismaApplicationUuid,
 } from "@/lib/paymentDealApplicationId";
+import {
+    OFFER_DECISION_UPDATED_EVENT,
+    offerDecisionUpdateMatchesApplication,
+} from "@/lib/offerDecisionSync";
+import {
+    CONTRACT_PREFILL_UPDATED_EVENT,
+    contractPrefillUpdateMatchesApplication,
+    emitContractPrefillUpdated,
+} from "@/lib/contractPrefillSync";
+import {
+    persistContractNetToMerchantFromRecipientFunds,
+    formatRecipientFundsInputFromDollars,
+    parseRecipientFundsInputDollars,
+    readNetToMerchantDollarsFromContract,
+    syncLiveOfferFromNetToMerchantPrefill,
+} from "./contractRecipientFundsSync";
 
 function formatContractCurrency(value: number | string | null | undefined) {
     return formatCurrency(value, { fallback: "—" });
@@ -689,7 +706,7 @@ export default function ContractTab({
         0;
 
     const amountFinanced = approvedAmount;
-    const recipientFunds = approvedAmount - commissionAmount;
+    const defaultRecipientFunds = approvedAmount - commissionAmount;
     const feeAmount = commissionAmount;
 
     const estimatedTotalPayment =
@@ -808,12 +825,22 @@ export default function ContractTab({
     });
 
     useEffect(() => {
+        if (isEditingContractValues) return;
+
         // Prefer persisted contract values from backend note; fallback to computed defaults.
         const note = String((applicationData as any)?.note || "");
         const persisted = parseStructuredSection<PersistedContractValues>(
             note,
             CONTRACT_VALUES_SECTION,
         );
+        const recipientFunds = resolveRecipientFundsDollarsForContractTab({
+            contract:
+                fetchedContract && typeof fetchedContract === "object"
+                    ? (fetchedContract as Record<string, unknown>)
+                    : null,
+            persistedRecipientFundsInput: persisted?.recipientFundsInput,
+            defaultRecipientFunds,
+        });
 
         if (persisted) {
             setAmountFinancedInput(String(persisted.amountFinancedInput || ""));
@@ -860,7 +887,8 @@ export default function ContractTab({
     }, [
         applicationData,
         amountFinanced,
-        recipientFunds,
+        defaultRecipientFunds,
+        fetchedContract,
         feeAmount,
         estimatedTotalPayment,
         paymentTotal,
@@ -869,7 +897,78 @@ export default function ContractTab({
         decisionFrequency,
         numberOfPayments,
         termLength,
+        isEditingContractValues,
     ]);
+
+    // Keep Recipient Funds in sync when Net to merchant is saved from the prefill editor.
+    useEffect(() => {
+        if (!applicationUuid) return;
+        const onContractPrefillUpdated = async (event: Event) => {
+            const detail = (
+                event as CustomEvent<{ applicationUuid?: string; contract?: unknown }>
+            ).detail;
+            if (
+                !contractPrefillUpdateMatchesApplication(
+                    detail?.applicationUuid,
+                    applicationUuid,
+                )
+            ) {
+                return;
+            }
+            if (detail?.contract) {
+                setFetchedContract(detail.contract);
+                if (!isEditingContractValues) {
+                    const netDollars = readNetToMerchantDollarsFromContract(detail.contract);
+                    if (netDollars !== undefined) {
+                        const formatted = formatRecipientFundsInputFromDollars(netDollars);
+                        setRecipientFundsInput(formatted);
+                        setSavedContractValuesSnapshot((prev) =>
+                            prev ? { ...prev, recipientFundsInput: formatted } : prev,
+                        );
+                    }
+                }
+                void dispatch(getApplicationById(String(applicationUuid)));
+                return;
+            }
+            try {
+                const res = await dispatch(
+                    getByApplicationIdContract(String(applicationUuid)),
+                ).unwrap();
+                setFetchedContract((res as { data?: unknown })?.data ?? res ?? null);
+            } catch {
+                /* keep existing snapshot */
+            }
+        };
+        window.addEventListener(CONTRACT_PREFILL_UPDATED_EVENT, onContractPrefillUpdated);
+        return () => {
+            window.removeEventListener(
+                CONTRACT_PREFILL_UPDATED_EVENT,
+                onContractPrefillUpdated,
+            );
+        };
+    }, [applicationUuid, dispatch, isEditingContractValues]);
+
+    // Refresh finance charge / recipient funds when Live Offer is saved elsewhere.
+    useEffect(() => {
+        if (!applicationUuid) return;
+        const onOfferDecisionUpdated = (event: Event) => {
+            const detail = (event as CustomEvent<{ applicationId?: string }>).detail;
+            if (
+                !offerDecisionUpdateMatchesApplication(
+                    detail?.applicationId,
+                    applicationUuid,
+                )
+            ) {
+                return;
+            }
+            void dispatch(getOfferDecisionByApplication(String(applicationUuid)));
+            void dispatch(getApplicationById(String(applicationUuid)));
+        };
+        window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+        return () => {
+            window.removeEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
+        };
+    }, [applicationUuid, dispatch]);
 
     useEffect(() => {
         // Load system-wide contract template (uploaded by Underwriter dashboard)
@@ -2915,12 +3014,68 @@ export default function ContractTab({
                 CONTRACT_VALUES_SECTION,
                 payload,
             );
+
+            const contractId = Number((fetchedContract as { id?: unknown } | null)?.id);
+            let nextPrefillOverrides: Record<string, unknown> | null = null;
+            if (Number.isFinite(contractId) && contractId > 0) {
+                nextPrefillOverrides = await persistContractNetToMerchantFromRecipientFunds(
+                    dispatch,
+                    contractId,
+                    payload.recipientFundsInput,
+                    (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                        ?.contractPrefillOverrides,
+                    {
+                        applicationData,
+                        offerDecision: offerRecord,
+                    },
+                );
+            } else if (parseRecipientFundsInputDollars(payload.recipientFundsInput) !== undefined) {
+                toast.warn(
+                    "Contract values saved, but Net to merchant will sync after a contract is generated.",
+                );
+            }
+
             await dispatch(
                 updateApplication({
                     id: String(applicationUuid),
                     data: { note },
                 }),
             ).unwrap();
+
+            if (nextPrefillOverrides) {
+                setFetchedContract((prev) =>
+                    prev && typeof prev === "object"
+                        ? { ...prev, contractPrefillOverrides: nextPrefillOverrides }
+                        : prev,
+                );
+                try {
+                    await syncLiveOfferFromNetToMerchantPrefill({
+                        dispatch,
+                        applicationData,
+                        applicationUuid,
+                        offerDecision: offerRecord,
+                        contractPrefillOverrides: nextPrefillOverrides,
+                        contract:
+                            fetchedContract && typeof fetchedContract === "object"
+                                ? (fetchedContract as Record<string, unknown>)
+                                : null,
+                    });
+                    void dispatch(getOfferDecisionByApplication(String(applicationUuid)));
+                } catch (offerSyncErr) {
+                    console.error(offerSyncErr);
+                    toast.warn(
+                        "Recipient Funds saved, but Live Offer could not be synced. Try saving prefill again.",
+                    );
+                }
+                emitContractPrefillUpdated(applicationUuid, {
+                    ...(fetchedContract && typeof fetchedContract === "object"
+                        ? fetchedContract
+                        : {}),
+                    contractPrefillOverrides: nextPrefillOverrides,
+                });
+            }
+
+            setRecipientFundsInput(payload.recipientFundsInput);
             setContractValuesSaved(true);
             setIsEditingContractValues(false);
             setSavedContractValuesSnapshot(payload);

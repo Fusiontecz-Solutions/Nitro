@@ -5,8 +5,8 @@ import {
 import type { FunderProfile } from "@/types/integrationSettingsTypes";
 import { normalizeFunderDocumentsSource } from "@/utils/funderDocumentSource";
 
-/** Shared contract CC list: PDF viewer reads/writes this storage key before send. */
-export const BOLDSIGN_CC_LIST_STORAGE_KEY = "boldsign_cc_list";
+/** User-added contract CC emails — stored on `Contract.contractPrefillOverrides`. */
+export const CONTRACT_CC_EMAILS_PREFILL_KEY = "contractCcEmails";
 
 export const KATAN_CONTRACT_CC_EMAIL = "subs@katancapital.com";
 export const ALLIANCE_CONTRACT_CC_EMAIL = "subs@alliancebridgecapital.com";
@@ -84,50 +84,80 @@ export function mergeContractCcEmailList(
   return out;
 }
 
-/**
- * Returns saved user CC emails plus the funder-specific default address.
- */
-export function loadBoldSignCcEmailList(
-  funderName?: string | null,
-  funders?: FunderProfile[],
-  state?: string | null,
-): string[] {
-  if (typeof window === "undefined") {
-    return mergeContractCcEmailList([], funderName, funders, state);
-  }
-  const raw = localStorage.getItem(BOLDSIGN_CC_LIST_STORAGE_KEY);
-  if (!raw) {
-    return mergeContractCcEmailList([], funderName, funders, state);
-  }
-  try {
-    const saved = JSON.parse(raw) as unknown;
-    if (!Array.isArray(saved)) {
-      return mergeContractCcEmailList([], funderName, funders, state);
+export function parseContractCcEmailsFromPrefill(raw: unknown): string[] {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const list = (raw as Record<string, unknown>)[CONTRACT_CC_EMAILS_PREFILL_KEY];
+  if (!Array.isArray(list)) return [];
+  const out: string[] = [];
+  for (const entry of list) {
+    if (typeof entry === "string" && entry.trim()) {
+      out.push(entry.trim());
     }
-    const userEmails: string[] = [];
-    for (const e of saved) {
-      if (typeof e === "string" && e.trim() !== "") {
-        userEmails.push(e.trim());
-      }
-    }
-    return mergeContractCcEmailList(userEmails, funderName, funders, state);
-  } catch {
-    return mergeContractCcEmailList([], funderName, funders, state);
   }
+  return [...new Set(out.map((e) => e.toLowerCase()))].map(
+    (lower) => out.find((e) => e.toLowerCase() === lower) || lower,
+  );
 }
 
-/** Persist only user-added CC emails (funder default is merged on load). */
-export function saveBoldSignCcEmailList(emails: string[]): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const userOnly = [
+export function mergeContractPrefillWithCcEmails(
+  baseRaw: unknown,
+  userEmails: string[],
+): Record<string, unknown> {
+  const base =
+    baseRaw != null && typeof baseRaw === "object" && !Array.isArray(baseRaw)
+      ? { ...(baseRaw as Record<string, unknown>) }
+      : {};
+  const normalized = [
     ...new Set(
-      emails
-        .map((e) => e.trim())
+      userEmails
+        .map((e) => String(e ?? "").trim())
         .filter(Boolean)
         .filter((e) => !isDefaultContractCcEmail(e)),
     ),
   ];
-  localStorage.setItem(BOLDSIGN_CC_LIST_STORAGE_KEY, JSON.stringify(userOnly));
+  if (!normalized.length) {
+    const next = { ...base };
+    delete next[CONTRACT_CC_EMAILS_PREFILL_KEY];
+    return next;
+  }
+  return {
+    ...base,
+    [CONTRACT_CC_EMAILS_PREFILL_KEY]: normalized,
+  };
+}
+
+/**
+ * Load CC chips: funder default + user emails from contract DB (`contractPrefillOverrides`).
+ */
+export function loadContractCcEmailList(
+  funderName?: string | null,
+  funders?: FunderProfile[],
+  state?: string | null,
+  contractPrefillOverrides?: unknown | null,
+): string[] {
+  const userEmails = parseContractCcEmailsFromPrefill(contractPrefillOverrides);
+  return mergeContractCcEmailList(userEmails, funderName, funders, state);
+}
+
+/** @deprecated Use loadContractCcEmailList — reads contract DB prefill, not localStorage. */
+export function loadBoldSignCcEmailList(
+  funderName?: string | null,
+  funders?: FunderProfile[],
+  state?: string | null,
+  contractPrefillOverrides?: unknown | null,
+): string[] {
+  return loadContractCcEmailList(
+    funderName,
+    funders,
+    state,
+    contractPrefillOverrides,
+  );
+}
+
+/** @deprecated CC list is persisted via persistContractCcEmails (contract DB). */
+export function saveBoldSignCcEmailList(
+  _emails: string[],
+  _applicationId?: string | null,
+): void {
+  /* no-op — use persistContractCcEmails */
 }

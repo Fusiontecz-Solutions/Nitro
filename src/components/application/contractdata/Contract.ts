@@ -1444,9 +1444,61 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
     return Math.max(0, advance - fees - refinance);
 }
 
+/**
+ * Inverse of `computeNetToMerchantDollars` — derive offer fees ($) from a target net to merchant.
+ * Used to keep Live Offer / OfferDecision in sync with Contract tab Recipient Funds.
+ */
+export function deriveOfferFeesDollarsForNetToMerchant(
+    sources: NetToMerchantPrefillSources,
+    netToMerchantDollars: number,
+): number | undefined {
+    if (!Number.isFinite(netToMerchantDollars) || netToMerchantDollars < 0) {
+        return undefined;
+    }
+    const ctx = getOfferDecisionPrefillContext(sources);
+    const advance = readGrossOfferAdvanceFromContext(ctx);
+    if (advance === undefined || !(advance > 0)) return undefined;
+
+    const { odRoot, odEff } = ctx;
+    const refinance =
+        coerceToFiniteNumber(odRoot?.refinanceAmount) ??
+        coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
+        coerceToFiniteNumber(odEff?.refinanceAmount) ??
+        coerceToFiniteNumber(odEff?.RefinanceAmount) ??
+        0;
+
+    return Math.max(0, Math.round((advance - refinance - netToMerchantDollars) * 100) / 100);
+}
+
 export function formatNetToMerchantPrefillValue(amount: number | undefined): string {
     if (amount === undefined || !Number.isFinite(amount)) return "";
     return truncateDecimalPrefill(amount);
+}
+
+/** Recipient Funds on Contract tab — prefers saved prefill `netToMerchant`, then note override, then default. */
+export function resolveRecipientFundsDollarsForContractTab(options: {
+    contract?: Record<string, unknown> | null;
+    persistedRecipientFundsInput?: string | null;
+    defaultRecipientFunds: number;
+}): number {
+    const prefill = normalizeContractPrefillOverrides(options.contract?.contractPrefillOverrides);
+    const fromPrefill = readStoredNetToMerchantDollars({
+        prefill: prefill ?? undefined,
+        contract: options.contract as NetToMerchantPrefillSources["contract"],
+    });
+    if (fromPrefill !== undefined && fromPrefill >= 0) {
+        return fromPrefill;
+    }
+
+    const persistedRaw = String(options.persistedRecipientFundsInput ?? "").trim();
+    if (persistedRaw) {
+        const fromNote = coerceToFiniteNumber(persistedRaw);
+        if (fromNote !== undefined && fromNote >= 0) {
+            return fromNote;
+        }
+    }
+
+    return Math.max(0, options.defaultRecipientFunds);
 }
 
 const PAYMENT_FREQUENCY_LABELS = new Set([
@@ -3178,7 +3230,6 @@ export const LIVE_OFFER_MONEY_PREFILL_KEYS: ReadonlyArray<keyof BuildContractPre
     "purchasePrice",
     "remittance",
     "frequency",
-    "netToMerchant",
     "appendixUnderwritingFees",
     "achAuthorizationAccountHolderBankTransactionFee",
     "achAuthorizationAccountHolderBankNumberOfTransactions",

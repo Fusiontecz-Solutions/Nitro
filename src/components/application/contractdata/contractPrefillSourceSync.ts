@@ -1,6 +1,10 @@
 import type { ClientUpdatePayload, OwnerDetail } from "@/types/clientTypes";
 import type { BuildContractPrefillFieldsArgs } from "./Contract";
 import {
+    deriveOfferFeesDollarsForNetToMerchant,
+    type NetToMerchantPrefillSources,
+} from "./Contract";
+import {
     applyCanonicalBankFieldsToPrefill,
     resolveCanonicalBankFromPrefill,
 } from "./Contract";
@@ -274,14 +278,28 @@ export function buildOfferDecisionUpsertFromPrefill(
     const totalRemit = parseMoney(prefill.purchasePrice);
     const repayPerPeriod = parseMoney(prefill.remittance);
     const frequency = str(prefill.frequency);
-    const fees = parseMoney(prefill.appendixUnderwritingFees);
+    const feesFromPrefill = parseMoney(prefill.appendixUnderwritingFees);
+    const netToMerchant = parseMoney(prefill.netToMerchant);
+
+    let fees = feesFromPrefill;
+    if (netToMerchant != null) {
+        const sources: NetToMerchantPrefillSources = {
+            offerDecision: existingOfferDecision,
+            prefill,
+        };
+        const derivedFees = deriveOfferFeesDollarsForNetToMerchant(sources, netToMerchant);
+        if (derivedFees != null) {
+            fees = derivedFees;
+        }
+    }
 
     if (
         offer == null &&
         totalRemit == null &&
         repayPerPeriod == null &&
         !frequency &&
-        fees == null
+        fees == null &&
+        netToMerchant == null
     ) {
         return null;
     }
