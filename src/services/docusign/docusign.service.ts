@@ -133,6 +133,7 @@ import {
   buildContractEnvelopeEmailSubject,
   buildContractEnvelopePdfFilename,
   normalizeContractCcEmailSubject,
+  resolveContractEnvelopeLenderName,
 } from '../../utils/contractEnvelopeEmailSubject';
 
 dotenv.config();
@@ -3566,7 +3567,11 @@ export class DocusignService {
 
   private async resolveApplicationContractEmailContext(
     applicationId: string,
-  ): Promise<{ businessName: string | null; offerAmount: number | null }> {
+  ): Promise<{
+    businessName: string | null;
+    offerAmount: number | null;
+    funderName: string | null;
+  }> {
     try {
       const contract = await prisma.contract.findFirst({
         where: { applicationId },
@@ -3576,6 +3581,7 @@ export class DocusignService {
           clientName: true,
           doingBusinessAs: true,
           approvedAmount: true,
+          funderName: true,
         },
       });
 
@@ -3584,6 +3590,7 @@ export class DocusignService {
       ).trim();
       let offerAmount =
         contract?.approvedAmount != null ? Number(contract.approvedAmount) : null;
+      const funderName = String(contract?.funderName ?? '').trim() || null;
 
       const app = await prisma.application.findUnique({
         where: { id: applicationId },
@@ -3627,9 +3634,10 @@ export class DocusignService {
       return {
         businessName: businessName || null,
         offerAmount: offerAmount != null && Number.isFinite(offerAmount) ? offerAmount : null,
+        funderName,
       };
     } catch {
-      return { businessName: null, offerAmount: null };
+      return { businessName: null, offerAmount: null, funderName: null };
     }
   }
 
@@ -3653,10 +3661,15 @@ export class DocusignService {
 
     const appId = String(applicationId || '').trim();
     if (appId) {
-      const { businessName, offerAmount } =
+      const { businessName, offerAmount, funderName } =
         await this.resolveApplicationContractEmailContext(appId);
       if (businessName) {
-        return buildContractEnvelopeEmailSubject(businessName, offerAmount);
+        const lenderName = resolveContractEnvelopeLenderName({ funderName });
+        return buildContractEnvelopeEmailSubject(
+          businessName,
+          offerAmount,
+          lenderName,
+        );
       }
     }
 

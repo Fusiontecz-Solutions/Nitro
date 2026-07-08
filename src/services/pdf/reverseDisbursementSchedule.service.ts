@@ -4,8 +4,10 @@ import { appendPdfBuffersToBase64 } from '../docusign/utils/merge-layout-pdfs';
 import type { DocumentLayoutWithBase64 } from '../docusign/utils/platform-layout-envelope';
 import {
   REVERSE_DISBURSEMENT_COLUMNS,
+  REVERSE_DISBURSEMENT_SUMMARY_FIELDS,
   type ReverseDisbursementScheduleData,
   type ReverseDisbursementScheduleRow,
+  type ReverseDisbursementScheduleSummary,
 } from './reverseDisbursementSchedule.types';
 
 const DEFAULT_LOGO_URL =
@@ -103,10 +105,19 @@ export function parseFixedDailyDebitFromPaste(text: string): string | undefined 
   return `$ ${match[1]}`;
 }
 
+/**
+ * When copied from a PDF, each "Day X - Day Y ..." row is sometimes pasted as one
+ * continuous line/paragraph instead of separate lines. Insert a line break before
+ * every "Day N - Day N" marker so each row can be parsed independently.
+ */
+function splitConcatenatedDayRows(text: string): string {
+  return String(text || '').replace(/\s+(?=Day\s+\d+\s*-\s*Day\s+\d+)/gi, '\n');
+}
+
 export function parsePastedReverseDisbursementTable(
   pastedText: string,
 ): ReverseDisbursementScheduleRow[] {
-  const lines = String(pastedText || '')
+  const lines = splitConcatenatedDayRows(pastedText)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -174,7 +185,26 @@ export function normalizeReverseDisbursementScheduleData(
   if (!rows.length) return null;
 
   const fixedDailyDebit = String(obj.fixedDailyDebit ?? '').trim() || undefined;
-  return { fixedDailyDebit, rows };
+
+  const summaryRaw =
+    obj.summary && typeof obj.summary === 'object' && !Array.isArray(obj.summary)
+      ? (obj.summary as Record<string, unknown>)
+      : null;
+  let summary: ReverseDisbursementScheduleSummary | undefined;
+  if (summaryRaw) {
+    const entries = REVERSE_DISBURSEMENT_SUMMARY_FIELDS.map(({ key }) => [
+      key,
+      String(summaryRaw[key] ?? '').trim(),
+    ]).filter(([, value]) => Boolean(value));
+    if (entries.length) {
+      summary = Object.fromEntries(entries) as ReverseDisbursementScheduleSummary;
+    }
+  }
+  if (fixedDailyDebit && !summary?.dailyDebit) {
+    summary = { ...summary, dailyDebit: fixedDailyDebit };
+  }
+
+  return { fixedDailyDebit, summary, rows };
 }
 
 function formatCurrencyCell(value: string): string {
@@ -192,6 +222,21 @@ function resolveLogoUrl(): string {
     String(process.env.REVERSE_DISBURSEMENT_LOGO_URL || '').trim() ||
     DEFAULT_LOGO_URL
   );
+}
+
+function formatSummaryValue(
+  key: keyof ReverseDisbursementScheduleSummary,
+  value: string,
+): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (key === 'totalFundingAmount' || key === 'netFundingAmount' || key === 'dailyDebit') {
+    return formatCurrencyCell(raw);
+  }
+  if (key === 'reductionOnDailyRate' || key === 'originationFeePercent') {
+    return raw.includes('%') ? raw : `${raw}%`;
+  }
+  return raw;
 }
 
 export function buildReverseDisbursementScheduleHtml(
@@ -214,9 +259,16 @@ export function buildReverseDisbursementScheduleHtml(
     })
     .join('');
 
-  const fixedDailyDebit = String(data.fixedDailyDebit ?? '').trim();
-  const footerHtml = fixedDailyDebit
-    ? `<p class="footer-debit">FIXED DAILY DEBIT: ${escapeHtml(formatCurrencyCell(fixedDailyDebit))}</p>`
+  const summary = data.summary ?? {};
+  const summaryRows = REVERSE_DISBURSEMENT_SUMMARY_FIELDS.map(({ key, label }) => {
+    const value = formatSummaryValue(key, summary[key] ?? '');
+    if (!value) return '';
+    return `<tr><td class="summary-label">${escapeHtml(label)}</td><td class="summary-value">${escapeHtml(value)}</td></tr>`;
+  })
+    .filter(Boolean)
+    .join('');
+  const summaryHtml = summaryRows
+    ? `<table class="summary-table"><tbody>${summaryRows}</tbody></table>`
     : '';
 
   return `
@@ -225,11 +277,11 @@ export function buildReverseDisbursementScheduleHtml(
     <img src="${escapeHtml(logoUrl)}" alt="Logo" class="logo" />
   </div>
   <h1 class="title">DISBURSEMENT SCHEDULE</h1>
+  ${summaryHtml}
   <table class="schedule-table">
     <thead><tr>${headerCells}</tr></thead>
     <tbody>${bodyRows}</tbody>
   </table>
-  ${footerHtml}
 </div>
 <style>
   .reverse-schedule-root {
@@ -261,6 +313,26 @@ export function buildReverseDisbursementScheduleHtml(
     background: #d9ead3;
     color: #111827;
   }
+  .summary-table {
+    border-collapse: collapse;
+    font-size: 12px;
+    margin: 0 0 22px;
+    width: auto;
+  }
+  .summary-table td {
+    border: 1px solid #9ca3af;
+    padding: 5px 10px;
+    vertical-align: top;
+  }
+  .summary-label {
+    font-weight: 700;
+    min-width: 190px;
+    white-space: nowrap;
+  }
+  .summary-value {
+    min-width: 110px;
+    text-align: right;
+  }
   .schedule-table {
     width: 100%;
     border-collapse: collapse;
@@ -278,12 +350,6 @@ export function buildReverseDisbursementScheduleHtml(
     background: #f3f4f6;
     font-weight: 700;
     text-align: left;
-  }
-  .footer-debit {
-    margin-top: 20px;
-    text-align: center;
-    font-size: 14px;
-    font-weight: 700;
   }
 </style>`;
 }

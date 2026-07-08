@@ -1,13 +1,26 @@
 import { EMAIL_BRAND_DISPLAY_NAME } from '../constants/emailBrand';
 import { sanitizeLetterPdfFilename } from '../services/pdf/letterHtmlToPdf.service';
+import { isAllianceBridgeFunder } from '../services/docusign/utils/resolve-main-contract-layout';
 
 /** Lender prefix for contract / ACH envelope email subjects and PDF names. */
 export const CONTRACT_ENVELOPE_LENDER_NAME = String(
   process.env.DOCUSIGN_EMAIL_LENDER_NAME || EMAIL_BRAND_DISPLAY_NAME,
 ).trim();
 
+/** Alliance Bridge contract envelope subject / PDF prefix (Texas and non-Texas). */
+export const ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME = 'ALLIANCE BRIDGE CAPITAL';
+
 /** @deprecated Use CONTRACT_ENVELOPE_LENDER_NAME */
 export const DOCUSIGN_EMAIL_LENDER_NAME = CONTRACT_ENVELOPE_LENDER_NAME;
+
+export function resolveContractEnvelopeLenderName(options?: {
+  funderName?: string | null;
+}): string {
+  if (isAllianceBridgeFunder(options?.funderName)) {
+    return ALLIANCE_BRIDGE_CONTRACT_LENDER_NAME;
+  }
+  return CONTRACT_ENVELOPE_LENDER_NAME;
+}
 
 function parseContractOfferAmount(value: unknown): number | null {
   if (value == null || value === '') return null;
@@ -35,10 +48,14 @@ export function formatContractOfferAmountForSubject(
 export function buildContractEnvelopeEmailSubject(
   businessName: string,
   offerAmount?: number | string | null,
+  lenderName?: string | null,
 ): string {
   const business = String(businessName || '').trim() || 'Business';
   const amount = formatContractOfferAmountForSubject(offerAmount);
-  return `${CONTRACT_ENVELOPE_LENDER_NAME} : ${business} - ${amount}`;
+  const lender =
+    String(lenderName ?? CONTRACT_ENVELOPE_LENDER_NAME).trim() ||
+    CONTRACT_ENVELOPE_LENDER_NAME;
+  return `${lender} : ${business} - ${amount}`;
 }
 
 /** ACH-only envelope email subject and PDF name: ACH FORM: BusinessName */
