@@ -162,11 +162,19 @@ import {
     offerDecisionUpdateMatchesApplication,
 } from "@/lib/offerDecisionSync";
 import {
+    CONTRACT_PREFILL_UPDATED_EVENT,
+    contractPrefillUpdateMatchesApplication,
+} from "@/lib/contractPrefillSync";
+import {
     isDefaultContractCcEmail,
-    loadBoldSignCcEmailList,
+    loadContractCcEmailList,
     mergeContractCcEmailList,
-    saveBoldSignCcEmailList,
 } from "./boldsignCcList";
+import {
+    persistContractCcEmails,
+    persistContractSendRecipients,
+    readContractPrefillOverrides,
+} from "./contractCcPersistence";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
 import {
     TemplateMappingPrefillEditDialog,
@@ -2110,6 +2118,46 @@ const PDFViewerModal = ({
         };
     }, [isOpen, applicationIdForLookup, dispatch]);
 
+    /** Re-sync prefill when Net to merchant is saved from the Contract tab. */
+    useEffect(() => {
+        if (!isOpen || !applicationIdForLookup) return;
+        const onContractPrefillUpdated = (event: Event) => {
+            const detail = (
+                event as CustomEvent<{ applicationUuid?: string; contract?: unknown }>
+            ).detail;
+            if (
+                !contractPrefillUpdateMatchesApplication(
+                    detail?.applicationUuid,
+                    applicationIdForLookup,
+                )
+            ) {
+                return;
+            }
+            const contract =
+                detail?.contract != null && typeof detail.contract === "object"
+                    ? (detail.contract as Record<string, unknown>)
+                    : null;
+            if (!contract) return;
+            const fullPrefill = contract.contractPrefillOverrides ?? null;
+            const main = stripDocumentTemplateBlobFromPrefillOverrides(fullPrefill);
+            setContractPrefillFromDb(main ?? null);
+            setResolvedContract((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          ...contract,
+                          contractPrefillOverrides: fullPrefill,
+                      }
+                    : contract,
+            );
+            void dispatch(getApplicationById(applicationIdForLookup));
+        };
+        window.addEventListener(CONTRACT_PREFILL_UPDATED_EVENT, onContractPrefillUpdated);
+        return () => {
+            window.removeEventListener(CONTRACT_PREFILL_UPDATED_EVENT, onContractPrefillUpdated);
+        };
+    }, [isOpen, applicationIdForLookup, dispatch]);
+
     useEffect(() => {
         if (!isOpen) {
             contractPrefillLoadKeyRef.current = null;
@@ -3161,20 +3209,59 @@ const PDFViewerModal = ({
         if (fd) setSelectedFunder(pickCanonicalFunderName(fd));
     }, [isOpen, applicationData, contractPrefillLoaded, pickCanonicalFunderName]);
 
-    // Seed CC list when the dialog opens; default CC follows selected funder.
+    const contractPrefillForCc = useMemo(
+        () => readContractPrefillOverrides(resolvedContract, contractPrefillFromDb),
+        [resolvedContract, contractPrefillFromDb],
+    );
+
+    const applyPersistedContractPrefill = useCallback((nextPrefill: Record<string, unknown>) => {
+        setContractPrefillFromDb(
+            stripDocumentTemplateBlobFromPrefillOverrides(nextPrefill),
+        );
+        setResolvedContract((prev) =>
+            prev && typeof prev === "object"
+                ? { ...prev, contractPrefillOverrides: nextPrefill }
+                : prev,
+        );
+    }, []);
+
+    const persistCcToContract = useCallback(
+        async (mergedCcEmails: string[]) => {
+            const cid = effectiveContractId;
+            if (cid == null) return;
+            const nextPrefill = await persistContractCcEmails(
+                dispatch,
+                cid,
+                mergedCcEmails,
+                contractPrefillForCc,
+            );
+            applyPersistedContractPrefill(nextPrefill);
+        },
+        [applyPersistedContractPrefill, contractPrefillForCc, dispatch, effectiveContractId],
+    );
+
+    // Seed CC list from contract DB when the dialog opens; default CC follows selected funder.
     useEffect(() => {
-        if (!isOpen) {
+        if (!isOpen || !contractPrefillLoaded) {
             return;
         }
         setCcEmails(
-            loadBoldSignCcEmailList(
+            loadContractCcEmailList(
                 selectedFunder,
                 funders,
                 pickUsStateForSelect(selectedState),
+                contractPrefillForCc,
             ),
         );
         setCcEmailDraft("");
-    }, [isOpen, selectedFunder, funders, selectedState]);
+    }, [
+        isOpen,
+        contractPrefillLoaded,
+        selectedFunder,
+        funders,
+        selectedState,
+        contractPrefillForCc,
+    ]);
 
     const prevFunderForPackageRef = useRef("");
     useEffect(() => {
@@ -3251,7 +3338,10 @@ const PDFViewerModal = ({
             pickUsStateForSelect(selectedState),
         );
         setCcEmails(next);
-        saveBoldSignCcEmailList(next);
+        void persistCcToContract(next).catch((err) => {
+            console.warn("[Contract CC] failed to save CC list to contract:", err);
+            toast.error("Could not save CC list to this contract.");
+        });
         setCcEmailDraft("");
     };
 
@@ -3291,9 +3381,33 @@ const PDFViewerModal = ({
                 pickUsStateForSelect(selectedState),
             );
 
-            saveBoldSignCcEmailList(toSend);
             setCcEmails(toSend);
             setCcEmailDraft("");
+
+            if (effectiveContractId != null) {
+                try {
+                    const primary = effectiveContractSignerRows[0];
+                    const nextPrefill = await persistContractSendRecipients(
+                        dispatch,
+                        effectiveContractId,
+                        {
+                            mergedCcEmails: toSend,
+                            contractPrefillOverrides: contractPrefillForCc,
+                            signerRows: effectiveContractSignerRows,
+                            primarySignerEmail: primary?.email,
+                            primarySignerName: primary?.name,
+                        },
+                    );
+                    applyPersistedContractPrefill(nextPrefill);
+                    setContractSignerOverrides(
+                        parseContractSignerOverridesFromPrefill(nextPrefill),
+                    );
+                } catch (persistErr) {
+                    console.warn("[Contract send] failed to persist CC/signers:", persistErr);
+                    toast.error("Could not save CC/signers on the contract before send.");
+                    return;
+                }
+            }
 
             if (onPrepareDocuSignDraft) {
                 const signerValidationMsg =
@@ -7284,10 +7398,11 @@ const PDFViewerModal = ({
                                                                 setSelectedFunder(nextFunder);
                                                             }
                                                             setCcEmails(
-                                                                loadBoldSignCcEmailList(
+                                                                loadContractCcEmailList(
                                                                     nextFunder,
                                                                     funders,
                                                                     picked,
+                                                                    contractPrefillForCc,
                                                                 ),
                                                             );
                                                             if (
@@ -7349,10 +7464,11 @@ const PDFViewerModal = ({
                                                             disclosureAutoLinkKeyRef.current = "";
                                                             const picked = pickUsStateForSelect(selectedState);
                                                             setCcEmails(
-                                                                loadBoldSignCcEmailList(
+                                                                loadContractCcEmailList(
                                                                     v,
                                                                     funders,
                                                                     picked,
+                                                                    contractPrefillForCc,
                                                                 ),
                                                             );
                                                             if (
@@ -9703,7 +9819,15 @@ const PDFViewerModal = ({
                                                     pickUsStateForSelect(selectedState),
                                                 );
                                                 setCcEmails(next);
-                                                saveBoldSignCcEmailList(next);
+                                                void persistCcToContract(next).catch((err) => {
+                                                    console.warn(
+                                                        "[Contract CC] failed to save CC list:",
+                                                        err,
+                                                    );
+                                                    toast.error(
+                                                        "Could not save CC list to this contract.",
+                                                    );
+                                                });
                                             }}
                                         >
                                             <X className="h-3.5 w-3.5" />

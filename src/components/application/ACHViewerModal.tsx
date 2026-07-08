@@ -43,10 +43,13 @@ import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import {
     isDefaultContractCcEmail,
-    loadBoldSignCcEmailList,
+    loadContractCcEmailList,
     mergeContractCcEmailList,
-    saveBoldSignCcEmailList,
 } from "./boldsignCcList";
+import {
+    persistContractCcEmails,
+    readContractPrefillOverrides,
+} from "./contractCcPersistence";
 import {
     canResendAchAuthorization,
     canSendAchAuthorization,
@@ -315,6 +318,33 @@ export default function ACHViewerModal({
                     ?.contractPrefillOverrides,
             ),
         [resolvedContract],
+    );
+
+    const contractPrefillForCc = useMemo(
+        () => readContractPrefillOverrides(resolvedContract, contractPrefillFromDb),
+        [resolvedContract, contractPrefillFromDb],
+    );
+
+    const applyPersistedContractPrefill = useCallback((nextPrefill: Record<string, unknown>) => {
+        setResolvedContract((prev) =>
+            prev && typeof prev === "object"
+                ? { ...prev, contractPrefillOverrides: nextPrefill }
+                : prev,
+        );
+    }, []);
+
+    const persistCcToContract = useCallback(
+        async (mergedCcEmails: string[]) => {
+            if (contractId == null) return;
+            const nextPrefill = await persistContractCcEmails(
+                dispatch,
+                contractId,
+                mergedCcEmails,
+                contractPrefillForCc,
+            );
+            applyPersistedContractPrefill(nextPrefill);
+        },
+        [applyPersistedContractPrefill, contractId, contractPrefillForCc, dispatch],
     );
 
     const documentTemplatePrefillByMappingId = useMemo(
@@ -831,9 +861,12 @@ export default function ACHViewerModal({
             contractState || null,
         );
         setCcEmails(next);
-        saveBoldSignCcEmailList(next);
+        void persistCcToContract(next).catch((err) => {
+            console.warn("[ACH CC] failed to save CC list to contract:", err);
+            toast.error("Could not save CC list to this contract.");
+        });
         setCcEmailDraft("");
-    }, [ccEmailDraft, ccEmails, funders, resolvedAchFunderName, contractState]);
+    }, [ccEmailDraft, ccEmails, funders, resolvedAchFunderName, contractState, persistCcToContract]);
 
     const saveAchSigners = useCallback(async () => {
         const rows = achSignerEditorRows
@@ -1053,7 +1086,6 @@ export default function ACHViewerModal({
                 funders,
                 contractState || null,
             );
-            saveBoldSignCcEmailList(ccEmailsToSend);
             setCcEmails(ccEmailsToSend);
             setCcEmailDraft("");
 
@@ -1064,6 +1096,22 @@ export default function ACHViewerModal({
                 showDocuSignTabMessage(docuSignTab, "Could not open DocuSign", msg);
                 setShowAchSignerEditor(true);
                 return;
+            }
+
+            if (contractId != null) {
+                try {
+                    const nextPrefill = await persistContractCcEmails(
+                        dispatch,
+                        contractId,
+                        ccEmailsToSend,
+                        contractPrefillForCc,
+                    );
+                    applyPersistedContractPrefill(nextPrefill);
+                } catch (persistErr) {
+                    console.warn("[ACH send] failed to persist CC list:", persistErr);
+                    toast.error("Could not save CC list on the contract before send.");
+                    return;
+                }
             }
 
             let envelopeId = String(linkedEnvelopeId ?? "").trim();
@@ -1203,9 +1251,14 @@ export default function ACHViewerModal({
     useEffect(() => {
         if (!isOpen) return;
         setCcEmails(
-            loadBoldSignCcEmailList(resolvedAchFunderName, funders, contractState || null),
+            loadContractCcEmailList(
+                resolvedAchFunderName,
+                funders,
+                contractState || null,
+                contractPrefillForCc,
+            ),
         );
-    }, [isOpen, resolvedAchFunderName, funders, contractState]);
+    }, [isOpen, resolvedAchFunderName, funders, contractState, contractPrefillForCc]);
 
     useEffect(() => {
         if (!isOpen || contractId == null) return;
@@ -1314,10 +1367,11 @@ export default function ACHViewerModal({
                                                 contractState || null,
                                             );
                                             setCcEmails(
-                                                loadBoldSignCcEmailList(
+                                                loadContractCcEmailList(
                                                     nextFunder,
                                                     funders,
                                                     contractState || null,
+                                                    contractPrefillForCc,
                                                 ),
                                             );
                                             if (
@@ -1603,7 +1657,17 @@ export default function ACHViewerModal({
                                                                 contractState || null,
                                                             );
                                                             setCcEmails(next);
-                                                            saveBoldSignCcEmailList(next);
+                                                            void persistCcToContract(next).catch(
+                                                                (err) => {
+                                                                    console.warn(
+                                                                        "[ACH CC] failed to save CC list:",
+                                                                        err,
+                                                                    );
+                                                                    toast.error(
+                                                                        "Could not save CC list to this contract.",
+                                                                    );
+                                                                },
+                                                            );
                                                         }}
                                                     >
                                                         <X className="h-3.5 w-3.5" />

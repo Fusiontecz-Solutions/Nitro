@@ -317,17 +317,21 @@ function isContractRowVisibleInSendTable(
 function isAchRowVisibleInSendTable(
     status: AchAuthorizationDocuSignCapsuleStatus | undefined,
     envelopeId?: string | null,
+    sentAt?: unknown,
 ): boolean {
     if (!String(envelopeId ?? "").trim()) return false;
-    return Boolean(status && status !== "DRAFT");
+    if (status && status !== "DRAFT") return true;
+    return Boolean(sentAt != null && String(sentAt).trim());
 }
 
 function isPackageRowVisibleInSendTable(
     status: StandalonePackageDocuSignCapsuleStatus | undefined,
     envelopeId?: string | null,
+    sentAt?: unknown,
 ): boolean {
     if (!String(envelopeId ?? "").trim()) return false;
-    return Boolean(status && status !== "DRAFT");
+    if (status && status !== "DRAFT") return true;
+    return Boolean(sentAt != null && String(sentAt).trim());
 }
 
 /** Disambiguate repeated send rows with sent date/time instead of "send N". */
@@ -548,7 +552,13 @@ export function buildContractSendTableRows(
     });
 
     if (achEnvelopeId && !seenEnvelopeIds.has(achEnvelopeId)) {
-        if (isAchRowVisibleInSendTable(achCurrent?.status, achEnvelopeId)) {
+        if (
+            isAchRowVisibleInSendTable(
+                achCurrent?.status,
+                achEnvelopeId,
+                achCurrent?.sentAt,
+            )
+        ) {
             seenEnvelopeIds.add(achEnvelopeId);
             rows.push({
                 rowType: "ach",
@@ -565,7 +575,13 @@ export function buildContractSendTableRows(
     }
 
     if (packageEnvelopeId && !seenEnvelopeIds.has(packageEnvelopeId)) {
-        if (isPackageRowVisibleInSendTable(packageCurrent?.status, packageEnvelopeId)) {
+        if (
+            isPackageRowVisibleInSendTable(
+                packageCurrent?.status,
+                packageEnvelopeId,
+                packageCurrent?.sentAt,
+            )
+        ) {
             seenEnvelopeIds.add(packageEnvelopeId);
             rows.push({
                 rowType: "package",
@@ -584,7 +600,9 @@ export function buildContractSendTableRows(
     const packageHistoryNewestFirst = [...packageHistory].reverse();
     packageHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
-        if (!isPackageRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
+        if (
+            !isPackageRowVisibleInSendTable(entry.status, entry.envelopeId, entry.sentAt)
+        ) return;
         seenEnvelopeIds.add(entry.envelopeId);
         rows.push({
             rowType: "package",
@@ -602,7 +620,7 @@ export function buildContractSendTableRows(
     const achHistoryNewestFirst = [...achHistory].reverse();
     achHistoryNewestFirst.forEach((entry) => {
         if (seenEnvelopeIds.has(entry.envelopeId)) return;
-        if (!isAchRowVisibleInSendTable(entry.status, entry.envelopeId)) return;
+        if (!isAchRowVisibleInSendTable(entry.status, entry.envelopeId, entry.sentAt)) return;
         seenEnvelopeIds.add(entry.envelopeId);
         rows.push({
             rowType: "ach",
@@ -646,111 +664,14 @@ function applyContractsGeneratedRowLabels(rows: ContractSendTableRow[]): void {
 }
 
 /**
- * Main-contract rows for the Contracts Generated table — every generation for this
- * application (draft, sent, signed, voided), numbered when there is more than one.
+ * Contracts Generated table — sent envelopes only (no drafts), including main contract,
+ * ACH authorization, addendum, and state disclosure rows.
  */
 export function buildContractsGeneratedTableRows(
     contract: Record<string, unknown> | null | undefined,
 ): ContractSendTableRow[] {
-    if (!contract) return [];
-
-    const contractId = Number((contract as { id?: unknown }).id);
-    const hasContractRecord = Number.isFinite(contractId) && contractId > 0;
-    if (!hasContractRecord) return [];
-
-    const prefill = contract.contractPrefillOverrides;
-    const doc = pickContractEnvelopeDocument(contract);
-    const mainEnvelopeId = String(doc?.envelopeId ?? "").trim() || null;
-
-    const achCurrent = parseAchAuthorizationDocuSignFromPrefill(prefill, {
-        excludeEnvelopeId: mainEnvelopeId,
-    });
-    const achEnvelopeId = String(achCurrent?.envelopeId ?? "").trim() || null;
-
-    const packageCurrent = parseStandalonePackageDocuSignFromPrefill(prefill, {
-        excludeEnvelopeId: mainEnvelopeId,
-    });
-    const packageEnvelopeId = String(packageCurrent?.envelopeId ?? "").trim() || null;
-
-    const contractHistory = parseContractSendHistoryFromPrefill(prefill);
-
-    const seenEnvelopeIds = new Set<string>();
-    const rows: ContractSendTableRow[] = [];
-
-    const mainEnvelopeIsAchOnly = Boolean(
-        mainEnvelopeId && achEnvelopeId && mainEnvelopeId === achEnvelopeId,
-    );
-    const mainEnvelopeIsPackageOnly = Boolean(
-        mainEnvelopeId && packageEnvelopeId && mainEnvelopeId === packageEnvelopeId,
-    );
-
-    for (const entry of contractHistory) {
-        if (seenEnvelopeIds.has(entry.envelopeId)) continue;
-        seenEnvelopeIds.add(entry.envelopeId);
-        rows.push({
-            rowType: "contract",
-            key: `history-contract-${entry.envelopeId}`,
-            label: "Contract",
-            envelopeId: entry.envelopeId,
-            contractStatus: entry.status,
-            documentStatus: entry.status,
-            sentAt: entry.sentAt ?? entry.archivedAt ?? null,
-            isCurrent: false,
-            termsSnapshot: entry.termsSnapshot ?? null,
-        });
-    }
-
-    if (mainEnvelopeId && !mainEnvelopeIsAchOnly && !mainEnvelopeIsPackageOnly) {
-        if (!seenEnvelopeIds.has(mainEnvelopeId)) {
-            seenEnvelopeIds.add(mainEnvelopeId);
-            rows.push({
-                rowType: "contract",
-                key: `current-contract-${mainEnvelopeId}`,
-                label: "Contract",
-                envelopeId: mainEnvelopeId,
-                contractStatus: (contract as { status?: unknown }).status,
-                documentStatus: doc?.status,
-                sentAt:
-                    doc?.sentAt ??
-                    doc?.updatedAt ??
-                    (contract as { updatedAt?: unknown }).updatedAt ??
-                    (contract as { createdAt?: unknown }).createdAt ??
-                    null,
-                isCurrent: true,
-                termsSnapshot: null,
-            });
-        } else {
-            const liveRow = rows.find((row) => row.envelopeId === mainEnvelopeId);
-            if (liveRow) {
-                liveRow.isCurrent = true;
-                liveRow.contractStatus = (contract as { status?: unknown }).status;
-                liveRow.documentStatus = doc?.status;
-            }
-        }
-    }
-
-    const hasCurrentMainContractRow = rows.some(
-        (row) => row.rowType === "contract" && row.isCurrent,
-    );
-    if (!hasCurrentMainContractRow) {
-        rows.push({
-            rowType: "contract",
-            key: `generated-contract-${contractId}`,
-            label: "Contract",
-            envelopeId: null,
-            contractStatus: (contract as { status?: unknown }).status ?? "DRAFT",
-            documentStatus: doc?.status ?? null,
-            sentAt:
-                (contract as { updatedAt?: unknown }).updatedAt ??
-                (contract as { createdAt?: unknown }).createdAt ??
-                null,
-            isCurrent: true,
-            termsSnapshot: null,
-        });
-    }
-
+    const rows = buildContractSendTableRows(contract);
     rows.sort((a, b) => contractGeneratedRowSortTime(a) - contractGeneratedRowSortTime(b));
     applyContractsGeneratedRowLabels(rows);
-
     return rows;
 }

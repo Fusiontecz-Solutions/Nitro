@@ -45,7 +45,9 @@ import {
     applyLiveOfferSyncToPrefillPartial,
     applyOwnerRowsToPrefillMerge,
     contractPrefillToContractColumnUpdate,
+    deriveOfferFeesDollarsForNetToMerchant,
     finalizeContractPrefillMoneyFields,
+    formatOfferDecisionFeesDollarsForPrefill,
     getContractPrefillEditDefaultsFromApplication,
     stripStaleOfferOverridesFromPersisted,
     type BuildContractPrefillFieldsArgs,
@@ -67,7 +69,7 @@ import { getByApplicationIdContract, updateContract } from "@/redux/actions/cont
 import { toast } from "react-toastify";
 import { SpaCalculationModal } from "./SpaCalculationModal";
 import { persistCalculatedPurchasePercent } from "./spaPrefillSync";
-import { cn } from "@/lib/utils";
+import { cn, parseNumberUS } from "@/lib/utils";
 import {
     GUARANTOR2_PREFILL_FORM_KEYS,
     OWNER2_PREFILL_FORM_KEYS,
@@ -85,6 +87,16 @@ import {
 import { getPlatformSignerRoleRows } from "./platformDocumentConfig";
 import { syncContractPrefillToSourceRecords } from "./contractPrefillSourceSync";
 import { resolveOwnerRowsForContractPrefill } from "./contractSignerOwnersSync";
+import {
+    CONTRACT_PREFILL_UPDATED_EVENT,
+    contractPrefillUpdateMatchesApplication,
+    emitContractPrefillUpdated,
+} from "@/lib/contractPrefillSync";
+import {
+    MANUAL_NET_TO_MERCHANT_KEY,
+    readNetToMerchantPrefillFromContract,
+    syncApplicationNoteRecipientFundsFromNetToMerchant,
+} from "../contractRecipientFundsSync";
 
 type LegacySnakeCasePrefillKey =
     | "ach_authorization_bank_portal_website"
@@ -1642,6 +1654,50 @@ export function ContractPrefillEditForm({
         // Intentionally omit `persistedPrefillOverrides` — re-hydrating on parent updates resets in-progress edits.
     }, [open, formReady]);
 
+    /** Contract tab saved Recipient Funds → refresh Net to merchant while this dialog is open. */
+    useEffect(() => {
+        if (!open) return;
+        const appKey = String(applicationUuid ?? "").trim();
+        if (!appKey) return;
+        const onExternalPrefillUpdate = (event: Event) => {
+            const detail = (
+                event as CustomEvent<{ applicationUuid?: string; contract?: unknown }>
+            ).detail;
+            if (!contractPrefillUpdateMatchesApplication(detail?.applicationUuid, appKey)) {
+                return;
+            }
+            const netToMerchant = readNetToMerchantPrefillFromContract(detail?.contract);
+            if (!netToMerchant) return;
+            const netDollars = parseNumberUS(netToMerchant);
+            const derivedFees =
+                Number.isFinite(netDollars) && netDollars >= 0
+                    ? deriveOfferFeesDollarsForNetToMerchant(
+                          {
+                              application: applicationData as Record<string, unknown> | undefined,
+                              contract: contractRecords?.contract ?? null,
+                              offerDecision: offerDecision ?? null,
+                              prefill: { netToMerchant },
+                          },
+                          netDollars,
+                      )
+                    : undefined;
+            setValues((prev) => ({
+                ...prev,
+                netToMerchant,
+                ...(derivedFees !== undefined
+                    ? {
+                          appendixUnderwritingFees:
+                              formatOfferDecisionFeesDollarsForPrefill(derivedFees),
+                      }
+                    : {}),
+            }));
+        };
+        window.addEventListener(CONTRACT_PREFILL_UPDATED_EVENT, onExternalPrefillUpdate);
+        return () => {
+            window.removeEventListener(CONTRACT_PREFILL_UPDATED_EVENT, onExternalPrefillUpdate);
+        };
+    }, [open, applicationUuid, applicationData, contractRecords?.contract, offerDecision]);
+
     useEffect(() => {
         if (!open) {
             offerSyncAppliedKeyRef.current = null;
@@ -1789,6 +1845,22 @@ export function ContractPrefillEditForm({
                     prefill: rawPayload,
                 }),
             );
+            const netDollars = parseNumberUS(String(payload.netToMerchant ?? "").trim());
+            if (Number.isFinite(netDollars) && netDollars >= 0) {
+                const derivedFees = deriveOfferFeesDollarsForNetToMerchant(
+                    {
+                        application: applicationData as Record<string, unknown> | undefined,
+                        contract: contractRecords?.contract ?? null,
+                        offerDecision: offerDecision ?? null,
+                        prefill: payload,
+                    },
+                    netDollars,
+                );
+                if (derivedFees !== undefined) {
+                    payload.appendixUnderwritingFees =
+                        formatOfferDecisionFeesDollarsForPrefill(derivedFees);
+                }
+            }
             const extras =
                 additionalContractPrefillJson && typeof additionalContractPrefillJson === "object"
                     ? { ...additionalContractPrefillJson }
@@ -1847,6 +1919,14 @@ export function ContractPrefillEditForm({
                 contractPrefillOverrides._manualPurchasePercent = true;
             } else {
                 delete contractPrefillOverrides._manualPurchasePercent;
+            }
+            const netToMerchantRaw = String(
+                (payload as { netToMerchant?: unknown }).netToMerchant ?? "",
+            ).trim();
+            if (netToMerchantRaw) {
+                contractPrefillOverrides[MANUAL_NET_TO_MERCHANT_KEY] = true;
+            } else {
+                delete contractPrefillOverrides[MANUAL_NET_TO_MERCHANT_KEY];
             }
             const signerRowsToPersist = signerEditorRows
                 .map((row) => ({
@@ -1919,6 +1999,25 @@ export function ContractPrefillEditForm({
                 } catch {
                     /* parent already has saved snapshot from update response */
                 }
+                const netToMerchantSaved = String(
+                    (mainSaved as { netToMerchant?: unknown } | null)?.netToMerchant ?? "",
+                ).trim();
+                if (netToMerchantSaved) {
+                    try {
+                        const appNote = String(
+                            (applicationData as { note?: unknown } | null)?.note ?? "",
+                        );
+                        await syncApplicationNoteRecipientFundsFromNetToMerchant(
+                            dispatch,
+                            appKey,
+                            appNote,
+                            netToMerchantSaved,
+                        );
+                    } catch (noteSyncErr) {
+                        console.error(noteSyncErr);
+                    }
+                }
+                emitContractPrefillUpdated(appKey, updatedContract);
             }
             setSaveError(null);
             toast.success("Contract prefill, offer, application, and bank details saved.");
@@ -1968,6 +2067,7 @@ export function ContractPrefillEditForm({
                             : null;
                     onPersistedPrefillChange?.(stripDocumentTemplateBlobFromPrefillOverrides(fullObj));
                     onPersistedPrefillFullChange?.(fullObj);
+                    emitContractPrefillUpdated(appKey, contract);
                 } catch {
                     onPersistedPrefillChange?.(null);
                     onPersistedPrefillFullChange?.(preserveDoc ?? null);
