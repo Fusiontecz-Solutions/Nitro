@@ -3195,7 +3195,10 @@ export class DocusignService {
       'disbursement',
       'funded',
     ]);
-    if (postDraftQueues.has(qKey)) return;
+    if (postDraftQueues.has(qKey)) {
+      await clearNeedsContractReinitiation(appId);
+      return;
+    }
 
     await prisma.application.updateMany({
       where: { id: appId },

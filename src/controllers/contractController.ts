@@ -2,6 +2,7 @@
 import contractService from '../services/contractService';
 import type { AuthenticatedUser } from '../services/applicationService';
 import { recordContractWorkflowActivityLog } from '../services/contractWorkflowActivityLog';
+import { clearNeedsContractReinitiation } from '../services/contractReinitiationService';
 import prisma from '../config/prismaClient';
 
 const getAuthenticatedUser = (req: Request): AuthenticatedUser | null =>
@@ -100,6 +101,9 @@ class ContractController {
               },
             },
           );
+          if (hadExistingContract) {
+            await clearNeedsContractReinitiation(appId);
+          }
         } catch (logErr) {
           console.error('[createContract] activity log failed:', logErr);
         }

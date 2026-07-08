@@ -408,6 +408,39 @@ export function declinedMatchWhere(): Prisma.ApplicationWhereInput {
     return { currentQueue: 'Declined' };
 }
 
+/** Soft-deleted applications (Recently Deleted bucket). */
+export function recentlyDeletedMatchWhere(): Prisma.ApplicationWhereInput {
+    return { deletedAt: { not: null } };
+}
+
+/** Exclude soft-deleted rows from normal pipeline lists and stats. */
+export function excludeSoftDeletedWhere(): Prisma.ApplicationWhereInput {
+    return { deletedAt: null };
+}
+
+/** Scope list queries: Recently Deleted shows only trashed rows; all other views hide them. */
+export function applySoftDeleteListScope(
+    where: Prisma.ApplicationWhereInput,
+    operationsStatus: string | undefined,
+): Prisma.ApplicationWhereInput {
+    const canonical = operationsStatus
+        ? normalizeOperationsStatusKey(String(operationsStatus))
+        : '';
+    const softDeleteFilter =
+        canonical === 'Recently_Deleted'
+            ? recentlyDeletedMatchWhere()
+            : excludeSoftDeletedWhere();
+    const existingAnd = where.AND
+        ? Array.isArray(where.AND)
+            ? where.AND
+            : [where.AND]
+        : [];
+    return {
+        ...where,
+        AND: [...existingAnd, softDeleteFilter],
+    };
+}
+
 /** Agent intake — queue labels only (matches sidebar / list drill-down). */
 export function agentPipelineMatchWhere(): Prisma.ApplicationWhereInput {
     return { currentQueue: { in: [...AGENT_PIPELINE_QUEUE_STRICT] } };
@@ -777,6 +810,9 @@ export function buildOperationsStatusFilterWhere(
     }
     if (canonical === 'Declined' || canonical === 'Rejected') {
         return declinedMatchWhere();
+    }
+    if (canonical === 'Recently_Deleted') {
+        return recentlyDeletedMatchWhere();
     }
     if (canonical === 'On_Hold') {
         return onHoldMatchWhere();

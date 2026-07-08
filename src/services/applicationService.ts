@@ -204,6 +204,16 @@ export async function getApplicationForUser(
         return { application: null, forbidden: true };
     }
 
+    const role = normalizeRole(user?.role);
+    const deletedAt = (application as { deletedAt?: Date | null }).deletedAt;
+    if (
+        deletedAt &&
+        role !== 'SUPER_ADMIN' &&
+        role !== 'OPERATIONS'
+    ) {
+        return { application: null, forbidden: false };
+    }
+
     return { application, forbidden: false };
 }
 

@@ -1,5 +1,5 @@
 import prisma from '../config/prismaClient';
-import type { Prisma } from '@prisma/client';
+import { ContractStatus, type Prisma } from '@prisma/client';
 import {
     archiveMainContractEnvelopeToHistory,
     buildContractSendHistoryTermsSnapshot,
@@ -61,15 +61,100 @@ export async function clearNeedsContractReinitiation(applicationId: string): Pro
     });
 }
 
+/** Queue labels indicating contract workflow moved past the reinitiation bucket. */
+const POST_REINITIATION_CONTRACT_QUEUES = [
+    'Contract Generated',
+    'Contract_Generated',
+    'ContractGenerated',
+    'Contract Sent',
+    'Contract_Sent',
+    'Contract Out',
+    'Contract_Out',
+    'Contracts Out',
+    'Contracts_Out',
+    'ContractOut',
+    'Contract Signed',
+    'Contract_Signed',
+    'Signed Contracts',
+    'Signed_Contracts',
+    'SignedContracts',
+] as const;
+
+/** State tokens indicating contract workflow moved past the reinitiation bucket. */
+const POST_REINITIATION_CONTRACT_STATES = [
+    'CONTRACT_GENERATED',
+    'Contract Generated',
+    'Contract_Generated',
+    'CONTRACT_SENT',
+    'Contract Sent',
+    'Contract_Sent',
+    'CONTRACTS_OUT',
+    'Contract Out',
+    'Contract_Out',
+    'Contracts Out',
+    'Contracts_Out',
+    'SIGNED_CONTRACTS',
+    'Contract Signed',
+    'Contract_Signed',
+    'Signed Contracts',
+    'Signed_Contracts',
+] as const;
+
+const POST_REINITIATION_CONTRACT_STATUSES: ContractStatus[] = [
+    ContractStatus.SENT,
+    ContractStatus.VIEWED,
+    ContractStatus.SIGNED,
+    ContractStatus.COMPLETED,
+    ContractStatus.DECLINED,
+    ContractStatus.REVOKED,
+    ContractStatus.EXPIRED,
+];
+
 /**
- * Deals flagged for contract reinitiation that have not yet received a new DocuSign envelope.
- * Once a contract is generated or sent to the client, the linked `Document` row exists and
- * the deal leaves the Reinitiate Contract pipeline bucket.
+ * Rows that still carry `needsContractReinitiation` but already progressed in the contract
+ * workflow (stale flag from before regeneration / send completed).
+ */
+export function staleContractReinitiationProgressWhere(): Prisma.ApplicationWhereInput {
+    return {
+        OR: [
+            { document: { isNot: null } },
+            {
+                contract: {
+                    status: { in: POST_REINITIATION_CONTRACT_STATUSES },
+                },
+            },
+            { currentQueue: { in: [...POST_REINITIATION_CONTRACT_QUEUES] } },
+            { currentState: { in: [...POST_REINITIATION_CONTRACT_STATES] } },
+        ],
+    };
+}
+
+/**
+ * Deals flagged for contract reinitiation that still need a fresh contract generated/sent.
+ * Excludes stale rows whose queue/state or contract status already advanced.
  */
 export function awaitingNewContractReinitiationWhere(): Prisma.ApplicationWhereInput {
     return {
-        AND: [{ needsContractReinitiation: true }, { document: { is: null } }],
+        AND: [
+            { needsContractReinitiation: true },
+            { document: { is: null } },
+            { NOT: staleContractReinitiationProgressWhere() },
+        ],
     };
+}
+
+/** Clear stale `needsContractReinitiation` flags for deals that already left the bucket. */
+export async function reconcileStaleContractReinitiationFlags(): Promise<number> {
+    const result = await prisma.application.updateMany({
+        where: {
+            AND: [{ needsContractReinitiation: true }, staleContractReinitiationProgressWhere()],
+        },
+        data: {
+            needsContractReinitiation: false,
+            isoUpdatedOfferApproved: false,
+        },
+    });
+    return result.count;
 }
 
 /**
@@ -139,6 +224,13 @@ export async function reinitiateContractForApplication(
 
     if (!contract) {
         await flagNeedsContractReinitiation(appId);
+        await prisma.application.update({
+            where: { id: appId },
+            data: {
+                currentQueue: 'Contract Pending',
+                currentState: 'Contract_Pending',
+            },
+        });
         await recordContractWorkflowActivityLog(
             appId,
             'REINITIATED',
@@ -185,6 +277,14 @@ export async function reinitiateContractForApplication(
     });
 
     await flagNeedsContractReinitiation(appId);
+
+    await prisma.application.update({
+        where: { id: appId },
+        data: {
+            currentQueue: 'Contract Pending',
+            currentState: 'Contract_Pending',
+        },
+    });
 
     const applicationAfter = await prisma.application.findUnique({
         where: { id: appId },

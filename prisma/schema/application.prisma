@@ -65,6 +65,7 @@ model User {
   verificationTokens         VerificationToken[]
   outbound_communications    outbound_communications[]
   gmailAutoCreateLedger      GmailAutoCreateLedger[]
+  deletedApplications        Application[]                 @relation("ApplicationDeletedBy")
 }
 
 model AccessToken {
@@ -246,7 +247,11 @@ model Application {
   isoQueryResolved           Boolean                       @default(false)
   /// Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call".
   finalApprovalSource        String?
+  /// Soft-delete timestamp — deal appears in Recently Deleted until restored or permanently removed.
+  deletedAt                  DateTime?
+  deletedById                String?                       @db.Uuid
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
+  deletedBy                User?                         @relation("ApplicationDeletedBy", fields: [deletedById], references: [id])
   approvedByUnderwriter    User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
   assignedUnderwriter      User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])
   client                   Client                        @relation(fields: [clientId], references: [id])
@@ -304,6 +309,8 @@ model Application {
   @@index([assignedUnderwriterId])
   @@index([currentQueue, assignedUnderwriterId])
   @@index([category])
+  @@index([deletedAt])
+  @@index([deletedById])
 }
 
 /// Per-application DocuSign / contract business fields (1:1 with Application)
