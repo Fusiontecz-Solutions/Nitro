@@ -33,6 +33,7 @@ export const OPERATIONS_DASHBOARD_APPLICATION_STATUSES = [
   "On_Hold",
   "Funded",
   "Declined",
+  "Recently_Deleted",
 ] as const;
 
 export type OperationsDashboardApplicationStatus =
@@ -79,6 +80,7 @@ const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   On_Hold: "On Hold",
   Funded: "Funded",
   Declined: "Rejected",
+  Recently_Deleted: "Recently Deleted",
   Agent: "Agent",
   Scrubbing: "Scrubbing",
   "Underwriter": "Underwriter",
@@ -149,6 +151,7 @@ export function normalizeOperationsDashboardStatusParam(
     funded: "Funded",
     declined: "Declined",
     rejected: "Declined",
+    recently_deleted: "Recently_Deleted",
     agent: "Agent",
     scrubbing: "Scrubbing",
     underwriter: "Underwriter",

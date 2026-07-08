@@ -734,7 +734,7 @@ export const rejectApplication = createAsyncThunk(
     }
 );
 
-// Delete application
+// Delete application (soft-delete → Recently Deleted)
 export const deleteApplication = createAsyncThunk(
     'application/delete',
     async (id: string, { rejectWithValue }) => {
@@ -749,6 +749,51 @@ export const deleteApplication = createAsyncThunk(
             );
         }
     }
+);
+
+// Permanently delete a soft-deleted application (Super Admin / Operations)
+export const permanentlyDeleteApplication = createAsyncThunk(
+    'application/permanentlyDelete',
+    async (id: string, { rejectWithValue }) => {
+        try {
+            const response = await axiosDelete(`/applications/${id}/permanent`);
+            await invalidateApplicationsListCache();
+            return { ...response.data, deletedId: id };
+        } catch (error: any) {
+            console.error('Permanent delete application error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to permanently delete application',
+            );
+        }
+    },
+);
+
+// Restore a soft-deleted application to a scrubber's claimed queue
+export const restoreApplicationToScrubber = createAsyncThunk(
+    'application/restoreToScrubber',
+    async (
+        {
+            applicationId,
+            scrubberId,
+        }: { applicationId: string; scrubberId: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/restore-to-scrubber`,
+                { scrubberId },
+            );
+            await invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Restore application to scrubber error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to restore application to scrubber',
+            );
+        }
+    },
 );
 
 // Upload documents to an existing application

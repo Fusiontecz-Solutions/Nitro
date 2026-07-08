@@ -262,6 +262,8 @@ export function resolveApplicationsPipelineCount(
       return summaryCounts.funded;
     case "Declined":
       return rejectedCount;
+    case "Recently_Deleted":
+      return caseStageCounts.Recently_Deleted ?? 0;
     default:
       return null;
   }

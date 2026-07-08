@@ -82,8 +82,7 @@ export function renderZeroBalanceLetterEmailHtml(
   const logoSrc = escapeHtml(ZERO_BALANCE_LETTER_EMAIL_LOGO_SRC);
   const watermarkSrc = escapeHtml(ZERO_BALANCE_LETTER_EMAIL_WATERMARK_SRC);
 
-  const bodyParagraph =
-    "This letter is to confirm that your account with us has a zero balance as of the date below.<br />At this time, there is no amount due on your account.";
+  const bodyParagraph = `This letter confirms that your account has a zero balance as of <strong>${letterDate}</strong>. No amount is currently due.`;
 
   const infoRow = (
     iconInner: string,
@@ -202,7 +201,7 @@ export function renderZeroBalanceLetterEmailHtml(
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.4;color:#4b5563;">
+                  <td style="padding:0 0 20px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.4;color:#4b5563;">
                     ${recipientAddress2}
                   </td>
                 </tr>

@@ -70,13 +70,7 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
   const recipientAddress2 = escapeHtml(
     pickOrNA(values, v.recipient_address_line2),
   );
-  const accountLastFour = (() => {
-    const raw = values[v.account_number.key]?.trim() ?? "";
-    if (!raw) return "NA";
-    const digits = raw.replace(/\D/g, "");
-    const tail = digits.length >= 4 ? digits.slice(-4) : digits;
-    return escapeHtml(tail || raw);
-  })();
+  const accountName = escapeHtml(pickOrNA(values, v.account_name));
   const payoffAmount = escapeHtml(pickOrNA(values, v.payoff_amount));
   const goodThroughDate = escapeHtml(pickOrNA(values, v.good_through_date));
   const paymentCompany = escapeHtml(pickOrNA(values, v.payment_company_name));
@@ -228,8 +222,8 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                 </tr>
 
                 <tr>
-                  <td style="padding:0 0 24px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;color:#1f2937;">
-                    Re: Account Ending in ${accountLastFour}
+                  <td style="padding:0 0 20px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;color:#1f2937;">
+                    Re: ${accountName}
                   </td>
                 </tr>
 
@@ -242,7 +236,7 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                 <tr>
                   <td style="padding:0 0 24px 0;">
                     <table role="presentation" class="info-table" border="0" cellpadding="0" cellspacing="0" width="${INFO_TABLE_WIDTH}" style="width:${INFO_TABLE_WIDTH}px;max-width:100%;border-collapse:collapse;background-color:#ffffff;border:2px solid #0ea5e9;border-radius:8px;overflow:hidden;">
-                      ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.account, "&#128179;", iconAccount), "Account Number", paymentAccountNumber, "font-family:Arial,Helvetica,sans-serif;font-size:18px;color:#666666;")}
+                      ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.account, "&#128179;", iconAccount), "Account Name", accountName, "font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#666666;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.payoff, "$", iconPayoff), "Payoff Amount", payoffAmount, "font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;color:#111111;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.date, "&#128197;", iconDate), "Good Through Date", goodThroughDate, "font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#666666;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.note, "&#128196;", iconNote), "Note", noteText, "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.4;color:#777777;", false)}
@@ -278,9 +272,19 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                 </tr>
 
                 <tr>
-                  <td style="padding:0 0 35px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#4b5563;">
-                    <strong style="display:block;color:#1f2937;padding-bottom:3px;">Routing</strong>
-                    ${paymentRoutingNumber}
+                  <td style="padding:0 0 35px 0;">
+                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                      <tr>
+                        <td valign="top" style="padding:0 48px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#4b5563;vertical-align:top;">
+                          <strong style="display:block;color:#1f2937;padding-bottom:3px;">Routing</strong>
+                          ${paymentRoutingNumber}
+                        </td>
+                        <td valign="top" style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#4b5563;vertical-align:top;">
+                          <strong style="display:block;color:#1f2937;padding-bottom:3px;">Account Number</strong>
+                          ${paymentAccountNumber}
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
 

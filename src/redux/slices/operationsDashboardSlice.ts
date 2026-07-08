@@ -44,6 +44,7 @@ const defaultCaseStageCounts: Record<string, number> = {
   "Funding Call": 0,
   On_Hold: 0,
   Declined: 0,
+  Recently_Deleted: 0,
 };
 
 const defaultCaseStageAmounts: Record<string, number> = {

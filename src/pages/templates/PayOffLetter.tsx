@@ -24,6 +24,11 @@ export const PAY_OFF_LETTER_VARIABLES: TemplateVariable[] = [
     label: "Account Number",
     placeholder: "1234567890",
   },
+  {
+    key: "account_name",
+    label: "Account Name (Business Name)",
+    placeholder: "Acme LLC",
+  },
   { key: "salutation_name", label: "Salutation Name", placeholder: "John Doe" },
   { key: "payoff_amount", label: "Payoff Amount", placeholder: "$5,678.90" },
   {
@@ -75,13 +80,7 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
   const recipientName = pick(values, v.recipient_name);
   const recipientAddress1 = pick(values, v.recipient_address_line1);
   const recipientAddress2 = pick(values, v.recipient_address_line2);
-  const accountNumber = pick(values, v.account_number);
-  const accountLastFour = (() => {
-    const raw = values[v.account_number.key]?.trim() ?? "";
-    if (!raw) return accountNumber;
-    const digits = raw.replace(/\D/g, "");
-    return digits.length >= 4 ? digits.slice(-4) : digits || accountNumber;
-  })();
+  const accountName = pick(values, v.account_name);
   const payoffAmount = pick(values, v.payoff_amount);
   const goodThroughDate = pick(values, v.good_through_date);
   const paymentCompany = pick(values, v.payment_company_name);
@@ -128,8 +127,8 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
             </p>
             <p style={{ margin: "0 0 5px" }}>{recipientAddress1}</p>
             <p style={{ margin: "0 0 16px" }}>{recipientAddress2}</p>
-            <p style={{ margin: "0 0 24px", fontWeight: "bold", color: "#1f2937" }}>
-              Re: Account Ending in {accountLastFour}
+            <p style={{ margin: "0 0 20px", fontWeight: "bold", color: "#1f2937" }}>
+              Re: {accountName}
             </p>
             <p style={{ margin: "0 0 24px" }}>
               We are pleased to provide the payoff information for your account.
@@ -137,7 +136,7 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
               received after the good through date may require a new payoff.
             </p>
             <p style={{ margin: "0 0 8px" }}>
-              <strong>Account Number:</strong> {paymentAccountNumber}
+              <strong>Account Name:</strong> {accountName}
             </p>
             <p style={{ margin: "0 0 8px" }}>
               <strong>Payoff Amount:</strong> {payoffAmount}

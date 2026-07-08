@@ -33,14 +33,17 @@ import {
   type TemplateCategory,
   type TemplateItem as ApiTemplateItem,
 } from "./paymentTemplateApi";
-import { sendPaymentMail } from "@/redux/actions/paymentMailActions";
+import {
+  sendPaymentMail,
+  downloadPaymentLetterPdf,
+} from "@/redux/actions/paymentMailActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import { clearBankDetails } from "@/redux/slices/bankDetailSlice";
 import { resolveOfferDecisionFundedAmount } from "@/lib/offerDecisionFees";
 import { cn, formatCurrency } from "@/lib/utils";
-import { FileText, Mail, RotateCcw, Send } from "lucide-react";
+import { Download, FileText, Mail, RotateCcw, Send } from "lucide-react";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import type { BankDetail } from "@/types/bankDetailTypes";
 import {
@@ -647,6 +650,7 @@ export default function Letters() {
   const [recipientEmail, setRecipientEmail] = useState("");
   const [subject, setSubject] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const templatesForType = useMemo(
     () => templateSource.filter((t) => t.category === templateType),
@@ -799,6 +803,53 @@ export default function Letters() {
     });
     setRecipientEmail("");
     setSubject("");
+  };
+
+  const downloadLetterPdf = async () => {
+    if (!selectedTemplate) {
+      toast.error("Choose a template first.");
+      return;
+    }
+    if (!mergedBody.trim()) {
+      toast.error("Nothing to download yet.");
+      return;
+    }
+
+    setIsDownloading(true);
+    try {
+      // Plain-text templates need line breaks preserved when rendered to PDF.
+      const pdfHtml = previewIsHtml
+        ? mergedBody
+        : `<pre style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;">${escapeHtmlForMerge(
+            mergedBody
+          )}</pre>`;
+
+      const blob = await downloadPaymentLetterPdf({
+        body: pdfHtml,
+        filename: `${selectedTemplate.name} - ${dealLabel}`,
+      });
+
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${selectedTemplate.name} - ${dealLabel}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      toast.success("Template downloaded.");
+    } catch (error: any) {
+      const message =
+        typeof error === "string"
+          ? error
+          : error?.response?.data?.message ||
+            error?.message ||
+            "Failed to download template";
+      toast.error(message);
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   const sendLetter = async () => {
@@ -1056,31 +1107,50 @@ export default function Letters() {
               <CardContent className="flex-1 overflow-hidden p-0">
                 {selectedTemplate ? (
                   <div className="m-4 min-h-[460px] rounded-xl border border-border/70 bg-card p-6 text-foreground dark:border-white/10 dark:bg-white/[0.03] sm:m-5 sm:p-3">
-                    <div className="mb-5 space-y-2 rounded-lg border border-border/60 bg-muted/25 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                      <p className="text-[13px] text-muted-foreground">
-                        Template:{" "}
-                        <span className="font-medium text-foreground">
-                          {selectedTemplate.name}
-                        </span>
-                      </p>
-                      <p className="text-[13px] text-muted-foreground">
-                        Type:{" "}
-                        <span className="font-medium capitalize text-foreground">
-                          {selectedTemplate.category}
-                        </span>
-                      </p>
-                      <p className="text-[13px] text-muted-foreground">
-                        To:{" "}
-                        <span className="break-all font-medium text-foreground">
-                          {recipientEmail || "(Empty)"}
-                        </span>
-                      </p>
-                      <p className="text-[13px] text-muted-foreground">
-                        Subject:{" "}
-                        <span className="break-words font-medium text-foreground">
-                          {subject || "(No Subject)"}
-                        </span>
-                      </p>
+                    <div className="mb-5 flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-muted/25 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <p className="text-[13px] text-muted-foreground">
+                          Template:{" "}
+                          <span className="font-medium text-foreground">
+                            {selectedTemplate.name}
+                          </span>
+                        </p>
+                        <p className="text-[13px] text-muted-foreground">
+                          Type:{" "}
+                          <span className="font-medium capitalize text-foreground">
+                            {selectedTemplate.category}
+                          </span>
+                        </p>
+                        <p className="text-[13px] text-muted-foreground">
+                          To:{" "}
+                          <span className="break-all font-medium text-foreground">
+                            {recipientEmail || "(Empty)"}
+                          </span>
+                        </p>
+                        <p className="text-[13px] text-muted-foreground">
+                          Subject:{" "}
+                          <span className="break-words font-medium text-foreground">
+                            {subject || "(No Subject)"}
+                          </span>
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void downloadLetterPdf()}
+                        disabled={isDownloading || isSending}
+                        className="shrink-0 cursor-pointer border-border dark:border-white/10"
+                      >
+                        {isDownloading ? (
+                          "Preparing..."
+                        ) : (
+                          <>
+                            <Download className="mr-1.5 size-3.5" />
+                            Download
+                          </>
+                        )}
+                      </Button>
                     </div>
                     <div
                       className={cn(
@@ -1127,7 +1197,7 @@ export default function Letters() {
               <CardFooter className="border-t border-border/60 bg-muted/25 p-4 dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
                 <Button
                   onClick={() => void sendLetter()}
-                  disabled={!selectedTemplate || isSending}
+                  disabled={!selectedTemplate || isSending || isDownloading}
                   className="w-full bg-[var(--brand)] py-5 text-base font-semibold text-white cursor-pointer hover:bg-[#1e547a]"
                 >
                   {isSending ? (

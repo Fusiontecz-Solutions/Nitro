@@ -10,6 +10,7 @@ import Description from "@mui/icons-material/Description";
 import Email from "@mui/icons-material/Email";
 
 import HighlightOff from "@mui/icons-material/HighlightOff";
+import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import FactCheck from "@mui/icons-material/FactCheck";
 import Article from "@mui/icons-material/Article";
 import CheckCircle from "@mui/icons-material/CheckCircle";
@@ -365,6 +366,7 @@ const dealPipelineSection: SidebarNavSection = {
     },
     { label: "Funded", url: "/applications", operationsStatus: "Funded", icon: Paid, pipelineAccent: "funded" },
     { label: "Decline", url: "/applications", operationsStatus: "Declined", icon: HighlightOff, pipelineAccent: "rejected" },
+    { label: "Recently Deleted", url: "/applications", operationsStatus: "Recently_Deleted", icon: DeleteOutline, pipelineAccent: "rejected" },
   ],
 };
 
