@@ -44,22 +44,13 @@ function formatMoneyInputValue(value: number): string {
     return formatCurrencyFull(value).replace(/^\$\s?/, "$");
 }
 
-function parseOfferMonthlyPayment(offerDecision?: Record<string, unknown> | null): number | null {
-    const offerMonthly = Number.parseFloat(
-        String(offerDecision?.monthlyPayment ?? "").replace(/[$,%\s]/g, ""),
-    );
-    return Number.isFinite(offerMonthly) && offerMonthly > 0 ? offerMonthly : null;
-}
-
 function paymentRowKey(row: SpaMonthlyPaymentRow, index: number): string {
-    return row.source === "offer"
-        ? "offer:monthly"
-        : `position:${row.positionId ?? `${row.label}:${index}`}`;
+    if (row.source === "positions_total") return "positions:total";
+    return `position:${row.positionId ?? `${row.label}:${index}`}`;
 }
 
 async function fetchSpaSourceData(
     applicationUuid: string,
-    offerDecision?: Record<string, unknown> | null,
 ): Promise<{
     banks: SpaBankApiRecord[];
     breakdown: ReturnType<typeof buildSpaCalculationBreakdown>;
@@ -84,7 +75,6 @@ async function fetchSpaSourceData(
     const breakdown = buildSpaCalculationBreakdown({
         banks: banks as Array<{ rows?: Array<Record<string, unknown>> }>,
         positions: positions as Array<Record<string, unknown>>,
-        offerMonthlyPayment: parseOfferMonthlyPayment(offerDecision),
     });
 
     return { banks, breakdown };
@@ -122,7 +112,7 @@ export function SpaCalculationModal({
         setLoading(true);
         setLoadError(null);
         try {
-            const { banks, breakdown } = await fetchSpaSourceData(appKey, offerDecision);
+            const { banks, breakdown } = await fetchSpaSourceData(appKey);
             setSourceBanks(banks);
             setPaymentRows(breakdown.monthlyPayments);
             setRevenueRows(breakdown.monthlyRevenues);
@@ -151,7 +141,7 @@ export function SpaCalculationModal({
         } finally {
             setLoading(false);
         }
-    }, [appKey, offerDecision]);
+    }, [appKey]);
 
     useEffect(() => {
         if (!open) return;
@@ -230,12 +220,12 @@ export function SpaCalculationModal({
             <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto p-0 sm:max-w-xl">
                 <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
                     <DialogTitle className="flex items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
-                        <Calculator className="h-4 w-4 text-[var(--brand)]" aria-hidden />
+                        <Calculator className="h-4 w-4 text-[#276D9C]" aria-hidden />
                         Calculate SPA
                     </DialogTitle>
                     <p className="mt-1 text-xs leading-snug text-slate-500 dark:text-slate-400">
-                        Edit monthly payments and revenue below. Calculate &amp; sync updates the
-                        scrubber (positions and bank analysis) and specified percentage.
+                        Edit repayments and revenue below. Uses scrubbing REPAYMENT column
+                        (per-period ACH, e.g. $1,259) — not MONTHLY PMTS. New offer excluded.
                     </p>
                 </div>
 
@@ -252,10 +242,10 @@ export function SpaCalculationModal({
                     ) : (
                         <>
                             <section className="space-y-2">
-                                <h3 className={SECTION_LABEL_CLASS}>Monthly payments</h3>
+                                <h3 className={SECTION_LABEL_CLASS}>Repayments</h3>
                                 {paymentRows.length === 0 ? (
                                     <p className="text-xs italic text-slate-500">
-                                        No active position payments or offer monthly payment found.
+                                        No active position total repayments found in scrubbing.
                                     </p>
                                 ) : (
                                     <div className="overflow-hidden rounded-md border border-slate-200 dark:border-slate-700">
@@ -264,7 +254,7 @@ export function SpaCalculationModal({
                                                 <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
                                                     <th className="px-3 py-2 font-semibold">Source</th>
                                                     <th className="px-3 py-2 text-right font-semibold">
-                                                        Monthly payment
+                                                        Repayment
                                                     </th>
                                                 </tr>
                                             </thead>
@@ -278,11 +268,6 @@ export function SpaCalculationModal({
                                                         >
                                                             <td className="px-3 py-2 text-slate-700 dark:text-slate-200">
                                                                 {row.label}
-                                                                {row.source === "offer" ? (
-                                                                    <span className="mt-0.5 block text-[10px] font-normal text-slate-400">
-                                                                        SPA only (not saved to scrubber)
-                                                                    </span>
-                                                                ) : null}
                                                             </td>
                                                             <td className="px-3 py-2">
                                                                 <Input
@@ -312,7 +297,7 @@ export function SpaCalculationModal({
                                                 })}
                                                 <tr className="border-t border-slate-200 bg-slate-50/80 dark:border-slate-700 dark:bg-slate-900/40">
                                                     <td className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-200">
-                                                        Total monthly payments
+                                                        Total monthly repayments
                                                     </td>
                                                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900 dark:text-slate-100">
                                                         {formatCurrencyFull(breakdown.totalMonthlyPayments)}
@@ -326,7 +311,7 @@ export function SpaCalculationModal({
 
                             <section className="space-y-2">
                                 <h3 className={SECTION_LABEL_CLASS}>
-                                    Monthly revenue (net credit)
+                                    Monthly revenue (credits)
                                 </h3>
                                 {revenueRows.length === 0 ? (
                                     <p className="text-xs italic text-slate-500">
@@ -339,7 +324,7 @@ export function SpaCalculationModal({
                                                 <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
                                                     <th className="px-3 py-2 font-semibold">Month</th>
                                                     <th className="px-3 py-2 text-right font-semibold">
-                                                        Net credit
+                                                        Credits
                                                     </th>
                                                 </tr>
                                             </thead>
@@ -350,13 +335,13 @@ export function SpaCalculationModal({
                                                         className={cn(
                                                             "border-t border-slate-100 dark:border-slate-800",
                                                             row.includedInSpaAverage &&
-                                                                "bg-[var(--brand)]/5 dark:bg-[var(--brand)]/10",
+                                                                "bg-[#276D9C]/5 dark:bg-[#276D9C]/10",
                                                         )}
                                                     >
                                                         <td className="px-3 py-2 text-slate-700 dark:text-slate-200">
                                                             {row.month}
                                                             {row.includedInSpaAverage ? (
-                                                                <span className="ml-2 text-[10px] font-medium uppercase tracking-wide text-[var(--brand)]">
+                                                                <span className="ml-2 text-[10px] font-medium uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
                                                                     Used in avg
                                                                 </span>
                                                             ) : null}
@@ -411,7 +396,7 @@ export function SpaCalculationModal({
                                     <span className="text-slate-600 dark:text-slate-300">
                                         Calculated SPA
                                     </span>
-                                    <span className="text-lg font-bold tabular-nums text-[var(--brand)]">
+                                    <span className="text-lg font-bold tabular-nums text-[#276D9C] dark:text-[#5a9fd4]">
                                         {breakdown.spa ? `${breakdown.spa}%` : "—"}
                                     </span>
                                 </div>
@@ -440,7 +425,7 @@ export function SpaCalculationModal({
                     <Button
                         type="button"
                         size="sm"
-                        className="gap-1.5"
+                        className="gap-1.5 bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
                         disabled={loading || saving || !canCalculate}
                         onClick={() => {
                             void handleCalculate();

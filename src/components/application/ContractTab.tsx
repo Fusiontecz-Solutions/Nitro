@@ -2788,7 +2788,7 @@ export default function ContractTab({
                             />
                         ) : (
                             <FileText
-                                className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] dark:text-[#C07BE0]"
+                                className="h-3.5 w-3.5 shrink-0 text-[#276D9C] dark:text-[#5a9fd4]"
                                 aria-hidden
                             />
                         )}
@@ -2882,7 +2882,7 @@ export default function ContractTab({
                                             disabled={isViewingRow}
                                             className={`h-7 w-7 shrink-0 ${isDark
                                                 ? "text-[#C07BE0] hover:bg-[#C07BE0]/10"
-                                                : "text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                                                : "text-[#276D9C] hover:bg-[#276D9C]/10"
                                                 }`}
                                             title={
                                                 isAchRow
@@ -2929,7 +2929,7 @@ export default function ContractTab({
                                             disabled={refreshingSigningStatus}
                                             className={`h-7 w-7 shrink-0 ${isDark
                                                 ? "text-[#C07BE0] hover:bg-[#C07BE0]/10"
-                                                : "text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                                                : "text-[#276D9C] hover:bg-[#276D9C]/10"
                                                 }`}
                                             title={
                                                 isAchRow
@@ -3149,11 +3149,7 @@ export default function ContractTab({
             <div
                 className={`rounded-lg border p-6 ${isDark ? "bg-[#1F2021] border-[#374151]" : "bg-[#E8F0F8] border-[#D1D5DB]"}`}
             >
-                <div className="flex flex-wrap items-end justify-between gap-6">
-                    <div className="flex flex-wrap items-end gap-6">
-
-                    </div>
-                    <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center justify-end gap-3">
                         <Button
                             type="button"
                             variant="default"
@@ -3200,8 +3196,6 @@ export default function ContractTab({
                                 "Send ACH Form"
                             )}
                         </Button>
-
-                    </div>
                 </div>
             </div>
 
@@ -3722,6 +3716,7 @@ export default function ContractTab({
                 }
                 onReloadContract={reloadFetchedContract}
             />
+
         </div>
     );
 }

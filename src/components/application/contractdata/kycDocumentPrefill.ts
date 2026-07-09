@@ -65,7 +65,7 @@ function applyKycPanelPatch<T extends Record<string, unknown>>(
     return out;
 }
 
-/** Bank prefill keys populated from voided-check scans — always overwrite stale values. */
+/** Bank + ACH account-holder keys from voided-check scans — always overwrite stale values. */
 const VOIDED_CHECK_BANK_PREFILL_KEYS = [
     "authorizationClientBankName",
     "authorizationClientBankAccount",
@@ -88,16 +88,7 @@ const VOIDED_CHECK_BANK_PREFILL_KEYS = [
     "authorizationClientNamePrint",
     "authorizationApplication",
     "doingBusinessAs",
-    "businessAddress",
-    "businessAddressCity",
-    "businessAddressState",
-    "businessAddressZip",
-    "securityBusinessName",
     "securityDoingBusinessAs",
-    "securityBusinessAddress",
-    "securityBusinessAddressCity",
-    "securityBusinessAddressState",
-    "securityBusinessAddressZip",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
 /** Driver-license scan fields — always overwrite stale saved values on re-upload. */
@@ -115,16 +106,6 @@ const DRIVER_LICENSE_PREFILL_KEYS = [
     "guarantorAddressCity",
     "guarantorAddressState",
     "guarantorAddressZip",
-    "businessAddressContract",
-    "businessAddressContractCity",
-    "businessAddressContractState",
-    "businessAddressContractZip",
-    "achAuthorizationAccountHolderName",
-    "achAuthorizationConcentAccountHolderName",
-    "achAuthorizationAccountHolderAddress",
-    "achAuthorizationAccountHolderCity",
-    "achAuthorizationAccountHolderState",
-    "achAuthorizationAccountHolderZip",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
 function mergeKycPrefillWithOverwrite(
@@ -286,23 +267,15 @@ function rebuildDriverLicenseContractPrefill(
     }
     if (street) {
         set("guarantorAddress", street);
-        set("businessAddressContract", street);
-        set("achAuthorizationAccountHolderAddress", street);
     }
     if (city) {
         set("guarantorAddressCity", city);
-        set("businessAddressContractCity", city);
-        set("achAuthorizationAccountHolderCity", city);
     }
     if (state) {
         set("guarantorAddressState", state);
-        set("businessAddressContractState", state);
-        set("achAuthorizationAccountHolderState", state);
     }
     if (zip) {
         set("guarantorAddressZip", zip);
-        set("businessAddressContractZip", zip);
-        set("achAuthorizationAccountHolderZip", zip);
     }
     return contractPrefill;
 }
@@ -346,23 +319,15 @@ function rebuildVoidedCheckContractPrefill(
         set("achAuthorizationAccountHolderBankAccountNumber", ach.accountNumber);
     }
     if (str(ach.address)) {
-        set("businessAddress", ach.address);
-        set("securityBusinessAddress", ach.address);
         set("achAuthorizationAccountHolderAddress", ach.address);
     }
     if (str(ach.city)) {
-        set("businessAddressCity", ach.city);
-        set("securityBusinessAddressCity", ach.city);
         set("achAuthorizationAccountHolderCity", ach.city);
     }
     if (str(ach.state)) {
-        set("businessAddressState", ach.state);
-        set("securityBusinessAddressState", ach.state);
         set("achAuthorizationAccountHolderState", ach.state);
     }
     if (str(ach.zip)) {
-        set("businessAddressZip", ach.zip);
-        set("securityBusinessAddressZip", ach.zip);
         set("achAuthorizationAccountHolderZip", ach.zip);
     }
     return contractPrefill;

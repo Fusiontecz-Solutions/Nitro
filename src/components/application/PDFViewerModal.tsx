@@ -9091,7 +9091,7 @@ const PDFViewerModal = ({
                                         <div className="space-y-4 border-t border-slate-200 pt-4 dark:border-slate-700">
                                             <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700">
                                                 <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/90 px-4 py-3 dark:border-slate-700 dark:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between">
-                                                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-blue-600 dark:text-blue-400">
+                                                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
                                                         Deal Review
                                                     </h3>
                                                     {canEditContractPrefill ? (
@@ -9100,7 +9100,7 @@ const PDFViewerModal = ({
                                                                 type="button"
                                                                 variant="outline"
                                                                 size="sm"
-                                                                className="h-8 whitespace-nowrap bg-white dark:bg-slate-950"
+                                                                className="h-8 whitespace-nowrap border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
                                                                 onClick={() => setSpaCalcModalOpen(true)}
                                                             >
                                                                 <Calculator className="mr-1.5 h-3.5 w-3.5" aria-hidden />
@@ -9126,7 +9126,7 @@ const PDFViewerModal = ({
 
                                         <div className="space-y-4 border p-4 rounded-lg">
                                             <div className="flex items-center justify-between mb-1">
-                                                <span className="text-blue-600 font-bold text-[11px] uppercase">Contract Details</span>
+                                                <span className="text-[#276D9C] font-bold text-[11px] uppercase">Contract Details</span>
                                                 {/* <span className="text-[11px] text-slate-400">Auto-filled from contract</span> */}
                                             </div>
                                             {(() => {

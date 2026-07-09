@@ -173,17 +173,56 @@ const ACTIVE_POSITION_STATUSES = new Set([
     "SELECT",
 ]);
 
-function getMonthlyMcaPmtsForPosition(row: Record<string, unknown>): number {
-    const manual = String(row.monthlyMcaPmts ?? "").trim();
-    if (manual) {
-        const p = parseNum(manual);
-        if (!Number.isNaN(p) && p >= 0) return p;
+function getPaymentsPerMonth(freq?: string): number {
+    const f = String(freq ?? "")
+        .toLowerCase()
+        .replace(/\s+/g, "");
+    if (f === "daily") return 22;
+    if (f === "weekly") return 4.2;
+    if (f === "bi-weekly" || f === "biweekly") return 2;
+    if (f === "monthly") return 1;
+    return 0;
+}
+
+/** Map raw `/positions` API rows to scrubbing-table field names. */
+function normalizePositionRowForSpa(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+        ...row,
+        installment: row.installment ?? row.ach,
+        totalRepayments: row.totalRepayments ?? row.paybackAmount,
+        amountFunded: row.amountFunded ?? row.fundedAmount,
+        lender: row.lender ?? row.funder ?? row.fundingCompany,
+        paymentTerm: row.paymentTerm ?? row.term,
+    };
+}
+
+/**
+ * Repayment for SPA — scrubbing REPAYMENT column (per-period ACH / installment).
+ * Does not use MONTHLY PMTS or TOTAL REPAYMENTS obligation.
+ */
+export function getPositionRepaymentForSpa(row: Record<string, unknown>): number {
+    const normalized = normalizePositionRowForSpa(row);
+    const repayment = parseNum(normalized.installment);
+    if (!Number.isNaN(repayment) && repayment > 0) return repayment;
+
+    const totalObligation = parseNum(
+        normalized.totalRepayments ?? normalized.paybackAmount,
+    );
+    const term = parseNum(normalized.paymentTerm);
+    if (
+        !Number.isNaN(totalObligation) &&
+        totalObligation > 0 &&
+        !Number.isNaN(term) &&
+        term > 0
+    ) {
+        return totalObligation / term;
     }
-    // For SPA we now align with Scrubbing tab guidance:
-    // the Positions "Repayment" column total is treated as the monthly payment.
-    const installment = parseNum(row.installment);
-    if (Number.isNaN(installment) || installment <= 0) return 0;
-    return installment;
+    return 0;
+}
+
+/** @deprecated Use getPositionRepaymentForSpa */
+export function getPositionTotalRepaymentForSpa(row: Record<string, unknown>): number {
+    return getPositionRepaymentForSpa(row);
 }
 
 function isActivePositionForTotals(row: Record<string, unknown>): boolean {
@@ -191,31 +230,38 @@ function isActivePositionForTotals(row: Record<string, unknown>): boolean {
         .trim()
         .toUpperCase();
     if (status && ACTIVE_POSITION_STATUSES.has(status)) return true;
-    const keys = ["amountFunded", "installment", "monthlyMcaPmts", "mcaRemit"] as const;
+    const keys = [
+        "amountFunded",
+        "fundedAmount",
+        "installment",
+        "ach",
+        "paybackAmount",
+        "totalRepayments",
+        "monthlyMcaPmts",
+        "mcaRemit",
+    ] as const;
     return keys.some((key) => {
         const v = row[key];
         return v != null && String(v).trim() !== "" && !Number.isNaN(parseNum(v));
     });
 }
 
-/** Sum of monthly MCA payments from active stack positions plus optional new-offer monthly payment. */
+/** Sum of scrubbing REPAYMENT column across active positions (not monthly pmts). */
 export function computeTotalMonthlyPayments(
     positions: Array<Record<string, unknown>> | null | undefined,
-    offerMonthlyPayment?: number | null,
 ): number {
     let sum = 0;
     for (const row of positions ?? []) {
         if (!isActivePositionForTotals(row)) continue;
-        const monthly = getMonthlyMcaPmtsForPosition(row);
-        if (!Number.isNaN(monthly) && monthly > 0) sum += monthly;
+        const repayment = getPositionRepaymentForSpa(row);
+        if (!Number.isNaN(repayment) && repayment > 0) sum += repayment;
     }
-    const offerMonthly = offerMonthlyPayment ?? 0;
-    if (Number.isFinite(offerMonthly) && offerMonthly > 0) sum += offerMonthly;
     return sum;
 }
 
 /**
- * SPA (Specified Percentage) = (total monthly payments / average revenue of last 3 months) × 100
+ * SPA = (total of repayments / average revenue of last 3 months) × 100.
+ * Numerator = sum of scrubbing REPAYMENT column (per-period ACH), not MONTHLY PMTS.
  */
 export function computeSpecifiedPurchasePercent(
     totalMonthlyPayments: number,
@@ -230,7 +276,6 @@ export function computeSpecifiedPurchasePercent(
 export function resolveSpecifiedPurchasePercentFromScrubbing(args: {
     banks?: BankTableLike[] | null;
     positions?: Array<Record<string, unknown>> | null;
-    offerMonthlyPayment?: number | null;
 }): string | null {
     const breakdown = buildSpaCalculationBreakdown(args);
     return breakdown.spa;
@@ -256,7 +301,7 @@ export type SpaMonthlyRevenueRow = {
 export type SpaMonthlyPaymentRow = {
     label: string;
     amount: number;
-    source: "position" | "offer";
+    source: "position" | "offer" | "positions_total";
     positionId?: string;
 };
 
@@ -360,49 +405,35 @@ export function buildSpaMonthlyRevenueRows(
     return { rows, monthsUsedForAverage: monthsForAvg };
 }
 
-/** Active position MCA payments plus optional new-offer monthly payment. */
+/** Single aggregated row: sum of scrubbing REPAYMENT column across active positions. */
 export function buildSpaMonthlyPaymentRows(
     positions: Array<Record<string, unknown>> | null | undefined,
-    offerMonthlyPayment?: number | null,
 ): SpaMonthlyPaymentRow[] {
-    const rows: SpaMonthlyPaymentRow[] = [];
-    let positionIndex = 0;
+    let total = 0;
     for (const row of positions ?? []) {
         if (!isActivePositionForTotals(row)) continue;
-        const monthly = getMonthlyMcaPmtsForPosition(row);
-        const positionId = String(row._id ?? row.id ?? "").trim() || undefined;
-        rows.push({
-            label: positionPaymentLabel(row, positionIndex),
-            amount: Number.isNaN(monthly) || monthly < 0 ? 0 : monthly,
-            source: "position",
-            positionId,
-        });
-        positionIndex += 1;
+        const repayment = getPositionRepaymentForSpa(row);
+        if (!Number.isNaN(repayment) && repayment > 0) total += repayment;
     }
-    const offerMonthly = offerMonthlyPayment ?? 0;
-    if (Number.isFinite(offerMonthly) && offerMonthly > 0) {
-        rows.push({
-            label: "New offer monthly payment",
-            amount: offerMonthly,
-            source: "offer",
-        });
-    }
-    return rows;
+    if (!(total > 0)) return [];
+    return [
+        {
+            label: "Total of repayments",
+            amount: total,
+            source: "positions_total",
+        },
+    ];
 }
 
 export function buildSpaCalculationBreakdown(args: {
     banks?: BankTableLike[] | null;
     positions?: Array<Record<string, unknown>> | null;
-    offerMonthlyPayment?: number | null;
 }): SpaCalculationBreakdown {
     const { rows: monthlyRevenues, monthsUsedForAverage } = buildSpaMonthlyRevenueRows(
         args.banks,
         SPA_AVG_REVENUE_MONTH_WINDOW,
     );
-    const monthlyPayments = buildSpaMonthlyPaymentRows(
-        args.positions,
-        args.offerMonthlyPayment,
-    );
+    const monthlyPayments = buildSpaMonthlyPaymentRows(args.positions);
     return computeSpaBreakdownFromRows(monthlyPayments, monthlyRevenues, monthsUsedForAverage);
 }
 
