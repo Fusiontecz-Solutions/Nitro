@@ -6,6 +6,13 @@ import BankAnalysisTable from "./BankAnalysisTable";
 import OfferDecisionToggle from "./OfferDecisionToggle";
 import PositionTableCalculator from "./PositionTableCalculator";
 
+export type DecisionTabSectionContext = {
+  /** True when offer is approved/saved and user has not clicked Edit. */
+  componentsReadOnly: boolean;
+  /** Bulk-save hook for bank cards — wired to Approve & Save. */
+  onRegisterBankSaveAll?: (saveAll: () => Promise<boolean>) => void;
+};
+
 type DecisionMakeFinalValuesProps = {
   applicationId?: string | null;
   allowOfferEdit?: boolean;
@@ -22,7 +29,11 @@ type DecisionMakeFinalValuesProps = {
     loading: boolean;
   }) => void;
   /** e.g. bank totals table — shown after offer, before positions (Decision Making layout). */
-  betweenOfferAndPositions?: ReactNode;
+  betweenOfferAndPositions?:
+    | ReactNode
+    | ((ctx: DecisionTabSectionContext) => ReactNode);
+  /** Rendered directly above the OFFER card (e.g. Super Admin assign-to-underwriter). */
+  aboveOffer?: ReactNode;
 };
 
 function toISODateOrEmpty(input: unknown): string {
@@ -82,6 +93,7 @@ export default function DecisionMakeFinalValues({
   positionsDisableCreate = false,
   onSummaryMetricsChange,
   betweenOfferAndPositions,
+  aboveOffer,
 }: DecisionMakeFinalValuesProps) {
   const { data: applicationData } = useSelector(
     (state: RootState) => state.applicationDetail,
@@ -135,6 +147,16 @@ export default function DecisionMakeFinalValues({
     return mapPositionsForCalculator(scopedPositions);
   }, [scopedPositions]);
 
+  const sectionContext: DecisionTabSectionContext = {
+    componentsReadOnly: !allowPositionsEdit,
+    onRegisterBankSaveAll: undefined,
+  };
+
+  const betweenSection =
+    typeof betweenOfferAndPositions === "function"
+      ? betweenOfferAndPositions(sectionContext)
+      : betweenOfferAndPositions;
+
   return (
     <div className="space-y-6 w-full">
       {/* Mount bank totals off-screen so we can reuse avgNetCredit for remit calculations */}
@@ -151,6 +173,8 @@ export default function DecisionMakeFinalValues({
         />
       </div>
 
+      {aboveOffer}
+
       <OfferDecisionToggle
         positions={calculatorPositions as any}
         bankTables={undefined}
@@ -162,7 +186,7 @@ export default function DecisionMakeFinalValues({
         onSummaryMetricsChange={onSummaryMetricsChange}
       />
 
-      {betweenOfferAndPositions}
+      {betweenSection}
 
       <PositionTableCalculator
         applicationId={effectiveApplicationId || undefined}

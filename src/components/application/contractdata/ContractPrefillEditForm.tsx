@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
     Building2,
+    Calculator,
     ChevronRight,
     CopyCheck,
     DollarSign,
@@ -73,6 +74,9 @@ import type { AppDispatch } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { toast } from "react-toastify";
 import { cn } from "@/lib/utils";
+import { syncContractPrefillToSourceRecords } from "./contractPrefillSourceSync";
+import { SpaCalculationModal } from "./SpaCalculationModal";
+import { persistCalculatedPurchasePercent } from "./spaPrefillSync";
 import {
     buildDocuSignRolesFromEditorRows,
     CONTRACT_SIGNER_OVERRIDES_KEY,
@@ -252,7 +256,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "rpa_merchant",
             title: "RPA — Merchant & agreement",
-            description: "Agreement date, legal name, state of inc., DBA, EIN, client / merchant name.",
+            description: "Agreement date, legal name, state of inc., DBA, EIN, client / merchant name, and client phone (page 1).",
             Icon: FileText,
             groups: [
                 {
@@ -264,6 +268,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                         "doingBusinessAs",
                         "federalTaxIdEin",
                         "clientName",
+                        "clientPhone",
                     ],
                 },
             ],
@@ -304,7 +309,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
             description: "Merchant (client) and guarantor email and phone.",
             Icon: Phone,
             groups: [
-                { heading: "Client", keys: ["clientEmail", "clientPhone"] },
+                { heading: "Client", keys: ["clientEmail"] },
                 { heading: "Guarantor", keys: ["guarantorEmail", "guarantorPhone"] },
             ],
         },
@@ -870,6 +875,7 @@ const DATE_KEYS: (keyof BuildContractPrefillFieldsArgs)[] = [
 /** Shown empty until the user saves a value in contract prefill overrides. */
 const REQUIRED_PREFILL_FIELD_KEYS = new Set<keyof BuildContractPrefillFieldsArgs>([
     "customerName",
+    "clientPhone",
     "purchasePercent",
     "remittance",
 ]);
@@ -975,11 +981,20 @@ function validatePrefillValues(values: Record<keyof BuildContractPrefillFieldsAr
         err.customerName = "Customer / primary name is required.";
     }
 
+    const clientPhoneVal = trimField(values, "clientPhone");
+    if (!clientPhoneVal) {
+        err.clientPhone = "Client phone is required.";
+    } else {
+        const clientPhoneMsg = validatePhone(clientPhoneVal);
+        if (clientPhoneMsg) err.clientPhone = clientPhoneMsg;
+    }
+
     for (const key of EMAIL_KEYS) {
         const msg = validateEmail(trimField(values, key));
         if (msg) err[key] = msg;
     }
     for (const key of PHONE_KEYS) {
+        if (key === "clientPhone") continue;
         const msg = validatePhone(trimField(values, key));
         if (msg) err[key] = msg;
     }
@@ -1140,8 +1155,17 @@ export function ContractPrefillEditForm({
     const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
     const [saveError, setSaveError] = useState<string | null>(null);
     const [activeSectionId, setActiveSectionId] = useState(CONTRACT_PREFILL_SECTIONS[0]?.id ?? "rpa_merchant");
+    const purchasePercentTouchedRef = useRef(false);
+    const [spaModalOpen, setSpaModalOpen] = useState(false);
+    const [savingSpaCalculation, setSavingSpaCalculation] = useState(false);
 
     const agreementDateForDefaults = agreementDatePlaceholder || "";
+
+    useEffect(() => {
+        if (!open) {
+            purchasePercentTouchedRef.current = false;
+        }
+    }, [open]);
 
     const documentTemplatePrefillByMappingId = useMemo(() => {
         const raw = additionalContractPrefillJson?.[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
@@ -1635,8 +1659,26 @@ export function ContractPrefillEditForm({
                 fromDb ?? (payload as Partial<BuildContractPrefillFieldsArgs>),
                 parsedBlob,
             );
+            try {
+                await syncContractPrefillToSourceRecords({
+                    dispatch,
+                    applicationData,
+                    applicationUuid,
+                    prefill: payload,
+                    offerDecision,
+                    contractGuarantors: contractRecords?.guarantors ?? null,
+                    bankDetail: contractRecords?.bankDetail ?? null,
+                });
+            } catch (syncErr) {
+                console.error(syncErr);
+                const syncMsg =
+                    syncErr instanceof Error
+                        ? syncErr.message
+                        : "Contract saved, but application or offer sync failed.";
+                toast.warn(syncMsg);
+            }
             setSaveError(null);
-            toast.success("Contract prefill fields saved.");
+            toast.success("Contract prefill, offer, application, and bank details saved.");
             queueMicrotask(() => {
                 onAfterPrefillSaved?.();
             });
@@ -1731,8 +1773,76 @@ export function ContractPrefillEditForm({
         }
     };
 
+    const handleApplyCalculatedSpa = useCallback(
+        async (spa: string) => {
+            purchasePercentTouchedRef.current = false;
+            setValues((prev) => ({ ...prev, purchasePercent: spa }));
+            setSaveError(null);
+            setFieldErrors((prev) => {
+                if (!prev.purchasePercent) return prev;
+                const next = { ...prev };
+                delete next.purchasePercent;
+                return next;
+            });
+
+            setSavingSpaCalculation(true);
+            try {
+                const result = await persistCalculatedPurchasePercent({
+                    dispatch,
+                    contractId,
+                    spa,
+                    persistedPrefillOverrides,
+                    additionalContractPrefillJson,
+                });
+                if (result.saved && result.mainSaved) {
+                    onPersistedPrefillChange?.(result.mainSaved);
+                    if (result.fullSaved) {
+                        const parsedBlob = (() => {
+                            const inner = result.fullSaved?.[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
+                            if (inner == null || typeof inner !== "object" || Array.isArray(inner)) {
+                                return documentTemplatePrefillByMappingId;
+                            }
+                            const out: Record<string, Record<string, string>> = {};
+                            for (const [mappingId, row] of Object.entries(inner)) {
+                                if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+                                out[mappingId] = Object.fromEntries(
+                                    Object.entries(row as Record<string, unknown>).map(([k, v]) => [
+                                        k,
+                                        String(v ?? ""),
+                                    ]),
+                                );
+                            }
+                            return out;
+                        })();
+                        onPersistedPrefillFullChange?.(result.mainSaved, parsedBlob);
+                    }
+                    toast.success(`Specified percentage calculated and saved: ${spa}%`);
+                } else {
+                    toast.success(
+                        `Specified percentage calculated: ${spa}%. Open a contract record to save it permanently.`,
+                    );
+                }
+                setSpaModalOpen(false);
+            } finally {
+                setSavingSpaCalculation(false);
+            }
+        },
+        [
+            contractId,
+            persistedPrefillOverrides,
+            additionalContractPrefillJson,
+            dispatch,
+            onPersistedPrefillChange,
+            onPersistedPrefillFullChange,
+            documentTemplatePrefillByMappingId,
+        ],
+    );
+
     const setField = useCallback(
         (key: keyof BuildContractPrefillFieldsArgs, v: string) => {
+            if (key === "purchasePercent") {
+                purchasePercentTouchedRef.current = true;
+            }
             setValues((prev) => {
                 const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {
                     [key]: v,
@@ -1768,6 +1878,7 @@ export function ContractPrefillEditForm({
     );
 
     return (
+        <>
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
                 className="flex max-h-[92vh] w-[min(100vw-2rem,960px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px]"
@@ -1934,7 +2045,13 @@ export function ContractPrefillEditForm({
                                                 ) : null}
                                                 <div className="grid gap-4 sm:grid-cols-2">
                                                     {group.keys.map((key) => (
-                                                        <div key={key} className="space-y-1.5">
+                                                        <div
+                                                            key={key}
+                                                            className={cn(
+                                                                "space-y-1.5",
+                                                                key === "purchasePercent" && "sm:col-span-2",
+                                                            )}
+                                                        >
                                                             <Label
                                                                 htmlFor={`prefill-${key}`}
                                                                 className="text-xs font-medium"
@@ -1944,32 +2061,74 @@ export function ContractPrefillEditForm({
                                                                     <span className="text-destructive"> *</span>
                                                                 ) : null}
                                                             </Label>
-                                                            <Input
-                                                                id={`prefill-${key}`}
-                                                                type={isPasswordPrefillKey(key) ? "password" : "text"}
-                                                                required={REQUIRED_PREFILL_FIELD_KEYS.has(key)}
-                                                                autoComplete={
-                                                                    isPasswordPrefillKey(key)
-                                                                        ? "new-password"
-                                                                        : undefined
-                                                                }
-                                                                value={values[key] ?? ""}
-                                                                onChange={(e) => setField(key, e.target.value)}
-                                                                disabled={readOnly}
-                                                                aria-invalid={Boolean(fieldErrors[key])}
-                                                                className={cn(
-                                                                    "h-9 text-sm",
-                                                                    fieldErrors[key] &&
-                                                                        "border-destructive focus-visible:ring-destructive",
-                                                                )}
-                                                                placeholder={
-                                                                    key === "agreementDate"
-                                                                        ? agreementDatePlaceholder
-                                                                        : key === "purchasePercent"
-                                                                          ? "Enter specific percentage"
-                                                                          : undefined
-                                                                }
-                                                            />
+                                                            {key === "purchasePercent" ? (
+                                                                <>
+                                                                    <div className="flex flex-wrap gap-2">
+                                                                        <Input
+                                                                            id={`prefill-${key}`}
+                                                                            type="text"
+                                                                            required={REQUIRED_PREFILL_FIELD_KEYS.has(key)}
+                                                                            value={values[key] ?? ""}
+                                                                            onChange={(e) =>
+                                                                                setField(key, e.target.value)
+                                                                            }
+                                                                            disabled={readOnly}
+                                                                            aria-invalid={Boolean(fieldErrors[key])}
+                                                                            className={cn(
+                                                                                "h-9 min-w-[8rem] flex-1 text-sm",
+                                                                                fieldErrors[key] &&
+                                                                                    "border-destructive focus-visible:ring-destructive",
+                                                                            )}
+                                                                            placeholder="e.g. 25.00"
+                                                                        />
+                                                                        {!readOnly ? (
+                                                                            <Button
+                                                                                type="button"
+                                                                                variant="outline"
+                                                                                size="sm"
+                                                                                className="h-9 shrink-0 gap-1.5 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                                                onClick={() => setSpaModalOpen(true)}
+                                                                            >
+                                                                                <Calculator
+                                                                                    className="h-3.5 w-3.5"
+                                                                                    aria-hidden
+                                                                                />
+                                                                                Calculate
+                                                                            </Button>
+                                                                        ) : null}
+                                                                    </div>
+                                                                    <p className="text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                                                                        SPA = (total of repayments ÷ average credits
+                                                                        of last 3 months) × 100. Uses scrubbing
+                                                                        REPAYMENT column (ACH), not monthly pmts.
+                                                                    </p>
+                                                                </>
+                                                            ) : (
+                                                                <Input
+                                                                    id={`prefill-${key}`}
+                                                                    type={isPasswordPrefillKey(key) ? "password" : "text"}
+                                                                    required={REQUIRED_PREFILL_FIELD_KEYS.has(key)}
+                                                                    autoComplete={
+                                                                        isPasswordPrefillKey(key)
+                                                                            ? "new-password"
+                                                                            : undefined
+                                                                    }
+                                                                    value={values[key] ?? ""}
+                                                                    onChange={(e) => setField(key, e.target.value)}
+                                                                    disabled={readOnly}
+                                                                    aria-invalid={Boolean(fieldErrors[key])}
+                                                                    className={cn(
+                                                                        "h-9 text-sm",
+                                                                        fieldErrors[key] &&
+                                                                            "border-destructive focus-visible:ring-destructive",
+                                                                    )}
+                                                                    placeholder={
+                                                                        key === "agreementDate"
+                                                                            ? agreementDatePlaceholder
+                                                                            : undefined
+                                                                    }
+                                                                />
+                                                            )}
                                                             {fieldErrors[key] ? (
                                                                 <p className="text-destructive text-xs" role="alert">
                                                                     {fieldErrors[key]}
@@ -2044,5 +2203,14 @@ export function ContractPrefillEditForm({
                 </DialogFooter>
             </DialogContent>
         </Dialog>
+        <SpaCalculationModal
+            open={spaModalOpen}
+            onOpenChange={setSpaModalOpen}
+            applicationUuid={applicationUuid}
+            offerDecision={offerDecision}
+            saving={savingSpaCalculation}
+            onApply={handleApplyCalculatedSpa}
+        />
+        </>
     );
 }

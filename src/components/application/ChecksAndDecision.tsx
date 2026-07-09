@@ -18,16 +18,22 @@ import { getComplianceChecks } from "@/redux/actions/complianceCheckActions";
 import { getApplicationActivityLogs } from "@/redux/actions/applicationActivityLogActions";
 
 interface ChecksAndDecisionProps {
-    /** When true, Approved modal shows "Proceed to Generate Contract" (FINAL_UNDERWRITER only) */
+    /** When true, Approved modal shows "Proceed to Generate Contract" (UNDERWRITER only) */
     isFinalUnderwriter?: boolean;
+    /** Scrubbing-stage decision making (no ISO approval mail flow). */
+    isPlainUnderwriter?: boolean;
     /** When true, Super Admin uses the same Send/Resend Approval Mail to ISO flow as the Final Underwriter. */
     isSuperAdmin?: boolean;
+    /** When true, enables Send/Resend Approval Mail to ISO for scrubbing users. */
+    canSendApprovalMailToIso?: boolean;
     /** Called when FINAL_UNDERWRITER clicks Proceed to Generate Contract */
     onProceedToContract?: () => void;
     /** When true, hides the "Make Underwriting Decision" action buttons (e.g. deal pipeline read-only view). */
     hideUnderwritingDecision?: boolean;
     /** When true, disables decision action buttons (stage preview / behind-current-deal view). */
     previewMode?: boolean;
+    /** Tighter layout when embedded in Decision Making tab. */
+    compactLayout?: boolean;
 }
 
 const ChecksAndDecision = ({

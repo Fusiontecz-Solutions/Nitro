@@ -72,9 +72,9 @@ import { useNavigate } from "react-router";
 import { formatDate as formatDateUtil } from "@/lib/utils";
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from "@/utils/formatPhoneNumber";
 
-const ROLE_ID = "UNDERWRITER";
-const LABEL = "Underwriter";
-const LABEL_PLURAL = "Underwriters";
+const ROLE_ID = "SCRUBBING";
+const LABEL = "Scrubber";
+const LABEL_PLURAL = "Scrubbing";
 
 function formatDate(dateStr: string | undefined): string {
   return formatDateUtil(dateStr ?? "", "—");

@@ -62,9 +62,56 @@ const AutoResizeTextarea = ({
 type FinalProps = {
   applicationId?: string | null;
   onBack?: () => void;
+  /** When true, omits page shell and ApplicationSummary (for carousel parent). */
+  embedded?: boolean;
+  /** When false, keeps fetched answers in Redux after unmount (carousel handoff). */
+  resetOnUnmount?: boolean;
+  /** Called after answers save successfully (and queue update when applicable). */
+  onSaveSuccess?: () => void;
 };
 
-export const Final = ({ applicationId, onBack }: FinalProps) => {
+export const FINAL_FORM_FIELDS = [
+  { key: 'nature_business', label: 'NATURE OF THE BUSINESS' },
+  { key: 'business_duration', label: 'HOW LONG IN BUSINESS?' },
+  { key: 'previous_experience', label: 'PREVIOUS EXPERIENCE' },
+  { key: 'existing_business_purchase', label: 'BOUGHT EXISTING OR ESTABLISHED?' },
+  { key: 'ownership_percentage', label: 'PERCENTAGE OF OWNERSHIP' },
+  { key: 'location_count', label: 'HOW MANY LOCATIONS?' },
+  { key: 'current_location_duration', label: 'HOW LONG IN CURRENT LOCATION?' },
+  { key: 'lease_or_own', label: 'LEASE OR OWN - CURRENT?' },
+  { key: 'relocation_plan', label: 'ANY PLANS TO RELOCATE?' },
+  { key: 'employee_count', label: 'HOW MANY EMPLOYEES?' },
+  { key: 'payroll_type', label: 'PAYROLL TYPE' },
+  { key: 'payroll_frequency', label: 'PAYROLL FREQUENCY' },
+  { key: 'payroll_processor', label: 'PAYROLL PROCESSOR' },
+  { key: 'bank_accounts_count', label: 'HOW MANY BANK ACCTS FOR BIZ?' },
+  { key: 'receivables_advertise', label: 'MAJORITY OF RECEIVABLES | ADVERTISE?' },
+  { key: 'use_of_funds', label: 'USE OF FUNDS' },
+  { key: 'purchase_agreement_read', label: 'DID YOU READ AND SIGNED OUR PURCHASE AGREEMENT?' },
+  { key: 'understand_funding_fees', label: 'DO YOU UNDERSTAND THE FUNDING, AND AGREE WITH ALL OF THE FEES?' },
+  { key: 'personal_guarantee_understood', label: 'DO YOU UNDERSTAND THE PERSONAL GUARANTEE ON OUR AGREEMENT?' },
+  { key: 'afford_existing_positions', label: 'WILL YOUR BUSINESS BE ABLE TO COMFORTABLY AFFORD ALL EXISTING MCA POSITIONS?' },
+  { key: 'additional_funding_mentioned', label: 'HAS iso MENTIONED ADDITIONAL FUNDING INCLUDING ALTERNATIVE LOC?' },
+  { key: 'bankruptcy_last_6_months', label: 'HAVE YOU FILED FOR BK OR RESTRUCTURE THE LAST 6 MONTHS?' },
+  { key: 'fraud_acknowledgement', label: 'DO YOU ACKNOWLEDGE THAT ANY FALSE STATEMENTS MAY CONSTITUTE FRAUD AND SUBJECT YOU TO LEGAL ACTION?' },
+] as const;
+
+export function areFinalAnswersComplete(
+  answersForApplication: Record<string, { answer?: string | null } | undefined>,
+): boolean {
+  return FINAL_FORM_FIELDS.every((field) => {
+    const answer = answersForApplication[field.key]?.answer;
+    return typeof answer === 'string' && answer.trim() !== '';
+  });
+}
+
+export const Final = ({
+  applicationId,
+  onBack,
+  embedded = false,
+  resetOnUnmount = true,
+  onSaveSuccess,
+}: FinalProps) => {
   const dispatch = useDispatch<AppDispatch>();
   const { data: applicationData } = useSelector(
     (state: RootState) => state.applicationDetail
@@ -80,31 +127,8 @@ export const Final = ({ applicationId, onBack }: FinalProps) => {
     return '';
   }, [applicationId, applicationData]);
 
-  const formFields = [
-    { key: 'nature_business', label: 'NATURE OF THE BUSINESS' },
-    { key: 'business_duration', label: 'HOW LONG IN BUSINESS?' },
-    { key: 'previous_experience', label: 'PREVIOUS EXPERIENCE' },
-    { key: 'existing_business_purchase', label: 'BOUGHT EXISTING OR ESTABLISHED?' },
-    { key: 'ownership_percentage', label: 'PERCENTAGE OF OWNERSHIP' },
-    { key: 'location_count', label: 'HOW MANY LOCATIONS?' },
-    { key: 'current_location_duration', label: 'HOW LONG IN CURRENT LOCATION?' },
-    { key: 'lease_or_own', label: 'LEASE OR OWN - CURRENT?' },
-    { key: 'relocation_plan', label: 'ANY PLANS TO RELOCATE?' },
-    { key: 'employee_count', label: 'HOW MANY EMPLOYEES?' },
-    { key: 'payroll_type', label: 'PAYROLL TYPE' },
-    { key: 'payroll_frequency', label: 'PAYROLL FREQUENCY' },
-    { key: 'payroll_processor', label: 'PAYROLL PROCESSOR' },
-    { key: 'bank_accounts_count', label: 'HOW MANY BANK ACCTS FOR BIZ?' },
-    { key: 'receivables_advertise', label: 'MAJORITY OF RECEIVABLES | ADVERTISE?' },
-    { key: 'use_of_funds', label: 'USE OF FUNDS' },
-    { key: 'purchase_agreement_read', label: 'DID YOU READ AND SIGNED OUR PURCHASE AGREEMENT?' },
-    { key: 'understand_funding_fees', label: 'DO YOU UNDERSTAND THE FUNDING, AND AGREE WITH ALL OF THE FEES?' },
-    { key: 'personal_guarantee_understood', label: 'DO YOU UNDERSTAND THE PERSONAL GUARANTEE ON OUR AGREEMENT?' },
-    { key: 'afford_existing_positions', label: 'WILL YOUR BUSINESS BE ABLE TO COMFORTABLY AFFORD ALL EXISTING MCA POSITIONS?' },
-    { key: 'additional_funding_mentioned', label: 'HAS iso MENTIONED ADDITIONAL FUNDING INCLUDING ALTERNATIVE LOC?' },
-    { key: 'bankruptcy_last_6_months', label: 'HAVE YOU FILED FOR BK OR RESTRUCTURE THE LAST 6 MONTHS?' },
-    { key: 'fraud_acknowledgement', label: 'DO YOU ACKNOWLEDGE THAT ANY FALSE STATEMENTS MAY CONSTITUTE FRAUD AND SUBJECT YOU TO LEGAL ACTION?' },
-  ] as const;
+  const formFields = FINAL_FORM_FIELDS;
+
   const yesNoQuestionKeys = new Set<string>([
     'existing_business_purchase',
     'relocation_plan',
@@ -139,9 +163,11 @@ export const Final = ({ applicationId, onBack }: FinalProps) => {
     dispatch(fetchFinalAnswers({ applicationId: applicationKey }));
 
     return () => {
-      dispatch(resetAnswersForApplication({ applicationId: applicationKey }));
+      if (resetOnUnmount) {
+        dispatch(resetAnswersForApplication({ applicationId: applicationKey }));
+      }
     };
-  }, [applicationKey, dispatch]);
+  }, [applicationKey, dispatch, resetOnUnmount]);
 
   const handleChange = (key: string, label: string, value: string) => {
     if (!applicationKey) return;
@@ -194,11 +220,13 @@ export const Final = ({ applicationId, onBack }: FinalProps) => {
           toast.warning(
             'Answers saved, but the deal could not be moved to the Final stage. Check permissions or try again.',
           );
+          onSaveSuccess?.();
           return;
         }
       } else {
         toast.success('Merchant interview answers saved successfully.');
       }
+      onSaveSuccess?.();
     } catch (error: unknown) {
       toast.error(
         error != null ? String(error) : 'Failed to save merchant interview answers',
@@ -220,9 +248,17 @@ export const Final = ({ applicationId, onBack }: FinalProps) => {
   // };
 
   return (
-    <div className="min-h-screen bg-gray-50 bg-transparent px-3 py-3 md:px-5 md:py-5 dark:bg-transparent">
-      <div className="max-w-8xl mx-auto flex flex-col gap-4">
-        <ApplicationSummary applicationId={applicationId} onBack={onBack} />
+    <div
+      className={
+        embedded
+          ? 'w-full'
+          : 'min-h-screen bg-gray-50 bg-transparent px-3 py-3 md:px-5 md:py-5 dark:bg-transparent'
+      }
+    >
+      <div className={embedded ? 'w-full' : 'max-w-8xl mx-auto flex flex-col gap-4'}>
+        {!embedded ? (
+          <ApplicationSummary applicationId={applicationId} onBack={onBack} />
+        ) : null}
 
         {/* Form Section - Now its own white card */}
         <div className="bg-white px-3 py-4 md:px-5 md:py-5 rounded-lg shadow-md dark:border dark:border-slate-700 dark:bg-[#141517] dark:shadow-lg dark:shadow-black/20">

@@ -1,6 +1,16 @@
 /** Stored on `Contract.contractPrefillOverrides` — separate from main contract envelope. */
 export const ACH_AUTHORIZATION_DOCUSIGN_KEY = "achAuthorizationDocuSign";
 
+/** Prior standalone ACH DocuSign sends — stored on `Contract.contractPrefillOverrides`. */
+export const ACH_SEND_HISTORY_KEY = "achSendHistory";
+
+export type AchSendHistoryEntry = {
+    envelopeId: string;
+    status: AchAuthorizationDocuSignCapsuleStatus;
+    sentAt?: string | null;
+    archivedAt: string;
+};
+
 export type AchAuthorizationDocuSignCapsuleStatus =
     | "DRAFT"
     | "SENT"
@@ -32,6 +42,7 @@ export function mapInternalEnvelopeStatusToAchCapsule(
 
 export function parseAchAuthorizationDocuSignFromPrefill(
     raw: unknown,
+    options?: { excludeEnvelopeId?: string | null },
 ): AchAuthorizationDocuSignMeta | null {
     if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
     const blob = (raw as Record<string, unknown>)[ACH_AUTHORIZATION_DOCUSIGN_KEY];
@@ -39,6 +50,8 @@ export function parseAchAuthorizationDocuSignFromPrefill(
     const o = blob as Record<string, unknown>;
     const envelopeId = String(o.envelopeId ?? "").trim();
     if (!envelopeId) return null;
+    const exclude = String(options?.excludeEnvelopeId ?? "").trim();
+    if (exclude && envelopeId === exclude) return null;
     const statusRaw = String(o.status ?? "DRAFT").trim().toUpperCase();
     const status: AchAuthorizationDocuSignCapsuleStatus =
         statusRaw === "SENT" ||
@@ -152,6 +165,34 @@ export function canResendAchAuthorization(
     if (!envelopeId) return true;
     const status = meta?.status ?? "DRAFT";
     return status === "VOIDED" || status === "SIGNED";
+}
+
+export function parseAchSendHistoryFromPrefill(raw: unknown): AchSendHistoryEntry[] {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const list = (raw as Record<string, unknown>)[ACH_SEND_HISTORY_KEY];
+    if (!Array.isArray(list)) return [];
+    const out: AchSendHistoryEntry[] = [];
+    for (const item of list) {
+        if (item == null || typeof item !== "object" || Array.isArray(item)) continue;
+        const o = item as Record<string, unknown>;
+        const envelopeId = String(o.envelopeId ?? "").trim();
+        if (!envelopeId) continue;
+        const statusRaw = String(o.status ?? "DRAFT").trim().toUpperCase();
+        const status: AchAuthorizationDocuSignCapsuleStatus =
+            statusRaw === "SENT" ||
+            statusRaw === "VIEWED" ||
+            statusRaw === "SIGNED" ||
+            statusRaw === "VOIDED"
+                ? statusRaw
+                : "DRAFT";
+        out.push({
+            envelopeId,
+            status,
+            sentAt: o.sentAt != null ? String(o.sentAt) : null,
+            archivedAt: String(o.archivedAt ?? ""),
+        });
+    }
+    return out;
 }
 
 /** Main contract DocuSign envelope — never treat ACH authorization envelope as the contract. */

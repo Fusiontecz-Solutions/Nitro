@@ -39,6 +39,8 @@ interface CommentSectionProps {
     styles?: string;
     isUnderwriter?: boolean;
     applicationId?: string;
+    /** Tighter card height when embedded beside decision making. */
+    compactLayout?: boolean;
     // Public/unregistered mode:
     // - always create/edit external comments
     // - hide comment/internal dropdowns

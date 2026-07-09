@@ -46,11 +46,22 @@ import {
 } from "@/components/ui/select";
 import { SearchableStateSelect, pickUsStateForSelect } from "@/components/ui/searchable-state-select";
 import {
-    DEFAULT_FUNDER_OPTIONS,
+    funderNamesForContractState,
+    findFunderProfile,
     normalizeLegacyFunderName,
     pickFunderForSelect,
 } from "@/constants/contractFunder";
+import {
+    funderAvailableForContractState,
+    funderNamesEquivalent,
+    formatFunderSelectLabel,
+    findFunderProfileById,
+    persistedFunderProfileIdForApi,
+    useFunderProfiles,
+} from "@/hooks/useFunderProfiles";
 import { fetchLatestContractTemplate } from "@/utils/contractTemplate";
+import { resolvePdfViewUrl } from "@/utils/cloudinaryPdfUrl";
+import { fetchMainContractTemplatePreview } from "./contractdata/contractTemplatePreview";
 import { fetchDocuSignTemplateIdForFunder } from "@/utils/contractDocuSignTemplate";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
@@ -83,6 +94,7 @@ import {
     updateContract,
     getByApplicationIdContract,
     getByIdContract,
+    syncKycPrefillToContract,
     type UpdateContractData,
 } from "@/redux/actions/contractActions";
 import { getBankDetails } from "@/redux/actions/bankDetailActions";
@@ -111,8 +123,11 @@ import {
     applyKycPanelsToOwnerEntries,
     mergeKycExtractionIntoPrefill,
     parseKycExtractionsFromUploadResponse,
+    finalizeKycExtractionForSync,
+    kycExtractionHasReadableFields,
     type KycExtractionResult,
 } from "./contractdata/kycDocumentPrefill";
+import KycExtractionReviewCard from "./contractdata/KycExtractionReviewCard";
 import { cn, formatDate, formatDateTimeUS } from "@/lib/utils";
 import { findApplicationFileForDocumentRequest } from "@/lib/documentRequestMatch";
 import { normalizeRoleKey } from "@/lib/sessionRole";
@@ -134,16 +149,19 @@ import {
 } from "@/redux/actions/boldSignActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import {
-    DOCUSIGN_DEFAULT_CC_EMAIL,
-    isDefaultCcEmail,
+    isReservedContractCcEmail,
     loadBoldSignCcEmailList,
     mergeWithDefaultCcEmails,
+    parseFunderDefaultCcEmails,
+    resolveContractDefaultCcEmails,
     saveBoldSignCcEmailList,
 } from "./docusignCcList";
 import { ContractPrefillEditForm } from "./contractdata/ContractPrefillEditForm";
 import { ExhibitACompaniesSummarySection } from "./contractdata/ExhibitACompaniesSummarySection";
 import { TemplateMappingPrefillEditDialog } from "./contractdata/TemplateMappingPrefillEditDialog";
 import { DisclosureCalculationModal } from "./contractdata/DisclosureCalculationModal";
+import { SpaCalculationModal } from "./contractdata/SpaCalculationModal";
+import { persistCalculatedPurchasePercent } from "./contractdata/spaPrefillSync";
 import {
     buildDisclosureCalculatorInputsFromSources,
     extractMonthlyRevenuesFromBankAnalyses,
@@ -163,6 +181,21 @@ import {
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
 import { isPlatformLayoutKey, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
+import {
+    contractSendPackageFingerprint,
+    canSendWithoutMainContract,
+    resolveEffectiveSendPackage,
+    validateContractSendPackage,
+    type ContractSendPackageSelection,
+} from "./contractdata/contractSendPackage";
+import {
+    buildContractSendTableRows,
+    canVoidContractSendTableRow,
+    getContractSendTableRowStatusLabel,
+    isContractSendTableRowFullySigned,
+    type ContractSendTableRow,
+} from "./contractdata/contractSendHistory";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
     DEFAULT_DOCUSIGN_TEMPLATE_ID,
 } from "./contractdata/docusignTemplateConfig";
@@ -237,6 +270,16 @@ function writeDocuSignLoadingTab(doc: Document): void {
     doc.close();
 }
 
+function resolveDealStateFromApplication(applicationData: unknown): string {
+    const ad = applicationData as Record<string, unknown> | null | undefined;
+    if (!ad || typeof ad !== "object") return "";
+    const bi0 = Array.isArray(ad.businessInfo)
+        ? (ad.businessInfo[0] as Record<string, unknown>)
+        : undefined;
+    const client = ad.client as Record<string, unknown> | undefined;
+    return pickUsStateForSelect(client?.state ?? bi0?.state);
+}
+
 function writeDocuSignErrorTab(doc: Document, message: string): void {
     const safe = String(message)
         .replace(/&/g, "&amp;")
@@ -268,7 +311,13 @@ interface PDFViewerModalProps {
         disclosureDocumentRef?: string | null;
         achDocumentRef?: string | null;
         standaloneAchOnly?: boolean;
+        includeMainContract?: boolean;
+        sendPackage?: ContractSendPackageSelection;
         roles?: DocuSignTemplateRolePayload[];
+        funderName?: string | null;
+        funderProfileId?: string | null;
+        contractState?: string | null;
+        mainContractLayoutKey?: string | null;
     }) => void | Promise<
         void | {
             envelopeId?: string;
@@ -606,19 +655,6 @@ function getPrimaryContractEnvelopeView(
     };
 }
 
-/** In-flight main contract envelope (sent to signers, not completed or voided). */
-function canCancelDocuSignContract(
-    contract: Record<string, unknown> | null | undefined,
-    sessionSentAt: Date | null,
-): boolean {
-    const { isCompleted, isOutForSignature } = getPrimaryContractEnvelopeView(
-        contract,
-        sessionSentAt,
-    );
-    if (isCompleted) return false;
-    return isOutForSignature;
-}
-
 /** Open DocuSign for the main contract — draft, after void, or resend after fully signed. */
 function canReviewAndSendToDocuSign(
     contract: Record<string, unknown> | null | undefined,
@@ -695,10 +731,51 @@ function resolveSignerEmailForSummary(
 }
 
 /** Direct PDF renderer using react-pdf (template PDF and post-send downloads). */
-function DirectPdfViewer({ fileUrl, errorMessage = "Could not render this PDF in the viewer." }: { fileUrl: string; errorMessage?: string }) {
+function DirectPdfViewer({
+    fileUrl,
+    fileName = "document.pdf",
+    errorMessage = "Could not render this PDF in the viewer.",
+}: {
+    fileUrl: string;
+    fileName?: string;
+    errorMessage?: string;
+}) {
     const wrapRef = useRef<HTMLDivElement>(null);
     const [numPages, setNumPages] = useState<number | null>(null);
     const [pageWidth, setPageWidth] = useState(640);
+    const [resolvedFileUrl, setResolvedFileUrl] = useState<string | null>(null);
+    const [resolveError, setResolveError] = useState<string | null>(null);
+    const cloudinaryBlobUrlRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        setResolvedFileUrl(null);
+        setResolveError(null);
+        void (async () => {
+            try {
+                const viewUrl = await resolvePdfViewUrl(fileUrl, fileName);
+                if (cancelled) return;
+                if (viewUrl !== fileUrl) {
+                    if (cloudinaryBlobUrlRef.current) {
+                        URL.revokeObjectURL(cloudinaryBlobUrlRef.current);
+                    }
+                    cloudinaryBlobUrlRef.current = viewUrl;
+                }
+                setResolvedFileUrl(viewUrl);
+            } catch {
+                if (!cancelled) {
+                    setResolveError("Could not load this PDF for preview.");
+                }
+            }
+        })();
+        return () => {
+            cancelled = true;
+            if (cloudinaryBlobUrlRef.current) {
+                URL.revokeObjectURL(cloudinaryBlobUrlRef.current);
+                cloudinaryBlobUrlRef.current = null;
+            }
+        };
+    }, [fileUrl, fileName]);
 
     useEffect(() => {
         const el = wrapRef.current;
@@ -718,8 +795,17 @@ function DirectPdfViewer({ fileUrl, errorMessage = "Could not render this PDF in
             ref={wrapRef}
             className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-slate-100 dark:bg-slate-950"
         >
+            {!resolvedFileUrl ? (
+                <div className="flex min-h-[200px] items-center justify-center">
+                    {resolveError ? (
+                        <p className="px-4 text-center text-xs text-slate-500">{resolveError}</p>
+                    ) : (
+                        <Loader2 className="h-8 w-8 animate-spin text-slate-400" aria-hidden />
+                    )}
+                </div>
+            ) : (
             <Document
-                file={fileUrl}
+                file={resolvedFileUrl}
                 onLoadSuccess={({ numPages: n }) => setNumPages(n)}
                 loading={
                     <div className="flex min-h-[200px] items-center justify-center">
@@ -746,6 +832,7 @@ function DirectPdfViewer({ fileUrl, errorMessage = "Could not render this PDF in
                     ))
                     : null}
             </Document>
+            )}
         </div>
     );
 }
@@ -803,6 +890,8 @@ const PDFViewerModal = ({
     const [sentAt, setSentAt] = useState<Date | null>(null);
     /** Sticky unlock for step 4 — survives modal close until void or contract change. */
     const [sentStepUnlocked, setSentStepUnlocked] = useState(false);
+    /** Selected row in Sent step when multiple envelopes were sent. */
+    const [selectedSentEnvelopeKey, setSelectedSentEnvelopeKey] = useState<string | null>(null);
     const [sentCcEmails, setSentCcEmails] = useState<string[]>([]);
     /** True only while user clicks Refresh on the Sent-step signing status card. */
     const [signingStatusRefreshing, setSigningStatusRefreshing] = useState(false);
@@ -834,6 +923,36 @@ const PDFViewerModal = ({
     };
     const [selectedState, setSelectedState] = useState<string>("");
     const [selectedFunder, setSelectedFunder] = useState<string>("");
+    const [selectedFunderProfileId, setSelectedFunderProfileId] = useState<string>("");
+    const contractStateForFunderSyncRef = useRef("");
+    const contractPrefillLoadKeyRef = useRef("");
+    const userSelectedFunderRef = useRef(false);
+    const userSelectedStateRef = useRef(false);
+    const {
+        funders,
+        funderSelectEntries,
+        resolveLayoutKey,
+        resolveLayoutKeyForProfile,
+        previewNameFor,
+        findFunder,
+        findFunderById,
+        resolveFunderOnStateChange,
+        resolveExpectedFunderForState,
+    } = useFunderProfiles(selectedState);
+    const fundersRef = useRef(funders);
+    fundersRef.current = funders;
+    const findFunderRef = useRef(findFunder);
+    findFunderRef.current = findFunder;
+    const findFunderByIdRef = useRef(findFunderById);
+    findFunderByIdRef.current = findFunderById;
+    const resolveLayoutKeyRef = useRef(resolveLayoutKey);
+    resolveLayoutKeyRef.current = resolveLayoutKey;
+    const resolveLayoutKeyForProfileRef = useRef(resolveLayoutKeyForProfile);
+    resolveLayoutKeyForProfileRef.current = resolveLayoutKeyForProfile;
+    const previewNameForRef = useRef(previewNameFor);
+    previewNameForRef.current = previewNameFor;
+    const selectedStateRef = useRef(selectedState);
+    selectedStateRef.current = selectedState;
     const [activeContractTemplateName, setActiveContractTemplateName] = useState<string>("Contract.pdf");
     const [savingContractMeta, setSavingContractMeta] = useState(false);
     const [contractPrefillEditOpen, setContractPrefillEditOpen] = useState(false);
@@ -853,15 +972,57 @@ const PDFViewerModal = ({
         setPdfRightPaneTab(initial);
     }, [isOpen, initialRightPaneTab]);
 
-    /** Includes any saved funder from the contract so the Select can show values not in the default list. */
+    /** Includes state-specific funders and any saved profile not in the active list. */
     const funderSelectOptions = useMemo(() => {
-        const base = [...DEFAULT_FUNDER_OPTIONS];
-        const cur = String(selectedFunder || "").trim();
-        if (cur && !base.some((x: string) => x.toLowerCase() === cur.toLowerCase())) {
-            return [...base, cur];
+        const base = funderSelectEntries;
+        const curId = String(selectedFunderProfileId || "").trim();
+        if (curId && !base.some((x) => x.value === curId)) {
+            const profile = findFunderById(curId);
+            if (profile) {
+                return [
+                    ...base,
+                    {
+                        value: profile.id,
+                        label: formatFunderSelectLabel(profile),
+                        funderName: profile.name,
+                    },
+                ];
+            }
         }
         return base;
-    }, [selectedFunder]);
+    }, [funderSelectEntries, selectedFunderProfileId, findFunderById]);
+
+    const selectedFunderRef = useRef("");
+    selectedFunderRef.current = String(selectedFunder || "").trim();
+    const selectedFunderProfileIdRef = useRef("");
+    selectedFunderProfileIdRef.current = String(selectedFunderProfileId || "").trim();
+
+    const [previewingMainContract, setPreviewingMainContract] = useState(false);
+
+    const selectedFunderProfile = useMemo(
+        () =>
+            findFunderById(selectedFunderProfileId) ??
+            findFunder(selectedFunder),
+        [findFunderById, findFunder, selectedFunderProfileId, selectedFunder],
+    );
+    const selectedFunderDefaultCcEmail = useMemo(() => {
+        return String(selectedFunderProfile?.defaultCcEmail ?? "").trim() || null;
+    }, [selectedFunderProfile]);
+    const selectedFunderDefaultCcEmails = useMemo(
+        () => parseFunderDefaultCcEmails(selectedFunderDefaultCcEmail),
+        [selectedFunderDefaultCcEmail],
+    );
+    const contractCcMergeOptions = useMemo(
+        () => ({ funderDefaultCcEmail: selectedFunderDefaultCcEmail }),
+        [selectedFunderDefaultCcEmail],
+    );
+    const contractDefaultCcEmails = useMemo(
+        () => resolveContractDefaultCcEmails(contractCcMergeOptions),
+        [contractCcMergeOptions],
+    );
+    const contractDefaultCcUsesFunderOverride = selectedFunderDefaultCcEmails.length > 0;
+    const selectedFunderDefaultCcRef = useRef<string | null>(null);
+    selectedFunderDefaultCcRef.current = selectedFunderDefaultCcEmail;
     /** Canonical contract id for this application (filled after lookup below). */
     const [resolvedContractId, setResolvedContractId] = useState<number | null>(null);
     /** Prefill overrides from `Contract.contractPrefillOverrides` (null = loaded, none stored). */
@@ -912,6 +1073,16 @@ const PDFViewerModal = ({
     >({});
     /** Currently dragged-over row, for drop-zone visual feedback. */
     const [dragOverDocKey, setDragOverDocKey] = useState<RequiredDocumentKey | null>(null);
+    /** Claude KYC extraction awaiting user review before syncing to contract prefill. */
+    const [pendingKycByDocKey, setPendingKycByDocKey] = useState<
+        Partial<
+            Record<
+                RequiredDocumentKey,
+                { extraction: KycExtractionResult; synced: boolean }
+            >
+        >
+    >({});
+    const [syncingKycKey, setSyncingKycKey] = useState<RequiredDocumentKey | null>(null);
     const [uploadedPreviewUrl, setUploadedPreviewUrl] = useState<string | null>(null);
     const [updatingUploadedFileId, setUpdatingUploadedFileId] = useState<string | null>(null);
     const [deletingUploadedFileId, setDeletingUploadedFileId] = useState<string | null>(null);
@@ -954,6 +1125,41 @@ const PDFViewerModal = ({
         [linkedDisclosureMapping, selectedState],
     );
 
+    /** `bs:<boldSignTemplateGuid>` | `up:<uploadedFileId>` | `` */
+    const [selectedAddendumOption, setSelectedAddendumOption] = useState<string>("");
+    /** Main contract in envelope — default on; addendum/disclosure auto-merge when configured below. */
+    const [includeMainContractInSend, setIncludeMainContractInSend] = useState(true);
+
+    const configuredAddendumLayoutKey = useMemo((): string | null => {
+        const opt = String(selectedAddendumOption || "").trim();
+        if (opt.startsWith("up:")) return null;
+        if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
+        const fromMapping = String(
+            linkedAddendumMapping?.template?.layoutKey ??
+                linkedAddendumMapping?.template?.templateId ??
+                linkedAddendumMapping?.templateId ??
+                "",
+        ).trim();
+        return isPlatformLayoutKey(fromMapping) ? fromMapping : null;
+    }, [selectedAddendumOption, linkedAddendumMapping]);
+
+    const configuredDisclosureRef = useMemo((): string | null => {
+        if (!linkedDisclosureMapping || !linkedDisclosureMatchesSelectedState) return null;
+        const rowId = String(linkedDisclosureMapping?.template?.id ?? "").trim();
+        return rowId || null;
+    }, [linkedDisclosureMapping, linkedDisclosureMatchesSelectedState]);
+
+    const canSendWithoutContract = useMemo(
+        () => canSendWithoutMainContract(configuredAddendumLayoutKey, configuredDisclosureRef),
+        [configuredAddendumLayoutKey, configuredDisclosureRef],
+    );
+
+    useEffect(() => {
+        if (!canSendWithoutContract) {
+            setIncludeMainContractInSend(true);
+        }
+    }, [canSendWithoutContract]);
+
     const documentTemplateEnvelopeByMappingId = useMemo(
         () =>
             parseDocumentTemplateEnvelopeByMappingId(
@@ -970,14 +1176,18 @@ const PDFViewerModal = ({
     const [loadingTemplateMappings, setLoadingTemplateMappings] = useState(false);
     const [linkingDisclosureTemplate, setLinkingDisclosureTemplate] = useState(false);
     const [disclosureCalcModalOpen, setDisclosureCalcModalOpen] = useState(false);
+    const [spaCalcModalOpen, setSpaCalcModalOpen] = useState(false);
+    const [savingSpaCalculation, setSavingSpaCalculation] = useState(false);
     const [disclosureCalcBankAnalyses, setDisclosureCalcBankAnalyses] = useState<unknown>(null);
     const [loadingDisclosureCalcBankAnalysis, setLoadingDisclosureCalcBankAnalysis] =
         useState(false);
     const [savingDisclosureCalculation, setSavingDisclosureCalculation] = useState(false);
     const [previewingTemplateId, setPreviewingTemplateId] = useState<string | null>(null);
     const templatePreviewBlobUrlRef = useRef<string | null>(null);
-    /** `bs:<boldSignTemplateGuid>` | `up:<uploadedFileId>` | `` */
-    const [selectedAddendumOption, setSelectedAddendumOption] = useState<string>("");
+    const mainContractPreviewRequestRef = useRef(0);
+    const lastAutoPreviewKeyRef = useRef("");
+    const uploadedPreviewUrlRef = useRef<string | null>(null);
+    uploadedPreviewUrlRef.current = uploadedPreviewUrl;
     // const [selectedPayoffLetterFileId, setSelectedPayoffLetterFileId] = useState<string>("");
     const [activeInfoPanel, setActiveInfoPanel] = useState<InfoPanelId | null>(null);
     const [, setSelectedInfoPanels] = useState<InfoPanelId[]>([]);
@@ -1096,6 +1306,8 @@ const PDFViewerModal = ({
         (state: RootState) => state.uploadedContractDocuments,
     );
     const applicationData = useSelector((state: RootState) => state.applicationDetail.data as any);
+    const applicationDataRef = useRef(applicationData);
+    applicationDataRef.current = applicationData;
 
     const offerDecisionState = useSelector((state: RootState) => state.offerDecision);
     const offerDecisionData = offerDecisionState?.data ?? null;
@@ -1496,11 +1708,6 @@ const PDFViewerModal = ({
         [resolvedContract],
     );
 
-    const canCancelSentContract = useMemo(
-        () => canCancelDocuSignContract(resolvedContract, sentAt),
-        [resolvedContract, sentAt],
-    );
-
     const canReviewAndSendDocuSign = useMemo(
         () => canReviewAndSendToDocuSign(resolvedContract, sentAt),
         [resolvedContract, sentAt],
@@ -1527,8 +1734,11 @@ const PDFViewerModal = ({
 
     const docuSignPrimaryActionLabel = useMemo(() => {
         if (showResendContractOnSentStep) return "Resend contract";
+        if (!includeMainContractInSend && canSendWithoutContract) {
+            return "Review & send documents in DocuSign";
+        }
         return "Review & send in DocuSign";
-    }, [showResendContractOnSentStep]);
+    }, [showResendContractOnSentStep, includeMainContractInSend, canSendWithoutContract]);
 
     /** Application client/businessInfo + contract ACH/addendum/EPO/owners/guarantors + optional preview overrides. */
     const dealReviewFields = useMemo(() => {
@@ -1640,6 +1850,10 @@ const PDFViewerModal = ({
             setResolvedContractId(null);
             setSelectedState("");
             setSelectedFunder("");
+            setSelectedFunderProfileId("");
+            userSelectedFunderRef.current = false;
+            userSelectedStateRef.current = false;
+            contractPrefillLoadKeyRef.current = "";
             setContractPrefillFromDb(null);
             setContractPrefillLoaded(false);
             setDocumentTemplatePrefillByMappingId({});
@@ -1654,19 +1868,43 @@ const PDFViewerModal = ({
             draftPreparedSignerRolesRef.current = null;
             prefilledPdfCachedForEnvelopeRef.current = null;
             prefilledBoldSignPdfUrlRef.current = null;
+            lastAutoPreviewKeyRef.current = "";
+            uploadedPreviewUrlRef.current = null;
+            setUploadedPreviewUrl(null);
+            setPreviewingMainContract(false);
             return;
         }
-        setContractPrefillLoaded(false);
         const propId = Number(contractId);
         const appId = applicationIdForLookup;
+        const loadKey = `${appId ?? ""}:${Number.isFinite(propId) ? propId : ""}`;
+        const isNewContractLoad = contractPrefillLoadKeyRef.current !== loadKey;
+        contractPrefillLoadKeyRef.current = loadKey;
+        if (isNewContractLoad) {
+            userSelectedFunderRef.current = false;
+            userSelectedStateRef.current = false;
+            setContractPrefillLoaded(false);
+        }
         const applyContractMeta = (contract: unknown) => {
             const c = contract as { state?: unknown; funderName?: unknown; contractPrefillOverrides?: unknown } | null;
             setResolvedContract(c && typeof c === "object" ? (c as Record<string, unknown>) : null);
-            setSelectedState(pickUsStateForSelect(c?.state));
-            const rawFunder = String(c?.funderName ?? "").trim();
-            setSelectedFunder(
-                pickFunderForSelect(rawFunder, DEFAULT_FUNDER_OPTIONS) || rawFunder,
-            );
+            let stateVal = pickUsStateForSelect(c?.state);
+            if (!stateVal) {
+                stateVal = resolveDealStateFromApplication(applicationDataRef.current);
+            }
+            setSelectedState(stateVal);
+            if (!userSelectedFunderRef.current) {
+                const rawFunder = String(c?.funderName ?? "").trim();
+                const profile = findFunderProfile(fundersRef.current, rawFunder, stateVal);
+                const funderName =
+                    pickFunderForSelect(
+                        rawFunder,
+                        funderNamesForContractState(fundersRef.current, stateVal),
+                    ) || rawFunder;
+                const resolvedProfile =
+                    profile ?? findFunderProfile(fundersRef.current, funderName, stateVal);
+                setSelectedFunderProfileId(resolvedProfile?.id ?? "");
+                setSelectedFunder(resolvedProfile?.name ?? funderName);
+            }
             setContractPrefillFromDb(
                 stripDocumentTemplateBlobFromPrefillOverrides(
                     normalizeContractPrefillOverrides(c?.contractPrefillOverrides),
@@ -1683,8 +1921,9 @@ const PDFViewerModal = ({
             setResolvedContractId(Number.isFinite(propId) ? propId : null);
             if (!Number.isFinite(propId)) {
                 setResolvedContract(null);
-                setSelectedState("");
+                setSelectedState(resolveDealStateFromApplication(applicationDataRef.current));
                 setSelectedFunder("");
+                setSelectedFunderProfileId("");
                 setDocumentTemplatePrefillByMappingId({});
                 setContractPrefillLoaded(true);
                 return;
@@ -1699,8 +1938,9 @@ const PDFViewerModal = ({
                 } catch {
                     if (!cancelledNoApp) {
                         setResolvedContract(null);
-                        setSelectedState("");
+                        setSelectedState(resolveDealStateFromApplication(applicationDataRef.current));
                         setSelectedFunder("");
+                        setSelectedFunderProfileId("");
                         setContractPrefillFromDb(null);
                         setDocumentTemplatePrefillByMappingId({});
                         setContractPrefillLoaded(true);
@@ -1738,8 +1978,9 @@ const PDFViewerModal = ({
                         } catch {
                             if (!cancelled) {
                                 setResolvedContract(null);
-                                setSelectedState("");
+                                setSelectedState(resolveDealStateFromApplication(applicationDataRef.current));
                                 setSelectedFunder("");
+                                setSelectedFunderProfileId("");
                                 setContractPrefillFromDb(null);
                                 setDocumentTemplatePrefillByMappingId({});
                                 setContractPrefillLoaded(true);
@@ -1747,8 +1988,9 @@ const PDFViewerModal = ({
                         }
                     } else {
                         setResolvedContract(null);
-                        setSelectedState("");
+                        setSelectedState(resolveDealStateFromApplication(applicationDataRef.current));
                         setSelectedFunder("");
+                        setSelectedFunderProfileId("");
                         setContractPrefillFromDb(null);
                         setDocumentTemplatePrefillByMappingId({});
                         setContractPrefillLoaded(true);
@@ -1779,7 +2021,50 @@ const PDFViewerModal = ({
         return fromContract || null;
     }, [sessionEnvelopeId, resolvedContract]);
 
-    const docuSignPreviewEnvelopeId = linkedEnvelopeId;
+    const sentEnvelopeRows = useMemo(
+        () => buildContractSendTableRows(resolvedContract),
+        [resolvedContract],
+    );
+
+    const selectedSentRow = useMemo((): ContractSendTableRow | null => {
+        if (!sentEnvelopeRows.length) return null;
+        if (selectedSentEnvelopeKey) {
+            const found = sentEnvelopeRows.find((row) => row.key === selectedSentEnvelopeKey);
+            if (found) return found;
+        }
+        const sessionEnv = String(sessionEnvelopeId || "").trim();
+        if (sessionEnv) {
+            const bySession = sentEnvelopeRows.find((row) => row.envelopeId === sessionEnv);
+            if (bySession) return bySession;
+        }
+        return sentEnvelopeRows.find((row) => row.isCurrent) ?? sentEnvelopeRows[0];
+    }, [sentEnvelopeRows, selectedSentEnvelopeKey, sessionEnvelopeId]);
+
+    const sentStepPreviewEnvelopeId = useMemo(() => {
+        const fromRow = String(selectedSentRow?.envelopeId ?? "").trim();
+        if (fromRow) return fromRow;
+        return linkedEnvelopeId;
+    }, [selectedSentRow, linkedEnvelopeId]);
+
+    const canCancelSentContract = useMemo(
+        () => canVoidContractSendTableRow(resolvedContract, selectedSentRow, sentAt),
+        [resolvedContract, selectedSentRow, sentAt],
+    );
+
+    const canReviewAndSendCurrentPackage = useMemo(() => {
+        if (!canSendWithoutContract || includeMainContractInSend) {
+            return canReviewAndSendDocuSign;
+        }
+        return Boolean(onPrepareDocuSignDraft);
+    }, [
+        canSendWithoutContract,
+        includeMainContractInSend,
+        canReviewAndSendDocuSign,
+        onPrepareDocuSignDraft,
+    ]);
+
+    const docuSignPreviewEnvelopeId =
+        activeStep === "sent" ? sentStepPreviewEnvelopeId : linkedEnvelopeId;
 
     const docuSignPdfCacheSuffix = useMemo(
         () => getDocuSignPdfCacheSuffix(resolvedContract, sentAt),
@@ -1799,6 +2084,9 @@ const PDFViewerModal = ({
     const draftPreparedPrefillFingerprintRef = useRef<string | null>(null);
     const draftPreparedSignerRolesRef = useRef<string | null>(null);
     const draftPreparedOwnerCountRef = useRef<number | null>(null);
+    const draftPreparedPackageFingerprintRef = useRef<string | null>(null);
+    const includeMainContractInSendRef = useRef(includeMainContractInSend);
+    includeMainContractInSendRef.current = includeMainContractInSend;
 
     const resolveSignerOverrideRowsForSend = useCallback((): ContractSignerOverrideRow[] => {
         if (showRecipientEditor) {
@@ -1843,6 +2131,7 @@ const PDFViewerModal = ({
         draftPreparedPrefillFingerprintRef.current = null;
         draftPreparedSignerRolesRef.current = null;
         draftPreparedOwnerCountRef.current = null;
+        draftPreparedPackageFingerprintRef.current = null;
     }, []);
 
     /** Saved signer overrides changed after a draft was prepared — force a new envelope on next send. */
@@ -2016,6 +2305,46 @@ const PDFViewerModal = ({
         return rowId || null;
     }, []);
 
+    const resolveAddendumLayoutKeyForDocuSignMerge = useCallback((): string | null => {
+        const opt = String(selectedAddendumOptionRef.current || "").trim();
+        if (opt.startsWith("up:")) return null;
+        if (opt.startsWith("bs:")) return opt.slice(3).trim() || null;
+        const fromMapping = String(
+            linkedAddendumMappingRef.current?.template?.layoutKey ??
+                linkedAddendumMappingRef.current?.template?.templateId ??
+                linkedAddendumMappingRef.current?.templateId ??
+                "",
+        ).trim();
+        return isPlatformLayoutKey(fromMapping) ? fromMapping : null;
+    }, []);
+
+    const getEffectiveSendPackage = useCallback((): ContractSendPackageSelection => {
+        return resolveEffectiveSendPackage({
+            includeMainContractInSend: includeMainContractInSendRef.current,
+            addendumLayoutKey: resolveAddendumLayoutKeyForDocuSignMerge(),
+            disclosureRef: resolveDisclosureTemplateRefForDocuSignMerge(),
+        });
+    }, [resolveAddendumLayoutKeyForDocuSignMerge, resolveDisclosureTemplateRefForDocuSignMerge]);
+
+    const sendPackageFingerprint = useMemo(
+        () => contractSendPackageFingerprint(getEffectiveSendPackage()),
+        [
+            getEffectiveSendPackage,
+            includeMainContractInSend,
+            selectedAddendumOption,
+            linkedAddendumMapping,
+            linkedDisclosureMapping,
+            linkedDisclosureMatchesSelectedState,
+            canSendWithoutContract,
+        ],
+    );
+
+    useEffect(() => {
+        const prepared = draftPreparedPackageFingerprintRef.current;
+        if (prepared == null || prepared === sendPackageFingerprint) return;
+        invalidateDocuSignDraftSession();
+    }, [sendPackageFingerprint, invalidateDocuSignDraftSession]);
+
     const primarySignerEmailRef = useRef("");
     primarySignerEmailRef.current = docuSignSignerEmail.email;
 
@@ -2096,7 +2425,7 @@ const PDFViewerModal = ({
                 const res = await axiosPost("/docusign/sender-view", {
                     envelopeId,
                     returnUrl,
-                    ccEmails: mergeWithDefaultCcEmails(ccForSync),
+                    ccEmails: mergeWithDefaultCcEmails(ccForSync, contractCcMergeOptions),
                     roles,
                     ...(appId ? { applicationId: appId } : {}),
                     ...(signerEmail
@@ -2243,10 +2572,15 @@ const PDFViewerModal = ({
     }, [docuSignPreviewEnvelopeId, linkedEnvelopeId, applicationIdForLookup]);
 
     const persistContractStateAndFunder = useCallback(
-        async (patch: { state?: string | null; funderName?: string | null }) => {
+        async (
+            patch: { state?: string | null; funderName?: string | null },
+            options?: { silent?: boolean },
+        ) => {
             const cid = effectiveContractId;
             if (cid == null || !Number.isFinite(cid)) {
-                toast.error("Generate or open a contract before updating state and funder.");
+                if (!options?.silent) {
+                    toast.error("Generate or open a contract before updating state and funder.");
+                }
                 return;
             }
             const data: UpdateContractData = {};
@@ -2263,18 +2597,34 @@ const PDFViewerModal = ({
                         : String(patch.funderName).trim();
             }
             if (Object.keys(data).length === 0) {
-                toast.info("Select a state or funder to save.");
+                if (!options?.silent) {
+                    toast.info("Select a state or funder to save.");
+                }
                 return;
             }
             try {
                 setSavingContractMeta(true);
-                await dispatch(
+                const res = await dispatch(
                     updateContract({
                         id: cid,
                         data,
                     }),
                 ).unwrap();
-                toast.success("Contract updated.");
+                const updated =
+                    (res as { data?: Record<string, unknown> } | null)?.data ??
+                    (res as Record<string, unknown> | null);
+                setResolvedContract((prev) => {
+                    const base =
+                        prev && typeof prev === "object"
+                            ? prev
+                            : updated && typeof updated === "object"
+                              ? updated
+                              : {};
+                    return { ...base, ...data };
+                });
+                if (!options?.silent) {
+                    toast.success("Contract updated.");
+                }
             } catch (err: unknown) {
                 const msg =
                     typeof err === "string"
@@ -2283,13 +2633,65 @@ const PDFViewerModal = ({
                             (err as { message?: string })?.message ||
                             "Failed to update contract.",
                         );
-                toast.error(msg);
+                if (!options?.silent) {
+                    toast.error(msg);
+                }
             } finally {
                 setSavingContractMeta(false);
             }
         },
         [effectiveContractId, dispatch],
     );
+
+    /** Flush user-selected funder to DB once a contract row exists. */
+    useEffect(() => {
+        if (!isOpen || effectiveContractId == null || !userSelectedFunderRef.current) return;
+        const funder = String(selectedFunder || "").trim();
+        if (!funder) return;
+        const dbFunder = String(resolvedContract?.funderName ?? "").trim();
+        if (funderNamesEquivalent(funder, dbFunder)) return;
+        void persistContractStateAndFunder({ funderName: funder }, { silent: true });
+    }, [
+        isOpen,
+        effectiveContractId,
+        selectedFunder,
+        resolvedContract?.funderName,
+        persistContractStateAndFunder,
+    ]);
+
+    useEffect(() => {
+        if (!isOpen || !contractPrefillLoaded || !selectedState.trim()) return;
+
+        const prevState = contractStateForFunderSyncRef.current;
+        contractStateForFunderSyncRef.current = selectedState;
+        // Skip on initial hydration (empty → loaded state from contract).
+        if (!prevState.trim()) return;
+        if (prevState === selectedState) return;
+        if (userSelectedFunderRef.current) return;
+
+        const expected = resolveExpectedFunderForState(selectedState);
+        if (!expected || expected === selectedFunder) return;
+        const current = findFunder(selectedFunder);
+        const shouldSync =
+            current != null && !funderAvailableForContractState(current, selectedState);
+        if (!shouldSync) return;
+        const expectedProfile = findFunderProfile(funders, expected, selectedState);
+        setSelectedFunderProfileId(expectedProfile?.id ?? "");
+        setSelectedFunder(expectedProfile?.name ?? expected);
+        if (effectiveContractId != null) {
+            void persistContractStateAndFunder({ funderName: expected }, { silent: true });
+        }
+    }, [
+        isOpen,
+        contractPrefillLoaded,
+        selectedState,
+        selectedFunder,
+        resolveExpectedFunderForState,
+        findFunder,
+        funders,
+        effectiveContractId,
+        persistContractStateAndFunder,
+    ]);
 
     useEffect(() => {
         if (!disclosureCalcModalOpen || !applicationIdForLookup) return;
@@ -2319,25 +2721,48 @@ const PDFViewerModal = ({
 
     useEffect(() => {
         if (!isOpen || !applicationData) return;
+        const st = resolveDealStateFromApplication(applicationData);
+        if (st) {
+            setSelectedState((prev) => (prev.trim() ? prev : st));
+        }
+        const contractFunder = String(
+            (resolvedContract as { funderName?: unknown } | null)?.funderName ?? "",
+        ).trim();
+        if (contractPrefillLoaded && contractFunder) return;
         const ad = applicationData as Record<string, unknown>;
         const bi0 = Array.isArray(ad.businessInfo)
             ? (ad.businessInfo[0] as Record<string, unknown>)
             : undefined;
-        const client = ad.client as Record<string, unknown> | undefined;
-        const st = String(client?.state ?? bi0?.state ?? "").trim();
         const fd = normalizeLegacyFunderName(bi0?.funderName ?? ad.funderName ?? "");
-        setSelectedState(st);
-        setSelectedFunder(pickFunderForSelect(fd, DEFAULT_FUNDER_OPTIONS) || fd);
-    }, [isOpen, applicationData]);
+        if (fd && !selectedFunder.trim() && !selectedFunderProfileId.trim()) {
+            const profile = findFunderProfile(funders, fd, st);
+            if (profile) {
+                setSelectedFunderProfileId(profile.id);
+                setSelectedFunder(profile.name);
+            } else {
+                setSelectedFunder(
+                    pickFunderForSelect(fd, funderNamesForContractState(funders, st)) || fd,
+                );
+            }
+        }
+    }, [
+        isOpen,
+        applicationData,
+        funders,
+        contractPrefillLoaded,
+        resolvedContract,
+        selectedFunder,
+        selectedFunderProfileId,
+    ]);
 
     // Seed CC list when the dialog opens (user-added addresses; default CC is always merged at send)
     useEffect(() => {
         if (!isOpen) {
             return;
         }
-        setCcEmails(loadBoldSignCcEmailList());
+        setCcEmails(loadBoldSignCcEmailList(contractCcMergeOptions));
         setCcEmailDraft("");
-    }, [isOpen]);
+    }, [isOpen, contractCcMergeOptions]);
 
     const addPdfCcFromDraft = () => {
         const raw = ccEmailDraft.trim();
@@ -2350,7 +2775,7 @@ const PDFViewerModal = ({
             return;
         }
         if (
-            isDefaultCcEmail(raw) ||
+            isReservedContractCcEmail(raw, contractCcMergeOptions) ||
             ccEmails.some((e) => e.toLowerCase() === raw.toLowerCase())
         ) {
             toast.info("That address is already in the CC list.");
@@ -2358,7 +2783,7 @@ const PDFViewerModal = ({
         }
         const next = [...ccEmails, raw];
         setCcEmails(next);
-        saveBoldSignCcEmailList(next);
+        saveBoldSignCcEmailList(next, contractCcMergeOptions);
         setCcEmailDraft("");
     };
 
@@ -2413,9 +2838,13 @@ const PDFViewerModal = ({
 
     const handleSend = async () => {
         if (!fileUrl) return;
-        if (!canReviewAndSendToDocuSign(resolvedContract, sentAt)) {
+        const packageIncludesMainContract =
+            !canSendWithoutContract || includeMainContractInSendRef.current;
+        if (!canReviewAndSendCurrentPackage) {
             toast.info(
-                "This contract is already out for signature. Void it in DocuSign before sending again.",
+                packageIncludesMainContract
+                    ? "This contract is already out for signature. Void it in DocuSign before sending again."
+                    : "Cannot send this document package right now.",
             );
             return;
         }
@@ -2437,16 +2866,16 @@ const PDFViewerModal = ({
             let userCc = [...ccEmails];
             if (draft && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft)) {
                 const dup =
-                    isDefaultCcEmail(draft) ||
+                    isReservedContractCcEmail(draft, contractCcMergeOptions) ||
                     userCc.some((e) => e.toLowerCase() === draft.toLowerCase());
                 if (!dup) {
                     userCc = [...userCc, draft];
                 }
             }
             userCc = [...new Set(userCc.map((e) => e.trim()).filter(Boolean))];
-            const toSend = mergeWithDefaultCcEmails(userCc);
+            const toSend = mergeWithDefaultCcEmails(userCc, contractCcMergeOptions);
 
-            saveBoldSignCcEmailList(userCc);
+            saveBoldSignCcEmailList(userCc, contractCcMergeOptions);
             setCcEmails(userCc);
             setCcEmailDraft("");
 
@@ -2481,7 +2910,28 @@ const PDFViewerModal = ({
                     return;
                 }
 
-                const addendumTemplateId = resolveAddendumTemplateIdForDocuSignMerge();
+                const packageSelection = getEffectiveSendPackage();
+                const addendumLayoutKey = resolveAddendumLayoutKeyForDocuSignMerge();
+                const disclosureRef = resolveDisclosureTemplateRefForDocuSignMerge();
+                const packageValidationMsg = validateContractSendPackage(packageSelection, {
+                    addendumLayoutKey,
+                    disclosureRef,
+                });
+                if (packageValidationMsg) {
+                    if (docuSignTab) {
+                        try {
+                            writeDocuSignErrorTab(docuSignTab.document, packageValidationMsg);
+                        } catch {
+                            /* ignore */
+                        }
+                    }
+                    toast.error(packageValidationMsg);
+                    return;
+                }
+
+                const addendumTemplateId = packageSelection.includeAddendum
+                    ? resolveAddendumTemplateIdForDocuSignMerge()
+                    : null;
                 const sessionEnv = String(sessionEnvelopeId || "").trim() || null;
                 const prefillMatchesPreparedDraft =
                     draftPreparedPrefillFingerprintRef.current === prefillDraftFingerprint;
@@ -2503,6 +2953,8 @@ const PDFViewerModal = ({
                 const ownerCountMatchesPrepared =
                     draftPreparedOwnerCountRef.current == null ||
                     draftPreparedOwnerCountRef.current === currentOwnerCount;
+                const packageMatchesPrepared =
+                    draftPreparedPackageFingerprintRef.current === sendPackageFingerprint;
                 const isResendAfterSigned = canResendMainContract(resolvedContract, sentAt);
                 /** Always create a fresh envelope when CC is set — reusing an old draft can keep broken recipients. */
                 const draftMatchesSelection =
@@ -2513,7 +2965,8 @@ const PDFViewerModal = ({
                     ccListsEqual(toSend, draftPreparedCcRef.current) &&
                     prefillMatchesPreparedDraft &&
                     signerRolesMatchPrepared &&
-                    ownerCountMatchesPrepared;
+                    ownerCountMatchesPrepared &&
+                    packageMatchesPrepared;
 
                 let envelopeId = draftMatchesSelection ? sessionEnv : null;
                 let preparedSenderUrl: string | null = null;
@@ -2543,12 +2996,24 @@ const PDFViewerModal = ({
                             "Creating a new DocuSign draft with your updated signers (including Owner 2 when applicable).",
                         );
                     }
-                    const disclosureDocumentRef = resolveDisclosureTemplateRefForDocuSignMerge();
+                    const disclosureDocumentRef = packageSelection.includeDisclosure
+                        ? resolveDisclosureTemplateRefForDocuSignMerge()
+                        : null;
                     const prepared = await onPrepareDocuSignDraft({
                         ccEmails: toSend,
                         addendumDocumentRef: addendumTemplateId,
                         disclosureDocumentRef,
+                        includeMainContract: packageSelection.includeMainContract,
+                        sendPackage: packageSelection,
                         roles: signerRolesForSend,
+                        funderName: selectedFunder.trim() || null,
+                        funderProfileId:
+                            persistedFunderProfileIdForApi(selectedFunderProfile) || null,
+                        contractState: pickUsStateForSelect(selectedState) || null,
+                        mainContractLayoutKey: resolveLayoutKey(
+                            selectedFunder,
+                            selectedFunderProfile?.id,
+                        ),
                     });
                     envelopeId = String(
                         (prepared as { envelopeId?: string } | undefined)?.envelopeId ?? "",
@@ -2565,6 +3030,7 @@ const PDFViewerModal = ({
                         draftPreparedPrefillFingerprintRef.current = prefillDraftFingerprint;
                         draftPreparedSignerRolesRef.current = signerFingerprintForSend;
                         draftPreparedOwnerCountRef.current = currentOwnerCount;
+                        draftPreparedPackageFingerprintRef.current = sendPackageFingerprint;
                         await persistContractEnvelopeHistory(envelopeId, "draft");
                     }
                 }
@@ -2679,11 +3145,8 @@ const PDFViewerModal = ({
         }
     };
 
-    /**
-     * Apply Claude KYC extraction (driver license / voided check) into contract prefill + info panels.
-     */
     const applyKycExtractionToModalState = useCallback(
-        (extraction: KycExtractionResult) => {
+        (extraction: KycExtractionResult, options?: { announce?: boolean }) => {
             if (!extraction || extraction.error) {
                 if (extraction?.error) {
                     toast.warn(`Document scan: ${extraction.error}`);
@@ -2741,15 +3204,107 @@ const PDFViewerModal = ({
 
             invalidateDocuSignDraftSession();
 
+            if (options?.announce === false) return;
+
             const label =
                 extraction.documentType === "driverLicense"
                     ? "Driver's license"
                     : extraction.documentType === "voidedCheck"
                       ? "Voided check"
                       : "Document";
-            toast.success(`${label} scanned — contract fields updated.`);
+            toast.success(`${label} synced — contract prefill updated.`);
         },
         [invalidateDocuSignDraftSession],
+    );
+
+    const refreshContractAfterKycSync = useCallback(
+        async (contractId: number, documentType: KycExtractionResult["documentType"]) => {
+            const refreshTasks: Promise<unknown>[] = [];
+            if (documentType === "voidedCheck") {
+                refreshTasks.push(dispatch(getAllACH({ contractId })).unwrap());
+            }
+            if (documentType === "driverLicense") {
+                refreshTasks.push(
+                    dispatch(getAllContractOwners({ contractId })).unwrap(),
+                    dispatch(getAllContractGuarantors({ contractId })).unwrap(),
+                );
+            }
+            const refreshed = await dispatch(getByIdContract(contractId)).unwrap();
+            await Promise.all(refreshTasks);
+            const contractData = (refreshed as { data?: unknown })?.data ?? refreshed;
+            if (contractData) {
+                setResolvedContract(contractData as Record<string, unknown>);
+                setContractPrefillFromDb(
+                    stripDocumentTemplateBlobFromPrefillOverrides(
+                        (contractData as { contractPrefillOverrides?: Record<string, unknown> | null })
+                            .contractPrefillOverrides ?? null,
+                    ) ?? null,
+                );
+            }
+        },
+        [dispatch],
+    );
+
+    const handleSyncKycExtraction = useCallback(
+        async (key: RequiredDocumentKey) => {
+            const pending = pendingKycByDocKey[key];
+            if (!pending || pending.synced || effectiveContractId == null) return;
+
+            const finalized = finalizeKycExtractionForSync(pending.extraction);
+            if (!finalized.documentType || finalized.error) return;
+            if (!kycExtractionHasReadableFields(finalized)) {
+                toast.warn("No readable fields to sync. Edit the card or re-upload the document.");
+                return;
+            }
+
+            setSyncingKycKey(key);
+            try {
+                const response = await dispatch(
+                    syncKycPrefillToContract({
+                        contractId: effectiveContractId,
+                        extraction: {
+                            documentType: finalized.documentType,
+                            contractPrefill: finalized.contractPrefill,
+                            panels: finalized.panels as Record<string, unknown>,
+                            keyData: finalized.keyData,
+                        },
+                    }),
+                ).unwrap();
+
+                const syncPayload =
+                    (response as { data?: KycExtractionResult & { mergedContractPrefillOverrides?: Record<string, unknown> } })
+                        ?.data ?? response;
+                const mergedExtraction: KycExtractionResult = {
+                    ...finalized,
+                    mergedContractPrefillOverrides:
+                        (syncPayload as { mergedContractPrefillOverrides?: Record<string, unknown> })
+                            .mergedContractPrefillOverrides,
+                };
+
+                applyKycExtractionToModalState(mergedExtraction);
+                await refreshContractAfterKycSync(effectiveContractId, finalized.documentType);
+
+                setPendingKycByDocKey((prev) => ({
+                    ...prev,
+                    [key]: { extraction: finalized, synced: true },
+                }));
+            } catch (error: unknown) {
+                const msg =
+                    error instanceof Error
+                        ? error.message
+                        : "Failed to sync extracted data to contract prefill.";
+                toast.error(msg);
+            } finally {
+                setSyncingKycKey(null);
+            }
+        },
+        [
+            pendingKycByDocKey,
+            effectiveContractId,
+            dispatch,
+            applyKycExtractionToModalState,
+            refreshContractAfterKycSync,
+        ],
     );
 
     /**
@@ -2813,8 +3368,28 @@ const PDFViewerModal = ({
                 ).unwrap();
 
                 const kycExtractions = parseKycExtractionsFromUploadResponse(uploadResult);
-                for (const extraction of kycExtractions) {
-                    applyKycExtractionToModalState(extraction);
+                const extractionForKey = kycExtractions.find(
+                    (e) =>
+                        e.documentType === key ||
+                        (key === "voidedCheck" && e.documentType === "voidedCheck") ||
+                        (key === "driverLicense" && e.documentType === "driverLicense"),
+                );
+                if (extractionForKey) {
+                    setPendingKycByDocKey((prev) => ({
+                        ...prev,
+                        [key]: { extraction: { ...extractionForKey }, synced: false },
+                    }));
+                    if (extractionForKey.error) {
+                        toast.warn(`Document scan: ${extractionForKey.error}`);
+                    } else if (kycExtractionHasReadableFields(extractionForKey)) {
+                        toast.info(
+                            `${key === "driverLicense" ? "Driver's license" : "Voided check"} scanned — review extracted data and click Sync to prefill.`,
+                        );
+                    } else {
+                        toast.warn(
+                            `${key === "driverLicense" ? "Driver's license" : "Voided check"} uploaded, but no readable fields were found.`,
+                        );
+                    }
                 }
 
                 setUploadProgressByKey((prev) => ({ ...prev, [key]: 100 }));
@@ -2860,7 +3435,7 @@ const PDFViewerModal = ({
                 toast.error(msg);
             }
         },
-        [dispatch, effectiveContractId, applyKycExtractionToModalState],
+        [dispatch, effectiveContractId],
     );
 
     const autoUploadRequestedDocument = useCallback(
@@ -3155,9 +3730,30 @@ const PDFViewerModal = ({
                     setResolvedContract(c);
                     const id = Number(c.id);
                     if (Number.isFinite(id)) setResolvedContractId(id);
-                    setSelectedState(pickUsStateForSelect(c.state));
+                    const stateVal =
+                        pickUsStateForSelect(c.state) ||
+                        resolveDealStateFromApplication(applicationDataRef.current);
+                    if (stateVal && !userSelectedStateRef.current) {
+                        setSelectedState(stateVal);
+                    }
                     const rawFunder = String(c.funderName ?? "").trim();
-                    setSelectedFunder(pickFunderForSelect(rawFunder, DEFAULT_FUNDER_OPTIONS) || rawFunder);
+                    if (!userSelectedFunderRef.current) {
+                        const profile = findFunderProfile(
+                            fundersRef.current,
+                            rawFunder,
+                            stateVal,
+                        );
+                        const funderName =
+                            pickFunderForSelect(
+                                rawFunder,
+                                funderNamesForContractState(fundersRef.current, stateVal),
+                            ) || rawFunder;
+                        const resolvedProfile =
+                            profile ??
+                            findFunderProfile(fundersRef.current, funderName, stateVal);
+                        setSelectedFunderProfileId(resolvedProfile?.id ?? "");
+                        setSelectedFunder(resolvedProfile?.name ?? funderName);
+                    }
                     setContractPrefillFromDb(
                         stripDocumentTemplateBlobFromPrefillOverrides(
                             normalizeContractPrefillOverrides(c.contractPrefillOverrides) ??
@@ -3224,6 +3820,7 @@ const PDFViewerModal = ({
                                 pendingCcForSentRef.current.length
                                     ? pendingCcForSentRef.current
                                     : ccEmailsRef.current,
+                                { funderDefaultCcEmail: selectedFunderDefaultCcRef.current },
                             );
                             const syncRes = await axiosPost("/docusign/sync-envelope-status", {
                                 ...(appId ? { applicationId: appId } : {}),
@@ -3297,6 +3894,7 @@ const PDFViewerModal = ({
                         pendingCcForSentRef.current.length
                             ? pendingCcForSentRef.current
                             : ccEmailsRef.current,
+                        { funderDefaultCcEmail: selectedFunderDefaultCcRef.current },
                     );
                     setSentCcEmails(cc);
                     if (activeStepRef.current !== "sent") {
@@ -3341,7 +3939,7 @@ const PDFViewerModal = ({
                 if (!silent) setSigningStatusRefreshing(false);
             }
         },
-        [applicationIdForLookup, contractId, dispatch],
+        [applicationIdForLookup, contractId, dispatch, funders],
     );
     refreshContractSigningStateRef.current = refreshContractSigningState;
 
@@ -3454,11 +4052,12 @@ const PDFViewerModal = ({
         prefilledBoldSignPdfUrlRef.current = null;
     }, []);
 
-    const buildDocuSignPrefillFieldsPayload = useCallback((): Array<{ id: string; value: string }> => {
-        const base = dealReviewFields
+    const buildDocuSignPrefillFieldsPayload = useCallback((): ContractPrefillField[] => {
+        const base: ContractPrefillField[] = dealReviewFields
             .map((f) => ({
                 id: f.id,
                 value: String(f.value ?? "").trim(),
+                label: f.label,
             }))
             .filter((f) => f.id && f.value);
 
@@ -3700,6 +4299,85 @@ const PDFViewerModal = ({
             resolvedContract,
             applicationData,
             dispatch,
+            syncPrefillToDraftEnvelope,
+        ],
+    );
+
+    const applySpaCalculation = useCallback(
+        async (spa: string) => {
+            setSavingSpaCalculation(true);
+            try {
+                const result = await persistCalculatedPurchasePercent({
+                    dispatch,
+                    contractId: effectiveContractId,
+                    spa,
+                    persistedPrefillOverrides: contractPrefillLoaded ? contractPrefillFromDb : null,
+                    additionalContractPrefillJson: {
+                        [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]:
+                            documentTemplatePrefillByMappingId,
+                    },
+                });
+                if (!result.saved || !result.mainSaved) {
+                    toast.warn(
+                        "SPA calculated but could not save. Open a contract record and try again.",
+                    );
+                    return;
+                }
+                const main = result.mainSaved;
+                setContractPrefillFromDb(main);
+                setResolvedContract((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              ...contractPrefillToContractColumnUpdate(main),
+                              contractPrefillOverrides:
+                                  result.fullSaved != null
+                                      ? {
+                                            ...(typeof prev.contractPrefillOverrides === "object" &&
+                                            prev.contractPrefillOverrides != null &&
+                                            !Array.isArray(prev.contractPrefillOverrides)
+                                                ? (prev.contractPrefillOverrides as Record<
+                                                      string,
+                                                      unknown
+                                                  >)
+                                                : {}),
+                                            ...result.fullSaved,
+                                        }
+                                      : prev.contractPrefillOverrides,
+                          }
+                        : prev,
+                );
+                draftPreparedPrefillFingerprintRef.current = docuSignPrefillDraftFingerprint({
+                    contractPrefillOverrides: main,
+                    documentTemplatePrefillByMappingId:
+                        parseDocumentTemplatePrefillByMappingId(result.fullSaved) ??
+                        documentTemplatePrefillByMappingId,
+                });
+                queueMicrotask(() => {
+                    void syncPrefillToDraftEnvelope();
+                });
+                toast.success(`Specified percentage calculated and saved: ${spa}%`);
+                setSpaCalcModalOpen(false);
+            } catch (err: unknown) {
+                const msg =
+                    typeof err === "string"
+                        ? err
+                        : String(
+                              (err as { message?: string })?.message ||
+                                  "Failed to save specified percentage.",
+                          );
+                toast.error(msg);
+                throw err;
+            } finally {
+                setSavingSpaCalculation(false);
+            }
+        },
+        [
+            dispatch,
+            effectiveContractId,
+            contractPrefillLoaded,
+            contractPrefillFromDb,
+            documentTemplatePrefillByMappingId,
             syncPrefillToDraftEnvelope,
         ],
     );
@@ -3965,6 +4643,144 @@ const PDFViewerModal = ({
         ],
     );
 
+    const loadMainContractTemplatePreview = useCallback(
+        async (options?: {
+            silent?: boolean;
+            force?: boolean;
+            funderProfileId?: string;
+            funderName?: string;
+        }) => {
+            const profileId = String(
+                options?.funderProfileId ?? selectedFunderProfileIdRef.current ?? "",
+            ).trim();
+            const profile =
+                findFunderProfileById(fundersRef.current, profileId) ??
+                (String(options?.funderName ?? selectedFunderRef.current ?? "").trim()
+                    ? findFunderRef.current(options?.funderName ?? selectedFunderRef.current)
+                    : undefined);
+            const funderName = String(
+                profile?.name ?? options?.funderName ?? selectedFunderRef.current ?? "",
+            ).trim();
+            if (!funderName) return;
+
+            const state = pickUsStateForSelect(selectedStateRef.current) || undefined;
+            const previewKey = `${profileId || funderName}:${state ?? ""}`;
+            if (
+                !options?.force &&
+                lastAutoPreviewKeyRef.current === previewKey &&
+                uploadedPreviewUrlRef.current
+            ) {
+                return;
+            }
+
+            const layoutKey = profile
+                ? resolveLayoutKeyForProfileRef.current(profile)
+                : resolveLayoutKeyRef.current(funderName, profileId);
+            const requestId = ++mainContractPreviewRequestRef.current;
+            setPreviewingMainContract(true);
+            try {
+                const preview = await fetchMainContractTemplatePreview({
+                    layoutKey,
+                    funderName,
+                    funderProfileId: persistedFunderProfileIdForApi(profile),
+                    state,
+                    previewName: previewNameForRef.current(funderName, profileId),
+                    fallbackUrl: fileUrl,
+                    fallbackName: fileName,
+                    findFunder: findFunderRef.current,
+                    findFunderById: findFunderByIdRef.current,
+                });
+                if (requestId !== mainContractPreviewRequestRef.current) return;
+                if (!preview?.url) {
+                    setUploadedPreviewUrl(null);
+                    uploadedPreviewUrlRef.current = null;
+                    lastAutoPreviewKeyRef.current = "";
+                    setDocumentUploadMessage(
+                        funderName
+                            ? `No contract PDF configured for ${funderName}.`
+                            : "Select a funder to preview the contract template.",
+                    );
+                    return;
+                }
+                if (templatePreviewBlobUrlRef.current) {
+                    URL.revokeObjectURL(templatePreviewBlobUrlRef.current);
+                }
+                if (preview.url.startsWith("blob:")) {
+                    templatePreviewBlobUrlRef.current = preview.url;
+                } else {
+                    templatePreviewBlobUrlRef.current = null;
+                }
+                lastAutoPreviewKeyRef.current = previewKey;
+                setActivePreview(null);
+                setUploadedPreviewUrl(preview.url);
+                uploadedPreviewUrlRef.current = preview.url;
+                setPdfRightPaneTab("template");
+                setActiveContractTemplateName(preview.name || "Contract.pdf");
+                setDocumentUploadMessage(
+                    `Showing contract: ${formatDropdownLabel(preview.name)}`,
+                );
+                if (!options?.silent) {
+                    toast.success(`Previewing ${formatDropdownLabel(preview.name)}`);
+                }
+            } catch (error: unknown) {
+                if (requestId !== mainContractPreviewRequestRef.current) return;
+                const err = error as {
+                    response?: { data?: { message?: string } };
+                    message?: string;
+                };
+                setDocumentUploadMessage(
+                    err?.response?.data?.message ||
+                        err?.message ||
+                        "Failed to load contract template PDF.",
+                );
+            } finally {
+                if (requestId === mainContractPreviewRequestRef.current) {
+                    setPreviewingMainContract(false);
+                }
+            }
+        },
+        [fileUrl, fileName],
+    );
+
+    const handlePreviewMainContractTemplate = useCallback(() => {
+        void loadMainContractTemplatePreview({ force: true });
+    }, [loadMainContractTemplatePreview]);
+
+    const scheduleMainContractTemplatePreview = useCallback(
+        (funderProfileIdOverride?: string) => {
+            const profileId = String(
+                funderProfileIdOverride ?? selectedFunderProfileIdRef.current ?? "",
+            ).trim();
+            if (!profileId && !selectedFunderRef.current.trim()) return;
+            lastAutoPreviewKeyRef.current = "";
+            uploadedPreviewUrlRef.current = null;
+            setUploadedPreviewUrl(null);
+            void loadMainContractTemplatePreview({
+                silent: true,
+                force: true,
+                funderProfileId: profileId || undefined,
+                funderName: selectedFunderRef.current,
+            });
+        },
+        [loadMainContractTemplatePreview],
+    );
+
+    useEffect(() => {
+        if (!isOpen || (!selectedFunderProfileId.trim() && !selectedFunder.trim())) return;
+        if (activeStep !== "info" && activeStep !== "summary" && activeStep !== "documents") {
+            return;
+        }
+        void loadMainContractTemplatePreview({ silent: true });
+    }, [
+        isOpen,
+        activeStep,
+        selectedFunder,
+        selectedFunderProfileId,
+        selectedState,
+        funders,
+        loadMainContractTemplatePreview,
+    ]);
+
     const handlePreviewBoldSignTemplate = useCallback(
         async (row: ContractDocumentTemplateMappingRow) => {
             if (!boldSignTemplateIsPreviewable(row?.template)) {
@@ -4079,13 +4895,24 @@ const PDFViewerModal = ({
         fetchTemplateMappings,
     ]);
 
-    // Reset preview to contract when leaving Documents tab
+    const prevActiveStepRef = useRef<ContractWizardStep>(activeStep);
+    // Reset document-tab preview when leaving Documents (keep funder contract PDF on info/summary).
     useEffect(() => {
-        if (activeStep !== "documents") {
+        const prev = prevActiveStepRef.current;
+        prevActiveStepRef.current = activeStep;
+        if (prev === "documents" && activeStep !== "documents") {
             setActivePreview(null);
             setUploadedPreviewUrl(null);
+            uploadedPreviewUrlRef.current = null;
+            lastAutoPreviewKeyRef.current = "";
+            if (
+                (activeStep === "info" || activeStep === "summary") &&
+                selectedFunderRef.current.trim()
+            ) {
+                void loadMainContractTemplatePreview({ silent: true, force: true });
+            }
         }
-    }, [activeStep]);
+    }, [activeStep, loadMainContractTemplatePreview]);
 
     useEffect(() => {
         if (!isOpen || effectiveContractId == null) return;
@@ -5090,6 +5917,7 @@ const PDFViewerModal = ({
                                 const summaryGreenActive = onSummary || onSent;
                                 const sentGreenActive = onSent;
                                 const canOpenSentStep =
+                                    sentEnvelopeRows.length > 0 ||
                                     sentStepUnlocked ||
                                     isContractAlreadySent(resolvedContract, sentAt);
 
@@ -5479,6 +6307,44 @@ const PDFViewerModal = ({
                                                 );
                                             })}
                                         </div>
+
+                                        {(Object.keys(pendingKycByDocKey) as RequiredDocumentKey[]).map(
+                                            (docKey) => {
+                                                const pending = pendingKycByDocKey[docKey];
+                                                if (!pending) return null;
+                                                return (
+                                                    <KycExtractionReviewCard
+                                                        key={`kyc-review-${docKey}`}
+                                                        documentKey={docKey}
+                                                        extraction={pending.extraction}
+                                                        synced={pending.synced}
+                                                        syncing={syncingKycKey === docKey}
+                                                        onChange={(next) =>
+                                                            setPendingKycByDocKey((prev) => ({
+                                                                ...prev,
+                                                                [docKey]: {
+                                                                    ...prev[docKey]!,
+                                                                    extraction: next,
+                                                                    synced: false,
+                                                                },
+                                                            }))
+                                                        }
+                                                        onSync={() => void handleSyncKycExtraction(docKey)}
+                                                        onDismiss={
+                                                            pending.synced
+                                                                ? () =>
+                                                                      setPendingKycByDocKey((prev) => {
+                                                                          const next = { ...prev };
+                                                                          delete next[docKey];
+                                                                          return next;
+                                                                      })
+                                                                : undefined
+                                                        }
+                                                    />
+                                                );
+                                            },
+                                        )}
+
                                         {documentUploadMessage && (
                                             <p className="pt-1 text-xs text-slate-600">{documentUploadMessage}</p>
                                         )}
@@ -5570,6 +6436,46 @@ const PDFViewerModal = ({
                                                 );
                                             })}
                                         </div> */}
+
+                                        {canSendWithoutContract ? (
+                                            <div className="rounded-xl border border-[#276D9C]/20 bg-gradient-to-br from-[#276D9C]/5 to-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:from-slate-900 dark:to-slate-900 dark:ring-slate-700/80">
+                                                <div className="mb-3 flex items-start gap-2.5">
+                                                    <div
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        aria-hidden
+                                                    >
+                                                        <FileText className="h-4 w-4" />
+                                                    </div>
+                                                    <div>
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                            Send options
+                                                        </h4>
+                                                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                            {includeMainContractInSend
+                                                                ? "Main contract is included. Selected addendum and linked state disclosure merge automatically."
+                                                                : "Sending configured addendum and/or state disclosure only (no main contract)."}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                                <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200/80 bg-white px-3 py-2.5 dark:border-slate-600 dark:bg-slate-950">
+                                                    <Checkbox
+                                                        checked={includeMainContractInSend}
+                                                        onCheckedChange={(checked: boolean | "indeterminate") =>
+                                                            setIncludeMainContractInSend(checked === true)
+                                                        }
+                                                        className="mt-0.5"
+                                                    />
+                                                    <span className="min-w-0">
+                                                        <span className="block text-xs font-medium text-slate-800 dark:text-slate-100">
+                                                            Include main contract agreement
+                                                        </span>
+                                                        <span className="mt-0.5 block text-[11px] text-slate-500 dark:text-slate-400">
+                                                            Uncheck only if you need to send addendum and/or disclosure without the contract.
+                                                        </span>
+                                                    </span>
+                                                </label>
+                                            </div>
+                                        ) : null}
 
                                         {/* Addendum template picker */}
                                         <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
@@ -5689,8 +6595,47 @@ const PDFViewerModal = ({
                                                         value={selectedState}
                                                         disabled={savingContractMeta}
                                                         onValueChange={(v: string) => {
+                                                            userSelectedStateRef.current = true;
                                                             setSelectedState(v);
                                                             const picked = pickUsStateForSelect(v);
+                                                            const switchedFunder = resolveFunderOnStateChange(
+                                                                selectedFunder,
+                                                                v,
+                                                            );
+                                                            let nextFunder = selectedFunder;
+                                                            let nextFunderProfileId = selectedFunderProfileId;
+                                                            if (switchedFunder != null) {
+                                                                nextFunder = switchedFunder;
+                                                                const switchedProfile = findFunderProfile(
+                                                                    funders,
+                                                                    switchedFunder,
+                                                                    picked,
+                                                                );
+                                                                nextFunderProfileId = switchedProfile?.id ?? "";
+                                                            } else {
+                                                                const currentFunder =
+                                                                    findFunderById(selectedFunderProfileId) ??
+                                                                    findFunder(selectedFunder);
+                                                                if (
+                                                                    (selectedFunderProfileId || selectedFunder) &&
+                                                                    currentFunder &&
+                                                                    picked &&
+                                                                    !funderAvailableForContractState(
+                                                                        currentFunder,
+                                                                        picked,
+                                                                    )
+                                                                ) {
+                                                                    nextFunder = "";
+                                                                    nextFunderProfileId = "";
+                                                                }
+                                                            }
+                                                            if (
+                                                                nextFunder !== selectedFunder ||
+                                                                nextFunderProfileId !== selectedFunderProfileId
+                                                            ) {
+                                                                setSelectedFunderProfileId(nextFunderProfileId);
+                                                                setSelectedFunder(nextFunder);
+                                                            }
                                                             if (
                                                                 effectiveContractId != null &&
                                                                 picked
@@ -5700,7 +6645,12 @@ const PDFViewerModal = ({
                                                                 disclosureAutoLinkKeyRef.current = "";
                                                             }
                                                             if (effectiveContractId != null) {
-                                                                void persistContractStateAndFunder({ state: v });
+                                                                void persistContractStateAndFunder({
+                                                                    state: v,
+                                                                    ...(nextFunder !== selectedFunder
+                                                                        ? { funderName: nextFunder }
+                                                                        : {}),
+                                                                });
                                                             }
                                                             if (effectiveContractId != null) {
                                                                 void syncDisclosureTemplateForState(v);
@@ -5713,30 +6663,66 @@ const PDFViewerModal = ({
                                                         <Building2 className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
                                                         Select Funder
                                                     </label>
-                                                    <Select
-                                                        value={selectedFunder || undefined}
-                                                        disabled={savingContractMeta}
-                                                        onValueChange={(v: string) => {
-                                                            setSelectedFunder(v);
-                                                            if (effectiveContractId != null) {
-                                                                void persistContractStateAndFunder({ funderName: v });
-                                                            }
-                                                        }}
-                                                    >
-                                                        <SelectTrigger
-                                                            id="pdf-viewer-contract-funder-info"
-                                                            className="h-10 w-full rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600"
+                                                    <div className="flex items-start gap-2">
+                                                        <Select
+                                                            value={selectedFunderProfileId || undefined}
+                                                            disabled={savingContractMeta}
+                                                            onValueChange={(profileId: string) => {
+                                                                userSelectedFunderRef.current = true;
+                                                                const profile = findFunderById(profileId);
+                                                                const funderName = profile?.name ?? "";
+                                                                selectedFunderProfileIdRef.current = profileId;
+                                                                selectedFunderRef.current = funderName;
+                                                                setSelectedFunderProfileId(profileId);
+                                                                setSelectedFunder(funderName);
+                                                                scheduleMainContractTemplatePreview(profileId);
+                                                                if (effectiveContractId != null) {
+                                                                    void persistContractStateAndFunder({
+                                                                        funderName,
+                                                                    });
+                                                                }
+                                                            }}
                                                         >
-                                                            <SelectValue placeholder="Select funder" />
-                                                        </SelectTrigger>
-                                                        <SelectContent position="popper" className="z-[10100] max-h-72">
-                                                            {funderSelectOptions.map((f: string) => (
-                                                                <SelectItem key={f} value={f}>
-                                                                    {f}
-                                                                </SelectItem>
-                                                            ))}
-                                                        </SelectContent>
-                                                    </Select>
+                                                            <SelectTrigger
+                                                                id="pdf-viewer-contract-funder-info"
+                                                                className="h-10 min-w-0 flex-1 rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600"
+                                                            >
+                                                                <SelectValue placeholder="Select funder" />
+                                                            </SelectTrigger>
+                                                            <SelectContent position="popper" className="z-[10100] max-h-72">
+                                                                {funderSelectOptions.map((f) => (
+                                                                    <SelectItem key={f.value} value={f.value}>
+                                                                        {f.label}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                        <Button
+                                                            type="button"
+                                                            size="icon"
+                                                            variant="outline"
+                                                            className="h-10 w-10 shrink-0 border-[#276D9C]/20"
+                                                            title="View contract template"
+                                                            aria-label="View contract template"
+                                                            disabled={!selectedFunder || previewingMainContract}
+                                                            onClick={() => void handlePreviewMainContractTemplate()}
+                                                        >
+                                                            {previewingMainContract ? (
+                                                                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                                                            ) : (
+                                                                <Eye className="h-4 w-4" aria-hidden />
+                                                            )}
+                                                        </Button>
+                                                    </div>
+                                                    {selectedFunder ? (
+                                                        <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                                                            Template:{" "}
+                                                            {previewNameFor(
+                                                                selectedFunder,
+                                                                selectedFunderProfileId,
+                                                            )}
+                                                        </p>
+                                                    ) : null}
                                                 </div>
                                             </div>
                                         </div>
@@ -7360,15 +8346,27 @@ const PDFViewerModal = ({
                                                 </p>
                                             </div>
                                             {canEditContractPrefill ? (
-                                                <Button
-                                                    type="button"
-                                                    variant="outline"
-                                                    size="sm"
-                                                    className="h-8 shrink-0"
-                                                    onClick={() => setContractPrefillEditOpen(true)}
-                                                >
-                                                    Edit prefill fields
-                                                </Button>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-8 shrink-0 gap-1.5 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                        onClick={() => setSpaCalcModalOpen(true)}
+                                                    >
+                                                        <Calculator className="h-3.5 w-3.5" aria-hidden />
+                                                        Calculate SPA
+                                                    </Button>
+                                                    <Button
+                                                        type="button"
+                                                        variant="outline"
+                                                        size="sm"
+                                                        className="h-8 shrink-0"
+                                                        onClick={() => setContractPrefillEditOpen(true)}
+                                                    >
+                                                        Edit prefill fields
+                                                    </Button>
+                                                </div>
                                             ) : null}
                                         </div>
 
@@ -7529,6 +8527,49 @@ const PDFViewerModal = ({
 
                                 {activeStep === "sent" && (
                                     <section className="space-y-4">
+                                        {sentEnvelopeRows.length > 0 ? (
+                                            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                                <label
+                                                    htmlFor="sent-envelope-select"
+                                                    className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400"
+                                                >
+                                                    Sent document
+                                                </label>
+                                                <Select
+                                                    value={selectedSentRow?.key ?? ""}
+                                                    onValueChange={(value: string) => {
+                                                        setSelectedSentEnvelopeKey(value);
+                                                        const row = sentEnvelopeRows.find(
+                                                            (item) => item.key === value,
+                                                        );
+                                                        if (row?.envelopeId) {
+                                                            invalidateDocuSignPdfCache();
+                                                            setPdfRightPaneTab("docusign");
+                                                            void loadPrefilledPdfFromDocuSign(
+                                                                row.envelopeId,
+                                                                { maxAttempts: 3 },
+                                                            );
+                                                        }
+                                                    }}
+                                                >
+                                                    <SelectTrigger
+                                                        id="sent-envelope-select"
+                                                        className="h-10 w-full bg-white dark:bg-slate-900"
+                                                    >
+                                                        <SelectValue placeholder="Select a sent document" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {sentEnvelopeRows.map((row) => (
+                                                            <SelectItem key={row.key} value={row.key}>
+                                                                {row.label} —{" "}
+                                                                {getContractSendTableRowStatusLabel(row)}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        ) : null}
+
                                         <div className="overflow-hidden rounded-2xl border border-[#276D9C]/20 bg-white shadow-sm dark:border-[#276D9C]/25 dark:bg-slate-950">
                                             <div className="bg-gradient-to-r from-[#276D9C] to-[#1f83b4] px-5 py-5 text-white">
                                                 <div className="flex items-start gap-3">
@@ -7540,16 +8581,20 @@ const PDFViewerModal = ({
                                                             Sent successfully
                                                         </p>
                                                         <h3 className="mt-1 text-lg font-semibold tracking-tight">
-                                                            {canResendContract
-                                                                ? "Contract fully signed"
-                                                                : "Contract is on its way for signature"}
+                                                            {selectedSentRow &&
+                                                            isContractSendTableRowFullySigned(selectedSentRow)
+                                                                ? `${selectedSentRow.label} fully signed`
+                                                                : `${selectedSentRow?.label ?? "Document"} is on its way for signature`}
                                                         </h3>
                                                         <p className="mt-1 text-sm leading-relaxed text-white/85">
-                                                            {canResendContract
-                                                                ? "All signers completed. Use Resend contract below to start a new envelope, or view the signed PDF on the right."
-                                                                : isContractOutForSignature
-                                                                  ? "Signers have an open envelope. Void the contract to send again, or wait until signing completes."
-                                                                  : "The DocuSign envelope was sent. Status and contract details refresh automatically."}
+                                                            {selectedSentRow &&
+                                                            isContractSendTableRowFullySigned(selectedSentRow)
+                                                                ? "All signers completed. The PDF on the right includes signatures."
+                                                                : canResendContract
+                                                                  ? "All signers completed. Use Resend contract below to start a new envelope, or view the signed PDF on the right."
+                                                                  : isContractOutForSignature
+                                                                    ? "Signers have an open envelope. Void the contract to send again, or wait until signing completes."
+                                                                    : "The DocuSign envelope was sent. Status and contract details refresh automatically."}
                                                         </p>
                                                     </div>
                                                 </div>
@@ -7594,8 +8639,9 @@ const PDFViewerModal = ({
                                                     </div>
                                                     <p className="break-all text-xs font-medium text-slate-900 dark:text-slate-100">
                                                         {String(
-                                                            pickContractEnvelopeDocument(resolvedContract)
-                                                                ?.envelopeId ??
+                                                            selectedSentRow?.envelopeId ??
+                                                                pickContractEnvelopeDocument(resolvedContract)
+                                                                    ?.envelopeId ??
                                                                 linkedEnvelopeId ??
                                                                 sessionEnvelopeId ??
                                                                 "—",
@@ -7953,6 +8999,7 @@ const PDFViewerModal = ({
                             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
                                 {pdfRightPaneTab === "template" ? (
                                     <DirectPdfViewer
+                                        key={`${selectedFunderProfileId || selectedFunder}:${currentPreviewUrl}`}
                                         fileUrl={currentPreviewUrl}
                                         errorMessage="Could not render this PDF. Please check that the PDF URL is reachable and allows browser access."
                                     />
@@ -8033,16 +9080,40 @@ const PDFViewerModal = ({
                                 </span>
                             </div>
                             <div className="flex flex-wrap gap-1.5">
-                                <span
-                                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/30 bg-[#276D9C]/12 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[#276D9C]/40 dark:bg-[#276D9C]/20 dark:text-slate-100"
-                                    title={`Always included: ${DOCUSIGN_DEFAULT_CC_EMAIL}`}
-                                >
-                                    <Mail className="h-3 w-3 shrink-0 text-[#276D9C] opacity-80" aria-hidden />
-                                    <span className="max-w-[220px] truncate">{DOCUSIGN_DEFAULT_CC_EMAIL}</span>
-                                    <span className="text-[10px] font-normal uppercase tracking-wide text-[#276D9C]/80">
-                                        Default
+                                {contractDefaultCcEmails.map((email) => (
+                                    <span
+                                        key={email}
+                                        className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:text-slate-100 ${
+                                            contractDefaultCcUsesFunderOverride
+                                                ? "border-emerald-500/30 bg-emerald-500/10 dark:border-emerald-500/40 dark:bg-emerald-500/15"
+                                                : "border-[#276D9C]/30 bg-[#276D9C]/12 dark:border-[#276D9C]/40 dark:bg-[#276D9C]/20"
+                                        }`}
+                                        title={
+                                            contractDefaultCcUsesFunderOverride
+                                                ? `Funder default CC: ${email}`
+                                                : `Default CC: ${email}`
+                                        }
+                                    >
+                                        <Mail
+                                            className={`h-3 w-3 shrink-0 opacity-80 ${
+                                                contractDefaultCcUsesFunderOverride
+                                                    ? "text-emerald-600 dark:text-emerald-400"
+                                                    : "text-[#276D9C]"
+                                            }`}
+                                            aria-hidden
+                                        />
+                                        <span className="max-w-[220px] truncate">{email}</span>
+                                        <span
+                                            className={`text-[10px] font-normal uppercase tracking-wide ${
+                                                contractDefaultCcUsesFunderOverride
+                                                    ? "text-emerald-700/80 dark:text-emerald-300/80"
+                                                    : "text-[#276D9C]/80"
+                                            }`}
+                                        >
+                                            {contractDefaultCcUsesFunderOverride ? "Funder" : "Default"}
+                                        </span>
                                     </span>
-                                </span>
+                                ))}
                                 {ccEmails.map((email) => (
                                     <span
                                         key={email}
@@ -8060,7 +9131,7 @@ const PDFViewerModal = ({
                                             onClick={() => {
                                                 const next = ccEmails.filter((e) => e !== email);
                                                 setCcEmails(next);
-                                                saveBoldSignCcEmailList(next);
+                                                saveBoldSignCcEmailList(next, contractCcMergeOptions);
                                             }}
                                         >
                                             <X className="h-3.5 w-3.5" />
@@ -8138,7 +9209,7 @@ const PDFViewerModal = ({
                                     >
                                         Done
                                     </Button>
-                            ) : activeStep === "sent" && canCancelSentContract ? null : canReviewAndSendDocuSign && docuSignOpenUrl ? (
+                            ) : activeStep === "sent" && canCancelSentContract ? null : canReviewAndSendCurrentPackage && docuSignOpenUrl ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -8164,7 +9235,7 @@ const PDFViewerModal = ({
                                 >
                                     Open DocuSign
                                 </Button>
-                            ) : canReviewAndSendDocuSign ? (
+                            ) : canReviewAndSendCurrentPackage ? (
                                 <Button
                                     type="button"
                                     variant="default"
@@ -8314,6 +9385,14 @@ const PDFViewerModal = ({
                 }
                 saving={savingDisclosureCalculation}
                 onApply={applyDisclosureCalculation}
+            />
+            <SpaCalculationModal
+                open={spaCalcModalOpen}
+                onOpenChange={setSpaCalcModalOpen}
+                applicationUuid={applicationIdForLookup}
+                offerDecision={(offerDecisionData as Record<string, unknown> | null) ?? null}
+                saving={savingSpaCalculation}
+                onApply={applySpaCalculation}
             />
         </>
     );

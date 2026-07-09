@@ -27,6 +27,7 @@ export type OperationsDashboardApplicationStatus =
 /** Deal-pipeline queue stages (aligned with Deal Pipeline `/applications?operationsStatus=`). */
 export const OPERATIONS_PIPELINE_QUEUE_STATUSES = [
   "Agent",
+  "Scrubbing",
   "Underwriter",
   "Final Underwriter",
   "Final",
@@ -59,6 +60,7 @@ const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
   Funded: "Funded",
   Declined: "Rejected",
   Agent: "Agent",
+  Scrubbing: "Scrubbing",
   Underwriter: "Underwriter",
   "Final Underwriter": "Final Underwriter",
   Final: "Final",
@@ -94,6 +96,7 @@ export function normalizeOperationsDashboardStatusParam(
     declined: "Declined",
     rejected: "Declined",
     agent: "Agent",
+    scrubbing: "Scrubbing",
     underwriter: "Underwriter",
     final_underwriter: "Final Underwriter",
     final: "Final",
@@ -150,6 +153,7 @@ export function inferOperationsListStatusFromApplication(
     return "Final";
   }
   if (q === "finalunderwriter" || q === "finalreview") return "Final Underwriter";
+  if (q === "scrubbing") return "Scrubbing";
   if (
     q === "underwriter" ||
     q === "underwriting" ||

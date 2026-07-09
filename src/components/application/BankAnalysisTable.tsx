@@ -87,6 +87,8 @@ interface BankAnalysisTableProps {
     allocatedBankAnalysisId?: number;
   }>;
   onBanksMetaChange?: (banks: Array<{ id: number; accountNumber: string }>) => void;
+  /** Parent registers bulk save (e.g. Offer Approve & Save). */
+  onRegisterSaveAll?: (saveAll: () => Promise<boolean>) => void;
 }
 
 const parseCurrency = (value: string): number => {
@@ -298,10 +300,16 @@ const BankAnalysisTable = ({
   applicationId: applicationIdProp,
   positions = [],
   onBanksMetaChange,
+  onRegisterSaveAll,
 }: BankAnalysisTableProps) => {
   const isReadOnly = !!readOnly;
   const isDeleteDisabled = !!disableDelete;
   const isCreateDisabled = !!disableCreate;
+
+  useEffect(() => {
+    onRegisterSaveAll?.(async () => true);
+  }, [onRegisterSaveAll]);
+
   const [fundingBreakdownModal, setFundingBreakdownModal] = useState<{
     bankId: number;
     rowIndex: number;

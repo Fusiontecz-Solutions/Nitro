@@ -96,6 +96,14 @@ body {
   --sidebar-accent-foreground: #111827;
   --sidebar-border: #e5e7eb;
   --sidebar-ring: #276d9c;
+  /* Brand tokens for Katan-parity components (Background Check, pipeline tabs) */
+  --brand: #276d9c;
+  --brand-hover: #1b4e6f;
+  --brand-mid: #2f7fb3;
+  --brand-accent: #276d9c;
+  --brand-accent-strong: #151357;
+  --brand-gradient: linear-gradient(135deg, #276d9c 0%, #2f7fb3 40%, #276d9c 100%);
+  --tab-pipeline-active-bg: #151357;
 }
 
 .dark {
@@ -130,6 +138,13 @@ body {
   --sidebar-accent-foreground: #f9fafb;
   --sidebar-border: #374151;
   --sidebar-ring: #3d8bc0;
+  --brand: #3d8bc0;
+  --brand-hover: #2f7fb3;
+  --brand-mid: #2f7fb3;
+  --brand-accent: #3d8bc0;
+  --brand-accent-strong: #151357;
+  --brand-gradient: linear-gradient(135deg, #151357 0%, #276d9c 45%, #3d8bc0 100%);
+  --tab-pipeline-active-bg: #151357;
 }
 
 @layer base {
@@ -183,6 +198,14 @@ body {
     font-weight: 600;
     line-height: 1.35;
     color: #475569;
+  }
+
+  /* Application pipeline tab active state (Woodmere navy) */
+  .tab-pipeline-active,
+  .tab-pipeline-active[data-state="active"] {
+    background-color: var(--tab-pipeline-active-bg) !important;
+    background-image: none !important;
+    color: #ffffff !important;
   }
 }
 

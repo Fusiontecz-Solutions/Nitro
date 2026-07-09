@@ -25,8 +25,10 @@ import { getBankDetails } from "@/redux/actions/bankDetailActions";
 import {
     getDocuSignTemplateRecipients,
     mergeAndSendDocuSignEnvelope,
+    voidBoldSignDocument,
 } from "@/redux/actions/boldSignActions";
 import { mergeWithDefaultCcEmails } from "./docusignCcList";
+import { funderNamesEquivalent, useFunderProfiles } from "@/hooks/useFunderProfiles";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,7 +56,7 @@ import OwnerModal, { type OwnerEntry } from "./OwnerModal";
 import BusinessInfoModal from "./BusinessInfoModal";
 import type { TermsOffer } from "@/types/termsOfferTypes";
 import { toast } from "react-toastify";
-import { Info, Loader2 } from "lucide-react";
+import { Ban, FileText, Info, Landmark, Loader2, RefreshCw } from "lucide-react";
 import {
     filterBankDetailsForApplication,
 } from "@/lib/bankDetailUtils";
@@ -72,25 +74,55 @@ import {
     mergeContractPrefillOverrideLayers,
     normalizeContractPrefillOverrides,
     parseNoteStructuredSection,
+    applyCanonicalBusinessAddressPrefillFields,
+    applyClientPersonNamePrefillFields,
+    contractPrefillFieldsToPartial,
+    contractPrefillToContractColumnUpdate,
+    mergeSyncedPartialIntoPrefillFields,
     type BuildContractPrefillFieldsArgs,
     type ContractPrefillContractRecords,
+    type ContractPrefillField,
 } from "./contractdata/Contract";
 import {
     applyDocumentTemplateMappingPrefillOverrides,
     DOCUMENT_SEND_HISTORY_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
-    formatDocumentSendStatusLabel,
     isAchEnvelopeDraftLikeStatus,
-    isDocumentSendEntryViewable,
     mergeStateDisclosurePrefillFallback,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
-    resolveAchHistoryEntryDisplayStatus,
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
-    type DocumentSendHistoryEntry,
 } from "./contractdata/documentTemplateMappingPrefill";
+import {
+    achCapsuleClassName,
+    parseAchAuthorizationDocuSignFromPrefill,
+    type AchAuthorizationDocuSignCapsuleStatus,
+} from "./contractdata/achAuthorizationDocuSign";
+import {
+    buildContractSendTableRows,
+    canVoidContractSendTableRow,
+    formatAchTableStatusLabel,
+    isAchSigningFinished,
+    isContractFullySigned,
+    isContractVoidedOrTerminal,
+    pickContractEnvelopeDocument,
+    type ContractSendTableRow,
+} from "./contractdata/contractSendHistory";
+import { syncDocuSignEnvelopeStatus } from "./contractdata/syncDocuSignEnvelopeStatus";
+import {
+    buildPackageEnvelopeEmailMessage,
+    buildPackageEnvelopeEmailSubject,
+    type ContractSendPackageSelection,
+} from "./contractdata/contractSendPackage";
+import {
+    formatStandalonePackageTableStatusLabel,
+    isStandalonePackageSigningFinished,
+    mergeStandalonePackageDocuSignIntoPrefill,
+    parseStandalonePackageDocuSignFromPrefill,
+    type StandalonePackageDocuSignCapsuleStatus,
+} from "./contractdata/standalonePackageDocuSign";
 import {
     buildDocuSignEnvelopeEmailSubject,
     DOCUSIGN_EMAIL_LENDER_NAME,
@@ -114,8 +146,10 @@ import {
     formatCurrency,
     formatCurrencyFull,
     formatDate,
+    formatDateTimeUS,
     formatNumberUSForInput,
     parseNumberUS,
+    type DateInput,
 } from "@/lib/utils";
 import {
     resolveOfferDecisionFeesRaw,
@@ -132,6 +166,10 @@ import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
 } from "./contractdata/boldSignTemplateDocument";
+import {
+    isAchAuthorizationLayoutKey,
+    PLATFORM_LAYOUT_KEYS,
+} from "./contractdata/platformDocumentConfig";
 
 type AchDocumentTemplateMappingRow = {
     id: string;
@@ -166,6 +204,53 @@ const parseMaybeNumber = (value: unknown): number | null => {
 };
 
 const CONTRACT_VALUES_SECTION = "CONTRACT_VALUES";
+
+function formatContractTableStatusLabel(
+    contractStatus: unknown,
+    documentStatus?: unknown,
+    hasEnvelope?: boolean,
+): string {
+    if (!hasEnvelope) return "Pending";
+    const ds = String(documentStatus ?? "").trim().toLowerCase();
+    const cs = String(contractStatus ?? "").trim().toUpperCase();
+    if (ds === "completed" || cs === "COMPLETED" || cs === "SIGNED") return "Signed";
+    if (ds === "viewed" || ds === "delivered" || cs === "VIEWED") return "Viewed";
+    if (ds === "sent" || cs === "SENT") return "Sent";
+    if (ds === "draft" || ds === "created" || cs === "DRAFT") return "Draft";
+    if (cs === "GENERATED") return "Generated";
+    if (
+        ds === "revoked" ||
+        ds === "voided" ||
+        cs === "REVOKED" ||
+        cs === "VOIDED"
+    ) {
+        return "Voided";
+    }
+    if (ds === "declined" || cs === "DECLINED") return "Declined";
+    if (ds === "expired" || cs === "EXPIRED") return "Expired";
+    return cs
+        ? cs
+              .replace(/_/g, " ")
+              .toLowerCase()
+              .replace(/\b\w/g, (c) => c.toUpperCase())
+        : "Pending";
+}
+
+function contractStatusToCapsuleStatus(
+    contractStatus: unknown,
+    documentStatus?: unknown,
+): AchAuthorizationDocuSignCapsuleStatus {
+    const label = formatContractTableStatusLabel(contractStatus, documentStatus, true);
+    if (label === "Signed") return "SIGNED";
+    if (label === "Viewed") return "VIEWED";
+    if (label === "Sent") return "SENT";
+    if (label === "Voided" || label === "Declined" || label === "Expired") return "VOIDED";
+    return "DRAFT";
+}
+
+function formatTableSentAt(value: unknown): string {
+    return formatDateTimeUS(value as DateInput, "—");
+}
 
 /** DocuSign when signers are rejected; show success toast instead of raw validation noise. */
 function isDocuSignMissingSignerMessage(message: string): boolean {
@@ -298,6 +383,7 @@ export default function ContractTab({
     const [achTemplateMappings, setAchTemplateMappings] = useState<AchDocumentTemplateMappingRow[]>([]);
     const [loadingAchMappings, setLoadingAchMappings] = useState(false);
     const [achViewerOpen, setAchViewerOpen] = useState(false);
+    const [preparingAchViewer, setPreparingAchViewer] = useState(false);
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
     const [pdfName, setPdfName] = useState<string>("Contract.pdf");
     const [selectedContractId, setSelectedContractId] = useState<number | null>(null);
@@ -308,11 +394,76 @@ export default function ContractTab({
         null,
     );
     const [creatingEnvelope, setCreatingEnvelope] = useState(false);
+    const [viewingSignedContract, setViewingSignedContract] = useState(false);
     const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
+    const [voidingContract, setVoidingContract] = useState(false);
+    const [viewingAchDocument, setViewingAchDocument] = useState(false);
+    const [refreshingSigningStatus, setRefreshingSigningStatus] = useState(false);
+    const [contractSyncError, setContractSyncError] = useState<string | null>(null);
+    const [achSyncError, setAchSyncError] = useState<string | null>(null);
+    const [packageSyncError, setPackageSyncError] = useState<string | null>(null);
     const [signedPdfPreviewOpen, setSignedPdfPreviewOpen] = useState(false);
     const [signedPdfPreviewUrl, setSignedPdfPreviewUrl] = useState<string | null>(null);
     const [signedPdfPreviewName, setSignedPdfPreviewName] = useState("Signed contract.pdf");
     const [fetchedContract, setFetchedContract] = useState<any | null>(null);
+    const contractStateForFunders = String(
+        (fetchedContract as { state?: string | null } | null)?.state ?? "",
+    ).trim();
+    const { resolveLayoutKey, findFunder } = useFunderProfiles(contractStateForFunders || null);
+
+    const persistContractFunderMeta = useCallback(
+        async (
+            contractId: number,
+            patch: { funderName?: string | null; state?: string | null },
+            contractRow?: Record<string, unknown> | null,
+        ) => {
+            const row =
+                contractRow ??
+                (fetchedContract && typeof fetchedContract === "object"
+                    ? (fetchedContract as Record<string, unknown>)
+                    : null);
+            const data: { funderName?: string | null; state?: string | null } = {};
+            if (patch.funderName !== undefined) {
+                const next =
+                    patch.funderName === "" || patch.funderName == null
+                        ? null
+                        : String(patch.funderName).trim();
+                const db = String((row as { funderName?: unknown } | null)?.funderName ?? "").trim();
+                if (!funderNamesEquivalent(next, db)) {
+                    data.funderName = next;
+                }
+            }
+            if (patch.state !== undefined) {
+                const next =
+                    patch.state === "" || patch.state == null
+                        ? null
+                        : String(patch.state).trim();
+                const db = String((row as { state?: unknown } | null)?.state ?? "").trim();
+                if (next !== db) {
+                    data.state = next;
+                }
+            }
+            if (!Object.keys(data).length) return;
+            try {
+                const res = await dispatch(
+                    updateContract({ id: contractId, data }),
+                ).unwrap();
+                const updated =
+                    (res as { data?: Record<string, unknown> } | null)?.data ??
+                    (res as Record<string, unknown> | null);
+                if (updated && typeof updated === "object") {
+                    setFetchedContract(updated);
+                } else {
+                    setFetchedContract((prev: Record<string, unknown> | null) =>
+                        prev && typeof prev === "object" ? { ...prev, ...data } : prev,
+                    );
+                }
+            } catch (err) {
+                console.warn("[ContractTab] persist funder/state skipped:", err);
+            }
+        },
+        [dispatch, fetchedContract],
+    );
 
     const appId =
         applicationId ??
@@ -382,27 +533,33 @@ export default function ContractTab({
         void dispatch(getBoldSignTemplates({}));
     }, [dispatch]);
 
-    const fetchAchTemplateMappings = useCallback(async () => {
-        if (!selectedContractId) {
-            setAchTemplateMappings([]);
-            return;
-        }
-        try {
-            setLoadingAchMappings(true);
-            const res = await axiosGet(
-                `/contract/${selectedContractId}/document-template-mappings`,
-            );
-            const rows = (res?.data?.data ?? []) as AchDocumentTemplateMappingRow[];
-            const achRows = Array.isArray(rows)
-                ? rows.filter((row) => String(row.documentType || "").toLowerCase() === "ach")
-                : [];
-            setAchTemplateMappings(achRows);
-        } catch {
-            setAchTemplateMappings([]);
-        } finally {
-            setLoadingAchMappings(false);
-        }
-    }, [selectedContractId]);
+    const fetchAchTemplateMappings = useCallback(
+        async (contractIdOverride?: number): Promise<AchDocumentTemplateMappingRow[]> => {
+            const contractId = contractIdOverride ?? selectedContractId;
+            if (!contractId) {
+                setAchTemplateMappings([]);
+                return [];
+            }
+            try {
+                setLoadingAchMappings(true);
+                const res = await axiosGet(
+                    `/contract/${contractId}/document-template-mappings`,
+                );
+                const rows = (res?.data?.data ?? []) as AchDocumentTemplateMappingRow[];
+                const achRows = Array.isArray(rows)
+                    ? rows.filter((row) => String(row.documentType || "").toLowerCase() === "ach")
+                    : [];
+                setAchTemplateMappings(achRows);
+                return achRows;
+            } catch {
+                setAchTemplateMappings([]);
+                return [];
+            } finally {
+                setLoadingAchMappings(false);
+            }
+        },
+        [selectedContractId],
+    );
 
     useEffect(() => {
         void fetchAchTemplateMappings();
@@ -619,6 +776,65 @@ export default function ContractTab({
         return Number.isFinite(Number(selectedContractId)) && Number(selectedContractId) > 0;
     }, [fetchedContract, selectedContractId]);
 
+    const contractEnvelopeDocument = useMemo(
+        () =>
+            pickContractEnvelopeDocument(
+                fetchedContract as Record<string, unknown> | null | undefined,
+            ),
+        [fetchedContract],
+    );
+
+    const mainContractEnvelopeId = useMemo(
+        () => String(contractEnvelopeDocument?.envelopeId ?? "").trim() || null,
+        [contractEnvelopeDocument],
+    );
+
+    const achAuthorizationDocuSign = useMemo(
+        () =>
+            parseAchAuthorizationDocuSignFromPrefill(
+                (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+                { excludeEnvelopeId: mainContractEnvelopeId },
+            ),
+        [fetchedContract, mainContractEnvelopeId],
+    );
+
+    const standalonePackageDocuSign = useMemo(
+        () =>
+            parseStandalonePackageDocuSignFromPrefill(
+                (fetchedContract as { contractPrefillOverrides?: unknown } | null)
+                    ?.contractPrefillOverrides,
+                { excludeEnvelopeId: mainContractEnvelopeId },
+            ),
+        [fetchedContract, mainContractEnvelopeId],
+    );
+
+    const packageCapsuleStatus: StandalonePackageDocuSignCapsuleStatus =
+        standalonePackageDocuSign?.status ?? "DRAFT";
+
+    const achCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus =
+        achAuthorizationDocuSign?.status ?? "DRAFT";
+
+    const contractFullySigned = isContractFullySigned(
+        (fetchedContract as { status?: unknown } | null)?.status,
+        contractEnvelopeDocument?.status,
+    );
+
+    const contractRecordForActions =
+        fetchedContract && typeof fetchedContract === "object"
+            ? (fetchedContract as Record<string, unknown>)
+            : null;
+
+    const contractSendTableRows = useMemo(
+        () =>
+            buildContractSendTableRows(
+                fetchedContract && typeof fetchedContract === "object"
+                    ? (fetchedContract as Record<string, unknown>)
+                    : null,
+            ),
+        [fetchedContract],
+    );
+
     const offerRecord =
         offerDecision != null && typeof offerDecision === "object"
             ? (offerDecision as Record<string, unknown>)
@@ -708,6 +924,151 @@ export default function ContractTab({
     const feeAmount = commissionAmount;
 
     const estimatedTotalPayment = repaymentStack?.payback ?? paybackAmount;
+
+    const ensureAchTemplateLinked = useCallback(
+        async (contractId: number) => {
+            const res = await axiosGet(`/contract/${contractId}/document-template-mappings`);
+            const rows = (res?.data?.data ?? []) as Array<{
+                id: string;
+                documentType?: string;
+                template?: { layoutKey?: string; templateId?: string } | null;
+                templateId?: string;
+            }>;
+            const achRows = rows.filter((row) => {
+                const docType = String(row.documentType ?? "").toLowerCase();
+                if (docType === "ach") return true;
+                const key = String(
+                    row.template?.layoutKey ?? row.template?.templateId ?? row.templateId ?? "",
+                )
+                    .trim()
+                    .toLowerCase();
+                return isAchAuthorizationLayoutKey(key);
+            });
+            await Promise.all(
+                achRows.slice(1).map((row) =>
+                    axiosDelete(`/contract/${contractId}/document-template-mappings/${row.id}`),
+                ),
+            );
+            if (achRows.length > 0) return;
+            const templateRef =
+                getBoldSignTemplateMappingRef(primaryAchTemplate) ??
+                PLATFORM_LAYOUT_KEYS.achAuthorization;
+            await axiosPost(`/contract/${contractId}/document-template-mappings`, {
+                documentType: "ach",
+                templateRef,
+            });
+        },
+        [primaryAchTemplate],
+    );
+
+    const ensureContractRecordForAch = useCallback(async (): Promise<number> => {
+        const fromSelection = Number(selectedContractId);
+        if (Number.isFinite(fromSelection) && fromSelection > 0) return fromSelection;
+
+        const fromFetched = Number((fetchedContract as { id?: unknown } | null)?.id);
+        if (Number.isFinite(fromFetched) && fromFetched > 0) {
+            setSelectedContractId(fromFetched);
+            return fromFetched;
+        }
+
+        if (!applicationUuid) {
+            throw new Error("Application is required to send the ACH form.");
+        }
+
+        const anyApp = applicationData as unknown as Record<string, unknown>;
+        const userFromRedux = loginData?.user as { _id?: string; id?: string } | undefined;
+        const userFromStorage = (() => {
+            if (typeof window === "undefined") return null;
+            try {
+                return JSON.parse(localStorage.getItem("user") || "null") as {
+                    _id?: string;
+                    id?: string;
+                } | null;
+            } catch {
+                return null;
+            }
+        })();
+        const createdById =
+            userFromRedux?._id ||
+            userFromRedux?.id ||
+            userFromStorage?._id ||
+            userFromStorage?.id ||
+            "";
+        const offerIdRaw =
+            (offerDecision as { id?: unknown; _id?: unknown } | null)?.id ??
+            (offerDecision as { id?: unknown; _id?: unknown } | null)?._id ??
+            latestTermsOffer?._id;
+        const referringIsoId = parseMaybeNumber(
+            anyApp?.referringIsoId ??
+                (anyApp?.referringISO as { id?: unknown } | undefined)?.id ??
+                (anyApp?.referringIso as { id?: unknown } | undefined)?.id,
+        );
+        const paymentTermsId = parseMaybeNumber(
+            (offerDecision as { paymentTermsId?: unknown } | null)?.paymentTermsId ??
+                anyApp?.paymentTermsId,
+        );
+        const paymentBankIdRaw =
+            anyApp?.paymentBankId ??
+            (anyApp?.paymentBank as { id?: unknown } | undefined)?.id ??
+            (anyApp?.bankDetail as { id?: unknown } | undefined)?.id;
+
+        const createRes = await dispatch(
+            createContract({
+                applicationId: String(applicationUuid),
+                clientId:
+                    (anyApp?.clientId as string | undefined) ??
+                    ((anyApp?.client as { _id?: string; id?: string } | undefined)?._id ||
+                        (anyApp?.client as { _id?: string; id?: string } | undefined)?.id),
+                referringIsoId: referringIsoId ?? undefined,
+                salesRepId: parseMaybeNumber(anyApp?.salesRepId) ?? undefined,
+                offerId: offerIdRaw ? String(offerIdRaw) : undefined,
+                contractLenght: termLength != null ? Number(termLength) : undefined,
+                approvedAmount: approvedAmount != null ? Number(approvedAmount) : undefined,
+                totalAmount:
+                    estimatedTotalPayment != null ? Number(estimatedTotalPayment) : undefined,
+                status: "DRAFT",
+                createdById: createdById || undefined,
+                paymentTermsId: paymentTermsId ?? undefined,
+                paymentBankId: paymentBankIdRaw ? String(paymentBankIdRaw) : undefined,
+            }),
+        ).unwrap();
+
+        const createdContract =
+            (createRes as { data?: Record<string, unknown> } | null)?.data ??
+            (createRes as Record<string, unknown> | null);
+        let contractId = Number((createdContract as { id?: unknown } | null)?.id);
+        if (!Number.isFinite(contractId) || contractId <= 0) {
+            const byApp = await dispatch(
+                getByApplicationIdContract(String(applicationUuid)),
+            ).unwrap();
+            const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
+            contractId = Number((contract as { id?: unknown } | null)?.id);
+            if (contract && typeof contract === "object") {
+                setFetchedContract(contract);
+            }
+        } else if (createdContract && typeof createdContract === "object") {
+            setFetchedContract(createdContract);
+        }
+
+        if (!Number.isFinite(contractId) || contractId <= 0) {
+            throw new Error("Could not create a contract record for this application.");
+        }
+
+        setSelectedContractId(contractId);
+        return contractId;
+    }, [
+        applicationData,
+        applicationUuid,
+        approvedAmount,
+        dispatch,
+        estimatedTotalPayment,
+        fetchedContract,
+        latestTermsOffer?._id,
+        loginData?.user,
+        offerDecision,
+        selectedContractId,
+        termLength,
+    ]);
 
     const estimatedPayment =
         repaymentStack?.perPeriodPayment ??
@@ -987,27 +1348,57 @@ export default function ContractTab({
         }
     };
 
-    const handleViewSignedEnvelope = async (
-        envelopeId: string,
-        documentLabel: string,
-        status?: string | null,
-    ) => {
-        const eid = String(envelopeId || "").trim();
-        if (!eid) {
-            toast.error("No DocuSign envelope found for this document.");
-            return;
-        }
-        if (!isDocumentSendEntryViewable(status)) {
-            toast.info("This document is not fully signed yet.");
+    const handleViewSignedContract = async (envelopeIdOverride?: string) => {
+        if (!applicationUuid) {
+            toast.error("Missing application ID.");
             return;
         }
 
-        setViewingSignedEnvelopeId(eid);
+        const envelopeKey = String(envelopeIdOverride ?? "").trim() || null;
+        setViewingSignedEnvelopeId(envelopeKey);
+        setViewingSignedContract(true);
         try {
-            const res = await axiosGet(`/docusign/download/${encodeURIComponent(eid)}`, {
-                responseType: "blob",
-                timeout: 120000,
-            });
+            let contract = fetchedContract;
+            if (!contract) {
+                const byApp = await dispatch(
+                    getByApplicationIdContract(String(applicationUuid)),
+                ).unwrap();
+                contract = (byApp as { data?: unknown })?.data ?? byApp;
+                setFetchedContract(contract);
+            }
+
+            const contractId = Number((contract as { id?: unknown })?.id);
+            if (!Number.isFinite(contractId) || contractId <= 0) {
+                toast.info("No contract is available to view.");
+                return;
+            }
+
+            const envelopeId = String(
+                envelopeIdOverride ??
+                    (contract as { application?: { document?: { envelopeId?: string } } })
+                        ?.application?.document?.envelopeId ??
+                    "",
+            ).trim();
+            if (!envelopeId) {
+                toast.error(
+                    "No DocuSign envelope found. Refresh contract status after signing completes.",
+                );
+                return;
+            }
+
+            if (!envelopeIdOverride) {
+                const documentStatus = (contract as { application?: { document?: { status?: string } } })
+                    ?.application?.document?.status;
+                if (!isContractFullySigned((contract as { status?: unknown })?.status, documentStatus)) {
+                    toast.info("The contract is not fully signed yet.");
+                    return;
+                }
+            }
+
+            const res = await axiosGet(
+                `/docusign/download/${encodeURIComponent(envelopeId)}`,
+                { responseType: "blob", timeout: 120000 },
+            );
             const blob =
                 res.data instanceof Blob
                     ? res.data
@@ -1020,11 +1411,10 @@ export default function ContractTab({
             const objectUrl = URL.createObjectURL(blob);
             const fileLabel = String(
                 (applicationData as { applicationId?: unknown })?.applicationId ??
-                    applicationUuid ??
-                    eid,
+                    applicationUuid,
             ).replace(/[^\w.-]+/g, "_");
-            const safeLabel = documentLabel.replace(/[^\w.-]+/g, "_").toLowerCase();
-            const fileName = `signed-${safeLabel}-${fileLabel}.pdf`;
+            const fileName = `signed-contract-${fileLabel}.pdf`;
+
             setSignedPdfPreviewUrl((prev) => {
                 if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
                 return objectUrl;
@@ -1036,97 +1426,248 @@ export default function ContractTab({
                 (err as { response?: { data?: { message?: string } }; message?: string })
                     ?.response?.data?.message ||
                 (err as { message?: string })?.message ||
-                "Could not load the signed document.";
+                "Could not load the signed contract.";
             toast.error(String(msg));
         } finally {
+            setViewingSignedContract(false);
             setViewingSignedEnvelopeId(null);
         }
     };
 
-    const generatedDocumentRows = useMemo(() => {
-        if (!fetchedContract) return [] as Array<
-            DocumentSendHistoryEntry & {
-                key: string;
-                displayStatus: string;
-                isFinancial: boolean;
-                viewable: boolean;
+    const reloadFetchedContract = useCallback(async () => {
+        if (!applicationUuid) return null;
+        const res = await dispatch(getByApplicationIdContract(String(applicationUuid))).unwrap();
+        const contract = (res as { data?: unknown })?.data ?? res ?? null;
+        setFetchedContract(contract);
+        const contractId = Number((contract as { id?: unknown })?.id);
+        if (Number.isFinite(contractId)) setSelectedContractId(contractId);
+        return contract;
+    }, [applicationUuid, dispatch]);
+
+    const refreshContractEnvelopeStatus = useCallback(
+        async (silent?: boolean, options?: { force?: boolean }) => {
+            const mainEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
+            if (!mainEnvelopeId || contractFullySigned) {
+                if (!silent) setContractSyncError(null);
+                return;
             }
-        >;
 
-        const prefill = (fetchedContract as { contractPrefillOverrides?: unknown })
-            ?.contractPrefillOverrides;
-        let history = parseDocumentSendHistory(prefill);
-
-        const contractEnvId = String(
-            (fetchedContract as { application?: { document?: { envelopeId?: string } } })
-                ?.application?.document?.envelopeId ?? "",
-        ).trim();
-        const contractDocStatus = String(
-            (fetchedContract as { application?: { document?: { status?: string } } })?.application
-                ?.document?.status ??
-                (fetchedContract as { status?: string })?.status ??
-                "",
-        ).trim();
-
-        if (contractEnvId) {
-            history = upsertDocumentSendHistory(history, {
-                envelopeId: contractEnvId,
-                documentKind: "contract",
-                label: "Contract",
-                status: contractDocStatus.toLowerCase() || "draft",
-                updatedAt: new Date().toISOString(),
-            });
-        }
-
-        const achEnvelopes = parseDocumentTemplateEnvelopeByMappingId(prefill);
-        for (const meta of Object.values(achEnvelopes)) {
-            const eid = String(meta.envelopeId ?? "").trim();
-            if (!eid) continue;
-            history = upsertDocumentSendHistory(history, {
-                envelopeId: eid,
-                documentKind: "ach",
-                label: "ACH Authorization",
-                status: meta.status,
-                updatedAt: meta.updatedAt,
-            });
-        }
-
-        if (!history.length) {
-            return [
-                {
-                    key: "contract-generated",
-                    envelopeId: contractEnvId || "contract",
-                    documentKind: "contract" as const,
-                    label: "Contract",
-                    status: contractDocStatus || "generated",
-                    displayStatus: formatDocumentSendStatusLabel(contractDocStatus || "generated"),
-                    isFinancial: true,
-                    viewable: isDocumentSendEntryViewable(contractDocStatus),
-                },
-            ];
-        }
-
-        return [...history]
-            .sort((a, b) => {
-                if (a.documentKind !== b.documentKind) {
-                    return a.documentKind === "contract" ? -1 : 1;
+            if (!silent) setRefreshingSigningStatus(true);
+            const appId = applicationUuid ? String(applicationUuid) : undefined;
+            try {
+                const result = await syncDocuSignEnvelopeStatus(mainEnvelopeId, {
+                    applicationId: appId,
+                    contractId: selectedContractId,
+                    force: options?.force,
+                    silent,
+                });
+                if (result.rateLimited) {
+                    if (!silent) {
+                        setContractSyncError(
+                            "DocuSign polling limit reached for contract. Wait a few minutes or rely on webhook updates.",
+                        );
+                    }
+                } else {
+                    setContractSyncError(null);
                 }
-                return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
-            })
-            .map((row) => {
-                const resolvedStatus =
-                    row.documentKind === "ach"
-                        ? resolveAchHistoryEntryDisplayStatus(row, history)
-                        : String(row.status ?? "").trim();
-                return {
-                    ...row,
-                    key: row.envelopeId,
-                    displayStatus: formatDocumentSendStatusLabel(resolvedStatus),
-                    isFinancial: row.documentKind === "contract",
-                    viewable: isDocumentSendEntryViewable(resolvedStatus || row.status),
-                };
-            });
-    }, [fetchedContract]);
+            } catch (err: unknown) {
+                const msg =
+                    err instanceof Error ? err.message : "Could not refresh contract status.";
+                setContractSyncError(msg);
+                if (!silent) toast.error(msg);
+            } finally {
+                try {
+                    await reloadFetchedContract();
+                } catch {
+                    /* partial sync still useful */
+                }
+                if (!silent) setRefreshingSigningStatus(false);
+            }
+        },
+        [
+            applicationUuid,
+            contractEnvelopeDocument?.envelopeId,
+            contractFullySigned,
+            reloadFetchedContract,
+            selectedContractId,
+        ],
+    );
+
+    const refreshAchEnvelopeStatus = useCallback(
+        async (silent?: boolean, options?: { force?: boolean }) => {
+            const achEnvelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
+            const mainEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
+            if (!achEnvelopeId || achEnvelopeId === mainEnvelopeId) {
+                if (!silent) setAchSyncError(null);
+                return;
+            }
+            if (isAchSigningFinished(achCapsuleStatus)) {
+                if (!silent) setAchSyncError(null);
+                return;
+            }
+
+            if (!silent) setRefreshingSigningStatus(true);
+            const appId = applicationUuid ? String(applicationUuid) : undefined;
+            try {
+                const result = await syncDocuSignEnvelopeStatus(achEnvelopeId, {
+                    applicationId: appId,
+                    contractId: selectedContractId,
+                    force: options?.force,
+                    silent,
+                });
+                if (result.rateLimited) {
+                    if (!silent) {
+                        setAchSyncError(
+                            "DocuSign polling limit reached for ACH. Wait a few minutes or rely on webhook updates.",
+                        );
+                    }
+                } else {
+                    setAchSyncError(null);
+                }
+            } catch (err: unknown) {
+                const msg =
+                    err instanceof Error ? err.message : "Could not refresh ACH status.";
+                setAchSyncError(msg);
+                if (!silent) toast.error(msg);
+            } finally {
+                try {
+                    await reloadFetchedContract();
+                } catch {
+                    /* partial sync still useful */
+                }
+                if (!silent) setRefreshingSigningStatus(false);
+            }
+        },
+        [
+            achAuthorizationDocuSign?.envelopeId,
+            achCapsuleStatus,
+            applicationUuid,
+            contractEnvelopeDocument?.envelopeId,
+            reloadFetchedContract,
+            selectedContractId,
+        ],
+    );
+
+    const refreshPackageEnvelopeStatus = useCallback(
+        async (silent?: boolean, options?: { force?: boolean }) => {
+            const packageEnvelopeId = String(standalonePackageDocuSign?.envelopeId ?? "").trim();
+            const mainEnvelopeId = String(contractEnvelopeDocument?.envelopeId ?? "").trim();
+            if (!packageEnvelopeId || packageEnvelopeId === mainEnvelopeId) {
+                if (!silent) setPackageSyncError(null);
+                return;
+            }
+            if (isStandalonePackageSigningFinished(packageCapsuleStatus)) {
+                if (!silent) setPackageSyncError(null);
+                return;
+            }
+
+            if (!silent) setRefreshingSigningStatus(true);
+            const appId = applicationUuid ? String(applicationUuid) : undefined;
+            try {
+                const result = await syncDocuSignEnvelopeStatus(packageEnvelopeId, {
+                    applicationId: appId,
+                    contractId: selectedContractId,
+                    force: options?.force,
+                    silent,
+                });
+                if (result.rateLimited) {
+                    if (!silent) {
+                        setPackageSyncError(
+                            "DocuSign polling limit reached for supplemental documents. Wait a few minutes or rely on webhook updates.",
+                        );
+                    }
+                } else {
+                    setPackageSyncError(null);
+                }
+            } catch (err: unknown) {
+                const msg =
+                    err instanceof Error
+                        ? err.message
+                        : "Could not refresh supplemental document status.";
+                setPackageSyncError(msg);
+                if (!silent) toast.error(msg);
+            } finally {
+                try {
+                    await reloadFetchedContract();
+                } catch {
+                    /* partial sync still useful */
+                }
+                if (!silent) setRefreshingSigningStatus(false);
+            }
+        },
+        [
+            applicationUuid,
+            contractEnvelopeDocument?.envelopeId,
+            packageCapsuleStatus,
+            reloadFetchedContract,
+            selectedContractId,
+            standalonePackageDocuSign?.envelopeId,
+        ],
+    );
+
+    const refreshSigningStatusesOnContractTab = useCallback(
+        async (silent?: boolean, options?: { force?: boolean }) => {
+            await refreshContractEnvelopeStatus(silent, options);
+            await refreshAchEnvelopeStatus(silent, options);
+            await refreshPackageEnvelopeStatus(silent, options);
+        },
+        [
+            refreshAchEnvelopeStatus,
+            refreshContractEnvelopeStatus,
+            refreshPackageEnvelopeStatus,
+        ],
+    );
+
+    const handleVoidSentEnvelopeRow = async (row: ContractSendTableRow) => {
+        const envelopeId = String(row.envelopeId ?? "").trim();
+        if (
+            !envelopeId ||
+            voidingContract ||
+            !canVoidContractSendTableRow(contractRecordForActions, row)
+        ) {
+            return;
+        }
+        const confirmed = window.confirm(
+            `Void "${row.label}" in DocuSign? Signers will no longer be able to sign this document.`,
+        );
+        if (!confirmed) return;
+
+        setVoidingContract(true);
+        try {
+            await dispatch(
+                voidBoldSignDocument({
+                    documentId: envelopeId,
+                    reason: "Voided by user from CRM",
+                }),
+            ).unwrap();
+            await refreshSigningStatusesOnContractTab(false, { force: true });
+            toast.success(`${row.label} voided in DocuSign.`);
+        } catch (err: unknown) {
+            const msg =
+                typeof err === "string"
+                    ? err
+                    : String(
+                          (err as { message?: string })?.message || "Failed to void document.",
+                      );
+            toast.error(msg);
+        } finally {
+            setVoidingContract(false);
+        }
+    };
+
+    const handleViewAchDocument = async () => {
+        const envelopeId = String(achAuthorizationDocuSign?.envelopeId ?? "").trim();
+        if (!envelopeId) {
+            toast.info("ACH authorization has not been sent via DocuSign yet.");
+            return;
+        }
+        setViewingAchDocument(true);
+        try {
+            await openAchViewer();
+        } finally {
+            setViewingAchDocument(false);
+        }
+    };
 
     /** Draft created — Contract Generated (not sent until DocuSign envelope is delivered). */
     const persistContractGeneratedStage = async () => {
@@ -1321,7 +1862,19 @@ export default function ContractTab({
             achDocumentRef?: string | null;
             /** When true, envelope contains only the ACH form (no main contract PDF). */
             standaloneAchOnly?: boolean;
+            /** When false, send supplemental docs only (no main contract PDF). */
+            includeMainContract?: boolean;
+            /** Create Contract — which documents are in this envelope. */
+            sendPackage?: ContractSendPackageSelection;
             roles?: DocuSignTemplateRolePayload[];
+            /** Current funder from contract modal (may not be persisted yet). */
+            funderName?: string | null;
+            /** CRM funder profile id — resolves funder-specific addendum/disclosure PDFs. */
+            funderProfileId?: string | null;
+            /** Contract state from modal (may not be persisted yet). */
+            contractState?: string | null;
+            /** Main contract layout key (Woodmere vs Texas Funding Group). */
+            mainContractLayoutKey?: string | null;
         },
         options: { autoSend: boolean; suppressSuccessToast?: boolean },
     ): Promise<{
@@ -1341,6 +1894,7 @@ export default function ContractTab({
         const disclosureDocumentRef = String(sendPayload.disclosureDocumentRef ?? "").trim();
         const achDocumentRef = String(sendPayload.achDocumentRef ?? "").trim();
         const standaloneAchOnly = sendPayload.standaloneAchOnly === true;
+        const includeMainContract = sendPayload.includeMainContract !== false;
 
         if (achDocumentRef && !standaloneAchOnly) {
             failDocuSignEnvelope(
@@ -1355,18 +1909,46 @@ export default function ContractTab({
             if (!achDocumentRef) {
                 failDocuSignEnvelope("Select an ACH template before sending.");
             }
-        } else if (!globalTemplateUrl) {
+        } else if (includeMainContract && !globalTemplateUrl) {
             failDocuSignEnvelope(
                 "No contract template uploaded. Please upload it from the Final Underwriter dashboard.",
             );
+        } else if (!includeMainContract) {
+            const supplementalOnlyRefs = [addendumDocumentRef, disclosureDocumentRef].filter(
+                Boolean,
+            );
+            if (!supplementalOnlyRefs.length) {
+                failDocuSignEnvelope(
+                    "Select at least one addendum or state disclosure to send without the main contract.",
+                );
+            }
         }
+
+        const sendPackageSelection: ContractSendPackageSelection | undefined =
+            sendPayload.sendPackage ??
+            (standaloneAchOnly
+                ? undefined
+                : includeMainContract
+                  ? {
+                        includeMainContract: true,
+                        includeAddendum: Boolean(addendumDocumentRef),
+                        includeDisclosure: Boolean(disclosureDocumentRef),
+                    }
+                  : {
+                        includeMainContract: false,
+                        includeAddendum: Boolean(addendumDocumentRef),
+                        includeDisclosure: Boolean(disclosureDocumentRef),
+                    });
 
         const userCcEmails = (sendPayload.ccEmails || [])
             .map((e) => String(e).trim())
             .filter(Boolean);
+        const resolvedFunderForCc = String(sendPayload.funderName ?? "").trim();
+        const funderDefaultCcEmail =
+            String(findFunder(resolvedFunderForCc)?.defaultCcEmail ?? "").trim() || null;
         const effectiveCcEmails = standaloneAchOnly
             ? [...new Set(userCcEmails)]
-            : mergeWithDefaultCcEmails(userCcEmails);
+            : mergeWithDefaultCcEmails(userCcEmails, { funderDefaultCcEmail });
 
         const applicationSignerEmail = getPrimaryRecipientEmail().trim();
         const applicationSignerName = getPrimaryRecipientName();
@@ -1412,6 +1994,31 @@ export default function ContractTab({
                 }
             } catch {
                 /* use fetchedContract */
+            }
+
+            const contractNumericIdForPersist = Number((latestContract as { id?: unknown })?.id);
+            if (Number.isFinite(contractNumericIdForPersist) && contractNumericIdForPersist > 0) {
+                await persistContractFunderMeta(
+                    contractNumericIdForPersist,
+                    {
+                        funderName: sendPayload.funderName,
+                        state: sendPayload.contractState,
+                    },
+                    latestContract as Record<string, unknown>,
+                );
+                try {
+                    const refreshedAfterMeta = await dispatch(
+                        getByApplicationIdContract(String(applicationUuid)),
+                    ).unwrap();
+                    const refreshedContract =
+                        (refreshedAfterMeta as { data?: unknown })?.data ?? refreshedAfterMeta;
+                    if (refreshedContract) {
+                        latestContract = refreshedContract;
+                        setFetchedContract(refreshedContract);
+                    }
+                } catch {
+                    /* use latestContract */
+                }
             }
 
             const signerOverridesFromContract = parseContractSignerOverridesFromPrefill(
@@ -1465,10 +2072,7 @@ export default function ContractTab({
             }
 
             const primarySignerEmail = String(roles[0]?.signerEmail || "").trim();
-            let prefillFieldsPayload = buildPrefillFields(latestContract).map((field) => ({
-                id: field.id,
-                value: field.value,
-            }));
+            let prefillFieldsPayload: ContractPrefillField[] = buildPrefillFields(latestContract);
             if (primarySignerEmail) {
                 prefillFieldsPayload = prefillFieldsPayload.map((field) =>
                     field.id === "client_email" || field.id === "customer_email"
@@ -1487,12 +2091,23 @@ export default function ContractTab({
                     .clientName.trim() ||
                 applicationSignerName.trim() ||
                 "Client";
+            const docuSignBusinessName =
+                resolveBalanceTransferMerchantContext(latestContract, applicationData)
+                    .businessName.trim() || docuSignClientName;
             const docuSignEmailSubject = standaloneAchOnly
                 ? `ACH Authorization — ${docuSignClientName}`
-                : buildDocuSignEnvelopeEmailSubject(docuSignClientName);
+                : sendPackageSelection
+                  ? buildPackageEnvelopeEmailSubject(
+                        docuSignBusinessName,
+                        sendPackageSelection,
+                        approvedAmount,
+                    )
+                  : buildDocuSignEnvelopeEmailSubject(docuSignClientName);
             const docuSignEmailMessage = standaloneAchOnly
                 ? `Please review and sign the ACH authorization form with ${DOCUSIGN_EMAIL_LENDER_NAME}.`
-                : `Please review and sign your agreement with ${DOCUSIGN_EMAIL_LENDER_NAME}.`;
+                : sendPackageSelection
+                  ? buildPackageEnvelopeEmailMessage(docuSignBusinessName, sendPackageSelection)
+                  : `Please review and sign your agreement with ${DOCUSIGN_EMAIL_LENDER_NAME}.`;
 
             const supplementalDocumentRefs = standaloneAchOnly
                 ? []
@@ -1608,15 +2223,129 @@ export default function ContractTab({
                 console.warn("[ContractTab] document template mapping prefill skipped:", mapErr);
             }
 
+            if (!standaloneAchOnly && includeMainContract) {
+                prefillFieldsPayload = applyPrimaryGuarantorNamesToPrefillFields(
+                    prefillFieldsPayload,
+                    primaryOwnerName,
+                    {
+                        primarySs: String(
+                            firstOwnerFromDb?.ssnNumber || firstOwnerFromDb?.ssn || "",
+                        ).trim(),
+                        primaryDriverLicense: String(
+                            firstOwnerFromDb?.driverLicenseNumber ||
+                                firstOwnerFromDb?.driverLicense ||
+                                "",
+                        ).trim(),
+                    },
+                );
+                prefillFieldsPayload = applySecondOwnerNameToPrefillFields(prefillFieldsPayload, {
+                    ownerCount,
+                    secondOwnerName:
+                        resolveOwnerRowFullName(secondOwnerFromDb) ||
+                        secondOwnerNameBeforeCollapse ||
+                        String(
+                            roles.find((r) => /owner\s*2/i.test(String(r.signerRole || "")))
+                                ?.signerName || "",
+                        ).trim(),
+                    secondOwnerSs: String(
+                        secondOwnerFromDb?.ssnNumber || secondOwnerFromDb?.ssn || "",
+                    ).trim(),
+                    secondOwnerDriverLicense: String(
+                        secondOwnerFromDb?.driverLicenseNumber ||
+                            secondOwnerFromDb?.driverLicense ||
+                            "",
+                    ).trim(),
+                });
+                prefillFieldsPayload = clearParty2PrefillFieldPayload(
+                    prefillFieldsPayload,
+                    ownerCount,
+                );
+
+                const syncedPartial = applyCanonicalBusinessAddressPrefillFields(
+                    applyClientPersonNamePrefillFields(
+                        contractPrefillFieldsToPartial(prefillFieldsPayload),
+                        applicationData,
+                    ),
+                );
+                prefillFieldsPayload = mergeSyncedPartialIntoPrefillFields(
+                    prefillFieldsPayload,
+                    syncedPartial,
+                );
+
+                const contractNumericIdPersist = Number((latestContract as { id?: unknown })?.id);
+                if (Number.isFinite(contractNumericIdPersist) && contractNumericIdPersist > 0) {
+                    try {
+                        const rawOverrides = (latestContract as { contractPrefillOverrides?: unknown })
+                            ?.contractPrefillOverrides;
+                        const mainOverrides = stripDocumentTemplateBlobFromPrefillOverrides(
+                            normalizeContractPrefillOverrides(rawOverrides) ?? {},
+                        ) as Record<string, unknown>;
+                        const columnUpdate = contractPrefillToContractColumnUpdate(syncedPartial);
+                        const nextOverrides = mergeContractPrefillOverrideLayers(
+                            mainOverrides as Partial<BuildContractPrefillFieldsArgs>,
+                            syncedPartial,
+                        );
+                        await dispatch(
+                            updateContract({
+                                id: contractNumericIdPersist,
+                                data: {
+                                    ...columnUpdate,
+                                    contractPrefillOverrides: nextOverrides,
+                                },
+                            }),
+                        ).unwrap();
+                        setFetchedContract({
+                            ...(latestContract as Record<string, unknown>),
+                            ...columnUpdate,
+                            contractPrefillOverrides: nextOverrides,
+                        });
+                    } catch (persistErr) {
+                        console.warn("[ContractTab] persist synced contract prefill failed:", persistErr);
+                    }
+                }
+            }
+
+            const contractNumericIdForSend = Number((latestContract as { id?: unknown })?.id);
+            const resolvedFunderName =
+                sendPayload.funderName ??
+                (latestContract as { funderName?: string | null })?.funderName ??
+                null;
+            const contractStateForSend =
+                String(sendPayload.contractState ?? "").trim() ||
+                String((latestContract as { state?: string | null })?.state ?? "").trim() ||
+                undefined;
+            const mainContractLayoutKey =
+                String(sendPayload.mainContractLayoutKey ?? "").trim() ||
+                resolveLayoutKey(
+                    resolvedFunderName,
+                    sendPayload.funderProfileId,
+                );
             const mergeRequest = {
                 ...(standaloneAchOnly
-                    ? { standaloneDocumentRefs: [achDocumentRef] }
-                    : { supplementalDocumentRefs }),
-                ...(standaloneAchOnly ? { skipApplicationEnvelopeLink: true } : {}),
+                    ? {
+                          standaloneDocumentRefs: [achDocumentRef],
+                          skipApplicationEnvelopeLink: true,
+                      }
+                    : {
+                          supplementalDocumentRefs,
+                          includeMainContract,
+                          mainContractLayoutKey,
+                          funderName: resolvedFunderName ? String(resolvedFunderName).trim() : undefined,
+                          funderProfileId: sendPayload.funderProfileId
+                              ? String(sendPayload.funderProfileId).trim()
+                              : undefined,
+                          contractState: contractStateForSend,
+                          ...(sendPackageSelection ? { sendPackage: sendPackageSelection } : {}),
+                          ...(!includeMainContract ? { skipApplicationEnvelopeLink: true } : {}),
+                      }),
                 ownerCount,
                 roles,
                 prefillFields: prefillFieldsPayload,
                 applicationId: String(applicationUuid),
+                contractId:
+                    Number.isFinite(contractNumericIdForSend) && contractNumericIdForSend > 0
+                        ? contractNumericIdForSend
+                        : undefined,
                 redirectUrl: redirectUrlDocusign,
                 showToolbar: true,
                 sendViewOption: "PreparePage",
@@ -1653,6 +2382,49 @@ export default function ContractTab({
 
             if (!documentId) {
                 failDocuSignEnvelope("DocuSign did not return a document ID.");
+            }
+
+            if (
+                !standaloneAchOnly &&
+                !includeMainContract &&
+                sendPackageSelection
+            ) {
+                const contractNumericId = Number((latestContract as { id?: unknown })?.id);
+                if (Number.isFinite(contractNumericId) && contractNumericId > 0) {
+                    try {
+                        const prefillBase =
+                            (latestContract as { contractPrefillOverrides?: unknown } | null)
+                                ?.contractPrefillOverrides ?? null;
+                        const contractPrefillOverrides = mergeStandalonePackageDocuSignIntoPrefill(
+                            prefillBase,
+                            {
+                                envelopeId: String(documentId),
+                                package: {
+                                    includeMainContract: sendPackageSelection.includeMainContract,
+                                    includeAddendum: sendPackageSelection.includeAddendum,
+                                    includeDisclosure: sendPackageSelection.includeDisclosure,
+                                },
+                            },
+                        );
+                        const updated = await dispatch(
+                            updateContract({
+                                id: contractNumericId,
+                                data: { contractPrefillOverrides },
+                            }),
+                        ).unwrap();
+                        const payload = (updated as { data?: unknown })?.data ?? updated;
+                        setFetchedContract({
+                            ...(latestContract as Record<string, unknown>),
+                            ...(payload as Record<string, unknown>),
+                            contractPrefillOverrides,
+                        });
+                    } catch (persistErr) {
+                        console.warn(
+                            "[ContractTab] persist standalone package DocuSign failed:",
+                            persistErr,
+                        );
+                    }
+                }
             }
 
             const envelopeStatus = (sendResponse as { data?: { envelopeStatus?: string } })
@@ -1763,7 +2535,13 @@ export default function ContractTab({
         disclosureDocumentRef?: string | null;
         achDocumentRef?: string | null;
         standaloneAchOnly?: boolean;
+        includeMainContract?: boolean;
+        sendPackage?: ContractSendPackageSelection;
         roles?: DocuSignTemplateRolePayload[];
+        funderName?: string | null;
+        funderProfileId?: string | null;
+        contractState?: string | null;
+        mainContractLayoutKey?: string | null;
     }) => {
         const result = await runDocuSignEnvelope(payload, {
             autoSend: false,
@@ -1773,9 +2551,13 @@ export default function ContractTab({
         if (!envelopeId) {
             throw new Error("DocuSign did not return an envelope ID after creating the draft.");
         }
-        if (!payload.standaloneAchOnly) {
+        if (!payload.standaloneAchOnly && payload.includeMainContract !== false) {
             const cid = Number((fetchedContract as { id?: unknown })?.id);
             if (Number.isFinite(cid) && cid > 0) {
+                await persistContractFunderMeta(cid, {
+                    funderName: payload.funderName,
+                    state: payload.contractState,
+                });
                 try {
                     const raw =
                         normalizeContractPrefillOverrides(
@@ -1980,19 +2762,30 @@ export default function ContractTab({
         [fetchDocuSignSenderViewUrl],
     );
 
-    const openAchFormViewer = () => {
-        if (!effectiveAchMapping) {
-            toast.info("ACH form is not configured. Add a BoldSign template with type ach.");
+    const openAchViewer = async () => {
+        if (!applicationUuid) {
+            toast.error("Application is required to send the ACH form.");
             return;
         }
-        if (selectedContractId && !linkedAchMapping && primaryAchTemplate) {
-            const ref = getBoldSignTemplateMappingRef(primaryAchTemplate);
-            if (ref) {
-                void ensureAchTemplateMapping(ref).then(() => setAchViewerOpen(true));
-                return;
-            }
+        setPreparingAchViewer(true);
+        try {
+            const contractId = await ensureContractRecordForAch();
+            await ensureAchTemplateLinked(contractId);
+            await fetchAchTemplateMappings(contractId);
+            setAchViewerOpen(true);
+        } catch (error) {
+            console.error("Failed to prepare ACH viewer:", error);
+            const message =
+                typeof error === "string"
+                    ? error
+                    : (error as { response?: { data?: { message?: string } }; message?: string })
+                          ?.response?.data?.message ||
+                      (error as { message?: string })?.message ||
+                      "Could not open ACH form viewer.";
+            toast.error(String(message));
+        } finally {
+            setPreparingAchViewer(false);
         }
-        setAchViewerOpen(true);
     };
 
     const appendStructuredNote = (sectionLabel: string, payload: unknown) => {
@@ -2032,6 +2825,248 @@ export default function ContractTab({
     const isContractValuesReadOnly = isReadOnly || !isEditingContractValues;
     /** Saved grid for anyone when values are persisted (incl. Operations read-only) — avoids disabled-input fade. */
     const showSavedContractGrid = contractValuesSaved;
+
+    const brandActionButtonClass = isDark
+        ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
+        : "text-[#276D9C] hover:bg-[#276D9C]/10";
+
+    const renderContractSendTableRow = (row: ContractSendTableRow) => {
+        const isAchRow = row.rowType === "ach";
+        const isPackageRow = row.rowType === "package";
+        const isSupplementalRow = isAchRow || isPackageRow;
+        const rowStatusLabel = isAchRow
+            ? formatAchTableStatusLabel({
+                  envelopeId: row.envelopeId,
+                  status: row.achStatus,
+              })
+            : isPackageRow
+              ? formatStandalonePackageTableStatusLabel(row.packageStatus, row.envelopeId)
+              : formatContractTableStatusLabel(
+                    row.contractStatus,
+                    row.documentStatus,
+                    Boolean(row.envelopeId),
+                );
+        const rowCapsuleStatus: AchAuthorizationDocuSignCapsuleStatus = isAchRow
+            ? (row.achStatus ?? "DRAFT")
+            : isPackageRow
+              ? ((row.packageStatus ?? "DRAFT") as AchAuthorizationDocuSignCapsuleStatus)
+              : contractStatusToCapsuleStatus(row.contractStatus, row.documentStatus);
+        const rowFullySigned = isAchRow
+            ? row.achStatus === "SIGNED"
+            : isPackageRow
+              ? row.packageStatus === "SIGNED"
+              : isContractFullySigned(row.contractStatus, row.documentStatus);
+        const rowSentAtDisplay = formatTableSentAt(row.sentAt);
+        const rowEnvelopeId = String(row.envelopeId ?? "").trim();
+        const rowCanVoid =
+            !isReadOnly &&
+            canVoidContractSendTableRow(contractRecordForActions, row);
+        const rowIsVoided = isAchRow
+            ? row.achStatus === "VOIDED"
+            : isPackageRow
+              ? row.packageStatus === "VOIDED"
+              : isContractVoidedOrTerminal(row.contractStatus, row.documentStatus);
+        const rowSyncError = isAchRow
+            ? achSyncError
+            : isPackageRow
+              ? packageSyncError
+              : contractSyncError;
+        const isViewingRow = isAchRow
+            ? viewingAchDocument
+            : viewingSignedContract &&
+              (viewingSignedEnvelopeId
+                  ? viewingSignedEnvelopeId === rowEnvelopeId
+                  : row.isCurrent);
+
+        return (
+            <TableRow key={row.key} className={tableRowClass}>
+                <TableCell className={tableCellClass}>
+                    <span className="inline-flex items-center gap-1.5">
+                        {isAchRow ? (
+                            <Landmark
+                                className="h-3.5 w-3.5 shrink-0 text-teal-700 dark:text-teal-300"
+                                aria-hidden
+                            />
+                        ) : isPackageRow ? (
+                            <FileText
+                                className="h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-300"
+                                aria-hidden
+                            />
+                        ) : (
+                            <FileText
+                                className={`h-3.5 w-3.5 shrink-0 ${isDark ? "text-[#5AACEA]" : "text-[#276D9C]"}`}
+                                aria-hidden
+                            />
+                        )}
+                        {row.label}
+                    </span>
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow
+                        ? "—"
+                        : (fetchedContract?.offer?.offer ??
+                              fetchedContract?.program ??
+                              "—")}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow ? "—" : (fetchedContract?.offer?.term ?? "—")}
+                </TableCell>
+                <TableCell className={tableCellClass}>{isSupplementalRow ? "—" : "1"}</TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow
+                        ? "—"
+                        : formatContractCurrency(fetchedContract?.approvedAmount)}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow
+                        ? "—"
+                        : formatContractCurrency(
+                              fetchedContract?.totalAmount ?? fetchedContract?.offer?.totalRemit,
+                          )}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow
+                        ? "—"
+                        : formatContractCurrency(contractTableMetrics.perPeriodPayment)}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow ? "—" : contractTableMetrics.buyRate}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow ? "—" : contractTableMetrics.upsell}
+                </TableCell>
+                <TableCell className={tableCellClass}>
+                    {isSupplementalRow ? "—" : contractTableMetrics.factor}
+                </TableCell>
+                <TableCell>
+                    <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-1.5">
+                            <span
+                                className={
+                                    rowEnvelopeId && rowCapsuleStatus !== "DRAFT"
+                                        ? `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${achCapsuleClassName(rowCapsuleStatus)}`
+                                        : statusBadgeClass
+                                }
+                            >
+                                {rowStatusLabel}
+                            </span>
+                            {rowEnvelopeId ? (
+                                <>
+                                    {rowFullySigned || (isSupplementalRow && rowEnvelopeId) ? (
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            onClick={() =>
+                                                isAchRow
+                                                    ? void (row.isCurrent
+                                                          ? handleViewAchDocument()
+                                                          : handleViewSignedContract(rowEnvelopeId))
+                                                    : void handleViewSignedContract(
+                                                          row.isCurrent && !isPackageRow
+                                                              ? undefined
+                                                              : rowEnvelopeId,
+                                                      )
+                                            }
+                                            disabled={isViewingRow}
+                                            className={`h-7 w-7 shrink-0 ${brandActionButtonClass}`}
+                                            title={
+                                                isAchRow
+                                                    ? rowFullySigned
+                                                        ? "View signed ACH form"
+                                                        : "View filled ACH form"
+                                                    : isPackageRow
+                                                      ? rowFullySigned
+                                                          ? "View signed supplemental documents"
+                                                          : "View supplemental documents"
+                                                      : "View signed contract"
+                                            }
+                                        >
+                                            {isViewingRow ? (
+                                                <Loader2
+                                                    className="h-3.5 w-3.5 animate-spin"
+                                                    aria-hidden
+                                                />
+                                            ) : (
+                                                <Info className="h-3.5 w-3.5" aria-hidden />
+                                            )}
+                                        </Button>
+                                    ) : null}
+                                    {row.isCurrent && !rowFullySigned && !rowIsVoided ? (
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            onClick={() =>
+                                                void (isAchRow
+                                                    ? refreshAchEnvelopeStatus(false, {
+                                                          force: true,
+                                                      })
+                                                    : isPackageRow
+                                                      ? refreshPackageEnvelopeStatus(false, {
+                                                            force: true,
+                                                        })
+                                                      : refreshContractEnvelopeStatus(false, {
+                                                            force: true,
+                                                        }))
+                                            }
+                                            disabled={refreshingSigningStatus}
+                                            className={`h-7 w-7 shrink-0 ${brandActionButtonClass}`}
+                                            title={
+                                                isAchRow
+                                                    ? "Refresh ACH status"
+                                                    : isPackageRow
+                                                      ? "Refresh supplemental document status"
+                                                      : "Refresh contract status"
+                                            }
+                                        >
+                                            <RefreshCw
+                                                className={`h-3.5 w-3.5 ${refreshingSigningStatus ? "animate-spin" : ""}`}
+                                                aria-hidden
+                                            />
+                                        </Button>
+                                    ) : null}
+                                    {rowCanVoid ? (
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            onClick={() => void handleVoidSentEnvelopeRow(row)}
+                                            disabled={voidingContract}
+                                            className={`h-7 w-7 shrink-0 ${isDark
+                                                ? "text-red-400 hover:bg-red-500/10"
+                                                : "text-red-600 hover:bg-red-50"
+                                                }`}
+                                            title={`Void ${row.label}`}
+                                        >
+                                            {voidingContract ? (
+                                                <Loader2
+                                                    className="h-3.5 w-3.5 animate-spin"
+                                                    aria-hidden
+                                                />
+                                            ) : (
+                                                <Ban className="h-3.5 w-3.5" aria-hidden />
+                                            )}
+                                        </Button>
+                                    ) : null}
+                                </>
+                            ) : null}
+                        </div>
+                        {rowSyncError ? (
+                            <p className="text-[10px] leading-snug text-amber-700 dark:text-amber-300">
+                                {rowSyncError}
+                            </p>
+                        ) : null}
+                    </div>
+                </TableCell>
+                <TableCell
+                    className={`${tableCellClass} text-xs tabular-nums whitespace-nowrap`}
+                >
+                    {rowSentAtDisplay}
+                </TableCell>
+            </TableRow>
+        );
+    };
 
     const calculationSummaryFields = [
         { label: "Amount Financed", value: amountFinancedInput },
@@ -2121,21 +3156,18 @@ export default function ContractTab({
                         {!isReadOnly && applicationUuid ? (
                             <Button
                                 type="button"
-                                onClick={openAchFormViewer}
-                                disabled={
-                                    creatingEnvelope ||
-                                    (Boolean(selectedContractId) && loadingAchMappings) ||
-                                    !effectiveAchMapping
-                                }
-                                title={
-                                    !effectiveAchMapping &&
-                                    !(Boolean(selectedContractId) && loadingAchMappings)
-                                        ? "ACH form template is not configured."
-                                        : undefined
-                                }
+                                onClick={() => void openAchViewer()}
+                                disabled={creatingEnvelope || preparingAchViewer}
                                 className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
                             >
-                                Send ACH Form
+                                {preparingAchViewer ? (
+                                    <span className="inline-flex items-center gap-2">
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Opening ACH form...
+                                    </span>
+                                ) : (
+                                    "Send ACH Form"
+                                )}
                             </Button>
                         ) : null}
                         <Button
@@ -2477,10 +3509,13 @@ export default function ContractTab({
                                 <TableHead className={tableHeaderCellClass}>
                                     STATUS
                                 </TableHead>
+                                <TableHead className={tableHeaderCellClass}>
+                                    SENT
+                                </TableHead>
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {(!fetchedContract && contractsForTable.length === 0) ? (
+                            {(!hasGeneratedContract && contractsForTable.length === 0) ? (
                                 <TableRow className={tableRowClass}>
                                     <TableCell
                                         colSpan={11}
@@ -2489,103 +3524,19 @@ export default function ContractTab({
                                         No contracts generated yet.
                                     </TableCell>
                                 </TableRow>
-                            ) : fetchedContract ? (
-                                generatedDocumentRows.map((row) => (
-                                    <TableRow key={row.key} className={tableRowClass}>
-                                        <TableCell className={`${tableCellClass} font-medium`}>
-                                            {row.label}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial
-                                                ? fetchedContract?.offer?.offer ||
-                                                  fetchedContract?.program ||
-                                                  "—"
-                                                : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial
-                                                ? (fetchedContract?.offer?.term ?? "—")
-                                                : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial ? "1" : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial
-                                                ? formatContractCurrency(
-                                                      fetchedContract?.approvedAmount,
-                                                  )
-                                                : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial
-                                                ? formatContractCurrency(
-                                                      fetchedContract?.totalAmount ??
-                                                          fetchedContract?.offer?.totalRemit,
-                                                  )
-                                                : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial
-                                                ? formatContractCurrency(
-                                                      contractTableMetrics.perPeriodPayment,
-                                                  )
-                                                : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial ? contractTableMetrics.buyRate : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial ? contractTableMetrics.upsell : "—"}
-                                        </TableCell>
-                                        <TableCell className={tableCellClass}>
-                                            {row.isFinancial ? contractTableMetrics.factor : "—"}
-                                        </TableCell>
-                                        <TableCell>
-                                            <div className="flex items-center gap-1.5">
-                                                <span className={statusBadgeClass}>
-                                                    {row.displayStatus}
-                                                </span>
-                                                {row.viewable ? (
-                                                    <Button
-                                                        type="button"
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        onClick={() =>
-                                                            void handleViewSignedEnvelope(
-                                                                row.envelopeId,
-                                                                row.label,
-                                                                row.status,
-                                                            )
-                                                        }
-                                                        disabled={
-                                                            viewingSignedEnvelopeId ===
-                                                            row.envelopeId
-                                                        }
-                                                        className={`h-7 w-7 shrink-0 ${isDark
-                                                            ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
-                                                            : "text-[#276D9C] hover:bg-[#276D9C]/10"
-                                                            }`}
-                                                        title={`View signed ${row.label}`}
-                                                    >
-                                                        {viewingSignedEnvelopeId ===
-                                                        row.envelopeId ? (
-                                                            <Loader2
-                                                                className="h-3.5 w-3.5 animate-spin"
-                                                                aria-hidden
-                                                            />
-                                                        ) : (
-                                                            <Info
-                                                                className="h-3.5 w-3.5"
-                                                                aria-hidden
-                                                            />
-                                                        )}
-                                                    </Button>
-                                                ) : null}
-                                            </div>
-                                        </TableCell>
-                                    </TableRow>
-                                ))
+                            ) : contractSendTableRows.length > 0 ? (
+                                contractSendTableRows.map(renderContractSendTableRow)
+                            ) : hasGeneratedContract ? (
+                                <TableRow className={tableRowClass}>
+                                    <TableCell
+                                        colSpan={11}
+                                        className={`text-center py-8 ${isDark ? "text-gray-400" : "text-[#687182]"}`}
+                                    >
+                                        No DocuSign sends yet. Rows appear here after a
+                                        contract, addendum, disclosure, or ACH form is sent from
+                                        DocuSign (not while still in draft).
+                                    </TableCell>
+                                </TableRow>
                             ) : (
                                 contractsForTable.map((offer) => (
                                     <TableRow
@@ -2633,6 +3584,7 @@ export default function ContractTab({
                                                 Generated
                                             </span>
                                         </TableCell>
+                                        <TableCell className={tableCellClass}>—</TableCell>
                                     </TableRow>
                                 ))
                             )}

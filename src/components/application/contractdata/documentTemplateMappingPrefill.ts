@@ -51,6 +51,24 @@ import { isUtahDisclosureState } from "./daily_utah";
 import { isPlatformLayoutKey, PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
 import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
 
+function resolveMainContractPersonNameFromPrefill(
+    byId: Map<string, { id: string; value: string }>,
+): string {
+    const personKeys = [
+        "owner1_guarantor_name",
+        "guaranty_owner1_name",
+        "guaranty_guarantor1_name",
+        "guaranty_client_name",
+        "security_guarantor",
+        "client_name",
+    ];
+    for (const key of personKeys) {
+        const value = String(byId.get(key)?.value || "").trim();
+        if (value) return value;
+    }
+    return "";
+}
+
 /** Stored on `Contract.contractPrefillOverrides` alongside main prefill keys. */
 export const DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY = "documentTemplatePrefillByMappingId";
 
@@ -1056,8 +1074,19 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     return [];
 }
 
+function upsertPrefillFieldValue(
+    byId: Map<string, ContractPrefillField>,
+    id: string,
+    value: string,
+): void {
+    const v = String(value ?? "").trim();
+    if (!v) return;
+    const existing = byId.get(id);
+    byId.set(id, existing ? { ...existing, value: v } : { id, value: v, label: "" });
+}
+
 export function applyDocumentTemplateMappingPrefillOverrides(args: {
-    prefillFieldsPayload: Array<{ id: string; value: string }>;
+    prefillFieldsPayload: ContractPrefillField[];
     mergedTemplateIds: string[];
     mergedLayoutKeys?: string[];
     templateMappingRows: Array<{
@@ -1079,7 +1108,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
-}): Array<{ id: string; value: string }> {
+}): ContractPrefillField[] {
     const blob = parseDocumentTemplatePrefillByMappingId(args.contractPrefillOverridesRaw);
     const mergedSet = new Set([
         ...args.mergedTemplateIds.map((x) => String(x).trim()).filter(Boolean),
@@ -1127,9 +1156,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             ? expandDisclosureEditorValuesToPdfFields(editorValues)
             : editorValues;
         for (const [id, value] of Object.entries(fieldsToMerge)) {
-            const v = String(value ?? "").trim();
-            if (!v) continue;
-            byId.set(id, { id, value: v });
+            upsertPrefillFieldValue(byId, id, String(value ?? ""));
         }
     }
 
@@ -1141,18 +1168,14 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
         );
     });
     if (disclosureMerged) {
-        byId.set("funder_name", {
-            id: "funder_name",
-            value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
-        });
-        const merchant = String(
-            byId.get("client_name")?.value ||
-                byId.get("client_legal_name")?.value ||
-                byId.get("business_legal_name")?.value ||
-                "",
-        ).trim();
+        upsertPrefillFieldValue(
+            byId,
+            "funder_name",
+            PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        );
+        const merchant = resolveMainContractPersonNameFromPrefill(byId);
         if (merchant) {
-            byId.set("client_name", { id: "client_name", value: merchant });
+            upsertPrefillFieldValue(byId, "client_name", merchant);
         }
     }
 
@@ -1161,14 +1184,14 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
 
 /** Ensures disclosure merchant + funder names are on the send payload when a CRM disclosure PDF is merged. */
 export function mergeStateDisclosurePrefillFallback(args: {
-    payload: Array<{ id: string; value: string }>;
+    payload: ContractPrefillField[];
     supplementalRefs: string[];
     contract?: Record<string, unknown> | null;
     application?: Record<string, unknown> | null;
     agreementDate?: string;
     mainPrefillOverrides?: Partial<BuildContractPrefillFieldsArgs> | null;
     bankDetail?: Record<string, unknown> | null;
-}): Array<{ id: string; value: string }> {
+}): ContractPrefillField[] {
     const supplementalIds = (args.supplementalRefs || [])
         .map((x) => String(x).trim())
         .filter(Boolean);
@@ -1221,20 +1244,23 @@ export function mergeStateDisclosurePrefillFallback(args: {
         ) {
             continue;
         }
-        byId.set(field.id, { id: field.id, value: v });
+        byId.set(
+            field.id,
+            existing
+                ? { ...existing, value: v }
+                : { id: field.id, value: v, label: String(field.label ?? "").trim() },
+        );
     }
-    byId.set("funder_name", {
-        id: "funder_name",
-        value: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
-    });
-    const merchant = String(
-        byId.get("client_name")?.value ||
-            byId.get("client_legal_name")?.value ||
-            sctx.recipientName ||
-            "",
-    ).trim();
+    upsertPrefillFieldValue(
+        byId,
+        "funder_name",
+        PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+    );
+    const merchant =
+        resolveMainContractPersonNameFromPrefill(byId) ||
+        String(sctx.recipientName || "").trim();
     if (merchant) {
-        byId.set("client_name", { id: "client_name", value: merchant });
+        upsertPrefillFieldValue(byId, "client_name", merchant);
     }
     return Array.from(byId.values());
 }
@@ -1328,9 +1354,9 @@ export function buildExpandedDisclosurePrefillFieldsForMapping(args: {
 
 /** Merge expanded disclosure PDF fields into a DocuSign prefill payload (by field id). */
 export function mergeExpandedDisclosurePrefillIntoPayload(
-    payload: Array<{ id: string; value: string }>,
-    disclosureFields: Array<{ id: string; value: string }>,
-): Array<{ id: string; value: string }> {
+    payload: ContractPrefillField[],
+    disclosureFields: Array<{ id: string; value: string; label?: string }>,
+): ContractPrefillField[] {
     if (!disclosureFields.length) return payload;
     const byId = new Map(payload.map((f) => [f.id, { ...f }]));
     for (const field of disclosureFields) {
@@ -1347,7 +1373,12 @@ export function mergeExpandedDisclosurePrefillIntoPayload(
         ) {
             continue;
         }
-        byId.set(field.id, { id: field.id, value: v });
+        byId.set(
+            field.id,
+            existing
+                ? { ...existing, value: v }
+                : { id: field.id, value: v, label: String(field.label ?? "").trim() },
+        );
     }
     return Array.from(byId.values());
 }

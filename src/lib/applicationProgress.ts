@@ -10,8 +10,8 @@
  */
 
 export type ApplicationProgressStageKey =
+  | "SCRUBBING"
   | "UNDERWRITER"
-  | "FINAL_UNDERWRITER"
   | "APPROVED"
   | "CONTRACT_GENERATED"
   | "CONTRACT_SIGNED"
@@ -29,8 +29,8 @@ export interface ApplicationProgressStage {
 
 /** Ordered lifecycle. Index === progress position. */
 export const APPLICATION_PROGRESS_STAGES: ApplicationProgressStage[] = [
-  { key: "UNDERWRITER", label: "Underwriting", description: "Under review by an underwriter" },
-  { key: "FINAL_UNDERWRITER", label: "Final Underwriter", description: "Final underwriter review" },
+  { key: "SCRUBBING", label: "Scrubbing", description: "First review by scrubbing team" },
+  { key: "UNDERWRITER", label: "Underwriter", description: "Final underwriter review" },
   { key: "APPROVED", label: "Approved", description: "Approved and ready for contract" },
   {
     key: "CONTRACT_GENERATED",
@@ -82,19 +82,20 @@ const TOKEN_TO_INDEX: Record<string, number> = {
   new: STAGE_INDEX_BY_KEY.UNDERWRITER,
   agent: STAGE_INDEX_BY_KEY.UNDERWRITER,
   onhold: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  review: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  draft: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  pending: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  submitted: STAGE_INDEX_BY_KEY.UNDERWRITER,
+  review: STAGE_INDEX_BY_KEY.SCRUBBING,
+  draft: STAGE_INDEX_BY_KEY.SCRUBBING,
+  pending: STAGE_INDEX_BY_KEY.SCRUBBING,
+  submitted: STAGE_INDEX_BY_KEY.SCRUBBING,
 
-  // Underwriter
+  // Scrubbing (first review)
+  scrubbing: STAGE_INDEX_BY_KEY.SCRUBBING,
+  underwriting: STAGE_INDEX_BY_KEY.SCRUBBING,
+  inprogress: STAGE_INDEX_BY_KEY.SCRUBBING,
+
+  // Underwriter (final review)
   underwriter: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  underwriting: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  inprogress: STAGE_INDEX_BY_KEY.UNDERWRITER,
-
-  // Final underwriter
-  finalunderwriter: STAGE_INDEX_BY_KEY.FINAL_UNDERWRITER,
-  finalreview: STAGE_INDEX_BY_KEY.FINAL_UNDERWRITER,
+  finalunderwriter: STAGE_INDEX_BY_KEY.UNDERWRITER,
+  finalreview: STAGE_INDEX_BY_KEY.UNDERWRITER,
 
   // Approved
   approved: STAGE_INDEX_BY_KEY.APPROVED,

@@ -905,6 +905,26 @@ function applySplitAddressStreetFields(
             zip: out.businessAddressContractZip,
         });
     }
+    if (
+        str(out.securityBusinessAddressCity) ||
+        str(out.securityBusinessAddressState) ||
+        str(out.securityBusinessAddressZip)
+    ) {
+        out.securityBusinessAddress = streetOnlyWhenPartsSplit({
+            line: out.securityBusinessAddress,
+            city: out.securityBusinessAddressCity,
+            state: out.securityBusinessAddressState,
+            zip: out.securityBusinessAddressZip,
+        });
+    }
+    if (str(out.guarantorAddressCity) || str(out.guarantorAddressState) || str(out.guarantorAddressZip)) {
+        out.guarantorAddress = streetOnlyWhenPartsSplit({
+            line: out.guarantorAddress,
+            city: out.guarantorAddressCity,
+            state: out.guarantorAddressState,
+            zip: out.guarantorAddressZip,
+        });
+    }
     return out;
 }
 
@@ -2200,6 +2220,61 @@ export function contractPrefillToContractColumnUpdate(
     return out;
 }
 
+const PREFILL_ID_TO_CAMEL_KEY: Record<string, keyof BuildContractPrefillFieldsArgs> = (() => {
+    const out: Record<string, keyof BuildContractPrefillFieldsArgs> = {};
+    for (const [camel, ids] of Object.entries(FIELD_IDS)) {
+        for (const id of ids) {
+            out[id.toLowerCase()] = camel as keyof BuildContractPrefillFieldsArgs;
+        }
+    }
+    return out;
+})();
+
+/** Reverse map DocuSign prefill ids → camelCase contract prefill keys. */
+export function contractPrefillFieldsToPartial(
+    fields: Array<{ id: string; value: string }>,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const partial: Partial<BuildContractPrefillFieldsArgs> = {};
+    for (const field of fields) {
+        const key = PREFILL_ID_TO_CAMEL_KEY[String(field.id || "").trim().toLowerCase()];
+        const value = str(field.value);
+        if (key && value) {
+            (partial as Record<string, string>)[key] = value;
+        }
+    }
+    return partial;
+}
+
+export function contractPrefillFieldsToColumnUpdate(
+    fields: Array<{ id: string; value: string }>,
+): Record<string, string | null> {
+    return contractPrefillToContractColumnUpdate(contractPrefillFieldsToPartial(fields));
+}
+
+/** Overwrite prefill payload rows from a synced partial (names, addresses, party slots). */
+export function mergeSyncedPartialIntoPrefillFields(
+    fields: ContractPrefillField[],
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+): ContractPrefillField[] {
+    const byId = new Map(fields.map((f) => [f.id, { ...f }]));
+    const syncedFields = buildContractPrefillFields({
+        customerName: str(partial.customerName) || "Signer",
+        agreementDate: str(partial.agreementDate),
+        ...partial,
+    });
+    for (const f of syncedFields) {
+        const value = str(f.value);
+        if (!value) continue;
+        const existing = byId.get(f.id);
+        byId.set(f.id, {
+            id: f.id,
+            label: existing?.label ?? f.label,
+            value,
+        });
+    }
+    return Array.from(byId.values());
+}
+
 function escapeRegExpForNote(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -2377,12 +2452,7 @@ export function applyOwnerRowsToPrefillMerge(
         const dl1 = str(o1.driverLicenseNumber ?? o1.driverLicense);
         if (n1 || ssn1 || dl1 || partyEmail(o1)) {
             if (n1) {
-                partial.owner1GuarantorName = n1;
-                partial.guarantyClientName = n1;
-                partial.guarantyOwner1Name = n1;
-                partial.guarantyGuarantor1Name = n1;
-                partial.securityGuarantor = n1;
-                partial.exhibitOwnerName = n1;
+                syncPrimaryPartyNameToPrefillPartial(partial as Record<string, unknown>, n1);
             }
             if (ssn1) {
                 partial.guarantySs = ssn1;
@@ -2489,6 +2559,97 @@ export const CLIENT_PERSON_NAME_PREFILL_KEYS = [
     "achAuthorizationConcentAccountHolderName",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
+/** Signer 1 / Owner 1 / Guarantor 1 / Client 1 / Merchant 1 — same person on every line. */
+export const PRIMARY_PARTY_NAME_SYNC_CAMEL_KEYS = [
+    "customerName",
+    "clientName",
+    "owner1GuarantorName",
+    "guarantyClientName",
+    "guarantyOwner1Name",
+    "guarantyGuarantor1Name",
+    "securityGuarantor",
+    "exhibitOwnerName",
+    "appendixClientName",
+    "achAuthorizationConcentAccountHolderName",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+const CANONICAL_BUSINESS_ADDRESS_STREET_KEYS = [
+    "businessAddress",
+    "businessAddressContract",
+    "securityBusinessAddress",
+    "guarantorAddress",
+    "achAuthorizationAccountHolderAddress",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+const CANONICAL_BUSINESS_ADDRESS_CITY_KEYS = [
+    "businessAddressCity",
+    "businessAddressContractCity",
+    "securityBusinessAddressCity",
+    "guarantorAddressCity",
+    "achAuthorizationAccountHolderCity",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+const CANONICAL_BUSINESS_ADDRESS_STATE_KEYS = [
+    "businessAddressState",
+    "businessAddressContractState",
+    "securityBusinessAddressState",
+    "guarantorAddressState",
+    "achAuthorizationAccountHolderState",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+const CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS = [
+    "businessAddressZip",
+    "businessAddressContractZip",
+    "securityBusinessAddressZip",
+    "guarantorAddressZip",
+    "achAuthorizationAccountHolderZip",
+] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
+
+/** Force the canonical primary-party person name onto every linked signer-1 line. */
+export function syncPrimaryPartyNameToPrefillPartial(
+    partial: Record<string, unknown>,
+    name: string,
+): void {
+    const value = String(name || "").trim();
+    if (!value) return;
+    for (const key of PRIMARY_PARTY_NAME_SYNC_CAMEL_KEYS) {
+        partial[key] = value;
+    }
+}
+
+/** Mirror canonical business address across contract, security, guarantor, and ACH tabs. */
+export function applyCanonicalBusinessAddressPrefillFields(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const out = { ...partial };
+    const street = str(out.businessAddress);
+    const city = str(out.businessAddressCity);
+    const state = str(out.businessAddressState);
+    const zip = str(out.businessAddressZip);
+    if (!street && !city && !state && !zip) return out;
+    if (street) {
+        for (const key of CANONICAL_BUSINESS_ADDRESS_STREET_KEYS) {
+            (out as Record<string, string>)[key] = street;
+        }
+    }
+    if (city) {
+        for (const key of CANONICAL_BUSINESS_ADDRESS_CITY_KEYS) {
+            (out as Record<string, string>)[key] = city;
+        }
+    }
+    if (state) {
+        for (const key of CANONICAL_BUSINESS_ADDRESS_STATE_KEYS) {
+            (out as Record<string, string>)[key] = state;
+        }
+    }
+    if (zip) {
+        for (const key of CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS) {
+            (out as Record<string, string>)[key] = zip;
+        }
+    }
+    return out;
+}
+
 function businessNameFromApplicationClient(anyApp: unknown): string {
     if (!anyApp) return "";
     const a = anyApp as Record<string, any>;
@@ -2544,9 +2705,7 @@ export function applyClientPersonNamePrefillFields(
     const personName = resolveContractClientPersonNameForPrefill(partial, application);
     if (!personName) return partial;
     const out = { ...partial };
-    for (const key of CLIENT_PERSON_NAME_PREFILL_KEYS) {
-        (out as Record<string, string>)[key] = personName;
-    }
+    syncPrimaryPartyNameToPrefillPartial(out as Record<string, unknown>, personName);
     return out;
 }
 
@@ -3017,6 +3176,7 @@ export function getContractPrefillEditDefaultsFromApplication(
     });
 
     return finalizePrefillDefaultsForOwnerCount(
+        applyCanonicalBusinessAddressPrefillFields(
         applyClientPersonNamePrefillFields(
         applyAuthorizationBusinessNamePrefillFields(
             applyAppendixUnderwritingFeesAmount(
@@ -3052,6 +3212,9 @@ export function getContractPrefillEditDefaultsFromApplication(
         },
         anyApp,
     ) as Partial<BuildContractPrefillFieldsArgs> & {
+        customerName: string;
+        agreementDate: string;
+    }) as Partial<BuildContractPrefillFieldsArgs> & {
         customerName: string;
         agreementDate: string;
     },
@@ -3227,10 +3390,12 @@ export function buildContractPrefillFieldsFromApplication(
         }
     }
     const customerName = str(mergedForFields.customerName) || "Signer";
-    const legalName = str(mergedForFields.legalName) || customerName;
+    const legalName = str(mergedForFields.legalName);
 
     const definedOnly = Object.fromEntries(
-        Object.entries(mergedForFields).filter(([, v]) => v !== undefined && v !== null),
+        Object.entries(
+            applyCanonicalBusinessAddressPrefillFields(mergedForFields),
+        ).filter(([, v]) => v !== undefined && v !== null),
     ) as Partial<BuildContractPrefillFieldsArgs>;
 
     const fromCore = buildContractPrefillFields({

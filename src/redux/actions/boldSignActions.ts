@@ -31,6 +31,26 @@ export type BoldSignMergeAndSendPayload = {
   standaloneDocumentRefs?: string[];
   /** Do not overwrite Application.document.envelopeId (standalone ACH stores envelope on contract mapping). */
   skipApplicationEnvelopeLink?: boolean;
+  /** When false, envelope omits the main contract PDF (standalone supplemental send). */
+  includeMainContract?: boolean;
+  /** Main contract layout key (from funder profile in Settings). */
+  mainContractLayoutKey?: string | null;
+  /** Funder name — selects DocuSign account profile when linked. */
+  funderName?: string | null;
+  /** CRM funder profile id — resolves funder-specific addendum/disclosure PDFs. */
+  funderProfileId?: string | null;
+  /** Contract state — disambiguates funders with the same display name. */
+  contractState?: string | null;
+  /** Code-defined layout keys (e.g. flex_addendum, balance_transfer). */
+  supplementalLayoutKeys?: string[];
+  /** CRM contract row — used when linking standalone envelopes to prefill. */
+  contractId?: number;
+  /** Documents included in this envelope (Create Contract package picker). */
+  sendPackage?: {
+    includeMainContract?: boolean;
+    includeAddendum?: boolean;
+    includeDisclosure?: boolean;
+  };
   /** Resolve supplemental refs from CRM document templates (AND on provided fields). */
   contractTemplateFilters?: BoldSignContractTemplateFilters;
   /** Active owner count (1 or 2) — controls Owner 2 signature slots. */

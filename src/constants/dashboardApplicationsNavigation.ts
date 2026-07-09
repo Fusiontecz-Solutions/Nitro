@@ -12,6 +12,22 @@ export function buildOperationsPipelineApplicationsUrl(
   return `/applications?${qs.toString()}`;
 }
 
+/** Underwriter sidebar — deal pool queue vs claimed deals. */
+export function buildUnderwriterPipelineApplicationsUrl(options: {
+  operationsStatus?: string;
+  underwriterClaim?: "unclaimed" | "mine";
+}): string {
+  if (options.underwriterClaim) {
+    const qs = new URLSearchParams();
+    qs.set("underwriterClaim", options.underwriterClaim);
+    return `/applications?${qs.toString()}`;
+  }
+  if (options.operationsStatus?.trim()) {
+    return buildOperationsPipelineApplicationsUrl(options.operationsStatus.trim());
+  }
+  return "/applications";
+}
+
 /** Query value for `GET /applications?statsBucket=` — must match backend `buildApplicationStatsBucketWhere`. */
 export const DASHBOARD_APPLICATION_STATS_BUCKET = {
   FUNDED: "funded",

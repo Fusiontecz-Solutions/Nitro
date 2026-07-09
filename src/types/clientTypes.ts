@@ -58,9 +58,19 @@ export interface CreateClientPayload {
     owners: OwnerDetail[];
 }
 
+/** Partial client update — omit `owners` unless replacing the full owner list. */
+export type ClientUpdatePayload = {
+    business?: Partial<BusinessProfile> & { address?: Partial<Address> };
+    owner?: Partial<OwnerDetail> & { address?: Partial<Address> };
+    owners?: OwnerDetail[];
+    status?: Client['status'];
+    notes?: string;
+    assignedTo?: string;
+};
+
 export interface UpdateClientPayload {
     id: string;
-    data: CreateClientPayload;
+    data: CreateClientPayload | ClientUpdatePayload;
 }
 
 // API Response Types

@@ -148,6 +148,7 @@ import {
     deleteUploadedContractDocumentSlice,
 } from './slices/contractSlice';
 import isoReducer from './slices/isoSlice';
+import backgroundCheckReducer from './slices/backgroundCheckSlice';
 import { paymentDashboardSessionCacheMiddleware } from './middleware/paymentDashboardSessionCacheMiddleware';
 
 export const store = configureStore({
@@ -295,6 +296,7 @@ export const store = configureStore({
         operationsApplications: operationsApplicationsSlice.reducer,
         operationsDashboard: operationsDashboardSlice.reducer,
         iso: isoReducer,
+        backgroundCheck: backgroundCheckReducer,
     },
     middleware: (getDefaultMiddleware) =>
         getDefaultMiddleware({

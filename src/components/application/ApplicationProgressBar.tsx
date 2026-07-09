@@ -31,7 +31,8 @@ const TWO_LINE_STAGE_KEYS = new Set<ApplicationProgressStageKey>([
 
 /** Compact labels so all steps fit without crushing layout. Full text stays in `title`. */
 const COMPACT_STAGE_LABELS: Partial<Record<ApplicationProgressStageKey, string>> = {
-  FINAL_UNDERWRITER: "Final Underwriter",
+  SCRUBBING: "Scrubbing",
+  UNDERWRITER: "Underwriter",
   FUNDING_CALL: "Funding Call",
   DISBURSEMENT: "Disbursement",
 };

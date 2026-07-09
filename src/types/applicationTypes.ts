@@ -86,6 +86,10 @@ export interface Application {
     claimedByUnderwriterId?: string | null;
     claimedAt?: string | null;
     claimedByUnderwriter?: ApplicationUserLite | null;
+    assignedUnderwriterId?: string | null;
+    assignedUnderwriter?: ApplicationUserLite | null;
+    approvedByUnderwriterId?: string | null;
+    approvedByUnderwriter?: ApplicationUserLite | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"). */
     category?: string | null;
     createdAt?: string;

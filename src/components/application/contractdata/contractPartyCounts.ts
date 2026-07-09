@@ -257,29 +257,16 @@ export function clearParty2PrefillFieldPayload<T extends { id: string; value: st
     return fields.filter((f) => !isParty2PrefillFieldId(f.id));
 }
 
-function mirrorEmptyPrefillIds(
-    byId: Map<string, { id: string; value: string }>,
+function forcePrefillIds<T extends { id: string; value: string }>(
+    byId: Map<string, T>,
     ids: readonly string[],
     value: string,
 ): void {
     const v = String(value || "").trim();
     if (!v) return;
     for (const id of ids) {
-        if (!String(byId.get(id)?.value || "").trim()) {
-            byId.set(id, { id, value: v });
-        }
-    }
-}
-
-function forcePrefillIds(
-    byId: Map<string, { id: string; value: string }>,
-    ids: readonly string[],
-    value: string,
-): void {
-    const v = String(value || "").trim();
-    if (!v) return;
-    for (const id of ids) {
-        byId.set(id, { id, value: v });
+        const existing = byId.get(id);
+        byId.set(id, (existing ? { ...existing, value: v } : { id, value: v }) as T);
     }
 }
 
@@ -291,18 +278,22 @@ export function resolveOwnerRowFullName(
 }
 
 /** Merchant / owner 1 / guarantor 1 share the same identity on all primary-party lines. */
-export function applyPrimaryGuarantorNamesToPrefillFields(
-    fields: Array<{ id: string; value: string }>,
+export function applyPrimaryGuarantorNamesToPrefillFields<T extends { id: string; value: string }>(
+    fields: T[],
     primaryName: string,
     options?: { primarySs?: string; primaryDriverLicense?: string },
-): Array<{ id: string; value: string }> {
+): T[] {
     const byId = new Map(fields.map((f) => [f.id, { ...f }]));
-    mirrorEmptyPrefillIds(byId, PRIMARY_GUARANTOR_PREFILL_IDS, primaryName);
-    mirrorEmptyPrefillIds(byId, PRIMARY_PARTY_SS_IDS, options?.primarySs || "");
-    mirrorEmptyPrefillIds(byId, PRIMARY_PARTY_DL_IDS, options?.primaryDriverLicense || "");
+    forcePrefillIds(byId, PRIMARY_GUARANTOR_PREFILL_IDS, primaryName);
+    forcePrefillIds(byId, PRIMARY_PARTY_SS_IDS, options?.primarySs || "");
+    forcePrefillIds(byId, PRIMARY_PARTY_DL_IDS, options?.primaryDriverLicense || "");
     const personal = String(primaryName || "").trim();
     if (personal) {
-        byId.set("client_name", { id: "client_name", value: personal });
+        const existing = byId.get("client_name");
+        byId.set(
+            "client_name",
+            (existing ? { ...existing, value: personal } : { id: "client_name", value: personal }) as T,
+        );
     }
     return Array.from(byId.values());
 }
@@ -348,15 +339,15 @@ export function resolveSecondOwnerSignerName(
 }
 
 /** Fill owner-2 / guarantor-2 / merchant-2 lines from the 2nd contract signer. */
-export function applySecondOwnerNameToPrefillFields(
-    fields: Array<{ id: string; value: string }>,
+export function applySecondOwnerNameToPrefillFields<T extends { id: string; value: string }>(
+    fields: T[],
     options: {
         ownerCount: number;
         secondOwnerName?: string;
         secondOwnerSs?: string;
         secondOwnerDriverLicense?: string;
     },
-): Array<{ id: string; value: string }> {
+): T[] {
     if (options.ownerCount < 2) return fields;
     const byId = new Map(fields.map((f) => [f.id, { ...f }]));
     const nameIds = PARTY2_PREFILL_FIELD_IDS.filter((id) => id.includes("name"));

@@ -146,7 +146,28 @@ export const getApplications = createAsyncThunk(
 
 export const claimUnderwriterDeal = createAsyncThunk(
     'application/claimUnderwriterDeal',
-    async ({ applicationId }: { applicationId: string }, { dispatch, rejectWithValue }) => {
+    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
+        try {
+            await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/scrubbing-claim`,
+                {},
+            );
+            invalidateApplicationsListCache();
+            return true;
+        } catch (error: any) {
+            console.error('Claim scrubbing deal error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to claim deal',
+            );
+        }
+    },
+);
+
+export const claimFinalUnderwriterDeal = createAsyncThunk(
+    'application/claimFinalUnderwriterDeal',
+    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
         try {
             await axiosPost(
                 `/applications/${encodeURIComponent(applicationId)}/underwriter-claim`,
@@ -159,7 +180,7 @@ export const claimUnderwriterDeal = createAsyncThunk(
             return rejectWithValue(
                 error.response?.data?.message ||
                     error?.message ||
-                    'Failed to claim deal',
+                    'Failed to claim application',
             );
         }
     },
@@ -167,10 +188,10 @@ export const claimUnderwriterDeal = createAsyncThunk(
 
 export const releaseUnderwriterDeal = createAsyncThunk(
     'application/releaseUnderwriterDeal',
-    async ({ applicationId }: { applicationId: string }, { dispatch, rejectWithValue }) => {
+    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
         try {
             await axiosPost(
-                `/applications/${encodeURIComponent(applicationId)}/underwriter-release`,
+                `/applications/${encodeURIComponent(applicationId)}/scrubbing-release`,
                 {},
             );
             invalidateApplicationsListCache();
@@ -181,6 +202,33 @@ export const releaseUnderwriterDeal = createAsyncThunk(
                 error.response?.data?.message ||
                     error?.message ||
                     'Failed to release claim',
+            );
+        }
+    },
+);
+
+export const assignApplicationToUnderwriter = createAsyncThunk(
+    'application/assignUnderwriter',
+    async (
+        {
+            applicationId,
+            underwriterId,
+        }: { applicationId: string; underwriterId: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/assign-underwriter`,
+                { underwriterId },
+            );
+            invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Assign application to Underwriter error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to assign application to Underwriter',
             );
         }
     },

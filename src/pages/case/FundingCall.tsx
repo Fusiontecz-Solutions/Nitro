@@ -18,6 +18,7 @@ import { isFundingCallStatusCallDone, isFundingCallStatusRejected } from '@/cons
 type FundingCallProps = {
   applicationId?: string;
   onSaved?: () => void;
+  onCallStatusChange?: (status: string) => void;
 };
 
 interface CallFormState {
@@ -28,7 +29,7 @@ interface CallFormState {
 }
 
 
-export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
+export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: FundingCallProps) => {
   const dispatch = useDispatch<AppDispatch>();
   const { loading: saving, success, error } = useSelector(
     (state: RootState) => state.createFundingCall,
@@ -114,11 +115,15 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
   // funding call also means Super Admin can immediately notify Operations
   // (e.g. when the page is re-opened after an earlier save).
   useEffect(() => {
-    if (!existingCalls || existingCalls.length === 0) return;
+    if (!existingCalls || existingCalls.length === 0) {
+      onCallStatusChange?.('');
+      return;
+    }
     const latest = existingCalls[0];
+    const callStatus = latest.callStatus || '';
     setForm((prev) => ({
       ...prev,
-      callStatus: latest.callStatus || '',
+      callStatus,
       applicationStatus: latest.applicationStatus || '',
       remarks: latest.remarks || '',
       followUpDate: latest.followUpDate
@@ -129,7 +134,7 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
       dispatch(
         setFundingCallDraft({
           applicationId,
-          callStatus: latest.callStatus || null,
+          callStatus: callStatus || null,
         }),
       );
     }
@@ -137,7 +142,8 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
     if (isFundingCallStatusCallDone(latest.callStatus)) {
       setOpsNotified(true);
     }
-  }, [existingCalls, applicationId, dispatch]);
+    onCallStatusChange?.(callStatus);
+  }, [existingCalls, applicationId, dispatch, onCallStatusChange]);
 
   const syncFundingCallDraft = useCallback(
     (callStatus: string) => {
@@ -202,6 +208,7 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
         remarks: reason,
       }));
       syncFundingCallDraft('Rejected');
+      onCallStatusChange?.('Rejected');
     },
     [
       applicationId,
@@ -209,6 +216,7 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
       form.applicationStatus,
       form.followUpDate,
       syncFundingCallDraft,
+      onCallStatusChange,
     ],
   );
 
@@ -220,6 +228,7 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
       setForm((prev) => ({ ...prev, callStatus: status }));
       setErrors({ callStatus: false });
       syncFundingCallDraft(status);
+      onCallStatusChange?.(status);
       setIsDropdownOpen(false);
       return;
     }
@@ -227,6 +236,7 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
     setForm((prev) => ({ ...prev, callStatus: status }));
     setErrors({ callStatus: false });
     syncFundingCallDraft(status);
+    onCallStatusChange?.(status);
     setIsDropdownOpen(false);
   };
 
@@ -263,9 +273,10 @@ export const FundingCall = ({ applicationId, onSaved }: FundingCallProps) => {
         dispatch(getFundingCalls({ application: applicationId }));
       }
       onSaved?.();
+      onCallStatusChange?.(form.callStatus);
       dispatch(resetCreateFundingCall());
     }
-  }, [success, dispatch, onSaved, form.callStatus, applicationId]);
+  }, [success, dispatch, onSaved, onCallStatusChange, form.callStatus, applicationId]);
 
   useEffect(() => {
     if (error) {

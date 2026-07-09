@@ -438,10 +438,9 @@ import { useNavigate } from 'react-router';
 import { formatDate as formatDateUtil } from "@/lib/utils";
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from '@/utils/formatPhoneNumber';
 
-const ROLE_ID = 'FINAL_UNDERWRITER';
-const LABEL = 'Final Underwriter';
-// const LABEL_PLURAL = 'Final Underwriters';
-const LABEL_PLURAL = 'Final Underwriters';
+const ROLE_ID = 'UNDERWRITER';
+const LABEL = 'Underwriter';
+const LABEL_PLURAL = 'Underwriters';
 
 function formatDate(dateStr: string | undefined): string {
   return formatDateUtil(dateStr ?? "", "—");

@@ -12,6 +12,7 @@ import { selectRolesList, selectRolesLoading } from '@/redux/selectors/rolesSele
 import { selectUsersByRole, selectUsersLoadingByRole } from '@/redux/selectors/settingsUsersSelectors';
 import type { AppDispatch, RootState } from '@/redux/store';
 import Agent from './Agent';
+import SCRUBBING from './SCRUBBING';
 import FINALUNDERWRITER from './FINALUNDERWRITER';
 import UNDERWRITER from './UNDERWRITER';
 import Syndicators from './Syndicators';
@@ -20,11 +21,11 @@ import AddUserModal from './AddUserModal';
 
 const FALLBACK_ROLES = [
   { id: "AGENT", roleName: "Agent", name: "Agent" },
-  { id: "UNDERWRITER", roleName: "Underwriters", name: "Underwriters" },
+  { id: "SCRUBBING", roleName: "Scrubbing", name: "Scrubbing" },
   {
-    id: "FINAL_UNDERWRITER",
-    roleName: "Final Underwriters",
-    name: "Final Underwriters",
+    id: "UNDERWRITER",
+    roleName: "Underwriters",
+    name: "Underwriters",
   },
   { id: "SYNDICATORS", roleName: "Syndicators", name: "Syndicators" },
   { id: "ACCOUNTS", roleName: "Accounts", name: "Accounts" },
@@ -32,6 +33,7 @@ const FALLBACK_ROLES = [
 
 const ROLE_ID_TO_COMPONENT: Record<string, React.ComponentType<{ users: any[]; loading: boolean; error: string | null }>> = {
   AGENT: Agent,
+  SCRUBBING: SCRUBBING,
   UNDERWRITER: UNDERWRITER,
   FINAL_UNDERWRITER: FINALUNDERWRITER,
   SYNDICATORS: Syndicators,

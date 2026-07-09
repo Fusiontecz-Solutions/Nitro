@@ -84,6 +84,7 @@ import {
 } from "@/constants/operationsDashboardApplications";
 import {
   buildApplicationsBrowseUrl,
+  buildUnderwriterPipelineApplicationsUrl,
   statCardTitleToApplicationsQuery,
 } from "@/constants/dashboardApplicationsNavigation";
 import {
@@ -246,7 +247,7 @@ const Applications = () => {
     new URLSearchParams(location.search).get("fromDashboard") === "operations";
 
   const showUwDealPoolUi =
-    sessionRoleKey === "UNDERWRITER" && !isOperationsDashboardView;
+    sessionRoleKey === "SCRUBBING" && !isOperationsDashboardView;
 
   // Local state (URL-derived defaults avoid a blank frame before the first list fetch)
   const [searchTerm, setSearchTerm] = useState("");
@@ -264,8 +265,8 @@ const Applications = () => {
   const [underwriterPoolTab, setUnderwriterPoolTab] = useState<"queue" | "my">(
     "queue",
   );
-  /** Underwriters should not see which colleague claimed a deal (admin/ops visibility only). */
-  const showClaimedByColumn = sessionRoleKey !== "UNDERWRITER";
+  /** Scrubbers should not see which colleague claimed a deal (admin/ops visibility only). */
+  const showClaimedByColumn = sessionRoleKey !== "SCRUBBING";
   const [claimBusyAppId, setClaimBusyAppId] = useState<string | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [isExtractingPDF, setIsExtractingPDF] = useState(false);
@@ -1260,6 +1261,21 @@ const Applications = () => {
   // Initialize list filter from dashboard query params
   useEffect(() => {
     const query = new URLSearchParams(location.search);
+    const uwClaim = query.get("underwriterClaim");
+    if (uwClaim === "unclaimed" || uwClaim === "mine") {
+      setUnderwriterPoolTab(uwClaim === "mine" ? "my" : "queue");
+      setDashboardStateFilter("");
+      setStatusFilter("all");
+
+      if (pagination.pageIndex !== 0) {
+        setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+        return;
+      }
+
+      setIsListFilterInitialized(true);
+      return;
+    }
+
     const operationsStatusFromQuery =
       query.get("operationsStatus") || query.get("currentState");
     const fromDashboard = query.get("fromDashboard");
@@ -1448,7 +1464,7 @@ const Applications = () => {
   const canCreateNewApplication =
     roleKey === "AGENT" || isSuperAdmin;
   const isUnderwriterRole =
-    roleKey === "UNDERWRITER" || roleKey === "FINAL_UNDERWRITER";
+    roleKey === "SCRUBBING" || roleKey === "UNDERWRITER";
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
@@ -1702,8 +1718,8 @@ const Applications = () => {
       let q: { statsBucket?: string; currentQueue?: string };
 
       if (title === "Total Application Assigned") {
-        if (roleKey === "FINAL_UNDERWRITER") {
-          q = { currentQueue: "Final Underwriter" };
+        if (roleKey === "UNDERWRITER") {
+          q = { currentQueue: "Underwriter" };
         } else {
           q = {};
         }
@@ -2118,6 +2134,12 @@ const Applications = () => {
                 onClick={() => {
                   setUnderwriterPoolTab("queue");
                   setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                  navigate(
+                    buildUnderwriterPipelineApplicationsUrl({
+                      underwriterClaim: "unclaimed",
+                    }),
+                    { replace: true },
+                  );
                 }}
                 aria-pressed={underwriterPoolTab === "queue"}
               >
@@ -2134,6 +2156,12 @@ const Applications = () => {
                 onClick={() => {
                   setUnderwriterPoolTab("my");
                   setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                  navigate(
+                    buildUnderwriterPipelineApplicationsUrl({
+                      underwriterClaim: "mine",
+                    }),
+                    { replace: true },
+                  );
                 }}
                 aria-pressed={underwriterPoolTab === "my"}
               >

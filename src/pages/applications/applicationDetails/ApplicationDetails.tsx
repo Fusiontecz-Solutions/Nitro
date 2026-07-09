@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import ApplicationSummary from "@/components/application/ApplicationSummary";
 import AgentDealIsoTag from "@/components/application/AgentDealIsoTag";
 import ApplicationBasicDetails from "@/components/application/ApplicationBasicDetails";
-import ApplicationOverviewBankDetails from "@/components/application/ApplicationOverviewBankDetails";
 import CommentSection from "@/components/application/CommentSection";
 import UploadedDocuments from "@/components/application/UploadedDocuments";
 import Approval from "@/components/application/Approval";
@@ -14,13 +13,14 @@ import RequiredDocument from "@/components/application/RequiredDocument";
 import BankAnalysisTable from "@/components/application/BankAnalysisTable";
 import BankAnalysis from "@/components/application/BankAnalysis";
 import ChecksAndDecision from "@/components/application/ChecksAndDecision";
+import SendApplicationToUnderwriter from "@/components/application/SendApplicationToUnderwriter";
 import ContractTab from "@/components/application/ContractTab";
 import ComplianceChecks from "@/components/application/ComplianceChecks";
 import DecisionMakeFinalValues from "@/components/application/DecisionMakeFinalValues";
 import EligibilityAnalysis from "@/components/application/EligibilityAnalysis";
+import BackgroundCheckTab from "@/components/application/BackgroundCheckTab";
 
 import { CasesDashboard } from "@/pages/case/CasesDashboard";
-import { EXTERNAL_LINKS } from "@/config/externalLinks";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
@@ -39,11 +39,11 @@ import {
   getCachedApplicationDetail,
 } from "@/lib/applicationDetailCache";
 import type { Application } from "@/types/applicationTypes";
+import { isFinalUnderwriterWorkflowQueue, isUnderwriterWorkflowDecisionStage } from "@/lib/applicationWorkflowState";
 import { useTheme } from "@/context/ThemeContext";
 import type { user } from "@/redux/slices/authSlice";
 import { toast } from "react-toastify";
-import { Final } from "@/pages/case/Final";
-import { FundingCall } from "@/pages/case/FundingCall";
+import FinalsAndFundingCallFlow from "@/components/application/FinalsAndFundingCallFlow";
 import { Disbursement } from "@/pages/case/Disbursment";
 import { useTabRouting, type TabOption } from "@/hooks/useTabRouting";
 import {
@@ -54,6 +54,7 @@ import {
 } from "@/constants/operationsDashboardApplications";
 import { getFundingCalls } from "@/redux/actions/fundingCallActions";
 import {
+    getOperationsPipelineStageTabId,
     getOperationsTabsForDashboardEntry,
     isOperationsPipelineTabBehindDealStage,
     SUPER_ADMIN_PIPELINE_TABS,
@@ -66,7 +67,6 @@ import { ChevronLeft, ChevronRight, ScrollText, Mail } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { getStageAccessForApplication } from "@/lib/applicationStageAccess";
-import { canManageBankDetailsOnOverview } from "@/lib/bankDetailsAccess";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import { HorizontalScrollFade } from "@/components/ui/horizontal-scroll-fade";
 import { normalizeRoleKey, resolveEffectiveRole } from "@/lib/sessionRole";
@@ -81,6 +81,7 @@ const ApplicationDetails = () => {
     const [agentSentToUnderwriter, setAgentSentToUnderwriter] = useState(false);
     const [auditLogOpen, setAuditLogOpen] = useState(false);
     const [mailLogOpen, setMailLogOpen] = useState(false);
+    const [liveFundingCallStatus, setLiveFundingCallStatus] = useState<string | null>(null);
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
 
@@ -121,6 +122,11 @@ const ApplicationDetails = () => {
         (applicationData as any)?._id ??
         applicationId ??
         null;
+    /** UUID or numeric applicationId — backend accepts either for PATCH `/applications/:id/queue`. */
+    const queueUpdateApplicationRef =
+        activityLogApplicationId ||
+        (resolvedApplicationId != null ? String(resolvedApplicationId) : "") ||
+        (applicationId ? String(applicationId) : "");
 
     useEffect(() => {
         setUser(data?.user)
@@ -135,31 +141,19 @@ const ApplicationDetails = () => {
     const userRole = resolveEffectiveRole(user);
     const roleKey = normalizeRoleKey(userRole);
     const isSuperAdmin = roleKey === "SUPER_ADMIN";
-    const isFundingUploaderRole =
-        roleKey === "SUPER_ADMIN" ||
-        roleKey === "UNDERWRITER" ||
-        roleKey === "FINAL_UNDERWRITER";
-    const isUnderwriter = roleKey === 'UNDERWRITER' || roleKey === 'FINAL_UNDERWRITER';
-    const isPlainUnderwriter = roleKey === 'UNDERWRITER';
-    const isFinalUnderwriter = roleKey === 'FINAL_UNDERWRITER';
+    const isUnderwriter = roleKey === 'SCRUBBING' || roleKey === 'UNDERWRITER';
+    const isPlainUnderwriter = roleKey === 'SCRUBBING';
+    const isFinalUnderwriter = roleKey === 'UNDERWRITER';
     const isAgent = roleKey === 'AGENT';
     const canEditIsoDetails =
         isSuperAdmin || isAgent || roleKey === "OPERATIONS";
-    const showBankDetailsOnOverview = canManageBankDetailsOnOverview(userRole);
     const hideBusinessProfileOnDecisionMakingTab =
-        roleKey === "UNDERWRITER" ||
+        roleKey === "SCRUBBING" ||
         roleKey === "OPERATIONS" ||
         roleKey === "SUPER_ADMIN";
     /** Operations + Super Admin use the same funding-pipeline tab strip and `?operationsStatus=` depth rules. */
     const useOperationsPipelineTabs =
         roleKey === "OPERATIONS" || roleKey === "SUPER_ADMIN";
-    const bankDetailsApplicationId =
-        applicationUuid != null
-            ? String(applicationUuid)
-            : resolvedApplicationId != null
-              ? String(resolvedApplicationId)
-              : applicationId ?? "";
-
     const operationsStatusQueryRaw = searchParams.get("operationsStatus");
     const operationsEntryStatus = useMemo(
         () =>
@@ -228,8 +222,7 @@ const ApplicationDetails = () => {
         const isApprovedStatus = explicitStatus?.toLowerCase() === 'approved';
         const isApprovedQueue = typeof queue === 'string' && queue.toLowerCase() === 'approved';
         const queueNorm = typeof queue === 'string' ? queue.trim().toLowerCase() : '';
-        const isSentToFinalUnderwriter =
-            queueNorm === 'final review' || queueNorm === 'final underwriter';
+        const isSentToFinalUnderwriter = isFinalUnderwriterWorkflowQueue(queue);
         /** After "Generate contract", queue moves here — keep CONTRACT tab so FUW is not locked out. */
         const isContractedQueue =
             queueNorm === 'contracted' ||
@@ -247,26 +240,29 @@ const ApplicationDetails = () => {
         //     stateNorm === 'completed' ||
         //     stateNorm === 'contracted';
 
-        // FINAL_UNDERWRITER: always expose both workflow tabs.
+        // UNDERWRITER (final review): overview with ISO, then pipeline tabs through decision making.
         if (isFinalUnderwriter) {
-            return [
-                { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
-                { id: "overview", label: "DECISION MAKING" },
-            ];
-        }
-
-        // UNDERWRITER (not final): full underwriter tabs
-        if (isUnderwriter) {
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
-                { id: "bank-analysis", label: "BANK ANALYSIS" },
+                { id: "background-check", label: "BACKGROUND CHECK" },
+                { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
                 { id: "decision-making", label: "DECISION MAKING" },
             ];
         }
 
-        // For non-underwriter users:
-        // - Before sending to Final Underwriter: show only first two tabs (Overview, Documents)
+        // SCRUBBING (not final): scrubbing merges bank analysis + decision making
+        if (isUnderwriter) {
+            return [
+                { id: "overview", label: "OVERVIEW" },
+                { id: "documents", label: "DOCUMENTS" },
+                { id: "background-check", label: "BACKGROUND CHECK" },
+                { id: "decision-making", label: "SCRUBBING" },
+            ];
+        }
+
+        // For non-scrubbing users:
+        // - Before sending to Underwriter: show only first two tabs (Overview, Documents)
         // - After sending (queue === "Final Review") or when Completed or when status/queue indicate Approved: show all four tabs
         if (
             isCompleted ||
@@ -293,10 +289,27 @@ const ApplicationDetails = () => {
         let list: TabOption[];
         if (useOperationsPipelineTabs) {
             list = isSuperAdmin
-                ? SUPER_ADMIN_PIPELINE_TABS.filter((t) => t.id !== "bank-analysis")
+                ? [...SUPER_ADMIN_PIPELINE_TABS]
                 : getOperationsTabsForDashboardEntry(effectiveOperationsStatus);
         } else {
             list = getTabs();
+        }
+        // Background Check tab — Super Admin only — before Eligibility Analysis when
+        // present, otherwise immediately before Contract.
+        if (isSuperAdmin && !list.some((t) => t.id === "background-check")) {
+            const bc: TabOption = { id: "background-check", label: "BACKGROUND CHECK" };
+            const eligIdx = list.findIndex((t) => t.id === "eligibility-analysis");
+            const contractIdx = list.findIndex((t) => t.id === "contract");
+            const at =
+                eligIdx >= 0
+                    ? eligIdx
+                    : contractIdx >= 0
+                      ? contractIdx
+                      : (() => {
+                            const overviewIdx = list.findIndex((t) => t.id === "overview");
+                            return overviewIdx >= 0 ? overviewIdx + 1 : list.length;
+                        })();
+            list = [...list.slice(0, at), bc, ...list.slice(at)];
         }
         return list;
     }, [
@@ -315,10 +328,6 @@ const ApplicationDetails = () => {
         (state: RootState) => state.fundingCalls,
     );
 
-    const fundingCallDraft = useSelector(
-        (state: RootState) => state.fundingCallDraft,
-    );
-
     const latestFundingCallStatus = useMemo(() => {
         const rows = fundingCallsForApp;
         if (!Array.isArray(rows) || rows.length === 0) return null;
@@ -326,18 +335,12 @@ const ApplicationDetails = () => {
         return latest?.callStatus ?? null;
     }, [fundingCallsForApp]);
 
-    const effectiveFundingCallStatusForDisbursement = useMemo(() => {
-        if (
-            fundingCallDraft?.applicationId &&
-            resolvedApplicationId != null &&
-            String(fundingCallDraft.applicationId) ===
-                String(resolvedApplicationId) &&
-            fundingCallDraft.callStatus
-        ) {
-            return fundingCallDraft.callStatus;
-        }
-        return latestFundingCallStatus;
-    }, [fundingCallDraft, resolvedApplicationId, latestFundingCallStatus]);
+    const effectiveFundingCallStatus =
+        liveFundingCallStatus ?? latestFundingCallStatus;
+
+    useEffect(() => {
+        setLiveFundingCallStatus(null);
+    }, [resolvedApplicationId]);
 
     useEffect(() => {
         if (!useOperationsPipelineTabs || !resolvedApplicationId) return;
@@ -351,15 +354,14 @@ const ApplicationDetails = () => {
             canOpenDisbursementTab(queue, {
                 explicitStatus,
                 currentState,
-                latestFundingCallStatus: effectiveFundingCallStatusForDisbursement,
+                latestFundingCallStatus: effectiveFundingCallStatus,
             }),
-        [
-            queue,
-            explicitStatus,
-            currentState,
-            effectiveFundingCallStatusForDisbursement,
-        ],
+        [queue, explicitStatus, currentState, effectiveFundingCallStatus],
     );
+
+    const handleFundingCallStatusChange = useCallback((status: string) => {
+        setLiveFundingCallStatus(status.trim() ? status : null);
+    }, []);
 
     const tabsForOperationsUi = useMemo(() => {
         if (!useOperationsPipelineTabs) return tabs;
@@ -377,10 +379,15 @@ const ApplicationDetails = () => {
         fundingCallsLoading,
     ]);
 
-    const defaultTabForRouting = useMemo(
-        () => tabs[0]?.id ?? "overview",
-        [tabs],
-    );
+    const defaultTabForRouting = useMemo(() => {
+        if (useOperationsPipelineTabs && effectiveOperationsStatus) {
+            const stageTab = getOperationsPipelineStageTabId(
+                effectiveOperationsStatus,
+            );
+            if (tabs.some((t) => t.id === stageTab)) return stageTab;
+        }
+        return tabs[0]?.id ?? "overview";
+    }, [tabs, useOperationsPipelineTabs, effectiveOperationsStatus]);
 
     const isLoadingCurrentApplication =
         !applicationId ||
@@ -430,6 +437,20 @@ const ApplicationDetails = () => {
         defaultTabForRouting,
         handleTabChange,
     ]);
+
+    /** Bank Analysis tab merged into Scrubbing for plain underwriters — remap legacy URLs. */
+    useEffect(() => {
+        if (!isTabsReady || !isPlainUnderwriter) return;
+        if (activeTab !== "bank-analysis") return;
+        handleTabChange("decision-making");
+    }, [isTabsReady, isPlainUnderwriter, activeTab, handleTabChange]);
+
+    /** Final + Funding Call merged into one pipeline tab — remap legacy URLs. */
+    useEffect(() => {
+        if (!isTabsReady || !useOperationsPipelineTabs) return;
+        if (activeTab !== "final" && activeTab !== "funding-call") return;
+        handleTabChange("finals-and-funding-call");
+    }, [isTabsReady, useOperationsPipelineTabs, activeTab, handleTabChange]);
 
     const handleOperationsTabChange = useCallback(
         (next: string) => {
@@ -483,8 +504,8 @@ const ApplicationDetails = () => {
 
     const isWorkflowRole =
         roleKey === "AGENT" ||
-        roleKey === "UNDERWRITER" ||
-        roleKey === "FINAL_UNDERWRITER";
+        roleKey === "SCRUBBING" ||
+        roleKey === "UNDERWRITER";
     const isViewOnlyBrowse =
         searchParams.get("viewOnly") === "1" && !isWorkflowRole;
 
@@ -495,6 +516,12 @@ const ApplicationDetails = () => {
         [applicationData, roleKey],
     );
     const isStagePreview = stageAccess.isPreview;
+    const underwriterWorkflowDecisionActive = useMemo(() => {
+        if (!isFinalUnderwriter) return false;
+        return isUnderwriterWorkflowDecisionStage(applicationData as Application | null);
+    }, [isFinalUnderwriter, applicationData]);
+    const underwriterDecisionPreviewMode =
+        isStagePreview && !underwriterWorkflowDecisionActive;
     const isOperationsReadOnlyPipelineTab =
         (useOperationsPipelineTabs &&
             (OPERATIONS_READ_ONLY_PIPELINE_TAB_IDS.has(activeTab) ||
@@ -502,7 +529,7 @@ const ApplicationDetails = () => {
         isViewOnlyBrowse ||
         isStagePreview;
     /**
-     * Documents tab upload/delete: workflow roles (Agent, Underwriter) keep upload even in
+     * Documents tab upload/delete: workflow roles (Agent, Scrubbing) keep upload even in
      * stage-preview; Super Admin keeps upload on Documents. Operations pipeline early tabs
      * stay view-only for OPERATIONS only.
      */
@@ -531,8 +558,8 @@ const ApplicationDetails = () => {
         !superAdminPipelineEditOverride &&
         (isOperationsReadOnlyPipelineTab || isViewOnlyBrowse || isStagePreview);
     /**
-     * UNDERWRITER (not Final Underwriter): full offer / bank / position edits on deals
-     * still at the underwriter stage. Other roles keep existing rules.
+     * SCRUBBING (not Underwriter): full offer / bank / position edits on deals
+     * still at the scrubbing stage. Other roles keep existing rules.
      */
     const plainUnderwriterWorkflowEdit =
         isPlainUnderwriter && !pipelineStageReadOnly && !isViewOnlyBrowse;
@@ -545,8 +572,6 @@ const ApplicationDetails = () => {
             !pipelineStageReadOnly);
     /** OPERATIONS may comment; block composer for `?viewOnly=1` browse links and stage-preview viewers. */
     const commentsReadOnly = isViewOnlyBrowse || isStagePreview;
-    const disableDecisionMakingFundingUpload =
-        isViewOnlyBrowse || isStagePreview || !isFundingUploaderRole;
     const normalizeWorkflowToken = (value: unknown) =>
         String(value ?? "")
             .trim()
@@ -556,12 +581,12 @@ const ApplicationDetails = () => {
     const stateNorm = normalizeWorkflowToken(
         currentState || status || statsCurrentState || "",
     );
-    /** Past agent intake — do not offer "Send to Underwriter". (Do not include `review`; backend still treats Review as agent-side.) */
+    /** Past agent intake — do not offer "Send to Scrubbing". (Do not include `review`; backend still treats Review as agent-side.) */
     const postAgentIntakeQueues = new Set([
-        "underwriter",
+        "scrubbing",
         "underwriting",
         "final review",
-        "final underwriter",
+        "final scrubbing",
         "approved",
         "contracted",
         "contract out",
@@ -587,7 +612,9 @@ const ApplicationDetails = () => {
         !isViewOnlyBrowse &&
         !isStagePreview &&
         isPreUnderwriterStage &&
-        !agentSentToUnderwriter;
+        !agentSentToUnderwriter &&
+        Boolean(queueUpdateApplicationRef) &&
+        !applicationDetailLoading;
 
     const changeTabScrollTop = useCallback(
         (tabId: string) => {
@@ -641,7 +668,7 @@ const ApplicationDetails = () => {
                 <Button
                     type="button"
                     variant="default"
-                    className="min-w-[8rem] bg-[#151357] text-white shadow-sm hover:bg-[#151357]/90 disabled:opacity-40 dark:bg-[#6BB8EA] dark:hover:bg-[#52A6DF] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
+                    className="min-w-[8rem] disabled:opacity-40"
                     disabled={!nextTab}
                     onClick={() => nextTab && changeTabScrollTop(nextTab.id)}
                 >
@@ -711,31 +738,38 @@ const ApplicationDetails = () => {
     }, [applicationId, applicationsListRows, dispatch, location.state]);
 
     const handleSendToUnderwriter = async () => {
-        if (!applicationUuid) return;
+        if (!queueUpdateApplicationRef) {
+            toast.error("Application ID is missing. Please refresh the page and try again.");
+            return;
+        }
         setSendingToUnderwriter(true);
-        const toastId = toast.loading("Sending application to Underwriter...");
+        const toastId = toast.loading("Sending application to Scrubbing...");
         try {
             await dispatch(
                 updateApplicationQueue({
-                    id: applicationUuid,
-                    data: { currentQueue: "Underwriter" },
+                    id: queueUpdateApplicationRef,
+                    data: { currentQueue: "Scrubbing" },
                 }),
             ).unwrap();
             setAgentSentToUnderwriter(true);
             toast.update(toastId, {
-                render: "Application has been sent to Underwriter.",
+                render: "Application has been sent to Scrubbing.",
                 type: "success",
                 isLoading: false,
                 autoClose: 2500,
             });
             refetchApplicationDetail();
         } catch (error) {
-            console.error("Failed to send application to Underwriter:", error);
+            console.error("Failed to send application to Scrubbing:", error);
+            const apiMessage =
+                typeof error === "string" && error.trim()
+                    ? error.trim()
+                    : "Failed to send application to Scrubbing. Please try again.";
             toast.update(toastId, {
-                render: "Failed to send application to Underwriter. Please try again.",
+                render: apiMessage,
                 type: "error",
                 isLoading: false,
-                autoClose: 4000,
+                autoClose: 6000,
             });
         } finally {
             setSendingToUnderwriter(false);
@@ -745,68 +779,49 @@ const ApplicationDetails = () => {
 
 
 
-    const externalLinksRow = (
-        <div className="flex items-center gap-6 flex-wrap">
-            {isSuperAdmin && activityLogApplicationId ? (
-                <>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                            setMailLogOpen((open) => !open);
-                            if (!mailLogOpen) setAuditLogOpen(false);
-                        }}
-                        aria-expanded={mailLogOpen}
-                        aria-haspopup="dialog"
-                        aria-pressed={mailLogOpen}
-                        className="group shrink-0 gap-2 rounded-full border border-cyan-700/25 bg-gradient-to-b from-cyan-500/[0.08] to-cyan-500/[0.03] px-4 py-2 text-sm font-semibold text-cyan-900 shadow-sm transition-all hover:border-cyan-700/40 hover:from-cyan-500/15 hover:to-cyan-500/08 hover:shadow-md active:scale-[0.98] dark:border-cyan-400/35 dark:from-cyan-400/15 dark:to-cyan-400/5 dark:text-cyan-100"
-                    >
-                        <Mail
-                            className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
-                            aria-hidden
-                        />
-                        Mail log
-                    </Button>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                            setAuditLogOpen((open) => !open);
-                            if (!auditLogOpen) setMailLogOpen(false);
-                        }}
-                        aria-expanded={auditLogOpen}
-                        aria-haspopup="dialog"
-                        aria-pressed={auditLogOpen}
-                        className="group shrink-0 gap-2 rounded-full border border-[#151357]/30 bg-gradient-to-b from-[#151357]/[0.1] to-[#151357]/[0.04] px-4 py-2 text-sm font-semibold text-[#151357] shadow-sm transition-all hover:border-[#151357]/45 hover:from-[#151357]/15 hover:to-[#151357]/08 hover:shadow-md active:scale-[0.98] dark:border-primary/35 dark:from-primary/20 dark:to-primary/8 dark:text-foreground dark:hover:border-primary/50"
-                    >
-                        <ScrollText
-                            className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
-                            aria-hidden
-                        />
-                        Activity log
-                    </Button>
-                </>
-            ) : null}
-            {EXTERNAL_LINKS.map((link, i) => (
-                <a
-                    key={link.label}
-                    href={link.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex flex-col"
+    const externalLinksRow =
+        isSuperAdmin && activityLogApplicationId ? (
+            <div className="flex items-center gap-6 flex-wrap">
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                        setMailLogOpen((open) => !open);
+                        if (!mailLogOpen) setAuditLogOpen(false);
+                    }}
+                    aria-expanded={mailLogOpen}
+                    aria-haspopup="dialog"
+                    aria-pressed={mailLogOpen}
+                    className="group shrink-0 gap-2 rounded-full border border-cyan-700/25 bg-gradient-to-b from-cyan-500/[0.08] to-cyan-500/[0.03] px-4 py-2 text-sm font-semibold text-cyan-900 shadow-sm transition-all hover:border-cyan-700/40 hover:from-cyan-500/15 hover:to-cyan-500/08 hover:shadow-md active:scale-[0.98] dark:border-cyan-400/35 dark:from-cyan-400/15 dark:to-cyan-400/5 dark:text-cyan-100"
                 >
-                    <span className="text-sm font-semibold text-[#3B8BD1] underline">
-                        {link.label}
-                    </span>
-                    <span className="text-xs text-[#687182]">
-                        {i === 0 ? "Link" : "Link"}
-                    </span>
-                </a>
-            ))}
-        </div>
-    );
+                    <Mail
+                        className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
+                        aria-hidden
+                    />
+                    Mail log
+                </Button>
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                        setAuditLogOpen((open) => !open);
+                        if (!auditLogOpen) setMailLogOpen(false);
+                    }}
+                    aria-expanded={auditLogOpen}
+                    aria-haspopup="dialog"
+                    aria-pressed={auditLogOpen}
+                    className="group shrink-0 gap-2 rounded-full border border-[var(--brand)]/30 bg-gradient-to-b from-[var(--brand)]/[0.1] to-[var(--brand)]/[0.04] px-4 py-2 text-sm font-semibold text-[var(--brand)] shadow-sm transition-all hover:border-[var(--brand)]/45 hover:from-[var(--brand)]/15 hover:to-[var(--brand)]/08 hover:shadow-md active:scale-[0.98] dark:border-primary/35 dark:from-primary/20 dark:to-primary/8 dark:text-foreground dark:hover:border-primary/50"
+                >
+                    <ScrollText
+                        className="h-4 w-4 shrink-0 opacity-90 transition-transform group-hover:scale-105"
+                        aria-hidden
+                    />
+                    Activity log
+                </Button>
+            </div>
+        ) : null;
 
     return (
         <div
@@ -822,17 +837,17 @@ const ApplicationDetails = () => {
                     />
                 ) : null}
                 {isFinalUnderwriter ? (
-                    /* FINAL_UNDERWRITER: 1) Tab row (tabs + links) 2) Application Summary below tabs 3) Tab content */
+                    /* UNDERWRITER: 1) Tab row (tabs + links) 2) Application Summary below tabs 3) Tab content */
                     <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
                         {/* Row 1: Tabs (left) + Links (right) */}
                         <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                            <HorizontalScrollFade className="w-full" scrollKey={activeTab}>
+                            <HorizontalScrollFade className="min-w-0 w-full flex-1" scrollKey={activeTab}>
                             <TabsList className="bg-transparent cursor-pointer p-0 h-auto flex w-max flex-nowrap items-center shrink-0">
                                 {tabs.map((tab, index) => {
                                     const isActive = activeTab === tab.id;
                                     const isFirst = index === 0;
                                     const isLast = index === tabs.length - 1;
-                                    const zIndex = isActive ? 10 : 2 - index;
+                                    const zIndex = isActive ? 10 : tabs.length - index;
                                     const clipPath = isFirst
                                         ? "polygon(0 0, calc(100% - 18px) 0, 100% 50%, calc(100% - 18px) 100%, 0 100%)"
                                         : isLast
@@ -848,10 +863,11 @@ const ApplicationDetails = () => {
                                             <div className={`absolute inset-0 ${isDark ? 'bg-gray-600' : 'bg-white'}`} style={{ clipPath }} />
                                             <TabsTrigger
                                                 value={tab.id}
-                                                className="relative cursor-pointer whitespace-nowrap px-5 py-2.5 text-xs font-bold border-0 shadow-none rounded-none sm:px-6 sm:text-sm lg:px-8"
+                                                className={`relative cursor-pointer whitespace-nowrap px-5 py-2.5 text-xs font-bold border-0 shadow-none rounded-none sm:px-6 sm:text-sm lg:px-8 data-[state=active]:shadow-none ${isActive ? "tab-pipeline-active" : ""}`}
                                                 style={{
-                                                    backgroundColor: isActive ? '#151357' : '#E8E9EC80',
-                                                    color: isActive ? '#FFFFFF' : '#000000',
+                                                    ...(isActive
+                                                        ? { color: "#FFFFFF" }
+                                                        : { backgroundColor: '#E8E9EC80', color: '#000000' }),
                                                     clipPath: triggerClip,
                                                 }}
                                             >
@@ -862,50 +878,60 @@ const ApplicationDetails = () => {
                                 })}
                             </TabsList>
                             </HorizontalScrollFade>
-                            <div className="shrink-0">{externalLinksRow}</div>
+                            {externalLinksRow ? (
+                                <div className="shrink-0">{externalLinksRow}</div>
+                            ) : null}
                         </div>
                         {/* Row 2: Application Summary (same five-column layout as all roles) */}
                         <FinalUnderwriterApplicationSummary
                             applicationId={applicationId}
                             onBack={() => navigate(-1)}
                         />
-                        {activeTab !== "eligibility-analysis" ? (
-                            <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
-                        ) : null}
-                        {/* Row 3: Tab content (Decision Making or Contract) */}
                         {canRenderTabContent ? (
                             <>
+                                <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
+                                    <AgentDealIsoTag applicationId={applicationId} alwaysEditable={canEditIsoDetails} />
+                                    <ApplicationBasicDetails applicationId={applicationId} />
+                                </LazyTabContent>
+                                <LazyTabContent activeTab={activeTab} value="documents" className="mt-6">
+                                    <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
+                                </LazyTabContent>
+                                <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <BackgroundCheckTab />
+                                </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="eligibility-analysis" className="mt-6">
                                     <EligibilityAnalysis />
                                 </LazyTabContent>
-                                <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
-                                    {/* Final Underwriter decision-making view (without duplicate ApplicationSummary) */}
-                                    <ApplicationBasicDetails applicationId={applicationId} />
-                                    <RequiredDocument
-                                        isDecisionMaking={true}
-                                        readOnly={isViewOnlyBrowse}
-                                        disableFundingUpload={
-                                            disableDecisionMakingFundingUpload
-                                        }
-                                    />
-                                    <div className="mt-10">
-                                        <DecisionMakeFinalValues
+                                <LazyTabContent activeTab={activeTab} value="decision-making" className="mt-6">
+                                    <DecisionMakeFinalValues
                                             applicationId={applicationId}
                                             allowOfferEdit
                                             allowPositionsEdit
                                             onSummaryMetricsChange={handleSummaryMetricsChange}
-                                            betweenOfferAndPositions={
-                                                <BankAnalysisTable disableDelete disableCreate />
-                                            }
+                                            betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) => (
+                                                <BankAnalysisTable
+                                                    disableDelete
+                                                    disableCreate
+                                                    readOnly={componentsReadOnly}
+                                                    onRegisterSaveAll={onRegisterBankSaveAll}
+                                                />
+                                            )}
                                         />
-                                    </div>
                                     <div className="flex flex-row gap-4 w-full mt-10 items-stretch">
-                                        <ChecksAndDecision
-                                            isFinalUnderwriter={true}
-                                            previewMode={isStagePreview}
-                                            onProceedToContract={() => handleTabChange("contract")}
-                                        />
-                                        <div className="w-[50%]"><CommentSection readOnly={commentsReadOnly} /></div>
+                                        <div className="flex-[7] min-w-0 flex flex-col">
+                                            <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                        </div>
+                                        <div className="flex-[3] min-w-0 flex flex-col">
+                                            <ChecksAndDecision
+                                                isFinalUnderwriter={true}
+                                                previewMode={
+                                                    underwriterDecisionPreviewMode &&
+                                                    !underwriterWorkflowDecisionActive
+                                                }
+                                                compactLayout
+                                                onProceedToContract={() => handleTabChange("contract")}
+                                            />
+                                        </div>
                                     </div>
                                 </LazyTabContent>
                                 <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
@@ -988,17 +1014,17 @@ const ApplicationDetails = () => {
                                             <TabsTrigger
                                                 value={tab.id}
                                                 disabled={isDisabled}
-                                                className={`relative whitespace-nowrap px-5 py-2 text-xs font-bold border-0 shadow-none transition-all duration-200 rounded-none sm:px-6 sm:text-sm lg:px-8 ${isDisabled
+                                                className={`relative whitespace-nowrap px-5 py-2 text-xs font-bold border-0 shadow-none transition-all duration-200 rounded-none sm:px-6 sm:text-sm lg:px-8 data-[state=active]:shadow-none ${isDisabled
                                                         ? "cursor-not-allowed opacity-45"
                                                         : "cursor-pointer"
-                                                    }`}
+                                                    } ${isActive ? "tab-pipeline-active" : ""}`}
                                                 style={{
-                                                    backgroundColor: isDark
-                                                        ? (isActive ? '#5AACEA' : '#374151')
-                                                        : (isActive ? '#151357' : '#E8E9EC80'),
-                                                    color: isDark
-                                                        ? '#FFFFFF'
-                                                        : (isActive ? '#FFFFFF' : '#000000'),
+                                                    ...(isActive
+                                                        ? { color: "#FFFFFF" }
+                                                        : {
+                                                            backgroundColor: isDark ? '#374151' : '#E8E9EC80',
+                                                            color: isDark ? '#FFFFFF' : '#000000',
+                                                        }),
                                                     clipPath: isFirst
                                                         ? "polygon(0 0, calc(100% - 20px) 0, calc(100% - 2px) 50%, calc(100% - 20px) 100%, 0 100%)"
                                                         : isLast
@@ -1013,7 +1039,9 @@ const ApplicationDetails = () => {
                                 })}
                             </TabsList>
                             </HorizontalScrollFade>
-                            <div className="shrink-0">{externalLinksRow}</div>
+                            {externalLinksRow ? (
+                                <div className="shrink-0">{externalLinksRow}</div>
+                            ) : null}
                         </div>
 
                         {canRenderTabContent ? (
@@ -1021,35 +1049,21 @@ const ApplicationDetails = () => {
 	                            <LazyTabContent activeTab={activeTab} value="overview" className="mt-6">
                                     <>
                                         <ApplicationSummary applicationId={applicationId} onBack={() => navigate(-1)} />
-                                        {showBankDetailsOnOverview && bankDetailsApplicationId ? (
-                                            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2 lg:items-stretch">
-                                                <AgentDealIsoTag
-                                                    applicationId={applicationId}
-                                                    alwaysEditable={canEditIsoDetails}
-                                                    splitLayout
-                                                    className="mb-0 h-full"
-                                                />
-                                                <ApplicationOverviewBankDetails
-                                                    applicationId={bankDetailsApplicationId}
-                                                    className="mt-0 h-full"
-                                                />
-                                            </div>
-                                        ) : (
-                                            <AgentDealIsoTag
-                                                applicationId={applicationId}
-                                                alwaysEditable={canEditIsoDetails}
-                                            />
-                                        )}
+                                        <AgentDealIsoTag
+                                            applicationId={applicationId}
+                                            alwaysEditable={canEditIsoDetails}
+                                        />
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                         {canShowSendToUnderwriterButton ? (
                                             <div className="flex justify-end mb-4">
                                                 <Button
                                                     type="button"
+                                                    variant="default"
                                                     onClick={handleSendToUnderwriter}
                                                     disabled={sendingToUnderwriter}
-                                                    className="bg-[#3B8BD1] hover:bg-[#3B8BD1] text-white mt-4 px-4 py-2 text-sm font-medium rounded-md cursor-pointer disabled:opacity-40"
+                                                    className="mt-4 disabled:opacity-40"
                                                 >
-                                                    {sendingToUnderwriter ? "Sending..." : "Send to Underwriter"}
+                                                    {sendingToUnderwriter ? "Sending..." : "Send to Scrubbing"}
                                                 </Button>
                                             </div>
                                         ) : null}
@@ -1065,11 +1079,12 @@ const ApplicationDetails = () => {
                                         <div className="flex justify-end mb-4">
                                             <Button
                                                 type="button"
+                                                variant="default"
                                                 onClick={handleSendToUnderwriter}
                                                 disabled={sendingToUnderwriter}
-                                                className="bg-[#3B8BD1] hover:bg-[#3B8BD1] text-white mt-4 px-4 py-2 text-sm font-medium rounded-md cursor-pointer disabled:opacity-40"
+                                                className="mt-4 disabled:opacity-40"
                                             >
-                                                {sendingToUnderwriter ? "Sending..." : "Send to Underwriter"}
+                                                {sendingToUnderwriter ? "Sending..." : "Send to Scrubbing"}
                                             </Button>
                                         </div>
                                     ) : null}
@@ -1082,6 +1097,11 @@ const ApplicationDetails = () => {
                                     <RequiredDocument readOnly={pipelineStageReadOnly} />
                             </LazyTabContent>
 
+                            <LazyTabContent activeTab={activeTab} value="background-check" className="mt-6">
+                                    <ApplicationSummary onBack={() => navigate(-1)} />
+                                    <BackgroundCheckTab />
+                            </LazyTabContent>
+
                             <LazyTabContent activeTab={activeTab} value="contract" className="mt-6">
                                     <ContractTab readOnly={isAgent || isViewOnlyBrowse} />
                             </LazyTabContent>
@@ -1092,17 +1112,13 @@ const ApplicationDetails = () => {
                                     <CasesDashboard applicationId={resolvedApplicationId} />
                             </LazyTabContent>
 
-                            <LazyTabContent activeTab={activeTab} value="final" className="mt-6">
-                                    <Final
+                            <LazyTabContent activeTab={activeTab} value="finals-and-funding-call" className="mt-6">
+                                    <FinalsAndFundingCallFlow
                                         applicationId={applicationId}
+                                        resolvedApplicationId={resolvedApplicationId}
                                         onBack={() => navigate(-1)}
-                                    />
-                            </LazyTabContent>
-
-                            <LazyTabContent activeTab={activeTab} value="funding-call" className="mt-6">
-                                    <FundingCall
-                                        applicationId={resolvedApplicationId}
-                                        onSaved={() => {
+                                        onCallStatusChange={handleFundingCallStatusChange}
+                                        onFundingCallSaved={() => {
                                             refetchApplicationDetail();
                                             if (resolvedApplicationId != null) {
                                                 void dispatch(
@@ -1157,85 +1173,97 @@ const ApplicationDetails = () => {
                                     {!hideBusinessProfileOnDecisionMakingTab && (
                                         <ApplicationBasicDetails applicationId={applicationId} />
                                     )}
-                                    <div className="flex flex-row mt-6 gap-4 w-full">
-                                        {isSuperAdmin ? (
-                                            <div className="flex-1 w-full">
-                                                <UploadedDocuments readOnly={uploadedDocumentsReadOnly} />
-                                            </div>
-                                        ) : (
-                                            <div className="flex-1 w-full">
-                                                <RequiredDocument
-                                                    isDecisionMaking={true}
-                                                    isBankAnalysis={false}
-                                                    readOnly={pipelineStageReadOnly}
-                                                    disableFundingUpload={
-                                                        disableDecisionMakingFundingUpload
-                                                    }
-                                                    hideFundingDocuments={
-                                                        roleKey === "OPERATIONS"
-                                                    }
+                                    {isPlainUnderwriter ? (
+                                        <>
+                                            <div className="mt-6">
+                                                <BankAnalysis
+                                                    readOnly={bankAnalysisTabReadOnly}
+                                                    enableCreate={plainUnderwriterWorkflowEdit}
                                                 />
                                             </div>
-                                        )}
-                                    </div>
-                                    <div className="mt-6">
-                                        <DecisionMakeFinalValues
-                                            applicationId={applicationId}
-                                            allowOfferEdit={canEditDecisionMakingFinalValues}
-                                            allowPositionsEdit={canEditDecisionMakingFinalValues}
-                                            positionsDisableDelete={
-                                                !superAdminPipelineEditOverride
-                                            }
-                                            positionsDisableCreate={
-                                                canEditDecisionMakingFinalValues &&
-                                                !superAdminPipelineEditOverride &&
-                                                !isPlainUnderwriter
-                                            }
-                                            betweenOfferAndPositions={
-                                                isUnderwriter ||
-                                                roleKey === "OPERATIONS" ||
-                                                superAdminPipelineEditOverride ? (
-                                                    <BankAnalysisTable
-                                                        disableDelete={
-                                                            !superAdminPipelineEditOverride
-                                                        }
-                                                        disableCreate={
-                                                            !superAdminPipelineEditOverride &&
-                                                            !plainUnderwriterWorkflowEdit &&
-                                                            (pipelineStageReadOnly ||
-                                                                isOperationsReadOnlyPipelineTab)
-                                                        }
-                                                        readOnly={
-                                                            !superAdminPipelineEditOverride &&
-                                                            !plainUnderwriterWorkflowEdit &&
-                                                            !operationsValueEditOverride &&
-                                                            (pipelineStageReadOnly ||
-                                                                isOperationsReadOnlyPipelineTab)
-                                                        }
-                                                    />
-                                                ) : (
-                                                    <BankAnalysisTable
-                                                        showOnlyTotals
-                                                        readOnly={
-                                                            pipelineStageReadOnly ||
-                                                            isOperationsReadOnlyPipelineTab
-                                                        }
-                                                    />
-                                                )
-                                            }
-                                        />
-                                    </div>
+                                            <RequiredDocument
+                                                isBankAnalysis={true}
+                                                readOnly={bankAnalysisTabReadOnly}
+                                            />
+                                        </>
+                                    ) : (
+                                        <div className="mt-6">
+                                            <DecisionMakeFinalValues
+                                                applicationId={applicationId}
+                                                allowOfferEdit={canEditDecisionMakingFinalValues}
+                                                allowPositionsEdit={canEditDecisionMakingFinalValues}
+                                                positionsDisableDelete={
+                                                    !superAdminPipelineEditOverride
+                                                }
+                                                positionsDisableCreate={
+                                                    canEditDecisionMakingFinalValues &&
+                                                    !superAdminPipelineEditOverride &&
+                                                    !isPlainUnderwriter
+                                                }
+                                                aboveOffer={
+                                                    isSuperAdmin ? (
+                                                        <SendApplicationToUnderwriter
+                                                            applicationId={applicationId}
+                                                            allowReassignWhenApproved
+                                                        />
+                                                    ) : undefined
+                                                }
+                                                betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) =>
+                                                    isUnderwriter ||
+                                                    roleKey === "OPERATIONS" ||
+                                                    superAdminPipelineEditOverride ? (
+                                                        <BankAnalysisTable
+                                                            disableDelete={
+                                                                !superAdminPipelineEditOverride
+                                                            }
+                                                            disableCreate={
+                                                                componentsReadOnly ||
+                                                                (!superAdminPipelineEditOverride &&
+                                                                    !plainUnderwriterWorkflowEdit &&
+                                                                    (pipelineStageReadOnly ||
+                                                                        isOperationsReadOnlyPipelineTab))
+                                                            }
+                                                            readOnly={
+                                                                componentsReadOnly ||
+                                                                (!superAdminPipelineEditOverride &&
+                                                                    !plainUnderwriterWorkflowEdit &&
+                                                                    !operationsValueEditOverride &&
+                                                                    (pipelineStageReadOnly ||
+                                                                        isOperationsReadOnlyPipelineTab))
+                                                            }
+                                                            onRegisterSaveAll={onRegisterBankSaveAll}
+                                                        />
+                                                    ) : (
+                                                        <BankAnalysisTable
+                                                            showOnlyTotals
+                                                            readOnly={
+                                                                componentsReadOnly ||
+                                                                pipelineStageReadOnly ||
+                                                                isOperationsReadOnlyPipelineTab
+                                                            }
+                                                        />
+                                                    )
+                                                }
+                                            />
+                                        </div>
+                                    )}
                                     <div className="flex flex-row mt-6 gap-4 w-full items-stretch">
-                                        <ChecksAndDecision
-                                            isSuperAdmin={isSuperAdmin}
-                                            hideUnderwritingDecision={roleKey === "OPERATIONS"}
-                                            previewMode={
-                                                !superAdminPipelineEditOverride &&
-                                                (isStagePreview ||
-                                                    isOperationsTabBehindCurrentDeal)
-                                            }
-                                        />
-                                        <div className="w-[50%]"><CommentSection readOnly={commentsReadOnly} /></div>
+                                        <div className="flex-[7] min-w-0 flex flex-col">
+                                            <CommentSection compactLayout readOnly={commentsReadOnly} />
+                                        </div>
+                                        <div className="flex-[3] min-w-0 flex flex-col">
+                                            <ChecksAndDecision
+                                                isPlainUnderwriter={isPlainUnderwriter}
+                                                canSendApprovalMailToIso={isSuperAdmin}
+                                                hideUnderwritingDecision={roleKey === "OPERATIONS"}
+                                                compactLayout
+                                                previewMode={
+                                                    !superAdminPipelineEditOverride &&
+                                                    (isStagePreview ||
+                                                        isOperationsTabBehindCurrentDeal)
+                                                }
+                                            />
+                                        </div>
                                     </div>
                             </LazyTabContent>
                             </>

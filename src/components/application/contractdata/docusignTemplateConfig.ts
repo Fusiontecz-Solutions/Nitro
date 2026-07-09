@@ -1,3 +1,5 @@
+import { formatUSD } from "@/utils/formatCurrency";
+
 /** Default signer role on Woodmere DocuSign templates (must match template role name exactly). */
 export const DOCUSIGN_DEFAULT_SIGNER_ROLE = "Signer";
 
@@ -19,15 +21,36 @@ export const DEFAULT_DOCUSIGN_TEMPLATE_ID = String(
         "",
 ).trim();
 
-/** Fixed lender name in DocuSign signer email subject (maps to envelope emailSubject). */
-export const DOCUSIGN_EMAIL_LENDER_NAME = String(
+/** Lender prefix for contract / ACH envelope email subjects and PDF names. */
+export const CONTRACT_ENVELOPE_LENDER_NAME = String(
     (typeof import.meta !== "undefined" &&
         import.meta.env?.VITE_DOCUSIGN_EMAIL_LENDER_NAME) ||
         "Woodmere Financial",
 ).trim();
 
+/** @deprecated Use CONTRACT_ENVELOPE_LENDER_NAME */
+export const DOCUSIGN_EMAIL_LENDER_NAME = CONTRACT_ENVELOPE_LENDER_NAME;
+
+/** Contract envelope email subject: Woodmere Financial : BusinessName - $Offer Amount */
+export function buildContractEnvelopeEmailSubject(
+    businessName: string,
+    offerAmount?: number | string | null,
+): string {
+    const business = String(businessName || "").trim() || "Business";
+    const amount = formatUSD(offerAmount, { fallback: "$0.00" });
+    return `${CONTRACT_ENVELOPE_LENDER_NAME} : ${business} - ${amount}`;
+}
+
+/** ACH-only envelope email subject: ACH FORM: BusinessName */
+export function buildAchFormEnvelopeEmailSubject(businessName: string): string {
+    const business = String(businessName || "").trim() || "Business";
+    return `ACH FORM: ${business}`;
+}
+
 /** DocuSign envelope email subject: fixed lender + per-deal client name. */
-export function buildDocuSignEnvelopeEmailSubject(clientName: string): string {
-    const client = String(clientName || "").trim() || "Client";
-    return `Complete with Docusign: ${DOCUSIGN_EMAIL_LENDER_NAME} - ${client}`;
+export function buildDocuSignEnvelopeEmailSubject(
+    clientName: string,
+    offerAmount?: number | string | null,
+): string {
+    return buildContractEnvelopeEmailSubject(clientName, offerAmount);
 }
