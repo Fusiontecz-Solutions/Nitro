@@ -951,6 +951,91 @@ function escapeEmailHtml(value: unknown): string {
         .replace(/"/g, '&quot;');
 }
 
+function resolveDeclineReasonsFromParams(
+    primaryReason: string,
+    otherReasons?: string,
+): string[] {
+    const primary = String(primaryReason || '').trim();
+    const other = String(otherReasons || '').trim();
+    const reasons: string[] = [];
+    if (primary) reasons.push(primary);
+    if (other) {
+        other
+            .split(',')
+            .map((reason) => reason.trim())
+            .filter(Boolean)
+            .forEach((reason) => reasons.push(reason));
+    }
+    return reasons.length ? reasons : ['Does not meet underwriting criteria'];
+}
+
+function renderDeclineReasonBulletRow(
+    reason: string,
+    paddingBottom: number,
+): string {
+    return `
+                                      <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom:${paddingBottom}px;">
+                                        <tr>
+                                          <td style="font-size:18px;color:#da1e28;padding-right:8px;line-height:1;vertical-align:top;width:16px;">&bull;</td>
+                                          <td style="font-family:Georgia,Times,serif;font-size:18px;font-weight:bold;color:#111111;line-height:1.3;vertical-align:top;">
+                                            ${escapeEmailHtml(reason)}
+                                          </td>
+                                        </tr>
+                                      </table>`;
+}
+
+function renderDeclineReasonColumnHtml(reasons: string[]): string {
+    if (reasons.length === 0) {
+        return '&nbsp;';
+    }
+
+    return reasons
+        .map((reason, index) =>
+            renderDeclineReasonBulletRow(reason, index < reasons.length - 1 ? 12 : 0),
+        )
+        .join('');
+}
+
+function splitDeclineReasonsForColumns(
+    reasons: string[],
+    perColumn = 5,
+): { left: string[]; right: string[] } {
+    const list = reasons.length ? reasons : ['Does not meet underwriting criteria'];
+    return {
+        left: list.slice(0, perColumn),
+        right: list.slice(perColumn),
+    };
+}
+
+function renderDeclineReasonsEmailRows(reasons: string[]): string {
+    const { left, right } = splitDeclineReasonsForColumns(reasons);
+
+    if (right.length === 0) {
+        return `
+                                  <tr>
+                                    <td style="vertical-align:top;">
+                                      ${renderDeclineReasonColumnHtml(left)}
+                                    </td>
+                                  </tr>`;
+    }
+
+    return `
+                                  <tr>
+                                    <td style="vertical-align:top;">
+                                      <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+                                        <tr>
+                                          <td width="50%" valign="top" style="width:50%;padding-right:10px;vertical-align:top;">
+                                            ${renderDeclineReasonColumnHtml(left)}
+                                          </td>
+                                          <td width="50%" valign="top" style="width:50%;padding-left:10px;vertical-align:top;">
+                                            ${renderDeclineReasonColumnHtml(right)}
+                                          </td>
+                                        </tr>
+                                      </table>
+                                    </td>
+                                  </tr>`;
+}
+
 /**
  * Branded "Application Declined" email for the linked ISO.
  * Self-contained, inbox-safe HTML (table layout, no external CSS) matching the
@@ -964,32 +1049,10 @@ export const buildApplicationRejectionEmailHtml = ({
     bannerLogoUrl,
 }: Omit<ApplicationRejectionEmailParams, 'to' | 'trackingId'>): string => {
     const safeClientName = escapeEmailHtml(clientName || 'Valued Partner');
-    const safePrimaryReason = escapeEmailHtml(primaryReason || 'Does not meet underwriting criteria');
-    const otherReasonsText = String(otherReasons || '').trim();
+    const declineReasons = resolveDeclineReasonsFromParams(primaryReason, otherReasons);
+    const declineReasonsBlock = renderDeclineReasonsEmailRows(declineReasons);
+    const reasonsHeading = declineReasons.length > 1 ? 'Decline Reasons' : 'Decline Reason';
     const logoUrl = escapeEmailHtml(String(bannerLogoUrl || ISO_EMAIL_LOGO_URL || '').trim());
-
-    const otherReasonsBlock = otherReasonsText
-        ? `
-                                  <tr>
-                                    <td style="border-top:1px dashed #cccccc;font-size:0;line-height:0;padding-bottom:12px;">&nbsp;</td>
-                                  </tr>
-                                  <tr>
-                                    <td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;color:#333333;padding-bottom:8px;">
-                                      Other Reason(s)
-                                    </td>
-                                  </tr>
-                                  <tr>
-                                    <td>
-                                      <table role="presentation" border="0" cellpadding="0" cellspacing="0" bgcolor="#f2f4f7" style="background-color:#f2f4f7;border-radius:4px;">
-                                        <tr>
-                                          <td style="padding:6px 12px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#666666;vertical-align:middle;">
-                                            <span style="color:#666666;font-size:12px;padding-right:5px;line-height:1;">&bull;</span> ${escapeEmailHtml(otherReasonsText)}
-                                          </td>
-                                        </tr>
-                                      </table>
-                                    </td>
-                                  </tr>`
-        : '';
 
     return `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
@@ -1096,22 +1159,10 @@ export const buildApplicationRejectionEmailHtml = ({
                               <td class="reason-content" bgcolor="#ffffff" valign="top" style="background-color:#ffffff;padding:20px 25px;border-radius:0 10px 10px 0;">
                                 <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
                                   <tr>
-                                    <td style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;color:#da1e28;padding-bottom:5px;">
-                                      Primary Reason
+                                    <td style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;color:#da1e28;padding-bottom:8px;">
+                                      ${reasonsHeading}
                                     </td>
-                                  </tr>
-                                  <tr>
-                                    <td style="padding-bottom:15px;vertical-align:middle;">
-                                      <table role="presentation" border="0" cellpadding="0" cellspacing="0">
-                                        <tr>
-                                          <td style="font-size:18px;color:#da1e28;padding-right:8px;line-height:1;vertical-align:middle;">&bull;</td>
-                                          <td style="font-family:Georgia,Times,serif;font-size:18px;font-weight:bold;color:#111111;line-height:1;vertical-align:middle;">
-                                            ${safePrimaryReason}
-                                          </td>
-                                        </tr>
-                                      </table>
-                                    </td>
-                                  </tr>${otherReasonsBlock}
+                                  </tr>${declineReasonsBlock}
                                 </table>
                               </td>
                             </tr>
