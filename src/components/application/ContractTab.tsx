@@ -3043,7 +3043,7 @@ export default function ContractTab({
             ).unwrap();
 
             if (nextPrefillOverrides) {
-                setFetchedContract((prev) =>
+                setFetchedContract((prev: Record<string, unknown> | null) =>
                     prev && typeof prev === "object"
                         ? { ...prev, contractPrefillOverrides: nextPrefillOverrides }
                         : prev,
