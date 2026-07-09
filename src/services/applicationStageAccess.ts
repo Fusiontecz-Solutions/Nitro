@@ -2,7 +2,7 @@
  * Stage-aware role access for applications (server side).
  *
  * Mirrors `FE/src/lib/applicationStageAccess.ts` so a workflow role (Agent /
- * Underwriter / Final Underwriter) can SEE deals that have advanced past their
+ * Scrubbing / Underwriter) can SEE deals that have advanced past their
  * stage but cannot mutate them — they appear as preview only.
  *
  * Non-workflow roles (Operations, Admin, Super Admin, Accountant, etc.) are
@@ -15,8 +15,8 @@ export type ApplicationStageMode = 'edit' | 'preview';
 
 export type ApplicationStageKey =
     | 'AGENT'
+    | 'SCRUBBING'
     | 'UNDERWRITER'
-    | 'FINAL_UNDERWRITER'
     | 'POST_FINAL';
 
 export interface ApplicationStageAccess {
@@ -39,7 +39,7 @@ const normalizeRoleKey = (value: unknown): string => {
     const raw = String(value ?? '').trim();
     if (!raw) return '';
     let key = raw.toUpperCase().replace(/\s+/g, '_');
-    if (key === 'FINALUNDERWRITER') key = 'FINAL_UNDERWRITER';
+    if (key === 'FINALUNDERWRITER' || key === 'FINAL_UNDERWRITER') key = 'UNDERWRITER';
     if (key === 'SUPERADMIN') key = 'SUPER_ADMIN';
     return key;
 };
@@ -53,9 +53,10 @@ const AGENT_STAGE_TOKENS = new Set([
     'draft',
 ]);
 
-const UNDERWRITER_STAGE_TOKENS = new Set(['underwriter', 'underwriting']);
+const SCRUBBING_STAGE_TOKENS = new Set(['scrubbing', 'underwriting']);
 
-const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
+const UNDERWRITER_STAGE_TOKENS = new Set([
+    'underwriter',
     'finalunderwriter',
     'finalreview',
 ]);
@@ -80,22 +81,22 @@ const POST_FINAL_STAGE_TOKENS = new Set([
 
 const STAGE_FRIENDLY_LABEL: Record<ApplicationStageKey, string> = {
     AGENT: 'Agent',
+    SCRUBBING: 'Scrubbing',
     UNDERWRITER: 'Underwriter',
-    FINAL_UNDERWRITER: 'Final Underwriter',
     POST_FINAL: 'Operations',
 };
 
 const STAGE_ORDER: Record<ApplicationStageKey, number> = {
     AGENT: 0,
-    UNDERWRITER: 1,
-    FINAL_UNDERWRITER: 2,
+    SCRUBBING: 1,
+    UNDERWRITER: 2,
     POST_FINAL: 3,
 };
 
 const ROLE_OWNED_STAGE: Record<string, ApplicationStageKey> = {
     AGENT: 'AGENT',
+    SCRUBBING: 'SCRUBBING',
     UNDERWRITER: 'UNDERWRITER',
-    FINAL_UNDERWRITER: 'FINAL_UNDERWRITER',
 };
 
 function resolveStageKey(
@@ -105,11 +106,9 @@ function resolveStageKey(
     const queueToken = normalizeToken(currentQueue);
     const stateToken = normalizeToken(currentState);
 
-    // Queue drives stage. FU keeps queue "Final Underwriter" with state "Approved" after
-    // sending approval mail (and while resending after ISO comments) — still FU-owned.
     if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return 'POST_FINAL';
-    if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'FINAL_UNDERWRITER';
     if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'UNDERWRITER';
+    if (SCRUBBING_STAGE_TOKENS.has(queueToken)) return 'SCRUBBING';
     if (AGENT_STAGE_TOKENS.has(queueToken)) return 'AGENT';
 
     if (POST_FINAL_STAGE_TOKENS.has(stateToken)) return 'POST_FINAL';

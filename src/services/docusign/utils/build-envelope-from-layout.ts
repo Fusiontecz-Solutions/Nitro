@@ -14,6 +14,8 @@ import {
   resolveDocuSignPrefillTabWidth,
 } from './docusign-tab-style';
 import { embedArialPdfFont } from './embed-arial-pdf-font';
+import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
+import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
 
@@ -113,13 +115,33 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'owner1_guarantor_name',
     'guaranty_owner1_name',
     'guaranty_guarantor1_name',
+    'security_guarantor',
   ],
-  ach_authorization_account_holder_name: [
-    'owner1_guarantor_name',
-    'client_name',
-    'guaranty_owner1_name',
-    'guaranty_guarantor1_name',
-    'guaranty_client_name',
+  business_address: [
+    'business_address_contract',
+    'security_business_address',
+    'guarantor_address',
+    'recipient_address',
+    'recipient_address1',
+    'ach_authorization_account_holder_address',
+  ],
+  business_address_city: [
+    'business_address_contract_city',
+    'security_business_address_city',
+    'guarantor_address_city',
+    'ach_authorization_account_holder_city',
+  ],
+  business_address_state: [
+    'business_address_contract_state',
+    'security_business_address_state',
+    'guarantor_address_state',
+    'ach_authorization_account_holder_state',
+  ],
+  business_address_zip: [
+    'business_address_contract_zip',
+    'security_business_address_zip',
+    'guarantor_address_zip',
+    'ach_authorization_account_holder_zip',
   ],
   ach_authorization_concent_account_holder_name: [
     'owner1_guarantor_name',
@@ -289,6 +311,15 @@ const PARTY1_NAME_KEYS = [
   'security_guarantor',
 ] as const;
 
+const PARTY1_NAME_PRIORITY = [
+  'owner1_guarantor_name',
+  'guaranty_owner1_name',
+  'guaranty_guarantor1_name',
+  'guaranty_client_name',
+  'security_guarantor',
+  'client_name',
+] as const;
+
 const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss'] as const;
 const PARTY1_DL_KEYS = [
   'guaranty_owner1_driver_license',
@@ -323,6 +354,23 @@ export const FILL_AT_SIGNING_VARIABLES = new Set([
 /** Katan uses page 15; Woodmere contract shifts portal section to page 16. */
 const WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE = '16';
 
+/** Woodmere-style 17-page contract (page-16 portal section) — excludes Texas Funding Group layout. */
+function usesWoodmereStyleNonTexasContractLayout(layoutKey: string | undefined): boolean {
+  const key = String(layoutKey || '').trim();
+  if (!key || key === DOCUMENT_LAYOUT_KEYS.contract) return true;
+  if (key === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract) return false;
+  if (isFunderContractLayoutKey(key)) return true;
+  return false;
+}
+
+/** Contract page 1 — merchant confirms or enters phone at signing (prefilled when available). */
+export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set(['client_phone']);
+
+function isRequiredSignerEditablePlacement(placement: DocumentLayoutPlacement): boolean {
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return REQUIRED_SIGNER_EDITABLE_VARIABLES.has(variable);
+}
+
 function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
   if (placement.fillAtSigning === true) return true;
   const variable = String(placement.variable || '').trim().toLowerCase();
@@ -334,22 +382,44 @@ function isWoodmereContractFillAtSigningPlacement(
   placement: DocumentLayoutPlacement,
 ): boolean {
   return (
-    layoutKey === 'contract' &&
+    usesWoodmereStyleNonTexasContractLayout(layoutKey) &&
     String(placement.pageNumber || '') === WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE &&
     isFillAtSigningPlacement(placement)
   );
 }
 
-/** Portal / reference fields on contract page 16 are required signer text (Katan page 15). */
+/** Page-16 ACH fields start blank; page-1 client phone keeps CRM prefill on the live tab. */
+function clearsValueAtSend(
+  layoutKey: string | undefined,
+  placement: DocumentLayoutPlacement,
+): boolean {
+  return isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
+}
+
+function isSignerEditableTextPlacement(
+  layoutKey: string | undefined,
+  placement: DocumentLayoutPlacement,
+): boolean {
+  if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
+  if (usesWoodmereStyleNonTexasContractLayout(layoutKey) && isRequiredSignerEditablePlacement(placement)) {
+    return true;
+  }
+  return false;
+}
+
+/** Portal / reference fields on contract page 16, plus page-1 client phone. */
 function isRequiredSignerTextField(
   placement: DocumentLayoutPlacement,
   layoutKey?: string,
 ): boolean {
   if (placement.type !== 'text') return false;
+  if (usesWoodmereStyleNonTexasContractLayout(layoutKey) && isRequiredSignerEditablePlacement(placement)) {
+    return true;
+  }
   return isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
 }
 
-/** True when a live DocuSign tab is a signer-fill field (must stay unlocked at send). */
+/** True when a live DocuSign tab must stay unlocked at send (signer fills or confirms). */
 export function isFillAtSigningTabRef(tab: {
   tabLabel?: string;
   name?: string;
@@ -357,13 +427,19 @@ export function isFillAtSigningTabRef(tab: {
   const label = String(tab.tabLabel || tab.name || '')
     .trim()
     .toLowerCase();
-  return Boolean(label && FILL_AT_SIGNING_VARIABLES.has(label));
+  return Boolean(
+    label &&
+      (FILL_AT_SIGNING_VARIABLES.has(label) ||
+        REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label)),
+  );
 }
 
 function shouldIncludeEmptyTextPlacement(
   placement: DocumentLayoutPlacement,
   layoutKey?: string,
 ): boolean {
+  if (placement.type !== 'text') return false;
+  if (isSignerEditableTextPlacement(layoutKey, placement)) return true;
   if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
   return includeEmptyLockedOptionalTextPlacement(placement);
 }
@@ -403,6 +479,17 @@ function mirrorIdentityFields(
   }
 }
 
+/** Owner / Merchant / Guarantor / Client 1 are the same person — force one canonical name. */
+function syncParty1NameFields(out: Record<string, string>): void {
+  const canonical = PARTY1_NAME_PRIORITY.map((k) => String(out[k] || '').trim()).find(
+    Boolean,
+  );
+  if (!canonical) return;
+  for (const k of PARTY1_NAME_KEYS) {
+    out[k] = canonical;
+  }
+}
+
 /** Owner / Merchant / Guarantor / Client 2 are the same person — force one canonical name. */
 function syncParty2NameFields(out: Record<string, string>): void {
   const canonical = PARTY2_NAME_PRIORITY.map((k) => String(out[k] || '').trim()).find(
@@ -435,7 +522,7 @@ function expandPrefillValues(
   ownerCount?: number,
 ): Record<string, string> {
   const out = { ...values };
-  mirrorIdentityFields(out, PARTY1_NAME_KEYS);
+  syncParty1NameFields(out);
   mirrorIdentityFields(out, PARTY1_SS_KEYS);
   mirrorIdentityFields(out, PARTY1_DL_KEYS);
   if (ownerCount === undefined || ownerCount >= 2) {
@@ -451,12 +538,6 @@ function expandPrefillValues(
     for (const alias of aliases) {
       if (!String(out[alias] || '').trim()) out[alias] = v;
     }
-  }
-  if (!String(out.client_name || '').trim()) {
-    const legal = String(
-      out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
-    ).trim();
-    if (legal) out.client_name = legal;
   }
   return out;
 }
@@ -475,13 +556,11 @@ function enrichValuesFromSigners(
       '',
   ).trim();
   if (primaryName) {
-    for (const k of PRIMARY_GUARANTOR_NAME_VARIABLES) {
-      if (!String(out[k] || '').trim()) out[k] = primaryName;
-    }
-    for (const k of PARTY1_NAME_KEYS) {
-      if (!String(out[k] || '').trim()) out[k] = primaryName;
+    for (const k of [...PRIMARY_GUARANTOR_NAME_VARIABLES, ...PARTY1_NAME_KEYS]) {
+      out[k] = primaryName;
     }
   }
+  syncParty1NameFields(out);
   if (ownerCount >= 2) {
     const primaryEmail = String(
       signers.find((s) => /receiver|client|merchant|customer/i.test(s.roleName))?.email ||
@@ -808,8 +887,8 @@ function toTextTab(
   lockDataTabs = false,
   layoutKey?: string,
 ): DocuSignTab {
-  const fillAtSigning = isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
-  const tabValue = fillAtSigning ? '' : value;
+  const signerEditable = isSignerEditableTextPlacement(layoutKey, placement);
+  const tabValue = clearsValueAtSend(layoutKey, placement) ? '' : value;
   const variable = String(placement.variable || '').trim();
   const displayLabel =
     getPrefillDisplayLabel(variable) ||
@@ -825,8 +904,9 @@ function toTextTab(
     height: placement.height,
     layoutWidth: placement.width,
   });
-  const lockTab = fillAtSigning ? false : lockDataTabs || Boolean(placement.lockedForSigner);
-  const optionalTab = fillAtSigning ? !isRequiredSignerTextField(placement, layoutKey) : Boolean(placement.optional);
+  // Page-16 ACH and page-1 client phone stay editable; other prefilled text locks at send.
+  const lockTab = signerEditable ? false : lockDataTabs || Boolean(placement.lockedForSigner);
+  const optionalTab = !isRequiredSignerTextField(placement, layoutKey);
   return applyDocuSignPrefillTabStyle(
     {
       tabLabel,
@@ -836,13 +916,10 @@ function toTextTab(
       xPosition: placement.x,
       yPosition: resolveTabYPosition(placement.y, layoutKey),
       ...(tabValue ? { value: tabValue } : {}),
+      ...(optionalTab ? { optional: 'true' } : { required: 'true', optional: 'false' }),
       ...(lockTab ? { locked: 'true' } : {}),
-      ...(optionalTab
-        ? { optional: 'true' }
-        : fillAtSigning
-          ? { required: 'true', optional: 'false' }
-          : {}),
-      ...(fillAtSigning ? { shared: 'false' } : {}),
+      // All text/date tabs are assigned to signer 1 only — owner 2 signs initials/signatures only.
+      shared: 'false',
       width,
       ...(placement.height ? { height: placement.height } : {}),
     },
@@ -866,6 +943,9 @@ export async function renderFlattenedLayoutPdf(
     if (placement.type !== 'text' && placement.type !== 'date') continue;
     if (!placementAllowed(placement, counts, expanded, layout.key)) continue;
     if (isWoodmereContractFillAtSigningPlacement(layout.key, placement)) continue;
+    if (usesWoodmereStyleNonTexasContractLayout(layout.key) && isRequiredSignerEditablePlacement(placement)) {
+      continue;
+    }
     const text = resolveTextPlacementValue(placement.variable || '', expanded, placement, layout.key);
     if (!text) continue;
 

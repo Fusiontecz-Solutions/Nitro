@@ -1163,6 +1163,48 @@ class ContractController {
     }
   }
 
+  async syncKycPrefill(req: Request, res: Response) {
+    try {
+      const contractId = Number(req.params.id);
+      if (isNaN(contractId)) {
+        return res.status(400).json({ success: false, message: 'Invalid contract id parameter' });
+      }
+
+      const documentType = String(req.body?.documentType || '').trim();
+      if (documentType !== 'driverLicense' && documentType !== 'voidedCheck') {
+        return res.status(400).json({
+          success: false,
+          message: 'documentType must be driverLicense or voidedCheck',
+        });
+      }
+
+      const data = await contractService.syncKycPrefillToContract(contractId, {
+        documentType,
+        contractPrefill:
+          req.body?.contractPrefill && typeof req.body.contractPrefill === 'object'
+            ? req.body.contractPrefill
+            : {},
+        panels:
+          req.body?.panels && typeof req.body.panels === 'object' ? req.body.panels : {},
+        keyData:
+          req.body?.keyData && typeof req.body.keyData === 'object' ? req.body.keyData : {},
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Contract prefill updated from reviewed KYC extraction',
+        data,
+      });
+    } catch (error: any) {
+      console.error('Sync KYC prefill error:', error);
+      const statusCode = error?.message === 'Contract not found' ? 404 : 500;
+      return res.status(statusCode).json({
+        success: false,
+        message: error?.message || 'Internal server error',
+      });
+    }
+  }
+
   async getUploadedContractDocuments(req: Request, res: Response) {
     try {
       const contractId = Number(req.params.id);

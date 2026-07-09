@@ -144,7 +144,7 @@ class CommentController {
           const latestFinalUwLog = await prisma.applicationActivityLog.findFirst({
             where: {
               applicationId: application.id,
-              userRole: 'FINAL_UNDERWRITER' as any,
+              userRole: 'UNDERWRITER' as any,
             },
             orderBy: { createdAt: 'desc' },
             select: { userId: true },
@@ -157,7 +157,7 @@ class CommentController {
           // Fallback: notify active Final Underwriters if no dedicated one found from activity.
           if (finalUwRecipients.size === 0) {
             const finalUnderwriters = await prisma.user.findMany({
-              where: { role: 'FINAL_UNDERWRITER', isActive: true },
+              where: { role: 'UNDERWRITER', isActive: true },
               select: { id: true },
             });
             finalUnderwriters.forEach((u) => finalUwRecipients.add(String(u.id)));

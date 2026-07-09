@@ -265,9 +265,13 @@ export const downloadTemplatePdf = async (req: Request, res: Response) => {
     if (!templateId?.trim()) {
       return res.status(400).json({ message: 'templateId is required' });
     }
+    const funderName = String(req.query.funderName ?? '').trim() || undefined;
+    const funderProfileId = String(req.query.funderProfileId ?? '').trim() || undefined;
+    const contractState = String(req.query.state ?? req.query.contractState ?? '').trim() || undefined;
     const pdfBuffer = await docusignService.downloadTemplatePdf(
       userId,
       String(templateId).trim(),
+      { funderName, funderProfileId, contractState },
     );
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
@@ -320,6 +324,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
     const {
       templates,
       templateIds,
+      supplementalLayoutKeys,
       supplementalDocumentRefs,
       standaloneDocumentRefs,
       contractTemplateFilters,
@@ -334,6 +339,13 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       ownerCount,
       guarantorCount,
       skipApplicationEnvelopeLink,
+      includeMainContract,
+      mainContractLayoutKey,
+      contractId,
+      sendPackage,
+      funderName,
+      funderProfileId,
+      contractState,
     } = req.body;
 
     if (!roles?.length) {
@@ -343,6 +355,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
     const result = await docusignService.mergeAndSendTemplates(userId, {
       templates,
       templateIds,
+      supplementalLayoutKeys,
       supplementalDocumentRefs,
       standaloneDocumentRefs,
       contractTemplateFilters,
@@ -357,6 +370,28 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       ownerCount: ownerCount != null ? Number(ownerCount) : undefined,
       guarantorCount: guarantorCount != null ? Number(guarantorCount) : undefined,
       skipApplicationEnvelopeLink: skipApplicationEnvelopeLink === true,
+      includeMainContract:
+        includeMainContract === false ? false : includeMainContract === true ? true : undefined,
+      mainContractLayoutKey:
+        typeof mainContractLayoutKey === 'string' ? mainContractLayoutKey.trim() : undefined,
+      contractId: contractId != null ? Number(contractId) : undefined,
+      sendPackage:
+        sendPackage && typeof sendPackage === 'object' && !Array.isArray(sendPackage)
+          ? {
+              includeMainContract: sendPackage.includeMainContract === true,
+              includeAddendum: sendPackage.includeAddendum === true,
+              includeDisclosure: sendPackage.includeDisclosure === true,
+            }
+          : undefined,
+      funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+      funderProfileId:
+        typeof funderProfileId === 'string' && funderProfileId.trim()
+          ? funderProfileId.trim()
+          : undefined,
+      contractState:
+        typeof contractState === 'string' && contractState.trim()
+          ? contractState.trim()
+          : undefined,
     });
 
     return res.json(result);
@@ -394,16 +429,19 @@ export const docusignWebhook = async (req: Request, res: Response) => {
 export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
-    const { applicationId, envelopeId, ccEmails } = req.body || {};
+    const { applicationId, envelopeId, ccEmails, contractId } = req.body || {};
     if (!applicationId && !envelopeId) {
       return res.status(400).json({
         message: 'applicationId or envelopeId is required',
       });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.syncEnvelopeStatusFromDocusign(userId, {
       applicationId,
       envelopeId,
       ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
+      contractId:
+        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
     });
     return res.json(result);
   } catch (error: any) {

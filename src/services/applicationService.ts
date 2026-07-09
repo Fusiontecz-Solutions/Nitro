@@ -22,8 +22,8 @@ function normalizeRole(role: string | UserRole | null | undefined): UserRole | n
     const normalized = String(role).trim().toUpperCase().replace(/-/g, '_');
     const valid: UserRole[] = [
         'AGENT',
+        'SCRUBBING',
         'UNDERWRITER',
-        'FINAL_UNDERWRITER',
         'ACCOUNTANT',
         'ACCOUNTS',
         'ADMIN',

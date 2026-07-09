@@ -1198,7 +1198,6 @@
       "x": "89",
       "y": "314",
       "signerRole": "Signer",
-      "optional": true,
       "sourceTabLabel": "client_phone"
     },
     {

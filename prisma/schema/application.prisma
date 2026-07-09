@@ -23,6 +23,8 @@ model User {
   googleRefreshToken            String?
   accessTokens                  AccessToken[]
   underwriterClaimedApps        Application[]                 @relation("ApplicationClaimedByUnderwriter")
+  underwriterApprovedApps       Application[]                 @relation("ApplicationApprovedByUnderwriter")
+  underwriterAssignedApps       Application[]                 @relation("ApplicationAssignedUnderwriter")
   createdApplications           Application[]                 @relation("ApplicationCreatedBy")
   referringApplications         Application[]                 @relation("ApplicationReferringAgent")
   salesApplications             Application[]                 @relation("ApplicationSalesRep")
@@ -215,8 +217,15 @@ model Application {
   status                   String?
   claimedByUnderwriterId   String?                       @db.Uuid
   claimedAt                DateTime?
+  approvedByUnderwriterId  String?                       @db.Uuid
+  approvedAt               DateTime?
+  /// Last action an Underwriter performed on this deal: "Approved By UW", "Decline by UW", "Final Approved by UW".
+  underwriterAction        String?
+  assignedUnderwriterId    String?                       @db.Uuid
   category                 String?
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
+  approvedByUnderwriter    User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
+  assignedUnderwriter      User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])
   client                   Client                        @relation(fields: [clientId], references: [id])
   createdBy                User?                         @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
   iso                      Iso?                          @relation(fields: [isoId], references: [id])
@@ -233,6 +242,7 @@ model Application {
   comments                 Comment[]
   complianceChecks         ComplianceCheck[]
   contract                 Contract?
+  backgroundCheck          BackgroundCheck?
   conversations            Conversation[]
   disclosures              Disclosure?
   document                 Document?
@@ -266,6 +276,9 @@ model Application {
   @@index([createdById])
   @@index([claimedByUnderwriterId])
   @@index([currentQueue, claimedByUnderwriterId])
+  @@index([approvedByUnderwriterId])
+  @@index([assignedUnderwriterId])
+  @@index([currentQueue, assignedUnderwriterId])
   @@index([category])
 }
 
@@ -971,8 +984,8 @@ enum PaymentMailLogStatus {
 
 enum Role {
   AGENT
+  SCRUBBING
   UNDERWRITER
-  FINAL_UNDERWRITER
   ACCOUNTANT
   ADMIN
   OPERATIONS

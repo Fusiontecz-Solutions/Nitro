@@ -217,6 +217,60 @@ export function convertDocuSignTemplateExport(
   };
 }
 
+/** Optional sign slots route to Owner 2 when `ownerCount >= 2`. Text stays on signer 1 (prefill only). */
+function applyDiscoverStyleOwnerRouting(
+  placements: DocumentLayoutPlacement[],
+): DocumentLayoutPlacement[] {
+  return placements.map((placement) => {
+    const isOwner2Signature =
+      placement.type === 'signature' && placement.optional === true;
+
+    if (!isOwner2Signature) {
+      return placement;
+    }
+
+    return {
+      ...placement,
+      signerParty: 'secondary',
+      when: 'owners >= 2',
+    };
+  });
+}
+
+/** Root-level `tabs` export (e.g. texas_funding_group_contract.json) without full DocuSign template envelope. */
+export function convertSimplifiedTabsContractExport(
+  exportJson: Record<string, unknown>,
+  meta: {
+    key: string;
+    name?: string;
+    description?: string;
+    pdfSource?: 'contractTemplate' | 'boldSignTemplate';
+    pdfFileName?: string;
+  },
+): DocumentLayout {
+  const wrapped = {
+    name: meta.name || exportJson.name,
+    documents: [
+      {
+        documentId: '1',
+        name: exportJson.documentName || meta.pdfFileName,
+        pageCount: exportJson.pageCount,
+      },
+    ],
+    recipients: {
+      signers: [
+        { roleName: 'Signer', routingOrder: 1, tabs: exportJson.tabs || {} },
+        { roleName: 'Owner 2', routingOrder: 2, tabs: {} },
+      ],
+    },
+  };
+  const layout = convertDocuSignTemplateExport(wrapped, meta);
+  return {
+    ...layout,
+    placements: applyDiscoverStyleOwnerRouting(layout.placements),
+  };
+}
+
 if (require.main === module) {
   const args = process.argv.slice(2);
   const getArg = (flag: string) => {

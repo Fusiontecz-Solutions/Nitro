@@ -48,6 +48,10 @@ import avochatoMessagingRoutes from './avochatoMessagingRoutes';
 import superAdminPlatformRoutes from './superAdminPlatformRoutes';
 import activityLogRoutes from './activityLogRoutes';
 import sendgridWebhookRoutes from './sendgridWebhookRoutes';
+import backgroundCheckRoutes from './backgroundCheckRoutes';
+import backgroundCheckReportRoutes from './backgroundCheckReportRoutes';
+import integrationSettingsRoutes from './integrationSettingsRoutes';
+import datamerchRoutes from './datamerchRoutes';
 
 router.use('/auth', authRoutes);
 router.use('/roles', roleRoutes);
@@ -97,6 +101,10 @@ router.use('/super-admin-platform', superAdminPlatformRoutes);
 router.use('/activity-logs', activityLogRoutes);
 // SendGrid Event Webhook (public, no JWT) — POST {SENDGRID_WEBHOOK_URL}/sendgrid/webhook
 router.use('/sendgrid', sendgridWebhookRoutes);
+router.use('/background-checks', backgroundCheckRoutes);
+router.use('/background-check-report', backgroundCheckReportRoutes);
+router.use('/datamerch', datamerchRoutes);
+router.use('/integration-settings', integrationSettingsRoutes);
 
 // router.get('/google/test', async (req, res) => {
 //   try {

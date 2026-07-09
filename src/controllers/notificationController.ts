@@ -239,7 +239,7 @@ class NotificationController {
                 emailSubject,
             } = req.body;
             const currentUserRole = (req as any).user?.role;
-            const isFinalUnderwriter = currentUserRole === 'FINAL_UNDERWRITER';
+            const isFinalUnderwriter = currentUserRole === 'UNDERWRITER' || currentUserRole === 'FINAL_UNDERWRITER';
 
             // Validate required fields - reason mandatory for Final Underwriter
             if (!applicationId) {
@@ -760,7 +760,7 @@ class NotificationController {
             const message = `Application${appIdNumber ? ` #${appIdNumber}` : ''} for ${clientName} is ready for Final Underwriter review.`;
 
             const finalUnderwriters = await prisma.user.findMany({
-                where: { role: 'FINAL_UNDERWRITER', isActive: true },
+                where: { role: 'UNDERWRITER', isActive: true },
                 select: { id: true },
             });
 

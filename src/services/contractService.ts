@@ -16,6 +16,8 @@ import {
   isKycDocumentType,
   mergeContractPrefillPatch,
   normalizeKycDocumentType,
+  type KycDocumentType,
+  type KycExtractionMapped,
 } from './contractKycPrefillMapper';
 
 async function resolvePaymentBankDetailForContract(
@@ -362,6 +364,147 @@ class ContractService {
     return (prisma as any).contractDocumentTemplateMapping.delete({ where: { id } });
   }
 
+  /**
+   * Persist KYC extraction into contract prefill JSON, contract scalar columns, and ACH row.
+   * Voided-check scans must update bank fields everywhere they are read (not only JSON overrides).
+   */
+  private async persistKycExtractionToContract(
+    contractId: number,
+    mapped: KycExtractionMapped,
+  ): Promise<Record<string, unknown>> {
+    const contractRow = await (prisma as any).contract.findUnique({
+      where: { id: contractId },
+      select: { id: true, clientId: true, contractPrefillOverrides: true },
+    });
+    if (!contractRow) {
+      throw new Error('Contract not found');
+    }
+
+    const mergedContractPrefillOverrides = mergeContractPrefillPatch(
+      contractRow.contractPrefillOverrides,
+      mapped.contractPrefill,
+    );
+
+    const scalarUpdate: ContractExtraFields = {};
+    for (const key of CONTRACT_EXTRA_STRING_FIELDS) {
+      const val = mapped.contractPrefill[key];
+      if (firstNonEmptyString(val)) {
+        scalarUpdate[key] = String(val).trim();
+      }
+    }
+
+    await this.updateContract(contractId, {
+      contractPrefillOverrides: mergedContractPrefillOverrides,
+      ...scalarUpdate,
+    });
+
+    if (mapped.documentType === 'voidedCheck' && mapped.panels?.ach) {
+      const ach = mapped.panels.ach;
+      const achPayload = {
+        bankName: firstNonEmptyString(ach.bankName) || undefined,
+        accountHolderName: firstNonEmptyString(ach.fullNameOnAccount) || undefined,
+        accountNumber: firstNonEmptyString(ach.accountNumber) || undefined,
+        routingNumber: firstNonEmptyString(ach.routingNumber) || undefined,
+        dba: firstNonEmptyString(ach.dba) || undefined,
+        address: firstNonEmptyString(ach.address) || undefined,
+        city: firstNonEmptyString(ach.city) || undefined,
+        state: firstNonEmptyString(ach.state) || undefined,
+        zip: firstNonEmptyString(ach.zip) || undefined,
+      };
+      const hasAchData = Object.values(achPayload).some((v) => Boolean(v));
+      if (hasAchData) {
+        const existing = await (prisma as any).aCH.findFirst({
+          where: { contractId },
+          select: { id: true },
+          orderBy: { createdAt: 'asc' },
+        });
+        if (existing?.id) {
+          await this.updateACH(existing.id, achPayload);
+        } else if (contractRow.clientId) {
+          await this.createACH({
+            clientId: contractRow.clientId,
+            contractId,
+            ...achPayload,
+          });
+        }
+      }
+    }
+
+    if (mapped.documentType === 'driverLicense') {
+      if (mapped.panels?.owner) {
+        const owner = mapped.panels.owner;
+        const ownerFirstName = firstNonEmptyString(owner.firstName);
+        const ownerLastName = firstNonEmptyString(owner.lastName);
+        if (ownerFirstName || ownerLastName) {
+          const ownerPayload = {
+            firstName: ownerFirstName || undefined,
+            lastName: ownerLastName || undefined,
+            address: firstNonEmptyString(owner.address) || undefined,
+            city: firstNonEmptyString(owner.city) || undefined,
+            state: firstNonEmptyString(owner.state) || undefined,
+            zip: firstNonEmptyString(owner.zipCode) || undefined,
+          };
+          const existingOwner = await (prisma as any).contractOwner.findFirst({
+            where: { contractId },
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+          });
+          if (existingOwner?.id) {
+            await this.updateContractOwner(existingOwner.id, ownerPayload);
+          } else {
+            await this.createContractOwner({
+              contractId,
+              firstName: ownerFirstName || '—',
+              lastName: ownerLastName || '—',
+              address: ownerPayload.address,
+              city: ownerPayload.city,
+              state: ownerPayload.state,
+              zip: ownerPayload.zip,
+            });
+          }
+        }
+      }
+
+      if (mapped.panels?.guarantor) {
+        const guarantor = mapped.panels.guarantor;
+        const guarantorFirstName = firstNonEmptyString(guarantor.firstName);
+        const guarantorLastName = firstNonEmptyString(guarantor.lastName);
+        if (guarantorFirstName || guarantorLastName) {
+          const guarantorPayload = {
+            firstName: guarantorFirstName || undefined,
+            lastName: guarantorLastName || undefined,
+            address: firstNonEmptyString(guarantor.address) || undefined,
+            city: firstNonEmptyString(guarantor.city) || undefined,
+            state: firstNonEmptyString(guarantor.state) || undefined,
+            zip: firstNonEmptyString(guarantor.zipCode) || undefined,
+            driverLicense: firstNonEmptyString(guarantor.driverLicenseNumber) || undefined,
+          };
+          const existingGuarantor = await (prisma as any).contractGuarantor.findFirst({
+            where: { contractId },
+            select: { id: true },
+            orderBy: { createdAt: 'asc' },
+          });
+          if (existingGuarantor?.id) {
+            await this.updateContractGuarantor(existingGuarantor.id, guarantorPayload);
+          } else {
+            await this.createContractGuarantor({
+              contractId,
+              firstName: guarantorFirstName || '—',
+              lastName: guarantorLastName || '—',
+              address: guarantorPayload.address,
+              city: guarantorPayload.city,
+              state: guarantorPayload.state,
+              zip: guarantorPayload.zip,
+              driverLicense: guarantorPayload.driverLicense,
+            });
+          }
+        }
+      }
+    }
+
+    return mergedContractPrefillOverrides;
+  }
+
   async uploadContractDocuments(
     contractId: number,
     filesByType: Record<string, any>,
@@ -429,26 +572,11 @@ class ContractService {
             kycType,
           );
 
-          const contractRow = await (prisma as any).contract.findUnique({
-            where: { id: contractId },
-            select: { contractPrefillOverrides: true },
-          });
-
-          const mergedContractPrefillOverrides = mergeContractPrefillPatch(
-            contractRow?.contractPrefillOverrides,
-            mapped.contractPrefill,
-          );
-
-          await this.updateContract(contractId, {
-            contractPrefillOverrides: mergedContractPrefillOverrides,
-          });
-
           kycExtractions.push({
             documentType: kycType,
             keyData: mapped.keyData,
             contractPrefill: mapped.contractPrefill,
             panels: mapped.panels,
-            mergedContractPrefillOverrides,
           });
         } catch (extractErr: unknown) {
           const msg =
@@ -491,19 +619,53 @@ class ContractService {
       documentType,
     );
 
-    const contractRow = await (prisma as any).contract.findUnique({
-      where: { id: contractId },
-      select: { contractPrefillOverrides: true },
-    });
-
-    const mergedContractPrefillOverrides = mergeContractPrefillPatch(
-      contractRow?.contractPrefillOverrides,
-      mapped.contractPrefill,
+    const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
+      contractId,
+      mapped,
     );
 
-    const updated = await this.updateContract(contractId, {
-      contractPrefillOverrides: mergedContractPrefillOverrides,
-    });
+    const updated = await this.getByIdContract(contractId);
+
+    return {
+      documentType,
+      keyData: mapped.keyData,
+      contractPrefill: mapped.contractPrefill,
+      panels: mapped.panels,
+      mergedContractPrefillOverrides,
+      contract: updated,
+    };
+  }
+
+  /**
+   * Apply reviewed KYC extraction (driver license / voided check) to contract prefill + related rows.
+   */
+  async syncKycPrefillToContract(
+    contractId: number,
+    payload: {
+      documentType: KycDocumentType;
+      contractPrefill?: Record<string, string>;
+      panels?: KycExtractionMapped['panels'];
+      keyData?: Record<string, string>;
+    },
+  ) {
+    const documentType = payload.documentType;
+    if (documentType !== 'driverLicense' && documentType !== 'voidedCheck') {
+      throw new Error('documentType must be driverLicense or voidedCheck');
+    }
+
+    const mapped: KycExtractionMapped = {
+      documentType,
+      keyData: payload.keyData ?? {},
+      contractPrefill: payload.contractPrefill ?? {},
+      panels: payload.panels ?? {},
+    };
+
+    const mergedContractPrefillOverrides = await this.persistKycExtractionToContract(
+      contractId,
+      mapped,
+    );
+
+    const updated = await this.getByIdContract(contractId);
 
     return {
       documentType,
@@ -674,6 +836,7 @@ class ContractService {
     agreementDate?: Date | string;
     paymentBankId?: string;
     state?: string | null;
+    funderName?: string | null;
   } & ContractExtraFields) {
     const application = data.applicationId
       ? await (prisma as any).application.findUnique({
@@ -830,7 +993,7 @@ class ContractService {
     const createContractTransactionOptions = { maxWait: 10_000, timeout: 30_000 } as const;
 
     return (prisma as any).$transaction(async (tx: any) => {
-      const contractData = {
+      const contractData: Record<string, unknown> = {
         clientId: derivedClientId,
         applicationId: data.applicationId || null,
         offerId: derivedOfferId,
@@ -846,6 +1009,12 @@ class ContractService {
         state: data.state ?? (businessState || null),
         ...derivedExtraFields,
       };
+      if (data.funderName !== undefined) {
+        contractData.funderName =
+          data.funderName === '' || data.funderName == null
+            ? null
+            : String(data.funderName).trim();
+      }
       applyContractExtraFields(contractData, data);
 
       let created: any;

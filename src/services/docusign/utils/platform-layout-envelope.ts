@@ -8,7 +8,13 @@ import {
   isDocumentLayoutKey,
   loadPlatformDocumentPdfBase64,
   normalizeSupplementalLayoutKeys,
+  findBoldSignTemplatePdfUrlByExactLayoutKey,
 } from '../platform-document-registry';
+import {
+  isFunderContractLayoutKey,
+  funderSupplementalLayoutKeyForDocument,
+  resolveFunderSupplementalStorageType,
+} from '../../../utils/funderContractLayout';
 import type { DocumentLayout } from './convert-docusign-template-export';
 import {
   buildEnvelopeFromLayouts,
@@ -25,24 +31,112 @@ import {
   DOCUSIGN_SECONDARY_ROLE_NAME,
 } from './docusign-client';
 import { mergeLayoutPdfsToSingleDocument } from './merge-layout-pdfs';
+import {
+  resolveMainContractCoordinateLayoutKey,
+} from './resolve-main-contract-layout';
+import {
+  isPersistedFunderProfileId,
+  resolveFunderProfile,
+  type SerializedFunderProfile,
+} from '../../funderProfileService';
+import {
+  resolveDocumentsLayoutFunderId,
+  resolveFunderSupplementalDocumentDisplayName,
+} from '../../../utils/funderDocumentSource';
+import { isTexasFundingGroupFunderProfile } from '../../../utils/funderProfileResolver';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
 
 export type DocumentLayoutWithBase64 = DocumentLayout & { documentBase64: string };
 
-export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutWithBase64> {
-  const layoutKey = DOCUMENT_LAYOUT_KEYS.contract;
-  const layout = getDocumentLayout(layoutKey);
+async function resolveCoordinateLayoutKeyForFunderPdf(
+  funderLayoutKey: string,
+  contractState?: string | null,
+): Promise<DocumentLayoutKey> {
+  const funderId = String(funderLayoutKey || '')
+    .trim()
+    .replace(/^funder_/i, '');
+  if (funderId) {
+    const row = await prisma.funderProfile.findUnique({
+      where: { id: funderId },
+      select: { name: true, displayName: true, mainContractLayoutKey: true },
+    });
+    if (row) {
+      return resolveMainContractCoordinateLayoutKey({
+        funderName: row.name,
+        state: contractState,
+        mainContractLayoutKey: row.mainContractLayoutKey,
+      });
+    }
+  }
+  return DOCUMENT_LAYOUT_KEYS.contract;
+}
+
+export type FunderLayoutContext = {
+  funderProfileId?: string | null;
+  funderName?: string | null;
+  contractState?: string | null;
+};
+
+async function resolveFunderLayoutContext(
+  context?: FunderLayoutContext,
+): Promise<SerializedFunderProfile | null> {
+  if (!context) return null;
+  const hasHints =
+    String(context.funderProfileId ?? '').trim() ||
+    String(context.funderName ?? '').trim();
+  if (!hasHints) return null;
+  return resolveFunderProfile({
+    funderProfileId: context.funderProfileId,
+    funderName: context.funderName,
+    state: context.contractState,
+  });
+}
+
+export async function loadMainContractLayoutPackage(
+  layoutKey: string = DOCUMENT_LAYOUT_KEYS.contract,
+  contractState?: string | null,
+): Promise<DocumentLayoutWithBase64> {
+  const key = String(layoutKey || '').trim() || DOCUMENT_LAYOUT_KEYS.contract;
+
+  if (isFunderContractLayoutKey(key)) {
+    const coordinateKey = await resolveCoordinateLayoutKeyForFunderPdf(key, contractState);
+    const layout = getDocumentLayout(coordinateKey);
+    const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(key);
+    if (!pdfUrl) {
+      throw new Error('No contract PDF uploaded for this funder.');
+    }
+    const documentBase64 = await fetchPdfAsBase64(pdfUrl);
+    const row = await prisma.boldSignTemplate.findFirst({
+      where: { OR: [{ layoutKey: key }, { templateId: key }] },
+      orderBy: { createdAt: 'desc' },
+      select: { name: true },
+    });
+    return {
+      ...layout,
+      key,
+      name: row?.name || layout.name,
+      documentBase64,
+    };
+  }
+
+  const platformKey = isDocumentLayoutKey(key) ? key : DOCUMENT_LAYOUT_KEYS.contract;
+  const layout = getDocumentLayout(platformKey);
   try {
-    const documentBase64 = await loadPlatformDocumentPdfBase64(layoutKey);
+    const documentBase64 = await loadPlatformDocumentPdfBase64(platformKey);
     return { ...layout, documentBase64 };
   } catch {
+    if (platformKey !== DOCUMENT_LAYOUT_KEYS.contract) {
+      throw new Error(
+        `No PDF configured for "${layout.name}". Upload to Cloudinary and set BoldSignTemplate.pdfUrl with layoutKey "${platformKey}".`,
+      );
+    }
     const latest = await prisma.contractTemplate.findFirst({
       orderBy: { createdAt: 'desc' },
     });
     if (!latest?.url) {
       throw new Error(
-        'No contract PDF configured. Upload a contract PDF from the Final Underwriter dashboard or set BoldSignTemplate.pdfUrl for layoutKey "contract".',
+        `No contract PDF configured. Upload a contract PDF or set BoldSignTemplate.pdfUrl for layoutKey "${platformKey}".`,
       );
     }
     const documentBase64 = await fetchPdfAsBase64(latest.url);
@@ -50,12 +144,61 @@ export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutW
   }
 }
 
+export async function loadLatestContractLayoutPackage(): Promise<DocumentLayoutWithBase64> {
+  return loadMainContractLayoutPackage(DOCUMENT_LAYOUT_KEYS.contract);
+}
+
 export async function loadSupplementalLayoutPackage(
   ref: string,
+  funderContext?: FunderLayoutContext,
 ): Promise<DocumentLayoutWithBase64> {
   const sourceRef = String(ref || '').trim();
+  const funder = await resolveFunderLayoutContext(funderContext);
+
   if (isDocumentLayoutKey(sourceRef)) {
     const layout = getDocumentLayout(sourceRef);
+    if (funder?.id) {
+      const docsFunderId =
+        resolveDocumentsLayoutFunderId(funder) ||
+        (isTexasFundingGroupFunderProfile(funder) ? funder.id : null);
+      if (docsFunderId) {
+        const storageType = resolveFunderSupplementalStorageType(sourceRef);
+        const scopedKey = funderSupplementalLayoutKeyForDocument(docsFunderId, sourceRef);
+        let scopedPdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(scopedKey);
+        if (!scopedPdfUrl) {
+          const typedRow = await prisma.boldSignTemplate.findFirst({
+            where: {
+              type: storageType,
+              OR: [
+                { layoutKey: { startsWith: `funder_${docsFunderId}_` } },
+                { templateId: { startsWith: `funder_${docsFunderId}_` } },
+              ],
+            },
+            orderBy: { createdAt: 'desc' },
+          });
+          scopedPdfUrl = String(typedRow?.pdfUrl || '').trim() || null;
+        }
+        if (scopedPdfUrl) {
+          const documentBase64 = await fetchPdfAsBase64(scopedPdfUrl);
+          const row = await prisma.boldSignTemplate.findFirst({
+            where: { OR: [{ layoutKey: scopedKey }, { templateId: scopedKey }] },
+            orderBy: { createdAt: 'desc' },
+            select: { name: true },
+          });
+          return {
+            ...layout,
+            key: scopedKey,
+            name: resolveFunderSupplementalDocumentDisplayName(
+              storageType,
+              funder,
+              row?.name,
+              layout.name,
+            ),
+            documentBase64,
+          };
+        }
+      }
+    }
     const documentBase64 = await loadPlatformDocumentPdfBase64(sourceRef);
     return { ...layout, documentBase64 };
   }
@@ -258,7 +401,10 @@ export async function resolveSupplementalRefsFromDb(filters: {
   if (type) where.type = type;
 
   const rows = await prisma.boldSignTemplate.findMany({
-    where,
+    where: {
+      ...where,
+      OR: [{ layoutKey: null }, { NOT: { layoutKey: { startsWith: 'funder_' } } }],
+    },
     select: { id: true, pdfUrl: true },
   });
   return [...new Set(rows.filter((r) => r.pdfUrl).map((r) => r.id))];
@@ -270,6 +416,10 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   standaloneDocumentRefs?: string[];
   /** When false, envelope contains only supplemental layouts (e.g. standalone ACH). */
   includeMainContract?: boolean;
+  mainContractLayoutKey?: string;
+  funderProfileId?: string | null;
+  funderName?: string | null;
+  contractState?: string | null;
   roles: Array<Record<string, unknown>>;
   prefillFields?: Array<{ id: string; value: string }>;
   ownerCount?: number;
@@ -287,15 +437,35 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   const includeMainContract = hasStandaloneOnly
     ? false
     : options.includeMainContract !== false;
+  const funderProfile = await resolveFunderLayoutContext({
+    funderProfileId: options.funderProfileId,
+    funderName: options.funderName,
+    contractState: options.contractState,
+  });
+  const funderContext: FunderLayoutContext = {
+    funderProfileId:
+      (funderProfile?.id && isPersistedFunderProfileId(funderProfile.id)
+        ? funderProfile.id
+        : null) ??
+      (isPersistedFunderProfileId(options.funderProfileId)
+        ? String(options.funderProfileId).trim()
+        : null),
+    funderName: funderProfile?.name ?? options.funderName,
+    contractState: options.contractState,
+  };
   const layouts: DocumentLayoutWithBase64[] = [];
   if (includeMainContract) {
-    layouts.push(await loadLatestContractLayoutPackage());
+    const mainContractLayoutKey =
+      String(options.mainContractLayoutKey || '').trim() || DOCUMENT_LAYOUT_KEYS.contract;
+    layouts.push(
+      await loadMainContractLayoutPackage(mainContractLayoutKey, options.contractState),
+    );
   }
   for (const ref of options.supplementalRefs || []) {
-    layouts.push(await loadSupplementalLayoutPackage(ref));
+    layouts.push(await loadSupplementalLayoutPackage(ref, funderContext));
   }
   for (const ref of standaloneRefs) {
-    layouts.push(await loadSupplementalLayoutPackage(ref));
+    layouts.push(await loadSupplementalLayoutPackage(ref, funderContext));
   }
   if (!layouts.length) {
     throw new Error('At least one document layout is required.');

@@ -237,6 +237,23 @@ export async function syncApplicationToContractGenerated(
   );
 }
 
+/**
+ * When a new main-contract DocuSign envelope replaces a prior send (resend after signed, etc.),
+ * move the deal back to Contract Generated so downstream sent/completed webhooks can advance it again.
+ */
+export async function syncApplicationOnMainContractResend(
+  prismaClient: PrismaLike,
+  applicationId: string,
+  meta: ContractWorkflowSyncMeta,
+): Promise<boolean> {
+  return syncApplicationWorkflowStage(
+    prismaClient,
+    applicationId,
+    contractGeneratedApplicationUpdateData(),
+    meta,
+  );
+}
+
 /** After envelope is sent / viewed / partially signed — awaiting completion. */
 export async function syncApplicationToContractSent(
   prismaClient: PrismaLike,

@@ -18,7 +18,40 @@ const US_LETTER_WIDTH_PX = 816;
 /** ISO workflow email column width (approval / offer-updated templates). */
 const CRM_EMAIL_WIDTH_PX = 600;
 
-type PdfHtmlKind = 'crm-letter' | 'crm-email' | 'fragment';
+type PdfHtmlKind = 'crm-letter' | 'crm-email' | 'compliance-report' | 'fragment';
+
+const COMPLIANCE_PDF_PRINT_STYLE = `<style id="compliance-pdf-print-inject">
+  @page {
+    size: letter;
+    margin: 0;
+    background: #ffffff;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    overflow-x: hidden;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+  table {
+    border-collapse: collapse;
+    max-width: 100%;
+  }
+  td, th {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+</style>`;
 
 const PRINT_INJECT_STYLE = `<style id="letter-pdf-print-inject">
   @page {
@@ -82,6 +115,10 @@ function classifyHtmlForPdf(html: string): PdfHtmlKind {
         return 'crm-email';
     }
 
+    if (/COMPLIANCE REPORT/i.test(t) && /bc-check-card/i.test(t)) {
+        return 'compliance-report';
+    }
+
     if (looksLikeFullHtmlDocument(t)) {
         return 'crm-letter';
     }
@@ -90,14 +127,14 @@ function classifyHtmlForPdf(html: string): PdfHtmlKind {
 }
 
 /** Preserve template `<head>` styles; only add print-safe helpers. */
-function injectPrintStylesIntoFullDocument(html: string): string {
+function injectPrintStylesIntoFullDocument(html: string, printStyle = PRINT_INJECT_STYLE): string {
     if (/<\/head>/i.test(html)) {
-        return html.replace(/<\/head>/i, `${PRINT_INJECT_STYLE}</head>`);
+        return html.replace(/<\/head>/i, `${printStyle}</head>`);
     }
     if (/<html[\s>]/i.test(html)) {
-        return html.replace(/<html([^>]*)>/i, `<html$1><head>${PRINT_INJECT_STYLE}</head>`);
+        return html.replace(/<html([^>]*)>/i, `<html$1><head>${printStyle}</head>`);
     }
-    return `<!DOCTYPE html><html lang="en"><head>${PRINT_INJECT_STYLE}</head><body>${html}</body></html>`;
+    return `<!DOCTYPE html><html lang="en"><head>${printStyle}</head><body>${html}</body></html>`;
 }
 
 /** Center 600px CRM email templates without overriding inner table widths. */
@@ -135,6 +172,14 @@ function prepareHtmlForPdf(html: string, kind: PdfHtmlKind): string {
     if (kind === 'crm-email') {
         const inner = looksLikeFullHtmlDocument(trimmed) ? extractBodyInnerHtml(trimmed) : trimmed;
         return buildEmailPdfDocument(inner);
+    }
+    if (kind === 'compliance-report') {
+        return injectPrintStylesIntoFullDocument(
+            looksLikeFullHtmlDocument(trimmed)
+                ? trimmed
+                : `<!DOCTYPE html><html><body>${trimmed}</body></html>`,
+            COMPLIANCE_PDF_PRINT_STYLE,
+        );
     }
     return injectPrintStylesIntoFullDocument(
         looksLikeFullHtmlDocument(trimmed)

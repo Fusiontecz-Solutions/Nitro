@@ -5,8 +5,8 @@
 /** Must stay in sync with `enum Role` in `prisma/schema/application.prisma`. */
 export const ROLES = [
   'AGENT',
+  'SCRUBBING',
   'UNDERWRITER',
-  'FINAL_UNDERWRITER',
   'ACCOUNTANT',
   'ACCOUNTS',
   'ADMIN',
