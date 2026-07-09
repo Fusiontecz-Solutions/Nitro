@@ -1,7 +1,9 @@
 import type { TemplateValues } from "./types";
 import {
   escapeHtml,
+  renderDeclineReasonsEmailRows,
   resolveApplicationRejectionEmailFields,
+  resolveDeclineReasonsList,
 } from "./applicationRejectionEmailShared";
 
 /** Hosted logo for outbound email (Gmail/Outlook-safe absolute URL). */
@@ -28,33 +30,15 @@ export function renderApplicationRejectionEmailHtml(
 ): string {
   const fields = resolveApplicationRejectionEmailFields(values);
   const clientName = escapeHtml(fields.clientName);
-  const primaryReason = escapeHtml(fields.primaryReason);
-  const otherReasonsText = fields.otherReasons;
+  const declineReasons = resolveDeclineReasonsList(values);
+  const declineReasonsBlock = renderDeclineReasonsEmailRows(
+    declineReasons,
+    escapeHtml,
+  );
+  const reasonsHeading =
+    declineReasons.length > 1 ? "Decline Reasons" : "Decline Reason";
   const logoSrc = escapeHtml(APPLICATION_REJECTION_EMAIL_LOGO_SRC);
   const watermarkSrc = escapeHtml(APPLICATION_REJECTION_EMAIL_WATERMARK_SRC);
-
-  const otherReasonsBlock = otherReasonsText
-    ? `
-                                  <tr>
-                                    <td style="border-top:1px dashed #cccccc;font-size:0;line-height:0;padding-bottom:12px;">&nbsp;</td>
-                                  </tr>
-                                  <tr>
-                                    <td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;color:#333333;padding-bottom:8px;">
-                                      Other Reason(s)
-                                    </td>
-                                  </tr>
-                                  <tr>
-                                    <td>
-                                      <table role="presentation" border="0" cellpadding="0" cellspacing="0" bgcolor="#f2f4f7" style="background-color:#f2f4f7;border-radius:4px;">
-                                        <tr>
-                                          <td style="padding:6px 12px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#666666;vertical-align:middle;">
-                                            <span style="color:#666666;font-size:12px;padding-right:5px;line-height:1;">&bull;</span> ${escapeHtml(otherReasonsText)}
-                                          </td>
-                                        </tr>
-                                      </table>
-                                    </td>
-                                  </tr>`
-    : "";
 
   return `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
@@ -167,22 +151,10 @@ export function renderApplicationRejectionEmailHtml(
                               <td class="reason-content" bgcolor="#ffffff" valign="top" style="background-color:#ffffff;padding:20px 25px;">
                                 <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
                                   <tr>
-                                    <td style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;color:#da1e28;padding-bottom:5px;">
-                                      Primary Reason
+                                    <td style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;color:#da1e28;padding-bottom:8px;">
+                                      ${reasonsHeading}
                                     </td>
-                                  </tr>
-                                  <tr>
-                                    <td style="padding-bottom:15px;vertical-align:middle;">
-                                      <table role="presentation" border="0" cellpadding="0" cellspacing="0">
-                                        <tr>
-                                          <td style="font-size:18px;color:#da1e28;padding-right:8px;line-height:1;vertical-align:middle;">&bull;</td>
-                                          <td style="font-family:Georgia,Times,serif;font-size:18px;font-weight:bold;color:#111111;line-height:1;vertical-align:middle;">
-                                            ${primaryReason}
-                                          </td>
-                                        </tr>
-                                      </table>
-                                    </td>
-                                  </tr>${otherReasonsBlock}
+                                  </tr>${declineReasonsBlock}
                                 </table>
                               </td>
                             </tr>
