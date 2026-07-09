@@ -2338,6 +2338,11 @@ function resolveClientForPrefill(anyApp: Record<string, any> | null | undefined)
         businessCity: str(c.businessCity || addr.city || c.city),
         businessState: str(c.businessState || addr.state || c.state),
         businessZip: str(c.businessZipCode || addr.zipCode || c.zip),
+        ownerAddress1: str(c.ownerAddress1 || own.address),
+        ownerAddress2: str(c.ownerAddress2),
+        ownerCity: str(c.ownerCity || own.city),
+        ownerState: str(c.ownerState || own.state),
+        ownerZip: str(c.ownerZipCode || own.zipCode),
         incorporationState: str(
             c.businessIncorporationState ||
             biz.incorporationState ||
@@ -3376,6 +3381,10 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
     const businessCity = String(r.businessCity || bi?.city || "");
     const businessState = String(r.businessState || bi?.state || "");
     const businessZip = String(r.businessZip || bi?.zip || "");
+    const contactStreet = [r.ownerAddress1, r.ownerAddress2].filter(Boolean).join(", ").trim();
+    const contactCity = String(r.ownerCity || "");
+    const contactState = String(r.ownerState || "");
+    const contactZip = String(r.ownerZip || "");
     const taxEin = String(r.ein || bi?.federalTaxIdEin || "");
     const phone = String(r.businessPhone || r.ownerPhone || "");
     const client = a?.client || {};
@@ -3407,10 +3416,10 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         businessAddressCity: businessCity,
         businessAddressState: businessState,
         businessAddressZip: businessZip,
-        businessAddressContract: businessAddress,
-        businessAddressContractCity: businessCity,
-        businessAddressContractState: businessState,
-        businessAddressContractZip: businessZip,
+        businessAddressContract: contactStreet,
+        businessAddressContractCity: contactCity,
+        businessAddressContractState: contactState,
+        businessAddressContractZip: contactZip,
         state: String(
             r.incorporationState || bi?.stateOfIncorporation || "",
         ),
@@ -3423,10 +3432,6 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         securityBusinessAddressCity: businessCity,
         securityBusinessAddressState: businessState,
         securityBusinessAddressZip: businessZip,
-        achAuthorizationAccountHolderAddress: businessAddress,
-        achAuthorizationAccountHolderCity: businessCity,
-        achAuthorizationAccountHolderState: businessState,
-        achAuthorizationAccountHolderZip: businessZip,
         securityGuarantor: ownerName || customerName || legalName,
         clientEmail: String(
             r.businessEmail ||
@@ -3892,15 +3897,10 @@ export function buildContractPrefillFieldsFromApplication(
         !str(savedOverrides.purchasePercent) &&
         !str(merged.purchasePercent)
     ) {
-        const od = options?.offerDecision ?? null;
-        const offerMonthlyNum = coerceToFiniteNumber(od?.monthlyPayment);
         const auto = options?.scrubbingContext
             ? resolveSpecifiedPurchasePercentFromScrubbing({
                   banks: options.scrubbingContext.banks,
                   positions: options.scrubbingContext.positions,
-                  offerMonthlyPayment:
-                      options.scrubbingContext.offerMonthlyPayment ??
-                      (offerMonthlyNum !== undefined ? offerMonthlyNum : null),
               })
             : null;
         if (auto) merged.purchasePercent = auto;

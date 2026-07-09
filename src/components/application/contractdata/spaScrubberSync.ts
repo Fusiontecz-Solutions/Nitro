@@ -24,6 +24,7 @@ function parseAmount(value: unknown): number {
 }
 
 function paymentRowKey(row: SpaMonthlyPaymentRow): string {
+    if (row.source === "positions_total") return "positions:total";
     return row.source === "offer"
         ? "offer:monthly"
         : `position:${row.positionId ?? row.label}`;
