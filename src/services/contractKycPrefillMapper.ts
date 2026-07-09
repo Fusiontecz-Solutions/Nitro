@@ -132,23 +132,15 @@ export function mapDriverLicenseKeyDataToPrefill(
 
   if (street) {
     set('guarantorAddress', street);
-    set('businessAddressContract', street);
-    set('achAuthorizationAccountHolderAddress', street);
   }
   if (city) {
     set('guarantorAddressCity', city);
-    set('businessAddressContractCity', city);
-    set('achAuthorizationAccountHolderCity', city);
   }
   if (state) {
     set('guarantorAddressState', state);
-    set('businessAddressContractState', state);
-    set('achAuthorizationAccountHolderState', state);
   }
   if (zip) {
     set('guarantorAddressZip', zip);
-    set('businessAddressContractZip', zip);
-    set('achAuthorizationAccountHolderZip', zip);
   }
 
   return {
@@ -238,26 +230,16 @@ export function mapVoidedCheckKeyDataToPrefill(
     set('achAuthorizationAccountHolderBankAccountNumber', account);
   }
   if (street) {
-    set('businessAddress', street);
-    set('securityBusinessAddress', street);
     set('achAuthorizationAccountHolderAddress', street);
   }
   if (city) {
-    set('businessAddressCity', city);
-    set('securityBusinessAddressCity', city);
     set('achAuthorizationAccountHolderCity', city);
   }
   if (state) {
-    set('businessAddressState', state);
-    set('securityBusinessAddressState', state);
     set('achAuthorizationAccountHolderState', state);
-    set('achAuthorizationAccountHolderBankState', state);
   }
   if (zip) {
-    set('businessAddressZip', zip);
-    set('securityBusinessAddressZip', zip);
     set('achAuthorizationAccountHolderZip', zip);
-    set('achAuthorizationAccountHolderBankZip', zip);
   }
 
   const bankCity = str(keyData.bank_city);
