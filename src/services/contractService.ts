@@ -934,6 +934,12 @@ class ContractService {
     const businessCity = firstNonEmptyString(client?.businessCity, biz?.city);
     const businessState = firstNonEmptyString(client?.businessState, biz?.state);
     const businessZip = firstNonEmptyString(client?.businessZipCode, biz?.zipCode, biz?.zip);
+    const contactAddress = firstNonEmptyString(
+      [client?.ownerAddress1, client?.ownerAddress2].filter(Boolean).join(', '),
+    );
+    const contactCity = firstNonEmptyString(client?.ownerCity);
+    const contactState = firstNonEmptyString(client?.ownerState);
+    const contactZip = firstNonEmptyString(client?.ownerZipCode);
     const purchaseAmount = derivedApprovedAmount != null ? String(derivedApprovedAmount) : '';
     const purchasePrice = derivedTotalAmount != null ? String(derivedTotalAmount) : '';
     const purchasePercent = '';
@@ -974,10 +980,10 @@ class ContractService {
       authorizationClientBankAccount: bankAccount || null,
       authorizationClientBankRouting: bankRouting || null,
       authorizedBusinessPhone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
-      businessAddressContract: businessAddress || null,
-      businessAddressContractCity: businessCity || null,
-      businessAddressContractState: businessState || null,
-      businessAddressContractZip: businessZip || null,
+      businessAddressContract: contactAddress || null,
+      businessAddressContractCity: contactCity || null,
+      businessAddressContractState: contactState || null,
+      businessAddressContractZip: contactZip || null,
       securityBusinessName: legalName || null,
       securityDoingBusinessAs: dba || null,
       securityBusinessAddress: businessAddress || null,
@@ -1090,10 +1096,10 @@ class ContractService {
             frequency: firstNonEmptyString(offer?.frequency) || null,
             dba: dba || null,
             phone: firstNonEmptyString(client?.businessNumber, client?.ownerMobileNumber) || null,
-            address: businessAddress || null,
-            city: businessCity || null,
-            state: businessState || null,
-            zip: businessZip || null,
+            address: null,
+            city: null,
+            state: null,
+            zip: null,
             bankBranchCity: null,
             bankState: null,
             bankZip: null,
@@ -1115,7 +1121,7 @@ class ContractService {
             dba1: dba || null,
             typeOfEntity1: firstNonEmptyString(client?.businessEntityType, biz?.entityType) || null,
             ein1: taxEin || null,
-            mailingAddress1: businessAddress || null,
+            mailingAddress1: contactAddress || null,
             legalName2: null,
             dba2: null,
             typeOfEntity2: null,

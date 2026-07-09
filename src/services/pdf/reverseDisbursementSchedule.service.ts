@@ -1,6 +1,7 @@
 import prisma from '../../config/prismaClient';
 import { renderHtmlToA4PdfBuffer } from './letterHtmlToPdf.service';
 import { appendPdfBuffersToBase64 } from '../docusign/utils/merge-layout-pdfs';
+import type { DocumentLayoutPlacement } from '../docusign/utils/convert-docusign-template-export';
 import type { DocumentLayoutWithBase64 } from '../docusign/utils/platform-layout-envelope';
 import {
   REVERSE_DISBURSEMENT_COLUMNS,
@@ -16,6 +17,36 @@ const DEFAULT_KATAN_LOGO_URL =
 
 const DEFAULT_ALLIANCE_LOGO_URL =
   'https://res.cloudinary.com/dfy6ahsqz/image/upload/v1783517910/ALLIANCE_BRIDGE_CAPITAL_-_FLEX_ADDENDUM_x5utri.jpg';
+
+/** DocuSign Sign Here tab on the appended disbursement schedule page. */
+const REVERSE_DISBURSEMENT_SIGNATURE_X = '495';
+const REVERSE_DISBURSEMENT_SIGNATURE_Y = '748';
+const REVERSE_DISBURSEMENT_SIGNATURE_PLACEMENT_ID = 'reverse_disbursement_signature';
+
+async function getPdfPageCountFromBase64(base64: string): Promise<number> {
+  const { PDFDocument } = await import('pdf-lib');
+  const pdf = await PDFDocument.load(Buffer.from(base64, 'base64'));
+  return pdf.getPageCount();
+}
+
+function buildReverseDisbursementSignaturePlacement(
+  pageNumber: string,
+  documentId: string,
+): DocumentLayoutPlacement {
+  return {
+    id: REVERSE_DISBURSEMENT_SIGNATURE_PLACEMENT_ID,
+    type: 'signature',
+    slot: `signature_p${pageNumber}_${REVERSE_DISBURSEMENT_SIGNATURE_X}_${REVERSE_DISBURSEMENT_SIGNATURE_Y}`,
+    documentId,
+    pageNumber,
+    x: REVERSE_DISBURSEMENT_SIGNATURE_X,
+    y: REVERSE_DISBURSEMENT_SIGNATURE_Y,
+    signerRole: 'Signer',
+    optional: false,
+    sourceTabLabel: 'Disbursement schedule signature',
+    signerParty: 'primary',
+  };
+}
 
 function escapeHtml(value: string): string {
   return String(value ?? '')
@@ -412,8 +443,23 @@ export async function maybeAppendReverseDisbursementToMainContractLayout(
 
   const schedulePdf = await renderReverseDisbursementSchedulePdf(schedule, funderName);
   const documentBase64 = await appendPdfBuffersToBase64(layout.documentBase64, [schedulePdf]);
+  const pageCount = await getPdfPageCountFromBase64(documentBase64);
+  const documentId = String(layout.document?.documentId || '1');
+  const disbursementSignature = buildReverseDisbursementSignaturePlacement(
+    String(pageCount),
+    documentId,
+  );
+  const placements = [
+    ...layout.placements.filter((p) => p.id !== REVERSE_DISBURSEMENT_SIGNATURE_PLACEMENT_ID),
+    disbursementSignature,
+  ];
   return {
     ...layout,
     documentBase64,
+    document: {
+      ...layout.document,
+      pageCount,
+    },
+    placements,
   };
 }
