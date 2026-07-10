@@ -1,6 +1,6 @@
 /** Next-action hints shown under deal-pipeline sidebar sub-items. */
 export const SIDEBAR_PIPELINE_ACTION_HINTS: Partial<Record<string, string>> = {
-  Contract_Signed: "Perform final & funding call",
+  Contract_Signed: "Perform Decision Logic",
 };
 
 export type SidebarPipelineActionAccent = "contract-signed";

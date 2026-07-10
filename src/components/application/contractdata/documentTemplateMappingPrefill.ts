@@ -4,19 +4,30 @@ import type {
     ContractPrefillField,
 } from "./Contract";
 import {
+    buildWoodmereFlexAddendumContractPrefillFields,
+    formatFlexAddendumMoneyDisplay,
+    type WoodmereFlexAddendumContractPrefillFields,
+} from "./WOODMERE_FLEX_ADDENDUM";
+import {
     buildContractPrefillFieldsFromApplication,
+    getApplicationPrimaryRecipientName,
     getContractPrefillEditDefaultsFromApplication,
     resolveBalanceTransferMerchantContext,
+    resolveOfferAmountDollarsForUnderwritingFees,
+    resolveRemittancePrefillValue,
 } from "./Contract";
 import {
     buildBalanceTransferSheetContractPrefillFields,
+    formatFunderNameWithDealIdPrefix,
     type BalanceTransferSheetContractPrefillFields,
 } from "./BALANCE_TRANSFER_SHEET_ADDENDUM";
 import { DOCUSIGN_ADDENDUM_TEMPLATE_IDS } from "./docusignAddendumTemplates";
 import {
-    buildWoodmereFlexAddendumContractPrefillFields,
-    type WoodmereFlexAddendumContractPrefillFields,
-} from "./WOODMERE_FLEX_ADDENDUM";
+    isAchAuthorizationLayoutKey,
+    isPlatformLayoutKey,
+    PLATFORM_DISCLOSURE_FUNDER_NAME,
+    PLATFORM_LAYOUT_KEYS,
+} from "./platformDocumentConfig";
 import {
     buildWoodmereBuyoutBlankAddendumContractPrefillFields,
     type WoodmereBuyoutBlankAddendumContractPrefillFields,
@@ -48,7 +59,11 @@ import {
     expandDisclosureEditorValuesToPdfFields,
 } from "./disclosureEditorFields";
 import { isUtahDisclosureState } from "./daily_utah";
-import { isPlatformLayoutKey, PLATFORM_DISCLOSURE_FUNDER_NAME } from "./platformDocumentConfig";
+import {
+    ACH_AUTHORIZATION_EDITABLE_FIELD_IDS,
+    ACH_AUTHORIZATION_FIELD_LABELS,
+    resolveAchSavedMappingOverrides,
+} from "./achFormEditConfig";
 import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
 
 function resolveMainContractPersonNameFromPrefill(
@@ -92,7 +107,38 @@ export type DocumentSendHistoryEntry = {
     label: string;
     status?: string;
     updatedAt?: string;
+    /** Funder used for this ACH send (standalone ACH envelopes). */
+    funderName?: string;
+    funderProfileId?: string;
 };
+
+/** Last ACH funder chosen/sent — used to default the ACH Form modal dropdown. */
+export const LAST_ACH_SENT_FUNDER_KEY = "lastAchSentFunder";
+
+export type LastAchSentFunderMeta = {
+    funderName: string;
+    funderProfileId?: string;
+    envelopeId?: string;
+    updatedAt?: string;
+};
+
+export function parseLastAchSentFunder(raw: unknown): LastAchSentFunderMeta | null {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const blob = (raw as Record<string, unknown>)[LAST_ACH_SENT_FUNDER_KEY];
+    if (blob == null || typeof blob !== "object" || Array.isArray(blob)) return null;
+    const o = blob as Record<string, unknown>;
+    const funderName = String(o.funderName ?? "").trim();
+    if (!funderName) return null;
+    const funderProfileId = String(o.funderProfileId ?? "").trim();
+    const envelopeId = String(o.envelopeId ?? "").trim();
+    const updatedAt = String(o.updatedAt ?? "").trim();
+    return {
+        funderName,
+        ...(funderProfileId ? { funderProfileId } : {}),
+        ...(envelopeId ? { envelopeId } : {}),
+        ...(updatedAt ? { updatedAt } : {}),
+    };
+}
 
 export function parseDocumentSendHistory(raw: unknown): DocumentSendHistoryEntry[] {
     if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return [];
@@ -107,12 +153,18 @@ export function parseDocumentSendHistory(raw: unknown): DocumentSendHistoryEntry
         if (!envelopeId || (documentKind !== "contract" && documentKind !== "ach")) continue;
         const status = String((row as Record<string, unknown>).status ?? "").trim();
         const updatedAt = String((row as Record<string, unknown>).updatedAt ?? "").trim();
+        const funderName = String((row as Record<string, unknown>).funderName ?? "").trim();
+        const funderProfileId = String(
+            (row as Record<string, unknown>).funderProfileId ?? "",
+        ).trim();
         out.push({
             envelopeId,
             documentKind,
             label: label || (documentKind === "ach" ? "ACH Authorization" : "Contract"),
             ...(status ? { status } : {}),
             ...(updatedAt ? { updatedAt } : {}),
+            ...(funderName ? { funderName } : {}),
+            ...(funderProfileId ? { funderProfileId } : {}),
         });
     }
     return out;
@@ -334,6 +386,10 @@ function disclosureDummyContext(): StateDisclosureContext {
         prepayment: d(),
         recipientName: d(),
         funderName: PLATFORM_DISCLOSURE_FUNDER_NAME,
+        funderAddress: d(),
+        funderPhone: d(),
+        funderEmail: d(),
+        dealIdPrefix: d(),
         recipientAddress: d(),
         signatureDate: d(),
         prepaymentReceivedByDate: d(),
@@ -483,8 +539,19 @@ function dotBalanceTransfer(): BalanceTransferSheetContractPrefillFields {
 
 function dotWoodmereFlex(): WoodmereFlexAddendumContractPrefillFields {
     return {
-        clientLegalName: DUMMY,
+        addendumDate: DUMMY,
+        agreementDate: DUMMY,
+        merchantName: DUMMY,
         clientName: DUMMY,
+        businessName2: DUMMY,
+        installmentDay1: "1",
+        installmentDay2: "16",
+        dailyPayment1: DUMMY,
+        receivablePurchase1: DUMMY,
+        dailyPayment2: DUMMY,
+        receivablePurchase2: DUMMY,
+        funderName: DUMMY,
+        dealIdPrefix: DUMMY,
     };
 }
 
@@ -505,6 +572,13 @@ function buildBalanceTransferComputed(
         str(overrides.purchasePrice) ||
         str(overrides.purchaseAmount) ||
         "";
+    const funderNameWithDealPrefix = formatFunderNameWithDealIdPrefix(
+        str(c.funderName) || str(overrides.funderName),
+        str(c.dealIdPrefix) || str(overrides.dealIdPrefix),
+        str(c.funderDisplayName) || str(overrides.funderDisplayName),
+    );
+    const dealIdPrefix =
+        str(c.dealIdPrefix) || str(overrides.dealIdPrefix) || "";
     return buildBalanceTransferSheetContractPrefillFields({
         merchantLegalName: merchant.clientLegalName,
         businessLegalName: merchant.businessName,
@@ -516,15 +590,101 @@ function buildBalanceTransferComputed(
         businessAddressState: str(c.businessAddressState) || str(overrides.businessAddressState),
         businessAddressZip: str(c.businessAddressZip) || str(overrides.businessAddressZip),
         purchasePrice,
+        funderNameWithDealPrefix,
+        dealIdPrefix,
     });
 }
 
-function buildWoodmereFlexComputed(contract: Record<string, unknown> | null, sctx: StateDisclosureContext): ContractPrefillField[] {
+function buildWoodmereFlexComputed(
+    contract: Record<string, unknown> | null,
+    sctx: StateDisclosureContext,
+    application?: Record<string, unknown> | null,
+): ContractPrefillField[] {
     const c = contract ?? {};
-    const personName = str(c.customerName) || str(c.clientName) || sctx.recipientName;
+    const app = application ?? null;
+    const overrides = (c.contractPrefillOverrides as Record<string, unknown> | undefined) ?? {};
+    const offerDecision =
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        (c.offer as Record<string, unknown> | undefined) ??
+        null;
+    const legal =
+        str(c.legalName) ||
+        str(c.clientLegalName) ||
+        sctx.recipientName ||
+        "";
+    const primaryRecipient = getApplicationPrimaryRecipientName(app);
+    const clientName =
+        str(c.customerName) ||
+        str(c.clientName) ||
+        str(c.owner1GuarantorName) ||
+        primaryRecipient ||
+        sctx.recipientName ||
+        "";
+    const agreementDate =
+        str(c.agreement_date) ||
+        sctx.signatureDate ||
+        str(c.agreementDate) ||
+        "";
+    const addendumDate = str(c.addendum_date) || agreementDate;
+    const legacyDailyPayment =
+        str(c.daily_payment) ||
+        str(c.remittance) ||
+        resolveRemittancePrefillValue({
+            application: app ?? undefined,
+            contract,
+            offerDecision,
+        });
+    const offerAmountNum = resolveOfferAmountDollarsForUnderwritingFees({
+        contract,
+        application: app ?? undefined,
+        offerDecision,
+    });
+    const offerAmountStr =
+        offerAmountNum !== undefined && offerAmountNum > 0
+            ? formatFlexAddendumMoneyDisplay(String(offerAmountNum))
+            : str(offerDecision?.offer) || str(c.approvedAmount) || "";
+    const dailyPayment1 =
+        str(c.daily_payment_1) ||
+        str(c.dailyPayment1) ||
+        legacyDailyPayment;
+    const receivablePurchase1 =
+        str(c.receivable_purchase_1) ||
+        str(c.receivablePurchase1) ||
+        str(c.receivable_purchase) ||
+        str(c.receivablePurchase) ||
+        offerAmountStr;
+    const dailyPayment2 =
+        str(c.daily_payment_2) || str(c.dailyPayment2) || dailyPayment1;
+    const receivablePurchase2 =
+        str(c.receivable_purchase_2) ||
+        str(c.receivablePurchase2) ||
+        receivablePurchase1;
+    const businessName2 =
+        str(c.merchant2Name) ||
+        str(c.owner2GuarantorName) ||
+        str(c.merchant2_name) ||
+        str(c.owner2_guarantor_name) ||
+        str(c.business_name_2) ||
+        "";
+    const funderName =
+        str(c.funderDisplayName) ||
+        str(overrides.funderDisplayName) ||
+        str(c.funderName) ||
+        str(overrides.funderName);
+    const dealIdPrefix = str(c.dealIdPrefix) || str(overrides.dealIdPrefix);
     return buildWoodmereFlexAddendumContractPrefillFields({
-        clientLegalName: str(c.legalName) || sctx.recipientName,
-        clientName: personName,
+        addendumDate,
+        agreementDate,
+        merchantName: legal,
+        clientName,
+        businessName2,
+        dailyPayment1,
+        receivablePurchase1,
+        dailyPayment2,
+        receivablePurchase2,
+        funderName,
+        dealIdPrefix,
     });
 }
 
@@ -673,14 +833,31 @@ const ADDENDUM_GUID = Object.fromEntries(
 function resolveAddendumKind(
     templateId?: string | null,
     normName = "",
+    layoutKey?: string | null,
 ): AddendumKind | null {
     const tid = String(templateId ?? "").trim().toLowerCase();
+    const lk = String(layoutKey ?? "").trim().toLowerCase();
+    const key = lk || tid;
+    if (
+        key === PLATFORM_LAYOUT_KEYS.flexAddendum ||
+        key.endsWith("_flex_addendum")
+    ) {
+        return "woodmere_flex";
+    }
+    if (
+        key === PLATFORM_LAYOUT_KEYS.balanceTransfer ||
+        key.endsWith("_balance_transfer")
+    ) {
+        return "balance_transfer_sheet";
+    }
     if (tid === ADDENDUM_GUID.WOODMERE_FLEX) return "woodmere_flex";
     if (tid === ADDENDUM_GUID.WOODMERE_BALANCE_TRANSFER_SHEET) return "balance_transfer_sheet";
-    if (matches(normName, "balance", "transfer") && normName.includes("sheet")) return "balance_transfer_sheet";
+    if (matches(normName, "balance", "transfer") && !normName.includes("discover") && !normName.includes("refi"))
+        return "balance_transfer_sheet";
     if (normName.includes("woodmere") && normName.includes("flex") && (normName.includes("dated") || normName.includes("agreement")))
         return "woodmere_flex_dated";
     if (normName.includes("woodmere") && normName.includes("flex")) return "woodmere_flex";
+    if (normName.includes("flex") && !normName.includes("dated")) return "woodmere_flex";
     if (normName.includes("buyout") && normName.includes("blank")) return "woodmere_buyout_blank";
     if (normName.includes("discover") && normName.includes("epo")) return "discover_epo";
     if (normName.includes("discover") && (normName.includes("refi") || normName.includes("balance_transfer")))
@@ -729,8 +906,15 @@ export function hasDocumentTemplatePrefillFieldMap(
 export function hasAddendumPrefillFieldMap(
     templateId?: string | null,
     templateName?: string | null,
+    layoutKey?: string | null,
 ): boolean {
-    return resolveAddendumKind(templateId, normalizeKey(templateName ?? "")) != null;
+    return (
+        resolveAddendumKind(
+            templateId,
+            normalizeKey(templateName ?? ""),
+            layoutKey,
+        ) != null
+    );
 }
 
 /** Remove per-mapping addendum blob so main contract prefill forms do not treat it as flat keys. */
@@ -742,6 +926,7 @@ export function stripDocumentTemplateBlobFromPrefillOverrides<
     delete o[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
     delete o[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
     delete o[DOCUMENT_SEND_HISTORY_KEY];
+    delete o[LAST_ACH_SENT_FUNDER_KEY];
     delete o[CONTRACT_SIGNER_OVERRIDES_KEY];
     return o as T;
 }
@@ -775,7 +960,7 @@ function addendumComputed(
         case "balance_transfer_sheet":
             return buildBalanceTransferComputed(contract, sctx, application);
         case "woodmere_flex":
-            return buildWoodmereFlexComputed(contract, sctx);
+            return buildWoodmereFlexComputed(contract, sctx, application);
         case "woodmere_buyout_blank":
             return buildWoodmereBuyoutComputed(contract, sctx);
         case "woodmere_flex_dated":
@@ -834,61 +1019,10 @@ export function parseDocumentTemplateEnvelopeByMappingId(
 export const LINKED_DOCUSIGN_ADDENDUM_SECTION_ID = "linked_docusign_addendum";
 export const LINKED_DOCUSIGN_ACH_SECTION_ID = "linked_docusign_ach";
 
-/** Field ids on `ach_authorization.layout.json` — keep in sync with backend layout. */
-const ACH_AUTHORIZATION_LAYOUT_FIELD_IDS = [
-    "ach_authorization_account_holder_address",
-    "ach_authorization_account_holder_bank_account_number",
-    "ach_authorization_account_holder_bank_branch_city",
-    "ach_authorization_account_holder_bank_name",
-    "ach_authorization_account_holder_bank_routing_number",
-    "ach_authorization_account_holder_bank_state",
-    "ach_authorization_account_holder_bank_transaction_fee",
-    "ach_authorization_account_holder_bank_number_of_transactions",
-    "ach_authorization_account_holder_bank_zip",
-    "ach_authorization_account_holder_city",
-    "ach_authorization_account_holder_dba",
-    "ach_authorization_account_holder_name",
-    "ach_authorization_account_holder_phone",
-    "ach_authorization_account_holder_state",
-    "ach_authorization_account_holder_zip",
-    "ach_authorization_concent_account_holder_name",
-    "authorization_client_bank_account",
-    "authorization_client_bank_name",
-    "authorization_client_bank_routing",
-    "authorization_client_name",
-    "authorization_client_name_print",
-    "authorization_client_tax_id",
-    "authorized_business_phone",
-    "signature_date",
-] as const;
-
-const ACH_AUTHORIZATION_FIELD_LABELS: Record<string, string> = {
-    ach_authorization_account_holder_name: "Account holder name",
-    ach_authorization_account_holder_dba: "DBA",
-    ach_authorization_account_holder_phone: "Phone",
-    ach_authorization_account_holder_address: "Street address",
-    ach_authorization_account_holder_city: "City",
-    ach_authorization_account_holder_state: "State",
-    ach_authorization_account_holder_zip: "ZIP",
-    ach_authorization_account_holder_bank_name: "Bank name",
-    ach_authorization_account_holder_bank_branch_city: "Bank branch city",
-    ach_authorization_account_holder_bank_state: "Bank state",
-    ach_authorization_account_holder_bank_zip: "Bank ZIP",
-    ach_authorization_account_holder_bank_routing_number: "Routing number",
-    ach_authorization_account_holder_bank_account_number: "Account number",
-    ach_authorization_account_holder_bank_transaction_fee: "Transaction fee",
-    ach_authorization_account_holder_bank_number_of_transactions: "NO. of transaction",
-    ach_authorization_concent_account_holder_name: "Consent — account holder name",
-    authorization_client_bank_account: "Client bank account",
-    authorization_client_bank_name: "Client bank name",
-    authorization_client_bank_routing: "Client bank routing",
-    authorization_client_name: "Client name",
-    authorization_client_name_print: "Client name (print)",
-    authorization_client_tax_id: "Client tax ID / EIN",
-    authorized_business_phone: "Business phone",
-    signature_date: "Signature date",
-};
-
+/**
+ * Text Data Labels from `ach_authorization*.layout.json` (excludes DocuSign date/sign tabs).
+ * Source of truth: `achFormEditConfig.ts`.
+ */
 export function usesCoordinateLayoutTemplate(row: {
     documentType?: string | null;
     template?: {
@@ -896,16 +1030,16 @@ export function usesCoordinateLayoutTemplate(row: {
         layoutKey?: string | null;
         pdfUrl?: string | null;
         templateId?: string | null;
+        name?: string | null;
     } | null;
 } | null): boolean {
     if (!row) return false;
     const docType = normalizeKey(row.documentType ?? "");
     const type = normalizeKey(row.template?.type ?? "");
     const layoutKey = String(row.template?.layoutKey ?? "").trim();
-    const pdfUrl = String(row.template?.pdfUrl ?? "").trim();
-    if (docType === "ach" || type === "ach" || layoutKey === "ach_authorization") return true;
-    if (layoutKey && pdfUrl) return true;
-    return false;
+    if (docType === "ach" || type === "ach") return true;
+    if (isAchAuthorizationLayoutKey(layoutKey)) return true;
+    return resolveAchAuthorizationTemplate(type, row.template?.name, layoutKey);
 }
 
 function resolveAchAuthorizationTemplate(
@@ -914,17 +1048,19 @@ function resolveAchAuthorizationTemplate(
     layoutKey?: string | null,
 ): boolean {
     const typeNorm = normalizeKey(templateType ?? "");
-    const layoutNorm = normalizeKey(layoutKey ?? "");
     const nameNorm = normalizeKey(templateName ?? "");
+    if (typeNorm === "ach") return true;
+    if (isAchAuthorizationLayoutKey(layoutKey)) return true;
+    // Avoid matching unrelated templates that merely mention "ach" in the name.
     return (
-        typeNorm === "ach" ||
-        layoutNorm === "ach_authorization" ||
-        nameNorm.includes("ach")
+        nameNorm.includes("ach_authorization") ||
+        nameNorm.includes("ach authorization") ||
+        (nameNorm.includes("ach") && nameNorm.includes("authorization"))
     );
 }
 
 function achAuthorizationAllDefs(): ContractPrefillField[] {
-    return ACH_AUTHORIZATION_LAYOUT_FIELD_IDS.map((id) => ({
+    return ACH_AUTHORIZATION_EDITABLE_FIELD_IDS.map((id) => ({
         id,
         label: ACH_AUTHORIZATION_FIELD_LABELS[id] || id.replace(/_/g, " "),
         value: "",
@@ -952,15 +1088,17 @@ function achAuthorizationComputed(
             bankDetail: contractRecords?.bankDetail,
         },
     });
-    const allowed = new Set<string>(ACH_AUTHORIZATION_LAYOUT_FIELD_IDS);
-    const rows = computed.filter((f) => allowed.has(f.id));
-    if (!rows.some((f) => f.id === "signature_date" && str(f.value))) {
-        const dateRow = rows.find((f) => f.id === "signature_date");
-        if (dateRow && agreementDate) {
-            dateRow.value = agreementDate;
-        }
-    }
-    return rows;
+    const allowed = new Set<string>(ACH_AUTHORIZATION_EDITABLE_FIELD_IDS);
+    const byId = new Map(computed.filter((f) => allowed.has(f.id)).map((f) => [f.id, f]));
+    // Preserve layout placement order for the Edit ACH form modal.
+    return ACH_AUTHORIZATION_EDITABLE_FIELD_IDS.map((id) => {
+        const row = byId.get(id);
+        return {
+            id,
+            label: ACH_AUTHORIZATION_FIELD_LABELS[id] || id.replace(/_/g, " "),
+            value: row?.value ?? "",
+        };
+    });
 }
 
 export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
@@ -1010,6 +1148,45 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     });
     const templateId = options.templateId;
 
+    // ACH must win over disclosure matching: state+frequency alone would otherwise
+    // return Page 3 / disclosure fields for every template on a disclosure deal.
+    if (
+        docType === "ach" ||
+        resolveAchAuthorizationTemplate(
+            options.templateType,
+            name,
+            options.templateLayoutKey,
+        )
+    ) {
+        const all = achAuthorizationAllDefs();
+        const computed = achAuthorizationComputed(
+            effectiveContract,
+            options.application ?? null,
+            options.agreementDate,
+            options.mainPrefillOverrides,
+            options.contractRecords ?? null,
+        );
+        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+    }
+
+    // Addendums must also win over disclosure matching for the same reason.
+    const norm = normalizeKey(name ?? "");
+    const addendum = resolveAddendumKind(
+        templateId,
+        norm,
+        options.templateLayoutKey,
+    );
+    if (addendum) {
+        const all = addendumAllDefs(addendum);
+        const computed = addendumComputed(
+            addendum,
+            effectiveContract,
+            sctx,
+            options.application ?? null,
+        );
+        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
+    }
+
     if (isDisclosureDoc) {
         const stAll = stateDisclosureAllDefs(name, state, frequency);
         if (stAll.length > 0) {
@@ -1038,37 +1215,6 @@ export function getDocumentTemplatePrefillFieldRowsForEditor(options: {
     if (stAll.length > 0) {
         const computed = stateDisclosureComputed(name, state, frequency, sctx);
         return mergeFieldRows(stAll, computed, options.savedOverridesForMapping);
-    }
-
-    const norm = normalizeKey(name ?? "");
-    const addendum = resolveAddendumKind(templateId, norm);
-    if (addendum) {
-        const all = addendumAllDefs(addendum);
-        const computed = addendumComputed(
-            addendum,
-            effectiveContract,
-            sctx,
-            options.application ?? null,
-        );
-        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
-    }
-
-    if (
-        resolveAchAuthorizationTemplate(
-            options.templateType,
-            name,
-            options.templateLayoutKey,
-        )
-    ) {
-        const all = achAuthorizationAllDefs();
-        const computed = achAuthorizationComputed(
-            effectiveContract,
-            options.application ?? null,
-            options.agreementDate,
-            options.mainPrefillOverrides,
-            options.contractRecords ?? null,
-        );
-        return mergeFieldRows(all, computed, options.savedOverridesForMapping);
     }
 
     return [];
@@ -1125,7 +1271,12 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             (tid && mergedSet.has(tid)) ||
             (templateId && mergedSet.has(templateId));
         if (!included) continue;
-        const perMap = blob[row.id];
+        const perMap =
+            String(row.documentType || "").toLowerCase() === "ach" ||
+            isAchAuthorizationLayoutKey(layoutKey) ||
+            normalizeKey(row.template?.type ?? "") === "ach"
+                ? resolveAchSavedMappingOverrides(blob, row.id)
+                : (blob[row.id] ?? null);
         const computedRows = getDocumentTemplatePrefillFieldRowsForEditor({
             templateId: templateId || tid || layoutKey,
             templateName: row.template?.name ?? null,
@@ -1137,7 +1288,7 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             application: args.application ?? null,
             agreementDate: args.agreementDate,
             mainPrefillOverrides: args.mainPrefillOverrides,
-            savedOverridesForMapping: perMap ?? null,
+            savedOverridesForMapping: perMap,
             bankDetail: args.bankDetail ?? null,
             documentType: row.documentType ?? null,
         });

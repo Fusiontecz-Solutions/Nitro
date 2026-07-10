@@ -28,7 +28,7 @@ import {
     voidBoldSignDocument,
 } from "@/redux/actions/boldSignActions";
 import { mergeWithDefaultCcEmails } from "./docusignCcList";
-import { funderNamesEquivalent, useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { funderNamesEquivalent, formatFunderSelectLabel, useFunderProfiles } from "@/hooks/useFunderProfiles";
 import { useTheme } from "@/context/ThemeContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -89,9 +89,11 @@ import {
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     isAchEnvelopeDraftLikeStatus,
+    LAST_ACH_SENT_FUNDER_KEY,
     mergeStateDisclosurePrefillFallback,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
+    parseLastAchSentFunder,
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
@@ -127,6 +129,8 @@ import {
     buildDocuSignEnvelopeEmailSubject,
     DOCUSIGN_EMAIL_LENDER_NAME,
 } from "./contractdata/docusignTemplateConfig";
+import { formatFunderNameWithDealIdPrefix } from "./contractdata/BALANCE_TRANSFER_SHEET_ADDENDUM";
+import { applyFunderDisclosureContactPrefill } from "./contractdata/funderDisclosureContact";
 import {
     parseContractSignerOverridesFromPrefill,
     parseBoldSignTemplateRolesFromRecipientsPayload,
@@ -384,6 +388,8 @@ export default function ContractTab({
     const [loadingAchMappings, setLoadingAchMappings] = useState(false);
     const [achViewerOpen, setAchViewerOpen] = useState(false);
     const [preparingAchViewer, setPreparingAchViewer] = useState(false);
+    /** Which Info Required ACH row feeds the ACH Form modal (first / last picked). */
+    const [selectedAchRecordId, setSelectedAchRecordId] = useState<string | null>(null);
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
     const [pdfName, setPdfName] = useState<string>("Contract.pdf");
     const [selectedContractId, setSelectedContractId] = useState<number | null>(null);
@@ -409,7 +415,7 @@ export default function ContractTab({
     const contractStateForFunders = String(
         (fetchedContract as { state?: string | null } | null)?.state ?? "",
     ).trim();
-    const { resolveLayoutKey, findFunder } = useFunderProfiles(contractStateForFunders || null);
+    const { resolveLayoutKey, findFunder, findFunderById } = useFunderProfiles(contractStateForFunders || null);
 
     const persistContractFunderMeta = useCallback(
         async (
@@ -584,7 +590,19 @@ export default function ContractTab({
         const previewable = achTemplateOptions.filter((template) =>
             boldSignTemplateIsPreviewable(template),
         );
-        return previewable[0] ?? null;
+        const platformFirst = previewable.find((template) => {
+            const layoutKey = String(template?.layoutKey || "").toLowerCase();
+            const templateId = String(template?.templateId || "").toLowerCase();
+            if (layoutKey.startsWith("funder_") || templateId.startsWith("funder_")) {
+                return false;
+            }
+            return (
+                layoutKey === "ach_authorization" ||
+                layoutKey === "ach_authorization_standalone" ||
+                layoutKey === "woodmere_ach_authorization"
+            );
+        });
+        return platformFirst ?? previewable[0] ?? null;
     }, [achTemplateOptions]);
 
     const linkedAchMapping = useMemo(() => {
@@ -682,6 +700,62 @@ export default function ContractTab({
         [bankDetailsList, bankDetailApplicationKeys],
     );
 
+    const achRecordRows = useMemo((): Record<string, unknown>[] => {
+        const data = achListState.data;
+        return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+    }, [achListState.data]);
+
+    const achFormSelectionStorageKey = useMemo(
+        () =>
+            selectedContractId != null
+                ? `achFormSelectedRecordId:${selectedContractId}`
+                : null,
+        [selectedContractId],
+    );
+
+    useEffect(() => {
+        if (!achRecordRows.length) {
+            setSelectedAchRecordId(null);
+            return;
+        }
+        const ids = achRecordRows.map((row) => String(row.id ?? "").trim()).filter(Boolean);
+        if (!ids.length) {
+            setSelectedAchRecordId(null);
+            return;
+        }
+        let preferred: string | null = null;
+        if (achFormSelectionStorageKey && typeof window !== "undefined") {
+            try {
+                const stored = String(
+                    window.sessionStorage.getItem(achFormSelectionStorageKey) || "",
+                ).trim();
+                if (stored && ids.includes(stored)) preferred = stored;
+            } catch {
+                /* ignore */
+            }
+        }
+        setSelectedAchRecordId((prev) => {
+            if (prev && ids.includes(prev)) return prev;
+            return preferred ?? ids[0];
+        });
+    }, [achRecordRows, achFormSelectionStorageKey]);
+
+    const handleSelectedAchRecordIdChange = useCallback(
+        (nextId: string) => {
+            const id = String(nextId || "").trim();
+            if (!id) return;
+            setSelectedAchRecordId(id);
+            if (achFormSelectionStorageKey && typeof window !== "undefined") {
+                try {
+                    window.sessionStorage.setItem(achFormSelectionStorageKey, id);
+                } catch {
+                    /* ignore */
+                }
+            }
+        },
+        [achFormSelectionStorageKey],
+    );
+
     const contractPrefillRecords: ContractPrefillContractRecords = useMemo(() => {
         const firstRow = (data: unknown): Record<string, unknown> | null =>
             Array.isArray(data) && data.length ? (data[0] as Record<string, unknown>) : null;
@@ -694,9 +768,15 @@ export default function ContractTab({
                       return ta - tb;
                   })[0]
                 : null;
+        const selectedAch =
+            (selectedAchRecordId
+                ? achRecordRows.find((row) => String(row.id ?? "").trim() === selectedAchRecordId)
+                : null) ??
+            achRecordRows[0] ??
+            null;
         return {
             contract: fetchedContract && typeof fetchedContract === "object" ? fetchedContract : null,
-            ach: firstRow(achListState.data),
+            ach: selectedAch,
             bankDetail: latestBank
                 ? {
                       bankName: latestBank.bankName,
@@ -714,7 +794,8 @@ export default function ContractTab({
                 : [],
         };
     }, [
-        achListState.data,
+        achRecordRows,
+        selectedAchRecordId,
         addendumListState.data,
         epoListState.data,
         contractOwnerListState.data,
@@ -1944,11 +2025,20 @@ export default function ContractTab({
             .map((e) => String(e).trim())
             .filter(Boolean);
         const resolvedFunderForCc = String(sendPayload.funderName ?? "").trim();
+        const funderProfileForSend =
+            (sendPayload.funderProfileId
+                ? findFunderById(String(sendPayload.funderProfileId).trim())
+                : null) ??
+            (resolvedFunderForCc ? findFunder(resolvedFunderForCc) : null);
+        const envelopeFunderLabel =
+            formatFunderSelectLabel(funderProfileForSend ?? undefined) ||
+            resolvedFunderForCc ||
+            DOCUSIGN_EMAIL_LENDER_NAME;
         const funderDefaultCcEmail =
-            String(findFunder(resolvedFunderForCc)?.defaultCcEmail ?? "").trim() || null;
-        const effectiveCcEmails = standaloneAchOnly
-            ? [...new Set(userCcEmails)]
-            : mergeWithDefaultCcEmails(userCcEmails, { funderDefaultCcEmail });
+            String(funderProfileForSend?.defaultCcEmail ?? "").trim() || null;
+        const effectiveCcEmails = mergeWithDefaultCcEmails(userCcEmails, {
+            funderDefaultCcEmail,
+        });
 
         const applicationSignerEmail = getPrimaryRecipientEmail().trim();
         const applicationSignerName = getPrimaryRecipientName();
@@ -2101,13 +2191,22 @@ export default function ContractTab({
                         docuSignBusinessName,
                         sendPackageSelection,
                         approvedAmount,
+                        envelopeFunderLabel,
                     )
-                  : buildDocuSignEnvelopeEmailSubject(docuSignClientName);
+                  : buildDocuSignEnvelopeEmailSubject(
+                        docuSignClientName,
+                        approvedAmount,
+                        envelopeFunderLabel,
+                    );
             const docuSignEmailMessage = standaloneAchOnly
-                ? `Please review and sign the ACH authorization form with ${DOCUSIGN_EMAIL_LENDER_NAME}.`
+                ? `Please review and sign the ACH authorization form with ${envelopeFunderLabel}.`
                 : sendPackageSelection
-                  ? buildPackageEnvelopeEmailMessage(docuSignBusinessName, sendPackageSelection)
-                  : `Please review and sign your agreement with ${DOCUSIGN_EMAIL_LENDER_NAME}.`;
+                  ? buildPackageEnvelopeEmailMessage(
+                        docuSignBusinessName,
+                        sendPackageSelection,
+                        envelopeFunderLabel,
+                    )
+                  : `Please review and sign your agreement with ${envelopeFunderLabel}.`;
 
             const supplementalDocumentRefs = standaloneAchOnly
                 ? []
@@ -2320,11 +2419,51 @@ export default function ContractTab({
                     resolvedFunderName,
                     sendPayload.funderProfileId,
                 );
+            const funderProfileForPrefill =
+                funderProfileForSend ??
+                (sendPayload.funderProfileId
+                    ? findFunderById(String(sendPayload.funderProfileId).trim())
+                    : null) ??
+                (resolvedFunderName ? findFunder(String(resolvedFunderName).trim()) : null);
+            const funderPlainName = formatFunderSelectLabel(
+                funderProfileForPrefill ?? undefined,
+            );
+            applyFunderDisclosureContactPrefill(
+                prefillFieldsPayload,
+                funderProfileForPrefill,
+                { funderDisplayName: funderPlainName || resolvedFunderName },
+            );
+            const funderNameWithDealPrefix = formatFunderNameWithDealIdPrefix(
+                funderProfileForPrefill?.name ?? resolvedFunderName,
+                funderProfileForPrefill?.dealIdPrefix,
+                funderProfileForPrefill?.displayName,
+            );
+            if (funderNameWithDealPrefix) {
+                const existing = prefillFieldsPayload.find(
+                    (f) => f.id === "funder_name_with_deal_prefix",
+                );
+                if (existing) {
+                    existing.value = funderNameWithDealPrefix;
+                } else {
+                    prefillFieldsPayload.push({
+                        id: "funder_name_with_deal_prefix",
+                        label: "Funder name (Deal ID prefix)",
+                        value: funderNameWithDealPrefix,
+                    });
+                }
+            }
             const mergeRequest = {
                 ...(standaloneAchOnly
                     ? {
                           standaloneDocumentRefs: [achDocumentRef],
                           skipApplicationEnvelopeLink: true,
+                          funderName: resolvedFunderName
+                              ? String(resolvedFunderName).trim()
+                              : undefined,
+                          funderProfileId: sendPayload.funderProfileId
+                              ? String(sendPayload.funderProfileId).trim()
+                              : undefined,
+                          contractState: contractStateForSend,
                       }
                     : {
                           supplementalDocumentRefs,
@@ -2619,7 +2758,12 @@ export default function ContractTab({
     };
 
     const persistAchEnvelopeOnContract = useCallback(
-        async (mappingId: string, envelopeId: string, status = "draft") => {
+        async (
+            mappingId: string,
+            envelopeId: string,
+            status = "draft",
+            funderMeta?: { funderName?: string | null; funderProfileId?: string | null } | null,
+        ) => {
             const cid = selectedContractId;
             if (cid == null || !Number.isFinite(Number(cid))) return;
             const rawOverrides =
@@ -2637,6 +2781,12 @@ export default function ContractTab({
             let sendHistory = parseDocumentSendHistory(rawOverrides);
             const previousEnvelopeId = String(previousMeta?.envelopeId ?? "").trim();
             const previousStatus = String(previousMeta?.status ?? "").trim();
+            const funderName = String(funderMeta?.funderName ?? "").trim();
+            const funderProfileId = String(funderMeta?.funderProfileId ?? "").trim();
+            const funderFields = {
+                ...(funderName ? { funderName } : {}),
+                ...(funderProfileId ? { funderProfileId } : {}),
+            };
             if (
                 previousEnvelopeId &&
                 previousEnvelopeId !== envelopeId &&
@@ -2649,6 +2799,7 @@ export default function ContractTab({
                     label: "ACH Authorization",
                     status: previousStatus,
                     updatedAt: String(previousMeta?.updatedAt ?? updatedAt),
+                    ...funderFields,
                 });
             }
             const nextEnvelopeBlob = {
@@ -2666,11 +2817,22 @@ export default function ContractTab({
                     label: "ACH Authorization",
                     status: statusTrim,
                     updatedAt,
+                    ...funderFields,
                 });
             }
             const prefillBlob = (rawOverrides as Record<string, unknown>)[
                 DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY
             ];
+            const priorLastAch = parseLastAchSentFunder(rawOverrides);
+            const nextLastAch =
+                funderName
+                    ? {
+                          funderName,
+                          ...(funderProfileId ? { funderProfileId } : {}),
+                          envelopeId,
+                          updatedAt,
+                      }
+                    : priorLastAch;
             await dispatch(
                 updateContract({
                     id: Number(cid),
@@ -2684,6 +2846,9 @@ export default function ContractTab({
                                 : {}),
                             [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: nextEnvelopeBlob,
                             [DOCUMENT_SEND_HISTORY_KEY]: sendHistory,
+                            ...(nextLastAch
+                                ? { [LAST_ACH_SENT_FUNDER_KEY]: nextLastAch }
+                                : {}),
                         },
                     },
                 }),
@@ -3732,6 +3897,9 @@ export default function ContractTab({
                         : null
                 }
                 contractPrefillRecords={contractPrefillRecords}
+                achRecordOptions={achRecordRows}
+                selectedAchRecordId={selectedAchRecordId}
+                onSelectedAchRecordIdChange={handleSelectedAchRecordIdChange}
                 readOnly={isReadOnly}
                 onContractDocumentsChanged={() => void refreshFetchedContract()}
                 onPrepareDocuSignDraft={

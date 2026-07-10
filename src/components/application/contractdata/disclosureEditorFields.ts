@@ -45,6 +45,10 @@ export const DISCLOSURE_EDITOR_FIELD_CATALOG: ReadonlyArray<{ id: string; label:
     { id: "disclosure_page3_net", label: "Page 3 net amount" },
     { id: "client_name", label: "Merchant / recipient name" },
     { id: "funder_name", label: "Funder / provider name" },
+    { id: "funder_address", label: "Funder address" },
+    { id: "funder_phone", label: "Funder phone" },
+    { id: "funder_email", label: "Funder email" },
+    { id: "deal_id_prefix", label: "Deal ID prefix" },
     { id: "disclosure_date", label: "Disclosure date" },
 ];
 
@@ -130,6 +134,10 @@ const EDITOR_TO_PDF_FIELD_IDS: Record<string, readonly string[]> = {
     disclosure_page3_net: ["disclosure_page3_net"],
     client_name: ["client_name", "recipient_name", "disclosure_name"],
     funder_name: ["funder_name"],
+    funder_address: ["funder_address"],
+    funder_phone: ["funder_phone"],
+    funder_email: ["funder_email"],
+    deal_id_prefix: ["deal_id_prefix"],
     disclosure_date: [
         "disclosure_date",
         "agreement_date",
@@ -229,7 +237,11 @@ export function expandDisclosureEditorValuesToPdfFields(
         }
     }
 
-    out.funder_name = PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase();
+    out.funder_name = String(
+        editorValues.funder_name || PLATFORM_DISCLOSURE_FUNDER_NAME,
+    )
+        .trim()
+        .toUpperCase();
     const merchant = String(editorValues.client_name ?? out.client_name ?? "").trim();
     if (merchant) {
         for (const pdfId of EDITOR_TO_PDF_FIELD_IDS.client_name ?? ["client_name"]) {
@@ -268,7 +280,13 @@ export function buildDisclosureEditorFieldsFromContext(
         disclosure_page3_subtotal: page3.page3Subtotal,
         disclosure_page3_net: page3.page3Net,
         client_name: String(ctx.recipientName ?? "").trim().toUpperCase(),
-        funder_name: PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
+        funder_name: String(ctx.funderName ?? PLATFORM_DISCLOSURE_FUNDER_NAME)
+            .trim()
+            .toUpperCase(),
+        funder_address: String(ctx.funderAddress ?? "").trim(),
+        funder_phone: String(ctx.funderPhone ?? "").trim(),
+        funder_email: String(ctx.funderEmail ?? "").trim(),
+        deal_id_prefix: String(ctx.dealIdPrefix ?? "").trim(),
         disclosure_date: disclosureDate,
     };
 

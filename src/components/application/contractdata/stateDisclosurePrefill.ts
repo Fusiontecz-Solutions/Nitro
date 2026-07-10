@@ -74,6 +74,14 @@ export interface StateDisclosureContext {
     recipientName?: string;
     /** Funder / provider legal name on the disclosure. */
     funderName?: string;
+    /** Selected funder street/city/state/zip (Connecticut disclosures). */
+    funderAddress?: string;
+    /** Selected funder phone (Connecticut disclosures). */
+    funderPhone?: string;
+    /** Selected funder email (Connecticut disclosures). */
+    funderEmail?: string;
+    /** Selected funder deal ID prefix (Connecticut disclosures). */
+    dealIdPrefix?: string;
     /** Broker fee paid to broker (Utah disclosure). */
     brokerFeePaidToBroker?: string;
     /** Estimated monthly cost of financing. */
@@ -193,6 +201,11 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
             disclosureDate: ctx.signatureDate,
             recipientName: ctx.recipientName,
             recipientAddress: ctx.recipientAddress,
+            funderName: ctx.funderName,
+            funderAddress: ctx.funderAddress,
+            funderPhone: ctx.funderPhone,
+            funderEmail: ctx.funderEmail,
+            dealIdPrefix: ctx.dealIdPrefix,
             amountTriggerPrepayment: ctx.prepaymentDiscountAmount,
             dateWhichAmountReceived: ctx.prepaymentReceivedByDate,
             recipientName2: ctx.recipientName,
@@ -216,6 +229,11 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
             disclosureDate: ctx.signatureDate,
             recipientName: ctx.recipientName,
             recipientAddress: ctx.recipientAddress,
+            funderName: ctx.funderName,
+            funderAddress: ctx.funderAddress,
+            funderPhone: ctx.funderPhone,
+            funderEmail: ctx.funderEmail,
+            dealIdPrefix: ctx.dealIdPrefix,
             amountTriggerPrepayment: ctx.prepaymentDiscountAmount,
             dateWhichAmountReceived: ctx.prepaymentReceivedByDate,
             recipientName2: ctx.recipientName,
@@ -246,6 +264,43 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
         }),
 
     weekly_florida: (ctx) =>
+        buildDailyFloridaContractPrefillFields({
+            clientName: ctx.recipientName,
+            funderName: ctx.funderName,
+            totalAmountBusinessFund: ctx.fundingProvided,
+            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountTobePaidToProvider: ctx.totalRepayment,
+            totalDollarCost: ctx.totalDollarCost,
+            estimatedPaymentAmount: ctx.estimatedPayment,
+            paymentExceededPercent: ctx.paymentExceededPercent,
+            percentOfBusinessIncome: ctx.paymentExceededPercent,
+            paymentFallenBelowPercent: ctx.paymentExceededPercent,
+            consistentWithPercent: ctx.paymentExceededPercent,
+            amountRequiredToTriggerPrepaymentDiscount: ctx.prepaymentDiscountAmount,
+            dateByWhichAmountMustbeReceived: ctx.prepaymentReceivedByDate,
+            signatureDate: ctx.signatureDate,
+        }),
+
+    /** Missouri uses the same field map / PDF tab labels as Florida. */
+    daily_missouri: (ctx) =>
+        buildDailyFloridaContractPrefillFields({
+            clientName: ctx.recipientName,
+            funderName: ctx.funderName,
+            totalAmountBusinessFund: ctx.fundingProvided,
+            totalAmountOfFundDisbursed: ctx.fundingDisbursed,
+            totalAmountTobePaidToProvider: ctx.totalRepayment,
+            totalDollarCost: ctx.totalDollarCost,
+            estimatedPaymentAmount: ctx.estimatedPayment,
+            paymentExceededPercent: ctx.paymentExceededPercent,
+            percentOfBusinessIncome: ctx.paymentExceededPercent,
+            paymentFallenBelowPercent: ctx.paymentExceededPercent,
+            consistentWithPercent: ctx.paymentExceededPercent,
+            amountRequiredToTriggerPrepaymentDiscount: ctx.prepaymentDiscountAmount,
+            dateByWhichAmountMustbeReceived: ctx.prepaymentReceivedByDate,
+            signatureDate: ctx.signatureDate,
+        }),
+
+    weekly_missouri: (ctx) =>
         buildDailyFloridaContractPrefillFields({
             clientName: ctx.recipientName,
             funderName: ctx.funderName,
@@ -363,6 +418,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     daily_kansas: (ctx) =>
         buildDailyKansasContractPrefillFields({
+            clientName: ctx.recipientName,
+            funderName: ctx.funderName,
             totalAmountOfFundProvided: ctx.fundingProvided,
             totalAmountFundDisbursed: ctx.fundingDisbursed,
             totalOfPayments: ctx.totalRepayment,
@@ -377,6 +434,8 @@ const REGISTRY: Record<string, StateDisclosureBuilder> = {
 
     weekly_kansas: (ctx) =>
         buildDailyKansasContractPrefillFields({
+            clientName: ctx.recipientName,
+            funderName: ctx.funderName,
             totalAmountOfFundProvided: ctx.fundingProvided,
             totalAmountFundDisbursed: ctx.fundingDisbursed,
             totalOfPayments: ctx.totalRepayment,
@@ -729,7 +788,14 @@ export function buildStateDisclosurePrefillContextFromContract(args: {
             numberOfPayments !== undefined ? String(Math.trunc(numberOfPayments)) : "",
         prepayment: "",
         recipientName: customerName,
-        funderName: PLATFORM_DISCLOSURE_FUNDER_NAME,
+        funderName:
+            str(contract.funderName) ||
+            str((contract as Record<string, unknown>).funder_name) ||
+            PLATFORM_DISCLOSURE_FUNDER_NAME,
+        funderAddress: str((contract as Record<string, unknown>).funderAddress),
+        funderPhone: str((contract as Record<string, unknown>).funderPhone),
+        funderEmail: str((contract as Record<string, unknown>).funderEmail),
+        dealIdPrefix: str((contract as Record<string, unknown>).dealIdPrefix),
         recipientAddress: businessAddressLine,
         signatureDate,
         prepaymentReceivedByDate: signatureDate,

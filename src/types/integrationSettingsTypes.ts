@@ -41,6 +41,12 @@ export type FunderProfile = {
   documentsSource?: "platform" | "own" | "shared";
   sharedDocumentsFunderId?: string | null;
   sharedDocumentsFunderName?: string | null;
+  addendumDocumentsSource?: "platform" | "own" | "shared";
+  disclosureDocumentsSource?: "platform" | "own" | "shared";
+  sharedAddendumFunderId?: string | null;
+  sharedDisclosureFunderId?: string | null;
+  sharedAddendumFunderName?: string | null;
+  sharedDisclosureFunderName?: string | null;
 };
 
 export type DocuSignAccountProfileInput = {
@@ -77,4 +83,8 @@ export type FunderProfileInput = {
   isActive?: boolean;
   documentsSource?: "platform" | "own" | "shared";
   sharedDocumentsFunderId?: string | null;
+  addendumDocumentsSource?: "platform" | "own" | "shared";
+  disclosureDocumentsSource?: "platform" | "own" | "shared";
+  sharedAddendumFunderId?: string | null;
+  sharedDisclosureFunderId?: string | null;
 };

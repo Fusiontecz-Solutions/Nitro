@@ -11,6 +11,11 @@ const FIELD_IDS = {
     disclosureDate: ["disclosure_date"],
     recipientName: ["recipient_name"],
     recipientAddress: ["recipient_address"],
+    funderName: ["funder_name"],
+    funderAddress: ["funder_address"],
+    funderPhone: ["funder_phone"],
+    funderEmail: ["funder_email"],
+    dealIdPrefix: ["deal_id_prefix"],
     amountTriggerPrepayment: ["amount_trigger_prepayment"],
     dateWhichAmountReceived: ["date_which_amount_received"],
     recipientName2: ["recipient_name2"],
@@ -40,6 +45,11 @@ export interface DailyConnecticutContractPrefillFields {
     disclosureDate?: string;
     recipientName?: string;
     recipientAddress?: string;
+    funderName?: string;
+    funderAddress?: string;
+    funderPhone?: string;
+    funderEmail?: string;
+    dealIdPrefix?: string;
     amountTriggerPrepayment?: string;
     dateWhichAmountReceived?: string;
     recipientName2?: string;
@@ -62,6 +72,11 @@ export function buildDailyConnecticutContractPrefillFields({
     disclosureDate = "",
     recipientName = "",
     recipientAddress = "",
+    funderName = "",
+    funderAddress = "",
+    funderPhone = "",
+    funderEmail = "",
+    dealIdPrefix = "",
     amountTriggerPrepayment = "",
     dateWhichAmountReceived = "",
     recipientName2 = "",
@@ -91,6 +106,11 @@ export function buildDailyConnecticutContractPrefillFields({
         ...mapIds(FIELD_IDS.disclosureDate, "Disclosure Date", disclosureDate),
         ...mapIds(FIELD_IDS.recipientName, "Recipient Name", recipientName),
         ...mapIds(FIELD_IDS.recipientAddress, "Recipient Address", recipientAddress),
+        ...mapIds(FIELD_IDS.funderName, "Funder Name", funderName),
+        ...mapIds(FIELD_IDS.funderAddress, "Funder Address", funderAddress),
+        ...mapIds(FIELD_IDS.funderPhone, "Funder Phone", funderPhone),
+        ...mapIds(FIELD_IDS.funderEmail, "Funder Email", funderEmail),
+        ...mapIds(FIELD_IDS.dealIdPrefix, "Deal ID Prefix", dealIdPrefix),
         ...mapIds(FIELD_IDS.amountTriggerPrepayment, "Amount Trigger Prepayment", amountTriggerPrepayment),
         ...mapIds(FIELD_IDS.dateWhichAmountReceived, "Date Which Amount Received", dateWhichAmountReceived),
         ...mapIds(FIELD_IDS.recipientName2, "Recipient Name 2", recipientName2),

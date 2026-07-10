@@ -234,6 +234,36 @@ export const assignApplicationToUnderwriter = createAsyncThunk(
     },
 );
 
+export const sendApplicationForFinalUnderwriterApproval = createAsyncThunk(
+    'application/sendFinalUnderwriterApproval',
+    async (
+        {
+            applicationId,
+            source,
+        }: {
+            applicationId: string;
+            source?: 'Decision Logic' | 'Funding Call';
+        },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/send-final-underwriter-approval`,
+                source ? { source } : {},
+            );
+            invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Send for final Underwriter approval error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to send application for final Underwriter approval',
+            );
+        }
+    },
+);
+
 export { prefetchApplicationsList } from '@/lib/applicationsListCache';
 
 // Application stats (count + totalAmount per queue/state)

@@ -11,7 +11,8 @@ import {
   useState,
 } from "react";
 import { Loader2, ShieldCheck } from "lucide-react";
-import { generateDecisionLogicReport } from "@/redux/actions/decision-logic-actions";
+import { Button } from "@/components/ui/button";
+import { generateDecisionLogicReportUntilComplete } from "@/redux/actions/decision-logic-actions";
 
 const WIDGET_SCRIPT_SRC =
   "https://assets.decisionlogic.com/cdn/widgetui/widgetUI.js";
@@ -45,72 +46,56 @@ function findWidgetScriptEl(): HTMLScriptElement | undefined {
   return undefined;
 }
 
-/** Non-empty widget `getEvent` detail (payload shapes vary by DL version). */
-function hasMeaningfulWidgetDetail(detail: unknown): boolean {
-  if (detail == null || detail === "") {
+/** Only treat real bank-login completion as a save trigger — ignore load/progress events. */
+function isWidgetCompletionSignal(detail: unknown): boolean {
+  if (detail == null || detail === "") return false;
+
+  if (typeof detail === "string") {
+    const status = detail.trim().toLowerCase();
+    if (!status) return false;
+    if (
+      status.includes("not completed") ||
+      status.includes("not started") ||
+      status.includes("in progress")
+    ) {
+      return false;
+    }
+    return (
+      status.includes("completed") ||
+      status.includes("complete") ||
+      status.includes("success")
+    );
+  }
+
+  if (typeof detail !== "object" || Array.isArray(detail)) {
     return false;
   }
-  console.log("detail from hasMeaningfulWidgetDetail", detail);
-  if (typeof detail === "string") {
-    return detail.trim().length > 0;
+
+  const row = detail as Record<string, unknown>;
+  if (row.isCompleted === true) return true;
+
+  const status = String(
+    row.statusText ?? row.status ?? row.eventType ?? row.type ?? "",
+  )
+    .trim()
+    .toLowerCase();
+  if (!status) return false;
+  if (
+    status.includes("not completed") ||
+    status.includes("not started") ||
+    status.includes("in progress")
+  ) {
+    return false;
   }
-  if (typeof detail === "number" || typeof detail === "boolean") {
-    return true;
-  }
-  console.log("detail from hasMeaningfulWidgetDetail", detail);
-  if (Array.isArray(detail)) {
-    return detail.length > 0;
-  }
-  if (typeof detail === "object") {
-    return Object.keys(detail as object).length > 0;
-  }
-  return false;
+  return (
+    status.includes("completed") ||
+    status.includes("complete") ||
+    status.includes("success")
+  );
 }
 
-/** DL often dispatches from shadow DOM; wait for quiet period after last signal before POST. */
-const WIDGET_REPORT_DEBOUNCE_MS = 2800;
-
-const REPORT_ATTEMPTS = 4;
-
-async function generateReportWithTransientRetry(
-  finalCode: string,
-  businessOwnerId: number,
-  bankAccountId: number,
-) {
-  let last: Awaited<ReturnType<typeof generateDecisionLogicReport>> | undefined;
-
-  console.log("finalCode from generateReportWithTransientRetry", finalCode);
-  console.log("businessOwnerId from generateReportWithTransientRetry", businessOwnerId);
-  console.log("bankAccountId from generateReportWithTransientRetry", bankAccountId);
-  
-  for (let attempt = 0; attempt < REPORT_ATTEMPTS; attempt++) {
-    last = await generateDecisionLogicReport(
-      finalCode,
-      businessOwnerId,
-      bankAccountId,
-    );
-    const err =
-      last &&
-      typeof last === "object" &&
-      "error" in last &&
-      typeof (last as { error?: string }).error === "string"
-        ? (last as { error: string }).error
-        : "";
-    if (!err) {
-      return last;
-    }
-    const soft = /not ready|pending|timeout|429|502|503|504|temporar|try again|empty|ECONNRESET|network|fetch/i.test(
-      err.toLowerCase(),
-    );
-    if (!soft || attempt === REPORT_ATTEMPTS - 1) {
-      return last;
-    }
-    await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, 1200 * (attempt + 1));
-    });
-  }
-  return last;
-}
+/** Wait for quiet period after the widget signals completion before fetching report. */
+const WIDGET_COMPLETION_DEBOUNCE_MS = 1500;
 
 export default function DecisionLogicExecutor({
   requestCode,
@@ -127,6 +112,8 @@ export default function DecisionLogicExecutor({
 
   const [widgetLoaded, setWidgetLoaded] = useState(false);
   const [widgetLoadError, setWidgetLoadError] = useState("");
+  const [isSavingReport, setIsSavingReport] = useState(false);
+  const [widgetContentMissing, setWidgetContentMissing] = useState(false);
   const reportSubmittedRef = useRef(false);
   const reportDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -239,10 +226,7 @@ export default function DecisionLogicExecutor({
       return;
     }
     reportSubmittedRef.current = true;
-    console.log("reportSubmittedRef from flushSaveReport",reportSubmittedRef.current);
-    console.log("requestCode from flushSaveReport", requestCode);
-    console.log("businessOwnerId from flushSaveReport", businessOwnerId);
-    console.log("bankAccountId from flushSaveReport", bankAccountId);
+    setIsSavingReport(true);
 
     try {
       const finalCode = requestCode.trim();
@@ -250,7 +234,7 @@ export default function DecisionLogicExecutor({
         throw new Error("Decision Logic did not return a request code.");
       }
 
-      const response = await generateReportWithTransientRetry(
+      const response = await generateDecisionLogicReportUntilComplete(
         finalCode,
         businessOwnerId,
         bankAccountId,
@@ -262,7 +246,7 @@ export default function DecisionLogicExecutor({
 
       toast.success(
         (response as { message?: string })?.message ||
-          "Decision Logic report saved.",
+          "Bank verification completed. Full report saved.",
       );
       navigate(
         `/decision-logic/success?businessOwnerId=${encodeURIComponent(
@@ -277,13 +261,14 @@ export default function DecisionLogicExecutor({
           "An unknown error occurred while generating the report.",
         );
       }
+    } finally {
+      setIsSavingReport(false);
     }
   }, [bankAccountId, businessOwnerId, navigate, requestCode]);
 
-  const scheduleSaveReportFromWidgetSignal = useCallback(
+  const scheduleSaveReportFromWidgetCompletion = useCallback(
     (detail: unknown) => {
-      console.log("detail from scheduleSaveReportFromWidgetSignal", detail);
-      if (!hasMeaningfulWidgetDetail(detail)) {
+      if (!isWidgetCompletionSignal(detail)) {
         return;
       }
       if (reportSubmittedRef.current) {
@@ -295,15 +280,11 @@ export default function DecisionLogicExecutor({
       reportDebounceRef.current = window.setTimeout(() => {
         reportDebounceRef.current = null;
         void flushSaveReport();
-      }, WIDGET_REPORT_DEBOUNCE_MS);
+      }, WIDGET_COMPLETION_DEBOUNCE_MS);
     },
     [flushSaveReport],
   );
 
-  /**
-   * Listen on `document` in capture phase: DL widget often emits `getEvent` from shadow DOM;
-   * those events may not reach a listener on `<widget-ui>` alone.
-   */
   useEffect(() => {
     if (!widgetLoaded) return;
     const host = document.getElementById("widget3");
@@ -318,14 +299,14 @@ export default function DecisionLogicExecutor({
       if (!path.includes(host)) {
         return;
       }
-      scheduleSaveReportFromWidgetSignal(e.detail);
+      scheduleSaveReportFromWidgetCompletion(e.detail);
     };
 
     const onHostGetEvent = (e: Event) => {
       if (!(e instanceof CustomEvent)) {
         return;
       }
-      scheduleSaveReportFromWidgetSignal(e.detail);
+      scheduleSaveReportFromWidgetCompletion(e.detail);
     };
 
     document.addEventListener("getEvent", onGetEventCapture, true);
@@ -339,69 +320,89 @@ export default function DecisionLogicExecutor({
         reportDebounceRef.current = null;
       }
     };
-  }, [widgetLoaded, scheduleSaveReportFromWidgetSignal]);
+  }, [widgetLoaded, scheduleSaveReportFromWidgetCompletion]);
 
-  /** Expand widget host + shadow iframe to match layout (Decision Logic defaults to a small width). */
   useLayoutEffect(() => {
     if (!widgetLoaded) return;
     let cancelled = false;
     let ro: ResizeObserver | undefined;
+    let mo: MutationObserver | undefined;
+    let pollId = 0;
 
-    const applySizes = () => {
-      if (cancelled) return;
+    const applySizes = (): boolean => {
+      if (cancelled) return false;
       const shell = document.getElementById("widgetHeight");
       const host = document.getElementById("widget3");
-      if (!shell || !host) return;
+      if (!shell || !host) return false;
 
-      const shellH = Math.max(320, Math.floor(shell.getBoundingClientRect().height));
+      const shellH = Math.max(420, Math.floor(shell.getBoundingClientRect().height));
       host.style.display = "block";
       host.style.width = "100%";
       host.style.maxWidth = "100%";
       host.style.boxSizing = "border-box";
       host.style.minHeight = `${shellH}px`;
+      host.style.height = `${shellH}px`;
 
       const root = host.shadowRoot;
-      if (!root) return;
+      if (!root) return false;
       const iframe = root.querySelector("iframe");
       if (iframe instanceof HTMLIFrameElement) {
         iframe.style.width = "100%";
         iframe.style.maxWidth = "100%";
         iframe.style.minHeight = `${shellH}px`;
-        iframe.style.height = "auto";
+        iframe.style.height = `${shellH}px`;
         iframe.style.border = "0";
         iframe.style.display = "block";
+        return true;
       }
+      return false;
     };
 
     applySizes();
     const t1 = window.setTimeout(applySizes, 120);
     const t2 = window.setTimeout(applySizes, 500);
+    const t3 = window.setTimeout(applySizes, 1500);
     const shell = document.getElementById("widgetHeight");
+    const host = document.getElementById("widget3");
     if (shell && typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver(() => applySizes());
       ro.observe(shell);
     }
+    if (host && typeof MutationObserver !== "undefined") {
+      mo = new MutationObserver(() => applySizes());
+      mo.observe(host, { childList: true, subtree: true, attributes: true });
+      if (host.shadowRoot) {
+        mo.observe(host.shadowRoot, { childList: true, subtree: true });
+      }
+    }
+
+    let attempts = 0;
+    pollId = window.setInterval(() => {
+      attempts += 1;
+      const hasIframe = applySizes();
+      if (hasIframe) {
+        setWidgetContentMissing(false);
+        window.clearInterval(pollId);
+        pollId = 0;
+        return;
+      }
+      if (attempts >= 20) {
+        setWidgetContentMissing(true);
+        window.clearInterval(pollId);
+        pollId = 0;
+      }
+    }, 500);
 
     return () => {
       cancelled = true;
       window.clearTimeout(t1);
       window.clearTimeout(t2);
+      window.clearTimeout(t3);
+      if (pollId) window.clearInterval(pollId);
       ro?.disconnect();
+      mo?.disconnect();
     };
   }, [widgetLoaded]);
-
-  useEffect(() => {
-    if (!widgetLoaded) return;
-  
-    console.log("⏳ Fallback timer started...");
-  
-    const timer = setTimeout(() => {
-      console.log("🚀 Fallback triggered → calling report");
-      flushSaveReport();
-    }, 12000); // 12 sec after widget loads
-  
-    return () => clearTimeout(timer);
-  }, [widgetLoaded, flushSaveReport]);
 
   const widgetProps: Record<string, string> = {
     id: "widget3",
@@ -445,8 +446,35 @@ export default function DecisionLogicExecutor({
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="mx-auto flex min-h-0 w-full max-w-[1920px] flex-1 flex-col px-3 py-4 sm:px-5 sm:py-5 md:px-8 md:py-6">
           <div className="widget_section flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_12px_40px_-12px_rgba(15,23,42,0.12)]">
-            {(widgetLoadError || showEnvHint) && (
+            {(widgetLoadError || showEnvHint || isSavingReport || widgetContentMissing) && (
               <div className="shrink-0 space-y-2 border-b border-slate-100 bg-slate-50/80 px-4 py-3 sm:px-6">
+                {isSavingReport ? (
+                  <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm text-blue-900">
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                    <p>
+                      Bank login complete. Fetching your full Decision Logic report — this can take up to a minute.
+                    </p>
+                  </div>
+                ) : null}
+                {widgetContentMissing && !widgetLoadError ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950">
+                    <p className="font-medium">Bank selection UI did not load</p>
+                    <p className="mt-1 text-xs leading-relaxed">
+                      DecisionLogic returned a request code, but the CDN widget stayed empty. This is usually a
+                      credentials/mode mismatch: set matching LIVE{" "}
+                      <code className="font-mono text-[0.7rem]">SITE_USER_GUID</code> /{" "}
+                      <code className="font-mono text-[0.7rem]">PROFILE_GUID</code> on the API and{" "}
+                      <code className="font-mono text-[0.7rem]">VITE_DECISION_LOGIC_*</code> on the frontend, then
+                      restart both and open a fresh invite link.
+                    </p>
+                    <p className="mt-2 text-xs text-amber-900/90">
+                      Mode: {widgetMode} · Request: {requestCode || "—"} · Site GUID:{" "}
+                      {widgetGuids.siteUserGuid
+                        ? `${widgetGuids.siteUserGuid.slice(0, 8)}…`
+                        : "missing"}
+                    </p>
+                  </div>
+                ) : null}
                 {widgetLoadError ? (
                   <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-800">
                     <p className="font-medium">Widget could not load</p>
@@ -493,6 +521,31 @@ export default function DecisionLogicExecutor({
                 </div>
               )}
             </div>
+            {widgetLoaded && !widgetLoadError ? (
+              <div className="shrink-0 border-t border-slate-100 bg-slate-50/80 px-4 py-3 sm:px-6">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-slate-600">
+                    After you finish bank login in the widget above, your full report will be saved automatically.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={isSavingReport}
+                    onClick={() => void flushSaveReport()}
+                  >
+                    {isSavingReport ? (
+                      <>
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
+                        Saving report…
+                      </>
+                    ) : (
+                      "I've finished connecting my bank"
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </main>

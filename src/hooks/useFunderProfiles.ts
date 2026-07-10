@@ -33,6 +33,8 @@ export const FALLBACK_FUNDER_PROFILES: FunderProfile[] = [
     sortOrder: 1,
     isActive: true,
     documentsSource: "platform",
+    addendumDocumentsSource: "platform",
+    disclosureDocumentsSource: "platform",
   },
 ];
 

@@ -1,4 +1,7 @@
 import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel";
+import { isContractSignedQueueBadgeLabel } from "@/lib/contractSignedQueueBadge";
+import { resolveApplicationProgress } from "@/lib/applicationProgress";
+import { inferOperationsListStatusFromApplication } from "@/constants/operationsDashboardApplications";
 
 /**
  * Workflow labels for "Current state" / summary — aligned with API `mapApplicationToApi` / `toWorkflowApiState`.
@@ -45,6 +48,31 @@ export function resolveApplicationWorkflowQueueAndStates(
   ).trim();
   const rawState = String(app.statsCurrentState ?? mappedState).trim();
   return { queue, mappedState, rawState };
+}
+
+/** True when the deal is in the contract-signed stage (queue and/or raw DB state). */
+export function isContractSignedApplication(
+  app: WorkflowDecisionApp | null | undefined,
+): boolean {
+  if (!app) return false;
+  const { queue, mappedState, rawState } =
+    resolveApplicationWorkflowQueueAndStates(app);
+  if (
+    isContractSignedQueueBadgeLabel(queue) ||
+    isContractSignedQueueBadgeLabel(mappedState) ||
+    isContractSignedQueueBadgeLabel(rawState)
+  ) {
+    return true;
+  }
+  if (resolveApplicationProgress(app).currentStageKey === "CONTRACT_SIGNED") {
+    return true;
+  }
+  return (
+    inferOperationsListStatusFromApplication(queue, {
+      currentState: rawState || mappedState,
+      explicitStatus: mappedState,
+    }) === "Contract_Signed"
+  );
 }
 
 export function isApplicationInFinalApprovalStage(

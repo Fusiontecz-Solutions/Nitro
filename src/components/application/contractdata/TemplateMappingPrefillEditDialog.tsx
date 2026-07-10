@@ -11,16 +11,29 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { AppDispatch } from "@/redux/store";
-import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
+import {
+    getByApplicationIdContract,
+    getAllACH,
+    updateACH,
+    updateContract,
+} from "@/redux/actions/contractActions";
 import { toast } from "react-toastify";
 import type {
     BuildContractPrefillFieldsArgs,
     ContractPrefillContractRecords,
 } from "./Contract";
+import { CONTRACT_PREFILL_COLUMN_SYNC_KEYS } from "./Contract";
+import {
+    ACH_PREFILL_MAPPING_ALIAS_KEY,
+    achCamelPartialToAchRecordPatch,
+    achTabValuesToCamelPartial,
+    resolveAchSavedMappingOverrides,
+} from "./achFormEditConfig";
 import {
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
     parseDocumentTemplateEnvelopeByMappingId,
+    parseDocumentTemplatePrefillByMappingId,
     getDocumentTemplatePrefillFieldRowsForEditor,
     usesCoordinateLayoutTemplate,
 } from "./documentTemplateMappingPrefill";
@@ -58,8 +71,13 @@ type TemplateMappingPrefillEditDialogProps = {
     documentTemplatePrefillByMappingId: Record<string, Record<string, string>>;
     /** Main contract prefill overrides (without document mapping blob); merged on save. */
     mainPrefillOverrides: Partial<BuildContractPrefillFieldsArgs> | null;
+    /**
+     * Optional title suffix (e.g. selected funder name for ACH).
+     * When set, replaces the template name in the dialog title.
+     */
+    titleSuffix?: string | null;
     /** After a successful save, parent refreshes contract + mapping list. */
-    onSaved: () => void;
+    onSaved: (savedTabValues?: Record<string, string>) => void;
 };
 
 export function TemplateMappingPrefillEditDialog({
@@ -74,6 +92,7 @@ export function TemplateMappingPrefillEditDialog({
     agreementDate,
     documentTemplatePrefillByMappingId,
     mainPrefillOverrides,
+    titleSuffix = null,
     onSaved,
 }: TemplateMappingPrefillEditDialogProps) {
     const dispatch = useDispatch<AppDispatch>();
@@ -84,7 +103,9 @@ export function TemplateMappingPrefillEditDialog({
 
     const editorRows = useMemo(() => {
         if (!row) return [];
-        const saved = documentTemplatePrefillByMappingId[row.id] ?? {};
+        const saved = coordinateLayout
+            ? resolveAchSavedMappingOverrides(documentTemplatePrefillByMappingId, row.id)
+            : (documentTemplatePrefillByMappingId[row.id] ?? {});
         return getDocumentTemplatePrefillFieldRowsForEditor({
             templateId: row.template?.templateId ?? null,
             templateName: row.template?.name ?? null,
@@ -92,6 +113,7 @@ export function TemplateMappingPrefillEditDialog({
             templateLayoutKey: row.template?.layoutKey ?? null,
             templateState: row.template?.state ?? null,
             templateFrequency: row.template?.frequency ?? null,
+            documentType: row.documentType ?? null,
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
             contractRecords,
@@ -101,6 +123,7 @@ export function TemplateMappingPrefillEditDialog({
         });
     }, [
         row,
+        coordinateLayout,
         documentTemplatePrefillByMappingId,
         resolvedContract,
         applicationData,
@@ -122,31 +145,87 @@ export function TemplateMappingPrefillEditDialog({
         }
         setSaving(true);
         try {
-            const nextBlob = {
+            const rawOverrides =
+                resolvedContract?.contractPrefillOverrides &&
+                typeof resolvedContract.contractPrefillOverrides === "object" &&
+                !Array.isArray(resolvedContract.contractPrefillOverrides)
+                    ? {
+                          ...(resolvedContract.contractPrefillOverrides as Record<
+                              string,
+                              unknown
+                          >),
+                      }
+                    : {};
+
+            const existingBlob = parseDocumentTemplatePrefillByMappingId(rawOverrides);
+            const envelopeBlob = parseDocumentTemplateEnvelopeByMappingId(rawOverrides);
+
+            const tabValues = { ...fieldValues };
+            let nextBlob: Record<string, Record<string, string>> = {
+                ...existingBlob,
                 ...documentTemplatePrefillByMappingId,
-                [row.id]: { ...fieldValues },
+                [row.id]: tabValues,
             };
 
-            const main = { ...(mainPrefillOverrides ?? {}) } as Record<string, unknown>;
+            const achCamel = coordinateLayout ? achTabValuesToCamelPartial(tabValues) : null;
+            if (coordinateLayout && achCamel) {
+                // Survive synthetic → real mapping id swaps.
+                nextBlob = {
+                    ...nextBlob,
+                    [ACH_PREFILL_MAPPING_ALIAS_KEY]: tabValues,
+                };
+            }
+
+            const main = { ...rawOverrides } as Record<string, unknown>;
             delete main[DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY];
             delete main[DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY];
-            const envelopeBlob = parseDocumentTemplateEnvelopeByMappingId(
-                resolvedContract?.contractPrefillOverrides,
-            );
-            const contractPrefillOverrides = {
+
+            const contractPrefillOverrides: Record<string, unknown> = {
                 ...main,
+                ...(achCamel ?? {}),
                 [DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY]: nextBlob,
                 ...(Object.keys(envelopeBlob).length
                     ? { [DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY]: envelopeBlob }
                     : {}),
             };
 
+            const columnSync: Record<string, string> = {};
+            if (achCamel) {
+                for (const key of CONTRACT_PREFILL_COLUMN_SYNC_KEYS) {
+                    if (!(key in achCamel)) continue;
+                    columnSync[key] = String(achCamel[key] ?? "");
+                }
+            }
+
             await dispatch(
                 updateContract({
                     id: cid,
-                    data: { contractPrefillOverrides },
+                    data: {
+                        contractPrefillOverrides,
+                        ...columnSync,
+                    },
                 }),
             ).unwrap();
+
+            if (coordinateLayout && achCamel) {
+                const achId = Number(
+                    (contractRecords?.ach as { id?: unknown } | null | undefined)?.id,
+                );
+                if (Number.isFinite(achId) && achId > 0) {
+                    const achPatch = achCamelPartialToAchRecordPatch(achCamel);
+                    const hasAchData = Object.values(achPatch).some(Boolean);
+                    if (hasAchData) {
+                        try {
+                            await dispatch(
+                                updateACH({ id: achId, data: achPatch }),
+                            ).unwrap();
+                            await dispatch(getAllACH({ contractId: cid })).unwrap();
+                        } catch (achErr) {
+                            console.warn("[ACH] Failed to sync Info Required ACH row:", achErr);
+                        }
+                    }
+                }
+            }
 
             const appKey = String(applicationUuid ?? "").trim();
             if (appKey) {
@@ -162,7 +241,7 @@ export function TemplateMappingPrefillEditDialog({
                     ? "ACH form field values saved."
                     : "Template mapping and DocuSign field overrides saved.",
             );
-            onSaved();
+            onSaved(coordinateLayout ? tabValues : undefined);
             onOpenChange(false);
         } catch (e: unknown) {
             console.error(e);
@@ -180,18 +259,22 @@ export function TemplateMappingPrefillEditDialog({
         coordinateLayout,
         fieldValues,
         documentTemplatePrefillByMappingId,
-        mainPrefillOverrides,
+        resolvedContract,
+        contractRecords,
         dispatch,
         applicationUuid,
         onSaved,
         onOpenChange,
     ]);
 
-    const titleName = row?.template?.name?.trim()
-        ? row.template.name
-        : coordinateLayout
-          ? "ACH authorization"
-          : row?.template?.templateId || "DocuSign template";
+    const overrideTitle = String(titleSuffix ?? "").trim();
+    const titleName = overrideTitle
+        ? overrideTitle
+        : row?.template?.name?.trim()
+          ? row.template.name
+          : coordinateLayout
+            ? "ACH authorization"
+            : row?.template?.templateId || "DocuSign template";
 
     const dialogTitle = coordinateLayout
         ? `Edit ACH form — ${titleName}`
@@ -201,7 +284,7 @@ export function TemplateMappingPrefillEditDialog({
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
                 className="flex max-h-[90vh] w-[min(100vw-2rem,960px)] flex-col gap-0 p-0 sm:max-w-[960px]"
-                onOpenAutoFocus={(e : any) => e.preventDefault()}
+                onOpenAutoFocus={(e: any) => e.preventDefault()}
             >
                 <DialogHeader className="shrink-0 border-b px-6 py-4">
                     <DialogTitle className="text-base">{dialogTitle}</DialogTitle>
@@ -217,23 +300,12 @@ export function TemplateMappingPrefillEditDialog({
                         {editorRows.length === 0 ? (
                             <p className="text-muted-foreground text-sm">
                                 No registered field map for this template. For ACH, ensure BoldSignTemplate has{" "}
-                                <span className="font-mono text-xs">type=ach</span>,{" "}
-                                <span className="font-mono text-xs">layoutKey=ach_authorization</span>, and{" "}
-                                <span className="font-mono text-xs">pdfUrl</span> set.
+                                <span className="font-mono text-xs">type=ach</span> or a layout key containing{" "}
+                                <span className="font-mono text-xs">ach_authorization</span> (including{" "}
+                                <span className="font-mono text-xs">ach_authorization_standalone</span> / funder
+                                scoped keys).
                             </p>
                         ) : (
-                            <>
-                            {/balance/i.test(titleName) && /transfer/i.test(titleName) ? (
-                                <p className="text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs leading-relaxed">
-                                    In DocuSign, set each field&apos;s <strong>Data Label</strong> to the id in
-                                    parentheses below (e.g. <span className="font-mono">business_name</span>,{" "}
-                                    <span className="font-mono">client_name</span>,{" "}
-                                    <span className="font-mono">client_dba</span>). Labels like
-                                    &quot;Merchant Legal Name&quot; also work if they normalize to{" "}
-                                    <span className="font-mono">merchant_legal_name</span> or{" "}
-                                    <span className="font-mono">client_name</span>.
-                                </p>
-                            ) : null}
                             <div className="grid gap-3 sm:grid-cols-2">
                                 {editorRows.map((r) => (
                                     <div key={r.id} className="space-y-1.5">
@@ -250,7 +322,6 @@ export function TemplateMappingPrefillEditDialog({
                                     </div>
                                 ))}
                             </div>
-                            </>
                         )}
                     </div>
                 </div>

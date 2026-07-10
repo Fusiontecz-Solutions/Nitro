@@ -29,15 +29,27 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   }
   if (payload.organization) formData.append("organization", payload.organization);
   if (payload.legalName) formData.append("legalName", payload.legalName);
-  if (payload.contactEmail) formData.append("contactEmail", payload.contactEmail);
-  if (payload.contactPhone) formData.append("contactPhone", payload.contactPhone);
+  if (payload.contactEmail !== undefined) {
+    formData.append("contactEmail", payload.contactEmail || "");
+  }
+  if (payload.contactPhone !== undefined) {
+    formData.append("contactPhone", payload.contactPhone || "");
+  }
   if (payload.defaultCcEmail !== undefined) {
     formData.append("defaultCcEmail", payload.defaultCcEmail || "");
   }
-  if (payload.addressLine1) formData.append("addressLine1", payload.addressLine1);
-  if (payload.addressCity) formData.append("addressCity", payload.addressCity);
-  if (payload.addressState) formData.append("addressState", payload.addressState);
-  if (payload.addressZip) formData.append("addressZip", payload.addressZip);
+  if (payload.addressLine1 !== undefined) {
+    formData.append("addressLine1", payload.addressLine1 || "");
+  }
+  if (payload.addressCity !== undefined) {
+    formData.append("addressCity", payload.addressCity || "");
+  }
+  if (payload.addressState !== undefined) {
+    formData.append("addressState", payload.addressState || "");
+  }
+  if (payload.addressZip !== undefined) {
+    formData.append("addressZip", payload.addressZip || "");
+  }
   if (payload.docusignAccountProfileId != null) {
     formData.append("docusignAccountProfileId", payload.docusignAccountProfileId || "");
   }
@@ -46,6 +58,18 @@ function appendFunderFormFields(formData: FormData, payload: FunderProfileInput)
   if (payload.documentsSource) formData.append("documentsSource", payload.documentsSource);
   if (payload.sharedDocumentsFunderId !== undefined) {
     formData.append("sharedDocumentsFunderId", payload.sharedDocumentsFunderId || "");
+  }
+  if (payload.addendumDocumentsSource) {
+    formData.append("addendumDocumentsSource", payload.addendumDocumentsSource);
+  }
+  if (payload.disclosureDocumentsSource) {
+    formData.append("disclosureDocumentsSource", payload.disclosureDocumentsSource);
+  }
+  if (payload.sharedAddendumFunderId !== undefined) {
+    formData.append("sharedAddendumFunderId", payload.sharedAddendumFunderId || "");
+  }
+  if (payload.sharedDisclosureFunderId !== undefined) {
+    formData.append("sharedDisclosureFunderId", payload.sharedDisclosureFunderId || "");
   }
 }
 

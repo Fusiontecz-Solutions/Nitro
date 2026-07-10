@@ -74,6 +74,45 @@ export function resolveApprovingUnderwriter(
     return null;
 }
 
+const isActiveUnderwriterRole = (role?: string | null): boolean =>
+    String(role ?? "")
+        .trim()
+        .toUpperCase()
+        .replace(/-/g, "_") === "UNDERWRITER";
+
+const resolveUnderwriterLink = (
+    id: string | null | undefined,
+    user?: ApplicationUserLite | null,
+): { id: string; user?: ApplicationUserLite | null } | null => {
+    const resolvedId = String(id ?? resolveUserLiteId(user) ?? "").trim();
+    if (!resolvedId) return null;
+    if (user?.role && !isActiveUnderwriterRole(user.role)) return null;
+    return { id: resolvedId, user };
+};
+
+/**
+ * Underwriter who should receive the post-contract final approval send.
+ * Skips scrubbers/admins recorded as approver when an assigned Underwriter exists.
+ */
+export function resolveFinalApprovalTargetUnderwriter(
+    app: UnderwriterApprovalAppFields,
+): { id: string; user?: ApplicationUserLite | null } | null {
+    return (
+        resolveUnderwriterLink(
+            app.approvedByUnderwriterId,
+            app.approvedByUnderwriter,
+        ) ??
+        resolveUnderwriterLink(
+            app.assignedUnderwriterId,
+            app.assignedUnderwriter,
+        ) ??
+        resolveUnderwriterLink(
+            app.claimedByUnderwriterId,
+            app.claimedByUnderwriter,
+        )
+    );
+}
+
 export function formatApprovedByUnderwriterLabel(
     app: UnderwriterApprovalAppFields,
     viewerUserId?: string | null,

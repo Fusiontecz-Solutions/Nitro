@@ -23,6 +23,19 @@ export function isDefaultCcEmail(email: string): boolean {
     return normalizeCcEmailToken(email) === normalizeCcEmailToken(DOCUSIGN_DEFAULT_CC_EMAIL);
 }
 
+/** Platform default + every funder-profile default CC (normalized). */
+export function collectKnownFunderDefaultCcEmails(
+    funderDefaultCcValues: Array<string | null | undefined> = [],
+): Set<string> {
+    const out = new Set<string>([normalizeCcEmailToken(DOCUSIGN_DEFAULT_CC_EMAIL)]);
+    for (const value of funderDefaultCcValues) {
+        for (const email of parseFunderDefaultCcEmails(value)) {
+            out.add(normalizeCcEmailToken(email));
+        }
+    }
+    return out;
+}
+
 /** Funder profile CC replaces platform default; otherwise platform default is used. */
 export function resolveContractDefaultCcEmails(options?: {
     funderDefaultCcEmail?: string | null;
@@ -34,19 +47,35 @@ export function resolveContractDefaultCcEmails(options?: {
 
 export function isReservedContractCcEmail(
     email: string,
-    options?: { funderDefaultCcEmail?: string | null },
+    options?: {
+        funderDefaultCcEmail?: string | null;
+        /** When set, also treat other funders' default CCs as reserved (not user-added). */
+        knownFunderDefaultCcEmails?: Iterable<string>;
+    },
 ): boolean {
     const token = normalizeCcEmailToken(email);
     if (!token) return false;
-    return resolveContractDefaultCcEmails(options).some(
-        (reserved) => normalizeCcEmailToken(reserved) === token,
-    );
+    if (
+        resolveContractDefaultCcEmails(options).some(
+            (reserved) => normalizeCcEmailToken(reserved) === token,
+        )
+    ) {
+        return true;
+    }
+    if (!options?.knownFunderDefaultCcEmails) return false;
+    for (const known of options.knownFunderDefaultCcEmails) {
+        if (normalizeCcEmailToken(known) === token) return true;
+    }
+    return false;
 }
 
 /** Default CC (platform or funder override), then user-added addresses (deduped). */
 export function mergeWithDefaultCcEmails(
     emails: string[],
-    options?: { funderDefaultCcEmail?: string | null },
+    options?: {
+        funderDefaultCcEmail?: string | null;
+        knownFunderDefaultCcEmails?: Iterable<string>;
+    },
 ): string[] {
     const out = new Set<string>(resolveContractDefaultCcEmails(options));
     for (const e of emails) {
@@ -60,9 +89,13 @@ export function mergeWithDefaultCcEmails(
 
 /**
  * Returns saved CC emails only (excludes default CC — merged at send time).
+ * Also drops other funders' default CCs so switching funders does not keep their CC.
  */
 export function loadBoldSignCcEmailList(
-    options?: { funderDefaultCcEmail?: string | null },
+    options?: {
+        funderDefaultCcEmail?: string | null;
+        knownFunderDefaultCcEmails?: Iterable<string>;
+    },
 ): string[] {
     if (typeof window === "undefined") {
         return [];
@@ -94,7 +127,10 @@ export function loadBoldSignCcEmailList(
 
 export function saveBoldSignCcEmailList(
     emails: string[],
-    options?: { funderDefaultCcEmail?: string | null },
+    options?: {
+        funderDefaultCcEmail?: string | null;
+        knownFunderDefaultCcEmails?: Iterable<string>;
+    },
 ): void {
     if (typeof window === "undefined") {
         return;

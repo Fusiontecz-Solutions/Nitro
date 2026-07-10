@@ -49,9 +49,12 @@ import {
   type FunderDocumentTemplateRow,
 } from "@/utils/funderLayoutKeys";
 import {
-  canManageFunderDocuments,
-  FUNDER_DOCUMENTS_SOURCE_OPTIONS,
-  normalizeFunderDocumentsSource,
+  canManageFunderAddendums,
+  canManageFunderDisclosures,
+  FUNDER_ADDENDUM_SOURCE_OPTIONS,
+  FUNDER_DISCLOSURE_SOURCE_OPTIONS,
+  resolveAddendumDocumentsSource,
+  resolveDisclosureDocumentsSource,
 } from "@/utils/funderDocumentSource";
 
 type Props = {
@@ -67,10 +70,20 @@ type Props = {
 const emptyForm: FunderProfileInput = {
   name: "",
   defaultCcEmail: "",
+  contactEmail: "",
+  contactPhone: "",
+  addressLine1: "",
+  addressCity: "",
+  addressState: "",
+  addressZip: "",
   isActive: true,
   allowedStates: [],
   documentsSource: "own",
   sharedDocumentsFunderId: null,
+  addendumDocumentsSource: "own",
+  disclosureDocumentsSource: "platform",
+  sharedAddendumFunderId: null,
+  sharedDisclosureFunderId: null,
 };
 
 const ADDENDUM_PRESETS = [
@@ -192,9 +205,23 @@ export default function FunderProfileModal({
         dealIdPrefix: initial.dealIdPrefix ?? "",
         docusignAccountProfileId: initial.docusignAccountProfileId ?? null,
         defaultCcEmail: initial.defaultCcEmail ?? "",
+        contactEmail: initial.contactEmail ?? "",
+        contactPhone: initial.contactPhone ?? "",
+        addressLine1: initial.addressLine1 ?? "",
+        addressCity: initial.addressCity ?? "",
+        addressState: initial.addressState ?? "",
+        addressZip: initial.addressZip ?? "",
         isActive: initial.isActive,
         documentsSource: initial.documentsSource ?? "own",
         sharedDocumentsFunderId: initial.sharedDocumentsFunderId ?? null,
+        addendumDocumentsSource:
+          initial.addendumDocumentsSource ?? initial.documentsSource ?? "own",
+        disclosureDocumentsSource:
+          initial.disclosureDocumentsSource ?? initial.documentsSource ?? "own",
+        sharedAddendumFunderId:
+          initial.sharedAddendumFunderId ?? initial.sharedDocumentsFunderId ?? null,
+        sharedDisclosureFunderId:
+          initial.sharedDisclosureFunderId ?? initial.sharedDocumentsFunderId ?? null,
       });
       setStatesText((initial.allowedStates ?? []).join(", "));
       setExcludedStatesText((initial.excludedStates ?? []).join(", "));
@@ -219,18 +246,37 @@ export default function FunderProfileModal({
   const disclosureRows = documents.filter(isFunderDisclosureRow);
   const addendumRows = documents.filter(isFunderAddendumRow);
 
-  const documentsSource = normalizeFunderDocumentsSource(form.documentsSource);
+  const addendumSource = resolveAddendumDocumentsSource({
+    documentsSource: form.documentsSource,
+    addendumDocumentsSource: form.addendumDocumentsSource,
+  });
+  const disclosureSource = resolveDisclosureDocumentsSource({
+    documentsSource: form.documentsSource,
+    disclosureDocumentsSource: form.disclosureDocumentsSource,
+  });
   const effectiveProfile = initial
     ? {
         id: initial.id,
-        documentsSource,
+        documentsSource: form.documentsSource,
         sharedDocumentsFunderId: form.sharedDocumentsFunderId ?? null,
+        addendumDocumentsSource: form.addendumDocumentsSource,
+        disclosureDocumentsSource: form.disclosureDocumentsSource,
+        sharedAddendumFunderId: form.sharedAddendumFunderId ?? null,
+        sharedDisclosureFunderId: form.sharedDisclosureFunderId ?? null,
       }
     : null;
-  const canUploadDocs = effectiveProfile ? canManageFunderDocuments(effectiveProfile) : false;
+  const canUploadAddendums = effectiveProfile
+    ? canManageFunderAddendums(effectiveProfile)
+    : false;
+  const canUploadDisclosures = effectiveProfile
+    ? canManageFunderDisclosures(effectiveProfile)
+    : false;
 
-  const sharedOwnerFunder = allFunders.find(
-    (f) => f.id === form.sharedDocumentsFunderId,
+  const sharedAddendumOwner = allFunders.find(
+    (f) => f.id === form.sharedAddendumFunderId,
+  );
+  const sharedDisclosureOwner = allFunders.find(
+    (f) => f.id === form.sharedDisclosureFunderId,
   );
   const otherFundersForShare = allFunders.filter((f) => f.id !== initial?.id);
 
@@ -257,10 +303,22 @@ export default function FunderProfileModal({
       excludedStates,
       docusignAccountProfileId: form.docusignAccountProfileId || null,
       defaultCcEmail: form.defaultCcEmail?.trim() ?? "",
+      contactEmail: form.contactEmail?.trim() ?? "",
+      contactPhone: form.contactPhone?.trim() ?? "",
+      addressLine1: form.addressLine1?.trim() ?? "",
+      addressCity: form.addressCity?.trim() ?? "",
+      addressState: form.addressState?.trim() ?? "",
+      addressZip: form.addressZip?.trim() ?? "",
       isActive: form.isActive,
-      documentsSource: form.documentsSource,
+      addendumDocumentsSource: addendumSource,
+      disclosureDocumentsSource: disclosureSource,
+      documentsSource: addendumSource,
+      sharedAddendumFunderId:
+        addendumSource === "shared" ? form.sharedAddendumFunderId || null : null,
+      sharedDisclosureFunderId:
+        disclosureSource === "shared" ? form.sharedDisclosureFunderId || null : null,
       sharedDocumentsFunderId:
-        form.documentsSource === "shared" ? form.sharedDocumentsFunderId || null : null,
+        addendumSource === "shared" ? form.sharedAddendumFunderId || null : null,
     };
 
     if (initial) {
@@ -475,6 +533,77 @@ export default function FunderProfileModal({
                   </label>
                 </div>
               </div>
+
+              <div className="rounded-lg border bg-muted/30 p-4 space-y-4">
+                <div className="flex items-center gap-2">
+                  <MapPin className="h-4 w-4 text-muted-foreground" aria-hidden />
+                  <h3 className="text-sm font-semibold">Disclosure contact</h3>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Used on state disclosures (e.g. Connecticut) for the selected funder&apos;s
+                  address, phone, and email.
+                </p>
+                <div className="grid gap-2">
+                  <Label htmlFor="f-address">Street address</Label>
+                  <Input
+                    id="f-address"
+                    value={form.addressLine1 ?? ""}
+                    onChange={(e) => set("addressLine1", e.target.value)}
+                    placeholder="123 Main St"
+                  />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3 sm:gap-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="f-city">City</Label>
+                    <Input
+                      id="f-city"
+                      value={form.addressCity ?? ""}
+                      onChange={(e) => set("addressCity", e.target.value)}
+                      placeholder="City"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="f-state">State</Label>
+                    <Input
+                      id="f-state"
+                      value={form.addressState ?? ""}
+                      onChange={(e) => set("addressState", e.target.value)}
+                      placeholder="CT"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="f-zip">ZIP</Label>
+                    <Input
+                      id="f-zip"
+                      value={form.addressZip ?? ""}
+                      onChange={(e) => set("addressZip", e.target.value)}
+                      placeholder="06103"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 sm:gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="f-phone">Phone</Label>
+                    <Input
+                      id="f-phone"
+                      type="tel"
+                      value={form.contactPhone ?? ""}
+                      onChange={(e) => set("contactPhone", e.target.value)}
+                      placeholder="(860) 555-0100"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="f-contact-email">Email</Label>
+                    <Input
+                      id="f-contact-email"
+                      type="email"
+                      value={form.contactEmail ?? ""}
+                      onChange={(e) => set("contactEmail", e.target.value)}
+                      placeholder="disclosures@example.com"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="rounded-lg border">
@@ -531,27 +660,29 @@ export default function FunderProfileModal({
 
           <TabsContent value="documents" className="space-y-5 mt-2">
             <UploadCard
-              title="Addendum & disclosure source"
-              description="Choose where this funder gets its addendum and state disclosure PDFs. The main contract PDF is always per funder."
+              title="Addendum source"
+              description="Choose where this funder gets flex / balance-transfer / ACH addendum PDFs. Independent from disclosures. The main contract PDF is always per funder."
             >
               <div className="space-y-2">
-                {FUNDER_DOCUMENTS_SOURCE_OPTIONS.map((opt) => (
+                {FUNDER_ADDENDUM_SOURCE_OPTIONS.map((opt) => (
                   <label
-                    key={opt.value}
+                    key={`addendum-${opt.value}`}
                     className={`flex cursor-pointer gap-3 rounded-lg border p-3 transition-colors ${
-                      documentsSource === opt.value
+                      addendumSource === opt.value
                         ? "border-[var(--brand)] bg-[var(--brand)]/5"
                         : "hover:bg-muted/40"
                     }`}
                   >
                     <input
                       type="radio"
-                      name="documentsSource"
+                      name="addendumDocumentsSource"
                       className="mt-1"
-                      checked={documentsSource === opt.value}
+                      checked={addendumSource === opt.value}
                       onChange={() => {
+                        set("addendumDocumentsSource", opt.value);
                         set("documentsSource", opt.value);
                         if (opt.value !== "shared") {
+                          set("sharedAddendumFunderId", null);
                           set("sharedDocumentsFunderId", null);
                         }
                       }}
@@ -564,13 +695,87 @@ export default function FunderProfileModal({
                 ))}
               </div>
 
-              {documentsSource === "shared" && (
+              {addendumSource === "shared" && (
                 <div className="grid gap-2 pt-1">
-                  <Label>Share PDFs with</Label>
+                  <Label>Share addendums with</Label>
                   <Select
-                    value={form.sharedDocumentsFunderId || "__pick__"}
+                    value={form.sharedAddendumFunderId || "__pick__"}
+                    onValueChange={(v: string) => {
+                      const id = v === "__pick__" ? null : v;
+                      set("sharedAddendumFunderId", id);
+                      set("sharedDocumentsFunderId", id);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select funder" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__pick__">Select funder…</SelectItem>
+                      {otherFundersForShare.map((f) => (
+                        <SelectItem key={f.id} value={f.id}>
+                          {f.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {addendumSource === "platform" && (
+                <InfoBanner>
+                  This funder uses platform addendums. No addendum uploads needed here.
+                </InfoBanner>
+              )}
+
+              {addendumSource === "shared" && sharedAddendumOwner && !canUploadAddendums && (
+                <InfoBanner>
+                  Addendums are managed on <strong>{sharedAddendumOwner.name}</strong>. Edit that
+                  funder to upload or change them.
+                </InfoBanner>
+              )}
+            </UploadCard>
+
+            <UploadCard
+              title="Disclosure source"
+              description="Choose where this funder gets state disclosure PDFs. You can keep platform defaults here while uploading custom addendums above."
+            >
+              <div className="space-y-2">
+                {FUNDER_DISCLOSURE_SOURCE_OPTIONS.map((opt) => (
+                  <label
+                    key={`disclosure-${opt.value}`}
+                    className={`flex cursor-pointer gap-3 rounded-lg border p-3 transition-colors ${
+                      disclosureSource === opt.value
+                        ? "border-[var(--brand)] bg-[var(--brand)]/5"
+                        : "hover:bg-muted/40"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="disclosureDocumentsSource"
+                      className="mt-1"
+                      checked={disclosureSource === opt.value}
+                      onChange={() => {
+                        set("disclosureDocumentsSource", opt.value);
+                        if (opt.value !== "shared") {
+                          set("sharedDisclosureFunderId", null);
+                        }
+                      }}
+                    />
+                    <span>
+                      <span className="text-sm font-medium">{opt.label}</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">{opt.description}</p>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {disclosureSource === "shared" && (
+                <div className="grid gap-2 pt-1">
+                  <Label>Share disclosures with</Label>
+                  <Select
+                    value={form.sharedDisclosureFunderId || "__pick__"}
                     onValueChange={(v: string) =>
-                      set("sharedDocumentsFunderId", v === "__pick__" ? null : v)
+                      set("sharedDisclosureFunderId", v === "__pick__" ? null : v)
                     }
                   >
                     <SelectTrigger>
@@ -585,33 +790,30 @@ export default function FunderProfileModal({
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Upload addendums and disclosures on the selected funder — both funders will use
-                    those PDFs.
-                  </p>
                 </div>
               )}
 
-              {documentsSource === "platform" && (
+              {disclosureSource === "platform" && (
                 <InfoBanner>
-                  Woodmere Financial uses the platform addendums and disclosures already
-                  configured in the system. No uploads needed here.
+                  This funder uses platform state disclosures (same as Woodmere Financial).
                 </InfoBanner>
               )}
 
-              {documentsSource === "shared" && sharedOwnerFunder && !canUploadDocs && (
-                <InfoBanner>
-                  PDFs are managed on <strong>{sharedOwnerFunder.name}</strong>. Edit that funder to
-                  upload or change addendums and disclosures.
-                </InfoBanner>
-              )}
+              {disclosureSource === "shared" &&
+                sharedDisclosureOwner &&
+                !canUploadDisclosures && (
+                  <InfoBanner>
+                    Disclosures are managed on <strong>{sharedDisclosureOwner.name}</strong>. Edit
+                    that funder to upload or change them.
+                  </InfoBanner>
+                )}
 
               <p className="text-xs text-muted-foreground">
-                Save setup (tab 1) after changing this setting.
+                Save setup (tab 1) after changing these settings.
               </p>
             </UploadCard>
 
-            {documentsSource === "platform" ? null : (
+            {canUploadDisclosures ? (
               <>
             <UploadCard
               title="State disclosure PDFs"
@@ -655,11 +857,8 @@ export default function FunderProfileModal({
                 type="file"
                 accept="application/pdf"
                 className="hidden"
-                disabled={!canUploadDocs}
                 onChange={(e) => setDisclosureFile(e.target.files?.[0] ?? null)}
               />
-              {canUploadDocs ? (
-                <>
               <button
                 type="button"
                 onClick={() => disclosureInputRef.current?.click()}
@@ -686,8 +885,6 @@ export default function FunderProfileModal({
                   `Save disclosure for ${disclosureState} (${disclosureFrequency})`
                 )}
               </Button>
-                </>
-              ) : null}
 
               <div>
                 <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -715,7 +912,7 @@ export default function FunderProfileModal({
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0 text-destructive"
-                          disabled={docActionId === row.id || !canUploadDocs}
+                          disabled={docActionId === row.id}
                           onClick={() => void handleDeleteDocument(row)}
                           title="Remove"
                         >
@@ -733,7 +930,11 @@ export default function FunderProfileModal({
                 )}
               </div>
             </UploadCard>
+              </>
+            ) : null}
 
+            {canUploadAddendums ? (
+              <>
             <UploadCard
               title="Addendum PDFs"
               description="Extra pages attached to the contract (flex addendum, balance transfer, etc.). Pick a type, name it, and upload the PDF."
@@ -804,11 +1005,8 @@ export default function FunderProfileModal({
                 type="file"
                 accept="application/pdf"
                 className="hidden"
-                disabled={!canUploadDocs}
                 onChange={(e) => setAddendumFile(e.target.files?.[0] ?? null)}
               />
-              {canUploadDocs ? (
-                <>
               <button
                 type="button"
                 onClick={() => addendumInputRef.current?.click()}
@@ -835,8 +1033,6 @@ export default function FunderProfileModal({
                   `Save addendum: ${addendumName.trim() || "…"}`
                 )}
               </Button>
-                </>
-              ) : null}
 
               <div>
                 <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -868,7 +1064,7 @@ export default function FunderProfileModal({
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 shrink-0 text-destructive"
-                          disabled={docActionId === row.id || !canUploadDocs}
+                          disabled={docActionId === row.id}
                           onClick={() => void handleDeleteDocument(row)}
                           title="Remove"
                         >
@@ -887,7 +1083,7 @@ export default function FunderProfileModal({
               </div>
             </UploadCard>
               </>
-            )}
+            ) : null}
           </TabsContent>
         </Tabs>
 

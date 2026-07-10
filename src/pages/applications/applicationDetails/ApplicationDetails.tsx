@@ -241,12 +241,12 @@ const ApplicationDetails = () => {
         //     stateNorm === 'contracted';
 
         // UNDERWRITER (final review): overview with ISO, then pipeline tabs through decision making.
+        // CONTRACT and DECISION LOGIC tabs are intentionally omitted — only Operations / Super Admin get them.
         if (isFinalUnderwriter) {
             return [
                 { id: "overview", label: "OVERVIEW" },
                 { id: "documents", label: "DOCUMENTS" },
                 { id: "background-check", label: "BACKGROUND CHECK" },
-                { id: "eligibility-analysis", label: "ELIGIBILITY ANALYSIS" },
                 { id: "decision-making", label: "DECISION MAKING" },
             ];
         }
@@ -294,7 +294,7 @@ const ApplicationDetails = () => {
         } else {
             list = getTabs();
         }
-        // Background Check tab — Super Admin only — before Eligibility Analysis when
+        // Background Check tab — Super Admin only — before Decision Logic when
         // present, otherwise immediately before Contract.
         if (isSuperAdmin && !list.some((t) => t.id === "background-check")) {
             const bc: TabOption = { id: "background-check", label: "BACKGROUND CHECK" };

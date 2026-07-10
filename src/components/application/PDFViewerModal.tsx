@@ -61,6 +61,14 @@ import {
 } from "@/hooks/useFunderProfiles";
 import { fetchLatestContractTemplate } from "@/utils/contractTemplate";
 import { resolvePdfViewUrl } from "@/utils/cloudinaryPdfUrl";
+import {
+    resolveAddendumDocumentsLayoutFunderId,
+    resolveDisclosureDocumentsLayoutFunderId,
+} from "@/utils/funderDocumentSource";
+import {
+    funderDisclosureLayoutKeyForState,
+    isPlatformScopedBoldSignTemplateRow,
+} from "@/utils/funderLayoutKeys";
 import { fetchMainContractTemplatePreview } from "./contractdata/contractTemplatePreview";
 import { fetchDocuSignTemplateIdForFunder } from "@/utils/contractDocuSignTemplate";
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -149,6 +157,7 @@ import {
 } from "@/redux/actions/boldSignActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import {
+    collectKnownFunderDefaultCcEmails,
     isReservedContractCcEmail,
     loadBoldSignCcEmailList,
     mergeWithDefaultCcEmails,
@@ -173,6 +182,7 @@ import {
     DOCUMENT_SEND_HISTORY_KEY,
     DOCUMENT_TEMPLATE_ENVELOPE_BY_MAPPING_ID_KEY,
     DOCUMENT_TEMPLATE_PREFILL_BY_MAPPING_ID_KEY,
+    hasAddendumPrefillFieldMap,
     mergeExpandedDisclosurePrefillIntoPayload,
     parseDocumentSendHistory,
     parseDocumentTemplateEnvelopeByMappingId,
@@ -420,6 +430,122 @@ function disclosureMappingMatchesState(
     if (!picked) return false;
     const templateState = normalizeStateForTemplateLookup(row.template?.state ?? "");
     return Boolean(templateState) && templateState === picked;
+}
+
+function templateLayoutKeyToken(template: {
+    layoutKey?: string | null;
+    templateId?: string | null;
+} | null | undefined): string {
+    return String(template?.layoutKey ?? template?.templateId ?? "")
+        .trim()
+        .toLowerCase();
+}
+
+/** True when template is an addendum (not ACH) for the contract addendum picker. */
+function isContractAddendumTemplateRow(template: {
+    type?: string | null;
+    name?: string | null;
+    title?: string | null;
+    templateName?: string | null;
+    layoutKey?: string | null;
+    templateId?: string | null;
+} | null | undefined): boolean {
+    if (!template) return false;
+    const key = templateLayoutKeyToken(template);
+    const typeText = String(template.type || "").toLowerCase();
+    const nameText = String(
+        template.name || template.title || template.templateName || "",
+    ).toLowerCase();
+    if (
+        key.includes("ach_authorization") ||
+        typeText === "ach" ||
+        typeText === "ach_authorization" ||
+        (nameText.includes("ach") && nameText.includes("authorization"))
+    ) {
+        return false;
+    }
+    if (
+        key === "flex_addendum" ||
+        key === "balance_transfer" ||
+        key.endsWith("_flex_addendum") ||
+        key.endsWith("_balance_transfer") ||
+        key.includes("_addendum_") ||
+        key.endsWith("_addendum")
+    ) {
+        return true;
+    }
+    return (
+        typeText.includes("addendum") ||
+        typeText === "flex_addendum" ||
+        typeText === "balance_transfer" ||
+        nameText.includes("addendum") ||
+        nameText.includes("balance transfer")
+    );
+}
+
+/**
+ * Platform / Woodmere (`documentsSource: platform`) → non-`funder_` templates.
+ * Own / shared → only `funder_{docsFunderId}_…` templates.
+ */
+function templateMatchesFunderDocuments(
+    template: {
+        layoutKey?: string | null;
+        templateId?: string | null;
+    } | null | undefined,
+    docsLayoutFunderId: string | null,
+): boolean {
+    const key = templateLayoutKeyToken(template);
+    if (docsLayoutFunderId) {
+        const prefix = `funder_${String(docsLayoutFunderId).trim()}_`.toLowerCase();
+        return key.startsWith(prefix);
+    }
+    return isPlatformScopedBoldSignTemplateRow({ layoutKey: key || null });
+}
+
+function disclosureMappingMatchesFunderDocuments(
+    row: ContractDocumentTemplateMappingRow | null | undefined,
+    docsLayoutFunderId: string | null,
+): boolean {
+    if (!row) return false;
+    return templateMatchesFunderDocuments(row.template, docsLayoutFunderId);
+}
+
+function pickDisclosureTemplateIdForFunder(
+    rows: Array<{
+        id?: string;
+        pdfUrl?: string | null;
+        layoutKey?: string | null;
+        templateId?: string | null;
+    }>,
+    docsLayoutFunderId: string | null,
+    state: string,
+    frequency: string,
+): string | null {
+    const withPdf = rows.filter((row) => String(row?.pdfUrl ?? "").trim());
+    if (!withPdf.length) return null;
+
+    if (docsLayoutFunderId) {
+        const prefix = `funder_${String(docsLayoutFunderId).trim()}_`.toLowerCase();
+        const exactKey = funderDisclosureLayoutKeyForState(
+            docsLayoutFunderId,
+            state,
+            frequency,
+        ).toLowerCase();
+        const scoped = withPdf.filter((row) => {
+            const key = templateLayoutKeyToken(row);
+            return key.startsWith(prefix) && key.includes("disclosure");
+        });
+        const exact = scoped.find(
+            (row) => templateLayoutKeyToken(row) === exactKey,
+        );
+        const match = exact ?? scoped[0];
+        return match?.id ? String(match.id) : null;
+    }
+
+    const platform = withPdf.find((row) =>
+        isPlatformScopedBoldSignTemplateRow(row),
+    );
+    return platform?.id ? String(platform.id) : null;
 }
 
 function toUsDateDisplay(value: string): string {
@@ -1012,10 +1138,15 @@ const PDFViewerModal = ({
         () => parseFunderDefaultCcEmails(selectedFunderDefaultCcEmail),
         [selectedFunderDefaultCcEmail],
     );
-    const contractCcMergeOptions = useMemo(
-        () => ({ funderDefaultCcEmail: selectedFunderDefaultCcEmail }),
-        [selectedFunderDefaultCcEmail],
-    );
+    const contractCcMergeOptions = useMemo(() => {
+        const knownFunderDefaultCcEmails = collectKnownFunderDefaultCcEmails(
+            funders.map((f) => f.defaultCcEmail),
+        );
+        return {
+            funderDefaultCcEmail: selectedFunderDefaultCcEmail,
+            knownFunderDefaultCcEmails,
+        };
+    }, [selectedFunderDefaultCcEmail, funders]);
     const contractDefaultCcEmails = useMemo(
         () => resolveContractDefaultCcEmails(contractCcMergeOptions),
         [contractCcMergeOptions],
@@ -1106,6 +1237,18 @@ const PDFViewerModal = ({
             (a, b) => Number(b.order ?? 0) - Number(a.order ?? 0),
         )[0];
     }, [addendumTemplateMappings]);
+
+    const linkedAddendumSupportsPrefillEdit = useMemo(
+        () =>
+            hasAddendumPrefillFieldMap(
+                linkedAddendumMapping?.template?.templateId ??
+                    linkedAddendumMapping?.templateId ??
+                    null,
+                linkedAddendumMapping?.template?.name ?? null,
+                linkedAddendumMapping?.template?.layoutKey ?? null,
+            ),
+        [linkedAddendumMapping],
+    );
 
     const disclosureTemplateMappings = useMemo(
         () => templateMappings.filter(isDisclosureMappingRow),
@@ -1532,13 +1675,32 @@ const PDFViewerModal = ({
             .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
             .join(" ");
     };
-    const addendumTemplateOptions = boldSignTemplates.filter((template: any) => {
-        const typeText = String(template?.type || "").toLowerCase();
-        const nameText = String(
-            template?.name || template?.title || template?.templateName || "",
-        ).toLowerCase();
-        return typeText.includes("addendum") || nameText.includes("addendum");
-    });
+    const addendumDocsLayoutFunderId = useMemo(
+        () =>
+            selectedFunderProfile
+                ? resolveAddendumDocumentsLayoutFunderId(selectedFunderProfile)
+                : null,
+        [selectedFunderProfile],
+    );
+    const disclosureDocsLayoutFunderId = useMemo(
+        () =>
+            selectedFunderProfile
+                ? resolveDisclosureDocumentsLayoutFunderId(selectedFunderProfile)
+                : null,
+        [selectedFunderProfile],
+    );
+    const docsLayoutFunderId = addendumDocsLayoutFunderId;
+    const docsLayoutFunderIdRef = useRef<string | null>(null);
+    docsLayoutFunderIdRef.current = docsLayoutFunderId;
+    const disclosureDocsLayoutFunderIdRef = useRef<string | null>(null);
+    disclosureDocsLayoutFunderIdRef.current = disclosureDocsLayoutFunderId;
+
+    const addendumTemplateOptions = useMemo(() => {
+        return boldSignTemplates.filter((template: any) => {
+            if (!isContractAddendumTemplateRow(template)) return false;
+            return templateMatchesFunderDocuments(template, docsLayoutFunderId);
+        });
+    }, [boldSignTemplates, docsLayoutFunderId]);
     const addendumDocs = uploadedDocs.filter((file: any) => {
         const text = String(
             file?.documentType || file?.fileName || "",
@@ -4448,7 +4610,11 @@ const PDFViewerModal = ({
     );
 
     const lookupDisclosureTemplateRef = useCallback(
-        async (state: string, frequency: string): Promise<string | null> => {
+        async (
+            state: string,
+            frequency: string,
+            docsFunderId?: string | null,
+        ): Promise<string | null> => {
             const params = new URLSearchParams({
                 type: "disclosure",
                 state: normalizeStateForTemplateLookup(state),
@@ -4458,11 +4624,19 @@ const PDFViewerModal = ({
             const rows = (res?.data?.data ?? []) as Array<{
                 id?: string;
                 pdfUrl?: string | null;
+                layoutKey?: string | null;
+                templateId?: string | null;
             }>;
-            const match = Array.isArray(rows)
-                ? rows.find((row) => String(row?.pdfUrl ?? "").trim())
-                : undefined;
-            return match?.id ? String(match.id) : null;
+            const layoutFunderId =
+                docsFunderId !== undefined
+                    ? docsFunderId
+                    : disclosureDocsLayoutFunderIdRef.current;
+            return pickDisclosureTemplateIdForFunder(
+                Array.isArray(rows) ? rows : [],
+                layoutFunderId,
+                state,
+                frequency,
+            );
         },
         [],
     );
@@ -4510,7 +4684,10 @@ const PDFViewerModal = ({
     );
 
     const syncDisclosureTemplateForState = useCallback(
-        async (state: string, options?: { silent?: boolean }) => {
+        async (
+            state: string,
+            options?: { silent?: boolean; docsLayoutFunderId?: string | null },
+        ) => {
             const picked = pickUsStateForSelect(state);
             if (!picked) {
                 if (linkedDisclosureMappingRef.current) {
@@ -4519,16 +4696,27 @@ const PDFViewerModal = ({
                 return;
             }
             if (effectiveContractId == null) return;
+            const layoutFunderId =
+                options?.docsLayoutFunderId !== undefined
+                    ? options.docsLayoutFunderId
+                    : disclosureDocsLayoutFunderIdRef.current;
             try {
                 setLinkingDisclosureTemplate(true);
                 const templateRef = await lookupDisclosureTemplateRef(
                     picked,
                     contractDisclosureFrequency,
+                    layoutFunderId,
                 );
                 const current = linkedDisclosureMappingRef.current;
                 const currentTemplateId = current ? mappingTemplateRowId(current) : "";
                 if (!templateRef && !current) return;
-                if (templateRef && currentTemplateId === templateRef) return;
+                if (
+                    templateRef &&
+                    currentTemplateId === templateRef &&
+                    disclosureMappingMatchesFunderDocuments(current, layoutFunderId)
+                ) {
+                    return;
+                }
                 if (!templateRef) {
                     await setDisclosureTemplateMapping(null);
                     if (!options?.silent) {
@@ -4562,22 +4750,31 @@ const PDFViewerModal = ({
         if (effectiveContractId == null || loadingTemplateMappings) return;
         const picked = pickUsStateForSelect(selectedState);
         if (!picked) return;
+        const docsKey = disclosureDocsLayoutFunderId ?? "platform";
         if (
             linkedDisclosureMapping &&
-            disclosureMappingMatchesState(linkedDisclosureMapping, picked)
+            disclosureMappingMatchesState(linkedDisclosureMapping, picked) &&
+            disclosureMappingMatchesFunderDocuments(
+                linkedDisclosureMapping,
+                disclosureDocsLayoutFunderId,
+            )
         ) {
             return;
         }
-        const key = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}`;
+        const key = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}:${docsKey}`;
         if (disclosureAutoLinkKeyRef.current === key) return;
         disclosureAutoLinkKeyRef.current = key;
-        void syncDisclosureTemplateForState(picked, { silent: true });
+        void syncDisclosureTemplateForState(picked, {
+            silent: true,
+            docsLayoutFunderId: disclosureDocsLayoutFunderId,
+        });
     }, [
         isOpen,
         effectiveContractId,
         loadingTemplateMappings,
         selectedState,
         contractDisclosureFrequency,
+        disclosureDocsLayoutFunderId,
         linkedDisclosureMapping,
         syncDisclosureTemplateForState,
     ]);
@@ -6633,14 +6830,75 @@ const PDFViewerModal = ({
                                                                 nextFunder !== selectedFunder ||
                                                                 nextFunderProfileId !== selectedFunderProfileId
                                                             ) {
+                                                                selectedFunderProfileIdRef.current =
+                                                                    nextFunderProfileId;
+                                                                selectedFunderRef.current = nextFunder;
                                                                 setSelectedFunderProfileId(nextFunderProfileId);
                                                                 setSelectedFunder(nextFunder);
+                                                            }
+                                                            const nextDocsLayoutFunderId = (() => {
+                                                                const profile =
+                                                                    (nextFunderProfileId
+                                                                        ? findFunderById(nextFunderProfileId)
+                                                                        : null) ??
+                                                                    (nextFunder
+                                                                        ? findFunder(nextFunder)
+                                                                        : null);
+                                                                return profile
+                                                                    ? resolveAddendumDocumentsLayoutFunderId(profile)
+                                                                    : null;
+                                                            })();
+                                                            const nextDisclosureDocsLayoutFunderId = (() => {
+                                                                const profile =
+                                                                    (nextFunderProfileId
+                                                                        ? findFunderById(nextFunderProfileId)
+                                                                        : null) ??
+                                                                    (nextFunder
+                                                                        ? findFunder(nextFunder)
+                                                                        : null);
+                                                                return profile
+                                                                    ? resolveDisclosureDocumentsLayoutFunderId(profile)
+                                                                    : null;
+                                                            })();
+                                                            docsLayoutFunderIdRef.current =
+                                                                nextDocsLayoutFunderId;
+                                                            disclosureDocsLayoutFunderIdRef.current =
+                                                                nextDisclosureDocsLayoutFunderId;
+                                                            if (
+                                                                nextFunder !== selectedFunder ||
+                                                                nextFunderProfileId !== selectedFunderProfileId
+                                                            ) {
+                                                                const opt = String(
+                                                                    selectedAddendumOption || "",
+                                                                ).trim();
+                                                                if (opt.startsWith("bs:")) {
+                                                                    const ref = opt.slice(3).trim();
+                                                                    const stillValid =
+                                                                        boldSignTemplates.some(
+                                                                            (t: any) =>
+                                                                                isContractAddendumTemplateRow(
+                                                                                    t,
+                                                                                ) &&
+                                                                                templateMatchesFunderDocuments(
+                                                                                    t,
+                                                                                    nextDocsLayoutFunderId,
+                                                                                ) &&
+                                                                                getBoldSignTemplateMappingRef(
+                                                                                    t,
+                                                                                ) === ref,
+                                                                        );
+                                                                    if (!stillValid) {
+                                                                        void setAddendumTemplateMapping(
+                                                                            null,
+                                                                        );
+                                                                    }
+                                                                }
                                                             }
                                                             if (
                                                                 effectiveContractId != null &&
                                                                 picked
                                                             ) {
-                                                                disclosureAutoLinkKeyRef.current = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}`;
+                                                                disclosureAutoLinkKeyRef.current = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}:${nextDisclosureDocsLayoutFunderId ?? "platform"}`;
                                                             } else {
                                                                 disclosureAutoLinkKeyRef.current = "";
                                                             }
@@ -6653,7 +6911,10 @@ const PDFViewerModal = ({
                                                                 });
                                                             }
                                                             if (effectiveContractId != null) {
-                                                                void syncDisclosureTemplateForState(v);
+                                                                void syncDisclosureTemplateForState(v, {
+                                                                    docsLayoutFunderId:
+                                                                        nextDisclosureDocsLayoutFunderId,
+                                                                });
                                                             }
                                                         }}
                                                     />
@@ -6676,6 +6937,56 @@ const PDFViewerModal = ({
                                                                 setSelectedFunderProfileId(profileId);
                                                                 setSelectedFunder(funderName);
                                                                 scheduleMainContractTemplatePreview(profileId);
+                                                                const nextDocsLayoutFunderId = profile
+                                                                    ? resolveAddendumDocumentsLayoutFunderId(profile)
+                                                                    : null;
+                                                                const nextDisclosureDocsLayoutFunderId = profile
+                                                                    ? resolveDisclosureDocumentsLayoutFunderId(profile)
+                                                                    : null;
+                                                                docsLayoutFunderIdRef.current =
+                                                                    nextDocsLayoutFunderId;
+                                                                disclosureDocsLayoutFunderIdRef.current =
+                                                                    nextDisclosureDocsLayoutFunderId;
+                                                                const picked =
+                                                                    pickUsStateForSelect(selectedState);
+                                                                if (
+                                                                    effectiveContractId != null &&
+                                                                    picked
+                                                                ) {
+                                                                    disclosureAutoLinkKeyRef.current = `${effectiveContractId}:${picked}:${contractDisclosureFrequency}:${nextDisclosureDocsLayoutFunderId ?? "platform"}`;
+                                                                    void syncDisclosureTemplateForState(
+                                                                        picked,
+                                                                        {
+                                                                            docsLayoutFunderId:
+                                                                                nextDisclosureDocsLayoutFunderId,
+                                                                        },
+                                                                    );
+                                                                }
+                                                                const opt = String(
+                                                                    selectedAddendumOption || "",
+                                                                ).trim();
+                                                                if (opt.startsWith("bs:")) {
+                                                                    const ref = opt.slice(3).trim();
+                                                                    const stillValid =
+                                                                        boldSignTemplates.some(
+                                                                            (t: any) =>
+                                                                                isContractAddendumTemplateRow(
+                                                                                    t,
+                                                                                ) &&
+                                                                                templateMatchesFunderDocuments(
+                                                                                    t,
+                                                                                    nextDocsLayoutFunderId,
+                                                                                ) &&
+                                                                                getBoldSignTemplateMappingRef(
+                                                                                    t,
+                                                                                ) === ref,
+                                                                        );
+                                                                    if (!stillValid) {
+                                                                        void setAddendumTemplateMapping(
+                                                                            null,
+                                                                        );
+                                                                    }
+                                                                }
                                                                 if (effectiveContractId != null) {
                                                                     void persistContractStateAndFunder({
                                                                         funderName,
@@ -6951,6 +7262,22 @@ const PDFViewerModal = ({
                                                                             <Eye className="h-3.5 w-3.5" />
                                                                         )}
                                                                     </Button>
+                                                                    {linkedAddendumSupportsPrefillEdit ? (
+                                                                        <Button
+                                                                            type="button"
+                                                                            size="icon"
+                                                                            variant="ghost"
+                                                                            className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-amber-50 hover:text-amber-800 dark:hover:bg-amber-950/40"
+                                                                            title="Edit addendum prefill"
+                                                                            onClick={() =>
+                                                                                setTemplateMappingPrefillEditRow(
+                                                                                    linkedAddendumMapping,
+                                                                                )
+                                                                            }
+                                                                        >
+                                                                            <Pencil className="h-3.5 w-3.5" />
+                                                                        </Button>
+                                                                    ) : null}
                                                                     <Button
                                                                         type="button"
                                                                         size="icon"

@@ -90,6 +90,8 @@ export interface Application {
     assignedUnderwriter?: ApplicationUserLite | null;
     approvedByUnderwriterId?: string | null;
     approvedByUnderwriter?: ApplicationUserLite | null;
+    /** Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call". */
+    finalApprovalSource?: 'Decision Logic' | 'Funding Call' | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"). */
     category?: string | null;
     createdAt?: string;

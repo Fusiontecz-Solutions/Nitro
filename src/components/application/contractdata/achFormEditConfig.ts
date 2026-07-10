@@ -1,14 +1,18 @@
 import type { BuildContractPrefillFieldsArgs } from "./Contract";
 
 /**
- * Text tabs on `hard_rock_ach_authorization` (see in-house-crm-be manifest JSON).
+ * Text Data Labels on ACH layouts
+ * (`ach_authorization.layout.json` / `ach_authorization_standalone.layout.json`).
  * Sign / initial / dateSigned tabs are filled in DocuSign — not editable here.
+ *
+ * Labels match the blank ACH PDF (e.g. EJM / Woodmere ACH BLANK FILLABLE).
+ * Order follows the form: page 1 authorization → page 2 account holder (LTR rows).
  */
 export const ACH_COORDINATE_MANIFEST_TEXT_TAB_LABELS = [
-    "authorization_client_name",
     "authorization_client_bank_name",
     "authorization_client_bank_routing",
     "authorization_client_bank_account",
+    "authorization_client_name",
     "authorization_client_name_print",
     "authorization_client_tax_id",
     "authorized_business_phone",
@@ -29,6 +33,9 @@ export const ACH_COORDINATE_MANIFEST_TEXT_TAB_LABELS = [
     "ach_authorization_account_holder_bank_number_of_transactions",
     "ach_authorization_concent_account_holder_name",
 ] as const;
+
+export type AchCoordinateTextTabLabel =
+    (typeof ACH_COORDINATE_MANIFEST_TEXT_TAB_LABELS)[number];
 
 type AchFormEditFieldKey = keyof Pick<
     BuildContractPrefillFieldsArgs,
@@ -60,40 +67,46 @@ type AchFormEditFieldKey = keyof Pick<
 export type AchFormEditField = {
     key: AchFormEditFieldKey;
     label: string;
-    tabLabel: (typeof ACH_COORDINATE_MANIFEST_TEXT_TAB_LABELS)[number];
+    tabLabel: AchCoordinateTextTabLabel;
 };
 
-/** Single-scroll ACH editor — one row per coordinate manifest text tab. */
+/** Edit ACH form — labels match the blank ACH PDF; ids match layout Data Labels. */
 export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
-    { key: "authorizationClientName", label: "Client name", tabLabel: "authorization_client_name" },
+    // Page 1 — Transfer Funds To/From + Seller Information
     {
         key: "authorizationClientBankName",
-        label: "Client bank name",
+        label: "Name of bank",
         tabLabel: "authorization_client_bank_name",
     },
     {
         key: "authorizationClientBankRouting",
-        label: "Client bank routing",
+        label: "ABA transit / routing #",
         tabLabel: "authorization_client_bank_routing",
     },
     {
         key: "authorizationClientBankAccount",
-        label: "Client bank account",
+        label: "Checking account",
         tabLabel: "authorization_client_bank_account",
     },
     {
+        key: "authorizationClientName",
+        label: "Seller's name",
+        tabLabel: "authorization_client_name",
+    },
+    {
         key: "authorizationClientNamePrint",
-        label: "Client name (print)",
+        label: "Print name",
         tabLabel: "authorization_client_name_print",
     },
     {
         key: "authorizationClientTaxId",
-        label: "Client tax ID / EIN",
+        label: "Seller's tax ID",
         tabLabel: "authorization_client_tax_id",
     },
+    // Page 2 — ACH Authorization
     {
         key: "authorizedBusinessPhone",
-        label: "Business phone",
+        label: "Authorized business phone number",
         tabLabel: "authorized_business_phone",
     },
     {
@@ -103,17 +116,17 @@ export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
     },
     {
         key: "achAuthorizationAccountHolderDba",
-        label: "DBA",
+        label: "Account holder DBA name",
         tabLabel: "ach_authorization_account_holder_dba",
     },
     {
         key: "achAuthorizationAccountHolderPhone",
-        label: "Phone",
+        label: "Account holder phone",
         tabLabel: "ach_authorization_account_holder_phone",
     },
     {
         key: "achAuthorizationAccountHolderAddress",
-        label: "Street address",
+        label: "Account holder address",
         tabLabel: "ach_authorization_account_holder_address",
     },
     {
@@ -133,12 +146,12 @@ export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
     },
     {
         key: "achAuthorizationAccountHolderBankName",
-        label: "Bank name",
+        label: "Account holder's bank name",
         tabLabel: "ach_authorization_account_holder_bank_name",
     },
     {
         key: "achAuthorizationAccountHolderBankBranchCity",
-        label: "Bank branch city",
+        label: "Branch city",
         tabLabel: "ach_authorization_account_holder_bank_branch_city",
     },
     {
@@ -153,27 +166,27 @@ export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
     },
     {
         key: "achAuthorizationAccountHolderBankRoutingNumber",
-        label: "Routing number",
+        label: "Bank routing number",
         tabLabel: "ach_authorization_account_holder_bank_routing_number",
     },
     {
         key: "achAuthorizationAccountHolderBankAccountNumber",
-        label: "Account number",
+        label: "Bank account number",
         tabLabel: "ach_authorization_account_holder_bank_account_number",
     },
     {
-        key: "achAuthorizationAccountHolderBankNumberOfTransactions",
-        label: "NO. of transaction (term of offer)",
-        tabLabel: "ach_authorization_account_holder_bank_number_of_transactions",
-    },
-    {
         key: "achAuthorizationAccountHolderBankTransactionFee",
-        label: "Transaction fee (estimated payment)",
+        label: "Rate / amount ($)",
         tabLabel: "ach_authorization_account_holder_bank_transaction_fee",
     },
     {
+        key: "achAuthorizationAccountHolderBankNumberOfTransactions",
+        label: "No. of transactions",
+        tabLabel: "ach_authorization_account_holder_bank_number_of_transactions",
+    },
+    {
         key: "achAuthorizationConcentAccountHolderName",
-        label: "Consent — account holder name",
+        label: "Name / title of account holder",
         tabLabel: "ach_authorization_concent_account_holder_name",
     },
 ];
@@ -181,3 +194,89 @@ export const ACH_FORM_FLAT_FIELDS: AchFormEditField[] = [
 export const ACH_FORM_FLAT_FIELD_KEYS = new Set(
     ACH_FORM_FLAT_FIELDS.map((f) => f.key),
 ) as Set<keyof BuildContractPrefillFieldsArgs>;
+
+/** Prefill / DocuSign field ids for the Edit ACH form modal (same as layout Data Labels). */
+export const ACH_AUTHORIZATION_EDITABLE_FIELD_IDS: readonly string[] =
+    ACH_FORM_FLAT_FIELDS.map((f) => f.tabLabel);
+
+export const ACH_AUTHORIZATION_FIELD_LABELS: Record<string, string> = Object.fromEntries(
+    ACH_FORM_FLAT_FIELDS.map((f) => [f.tabLabel, f.label]),
+);
+
+/**
+ * Stable key inside `documentTemplatePrefillByMappingId` so ACH edits survive when the
+ * mapping row id changes (synthetic `ach-template-*` → real DB mapping id).
+ */
+export const ACH_PREFILL_MAPPING_ALIAS_KEY = "ach_authorization";
+
+/** DocuSign tabLabel → camelCase contract prefill keys. */
+export function achTabValuesToCamelPartial(
+    values: Record<string, string>,
+): Partial<BuildContractPrefillFieldsArgs> {
+    const out: Partial<BuildContractPrefillFieldsArgs> = {};
+    for (const field of ACH_FORM_FLAT_FIELDS) {
+        const raw = values[field.tabLabel];
+        (out as Record<string, string>)[field.key] =
+            raw === undefined || raw === null ? "" : String(raw);
+    }
+    return out;
+}
+
+/** camelCase contract prefill → DocuSign tabLabel map. */
+export function achCamelPartialToTabValues(
+    partial: Partial<BuildContractPrefillFieldsArgs> | null | undefined,
+): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!partial) return out;
+    for (const field of ACH_FORM_FLAT_FIELDS) {
+        const raw = partial[field.key];
+        if (raw === undefined || raw === null) continue;
+        out[field.tabLabel] = String(raw);
+    }
+    return out;
+}
+
+/** Prefer mapping-row overrides, then the stable ACH alias. */
+export function resolveAchSavedMappingOverrides(
+    blob: Record<string, Record<string, string>> | null | undefined,
+    mappingId?: string | null,
+): Record<string, string> {
+    const map = blob ?? {};
+    const byId = mappingId ? map[String(mappingId)] : undefined;
+    if (byId && typeof byId === "object" && Object.keys(byId).length > 0) {
+        return { ...byId };
+    }
+    const alias = map[ACH_PREFILL_MAPPING_ALIAS_KEY];
+    if (alias && typeof alias === "object") return { ...alias };
+    return {};
+}
+
+/** ACH Info Required / `ACH` table payload from edit-form camelCase values. */
+export function achCamelPartialToAchRecordPatch(
+    partial: Partial<BuildContractPrefillFieldsArgs>,
+): Record<string, string | undefined> {
+    const g = (key: keyof BuildContractPrefillFieldsArgs) => {
+        const v = String(partial[key] ?? "").trim();
+        return v || undefined;
+    };
+    return {
+        bankName:
+            g("achAuthorizationAccountHolderBankName") || g("authorizationClientBankName"),
+        accountHolderName: g("achAuthorizationAccountHolderName") || g("authorizationClientName"),
+        accountNumber:
+            g("achAuthorizationAccountHolderBankAccountNumber") ||
+            g("authorizationClientBankAccount"),
+        routingNumber:
+            g("achAuthorizationAccountHolderBankRoutingNumber") ||
+            g("authorizationClientBankRouting"),
+        dba: g("achAuthorizationAccountHolderDba"),
+        phone: g("achAuthorizationAccountHolderPhone") || g("authorizedBusinessPhone"),
+        address: g("achAuthorizationAccountHolderAddress"),
+        city: g("achAuthorizationAccountHolderCity"),
+        state: g("achAuthorizationAccountHolderState"),
+        zip: g("achAuthorizationAccountHolderZip"),
+        bankBranchCity: g("achAuthorizationAccountHolderBankBranchCity"),
+        bankState: g("achAuthorizationAccountHolderBankState"),
+        bankZip: g("achAuthorizationAccountHolderBankZip"),
+    };
+}

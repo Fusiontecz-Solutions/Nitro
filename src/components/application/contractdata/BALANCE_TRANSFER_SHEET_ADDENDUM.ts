@@ -12,6 +12,11 @@ export const BALANCE_TRANSFER_SHEET_FIELD_DEFS = [
     { id: "business_address_state", label: "Business address state" },
     { id: "business_address_zip", label: "Business address ZIP" },
     { id: "purchase_price", label: "Purchase price" },
+    {
+        id: "funder_name_with_deal_prefix",
+        label: "Funder name (Deal ID prefix)",
+    },
+    { id: "deal_id_prefix", label: "Deal ID prefix" },
 ] as const;
 
 /** DocuSign prefill source values for the Balance Transfer Sheet template. */
@@ -26,6 +31,21 @@ export interface BalanceTransferSheetContractPrefillFields {
     businessAddressState?: string;
     businessAddressZip?: string;
     purchasePrice?: string;
+    funderNameWithDealPrefix?: string;
+    dealIdPrefix?: string;
+}
+
+export function formatFunderNameWithDealIdPrefix(
+    funderName?: string | null,
+    dealIdPrefix?: string | null,
+    displayName?: string | null,
+): string {
+    const name = String(displayName || funderName || "").trim();
+    const prefix = String(dealIdPrefix || "").trim();
+    if (!name && !prefix) return "";
+    if (!name) return `("${prefix}")`;
+    if (!prefix) return name;
+    return `${name} ("${prefix}")`;
 }
 
 export function buildBalanceTransferSheetContractPrefillFields({
@@ -39,6 +59,8 @@ export function buildBalanceTransferSheetContractPrefillFields({
     businessAddressState = "",
     businessAddressZip = "",
     purchasePrice = "",
+    funderNameWithDealPrefix = "",
+    dealIdPrefix = "",
 }: BalanceTransferSheetContractPrefillFields = {}): ContractPrefillField[] {
     const values: Record<string, string> = {
         merchant_legal_name: merchantLegalName,
@@ -51,6 +73,8 @@ export function buildBalanceTransferSheetContractPrefillFields({
         business_address_state: businessAddressState,
         business_address_zip: businessAddressZip,
         purchase_price: purchasePrice,
+        funder_name_with_deal_prefix: funderNameWithDealPrefix,
+        deal_id_prefix: dealIdPrefix,
     };
     return BALANCE_TRANSFER_SHEET_FIELD_DEFS.map(({ id, label }) => ({
         id,

@@ -1,8 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { useDispatch } from "react-redux";
+import { useDispatch, useSelector } from "react-redux";
 import { Document, Page, pdfjs } from "react-pdf";
 import {
+    Building2,
     CheckCircle2,
     FileText,
     Info,
@@ -21,13 +22,37 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { axiosGet, axiosPatch, axiosPost } from "@/redux/axios";
-import type { AppDispatch } from "@/redux/store";
+import type { AppDispatch, RootState } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
+import { fetchFunderDocuments } from "@/redux/actions/integrationSettingsActions";
 import {
+    findFunderProfile,
+} from "@/constants/contractFunder";
+import {
+    formatFunderSelectLabel,
+    isWoodmereFunderProfile,
+    persistedFunderProfileIdForApi,
+    useFunderProfiles,
+} from "@/hooks/useFunderProfiles";
+import type { FunderProfile } from "@/types/integrationSettingsTypes";
+import { pickUsStateForSelect } from "@/components/ui/searchable-state-select";
+import {
+    collectKnownFunderDefaultCcEmails,
+    isReservedContractCcEmail,
     loadBoldSignCcEmailList,
+    mergeWithDefaultCcEmails,
+    parseFunderDefaultCcEmails,
+    resolveContractDefaultCcEmails,
     saveBoldSignCcEmailList,
 } from "./docusignCcList";
 import {
@@ -49,12 +74,17 @@ import {
     resolveAchEnvelopeDisplayStatus,
     resolveAchPdfEnvelopeId,
     getDocumentTemplatePrefillFieldRowsForEditor,
+    parseLastAchSentFunder,
     type DocumentTemplateEnvelopeMeta,
 } from "./contractdata/documentTemplateMappingPrefill";
 import {
     TemplateMappingPrefillEditDialog,
     type TemplateMappingPrefillEditRow,
 } from "./contractdata/TemplateMappingPrefillEditDialog";
+import {
+    achTabValuesToCamelPartial,
+    resolveAchSavedMappingOverrides,
+} from "./contractdata/achFormEditConfig";
 import {
     normalizeContractPrefillOverrides,
     type BuildContractPrefillFieldsArgs,
@@ -78,6 +108,192 @@ const ACH_STATUS_POLL_MS = 20_000;
 
 const ACH_TERMINAL_VOID_STATUSES = new Set(["revoked", "voided", "declined", "expired"]);
 const ACH_DRAFT_STATUSES = new Set(["", "draft"]);
+
+const ACH_STANDALONE_LAYOUT_KEY = "ach_authorization_standalone";
+
+function resolveDealStateFromApplication(applicationData: unknown): string {
+    const ad = applicationData as Record<string, unknown> | null | undefined;
+    if (!ad || typeof ad !== "object") return "";
+    const bi0 = Array.isArray(ad.businessInfo)
+        ? (ad.businessInfo[0] as Record<string, unknown>)
+        : undefined;
+    const client = ad.client as Record<string, unknown> | undefined;
+    return pickUsStateForSelect(client?.state ?? bi0?.state);
+}
+
+function maskAccountTail(account: unknown): string {
+    const digits = String(account ?? "").replace(/\D/g, "");
+    if (!digits) return "";
+    if (digits.length <= 4) return digits;
+    return `••••${digits.slice(-4)}`;
+}
+
+function formatAchRecordOptionLabel(row: Record<string, unknown>, index: number): string {
+    const bank = String(row.bankName ?? "").trim();
+    const holder = String(row.accountHolderName ?? "").trim();
+    const tail = maskAccountTail(row.accountNumber);
+    const parts = [bank || holder || `ACH entry #${index + 1}`, tail].filter(Boolean);
+    return parts.join(" · ");
+}
+
+function toPreviewableTemplate(template: {
+    id?: string;
+    layoutKey?: string | null;
+    templateId?: string | null;
+    type?: string | null;
+    name?: string | null;
+    pdfUrl?: string | null;
+    pdf_url?: string | null;
+}): {
+    id?: string;
+    name?: string;
+    layoutKey?: string;
+    templateId?: string;
+    type?: string;
+    pdfUrl?: string;
+    pdf_url?: string;
+} {
+    return {
+        id: template.id,
+        name: template.name == null ? undefined : String(template.name),
+        layoutKey: template.layoutKey == null ? undefined : String(template.layoutKey),
+        templateId: template.templateId == null ? undefined : String(template.templateId),
+        type: template.type == null ? undefined : String(template.type),
+        pdfUrl: template.pdfUrl == null ? undefined : String(template.pdfUrl),
+        pdf_url: template.pdf_url == null ? undefined : String(template.pdf_url),
+    };
+}
+
+function isPlatformAchTemplateRow(template: {
+    layoutKey?: string | null;
+    templateId?: string | null;
+    type?: string | null;
+    name?: string | null;
+}): boolean {
+    const layoutKey = String(template.layoutKey ?? "").trim().toLowerCase();
+    const templateId = String(template.templateId ?? "").trim().toLowerCase();
+    const type = String(template.type ?? "").trim().toLowerCase();
+    const name = String(template.name ?? "").trim().toLowerCase();
+    if (layoutKey.startsWith("funder_") || templateId.startsWith("funder_")) return false;
+    return (
+        layoutKey === "ach_authorization" ||
+        layoutKey === "ach_authorization_standalone" ||
+        layoutKey === "woodmere_ach_authorization" ||
+        type === "ach" ||
+        type === "ach_authorization" ||
+        (name.includes("ach") && name.includes("woodmere") && !name.includes("attach"))
+    );
+}
+
+function findPlatformAchTemplate(
+    templates: Array<{
+        id?: string;
+        layoutKey?: string | null;
+        templateId?: string | null;
+        type?: string | null;
+        name?: string | null;
+        pdfUrl?: string | null;
+        pdf_url?: string | null;
+    }>,
+) {
+    const previewable = templates.filter(
+        (t) => isPlatformAchTemplateRow(t) && boldSignTemplateIsPreviewable(toPreviewableTemplate(t)),
+    );
+    return (
+        previewable.find((t) => String(t.layoutKey ?? "").toLowerCase() === "ach_authorization") ||
+        previewable.find(
+            (t) => String(t.layoutKey ?? "").toLowerCase() === "ach_authorization_standalone",
+        ) ||
+        previewable[0] ||
+        null
+    );
+}
+
+function findFunderScopedAchTemplate(
+    funderId: string,
+    templates: Array<{
+        id?: string;
+        layoutKey?: string | null;
+        templateId?: string | null;
+        type?: string | null;
+        name?: string | null;
+        pdfUrl?: string | null;
+        pdf_url?: string | null;
+    }>,
+) {
+    const id = String(funderId || "").trim();
+    if (!id) return null;
+    const prefix = `funder_${id}_`.toLowerCase();
+    const matches = templates.filter((t) => {
+        const key = String(t.layoutKey ?? t.templateId ?? "")
+            .trim()
+            .toLowerCase();
+        if (!key.startsWith(prefix)) return false;
+        return (
+            key.includes("ach_authorization") ||
+            String(t.type ?? "")
+                .toLowerCase()
+                .includes("ach")
+        );
+    });
+    return (
+        matches.find((t) => boldSignTemplateIsPreviewable(toPreviewableTemplate(t))) ?? null
+    );
+}
+
+function isUploadedAchDocumentRow(row: {
+    type?: string | null;
+    layoutKey?: string | null;
+}): boolean {
+    const type = String(row.type ?? "").toLowerCase();
+    const key = String(row.layoutKey ?? "").toLowerCase();
+    return (
+        type === "ach" ||
+        type === "ach_authorization" ||
+        key.includes("ach_authorization")
+    );
+}
+
+/** True when this funder can send an ACH form (platform Woodmere ACH, or uploaded ACH PDF). */
+function funderHasAchAuthorizationForm(
+    profile: FunderProfile,
+    templates: Array<{ layoutKey?: string | null; templateId?: string | null; type?: string | null }>,
+): boolean {
+    if (isWoodmereFunderProfile(profile)) return true;
+    const source = String(
+        profile.addendumDocumentsSource ?? profile.documentsSource ?? "",
+    )
+        .trim()
+        .toLowerCase();
+    if (source === "platform") return true;
+
+    const docsFunderId =
+        source === "shared"
+            ? String(
+                  profile.sharedAddendumFunderId ??
+                      profile.sharedDocumentsFunderId ??
+                      "",
+              ).trim() || profile.id
+            : profile.id;
+    const id = String(docsFunderId || "").trim();
+    if (!id || id.startsWith("fallback-")) return false;
+
+    const prefix = `funder_${id}_`.toLowerCase();
+    return templates.some((row) => {
+        const key = String(row.layoutKey ?? row.templateId ?? "")
+            .trim()
+            .toLowerCase();
+        const type = String(row.type ?? "")
+            .trim()
+            .toLowerCase();
+        if (!key.startsWith(prefix)) return false;
+        return (
+            type === "ach" ||
+            type === "ach_authorization" ||
+            key.includes("ach_authorization")
+        );
+    });
+}
 const ACH_OUT_FOR_SIGNATURE_STATUSES = new Set(["sent", "viewed", "delivered"]);
 
 function getAchEnvelopeView(status: string, envelopeId: string) {
@@ -255,6 +471,10 @@ export interface ACHFormViewerModalProps {
     achMapping: AchDocumentTemplateMappingRow | null;
     contract: Record<string, unknown> | null;
     contractPrefillRecords?: ContractPrefillContractRecords;
+    /** Info Required ACH rows — when more than one, show a selector in the modal. */
+    achRecordOptions?: Record<string, unknown>[];
+    selectedAchRecordId?: string | null;
+    onSelectedAchRecordIdChange?: (id: string) => void;
     readOnly?: boolean;
     onContractDocumentsChanged?: () => void;
     onPrepareDocuSignDraft?: (payload: {
@@ -262,6 +482,9 @@ export interface ACHFormViewerModalProps {
         achDocumentRef?: string | null;
         standaloneAchOnly?: boolean;
         roles?: DocuSignTemplateRolePayload[];
+        funderName?: string | null;
+        funderProfileId?: string | null;
+        contractState?: string | null;
     }) => Promise<{
         envelopeId?: string;
         sendUrl?: string | null;
@@ -270,6 +493,7 @@ export interface ACHFormViewerModalProps {
         mappingId: string,
         envelopeId: string,
         status?: string,
+        funderMeta?: { funderName?: string | null; funderProfileId?: string | null } | null,
     ) => Promise<void>;
     fetchDocuSignSenderViewUrlWithRetry: (
         envelopeId: string,
@@ -290,6 +514,9 @@ export default function ACHFormViewerModal({
     achMapping,
     contract,
     contractPrefillRecords,
+    achRecordOptions = [],
+    selectedAchRecordId = null,
+    onSelectedAchRecordIdChange,
     readOnly = false,
     onContractDocumentsChanged,
     onPrepareDocuSignDraft,
@@ -327,10 +554,263 @@ export default function ACHFormViewerModal({
         email: "",
     });
     const [savingSigner, setSavingSigner] = useState(false);
+    const [selectedFunder, setSelectedFunder] = useState("");
+    const [selectedFunderProfileId, setSelectedFunderProfileId] = useState("");
+    const userSelectedFunderRef = useRef(false);
     const templateBlobUrlRef = useRef<string | null>(null);
     const docuSignBlobUrlRef = useRef<string | null>(null);
     const achCcEmailDeliveredRef = useRef(false);
     const lastAchStatusSyncAtRef = useRef(0);
+
+    const contractStateForFunders = useMemo(() => {
+        const fromContract = String(
+            (resolvedContract as { state?: string | null } | null)?.state ?? "",
+        ).trim();
+        if (fromContract) return pickUsStateForSelect(fromContract) || fromContract;
+        return resolveDealStateFromApplication(applicationData);
+    }, [resolvedContract, applicationData]);
+
+    const {
+        funders,
+        funderSelectEntries,
+        findFunder,
+        findFunderById,
+        resolveDefaultFunder,
+    } = useFunderProfiles(contractStateForFunders || null);
+
+    const boldSignTemplatesState = useSelector((state: RootState) => state.boldSignTemplates);
+    const boldSignTemplates = useMemo(
+        () =>
+            Array.isArray(boldSignTemplatesState.data)
+                ? (boldSignTemplatesState.data as Array<{
+                      layoutKey?: string | null;
+                      templateId?: string | null;
+                      type?: string | null;
+                  }>)
+                : [],
+        [boldSignTemplatesState.data],
+    );
+
+    const achCapableFunderEntries = useMemo(() => {
+        return funderSelectEntries.filter((entry) => {
+            const profile = findFunderById(entry.value);
+            if (!profile) return false;
+            return funderHasAchAuthorizationForm(profile, boldSignTemplates);
+        });
+    }, [funderSelectEntries, findFunderById, boldSignTemplates]);
+
+    const woodmereAchFunderEntry = useMemo(() => {
+        return (
+            achCapableFunderEntries.find((entry) => {
+                const profile = findFunderById(entry.value);
+                return profile ? isWoodmereFunderProfile(profile) : false;
+            }) ?? null
+        );
+    }, [achCapableFunderEntries, findFunderById]);
+
+    const funderSelectOptions = useMemo(() => {
+        const base = achCapableFunderEntries;
+        const curId = String(selectedFunderProfileId || "").trim();
+        if (curId && !base.some((x) => x.value === curId)) {
+            const profile = findFunderById(curId);
+            if (profile && funderHasAchAuthorizationForm(profile, boldSignTemplates)) {
+                return [
+                    ...base,
+                    {
+                        value: profile.id,
+                        label: formatFunderSelectLabel(profile),
+                        funderName: profile.name,
+                    },
+                ];
+            }
+        }
+        return base;
+    }, [
+        achCapableFunderEntries,
+        selectedFunderProfileId,
+        findFunderById,
+        boldSignTemplates,
+    ]);
+
+    const selectedFunderProfile = useMemo(
+        () =>
+            findFunderById(selectedFunderProfileId) ?? findFunder(selectedFunder),
+        [findFunderById, findFunder, selectedFunderProfileId, selectedFunder],
+    );
+
+    const selectedFunderDefaultCcEmail = useMemo(
+        () => String(selectedFunderProfile?.defaultCcEmail ?? "").trim() || null,
+        [selectedFunderProfile],
+    );
+
+    const contractCcMergeOptions = useMemo(() => {
+        const knownFunderDefaultCcEmails = collectKnownFunderDefaultCcEmails(
+            funders.map((f) => f.defaultCcEmail),
+        );
+        return {
+            funderDefaultCcEmail: selectedFunderDefaultCcEmail,
+            knownFunderDefaultCcEmails,
+        };
+    }, [selectedFunderDefaultCcEmail, funders]);
+
+    const contractDefaultCcEmails = useMemo(
+        () => resolveContractDefaultCcEmails(contractCcMergeOptions),
+        [contractCcMergeOptions],
+    );
+
+    const contractDefaultCcUsesFunderOverride =
+        parseFunderDefaultCcEmails(selectedFunderDefaultCcEmail).length > 0;
+
+    const funderSelectionStorageKey = useMemo(
+        () =>
+            contractId != null ? `achFormSelectedFunderProfileId:${contractId}` : null,
+        [contractId],
+    );
+
+    const applyFunderSelection = useCallback(
+        (profileId: string, funderName: string, options?: { persist?: boolean }) => {
+            setSelectedFunderProfileId(profileId);
+            setSelectedFunder(funderName);
+            if (funderSelectionStorageKey && typeof window !== "undefined" && profileId) {
+                try {
+                    window.sessionStorage.setItem(funderSelectionStorageKey, profileId);
+                } catch {
+                    /* ignore */
+                }
+            }
+            if (options?.persist && contractId != null && funderName.trim()) {
+                void dispatch(
+                    updateContract({
+                        id: Number(contractId),
+                        data: { funderName: funderName.trim() },
+                    }),
+                )
+                    .unwrap()
+                    .then(() => onContractDocumentsChanged?.())
+                    .catch(() => {
+                        /* non-blocking */
+                    });
+            }
+        },
+        [contractId, dispatch, funderSelectionStorageKey, onContractDocumentsChanged],
+    );
+
+    useEffect(() => {
+        if (!isOpen) {
+            userSelectedFunderRef.current = false;
+            return;
+        }
+        if (userSelectedFunderRef.current) return;
+        if (!achCapableFunderEntries.length) return;
+
+        const isAchCapableId = (id: string) =>
+            achCapableFunderEntries.some((e) => e.value === id);
+
+        const lastSent = parseLastAchSentFunder(
+            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                ?.contractPrefillOverrides,
+        );
+        const pickAchCapableProfile = (
+            profileId?: string | null,
+            funderName?: string | null,
+        ) => {
+            const byId =
+                profileId && isAchCapableId(profileId) ? findFunderById(profileId) : null;
+            if (byId) return byId;
+            const byName = findFunderProfile(
+                funders,
+                funderName,
+                contractStateForFunders,
+            );
+            if (byName && isAchCapableId(byName.id)) return byName;
+            const entryByName = achCapableFunderEntries.find(
+                (e) =>
+                    String(funderName || "").trim() &&
+                    (e.funderName.toLowerCase() === String(funderName).trim().toLowerCase() ||
+                        e.label.toLowerCase() === String(funderName).trim().toLowerCase()),
+            );
+            return entryByName ? findFunderById(entryByName.value) ?? null : null;
+        };
+
+        if (lastSent) {
+            const lastSentProfile = pickAchCapableProfile(
+                lastSent.funderProfileId,
+                lastSent.funderName,
+            );
+            if (lastSentProfile) {
+                setSelectedFunderProfileId(lastSentProfile.id);
+                setSelectedFunder(lastSentProfile.name);
+                return;
+            }
+        }
+
+        // Contract funder from a prior ACH send/select (legacy before lastAchSentFunder).
+        const contractFunderName = String(
+            (resolvedContract as { funderName?: unknown } | null)?.funderName ?? "",
+        ).trim();
+        const contractFunderProfile = pickAchCapableProfile(null, contractFunderName);
+        if (contractFunderProfile && !isWoodmereFunderProfile(contractFunderProfile)) {
+            setSelectedFunderProfileId(contractFunderProfile.id);
+            setSelectedFunder(contractFunderProfile.name);
+            return;
+        }
+
+        let preferredProfileId = "";
+        if (funderSelectionStorageKey && typeof window !== "undefined") {
+            try {
+                preferredProfileId = String(
+                    window.sessionStorage.getItem(funderSelectionStorageKey) || "",
+                ).trim();
+            } catch {
+                preferredProfileId = "";
+            }
+        }
+
+        const storedProfile =
+            preferredProfileId && isAchCapableId(preferredProfileId)
+                ? findFunderById(preferredProfileId)
+                : null;
+        if (storedProfile) {
+            setSelectedFunderProfileId(storedProfile.id);
+            setSelectedFunder(storedProfile.name);
+            return;
+        }
+
+        // Default: Woodmere when it has ACH (platform), else first ACH-capable funder.
+        if (woodmereAchFunderEntry) {
+            setSelectedFunderProfileId(woodmereAchFunderEntry.value);
+            setSelectedFunder(woodmereAchFunderEntry.funderName);
+            return;
+        }
+
+        const defaultName = resolveDefaultFunder();
+        const defaultProfile = findFunderProfile(
+            funders,
+            defaultName,
+            contractStateForFunders,
+        );
+        if (defaultProfile && isAchCapableId(defaultProfile.id)) {
+            setSelectedFunderProfileId(defaultProfile.id);
+            setSelectedFunder(defaultProfile.name);
+            return;
+        }
+
+        const first = achCapableFunderEntries[0];
+        if (first) {
+            setSelectedFunderProfileId(first.value);
+            setSelectedFunder(first.funderName);
+        }
+    }, [
+        isOpen,
+        funders,
+        achCapableFunderEntries,
+        woodmereAchFunderEntry,
+        contractStateForFunders,
+        funderSelectionStorageKey,
+        findFunderById,
+        resolveDefaultFunder,
+        resolvedContract,
+    ]);
 
     const documentTemplateEnvelopeByMappingId = useMemo(
         () =>
@@ -401,9 +881,69 @@ export default function ACHFormViewerModal({
     }, [resolvedContract]);
 
     const achTemplateLabel = useMemo(() => {
-        const name = achMapping?.template?.name || achMapping?.templateId || "ACH Authorization";
-        return String(name);
-    }, [achMapping]);
+        const funderName = String(
+            selectedFunder || selectedFunderProfile?.name || "",
+        ).trim();
+        if (funderName) return funderName;
+
+        const profile = selectedFunderProfile;
+        const usesPlatformAch =
+            !profile ||
+            isWoodmereFunderProfile(profile) ||
+            String(profile.addendumDocumentsSource ?? profile.documentsSource ?? "")
+                .trim()
+                .toLowerCase() === "platform";
+        if (usesPlatformAch) {
+            const platformAch = findPlatformAchTemplate(boldSignTemplates);
+            const platformName = String(platformAch?.name ?? "").trim();
+            if (platformName && !/^ach\s*authorization$/i.test(platformName)) {
+                return platformName;
+            }
+            return "Woodmere Financial";
+        }
+        const docsFunderId =
+            String(profile.addendumDocumentsSource ?? profile.documentsSource ?? "")
+                .trim()
+                .toLowerCase() === "shared"
+                ? String(
+                      profile.sharedAddendumFunderId ??
+                          profile.sharedDocumentsFunderId ??
+                          "",
+                  ).trim() || profile.id
+                : profile.id;
+        const scopedAch = findFunderScopedAchTemplate(docsFunderId, boldSignTemplates);
+        const scopedName = String(scopedAch?.name ?? "").trim();
+        if (scopedName && !/^ach\s*authorization$/i.test(scopedName)) return scopedName;
+        const mapped = String(achMapping?.template?.name ?? "").trim();
+        if (mapped && !/^ach\s*authorization$/i.test(mapped)) return mapped;
+        return "ACH form";
+    }, [achMapping, selectedFunder, selectedFunderProfile, boldSignTemplates]);
+
+    const selectableAchRecords = useMemo(() => {
+        return (achRecordOptions ?? [])
+            .map((row, index) => {
+                const id = String(row.id ?? "").trim();
+                if (!id) return null;
+                return {
+                    id,
+                    label: formatAchRecordOptionLabel(row, index),
+                };
+            })
+            .filter(Boolean) as Array<{ id: string; label: string }>;
+    }, [achRecordOptions]);
+
+    const showAchRecordSelector = selectableAchRecords.length > 1;
+
+    const effectiveSelectedAchRecordId = useMemo(() => {
+        if (!selectableAchRecords.length) return "";
+        if (
+            selectedAchRecordId &&
+            selectableAchRecords.some((r) => r.id === selectedAchRecordId)
+        ) {
+            return selectedAchRecordId;
+        }
+        return selectableAchRecords[0].id;
+    }, [selectableAchRecords, selectedAchRecordId]);
 
     const refreshContractRow = useCallback(async () => {
         if (!applicationId && contractId == null) return null;
@@ -432,8 +972,8 @@ export default function ACHFormViewerModal({
                 userCc = [...userCc, draft];
             }
         }
-        return [...new Set(userCc.map((e) => e.trim()).filter(Boolean))];
-    }, [ccEmailDraft, ccEmails]);
+        return mergeWithDefaultCcEmails(userCc, contractCcMergeOptions);
+    }, [ccEmailDraft, ccEmails, contractCcMergeOptions]);
 
     const buildAchSignerRoles = useCallback((): DocuSignTemplateRolePayload[] => {
         const role = String(achSigner.role || "Receiver").trim() || "Receiver";
@@ -448,7 +988,10 @@ export default function ACHFormViewerModal({
             setShowAchSignerEditor(false);
             return;
         }
-        setCcEmails(loadBoldSignCcEmailList());
+        const loaded = loadBoldSignCcEmailList(contractCcMergeOptions);
+        setCcEmails(loaded);
+        // Drop stale funder defaults (e.g. EJM CC left over after switching to Woodmere).
+        saveBoldSignCcEmailList(loaded, contractCcMergeOptions);
         setCcEmailDraft("");
 
         const overrides = parseContractSignerOverridesFromPrefill(
@@ -469,7 +1012,7 @@ export default function ACHFormViewerModal({
                 email: getSignerEmail().trim(),
             });
         }
-    }, [isOpen, resolvedContract, getSignerName, getSignerEmail]);
+    }, [isOpen, resolvedContract, getSignerName, getSignerEmail, contractCcMergeOptions]);
 
     const syncAchEnvelopeStatus = useCallback(
         async (silent = false, options?: { force?: boolean }) => {
@@ -549,16 +1092,84 @@ export default function ACHFormViewerModal({
     );
 
     const loadTemplatePdf = useCallback(async () => {
-        if (!achMapping?.template || !boldSignTemplateIsPreviewable(achMapping.template)) {
-            setTemplatePdfUrl(null);
-            return;
-        }
         setTemplatePdfLoading(true);
         try {
-            const blob = await loadBoldSignTemplatePdfBlob({
-                template: achMapping.template,
-                axiosGet,
-            });
+            let blob: Blob | null = null;
+            const profile = selectedFunderProfile;
+            const usesPlatformAch =
+                !profile ||
+                isWoodmereFunderProfile(profile) ||
+                String(profile.addendumDocumentsSource ?? profile.documentsSource ?? "")
+                    .trim()
+                    .toLowerCase() === "platform";
+
+            if (usesPlatformAch) {
+                const platformAch =
+                    findPlatformAchTemplate(boldSignTemplates) ||
+                    (achMapping?.template && isPlatformAchTemplateRow(achMapping.template)
+                        ? achMapping.template
+                        : null);
+                if (platformAch && boldSignTemplateIsPreviewable(toPreviewableTemplate(platformAch))) {
+                    blob = await loadBoldSignTemplatePdfBlob({
+                        template: toPreviewableTemplate(platformAch),
+                        axiosGet,
+                    });
+                }
+            } else {
+                const docsFunderId =
+                    String(profile.addendumDocumentsSource ?? profile.documentsSource ?? "")
+                        .trim()
+                        .toLowerCase() === "shared"
+                        ? String(
+                              profile.sharedAddendumFunderId ??
+                                  profile.sharedDocumentsFunderId ??
+                                  "",
+                          ).trim() || profile.id
+                        : profile.id;
+                const scopedAch = findFunderScopedAchTemplate(docsFunderId, boldSignTemplates);
+                if (scopedAch) {
+                    blob = await loadBoldSignTemplatePdfBlob({
+                        template: toPreviewableTemplate(scopedAch),
+                        axiosGet,
+                    });
+                } else {
+                    try {
+                        const docs = await fetchFunderDocuments(String(docsFunderId));
+                        const achDoc = docs.find((row) => isUploadedAchDocumentRow(row));
+                        const pdfUrl = String(achDoc?.pdfUrl ?? "").trim();
+                        if (pdfUrl) {
+                            blob = await loadBoldSignTemplatePdfBlob({
+                                template: {
+                                    pdfUrl,
+                                    name: achDoc?.name,
+                                    layoutKey: achDoc?.layoutKey ?? undefined,
+                                    type: achDoc?.type,
+                                },
+                                axiosGet,
+                            });
+                        }
+                    } catch {
+                        /* fall through */
+                    }
+                }
+            }
+
+            if (!blob) {
+                const fallback =
+                    findPlatformAchTemplate(boldSignTemplates) ||
+                    (achMapping?.template &&
+                    boldSignTemplateIsPreviewable(toPreviewableTemplate(achMapping.template))
+                        ? achMapping.template
+                        : null);
+                if (!fallback) {
+                    setTemplatePdfUrl(null);
+                    return;
+                }
+                blob = await loadBoldSignTemplatePdfBlob({
+                    template: toPreviewableTemplate(fallback),
+                    axiosGet,
+                });
+            }
             if (templateBlobUrlRef.current) {
                 URL.revokeObjectURL(templateBlobUrlRef.current);
             }
@@ -572,7 +1183,7 @@ export default function ACHFormViewerModal({
         } finally {
             setTemplatePdfLoading(false);
         }
-    }, [achMapping]);
+    }, [achMapping, selectedFunderProfile, boldSignTemplates]);
 
     const loadDocuSignPdf = useCallback(async () => {
         if (!achPdfEnvelopeId) {
@@ -614,14 +1225,22 @@ export default function ACHFormViewerModal({
         }
     }, [achPdfEnvelopeId]);
 
-    const syncAchPrefillToDraftEnvelope = useCallback(async () => {
+    const syncAchPrefillToDraftEnvelope = useCallback(async (
+        overrideTabValues?: Record<string, string> | null,
+    ) => {
         if (!achEnvelopeId || !achMapping?.id) return;
         const draftLike =
             isAchEnvelopeDraftLikeStatus(achStatus) ||
             ACH_DRAFT_STATUSES.has(achStatus.toLowerCase());
         if (!draftLike || isAchEnvelopeSigningFinished(achStatus)) return;
 
-        const saved = documentTemplatePrefillByMappingId[achMapping.id] ?? {};
+        const saved =
+            overrideTabValues && Object.keys(overrideTabValues).length > 0
+                ? overrideTabValues
+                : resolveAchSavedMappingOverrides(
+                      documentTemplatePrefillByMappingId,
+                      achMapping.id,
+                  );
         const rows = getDocumentTemplatePrefillFieldRowsForEditor({
             templateId: achMapping.template?.templateId ?? achMapping.templateId ?? null,
             templateName: achMapping.template?.name ?? null,
@@ -629,11 +1248,17 @@ export default function ACHFormViewerModal({
             templateLayoutKey: achMapping.template?.layoutKey ?? null,
             templateState: achMapping.template?.state ?? null,
             templateFrequency: achMapping.template?.frequency ?? null,
+            documentType: achMapping.documentType ?? null,
             contract: resolvedContract,
             application: applicationData as Record<string, unknown> | null,
             contractRecords: contractPrefillRecords,
             agreementDate: new Date().toLocaleDateString("en-US"),
-            mainPrefillOverrides: mainPrefillOverridesForDialog ?? undefined,
+            mainPrefillOverrides: {
+                ...(mainPrefillOverridesForDialog ?? {}),
+                ...(overrideTabValues
+                    ? achTabValuesToCamelPartial(overrideTabValues)
+                    : {}),
+            },
             savedOverridesForMapping: saved,
         });
         const fields = rows
@@ -683,6 +1308,12 @@ export default function ACHFormViewerModal({
         if (!isOpen) return;
         void loadTemplatePdf();
     }, [isOpen, loadTemplatePdf]);
+
+    /** When the selected ACH entry changes, push updated prefill into a draft envelope. */
+    useEffect(() => {
+        if (!isOpen || !effectiveSelectedAchRecordId) return;
+        void syncAchPrefillToDraftEnvelope();
+    }, [isOpen, effectiveSelectedAchRecordId, syncAchPrefillToDraftEnvelope]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -749,13 +1380,16 @@ export default function ACHFormViewerModal({
             toast.error("Enter a valid email address.");
             return;
         }
-        if (ccEmails.some((e) => e.toLowerCase() === raw.toLowerCase())) {
+        if (
+            isReservedContractCcEmail(raw, contractCcMergeOptions) ||
+            ccEmails.some((e) => e.toLowerCase() === raw.toLowerCase())
+        ) {
             toast.info("That address is already in the CC list.");
             return;
         }
         const next = [...ccEmails, raw];
         setCcEmails(next);
-        saveBoldSignCcEmailList(next);
+        saveBoldSignCcEmailList(next, contractCcMergeOptions);
         setCcEmailDraft("");
     };
 
@@ -879,8 +1513,11 @@ export default function ACHFormViewerModal({
             );
             return;
         }
-        const achTemplateId = getBoldSignTemplateMappingRef(achMapping.template);
-        if (!achTemplateId) {
+        const hasAchTemplate =
+            Boolean(getBoldSignTemplateMappingRef(achMapping.template)) ||
+            Boolean(String(achMapping.template?.layoutKey ?? "").trim()) ||
+            Boolean(selectedFunderProfile);
+        if (!hasAchTemplate) {
             toast.info("ACH form template is not configured.");
             return;
         }
@@ -906,11 +1543,10 @@ export default function ACHFormViewerModal({
                 const dup = userCc.some((e) => e.toLowerCase() === draft.toLowerCase());
                 if (!dup) userCc.push(draft);
             }
-            const dedupedCc = [...new Set(userCc.map((e) => e.trim()).filter(Boolean))];
-            saveBoldSignCcEmailList(dedupedCc);
-            setCcEmails(dedupedCc);
+            const toSend = mergeWithDefaultCcEmails(userCc, contractCcMergeOptions);
+            saveBoldSignCcEmailList(userCc, contractCcMergeOptions);
+            setCcEmails(userCc);
             setCcEmailDraft("");
-            const toSend = dedupedCc;
 
             const signerRoles = buildAchSignerRoles();
             const signerValidation = validateDocuSignSignerRoles(signerRoles);
@@ -923,11 +1559,22 @@ export default function ACHFormViewerModal({
                 return;
             }
 
+            const funderName = String(selectedFunder || selectedFunderProfile?.name || "").trim();
+            if (!funderName && funderSelectOptions.length > 0) {
+                const msg = "Select a funder before sending the ACH form.";
+                if (docuSignTab) writeDocuSignErrorTab(docuSignTab.document, msg);
+                toast.error(msg);
+                return;
+            }
+
             const prepared = await onPrepareDocuSignDraft({
                 ccEmails: toSend,
-                achDocumentRef: achTemplateId,
+                achDocumentRef: ACH_STANDALONE_LAYOUT_KEY,
                 standaloneAchOnly: true,
                 roles: signerRoles,
+                funderName: funderName || null,
+                funderProfileId: persistedFunderProfileIdForApi(selectedFunderProfile),
+                contractState: contractStateForFunders || null,
             });
             const envelopeId = String(prepared?.envelopeId ?? "").trim();
             const preparedSenderUrl = String(prepared?.sendUrl ?? "").trim() || null;
@@ -940,7 +1587,7 @@ export default function ACHFormViewerModal({
 
             const senderViewResult = await fetchDocuSignSenderViewUrlWithRetry(
                 envelopeId,
-                dedupedCc,
+                toSend,
                 Boolean(preparedSenderUrl),
                 signerRoles,
             );
@@ -958,6 +1605,10 @@ export default function ACHFormViewerModal({
                 achMapping.id,
                 envelopeId,
                 canResendAch ? "" : "draft",
+                {
+                    funderName: funderName || null,
+                    funderProfileId: persistedFunderProfileIdForApi(selectedFunderProfile),
+                },
             );
             await refreshContractRow();
             setPdfPaneTab("docusign");
@@ -1039,6 +1690,107 @@ export default function ACHFormViewerModal({
 
                     <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
                         <div className="flex min-h-0 w-full shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-200 p-4 dark:border-slate-700 lg:w-[42%] lg:min-w-[22rem]">
+                            {funderSelectOptions.length > 0 ? (
+                                <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                    <div className="mb-2 flex min-w-0 items-start gap-2.5">
+                                        <div
+                                            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                            aria-hidden
+                                        >
+                                            <Building2 className="h-4 w-4" />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <label
+                                                htmlFor="ach-form-funder-select"
+                                                className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]"
+                                            >
+                                                Select funder
+                                            </label>
+                                            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                Only funders with an ACH form are listed. Defaults to
+                                                the last sent ACH funder, otherwise Woodmere
+                                                Financial.
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <Select
+                                        value={selectedFunderProfileId || undefined}
+                                        disabled={readOnly}
+                                        onValueChange={(profileId: string) => {
+                                            userSelectedFunderRef.current = true;
+                                            const profile = findFunderById(profileId);
+                                            const funderName = profile?.name ?? "";
+                                            applyFunderSelection(profileId, funderName, {
+                                                persist: true,
+                                            });
+                                        }}
+                                    >
+                                        <SelectTrigger
+                                            id="ach-form-funder-select"
+                                            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs shadow-sm focus:ring-[#276D9C]/20 dark:border-slate-600 dark:bg-slate-950"
+                                        >
+                                            <SelectValue placeholder="Select funder" />
+                                        </SelectTrigger>
+                                        <SelectContent
+                                            position="popper"
+                                            className="z-[10100] max-h-72"
+                                        >
+                                            {funderSelectOptions.map((f) => (
+                                                <SelectItem key={f.value} value={f.value}>
+                                                    {f.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                    {selectedFunder ? (
+                                        <p className="mt-2 truncate text-[11px] text-slate-500 dark:text-slate-400">
+                                            Sending as {selectedFunder}
+                                        </p>
+                                    ) : null}
+                                </div>
+                            ) : null}
+
+                            {showAchRecordSelector ? (
+                                <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                    <div className="mb-2 flex min-w-0 items-start gap-2.5">
+                                        <div
+                                            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                            aria-hidden
+                                        >
+                                            <Landmark className="h-4 w-4" />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <label
+                                                htmlFor="ach-form-record-select"
+                                                className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]"
+                                            >
+                                                ACH form
+                                            </label>
+                                            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                                Multiple ACH entries found. Defaults to the first
+                                                entry or your last selection.
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <select
+                                        id="ach-form-record-select"
+                                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs text-slate-800 outline-none transition focus:border-[#276D9C] focus:ring-2 focus:ring-[#276D9C]/20 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100"
+                                        value={effectiveSelectedAchRecordId}
+                                        disabled={readOnly || !onSelectedAchRecordIdChange}
+                                        onChange={(e) => {
+                                            const next = String(e.target.value || "").trim();
+                                            if (next) onSelectedAchRecordIdChange?.(next);
+                                        }}
+                                    >
+                                        {selectableAchRecords.map((opt) => (
+                                            <option key={opt.id} value={opt.id}>
+                                                {opt.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            ) : null}
+
                             <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                 <div className="mb-3 flex items-start justify-between gap-2">
                                     <div className="flex min-w-0 items-start gap-2.5">
@@ -1075,11 +1827,6 @@ export default function ACHFormViewerModal({
                                             <p className="truncate text-[11px] font-medium text-slate-700 dark:text-slate-200">
                                                 {achTemplateLabel}
                                             </p>
-                                            {achEnvelopeId ? (
-                                                <p className="truncate text-[10px] text-slate-500">
-                                                    Envelope: {achEnvelopeId}
-                                                </p>
-                                            ) : null}
                                         </div>
                                     </div>
                                     {!readOnly ? (
@@ -1249,11 +1996,42 @@ export default function ACHFormViewerModal({
                                             CC (copy only — not a signer)
                                         </span>
                                         <div className="flex flex-wrap gap-1.5">
-                                            {ccEmails.length === 0 ? (
-                                                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                                                    No CC recipients — add one below if needed.
+                                            {contractDefaultCcEmails.map((email) => (
+                                                <span
+                                                    key={`default-cc-${email}`}
+                                                    className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:text-slate-100 ${
+                                                        contractDefaultCcUsesFunderOverride
+                                                            ? "border-emerald-500/30 bg-emerald-500/10 dark:border-emerald-500/40 dark:bg-emerald-500/15"
+                                                            : "border-[#276D9C]/30 bg-[#276D9C]/12 dark:border-[#276D9C]/40 dark:bg-[#276D9C]/20"
+                                                    }`}
+                                                    title={
+                                                        contractDefaultCcUsesFunderOverride
+                                                            ? `Funder default CC: ${email}`
+                                                            : `Default CC: ${email}`
+                                                    }
+                                                >
+                                                    <Mail
+                                                        className={`h-3 w-3 shrink-0 opacity-80 ${
+                                                            contractDefaultCcUsesFunderOverride
+                                                                ? "text-emerald-600 dark:text-emerald-400"
+                                                                : "text-[#276D9C]"
+                                                        }`}
+                                                        aria-hidden
+                                                    />
+                                                    <span className="max-w-[220px] truncate">{email}</span>
+                                                    <span
+                                                        className={`text-[10px] font-normal uppercase tracking-wide ${
+                                                            contractDefaultCcUsesFunderOverride
+                                                                ? "text-emerald-700/80 dark:text-emerald-300/80"
+                                                                : "text-[#276D9C]/80"
+                                                        }`}
+                                                    >
+                                                        {contractDefaultCcUsesFunderOverride
+                                                            ? "Funder"
+                                                            : "Default"}
+                                                    </span>
                                                 </span>
-                                            ) : null}
+                                            ))}
                                             {ccEmails.map((email) => (
                                                 <span
                                                     key={email}
@@ -1271,7 +2049,10 @@ export default function ACHFormViewerModal({
                                                             onClick={() => {
                                                                 const next = ccEmails.filter((e) => e !== email);
                                                                 setCcEmails(next);
-                                                                saveBoldSignCcEmailList(next);
+                                                                saveBoldSignCcEmailList(
+                                                                    next,
+                                                                    contractCcMergeOptions,
+                                                                );
                                                             }}
                                                         >
                                                             <X className="h-3.5 w-3.5" />
@@ -1550,9 +2331,12 @@ export default function ACHFormViewerModal({
                 agreementDate={new Date().toLocaleDateString("en-US")}
                 documentTemplatePrefillByMappingId={documentTemplatePrefillByMappingId}
                 mainPrefillOverrides={mainPrefillOverridesForDialog}
-                onSaved={() => {
+                titleSuffix={
+                    String(selectedFunder || selectedFunderProfile?.name || "").trim() || null
+                }
+                onSaved={(savedTabValues) => {
                     void refreshContractRow().then(() => {
-                        void syncAchPrefillToDraftEnvelope();
+                        void syncAchPrefillToDraftEnvelope(savedTabValues);
                     });
                     if (pdfPaneTab === "template") void loadTemplatePdf();
                 }}

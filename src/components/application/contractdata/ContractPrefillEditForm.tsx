@@ -1081,6 +1081,7 @@ export type LinkedAddendumMappingRef = {
     template?: {
         templateId?: string;
         name?: string | null;
+        layoutKey?: string | null;
         state?: string | null;
         frequency?: string | null;
     } | null;
@@ -1192,6 +1193,7 @@ export function ContractPrefillEditForm({
                 linkedAddendumMapping.templateId ??
                 null,
             templateName: linkedAddendumMapping.template?.name ?? null,
+            templateLayoutKey: linkedAddendumMapping.template?.layoutKey ?? null,
             templateState: linkedAddendumMapping.template?.state ?? null,
             templateFrequency: linkedAddendumMapping.template?.frequency ?? null,
             contract: resolvedContract ?? contractRecords?.contract ?? null,
