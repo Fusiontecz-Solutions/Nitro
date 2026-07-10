@@ -12,7 +12,9 @@ import {
 } from '../platform-document-registry';
 import {
   isFunderContractLayoutKey,
+  isFunderSupplementalLayoutKey,
   funderSupplementalLayoutKeyForDocument,
+  parseFunderSupplementalLayoutKey,
   resolveFunderSupplementalStorageType,
 } from '../../../utils/funderContractLayout';
 import type { DocumentLayout } from './convert-docusign-template-export';
@@ -24,7 +26,11 @@ import {
   assertLayoutPlacementsFitPdfPages,
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
-import { fetchPdfAsBase64, resolveTemplateRefForMerge } from './merge-template-resolve';
+import {
+  fetchPdfAsBase64,
+  resolveCoordinateLayoutKeyForTemplate,
+  resolveTemplateRefForMerge,
+} from './merge-template-resolve';
 import {
   DOCUSIGN_COMBINE_PACKAGE_PDF,
   DOCUSIGN_DEFAULT_ROLE_NAME,
@@ -40,7 +46,8 @@ import {
   type SerializedFunderProfile,
 } from '../../funderProfileService';
 import {
-  resolveDocumentsLayoutFunderId,
+  formatFunderNameWithDealIdPrefix,
+  resolveAddendumDocumentsLayoutFunderId,
   resolveFunderSupplementalDocumentDisplayName,
 } from '../../../utils/funderDocumentSource';
 import { isTexasFundingGroupFunderProfile } from '../../../utils/funderProfileResolver';
@@ -159,7 +166,7 @@ export async function loadSupplementalLayoutPackage(
     const layout = getDocumentLayout(sourceRef);
     if (funder?.id) {
       const docsFunderId =
-        resolveDocumentsLayoutFunderId(funder) ||
+        resolveAddendumDocumentsLayoutFunderId(funder) ||
         (isTexasFundingGroupFunderProfile(funder) ? funder.id : null);
       if (docsFunderId) {
         const storageType = resolveFunderSupplementalStorageType(sourceRef);
@@ -201,6 +208,38 @@ export async function loadSupplementalLayoutPackage(
     }
     const documentBase64 = await loadPlatformDocumentPdfBase64(sourceRef);
     return { ...layout, documentBase64 };
+  }
+
+  // Funder-scoped addendum/ACH keys reuse platform coordinates; PDF comes from the funder row.
+  if (isFunderSupplementalLayoutKey(sourceRef)) {
+    const parsed = parseFunderSupplementalLayoutKey(sourceRef);
+    const coordinateKey = resolveCoordinateLayoutKeyForTemplate({
+      layoutKey: sourceRef,
+      type: parsed?.supplementalType,
+    });
+    if (coordinateKey) {
+      const layout = getDocumentLayout(coordinateKey);
+      const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(sourceRef);
+      if (!pdfUrl) {
+        throw new Error(
+          `No PDF configured for funder document "${sourceRef}". Upload the addendum/disclosure PDF for this funder.`,
+        );
+      }
+      const documentBase64 = await fetchPdfAsBase64(pdfUrl, sourceRef);
+      const row = await prisma.boldSignTemplate.findFirst({
+        where: { OR: [{ layoutKey: sourceRef }, { templateId: sourceRef }] },
+        orderBy: { createdAt: 'desc' },
+        select: { name: true, type: true },
+      });
+      return {
+        ...layout,
+        key: sourceRef,
+        name:
+          String(row?.name || '').trim() ||
+          layout.name,
+        documentBase64,
+      };
+    }
   }
 
   const resolved = await resolveTemplateRefForMerge(sourceRef);
@@ -480,7 +519,70 @@ export async function buildPlatformLayoutEnvelopeDefinition(options: {
   const guarantorCount =
     options.guarantorCount ??
     (ownerCount >= 2 ? 2 : countGuarantorsFromRoles(options.roles));
-  const values = prefillFieldsToValueMap(options.prefillFields || []);
+  const prefillFields = [...(options.prefillFields || [])];
+  if (funderProfile) {
+    const funderPlainName = String(
+      funderProfile.displayName || funderProfile.name || '',
+    ).trim();
+    if (funderPlainName) {
+      const existingFunderIdx = prefillFields.findIndex(
+        (f) => String(f.id || '').trim() === 'funder_name',
+      );
+      if (existingFunderIdx >= 0) {
+        prefillFields[existingFunderIdx] = {
+          ...prefillFields[existingFunderIdx],
+          id: 'funder_name',
+          value: funderPlainName,
+        };
+      } else {
+        prefillFields.push({
+          id: 'funder_name',
+          value: funderPlainName,
+        });
+      }
+    }
+    const funderLabel = formatFunderNameWithDealIdPrefix(
+      funderProfile.name,
+      funderProfile.dealIdPrefix,
+      funderProfile.displayName,
+    );
+    if (funderLabel) {
+      const existingIdx = prefillFields.findIndex(
+        (f) => String(f.id || '').trim() === 'funder_name_with_deal_prefix',
+      );
+      if (existingIdx >= 0) {
+        prefillFields[existingIdx] = {
+          ...prefillFields[existingIdx],
+          id: 'funder_name_with_deal_prefix',
+          value: funderLabel,
+        };
+      } else {
+        prefillFields.push({
+          id: 'funder_name_with_deal_prefix',
+          value: funderLabel,
+        });
+      }
+    }
+    const dealPrefix = String(funderProfile.dealIdPrefix || '').trim();
+    if (dealPrefix) {
+      const existingPrefixIdx = prefillFields.findIndex(
+        (f) => String(f.id || '').trim() === 'deal_id_prefix',
+      );
+      if (existingPrefixIdx >= 0) {
+        prefillFields[existingPrefixIdx] = {
+          ...prefillFields[existingPrefixIdx],
+          id: 'deal_id_prefix',
+          value: dealPrefix,
+        };
+      } else {
+        prefillFields.push({
+          id: 'deal_id_prefix',
+          value: dealPrefix,
+        });
+      }
+    }
+  }
+  const values = prefillFieldsToValueMap(prefillFields);
   const partyCounts = { ownerCount, guarantorCount };
 
   const shouldFlatten = options.flattenPrefillInPdf === true;

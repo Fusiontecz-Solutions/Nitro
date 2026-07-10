@@ -222,6 +222,8 @@ model Application {
   /// Last action an Underwriter performed on this deal: "Approved By UW", "Decline by UW", "Final Approved by UW".
   underwriterAction        String?
   assignedUnderwriterId    String?                       @db.Uuid
+  /// Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call".
+  finalApprovalSource      String?
   category                 String?
   claimedByUnderwriter     User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
   approvedByUnderwriter    User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])

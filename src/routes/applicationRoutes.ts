@@ -182,6 +182,13 @@ router.post(
     applicationController.assignApplicationToUnderwriter.bind(applicationController),
 );
 
+// Super Admin / Operations: send deal to the approving Underwriter for final approval
+router.post(
+    '/:id/send-final-underwriter-approval',
+    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    applicationController.sendForFinalUnderwriterApproval.bind(applicationController),
+);
+
 // Update application state
 router.patch('/:id/state', applicationController.updateState.bind(applicationController));
 

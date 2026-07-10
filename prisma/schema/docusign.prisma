@@ -128,10 +128,19 @@ model FunderProfile {
   docusignAccountProfileId String?                 @db.Uuid
   sortOrder                Int                     @default(0)
   isActive                 Boolean                 @default(true)
-  /// Addendum/disclosure PDF source: platform | own | shared (contract PDF is always per-funder).
+  /// Legacy combined addendum/disclosure PDF source: platform | own | shared.
+  /// Prefer addendumDocumentsSource / disclosureDocumentsSource when set.
   documentsSource          String                  @default("own")
-  /// When documentsSource is shared, layout keys use this funder's uploaded PDFs.
+  /// When documentsSource / addendumDocumentsSource is shared (legacy shared id).
   sharedDocumentsFunderId   String?                 @db.Uuid
+  /// Addendum/ACH PDF source: platform | own | shared (null = use documentsSource).
+  addendumDocumentsSource   String?
+  /// State disclosure PDF source: platform | own | shared (null = use documentsSource).
+  disclosureDocumentsSource String?
+  /// When addendumDocumentsSource is shared, layout keys use this funder's addendum PDFs.
+  sharedAddendumFunderId    String?                 @db.Uuid
+  /// When disclosureDocumentsSource is shared, layout keys use this funder's disclosure PDFs.
+  sharedDisclosureFunderId  String?                 @db.Uuid
   createdAt                DateTime                @default(now())
   updatedAt                DateTime                @updatedAt
   docusignAccountProfile   DocuSignAccountProfile? @relation(fields: [docusignAccountProfileId], references: [id], onDelete: SetNull)

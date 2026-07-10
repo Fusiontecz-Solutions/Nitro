@@ -1128,16 +1128,18 @@ export class DocusignService {
     applicationId?: string;
     title?: string;
     prefillFields?: PrefillField[];
+    funderName?: string | null;
   }): Promise<string> {
     const fromPrefill = this.resolveContractContextFromPrefillFields(options.prefillFields);
     const appId = String(options.applicationId || '').trim();
+    const lenderName = String(options.funderName || '').trim() || undefined;
 
     if (appId) {
       const ctx = await this.resolveApplicationContractEmailContext(appId);
       const businessName = ctx.businessName || fromPrefill.businessName;
       const offerAmount = ctx.offerAmount ?? fromPrefill.offerAmount;
       if (businessName) {
-        return buildContractEnvelopeEmailSubject(businessName, offerAmount);
+        return buildContractEnvelopeEmailSubject(businessName, offerAmount, lenderName);
       }
     }
 
@@ -1145,6 +1147,7 @@ export class DocusignService {
       return buildContractEnvelopeEmailSubject(
         fromPrefill.businessName,
         fromPrefill.offerAmount,
+        lenderName,
       );
     }
 
@@ -1152,7 +1155,7 @@ export class DocusignService {
     if (override) return override;
 
     const clientName = await this.resolveClientDisplayNameForApplication(appId);
-    return buildContractEnvelopeEmailSubject(clientName, fromPrefill.offerAmount);
+    return buildContractEnvelopeEmailSubject(clientName, fromPrefill.offerAmount, lenderName);
   }
 
   private async resolveEnvelopeEmailSubject(
@@ -3258,6 +3261,9 @@ export class DocusignService {
             applicationId: options.applicationId,
             title: options.title,
             prefillFields: options.prefillFields,
+            funderName:
+              String(funderProfile?.displayName || funderProfile?.name || funderName || '').trim() ||
+              null,
           });
       const layoutKeyForSend = await resolveMainContractLayoutKeyForSend({
         mainContractLayoutKey: options.mainContractLayoutKey,

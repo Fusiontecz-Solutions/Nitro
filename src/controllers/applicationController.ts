@@ -17,6 +17,7 @@ import {
     type AuthenticatedUser,
 } from '../services/applicationService';
 import { getUnderwriterClaimMutationDenial } from '../services/underwriterClaimGuard';
+import { resolveFinalApprovalUnderwriterTarget } from '../services/finalApprovalTargetService';
 import { getApplicationStageAccessForUser } from '../services/applicationStageAccess';
 import {
     aggregateApplicationStats,
@@ -3846,6 +3847,150 @@ class ApplicationController {
             });
         } catch (error) {
             console.error('Assign application to Underwriter error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    /** Super Admin / Operations: send a deal back to the approving underwriter for final approval. */
+    async sendForFinalUnderwriterApproval(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const sourceRaw = (req.body as { source?: unknown } | undefined)?.source;
+            const finalApprovalSource =
+                sourceRaw === 'Decision Logic' || sourceRaw === 'Funding Call'
+                    ? sourceRaw
+                    : null;
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            if (
+                roleUpper !== 'SUPER_ADMIN' &&
+                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'OPERATIONS'
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        'Only Super Admin or Operations can send applications for final Underwriter approval',
+                });
+            }
+            const actorId = authUser?.id;
+            if (!actorId) {
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const include = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            } satisfies Prisma.ApplicationInclude;
+
+            const { application, forbidden } = await getApplicationForUser(whereClause, authUser, include);
+
+            if (forbidden) {
+                return res.status(403).json({ success: false, message: 'Forbidden' });
+            }
+            if (!application) {
+                return res.status(404).json({ success: false, message: 'Application not found' });
+            }
+
+            const target = await resolveFinalApprovalUnderwriterTarget(prisma, {
+                approvedByUnderwriterId: application.approvedByUnderwriterId,
+                assignedUnderwriterId: application.assignedUnderwriterId,
+                claimedByUnderwriterId: application.claimedByUnderwriterId,
+            });
+            if (!target) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        'No active Underwriter is linked to this application. Assign or record an Underwriter approval before sending for final approval.',
+                });
+            }
+            const approvingUnderwriterId = target.userId;
+
+            const previousQueue = application.currentQueue;
+            const previousState = application.currentState;
+            const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+            const targetName =
+                `${target.firstName || ''} ${target.lastName || ''}`.trim() ||
+                target.email ||
+                'Underwriter';
+
+            const refreshed = await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    currentQueue: FINAL_APPROVAL_QUEUE,
+                    currentState: FINAL_APPROVAL_STATE,
+                    assignedUnderwriter: { connect: { id: approvingUnderwriterId } },
+                    ...(finalApprovalSource ? { finalApprovalSource } : {}),
+                },
+                include,
+            });
+
+            try {
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'QUEUE_CHANGED',
+                    actionDescription: `${actorName} sent application to ${targetName} for final Underwriter approval.`,
+                    previousStatus: `${previousQueue} / ${previousState}`,
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: {
+                        assignedUnderwriterId: approvingUnderwriterId,
+                        ...(finalApprovalSource ? { finalApprovalSource } : {}),
+                    },
+                });
+            } catch (logErr) {
+                console.error('Failed to log final Underwriter approval send:', logErr);
+            }
+
+            try {
+                const clientName =
+                    String((refreshed as any)?.client?.businessName || '').trim() ||
+                    `${(refreshed as any)?.client?.ownerFirstName || ''} ${(refreshed as any)?.client?.ownerLastName || ''}`.trim() ||
+                    'Client';
+                const appNum = (refreshed as any)?.applicationId ?? '';
+                const appRef = appNum ? ` #${appNum}` : '';
+                await prisma.notification.create({
+                    data: {
+                        title: 'Application sent for final approval',
+                        message: actorName
+                            ? `${actorName} sent application${appRef} for ${clientName} to you for final approval.`
+                            : `Application${appRef} for ${clientName} was sent to you for final approval.`,
+                        type: 'application_update',
+                        recipientId: approvingUnderwriterId,
+                        applicationId: refreshed.id,
+                        createdById: String(actorId),
+                    },
+                });
+            } catch (notifErr) {
+                console.error('Failed to notify approving Underwriter:', notifErr);
+            }
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: `Application sent to ${targetName} for final approval`,
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Send for final Underwriter approval error:', error);
             return res.status(500).json({
                 success: false,
                 message: 'Internal server error',

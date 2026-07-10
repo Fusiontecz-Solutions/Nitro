@@ -16,6 +16,10 @@ import {
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { tryBuildStateDisclosureLayoutFromDbRow } from './state-document-layout';
+import {
+  parseFunderSupplementalLayoutKey,
+  resolveFunderSupplementalStorageType,
+} from '../../../utils/funderContractLayout';
 
 export type ResolvedMergeTemplate = {
   sourceRef: string;
@@ -25,6 +29,28 @@ export type ResolvedMergeTemplate = {
   /** When set, coordinates come from `state-document-config.ts` (disclosure merge). */
   inlineLayout?: DocumentLayout;
 };
+
+/**
+ * Funder-owned layout keys (`funder_{uuid}_balance_transfer`, etc.) store that
+ * funder's PDF, but always reuse the shared platform coordinate layouts.
+ */
+export function resolveCoordinateLayoutKeyForTemplate(options: {
+  layoutKey?: string | null;
+  type?: string | null;
+}): DocumentLayoutKey | null {
+  const key = String(options.layoutKey || '').trim();
+  if (isDocumentLayoutKey(key)) return key;
+
+  const parsed = parseFunderSupplementalLayoutKey(key);
+  if (parsed) {
+    const storageType = resolveFunderSupplementalStorageType(
+      parsed.supplementalType,
+    );
+    if (isDocumentLayoutKey(storageType)) return storageType;
+  }
+
+  return resolveLayoutKeyFromBoldSignType(String(options.type || '')) || null;
+}
 
 export async function resolveTemplateRefForMerge(
   ref: string,
@@ -52,16 +78,22 @@ export async function resolveTemplateRefForMerge(
 
   const row = await prisma.boldSignTemplate.findFirst({
     where: {
-      OR: [{ id: sourceRef }, { templateId: sourceRef }],
+      OR: [
+        { id: sourceRef },
+        { templateId: sourceRef },
+        { layoutKey: sourceRef },
+      ],
     },
+    orderBy: { createdAt: 'desc' },
   });
 
   if (row) {
     const layoutFromRow = String(row.layoutKey || '').trim();
     const layoutKey =
-      (layoutFromRow as DocumentLayoutKey) ||
-      resolveLayoutKeyFromBoldSignType(String(row.type || '')) ||
-      undefined;
+      resolveCoordinateLayoutKeyForTemplate({
+        layoutKey: layoutFromRow,
+        type: row.type,
+      }) || undefined;
     const pdfUrl = String(row.pdfUrl || '').trim() || undefined;
     const inlineLayout = tryBuildStateDisclosureLayoutFromDbRow(row);
 

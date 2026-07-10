@@ -28,14 +28,17 @@ export function formatContractOfferAmountForSubject(
   }).format(amount);
 }
 
-/** Contract envelope subject / PDF name: Woodmere Financial : BusinessName - $12,345.67 */
+/** Contract envelope subject / PDF name: {FunderName} : BusinessName - $12,345.67 */
 export function buildContractEnvelopeEmailSubject(
   businessName: string,
   offerAmount?: number | string | null,
+  funderName?: string | null,
 ): string {
   const business = String(businessName || '').trim() || 'Business';
   const amount = formatContractOfferAmountForSubject(offerAmount);
-  return `${CONTRACT_ENVELOPE_LENDER_NAME} : ${business} - ${amount}`;
+  const lender =
+    String(funderName || '').trim() || CONTRACT_ENVELOPE_LENDER_NAME;
+  return `${lender} : ${business} - ${amount}`;
 }
 
 export function buildContractEnvelopePdfFilename(subject: string): string {
@@ -55,6 +58,7 @@ export function normalizeContractCcEmailSubject(subject: string | null | undefin
 export function buildDocuSignEnvelopeEmailSubject(
   businessName: string,
   offerAmount?: number | string | null,
+  funderName?: string | null,
 ): string {
-  return buildContractEnvelopeEmailSubject(businessName, offerAmount);
+  return buildContractEnvelopeEmailSubject(businessName, offerAmount, funderName);
 }

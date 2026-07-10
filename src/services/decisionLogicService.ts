@@ -6,6 +6,10 @@ import { NotFoundError, ValidationError } from "../utils/errors";
 import { tokenRepository } from "./repositories/tokenRepository";
 import { decisionLogicRepository } from "./repositories/decisionLogicRepository";
 import { createAndVerifyRequestSoap2 } from "./decisionLogicSoapClient";
+import {
+    DECISION_LOGIC_REPORT_NOT_COMPLETE_MESSAGE,
+    isDecisionLogicReportsDetailsComplete,
+} from "../utils/decisionLogicReportStatus";
 
 function decisionLogicDebugEnabled(): boolean {
     return String(process.env.DECISION_LOGIC_DEBUG ?? "").trim() === "true";
@@ -117,9 +121,9 @@ export const decisionLogicService = {
                 businessOwnerId
             );
 
-            const serviceKey = process.env.SERVICE_KEY;
-            const siteUserGuid = process.env.SITE_USER_GUID;
-            const profileGuid = process.env.PROFILE_GUID;
+            const serviceKey = String(process.env.SERVICE_KEY ?? "").trim();
+            const siteUserGuid = String(process.env.SITE_USER_GUID ?? "").trim();
+            const profileGuid = String(process.env.PROFILE_GUID ?? "").trim();
             if (!serviceKey || !siteUserGuid || !profileGuid) {
                 throw new ValidationError(
                     "Decision Logic is not configured: set SERVICE_KEY, SITE_USER_GUID, and PROFILE_GUID on the server.",
@@ -337,9 +341,12 @@ export const decisionLogicService = {
                 ba
             );
 
-            if (existingReport) {
+            if (
+                existingReport &&
+                isDecisionLogicReportsDetailsComplete(existingReport.reportsDetails)
+            ) {
                 decisionLogicBreadcrumb(
-                    "fetchDecisionLogicReportAndSave: cached row exists, skipping DL GetReportDetails",
+                    "fetchDecisionLogicReportAndSave: complete cached row, skipping DL GetReportDetails",
                     {
                         requestCodePrefix: rc.slice(0, 4),
                         requestCodeLength: rc.length,
@@ -348,6 +355,18 @@ export const decisionLogicService = {
                     },
                 );
                 return existingReport;
+            }
+
+            if (existingReport) {
+                decisionLogicBreadcrumb(
+                    "fetchDecisionLogicReportAndSave: incomplete cached row, refetching DL GetReportDetails",
+                    {
+                        requestCodePrefix: rc.slice(0, 4),
+                        requestCodeLength: rc.length,
+                        businessOwnerId: bo,
+                        bankAccountId: ba,
+                    },
+                );
             }
 
             const url = `${decisionLogicRestV1Base()}/GetReportDetailsFromRequestCode`;
@@ -390,6 +409,11 @@ export const decisionLogicService = {
             if (reportsDetails === undefined || reportsDetails === null) {
                 throw new Error("Invalid response structure from external API.");
             }
+
+            if (!isDecisionLogicReportsDetailsComplete(reportsDetails)) {
+                throw new ValidationError(DECISION_LOGIC_REPORT_NOT_COMPLETE_MESSAGE);
+            }
+
             const saved = await decisionLogicRepository.saveDecisionLogicReport(
                 reportsDetails,
                 bo,

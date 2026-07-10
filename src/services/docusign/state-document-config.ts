@@ -200,6 +200,9 @@ const UTAH_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
 
 /** Kansas disclosure page-1 coordinates — daily layout. */
 const KANSAS_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
+  { tabLabel: 'client_name', x: '245', y: '98' },
+  { tabLabel: 'client_name', x: '248', y: '149' },
+  { tabLabel: 'funder_name', x: '162', y: '199' },
   { tabLabel: 'total_amount_of_fund_provided', x: '434', y: '103' },
   { tabLabel: 'total_amount_fund_disbursed', x: '435', y: '153' },
   { tabLabel: 'total_of_payments', x: '437', y: '204' },
@@ -210,6 +213,9 @@ const KANSAS_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTab
 
 /** Kansas disclosure page-1 coordinates — weekly layout. */
 const KANSAS_WEEKLY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
+  { tabLabel: 'client_name', x: '245', y: '98' },
+  { tabLabel: 'client_name', x: '248', y: '149' },
+  { tabLabel: 'funder_name', x: '162', y: '199' },
   { tabLabel: 'total_amount_of_fund_provided', x: '434', y: '103' },
   { tabLabel: 'total_amount_fund_disbursed', x: '433', y: '136' },
   { tabLabel: 'total_of_payments', x: '434', y: '172' },
@@ -289,6 +295,10 @@ const VIRGINIA_WEEKLY_PAGE2_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
 const CONNECTICUT_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'recipient_name', x: '450', y: '69' },
   { tabLabel: 'recipient_address', x: '345', y: '105' },
+  { tabLabel: 'funder_name', x: '424', y: '126' },
+  { tabLabel: 'funder_address', x: '346', y: '164' },
+  { tabLabel: 'funder_phone', x: '466', y: '189' },
+  { tabLabel: 'funder_email', x: '344', y: '229' },
   { tabLabel: 'total_amount_commercial_financing', x: '267', y: '46' },
   { tabLabel: 'deducted_at_disbursement', x: '268', y: '89' },
   { tabLabel: 'total_commerical_financing', x: '267', y: '127' },
@@ -302,6 +312,10 @@ const CONNECTICUT_DAILY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['te
 const CONNECTICUT_WEEKLY_DISCLOSURE_PAGE1_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'recipient_name', x: '450', y: '69' },
   { tabLabel: 'recipient_address', x: '345', y: '118' },
+  { tabLabel: 'funder_name', x: '424', y: '126' },
+  { tabLabel: 'funder_address', x: '346', y: '164' },
+  { tabLabel: 'funder_phone', x: '466', y: '189' },
+  { tabLabel: 'funder_email', x: '344', y: '229' },
   { tabLabel: 'total_amount_commercial_financing', x: '267', y: '46' },
   { tabLabel: 'deducted_at_disbursement', x: '268', y: '89' },
   { tabLabel: 'total_commerical_financing', x: '267', y: '127' },
@@ -315,6 +329,16 @@ const CONNECTICUT_PAGE2_TEXT_TABS: StateDocumentFieldConfig['textTabs'] = [
   { tabLabel: 'recipient_name2', x: '152', y: '43', pageNumber: '2' },
   { tabLabel: 'recipient_address2', x: '150', y: '63', pageNumber: '2' },
   { tabLabel: 'disclosure_date2', x: '429', y: '40', pageNumber: '2' },
+  { tabLabel: 'funder_name', x: '431', y: '59', pageNumber: '2' },
+  { tabLabel: 'funder_name', x: '52', y: '176', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '280', y: '245', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '391', y: '272', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '328', y: '353', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '503', y: '337', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '341', y: '365', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '269', y: '378', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '98', y: '392', pageNumber: '2' },
+  { tabLabel: 'deal_id_prefix', x: '276', y: '487', pageNumber: '2' },
   {
     tabLabel: 'connecticut_review_field_1',
     x: '284',

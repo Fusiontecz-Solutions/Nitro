@@ -13,7 +13,7 @@ import {
   applyDocuSignPrefillTabStyle,
   resolveDocuSignPrefillTabWidth,
 } from './docusign-tab-style';
-import { embedArialPdfFont } from './embed-arial-pdf-font';
+import { embedArialBoldPdfFont, embedArialPdfFont } from './embed-arial-pdf-font';
 import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
 import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
 
@@ -94,10 +94,11 @@ export type LayoutPartyCounts = {
 
 /** Canonical CRM keys copied to legacy / duplicate tab labels automatically. */
 const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
-  agreement_date: ['signature_date', 'disclosure_date'],
-  signature_date: ['agreement_date', 'Signature_date', 'disclosure_date'],
-  Signature_date: ['signature_date', 'agreement_date', 'disclosure_date'],
-  disclosure_date: ['agreement_date', 'signature_date'],
+  agreement_date: ['signature_date', 'disclosure_date', 'addendum_date'],
+  addendum_date: ['agreement_date', 'signature_date', 'disclosure_date'],
+  signature_date: ['agreement_date', 'addendum_date', 'Signature_date', 'disclosure_date'],
+  Signature_date: ['signature_date', 'agreement_date', 'addendum_date', 'disclosure_date'],
+  disclosure_date: ['agreement_date', 'addendum_date', 'signature_date'],
   date_by_which_amount_mustbe_received: ['prepayment_received_by_date'],
   funder_name: ['disclosure_funder_name'],
   client_legal_name: ['business_legal_name', 'merchant_legal_name'],
@@ -786,6 +787,26 @@ function expandLayoutsWithOwner2Initials(
   });
 }
 
+const FLEX_ADDENDUM_MONEY_VARIABLES = new Set([
+  'daily_payment_1',
+  'daily_payment_2',
+  'receivable_purchase_1',
+  'receivable_purchase_2',
+]);
+
+function formatFlexAddendumMoneyUsd(value: string): string {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  const n = Number(trimmed.replace(/[$,\s]/g, ''));
+  if (!Number.isFinite(n)) return trimmed;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
 function resolveTextPlacementValue(
   variable: string,
   values: Record<string, string>,
@@ -794,6 +815,11 @@ function resolveTextPlacementValue(
 ): string {
   const key = String(variable || '').trim();
   if (!key) return '';
+
+  const formatIfMoney = (raw: string) =>
+    FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
+      ? formatFlexAddendumMoneyUsd(raw)
+      : raw;
 
   if (
     layoutKey === 'contract' &&
@@ -814,12 +840,12 @@ function resolveTextPlacementValue(
   ].filter(Boolean);
   for (const candidate of candidates) {
     const direct = String(values[candidate] || '').trim();
-    if (direct) return direct;
+    if (direct) return formatIfMoney(direct);
     const aliases = PREFILL_VALUE_ALIASES[candidate] || PREFILL_VALUE_ALIASES[candidate.toLowerCase()];
     if (aliases) {
       for (const alias of aliases) {
         const v = String(values[alias] || '').trim();
-        if (v) return v;
+        if (v) return formatIfMoney(v);
       }
     }
   }
@@ -903,6 +929,7 @@ function toTextTab(
     value: tabValue,
     height: placement.height,
     layoutWidth: placement.width,
+    fontSize: placement.fontSize,
   });
   // Page-16 ACH and page-1 client phone stay editable; other prefilled text locks at send.
   const lockTab = signerEditable ? false : lockDataTabs || Boolean(placement.lockedForSigner);
@@ -918,12 +945,13 @@ function toTextTab(
       ...(tabValue ? { value: tabValue } : {}),
       ...(optionalTab ? { optional: 'true' } : { required: 'true', optional: 'false' }),
       ...(lockTab ? { locked: 'true' } : {}),
+      ...(placement.bold ? { bold: 'true' } : {}),
       // All text/date tabs are assigned to signer 1 only — owner 2 signs initials/signatures only.
       shared: 'false',
       width,
       ...(placement.height ? { height: placement.height } : {}),
     },
-    { height: placement.height },
+    { height: placement.height, fontSize: placement.fontSize },
   );
 }
 
@@ -936,6 +964,7 @@ export async function renderFlattenedLayoutPdf(
   const { PDFDocument, rgb } = await import('pdf-lib');
   const pdfDoc = await PDFDocument.load(Buffer.from(layout.documentBase64, 'base64'));
   const font = await embedArialPdfFont(pdfDoc);
+  const boldFont = await embedArialBoldPdfFont(pdfDoc);
   const pages = pdfDoc.getPages();
   const expanded = expandPrefillValues(values, counts.ownerCount);
 
@@ -954,7 +983,11 @@ export async function renderFlattenedLayoutPdf(
     if (!page) continue;
 
     const tabHeight = parseFloat(String(placement.height || '19')) || 19;
-    const fontSize = Math.min(11, Math.max(7, Math.round(tabHeight * 0.55)));
+    const explicitFontSize = parseFloat(String(placement.fontSize ?? '').trim());
+    const fontSize =
+      Number.isFinite(explicitFontSize) && explicitFontSize > 0
+        ? explicitFontSize
+        : Math.min(11, Math.max(7, Math.round(tabHeight * 0.55)));
     const { height: pageHeight } = page.getSize();
     const x = parseFloat(String(placement.x || '0')) || 0;
     const yTop = parseFloat(resolveTabYPosition(placement.y, layout.key)) || 0;
@@ -965,13 +998,14 @@ export async function renderFlattenedLayoutPdf(
         value: text,
         height: placement.height,
         layoutWidth: placement.width,
+        fontSize: placement.fontSize,
       }),
     );
     page.drawText(text, {
       x,
       y: Math.max(2, y),
       size: fontSize,
-      font,
+      font: placement.bold ? boldFont : font,
       color: rgb(0, 0, 0),
       maxWidth: Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : undefined,
     });

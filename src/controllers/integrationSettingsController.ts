@@ -102,16 +102,34 @@ function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInp
       : undefined,
     organization: body.organization ? String(body.organization).trim() : undefined,
     legalName: body.legalName ? String(body.legalName).trim() : undefined,
-    contactEmail: body.contactEmail ? String(body.contactEmail).trim() : undefined,
-    contactPhone: body.contactPhone ? String(body.contactPhone).trim() : undefined,
+    contactEmail:
+      body.contactEmail !== undefined && body.contactEmail !== null
+        ? String(body.contactEmail).trim() || null
+        : undefined,
+    contactPhone:
+      body.contactPhone !== undefined && body.contactPhone !== null
+        ? String(body.contactPhone).trim() || null
+        : undefined,
     defaultCcEmail:
       body.defaultCcEmail !== undefined && body.defaultCcEmail !== null
         ? String(body.defaultCcEmail).trim() || null
         : undefined,
-    addressLine1: body.addressLine1 ? String(body.addressLine1).trim() : undefined,
-    addressCity: body.addressCity ? String(body.addressCity).trim() : undefined,
-    addressState: body.addressState ? String(body.addressState).trim() : undefined,
-    addressZip: body.addressZip ? String(body.addressZip).trim() : undefined,
+    addressLine1:
+      body.addressLine1 !== undefined && body.addressLine1 !== null
+        ? String(body.addressLine1).trim() || null
+        : undefined,
+    addressCity:
+      body.addressCity !== undefined && body.addressCity !== null
+        ? String(body.addressCity).trim() || null
+        : undefined,
+    addressState:
+      body.addressState !== undefined && body.addressState !== null
+        ? String(body.addressState).trim() || null
+        : undefined,
+    addressZip:
+      body.addressZip !== undefined && body.addressZip !== null
+        ? String(body.addressZip).trim() || null
+        : undefined,
     docusignAccountProfileId:
       body.docusignAccountProfileId === '' || body.docusignAccountProfileId == null
         ? null
@@ -131,6 +149,32 @@ function parseFunderProfileBody(body: Record<string, unknown>): FunderProfileInp
       body.sharedDocumentsFunderId === '' || body.sharedDocumentsFunderId == null
         ? null
         : String(body.sharedDocumentsFunderId);
+  }
+  if (
+    body.addendumDocumentsSource !== undefined &&
+    body.addendumDocumentsSource !== null &&
+    body.addendumDocumentsSource !== ''
+  ) {
+    payload.addendumDocumentsSource = String(body.addendumDocumentsSource).trim();
+  }
+  if (
+    body.disclosureDocumentsSource !== undefined &&
+    body.disclosureDocumentsSource !== null &&
+    body.disclosureDocumentsSource !== ''
+  ) {
+    payload.disclosureDocumentsSource = String(body.disclosureDocumentsSource).trim();
+  }
+  if (body.sharedAddendumFunderId !== undefined) {
+    payload.sharedAddendumFunderId =
+      body.sharedAddendumFunderId === '' || body.sharedAddendumFunderId == null
+        ? null
+        : String(body.sharedAddendumFunderId);
+  }
+  if (body.sharedDisclosureFunderId !== undefined) {
+    payload.sharedDisclosureFunderId =
+      body.sharedDisclosureFunderId === '' || body.sharedDisclosureFunderId == null
+        ? null
+        : String(body.sharedDisclosureFunderId);
   }
 
   if (allowedStates !== undefined) {
