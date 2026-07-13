@@ -90,6 +90,8 @@ export interface BuildContractPrefillFieldsArgs {
     authorizationClientBankRouting?: string;
     authorizationClientBankAccount?: string;
     authorizationClientName?: string;
+    /** Name line above ACH signature (page 13) — independent from Seller's / business name. */
+    authorizationClientSignerName?: string;
     authorizationClientNamePrint?: string;
     authorizationClientTaxId?: string;
     authorizationClientDate?: string;
@@ -255,6 +257,7 @@ const FIELD_IDS = {
     authorizationClientBankRouting: ["authorization_client_bank_routing"],
     authorizationClientBankAccount: ["authorization_client_bank_account"],
     authorizationClientName: ["authorization_client_name"],
+    authorizationClientSignerName: ["authorization_client_signer_name"],
     authorizationClientNamePrint: ["authorization_client_name_print"],
     authorizationClientTaxId: ["authorization_client_tax_id"],
     authorizationClientDate: ["authorization_client_date"],
@@ -533,6 +536,7 @@ export const buildContractPrefillFields = ({
     authorizationClientBankRouting = "",
     authorizationClientBankAccount = "",
     authorizationClientName = "",
+    authorizationClientSignerName = "",
     authorizationClientNamePrint = "",
     authorizationClientTaxId = "",
     authorizationClientDate = "",
@@ -687,10 +691,15 @@ export const buildContractPrefillFields = ({
         ...mapIds(FIELD_IDS.authorizationClientBankRouting, "Authorization Client Bank Routing", authorizationClientBankRouting),
         ...mapIds(FIELD_IDS.authorizationClientBankAccount, "Authorization Client Bank Account", authorizationClientBankAccount),
         ...mapIds(FIELD_IDS.authorizationClientName, "Authorization Client Name", authorizationClientName),
+        ...mapIds(
+            FIELD_IDS.authorizationClientSignerName,
+            "Authorization Client Signer Name",
+            authorizationClientSignerName,
+        ),
         ...mapIds(FIELD_IDS.authorizationClientNamePrint, "Authorization Client Name Print", authorizationClientNamePrint),
         ...mapIds(FIELD_IDS.authorizationClientTaxId, "Authorization Client Tax ID", authorizationClientTaxId),
         ...mapIds(FIELD_IDS.authorizationClientDate, "Authorization Client Date", authorizationClientDate),
-        ...mapIds(FIELD_IDS.authorizedBusinessPhone, "Authorized Business Phone", authorizedBusinessPhone),
+        ...mapIds(FIELD_IDS.authorizedBusinessPhone, "Authorized Business Phone", ""),
         ...mapIds(FIELD_IDS.achAuthorizationAccountHolderName, "ACH Account Holder Name", achAuthorizationAccountHolderName),
         ...mapIds(FIELD_IDS.achAuthorizationAccountHolderDba, "ACH Account Holder DBA", achAuthorizationAccountHolderDba),
         ...mapIds(FIELD_IDS.achAuthorizationAccountHolderPhone, "ACH Account Holder Phone", achAuthorizationAccountHolderPhone),
@@ -1862,7 +1871,7 @@ function inferDealReviewLabelFromFieldId(id: string, category: string): string |
         return "Client name";
     }
     if (category === "Authorization" && norm === "authorized_business_phone") {
-        return "Business phone";
+        return "Business phone (merchant fills)";
     }
 
     if (category === "Guarantor" && norm.startsWith("guarantor_")) {
@@ -2173,10 +2182,11 @@ const DEAL_REVIEW_CANONICAL_LABEL_BY_ID: Record<string, string> = {
     authorization_client_bank_routing: "Routing number",
     authorization_client_bank_account: "Account number",
     authorization_client_name: "Business name",
-    authorization_client_name_print: "Business name (print)",
+    authorization_client_signer_name: "Signer name",
+    authorization_client_name_print: "Printed name",
     authorization_client_tax_id: "Tax ID / EIN",
     authorization_client_date: "Date",
-    authorized_business_phone: "Business phone",
+    authorized_business_phone: "Business phone (merchant fills)",
     ach_authorization_account_holder_name: "Name",
     ach_authorization_account_holder_dba: "DBA",
     ach_authorization_account_holder_phone: "Phone",
@@ -2669,14 +2679,14 @@ export function resolveDisclosureOwnerNamePrefill(
     );
 }
 
-/** Appendix / guaranty / main contract / ACH authorization signatory tabs — owner name, not business legal name. */
+/** Appendix / guaranty / main contract / ACH signer & print tabs — owner name, not business legal name. */
 export function resolvePersonalClientNamePrefill(
     row: Record<string, unknown>,
     field:
         | "clientName"
         | "appendixClientName"
         | "guarantyClientName"
-        | "authorizationClientName"
+        | "authorizationClientSignerName"
         | "authorizationClientNamePrint",
 ): string {
     const customer = str(row.customerName);
@@ -2684,6 +2694,22 @@ export function resolvePersonalClientNamePrefill(
     const saved = str(row[field]);
     if (customer && (!saved || (legal && saved === legal))) return customer;
     return saved || customer;
+}
+
+/** ACH `authorization_client_name` (Seller's Name) — business / legal name, not owner personal name. */
+export function resolveAuthorizationBusinessNamePrefill(
+    row: Record<string, unknown>,
+    clientArgs?: Partial<BuildContractPrefillFieldsArgs>,
+): string {
+    const saved = str(row.authorizationClientName);
+    const business =
+        resolveMerchantBusinessNameForPrefill(row, clientArgs) ||
+        str(row.securityBusinessName) ||
+        str(clientArgs?.legalName);
+    const customer = str(row.customerName);
+    // Prefer business; if saved is still a personal/client name, replace with business.
+    if (business && (!saved || (customer && saved === customer))) return business;
+    return saved || business || customer;
 }
 
 /** Prefer owner name when legacy rows stored business legal name in ACH holder fields. */
@@ -3167,7 +3193,10 @@ function contractRowToPrefillPartial(row: Record<string, unknown> | null | undef
         authorizationClientBankName: authBankName,
         authorizationClientBankRouting: str(row.authorizationClientBankRouting),
         authorizationClientBankAccount: str(row.authorizationClientBankAccount),
-        authorizationClientName: resolvePersonalClientNamePrefill(row, "authorizationClientName"),
+        authorizationClientName: resolveAuthorizationBusinessNamePrefill(row),
+        authorizationClientSignerName:
+            str(normalizeContractPrefillOverrides(row.contractPrefillOverrides)?.authorizationClientSignerName) ||
+            resolvePersonalClientNamePrefill(row, "authorizationClientSignerName"),
         authorizationClientNamePrint: resolvePersonalClientNamePrefill(
             row,
             "authorizationClientNamePrint",
@@ -3441,7 +3470,6 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
             "",
         ),
         clientPhone: phone,
-        authorizedBusinessPhone: phone,
         guarantyClientName: ownerName,
         guarantySs: ownerSsn,
         guarantySsDriverLicense: ownerDriverLicense,
@@ -3453,8 +3481,9 @@ export function getApplicationClientPrefillArgs(anyApp: unknown): Partial<BuildC
         guarantyGuarantor1DriverLicense: ownerDriverLicense,
         owner1GuarantorName: ownerName,
         authorizationApplication: customerName || legalName,
-        authorizationClientName: customerName || "",
-        authorizationClientNamePrint: customerName || "",
+        authorizationClientName: legalName || "",
+        authorizationClientSignerName: customerName || ownerName || "",
+        authorizationClientNamePrint: customerName || ownerName || "",
         achAuthorizationAccountHolderName: ownerName || customerName || "",
         achAuthorizationConcentAccountHolderName: ownerName || customerName || "",
     };
@@ -3719,6 +3748,7 @@ export function getContractPrefillEditDefaultsFromApplication(
         ...recordPartial,
         ...clientArgs,
         ...liveOfferArgs,
+        ...contractOverrides,
         customerName,
     };
 
@@ -3737,9 +3767,10 @@ export function getContractPrefillEditDefaultsFromApplication(
         appendixClientName: resolvePersonalClientNamePrefill(resolverRow, "appendixClientName"),
         guarantyClientName: resolvePersonalClientNamePrefill(resolverRow, "guarantyClientName"),
         authorizationApplication: resolveAuthorizationApplicationPrefill(resolverRow),
-        authorizationClientName: resolvePersonalClientNamePrefill(
+        authorizationClientName: resolveAuthorizationBusinessNamePrefill(resolverRow),
+        authorizationClientSignerName: resolvePersonalClientNamePrefill(
             resolverRow,
-            "authorizationClientName",
+            "authorizationClientSignerName",
         ),
         authorizationClientNamePrint: resolvePersonalClientNamePrefill(
             resolverRow,
@@ -3752,8 +3783,14 @@ export function getContractPrefillEditDefaultsFromApplication(
         Object.assign(mergedBeforeFees, pickLiveOfferMoneyOverlay(liveOfferArgs));
     }
     stripImpliedPurchasePercentFromOffer(mergedBeforeFees, options?.offerDecision ?? null);
-    if (!str(mergedBeforeFees.authorizationClientName) && customerName) {
-        mergedBeforeFees.authorizationClientName = customerName;
+    if (!str(mergedBeforeFees.authorizationClientName)) {
+        const businessName = resolveMerchantBusinessNameForPrefill(mergedBeforeFees);
+        if (businessName) mergedBeforeFees.authorizationClientName = businessName;
+    }
+    if (!str(mergedBeforeFees.authorizationClientSignerName) && customerName) {
+        mergedBeforeFees.authorizationClientSignerName = customerName;
+    }
+    if (!str(mergedBeforeFees.authorizationClientNamePrint) && customerName) {
         mergedBeforeFees.authorizationClientNamePrint = customerName;
     }
     if (!str(mergedBeforeFees.authorizationApplication) && customerName) {

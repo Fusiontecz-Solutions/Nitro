@@ -1,10 +1,17 @@
-import { axiosPut } from "@/redux/axios";
-import { getPositions, updatePosition } from "@/redux/actions/positionActions";
+import { axiosPost, axiosPut } from "@/redux/axios";
+import {
+    createPosition,
+    getPositions,
+    updatePosition,
+} from "@/redux/actions/positionActions";
 import type { AppDispatch } from "@/redux/store";
-import type {
-    SpaBankMonthContribution,
-    SpaMonthlyPaymentRow,
-    SpaMonthlyRevenueRow,
+import type { CreatePositionPayload } from "@/types/positionTypes";
+import {
+    getPositionRepaymentForSpa,
+    isActivePositionForTotals,
+    type SpaBankMonthContribution,
+    type SpaMonthlyPaymentRow,
+    type SpaMonthlyRevenueRow,
 } from "@/lib/scrubbingSpecifiedPercent";
 
 export const SPA_SCRUBBER_SYNCED_EVENT = "katan:spa-scrubber-synced";
@@ -34,29 +41,48 @@ function amountsEqual(a: number, b: number): boolean {
     return Math.abs(a - b) < 0.005;
 }
 
-function distributeNetCredit(
-    targetNetCredit: number,
+function positionBackendId(row: Record<string, unknown>): string {
+    return String(row._id ?? row.id ?? "").trim();
+}
+
+/** Distribute a target total across parts (proportional, or equal if all zero). */
+function distributeAmount(
+    target: number,
+    parts: Array<{ id: string; amount: number }>,
+): Array<{ id: string; amount: number }> {
+    if (!parts.length) return [];
+    const sum = parts.reduce((s, p) => s + (p.amount > 0 ? p.amount : 0), 0);
+    if (!(sum > 0)) {
+        const each = target / parts.length;
+        return parts.map((p) => ({ id: p.id, amount: each }));
+    }
+    return parts.map((p) => ({
+        id: p.id,
+        amount: target * ((p.amount > 0 ? p.amount : 0) / sum),
+    }));
+}
+
+/**
+ * SPA edits the Credits column. Contributions.netCredit is already Credits
+ * (not net of transfers), so write that value straight to totalCredit.
+ */
+function distributeCredits(
+    targetCredits: number,
     contributions: SpaBankMonthContribution[],
 ): SpaBankMonthContribution[] {
     if (!contributions.length) return [];
     const sum = contributions.reduce((s, row) => s + row.netCredit, 0);
-    if (!(targetNetCredit >= 0)) return contributions;
+    if (!(targetCredits >= 0)) return contributions;
 
     return contributions.map((contrib, index) => {
         const ratio =
-            sum > 0
-                ? contrib.netCredit / sum
-                : 1 / contributions.length;
-        const newNetCredit =
-            sum > 0 || index === 0
-                ? targetNetCredit * ratio
-                : 0;
-        const newTotalCredit =
-            newNetCredit + contrib.loanTransfer + contrib.deposit + contrib.other;
+            sum > 0 ? contrib.netCredit / sum : 1 / contributions.length;
+        const newCredits =
+            sum > 0 || index === 0 ? targetCredits * ratio : 0;
         return {
             ...contrib,
-            netCredit: newNetCredit,
-            totalCredit: newTotalCredit,
+            netCredit: newCredits,
+            totalCredit: newCredits,
         };
     });
 }
@@ -68,6 +94,10 @@ function cloneBanks(banks: SpaBankApiRecord[]): SpaBankApiRecord[] {
     }));
 }
 
+function monthLabelOf(row: Record<string, unknown>): string {
+    return String(row.monthLabel ?? row.month ?? "").trim();
+}
+
 function applyRevenueEditsToBanks(
     banks: SpaBankApiRecord[],
     revenueEdits: Array<{
@@ -75,31 +105,75 @@ function applyRevenueEditsToBanks(
         netCredit: number;
         bankContributions?: SpaBankMonthContribution[];
     }>,
-): SpaBankApiRecord[] {
+): { banks: SpaBankApiRecord[]; banksToSave: SpaBankApiRecord[] } {
     const next = cloneBanks(banks);
+    const touched = new Set<SpaBankApiRecord>();
+
     for (const edit of revenueEdits) {
         const contributions = edit.bankContributions ?? [];
-        if (!contributions.length) continue;
-        const adjusted = distributeNetCredit(edit.netCredit, contributions);
-        for (const contrib of adjusted) {
-            const bank = next.find(
-                (item) =>
-                    String(item._id ?? item.id ?? "").trim() === contrib.bankBackendId,
-            );
-            if (!bank || !Array.isArray(bank.rows)) continue;
-            const row = bank.rows.find((r) => {
-                const rowId = String(r._id ?? r.id ?? "").trim();
-                const monthLabel = String(r.monthLabel ?? r.month ?? "").trim();
-                if (contrib.rowBackendId && rowId) {
-                    return rowId === contrib.rowBackendId;
+        if (contributions.length > 0) {
+            const adjusted = distributeCredits(edit.netCredit, contributions);
+            for (const contrib of adjusted) {
+                const bank = next.find(
+                    (item) =>
+                        String(item._id ?? item.id ?? "").trim() ===
+                        contrib.bankBackendId,
+                );
+                if (!bank) continue;
+                if (!Array.isArray(bank.rows)) bank.rows = [];
+                let row = bank.rows.find((r) => {
+                    const rowId = String(r._id ?? r.id ?? "").trim();
+                    if (contrib.rowBackendId && rowId) {
+                        return rowId === contrib.rowBackendId;
+                    }
+                    return monthLabelOf(r) === edit.month;
+                });
+                if (!row) {
+                    row = {
+                        monthLabel: edit.month,
+                        month: edit.month,
+                        totalCredit: contrib.totalCredit,
+                        loanTransfer: contrib.loanTransfer,
+                        deposit: contrib.deposit,
+                        other: contrib.other,
+                        nsfNegDays: 0,
+                        lowBlcDays: 0,
+                        avgDailyBlc: 0,
+                    };
+                    bank.rows.push(row);
+                } else {
+                    row.totalCredit = contrib.totalCredit;
                 }
-                return monthLabel === edit.month;
-            });
-            if (!row) continue;
-            row.totalCredit = contrib.totalCredit;
+                touched.add(bank);
+            }
+            continue;
         }
+
+        // No per-bank contributions (manual SPA entry): write full credits onto first bank.
+        const bank = next[0];
+        if (!bank) continue;
+        if (!Array.isArray(bank.rows)) bank.rows = [];
+        let row = bank.rows.find((r) => monthLabelOf(r) === edit.month);
+        if (!row) {
+            row = {
+                monthLabel: edit.month,
+                month: edit.month,
+                totalCredit: edit.netCredit,
+                loanTransfer: 0,
+                deposit: 0,
+                other: 0,
+                nsfNegDays: 0,
+                lowBlcDays: 0,
+                avgDailyBlc: 0,
+            };
+            bank.rows.push(row);
+        } else {
+            row.totalCredit = edit.netCredit;
+        }
+        touched.add(bank);
     }
-    return next;
+
+    return { banks: next, banksToSave: Array.from(touched) };
 }
 
 async function saveBankRecord(bank: SpaBankApiRecord): Promise<void> {
@@ -108,7 +182,7 @@ async function saveBankRecord(bank: SpaBankApiRecord): Promise<void> {
 
     const rowsPayload = (bank.rows ?? [])
         .map((row) => {
-            const monthLabel = String(row.monthLabel ?? row.month ?? "").trim();
+            const monthLabel = monthLabelOf(row);
             const totalCredit = parseAmount(row.totalCredit);
             const loanTransfer = parseAmount(row.loanTransfer);
             const deposit = parseAmount(row.deposit);
@@ -146,6 +220,55 @@ async function saveBankRecord(bank: SpaBankApiRecord): Promise<void> {
     });
 }
 
+async function createBankWithRevenueRows(
+    applicationUuid: string,
+    revenueEdits: Array<{ month: string; netCredit: number }>,
+): Promise<void> {
+    const rows = revenueEdits
+        .filter((edit) => edit.netCredit > 0 && String(edit.month).trim())
+        .map((edit) => ({
+            monthLabel: edit.month,
+            monthDate: new Date().toISOString(),
+            totalCredit: edit.netCredit,
+            loanTransfer: 0,
+            deposit: 0,
+            other: 0,
+            nsfNegDays: 0,
+            lowBlcDays: 0,
+            avgDailyBlc: 0,
+        }));
+    if (!rows.length) return;
+
+    await axiosPost("/bank-analysis", {
+        application: applicationUuid,
+        accountNumber: "",
+        rows,
+    });
+}
+
+function buildManualPositionPayload(
+    applicationUuid: string,
+    repayment: number,
+): CreatePositionPayload {
+    const today = new Date().toISOString().slice(0, 10);
+    const amount = repayment > 0 ? repayment : 1;
+    return {
+        position: "Position 1",
+        factorRate: "1.49",
+        ach: String(repayment),
+        percentOfGross: "0",
+        funder: "SPA Calculator",
+        paybackAmount: amount,
+        fundingDate: today,
+        activeStatus: true,
+        fundedAmount: amount,
+        frequency: "Daily",
+        closeDate: today,
+        application: applicationUuid,
+        status: "ACTIVE",
+    };
+}
+
 export function notifySpaScrubberSynced(applicationUuid: string): void {
     if (typeof window === "undefined") return;
     window.dispatchEvent(
@@ -159,6 +282,7 @@ export async function persistSpaEditsToScrubber(args: {
     dispatch: AppDispatch;
     applicationUuid: string;
     banks: SpaBankApiRecord[];
+    positions?: Array<Record<string, unknown>>;
     initialPayments: SpaMonthlyPaymentRow[];
     currentPayments: SpaMonthlyPaymentRow[];
     initialRevenues: SpaMonthlyRevenueRow[];
@@ -170,13 +294,41 @@ export async function persistSpaEditsToScrubber(args: {
     const initialPaymentMap = new Map(
         args.initialPayments.map((row) => [paymentRowKey(row), row.amount]),
     );
-    const positionUpdates: Array<{ id: string; monthlyMcaPmts: number }> = [];
+
+    /** Persist REPAYMENT (ach), not MONTHLY PMTS — matches SPA numerator. */
+    const positionAchUpdates: Array<{ id: string; ach: number }> = [];
+    let createRepaymentAmount: number | null = null;
+
     for (const row of args.currentPayments) {
-        if (row.source !== "position" || !row.positionId) continue;
         const key = paymentRowKey(row);
         const before = initialPaymentMap.get(key) ?? 0;
         if (amountsEqual(before, row.amount)) continue;
-        positionUpdates.push({ id: row.positionId, monthlyMcaPmts: row.amount });
+
+        if (row.source === "position" && row.positionId) {
+            positionAchUpdates.push({ id: row.positionId, ach: row.amount });
+            continue;
+        }
+
+        if (row.source !== "positions_total") continue;
+
+        const activePositions = (args.positions ?? []).filter((p) =>
+            isActivePositionForTotals(p),
+        );
+        const withIds = activePositions
+            .map((p) => ({
+                id: positionBackendId(p),
+                amount: getPositionRepaymentForSpa(p),
+            }))
+            .filter((p) => p.id);
+
+        if (!withIds.length) {
+            if (row.amount > 0) createRepaymentAmount = row.amount;
+            continue;
+        }
+
+        for (const part of distributeAmount(row.amount, withIds)) {
+            positionAchUpdates.push({ id: part.id, ach: part.amount });
+        }
     }
 
     const initialRevenueMap = new Map(
@@ -197,30 +349,43 @@ export async function persistSpaEditsToScrubber(args: {
         });
     }
 
-    if (!positionUpdates.length && !revenueEdits.length) return;
+    const hasPaymentWork =
+        positionAchUpdates.length > 0 || createRepaymentAmount != null;
+    const hasRevenueWork = revenueEdits.length > 0;
+    if (!hasPaymentWork && !hasRevenueWork) return;
 
-    for (const update of positionUpdates) {
+    for (const update of positionAchUpdates) {
         await args
             .dispatch(
                 updatePosition({
                     id: update.id,
-                    data: { monthlyMcaPmts: update.monthlyMcaPmts },
+                    data: { ach: String(update.ach) },
                 }),
             )
             .unwrap();
     }
 
-    if (revenueEdits.length > 0 && args.banks.length > 0) {
-        const banksToSave = applyRevenueEditsToBanks(args.banks, revenueEdits);
-        const changedBankIds = new Set(
-            revenueEdits.flatMap((edit) =>
-                (edit.bankContributions ?? []).map((c) => c.bankBackendId),
-            ),
-        );
-        for (const bank of banksToSave) {
-            const bankId = String(bank._id ?? bank.id ?? "").trim();
-            if (!bankId || !changedBankIds.has(bankId)) continue;
-            await saveBankRecord(bank);
+    if (createRepaymentAmount != null) {
+        await args
+            .dispatch(
+                createPosition(
+                    buildManualPositionPayload(appKey, createRepaymentAmount),
+                ),
+            )
+            .unwrap();
+    }
+
+    if (hasRevenueWork) {
+        if (args.banks.length > 0) {
+            const { banksToSave } = applyRevenueEditsToBanks(
+                args.banks,
+                revenueEdits,
+            );
+            for (const bank of banksToSave) {
+                await saveBankRecord(bank);
+            }
+        } else {
+            await createBankWithRevenueRows(appKey, revenueEdits);
         }
     }
 

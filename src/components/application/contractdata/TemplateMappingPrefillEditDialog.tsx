@@ -42,6 +42,7 @@ const ADDENDUM_PREFILL_FULL_WIDTH_FIELD_IDS = new Set([
     "achAuthorizationConcentAccountHolderName",
     "authorizationClientBankName",
     "authorizationClientName",
+    "authorizationClientSignerName",
     "authorizationClientNamePrint",
 ]);
 

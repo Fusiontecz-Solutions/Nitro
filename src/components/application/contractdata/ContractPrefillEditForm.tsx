@@ -176,11 +176,12 @@ const FIELD_LABELS = {
     authorizationClientBankName: "Bank name",
     authorizationClientBankRouting: "Routing number",
     authorizationClientBankAccount: "Account number",
-    authorizationClientName: "Signer name",
+    authorizationClientName: "Business name",
+    authorizationClientSignerName: "Signer name",
     authorizationClientNamePrint: "Printed name",
     authorizationClientTaxId: "Tax ID / EIN",
     authorizationClientDate: "Date",
-    authorizedBusinessPhone: "Business phone",
+    authorizedBusinessPhone: "Business phone (merchant fills in DocuSign)",
     achAuthorizationAccountHolderName: "Owner name",
     achAuthorizationAccountHolderDba: "DBA",
     achAuthorizationAccountHolderPhone: "Phone",
@@ -452,7 +453,8 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "ach_direct_deposit",
             title: "ACH credit / direct deposit authorization",
-            description: "Client name on the authorization, then bank, signatory, tax ID, and date.",
+            description:
+                "Bank and signatory fields are prefilled. Authorized business phone is left blank for the merchant to fill in DocuSign (required).",
             Icon: Landmark,
             groups: [
                 { heading: "Client", keys: ["authorizationApplication"] },
@@ -462,6 +464,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                         "authorizationClientBankRouting",
                         "authorizationClientBankAccount",
                         "authorizationClientName",
+                        "authorizationClientSignerName",
                         "authorizationClientNamePrint",
                         "authorizationClientTaxId",
                         "authorizationClientDate",
@@ -798,6 +801,7 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
         keys: [
             "legalName",
             "securityBusinessName",
+            "authorizationClientName",
             "achAuthorizationAccountHolderName",
             "achAuthorizationConcentAccountHolderName",
             "addendumDatedPrincipalBusiness",
@@ -811,7 +815,7 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
             "clientName",
             "appendixClientName",
             "authorizationApplication",
-            "authorizationClientName",
+            "authorizationClientSignerName",
             "authorizationClientNamePrint",
             "guarantyClientName",
             "securityGuarantor",
@@ -833,7 +837,6 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
         label: "Business / guarantor phone",
         keys: [
             "clientPhone",
-            "authorizedBusinessPhone",
             "achAuthorizationAccountHolderPhone",
             "guarantorPhone",
         ],

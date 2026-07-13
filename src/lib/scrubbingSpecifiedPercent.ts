@@ -225,7 +225,7 @@ export function getPositionTotalRepaymentForSpa(row: Record<string, unknown>): n
     return getPositionRepaymentForSpa(row);
 }
 
-function isActivePositionForTotals(row: Record<string, unknown>): boolean {
+export function isActivePositionForTotals(row: Record<string, unknown>): boolean {
     const status = String(row.status ?? "")
         .trim()
         .toUpperCase();
