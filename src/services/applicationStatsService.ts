@@ -289,7 +289,7 @@ export async function aggregateApplicationStats(params: {
         params.underwriterClaim,
         params.authUser?.id ?? null,
     );
-    const whereScoped = Prisma.sql`(${whereScopedBase}) AND (${uwClaimPred})`;
+    const whereScoped = Prisma.sql`(${whereScopedBase}) AND (${uwClaimPred}) AND a."deletedAt" IS NULL`;
     const whereWorkflow = whereScoped;
     const assignedQueueLabel = primaryWorkflowQueueForRole(params.role);
     const assignedCountExpr =

@@ -6,10 +6,13 @@ import {
 } from './applicationService';
 import {
     buildOperationsStatusFilterWhere,
+    excludeSoftDeletedWhere,
+    normalizeOperationsStatusKey,
     resolveOperationsListFilterMode,
     type OperationsStatusFilterMode,
 } from './operationsStatusFilter';
 import { aggregateQueueMetricsByCurrentQueue } from './operationsDashboardQueueMetricsService';
+import { reconcileStaleContractReinitiationFlags } from './contractReinitiationService';
 
 function buildRoleDefaultWhere(authUser: AuthenticatedUser | null): Prisma.ApplicationWhereInput {
     if (!authUser) {
@@ -36,8 +39,11 @@ async function countApplicationsForPipelineStage(
     );
     const mode = resolveOperationsListFilterMode(authUser?.role ?? null);
     const stageWhere = buildOperationsStatusFilterWhere(operationsStatus, mode);
+    const canonical = normalizeOperationsStatusKey(operationsStatus);
+    const excludeDeleted =
+        canonical === 'Recently_Deleted' ? undefined : excludeSoftDeletedWhere();
     return prisma.application.count({
-        where: combineWhere(visibilityBase, stageWhere),
+        where: combineWhere(combineWhere(visibilityBase, stageWhere), excludeDeleted),
     });
 }
 
@@ -102,6 +108,11 @@ export async function aggregateOperationsDashboardSummary(
     authUser: AuthenticatedUser | null,
 ): Promise<OperationsDashboardSummaryPayload> {
     const mode = viewerMode(authUser);
+    try {
+        await reconcileStaleContractReinitiationFlags();
+    } catch (reconcileErr) {
+        console.error('[operationsDashboard] reconcile stale reinitiation flags failed:', reconcileErr);
+    }
     const queueMetrics = await aggregateQueueMetricsByCurrentQueue(authUser);
     const { counts, amounts, totalCases } = queueMetrics;
 
@@ -119,6 +130,7 @@ export async function aggregateOperationsDashboardSummary(
         contractSentCount,
         signedContractCount,
         onHoldCount,
+        recentlyDeletedCount,
     ] = await Promise.all([
         countApplicationsForPipelineStage(authUser, 'Agent'),
         countApplicationsForPipelineStage(authUser, 'Scrubbing'),
@@ -133,6 +145,7 @@ export async function aggregateOperationsDashboardSummary(
         countApplicationsForPipelineStage(authUser, 'Contract_Sent'),
         countApplicationsForPipelineStage(authUser, 'Contract_Signed'),
         countApplicationsForPipelineStage(authUser, 'On_Hold'),
+        countApplicationsForPipelineStage(authUser, 'Recently_Deleted'),
     ]);
 
     // Use the same strict pipeline matchers as GET /applications?operationsStatus=…
@@ -182,6 +195,7 @@ export async function aggregateOperationsDashboardSummary(
             Disbursment: disbursment,
             Funded: funded,
             Declined: counts.Declined,
+            Recently_Deleted: recentlyDeletedCount,
         },
         caseStageAmounts: {
             Agent: amounts.Agent,
@@ -225,7 +239,10 @@ export async function listOperationsDashboardRecentCases(
         : isOperations
           ? buildOperationsStatusFilterWhere('Contract_Signed', filterMode)
           : buildOperationsStatusFilterWhere('Contracted', filterMode);
-    const where = combineWhere(visibilityBase, recentDealsWhere);
+    const where = combineWhere(
+        combineWhere(visibilityBase, recentDealsWhere),
+        excludeSoftDeletedWhere(),
+    );
     const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.trunc(limit), 1), 500) : 200;
 
     const rows = await prisma.application.findMany({

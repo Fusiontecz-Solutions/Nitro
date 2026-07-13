@@ -170,3 +170,47 @@ export async function sendPaymentMail(req: Request, res: Response): Promise<void
 
 }
 
+/**
+ * POST /api/mail/letter-pdf
+ * Renders the supplied letter/template HTML to a single-page PDF and streams it
+ * back as a downloadable attachment. Reuses the same Puppeteer renderer used for
+ * email PDF attachments so the download matches what merchants receive.
+ */
+export async function downloadLetterPdf(req: Request, res: Response): Promise<void> {
+    try {
+        const body = req.body as Record<string, unknown>;
+        const htmlBody = typeof body.body === 'string' ? body.body : '';
+        const rawFilename =
+            typeof body.filename === 'string' && body.filename.trim()
+                ? body.filename.trim()
+                : 'letter';
+
+        if (!htmlBody.trim()) {
+            res.status(400).json({
+                success: false,
+                message: 'Template body is required to generate a PDF',
+            });
+            return;
+        }
+
+        const { renderLetterHtmlToPdfBuffer, sanitizeLetterPdfFilename } = await import(
+            '../services/pdf/letterHtmlToPdf.service'
+        );
+
+        const filename = sanitizeLetterPdfFilename(rawFilename);
+        const pdfBuffer = await renderLetterHtmlToPdfBuffer(htmlBody);
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.status(200).end(pdfBuffer);
+        return;
+    } catch (error: any) {
+        console.error('Letter PDF download error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Failed to generate letter PDF',
+        });
+    }
+}
+

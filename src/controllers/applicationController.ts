@@ -47,6 +47,8 @@ import {
 } from '../services/operationsDashboardSummaryService';
 import {
     buildOperationsStatusFilterWhere,
+    applySoftDeleteListScope,
+    normalizeOperationsStatusKey,
     resolveOperationsListFilterMode,
     dashboardStateQueueAliases,
     isContractedOpsKey,
@@ -61,7 +63,10 @@ import {
     APPLICATION_QUEUE_APPROVAL_SENT,
     APPLICATION_STATE_APPROVAL_SENT,
 } from '../services/contractApplicationWorkflowSync';
-import { reinitiateContractForApplication } from '../services/contractReinitiationService';
+import {
+    reinitiateContractForApplication,
+    reconcileStaleContractReinitiationFlags,
+} from '../services/contractReinitiationService';
 import {
     buildApplicationApprovalEmailHtml,
     buildApplicationApprovedEmailInjectValues,
@@ -811,6 +816,8 @@ export const mapApplicationToApi = (app: any) => {
         claimedByUnderwriterId,
         claimedAt,
         claimedByUnderwriter,
+        deletedAt,
+        deletedById,
         approvedByUnderwriterId,
         approvedAt,
         approvedByUnderwriter,
@@ -967,6 +974,13 @@ export const mapApplicationToApi = (app: any) => {
                     ? String(claimedAt)
                     : undefined,
         claimedByUnderwriter: mapUserLite(claimedByUnderwriter),
+        deletedAt:
+            deletedAt instanceof Date
+                ? deletedAt.toISOString()
+                : deletedAt
+                    ? String(deletedAt)
+                    : undefined,
+        deletedById: deletedById ?? undefined,
         approvedByUnderwriterId: approvedByUnderwriterId ?? undefined,
         approvedAt:
             approvedAt instanceof Date
@@ -1794,6 +1808,17 @@ class ApplicationController {
             if (priority) where.priority = String(priority);
             if (type) where.type = { contains: String(type), mode: 'insensitive' };
             if (operationsStatus) {
+                const operationsStatusKey = normalizeOperationsStatusKey(String(operationsStatus));
+                if (operationsStatusKey === 'Reinitiate_Contract') {
+                    try {
+                        await reconcileStaleContractReinitiationFlags();
+                    } catch (reconcileErr) {
+                        console.error(
+                            '[applications list] reconcile stale reinitiation flags failed:',
+                            reconcileErr,
+                        );
+                    }
+                }
                 const operationsFilter = buildOperationsStatusFilterWhere(
                     String(operationsStatus),
                     resolveOperationsListFilterMode(authUser?.role),
@@ -2114,6 +2139,27 @@ class ApplicationController {
                     ],
                 };
             }
+
+            const operationsStatusParam = operationsStatus
+                ? String(operationsStatus)
+                : undefined;
+            const opsStatusCanonical = operationsStatusParam
+                ? normalizeOperationsStatusKey(operationsStatusParam)
+                : '';
+            if (opsStatusCanonical === 'Recently_Deleted') {
+                if (
+                    authRoleUpper !== 'SUPER_ADMIN' &&
+                    authRoleUpper !== 'SUPERADMIN' &&
+                    authRoleUpper !== 'OPERATIONS'
+                ) {
+                    return res.status(403).json({
+                        success: false,
+                        message:
+                            'Only Super Admin or Operations can view Recently Deleted applications',
+                    });
+                }
+            }
+            where = applySoftDeleteListScope(where, operationsStatusParam);
 
             const listInclude: Prisma.ApplicationInclude = useLitePayload
                 ? {
@@ -5150,7 +5196,7 @@ class ApplicationController {
         }
     }
 
-    // Delete application and all dependent records in a single transaction
+    // Soft-delete application (moves to Recently Deleted)
     async delete(req: Request, res: Response) {
         try {
             const { id } = req.params;
@@ -5178,139 +5224,43 @@ class ApplicationController {
                 return;
             }
 
-            await prisma.$transaction(
-                async (tx: Prisma.TransactionClient) => {
-                    await tx.scheduledRePayment.deleteMany({ where: { applicationId: id } });
+            const deletedAt = (application as { deletedAt?: Date | null }).deletedAt;
+            if (deletedAt) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application is already in Recently Deleted',
+                });
+            }
 
-                    const months = await tx.month.findMany({
-                        where: { applicationId: id },
-                        select: { id: true },
-                    });
-                    const monthIds = months.map((m) => m.id);
-                    if (monthIds.length > 0) {
-                        await tx.monthlyTransaction.deleteMany({
-                            where: { monthId: { in: monthIds } },
-                        });
-                    }
-                    await tx.month.deleteMany({ where: { applicationId: id } });
-
-                    const analyses = await tx.bankAnalysis.findMany({
-                        where: { applicationId: id },
-                        select: { id: true },
-                    });
-                    const analysisIds = analyses.map((a) => a.id);
-                    if (analysisIds.length > 0) {
-                        await tx.bankAnalysisRow.deleteMany({
-                            where: { bankAnalysisId: { in: analysisIds } },
-                        });
-                    }
-                    await tx.bankAnalysis.deleteMany({ where: { applicationId: id } });
-
-                    await tx.applicationFile.deleteMany({ where: { applicationId: id } });
-                    await tx.comment.deleteMany({ where: { applicationId: id } });
-                    await tx.complianceCheck.deleteMany({ where: { applicationId: id } });
-                    await tx.note.deleteMany({ where: { applicationId: id } });
-                    await tx.position.deleteMany({ where: { applicationId: id } });
-                    await tx.applicationQuestionResponse.deleteMany({
-                        where: { applicationId: id },
-                    });
-
-                    await tx.document.deleteMany({ where: { applicationId: id } });
-                    await tx.fundingInfo.deleteMany({ where: { applicationId: id } });
-
-                    await tx.docuSignEnvelope.deleteMany({
-                        where: {
-                            OR: [
-                                { termsOffer: { applicationId: id } },
-                                { contract: { applicationId: id } },
-                            ],
-                        },
-                    });
-
-                    await tx.paymentTerms.deleteMany({
-                        where: { contract: { applicationId: id } },
-                    });
-
-                    await tx.termsOffer.deleteMany({ where: { applicationId: id } });
-
-                    // Break optional FKs pointing at this application's contract(s) so Contract delete
-                    // does not fail when the DB uses RESTRICT (TermsOffer / ACH / EPO / Addendum).
-                    await tx.termsOffer.updateMany({
-                        where: { contracts: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-                    await tx.aCH.updateMany({
-                        where: { contract: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-                    await tx.ePO.updateMany({
-                        where: { contract: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-                    await tx.addendum.updateMany({
-                        where: { contract: { applicationId: id } },
-                        data: { contractId: null },
-                    });
-
-                    // Contract rows reference OfferDecision (FK on Contract). Delete contracts first,
-                    // otherwise OfferDecision delete fails on DBs without ON DELETE CASCADE to Contract.
-                    await tx.funding.deleteMany({ where: { applicationId: id } });
-                    await tx.disclosure.deleteMany({ where: { applicationId: id } });
-                    await tx.contract.deleteMany({ where: { applicationId: id } });
-                    await tx.offerDecision.deleteMany({ where: { applicationId: id } });
-
-                    await tx.bankDetail.deleteMany({ where: { applicationId: id } });
-
-                    await tx.documentRequest.deleteMany({ where: { applicationId: id } });
-                    await tx.applicationSyndicatorDetails.deleteMany({ where: { applicationId: id } });
-                    await tx.commissionRequest.deleteMany({ where: { applicationId: id } });
-
-                    await tx.clientBankInfo.updateMany({
-                        where: { applicationId: id },
-                        data: { applicationId: null },
-                    });
-
-                    await tx.notification.updateMany({
-                        where: { applicationId: id },
-                        data: { applicationId: null },
-                    });
-                    await tx.conversation.updateMany({
-                        where: { applicationId: id },
-                        data: { applicationId: null },
-                    });
-
-                    await tx.applicationActivityLog.deleteMany({ where: { applicationId: id } });
-                    await tx.fundingCall.deleteMany({ where: { applicationId: id } });
-                    await tx.finalAnswer.deleteMany({ where: { applicationId: id } });
-                    await tx.publicApprovalToken.deleteMany({ where: { applicationId: id } });
-                    await tx.collectionPayment.deleteMany({ where: { applicationId: id } });
-                    await tx.offers.deleteMany({ where: { applicationId: id } });
-                    await tx.skippedActumTransactions.deleteMany({ where: { applicationId: id } });
-
-                    const withSyndicators = await tx.application.findUnique({
-                        where: { id },
-                        select: { syndicator: { select: { id: true } } },
-                    });
-                    if (withSyndicators && withSyndicators.syndicator.length > 0) {
-                        await tx.application.update({
-                            where: { id },
-                            data: { syndicator: { set: [] } },
-                        });
-                    }
-
-                    await tx.application.delete({ where: { id } });
+            const actorId = authUser?.id;
+            await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    deletedAt: new Date(),
+                    deletedById: actorId ?? null,
                 },
-                {
-                    maxWait: 15_000,
-                    timeout: 120_000,
-                },
-            );
+            });
+
+            try {
+                const actorName = String((req as any).user?.name || '').trim() || 'User';
+                await createApplicationActivityLog({
+                    applicationId: application.id,
+                    user: authUser,
+                    req,
+                    actionType: 'STATUS_CHANGED',
+                    actionDescription: `${actorName} moved application to Recently Deleted.`,
+                    previousStatus: `${application.currentQueue} / ${application.currentState}`,
+                    currentStatus: 'Recently Deleted',
+                });
+            } catch (logErr) {
+                console.error('Failed to log soft delete:', logErr);
+            }
 
             invalidateAllApplicationStatsCache();
 
             return res.status(200).json({
                 success: true,
-                message: 'Application deleted successfully',
+                message: 'Application moved to Recently Deleted',
             });
         } catch (error) {
             console.error('Delete application error:', error);
@@ -5334,6 +5284,333 @@ class ApplicationController {
                 message: isDev ? message : 'Internal server error',
             });
         }
+    }
+
+    /** Super Admin / Operations: permanently remove a soft-deleted application. */
+    async permanentlyDelete(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            if (
+                roleUpper !== 'SUPER_ADMIN' &&
+                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'OPERATIONS'
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        'Only Super Admin or Operations can permanently delete applications',
+                });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const application = await prisma.application.findUnique({
+                where: whereClause,
+            });
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (!(application as { deletedAt?: Date | null }).deletedAt) {
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        'Only applications in Recently Deleted can be permanently deleted',
+                });
+            }
+
+            await this.executePermanentApplicationDelete(application.id);
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: 'Application permanently deleted',
+            });
+        } catch (error) {
+            console.error('Permanent delete application error:', error);
+            const isDev = process.env.NODE_ENV !== 'production';
+            let message = 'Internal server error';
+            if (isDev && error instanceof Error) {
+                message = error.message;
+            }
+            return res.status(500).json({
+                success: false,
+                message: isDev ? message : 'Internal server error',
+            });
+        }
+    }
+
+    /** Super Admin / Operations: restore a soft-deleted deal to a scrubber's claimed queue. */
+    async restoreApplicationToScrubber(req: Request, res: Response) {
+        try {
+            const { id } = req.params;
+            const authUser = getAuthenticatedUser(req);
+            const roleUpper = authUser?.role
+                ? String(authUser.role).toUpperCase().replace(/-/g, '_')
+                : '';
+            if (
+                roleUpper !== 'SUPER_ADMIN' &&
+                roleUpper !== 'SUPERADMIN' &&
+                roleUpper !== 'OPERATIONS'
+            ) {
+                return res.status(403).json({
+                    success: false,
+                    message:
+                        'Only Super Admin or Operations can restore deleted applications',
+                });
+            }
+
+            const scrubberId = String(
+                (req.body as { scrubberId?: unknown } | undefined)?.scrubberId ?? '',
+            ).trim();
+            if (!scrubberId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'scrubberId is required',
+                });
+            }
+
+            const scrubber = await prisma.user.findFirst({
+                where: {
+                    id: scrubberId,
+                    isActive: true,
+                    role: 'SCRUBBING',
+                },
+                select: { id: true, firstName: true, lastName: true, email: true },
+            });
+            if (!scrubber) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Selected scrubber was not found or is inactive',
+                });
+            }
+
+            const idStr = String(id ?? '');
+            const whereClause: Prisma.ApplicationWhereUniqueInput = /^\d+$/.test(idStr)
+                ? { applicationId: Number(idStr) }
+                : { id: idStr };
+
+            const include = {
+                referringAgent: { select: { id: true, firstName: true, lastName: true, email: true } },
+                salesRepresentative: { select: { id: true, firstName: true, lastName: true, email: true } },
+                createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+                client: true,
+                iso: true,
+                claimedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                approvedByUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+                assignedUnderwriter: { select: APPLICATION_USER_LITE_SELECT },
+            } satisfies Prisma.ApplicationInclude;
+
+            const application = await prisma.application.findUnique({
+                where: whereClause,
+                include,
+            });
+
+            if (!application) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Application not found',
+                });
+            }
+
+            if (!(application as { deletedAt?: Date | null }).deletedAt) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Application is not in Recently Deleted',
+                });
+            }
+
+            const scrubberName =
+                `${scrubber.firstName || ''} ${scrubber.lastName || ''}`.trim() ||
+                scrubber.email ||
+                'Scrubber';
+            const actorName = String((req as any).user?.name || '').trim() || 'Admin';
+
+            const refreshed = await prisma.application.update({
+                where: { id: application.id },
+                data: {
+                    deletedAt: null,
+                    deletedById: null,
+                    currentQueue: WORKFLOW_QUEUES.SCRUBBING,
+                    currentState: ApplicationState.IN_PROGRESS,
+                    claimedByUnderwriterId: scrubberId,
+                    claimedAt: new Date(),
+                    assignedUnderwriterId: null,
+                    approvedByUnderwriterId: null,
+                    approvedAt: null,
+                    underwriterAction: null,
+                    scrubberRecommendation: null,
+                },
+                include,
+            });
+
+            try {
+                await createApplicationActivityLog({
+                    applicationId: refreshed.id,
+                    user: authUser,
+                    req,
+                    actionType: 'QUEUE_CHANGED',
+                    actionDescription: `${actorName} restored application from Recently Deleted and assigned it to Scrubber ${scrubberName}.`,
+                    previousStatus: 'Recently Deleted',
+                    currentStatus: `${refreshed.currentQueue} / ${refreshed.currentState}`,
+                    metadata: { scrubberId, claimedByUnderwriterId: scrubberId },
+                });
+            } catch (logErr) {
+                console.error('Failed to log restore to scrubber:', logErr);
+            }
+
+            invalidateAllApplicationStatsCache();
+
+            return res.status(200).json({
+                success: true,
+                message: `Application restored and assigned to ${scrubberName}`,
+                data: mapApplicationToApi(refreshed),
+            });
+        } catch (error) {
+            console.error('Restore application to scrubber error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Internal server error',
+            });
+        }
+    }
+
+    private async executePermanentApplicationDelete(id: string) {
+        await prisma.$transaction(
+            async (tx: Prisma.TransactionClient) => {
+                await tx.scheduledRePayment.deleteMany({ where: { applicationId: id } });
+
+                const months = await tx.month.findMany({
+                    where: { applicationId: id },
+                    select: { id: true },
+                });
+                const monthIds = months.map((m) => m.id);
+                if (monthIds.length > 0) {
+                    await tx.monthlyTransaction.deleteMany({
+                        where: { monthId: { in: monthIds } },
+                    });
+                }
+                await tx.month.deleteMany({ where: { applicationId: id } });
+
+                const analyses = await tx.bankAnalysis.findMany({
+                    where: { applicationId: id },
+                    select: { id: true },
+                });
+                const analysisIds = analyses.map((a) => a.id);
+                if (analysisIds.length > 0) {
+                    await tx.bankAnalysisRow.deleteMany({
+                        where: { bankAnalysisId: { in: analysisIds } },
+                    });
+                }
+                await tx.bankAnalysis.deleteMany({ where: { applicationId: id } });
+
+                await tx.applicationFile.deleteMany({ where: { applicationId: id } });
+                await tx.comment.deleteMany({ where: { applicationId: id } });
+                await tx.complianceCheck.deleteMany({ where: { applicationId: id } });
+                await tx.note.deleteMany({ where: { applicationId: id } });
+                await tx.position.deleteMany({ where: { applicationId: id } });
+                await tx.applicationQuestionResponse.deleteMany({
+                    where: { applicationId: id },
+                });
+
+                await tx.document.deleteMany({ where: { applicationId: id } });
+                await tx.fundingInfo.deleteMany({ where: { applicationId: id } });
+
+                await tx.docuSignEnvelope.deleteMany({
+                    where: {
+                        OR: [
+                            { termsOffer: { applicationId: id } },
+                            { contract: { applicationId: id } },
+                        ],
+                    },
+                });
+
+                await tx.paymentTerms.deleteMany({
+                    where: { contract: { applicationId: id } },
+                });
+
+                await tx.termsOffer.deleteMany({ where: { applicationId: id } });
+
+                await tx.termsOffer.updateMany({
+                    where: { contracts: { applicationId: id } },
+                    data: { contractId: null },
+                });
+                await tx.aCH.updateMany({
+                    where: { contract: { applicationId: id } },
+                    data: { contractId: null },
+                });
+                await tx.ePO.updateMany({
+                    where: { contract: { applicationId: id } },
+                    data: { contractId: null },
+                });
+                await tx.addendum.updateMany({
+                    where: { contract: { applicationId: id } },
+                    data: { contractId: null },
+                });
+
+                await tx.funding.deleteMany({ where: { applicationId: id } });
+                await tx.disclosure.deleteMany({ where: { applicationId: id } });
+                await tx.contract.deleteMany({ where: { applicationId: id } });
+                await tx.offerDecision.deleteMany({ where: { applicationId: id } });
+
+                await tx.bankDetail.deleteMany({ where: { applicationId: id } });
+
+                await tx.documentRequest.deleteMany({ where: { applicationId: id } });
+                await tx.applicationSyndicatorDetails.deleteMany({ where: { applicationId: id } });
+                await tx.commissionRequest.deleteMany({ where: { applicationId: id } });
+
+                await tx.clientBankInfo.updateMany({
+                    where: { applicationId: id },
+                    data: { applicationId: null },
+                });
+
+                await tx.notification.updateMany({
+                    where: { applicationId: id },
+                    data: { applicationId: null },
+                });
+                await tx.conversation.updateMany({
+                    where: { applicationId: id },
+                    data: { applicationId: null },
+                });
+
+                await tx.applicationActivityLog.deleteMany({ where: { applicationId: id } });
+                await tx.fundingCall.deleteMany({ where: { applicationId: id } });
+                await tx.finalAnswer.deleteMany({ where: { applicationId: id } });
+                await tx.publicApprovalToken.deleteMany({ where: { applicationId: id } });
+                await tx.collectionPayment.deleteMany({ where: { applicationId: id } });
+                await tx.offers.deleteMany({ where: { applicationId: id } });
+                await tx.skippedActumTransactions.deleteMany({ where: { applicationId: id } });
+
+                const withSyndicators = await tx.application.findUnique({
+                    where: { id },
+                    select: { syndicator: { select: { id: true } } },
+                });
+                if (withSyndicators && withSyndicators.syndicator.length > 0) {
+                    await tx.application.update({
+                        where: { id },
+                        data: { syndicator: { set: [] } },
+                    });
+                }
+
+                await tx.application.delete({ where: { id } });
+            },
+            {
+                maxWait: 15_000,
+                timeout: 120_000,
+            },
+        );
     }
 
     // Extract information from PDF using Groq API

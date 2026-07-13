@@ -240,7 +240,21 @@ router.put(
 // Duplicate applications (dedupes) - UW/Admin only
 router.get('/:id/duplicates', applicationController.getDuplicates.bind(applicationController));
 
-// Delete application
+// Recently Deleted: restore to scrubber (Super Admin / Operations)
+router.post(
+    '/:id/restore-to-scrubber',
+    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    applicationController.restoreApplicationToScrubber.bind(applicationController),
+);
+
+// Recently Deleted: permanent removal (Super Admin / Operations)
+router.delete(
+    '/:id/permanent',
+    requireRoles('SUPER_ADMIN', 'OPERATIONS'),
+    applicationController.permanentlyDelete.bind(applicationController),
+);
+
+// Soft-delete application (moves to Recently Deleted)
 router.delete('/:id', applicationController.delete.bind(applicationController));
 
 export default router;
