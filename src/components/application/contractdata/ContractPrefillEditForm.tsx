@@ -100,8 +100,7 @@ type ContractPrefillFormFieldKey = Exclude<keyof BuildContractPrefillFieldsArgs,
 /** Field labels aligned with Deal Review + Offer decision (section title provides context). */
 const FIELD_LABELS = {
     customerName: "Customer / primary name",
-    /** Kept for form state typing; not shown in sections — entity type is set on the template. */
-    entityType: "Entity type",
+    entityType: "Type of entity",
     legalName: "Legal name",
     doingBusinessAs: "DBA",
     businessAddress: "Street",
@@ -165,6 +164,7 @@ const FIELD_LABELS = {
     authorizationClientBankRouting: "Routing number",
     authorizationClientBankAccount: "Account number",
     authorizationClientName: "Signer name",
+    authorizationClientSignerName: "Seller's name (signature)",
     authorizationClientNamePrint: "Printed name",
     authorizationClientTaxId: "Tax ID / EIN",
     authorizationClientDate: "Date",
@@ -186,6 +186,7 @@ const FIELD_LABELS = {
     achAuthorizationAccountHolderBankNumberOfTransactions: "NO. of transaction",
     achAuthorizationAccountHolderDate: "Date",
     achAuthorizationConcentAccountHolderName: "Name",
+    achAuthorizationConcentAccountHolderName2: "Name (page 2)",
     achAuthorizationConcentAccountHolderDate: "Date",
     achAuthorizationBankPortalWebsite: "Bank portal URL",
     achAuthorizationUsername: "Username",
@@ -230,6 +231,18 @@ const FIELD_LABELS = {
     exhibitAValue10: "Exhibit A company 10",
 } as const satisfies Record<ContractPrefillFormFieldKey, string>;
 
+/** Matches Create Client / application business entity options. */
+const ENTITY_TYPE_OPTIONS = [
+    { value: "LLC", label: "LLC" },
+    { value: "Corporation", label: "Corporation" },
+    { value: "Partnership", label: "Partnership" },
+    { value: "Sole Proprietorship", label: "Sole Proprietorship" },
+    { value: "S-Corp", label: "S-Corp" },
+    { value: "C-Corp", label: "C-Corp" },
+    { value: "Non-Profit", label: "Non-Profit" },
+    { value: "Other", label: "Other" },
+] as const;
+
 type ContractPrefillSectionGroup = {
     /** Sub-heading inside the section (e.g. Client, Guarantor). */
     heading?: string;
@@ -256,7 +269,8 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
         {
             id: "rpa_merchant",
             title: "RPA — Merchant & agreement",
-            description: "Agreement date, legal name, state of inc., DBA, EIN, client / merchant name, and client phone (page 1).",
+            description:
+                "Agreement date, legal name, type of entity, state of inc., DBA, EIN, client / merchant name, and client phone (page 1).",
             Icon: FileText,
             groups: [
                 {
@@ -265,6 +279,7 @@ const CONTRACT_PREFILL_SECTIONS: ContractPrefillSection[] = [
                         "agreementDate",
                         "state",
                         "legalName",
+                        "entityType",
                         "doingBusinessAs",
                         "federalTaxIdEin",
                         "clientName",
@@ -1350,8 +1365,8 @@ export function ContractPrefillEditForm({
             );
             const secondRow = resolvedOwnerRows[1];
             const secondOwnerName =
-                resolveOwnerRowFullName(secondRow) ||
-                resolveSecondOwnerSignerName(signerRoles, ownerCount, resolvedOwnerRows);
+                resolveSecondOwnerSignerName(signerRoles, ownerCount, resolvedOwnerRows) ||
+                resolveOwnerRowFullName(secondRow);
             const secondOwnerSs = String(secondRow?.ssnNumber ?? secondRow?.ssn ?? "").trim();
             const secondOwnerDriverLicense = String(
                 secondRow?.driverLicenseNumber ?? secondRow?.driverLicense ?? "",
@@ -1427,8 +1442,8 @@ export function ContractPrefillEditForm({
             );
             const secondRow = resolvedOwnerRows[1];
             const secondOwnerName =
-                resolveOwnerRowFullName(secondRow) ||
-                resolveSecondOwnerSignerName(signerRoles, activeOwnerCount, resolvedOwnerRows);
+                resolveSecondOwnerSignerName(signerRoles, activeOwnerCount, resolvedOwnerRows) ||
+                resolveOwnerRowFullName(secondRow);
             applySecondOwnerNameToPrefillPartial(
                 merged,
                 secondOwnerName,
@@ -2105,6 +2120,45 @@ export function ContractPrefillEditForm({
                                                                         REPAYMENT column (ACH), not monthly pmts.
                                                                     </p>
                                                                 </>
+                                                            ) : key === "entityType" ? (
+                                                                <Select
+                                                                    value={values[key] ?? ""}
+                                                                    onValueChange={(v: string) => setField(key, v)}
+                                                                    disabled={readOnly}
+                                                                >
+                                                                    <SelectTrigger
+                                                                        id={`prefill-${key}`}
+                                                                        className={cn(
+                                                                            "h-9 text-sm",
+                                                                            fieldErrors[key] &&
+                                                                                "border-destructive focus-visible:ring-destructive",
+                                                                        )}
+                                                                        aria-invalid={Boolean(fieldErrors[key])}
+                                                                    >
+                                                                        <SelectValue placeholder="Select type of entity" />
+                                                                    </SelectTrigger>
+                                                                    <SelectContent
+                                                                        position="popper"
+                                                                        className="z-[10200]"
+                                                                    >
+                                                                        {ENTITY_TYPE_OPTIONS.map((opt) => (
+                                                                            <SelectItem
+                                                                                key={opt.value}
+                                                                                value={opt.value}
+                                                                            >
+                                                                                {opt.label}
+                                                                            </SelectItem>
+                                                                        ))}
+                                                                        {values[key] &&
+                                                                        !ENTITY_TYPE_OPTIONS.some(
+                                                                            (o) => o.value === values[key],
+                                                                        ) ? (
+                                                                            <SelectItem value={values[key]!}>
+                                                                                {values[key]}
+                                                                            </SelectItem>
+                                                                        ) : null}
+                                                                    </SelectContent>
+                                                                </Select>
                                                             ) : (
                                                                 <Input
                                                                     id={`prefill-${key}`}

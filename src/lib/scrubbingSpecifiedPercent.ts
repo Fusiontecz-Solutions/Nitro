@@ -301,6 +301,41 @@ export type SpaCalculationBreakdown = {
     spa: string | null;
 };
 
+/** Last N full calendar months (excludes current MTD) for empty SPA revenue seeding. */
+export function buildDefaultSpaRevenueMonthLabels(
+    count: number = SPA_AVG_REVENUE_MONTH_WINDOW,
+): string[] {
+    const now = new Date();
+    const labels: string[] = [];
+    for (let i = 1; i <= count; i += 1) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        labels.push(`${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`);
+    }
+    return labels;
+}
+
+/** Empty editable revenue rows when scrubber has no bank months yet. */
+export function buildEmptySpaRevenueRows(
+    count: number = SPA_AVG_REVENUE_MONTH_WINDOW,
+): SpaMonthlyRevenueRow[] {
+    return buildDefaultSpaRevenueMonthLabels(count).map((month) => ({
+        month,
+        netCredit: 0,
+        includedInSpaAverage: true,
+    }));
+}
+
+/** Empty editable repayment row when scrubber has no positions yet. */
+export function buildEmptySpaPaymentRows(): SpaMonthlyPaymentRow[] {
+    return [
+        {
+            label: "Total of repayments",
+            amount: 0,
+            source: "positions_total",
+        },
+    ];
+}
+
 /** Per-month net credit across all banks; flags last N months used for SPA average. */
 export function buildSpaMonthlyRevenueRows(
     banks: BankTableLike[] | null | undefined,
@@ -310,25 +345,20 @@ export function buildSpaMonthlyRevenueRows(
         return { rows: [], monthsUsedForAverage: [] };
     }
 
-    const activeMonthSet = new Set<string>();
+    // Include structured bank months even when credits are still empty so SPA can edit them.
+    const monthLabelByKey = new Map<string, string>();
     for (const table of banks) {
         for (const row of table.rows ?? []) {
-            const monthLabel = normalizeMonthLabelKey(rowMonthLabel(row));
+            const display = String(rowMonthLabel(row) || "").trim();
+            const monthLabel = normalizeMonthLabelKey(display);
             if (!monthLabel || monthLabel.includes("mtd")) continue;
-            const nc = rowNetCredit(row);
-            if (nc !== null) activeMonthSet.add(monthLabel);
+            if (!monthLabelByKey.has(monthLabel)) {
+                monthLabelByKey.set(monthLabel, display);
+            }
         }
     }
 
-    const firstRows = banks[0]?.rows ?? [];
-    const orderedMonths = sortMonthsDesc(
-        firstRows
-            .map((r) => String(rowMonthLabel(r) || "").trim())
-            .filter((m) => {
-                const ml = normalizeMonthLabelKey(m);
-                return ml && !ml.includes("mtd") && activeMonthSet.has(ml);
-            }),
-    );
+    const orderedMonths = sortMonthsDesc([...monthLabelByKey.values()]);
     const monthsForAvg =
         monthWindow > 0 ? orderedMonths.slice(0, monthWindow) : orderedMonths;
     const avgMonthKeys = new Set(
@@ -353,11 +383,11 @@ export function buildSpaMonthlyRevenueRows(
             );
             if (!row) continue;
             const nc = rowNetCredit(row);
-            if (nc === null) continue;
             const totalCredit = parseCurrency(String(row.totalCredit ?? ""));
             const loanTransfer = parseCurrency(String(row.loanTransfer ?? ""));
             const deposit = parseCurrency(String(row.deposit ?? ""));
             const other = parseCurrency(String(row.other ?? ""));
+            const effectiveNc = nc !== null ? nc : 0;
             const rowBackendId = String(
                 (row as { _id?: string; id?: string })._id ??
                     (row as { _id?: string; id?: string }).id ??
@@ -366,13 +396,13 @@ export function buildSpaMonthlyRevenueRows(
             bankContributions.push({
                 bankBackendId,
                 rowBackendId: rowBackendId || undefined,
-                netCredit: nc,
+                netCredit: effectiveNc,
                 totalCredit,
                 loanTransfer,
                 deposit,
                 other,
             });
-            monthSum += nc;
+            monthSum += effectiveNc;
             bankCount += 1;
         }
         if (bankCount === 0) continue;
@@ -387,24 +417,29 @@ export function buildSpaMonthlyRevenueRows(
     return { rows, monthsUsedForAverage: monthsForAvg };
 }
 
-/** Single aggregated row: sum of scrubbing REPAYMENT column across active positions. */
+/**
+ * One editable row per active scrubbing position (REPAYMENT / ACH).
+ * Empty scrubber returns [] — modal seeds a manual total row the user can fill.
+ */
 export function buildSpaMonthlyPaymentRows(
     positions: Array<Record<string, unknown>> | null | undefined,
 ): SpaMonthlyPaymentRow[] {
-    let total = 0;
+    const rows: SpaMonthlyPaymentRow[] = [];
     for (const row of positions ?? []) {
         if (!isActivePositionForTotals(row)) continue;
+        const normalized = normalizePositionRowForSpa(row);
+        const positionId = String(row._id ?? row.id ?? "").trim();
+        if (!positionId) continue;
         const repayment = getPositionRepaymentForSpa(row);
-        if (!Number.isNaN(repayment) && repayment > 0) total += repayment;
+        const lender = String(normalized.lender ?? "").trim();
+        rows.push({
+            label: lender || "Position",
+            amount: !Number.isNaN(repayment) && repayment > 0 ? repayment : 0,
+            source: "position",
+            positionId,
+        });
     }
-    if (!(total > 0)) return [];
-    return [
-        {
-            label: "Total of repayments",
-            amount: total,
-            source: "positions_total",
-        },
-    ];
+    return rows;
 }
 
 export function buildSpaCalculationBreakdown(args: {

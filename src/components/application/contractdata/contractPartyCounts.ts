@@ -210,6 +210,7 @@ const PRIMARY_GUARANTOR_PREFILL_IDS = [
     "guaranty_guarantor1_name",
     "guaranty_client_name",
     "client_name",
+    "addendum_client_name",
     "security_guarantor",
 ] as const;
 

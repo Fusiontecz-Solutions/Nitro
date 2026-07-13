@@ -31,7 +31,7 @@ export const CONTRACT_ENVELOPE_LENDER_NAME = String(
 /** @deprecated Use CONTRACT_ENVELOPE_LENDER_NAME */
 export const DOCUSIGN_EMAIL_LENDER_NAME = CONTRACT_ENVELOPE_LENDER_NAME;
 
-/** Contract envelope email subject: {FunderName} : BusinessName - $Offer Amount */
+/** Contract envelope email subject: {FunderName}: BusinessName $Offer Amount */
 export function buildContractEnvelopeEmailSubject(
     businessName: string,
     offerAmount?: number | string | null,
@@ -41,13 +41,16 @@ export function buildContractEnvelopeEmailSubject(
     const amount = formatUSD(offerAmount, { fallback: "$0.00" });
     const lender =
         String(funderName || "").trim() || CONTRACT_ENVELOPE_LENDER_NAME;
-    return `${lender} : ${business} - ${amount}`;
+    return `${lender}: ${business} ${amount}`;
 }
 
-/** ACH-only envelope email subject: ACH FORM: BusinessName */
-export function buildAchFormEnvelopeEmailSubject(businessName: string): string {
-    const business = String(businessName || "").trim() || "Business";
-    return `ACH FORM: ${business}`;
+/** ACH / standalone envelope subject — same as contract: {FunderName}: BusinessName $Amount */
+export function buildAchFormEnvelopeEmailSubject(
+    businessName: string,
+    offerAmount?: number | string | null,
+    funderName?: string | null,
+): string {
+    return buildContractEnvelopeEmailSubject(businessName, offerAmount, funderName);
 }
 
 /** DocuSign envelope email subject: fixed lender + per-deal client name. */

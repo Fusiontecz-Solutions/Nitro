@@ -52,7 +52,7 @@ const EDITOR_FIELD_DEFS: Array<{
     { id: "addendumDate", label: "Addendum date", tabId: "addendum_date" },
     { id: "agreementDate", label: "Agreement date", tabId: "agreement_date" },
     { id: "merchantName", label: "Merchant legal name", tabId: "client_legal_name" },
-    { id: "clientName", label: "Client name", tabId: "client_name" },
+    { id: "clientName", label: "Owner 1 name (print)", tabId: "addendum_client_name" },
     { id: "businessName2", label: "Merchant 2 / owner 2 name", tabId: "merchant2_name" },
     { id: "installmentDay1", label: "Installment day — 1st payment", tabId: "installment_day_1" },
     { id: "installmentDay2", label: "Installment day — 2nd payment", tabId: "installment_day_2" },

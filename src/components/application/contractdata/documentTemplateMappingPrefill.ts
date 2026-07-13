@@ -13,6 +13,7 @@ import {
     getApplicationPrimaryRecipientName,
     getContractPrefillEditDefaultsFromApplication,
     resolveBalanceTransferMerchantContext,
+    resolveContractBusinessLegalNameForPrefill,
     resolveOfferAmountDollarsForUnderwritingFees,
     resolveRemittancePrefillValue,
 } from "./Contract";
@@ -66,20 +67,20 @@ import {
 } from "./achFormEditConfig";
 import { CONTRACT_SIGNER_OVERRIDES_KEY } from "./templateRecipients";
 
-function resolveMainContractPersonNameFromPrefill(
+function resolveMainContractBusinessNameFromPrefill(
     byId: Map<string, { id: string; value: string }>,
 ): string {
-    const personKeys = [
-        "owner1_guarantor_name",
-        "guaranty_owner1_name",
-        "guaranty_guarantor1_name",
-        "guaranty_client_name",
-        "security_guarantor",
-        "client_name",
+    const businessKeys = [
+        "legal_name",
+        "client_legal_name",
+        "security_business_name",
+        "business_legal_name",
+        "merchant_legal_name",
+        "authorization_application",
     ];
-    for (const key of personKeys) {
+    for (const key of businessKeys) {
         const value = String(byId.get(key)?.value || "").trim();
-        if (value) return value;
+        if (value && !/^\d+$/.test(value.replace(/\s/g, ""))) return value;
     }
     return "";
 }
@@ -1324,9 +1325,12 @@ export function applyDocumentTemplateMappingPrefillOverrides(args: {
             "funder_name",
             PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
         );
-        const merchant = resolveMainContractPersonNameFromPrefill(byId);
+        const merchant = resolveMainContractBusinessNameFromPrefill(byId);
         if (merchant) {
             upsertPrefillFieldValue(byId, "client_name", merchant);
+            upsertPrefillFieldValue(byId, "recipient_name", merchant);
+            upsertPrefillFieldValue(byId, "disclosure_name", merchant);
+            upsertPrefillFieldValue(byId, "disclosure_merchant_name", merchant);
         }
     }
 
@@ -1408,10 +1412,17 @@ export function mergeStateDisclosurePrefillFallback(args: {
         PLATFORM_DISCLOSURE_FUNDER_NAME.toUpperCase(),
     );
     const merchant =
-        resolveMainContractPersonNameFromPrefill(byId) ||
+        resolveMainContractBusinessNameFromPrefill(byId) ||
+        resolveContractBusinessLegalNameForPrefill(
+            effectiveContract,
+            args.application ?? null,
+        ) ||
         String(sctx.recipientName || "").trim();
     if (merchant) {
         upsertPrefillFieldValue(byId, "client_name", merchant);
+        upsertPrefillFieldValue(byId, "recipient_name", merchant);
+        upsertPrefillFieldValue(byId, "disclosure_name", merchant);
+        upsertPrefillFieldValue(byId, "disclosure_merchant_name", merchant);
     }
     return Array.from(byId.values());
 }

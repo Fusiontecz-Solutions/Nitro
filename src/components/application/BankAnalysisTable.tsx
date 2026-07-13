@@ -21,6 +21,7 @@ import type {
   BankTotalTableAverageCells,
   BankTotalTableRow,
 } from "@/components/application/BankTotalTable";
+import { SPA_SCRUBBER_SYNCED_EVENT } from "@/components/application/contractdata/spaScrubberSync";
 
 interface MonthlyData {
   month: string;
@@ -409,7 +410,49 @@ const BankAnalysisTable = ({
 
   // Load existing bank analysis data for this application
   useEffect(() => {
-    const load = async () => {
+    const mapBanksFromApi = (list: BankAnalysis[]): BankAnalysisInstance[] =>
+      list.map((item, index) => ({
+        id: index + 1,
+        backendId: item._id,
+        accountNumber: item.accountNumber || "",
+        accountHeaderLocked: Boolean(item.accountNumber?.trim()),
+        rows:
+          item.rows && item.rows.length > 0
+            ? sortMonthlyRowsByMonthDesc(
+                item.rows.map((r) => {
+                  const backendNetCredit =
+                    (r.totalCredit || 0) -
+                    ((r.loanTransfer || 0) +
+                      (r.deposit || 0) +
+                      (r.other || 0));
+                  const autoAvgDailyBlc =
+                    backendNetCredit > 0 ? backendNetCredit / 30 : 0;
+
+                  const mr: MonthlyData = {
+                    month: r.monthLabel,
+                    totalCredit: r.totalCredit ? String(r.totalCredit) : "",
+                    loanTransfer: r.loanTransfer
+                      ? String(r.loanTransfer)
+                      : "",
+                    deposit: r.deposit ? String(r.deposit) : "",
+                    other: r.other ? String(r.other) : "",
+                    nsfNegDays: r.nsfNegDays ? String(r.nsfNegDays) : "",
+                    lowBlcDays: r.lowBlcDays ? String(r.lowBlcDays) : "",
+                    avgDailyBlc: r.avgDailyBlc
+                      ? String(r.avgDailyBlc)
+                      : autoAvgDailyBlc > 0
+                        ? formatNumberUS(autoAvgDailyBlc)
+                        : "",
+                    rowBackendId: (r as { _id?: string; id?: string })._id ?? (r as { _id?: string; id?: string }).id,
+                  };
+                  const locked = { ...mr, isLocked: hasAnyValue(mr) };
+                  return formatMoneyRowDisplay(locked);
+                }),
+              )
+            : createDefaultRows(),
+      }));
+
+    const load = async (opts?: { silent?: boolean }) => {
       if (!applicationId) {
         setIsInitialLoading(false);
         return;
@@ -421,60 +464,30 @@ const BankAnalysisTable = ({
         const payload = resp.data;
         const list: BankAnalysis[] = payload?.data ?? payload ?? [];
         if (!Array.isArray(list) || list.length === 0) {
-          setIsInitialLoading(false);
+          if (!opts?.silent) setIsInitialLoading(false);
           return;
         }
 
-        setBanks(
-          list.map((item, index) => ({
-            id: index + 1,
-            backendId: item._id,
-            accountNumber: item.accountNumber || "",
-            accountHeaderLocked: Boolean(item.accountNumber?.trim()),
-            rows:
-              item.rows && item.rows.length > 0
-                ? sortMonthlyRowsByMonthDesc(
-                    item.rows.map((r) => {
-                      const backendNetCredit =
-                        (r.totalCredit || 0) -
-                        ((r.loanTransfer || 0) +
-                          (r.deposit || 0) +
-                          (r.other || 0));
-                      const autoAvgDailyBlc =
-                        backendNetCredit > 0 ? backendNetCredit / 30 : 0;
-
-                      const mr: MonthlyData = {
-                        month: r.monthLabel,
-                        totalCredit: r.totalCredit ? String(r.totalCredit) : "",
-                        loanTransfer: r.loanTransfer
-                          ? String(r.loanTransfer)
-                          : "",
-                        deposit: r.deposit ? String(r.deposit) : "",
-                        other: r.other ? String(r.other) : "",
-                        nsfNegDays: r.nsfNegDays ? String(r.nsfNegDays) : "",
-                        lowBlcDays: r.lowBlcDays ? String(r.lowBlcDays) : "",
-                        avgDailyBlc: r.avgDailyBlc
-                          ? String(r.avgDailyBlc)
-                          : autoAvgDailyBlc > 0
-                            ? formatNumberUS(autoAvgDailyBlc)
-                            : "",
-                        rowBackendId: (r as { _id?: string; id?: string })._id ?? (r as { _id?: string; id?: string }).id,
-                      };
-                      const locked = { ...mr, isLocked: hasAnyValue(mr) };
-                      return formatMoneyRowDisplay(locked);
-                    }),
-                  )
-                : createDefaultRows(),
-          })),
-        );
+        setBanks(mapBanksFromApi(list));
       } catch (error) {
         console.error("Failed to load bank analysis", error);
       } finally {
-        setIsInitialLoading(false);
+        if (!opts?.silent) setIsInitialLoading(false);
       }
     };
 
     void load();
+
+    const onSpaSynced = (event: Event) => {
+      const detail = (event as CustomEvent<{ applicationUuid?: string }>).detail;
+      const syncedApp = String(detail?.applicationUuid ?? "").trim();
+      if (!syncedApp || syncedApp !== applicationId) return;
+      void load({ silent: true });
+    };
+    window.addEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaSynced);
+    return () => {
+      window.removeEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaSynced);
+    };
   }, [applicationId]);
 
   const monthSummary = useMemo(() => {
