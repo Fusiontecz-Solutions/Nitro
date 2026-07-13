@@ -34,7 +34,6 @@ import { axiosGet, axiosPatch, axiosPost } from "@/redux/axios";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { getByApplicationIdContract, updateContract } from "@/redux/actions/contractActions";
 import { voidBoldSignDocument } from "@/redux/actions/boldSignActions";
-import { fetchFunderDocuments } from "@/redux/actions/integrationSettingsActions";
 import {
     findFunderProfile,
 } from "@/constants/contractFunder";
@@ -58,7 +57,6 @@ import {
 import {
     boldSignTemplateIsPreviewable,
     getBoldSignTemplateMappingRef,
-    loadBoldSignTemplatePdfBlob,
 } from "./contractdata/boldSignTemplateDocument";
 import {
     canPreviewFilledOrSignedEnvelope,
@@ -238,19 +236,6 @@ function findFunderScopedAchTemplate(
     });
     return (
         matches.find((t) => boldSignTemplateIsPreviewable(toPreviewableTemplate(t))) ?? null
-    );
-}
-
-function isUploadedAchDocumentRow(row: {
-    type?: string | null;
-    layoutKey?: string | null;
-}): boolean {
-    const type = String(row.type ?? "").toLowerCase();
-    const key = String(row.layoutKey ?? "").toLowerCase();
-    return (
-        type === "ach" ||
-        type === "ach_authorization" ||
-        key.includes("ach_authorization")
     );
 }
 
@@ -1091,84 +1076,43 @@ export default function ACHFormViewerModal({
         [achEnvelopeId, achMapping?.id, achStatus, achDisplayStatus, applicationId, persistAchEnvelopeOnContract, refreshContractRow, resolveCcForSend],
     );
 
+    const revokeTemplatePdfUrl = useCallback(() => {
+        if (templateBlobUrlRef.current) {
+            URL.revokeObjectURL(templateBlobUrlRef.current);
+            templateBlobUrlRef.current = null;
+        }
+        setTemplatePdfUrl(null);
+    }, []);
+
+    /** Same path as Katan ACHViewerModal: platform/funder ACH PDF via DocuSign layout download. */
     const loadTemplatePdf = useCallback(async () => {
+        const funderName = String(
+            selectedFunder || selectedFunderProfile?.name || "",
+        ).trim();
+        const funderProfileId = persistedFunderProfileIdForApi(selectedFunderProfile);
         setTemplatePdfLoading(true);
         try {
-            let blob: Blob | null = null;
-            const profile = selectedFunderProfile;
-            const usesPlatformAch =
-                !profile ||
-                isWoodmereFunderProfile(profile) ||
-                String(profile.addendumDocumentsSource ?? profile.documentsSource ?? "")
-                    .trim()
-                    .toLowerCase() === "platform";
-
-            if (usesPlatformAch) {
-                const platformAch =
-                    findPlatformAchTemplate(boldSignTemplates) ||
-                    (achMapping?.template && isPlatformAchTemplateRow(achMapping.template)
-                        ? achMapping.template
-                        : null);
-                if (platformAch && boldSignTemplateIsPreviewable(toPreviewableTemplate(platformAch))) {
-                    blob = await loadBoldSignTemplatePdfBlob({
-                        template: toPreviewableTemplate(platformAch),
-                        axiosGet,
-                    });
-                }
-            } else {
-                const docsFunderId =
-                    String(profile.addendumDocumentsSource ?? profile.documentsSource ?? "")
-                        .trim()
-                        .toLowerCase() === "shared"
-                        ? String(
-                              profile.sharedAddendumFunderId ??
-                                  profile.sharedDocumentsFunderId ??
-                                  "",
-                          ).trim() || profile.id
-                        : profile.id;
-                const scopedAch = findFunderScopedAchTemplate(docsFunderId, boldSignTemplates);
-                if (scopedAch) {
-                    blob = await loadBoldSignTemplatePdfBlob({
-                        template: toPreviewableTemplate(scopedAch),
-                        axiosGet,
-                    });
-                } else {
-                    try {
-                        const docs = await fetchFunderDocuments(String(docsFunderId));
-                        const achDoc = docs.find((row) => isUploadedAchDocumentRow(row));
-                        const pdfUrl = String(achDoc?.pdfUrl ?? "").trim();
-                        if (pdfUrl) {
-                            blob = await loadBoldSignTemplatePdfBlob({
-                                template: {
-                                    pdfUrl,
-                                    name: achDoc?.name,
-                                    layoutKey: achDoc?.layoutKey ?? undefined,
-                                    type: achDoc?.type,
-                                },
-                                axiosGet,
-                            });
-                        }
-                    } catch {
-                        /* fall through */
-                    }
-                }
-            }
-
-            if (!blob) {
-                const fallback =
-                    findPlatformAchTemplate(boldSignTemplates) ||
-                    (achMapping?.template &&
-                    boldSignTemplateIsPreviewable(toPreviewableTemplate(achMapping.template))
-                        ? achMapping.template
-                        : null);
-                if (!fallback) {
-                    setTemplatePdfUrl(null);
-                    return;
-                }
-                blob = await loadBoldSignTemplatePdfBlob({
-                    template: toPreviewableTemplate(fallback),
-                    axiosGet,
-                });
+            const response = await axiosGet(
+                `/docusign/template/${encodeURIComponent(ACH_STANDALONE_LAYOUT_KEY)}/download`,
+                {
+                    responseType: "blob",
+                    params: {
+                        ...(funderProfileId ? { funderProfileId } : {}),
+                        ...(funderName ? { funderName } : {}),
+                        ...(contractStateForFunders
+                            ? { state: contractStateForFunders }
+                            : {}),
+                    },
+                },
+            );
+            const blob =
+                response?.data instanceof Blob
+                    ? response.data
+                    : new Blob([response?.data], { type: "application/pdf" });
+            if (!blob.size) {
+                toast.error("ACH template PDF is empty.");
+                revokeTemplatePdfUrl();
+                return;
             }
             if (templateBlobUrlRef.current) {
                 URL.revokeObjectURL(templateBlobUrlRef.current);
@@ -1177,13 +1121,42 @@ export default function ACHFormViewerModal({
             templateBlobUrlRef.current = url;
             setTemplatePdfUrl(url);
         } catch (err: unknown) {
-            const msg = (err as Error)?.message || "Failed to load ACH template PDF.";
-            toast.error(msg);
-            setTemplatePdfUrl(null);
+            const msg =
+                (err as { response?: { data?: { message?: string } }; message?: string })
+                    ?.response?.data?.message ||
+                (err as { message?: string })?.message ||
+                "Failed to load ACH template PDF.";
+            toast.error(String(msg));
+            revokeTemplatePdfUrl();
         } finally {
             setTemplatePdfLoading(false);
         }
-    }, [achMapping, selectedFunderProfile, boldSignTemplates]);
+    }, [
+        selectedFunder,
+        selectedFunderProfile,
+        contractStateForFunders,
+        revokeTemplatePdfUrl,
+    ]);
+
+    const achDownloadFunderName = useMemo(() => {
+        const fromHistory = [...achSendHistory]
+            .reverse()
+            .map((h) => String(h.funderName ?? "").trim())
+            .find(Boolean);
+        if (fromHistory) return fromHistory;
+        const lastSent = parseLastAchSentFunder(
+            (resolvedContract as { contractPrefillOverrides?: unknown } | null)
+                ?.contractPrefillOverrides,
+        );
+        const fromLastSent = String(lastSent?.funderName ?? "").trim();
+        if (fromLastSent) return fromLastSent;
+        return String(selectedFunder || selectedFunderProfile?.name || "").trim();
+    }, [
+        achSendHistory,
+        resolvedContract,
+        selectedFunder,
+        selectedFunderProfile?.name,
+    ]);
 
     const loadDocuSignPdf = useCallback(async () => {
         if (!achPdfEnvelopeId) {
@@ -1199,6 +1172,13 @@ export default function ACHFormViewerModal({
                 {
                     responseType: "blob",
                     timeout: 120000,
+                    params: {
+                        ...(applicationId ? { applicationId: String(applicationId) } : {}),
+                        ...(contractId != null ? { contractId } : {}),
+                        ...(achDownloadFunderName
+                            ? { funderName: achDownloadFunderName }
+                            : {}),
+                    },
                 },
             );
             const blob = res.data instanceof Blob ? res.data : new Blob([res.data]);
@@ -1223,7 +1203,7 @@ export default function ACHFormViewerModal({
         } finally {
             setDocuSignPdfLoading(false);
         }
-    }, [achPdfEnvelopeId]);
+    }, [achPdfEnvelopeId, applicationId, contractId, achDownloadFunderName]);
 
     const syncAchPrefillToDraftEnvelope = useCallback(async (
         overrideTabValues?: Record<string, string> | null,
@@ -1369,6 +1349,55 @@ export default function ACHFormViewerModal({
     const canReviewAndSendAch = canReviewAndSendAchEnvelope(achStatus, achEnvelopeId);
     const achEnvelopeView = getAchEnvelopeView(achStatus, achEnvelopeId);
     const canEditRecipients = !readOnly && !achEnvelopeView.isOutForSignature;
+    /** Funder can change before send/resend; locked while out for signature (matches Katan). */
+    const canEditAchFunder = !readOnly && !achEnvelopeView.isOutForSignature;
+
+    const handleAchFunderChange = useCallback(
+        (profileId: string) => {
+            userSelectedFunderRef.current = true;
+            const profile = findFunderById(profileId);
+            const funderName = profile?.name ?? "";
+
+            revokeTemplatePdfUrl();
+            setPdfPaneTab("template");
+
+            applyFunderSelection(profileId, funderName, { persist: true });
+
+            const nextCcOptions = {
+                funderDefaultCcEmail: String(profile?.defaultCcEmail ?? "").trim() || null,
+                knownFunderDefaultCcEmails: collectKnownFunderDefaultCcEmails(
+                    funders.map((f) => f.defaultCcEmail),
+                ),
+            };
+            const nextCc = loadBoldSignCcEmailList(nextCcOptions);
+            setCcEmails(nextCc);
+            saveBoldSignCcEmailList(nextCc, nextCcOptions);
+            setCcEmailDraft("");
+
+            if (
+                achEnvelopeView.hasEnvelope &&
+                (achEnvelopeView.isDraft ||
+                    achEnvelopeView.isCompleted ||
+                    achEnvelopeView.isTerminal)
+            ) {
+                toast.info(
+                    achEnvelopeView.isCompleted || achEnvelopeView.isTerminal
+                        ? "Funder changed. Click Resend ACH form (or Send ACH form) to create a new DocuSign envelope with the selected funder."
+                        : "Funder changed. Use Resend ACH form to create a new DocuSign draft with the selected funder's PDF.",
+                );
+            }
+        },
+        [
+            findFunderById,
+            revokeTemplatePdfUrl,
+            applyFunderSelection,
+            funders,
+            achEnvelopeView.hasEnvelope,
+            achEnvelopeView.isDraft,
+            achEnvelopeView.isCompleted,
+            achEnvelopeView.isTerminal,
+        ],
+    );
 
     const addAchCcFromDraft = () => {
         const raw = ccEmailDraft.trim();
@@ -1692,42 +1721,24 @@ export default function ACHFormViewerModal({
                         <div className="flex min-h-0 w-full shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-200 p-4 dark:border-slate-700 lg:w-[42%] lg:min-w-[22rem]">
                             {funderSelectOptions.length > 0 ? (
                                 <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
-                                    <div className="mb-2 flex min-w-0 items-start gap-2.5">
-                                        <div
-                                            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                    <label
+                                        className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300"
+                                        htmlFor="ach-form-funder-select"
+                                    >
+                                        <Building2
+                                            className="h-3.5 w-3.5 text-[#276D9C]"
                                             aria-hidden
-                                        >
-                                            <Building2 className="h-4 w-4" />
-                                        </div>
-                                        <div className="min-w-0">
-                                            <label
-                                                htmlFor="ach-form-funder-select"
-                                                className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]"
-                                            >
-                                                Select funder
-                                            </label>
-                                            <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                                                Only funders with an ACH form are listed. Defaults to
-                                                the last sent ACH funder, otherwise Woodmere
-                                                Financial.
-                                            </p>
-                                        </div>
-                                    </div>
+                                        />
+                                        ACH funder
+                                    </label>
                                     <Select
                                         value={selectedFunderProfileId || undefined}
-                                        disabled={readOnly}
-                                        onValueChange={(profileId: string) => {
-                                            userSelectedFunderRef.current = true;
-                                            const profile = findFunderById(profileId);
-                                            const funderName = profile?.name ?? "";
-                                            applyFunderSelection(profileId, funderName, {
-                                                persist: true,
-                                            });
-                                        }}
+                                        disabled={!canEditAchFunder}
+                                        onValueChange={handleAchFunderChange}
                                     >
                                         <SelectTrigger
                                             id="ach-form-funder-select"
-                                            className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-xs shadow-sm focus:ring-[#276D9C]/20 dark:border-slate-600 dark:bg-slate-950"
+                                            className="h-10 w-full rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600"
                                         >
                                             <SelectValue placeholder="Select funder" />
                                         </SelectTrigger>
