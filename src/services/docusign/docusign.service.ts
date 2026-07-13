@@ -1007,7 +1007,7 @@ export class DocusignService {
 
   /** Decrypt CRM `enc:v1:` values and drop empty fields before sending to DocuSign. */
   private sanitizePrefillFieldsForDocuSign(prefillFields?: PrefillField[]): PrefillField[] {
-    return (prefillFields || [])
+    const sanitized = (prefillFields || [])
       .map((f) => {
         const id = String(f?.id ?? '').trim();
         let value = String(f?.value ?? '').trim();
@@ -1023,6 +1023,45 @@ export class DocusignService {
         return { id, value };
       })
       .filter((f): f is PrefillField => f != null);
+
+    const byNorm = new Map<string, string>();
+    for (const f of sanitized) {
+      byNorm.set(normalizeFieldKey(f.id), f.value);
+    }
+    const personal = new Set(
+      [
+        byNorm.get('customer_name'),
+        byNorm.get('client_name'),
+        byNorm.get('owner1_guarantor_name'),
+        byNorm.get('authorization_client_signer_name'),
+        byNorm.get('ach_authorization_account_holder_name'),
+      ]
+        .map((v) => String(v || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const prefer = (key: string): string => {
+      const t = String(byNorm.get(key) || '').trim();
+      if (!t || personal.has(t.toLowerCase())) return '';
+      return t;
+    };
+    const consentBusiness =
+      prefer('client_legal_name') ||
+      prefer('security_business_name') ||
+      prefer('business_legal_name') ||
+      prefer('authorization_client_name') ||
+      prefer('doing_business_as');
+    if (!consentBusiness) return sanitized;
+
+    return sanitized.map((f) => {
+      const key = normalizeFieldKey(f.id);
+      if (
+        key === 'ach_authorization_concent_account_holder_name' ||
+        key === 'achauthorizationconcentaccountholdername'
+      ) {
+        return { ...f, value: consentBusiness };
+      }
+      return f;
+    });
   }
 
   /**
@@ -2933,7 +2972,10 @@ export class DocusignService {
       });
     }
 
-    await clearAchAuthorizationIfMatchesMainContract(applicationId, newEnvelopeId);
+    await clearAchAuthorizationIfMatchesMainContract(applicationId, [
+      priorEnvelopeId,
+      newEnvelopeId,
+    ].filter(Boolean));
 
     await prisma.document.upsert({
       where: { applicationId },

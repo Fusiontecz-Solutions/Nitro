@@ -135,12 +135,10 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'guaranty_client_name',
   ],
   ach_authorization_concent_account_holder_name: [
-    'owner1_guarantor_name',
-    'customer_name',
-    'client_name',
-    'guaranty_owner1_name',
-    'guaranty_guarantor1_name',
-    'guaranty_client_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'authorization_client_name',
   ],
   ach_authorization_account_holder_bank_state: ['achauthorizationaccountholderbankstate'],
   ach_authorization_account_holder_bank_zip: ['achauthorizationaccountholderbankzip'],
@@ -527,6 +525,42 @@ function isolateBalanceTransferMerchantLegalName(values: Record<string, string>)
   }
 }
 
+function forceAchConsentAccountHolderBusinessName(values: Record<string, string>): void {
+  const personal = new Set(
+    [
+      values.customer_name,
+      values.client_name,
+      values.owner1_guarantor_name,
+      values.authorization_client_signer_name,
+      values.ach_authorization_account_holder_name,
+    ]
+      .map((v) => String(v || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const prefer = (raw: string | undefined): string => {
+    const t = String(raw || '').trim();
+    if (!t) return '';
+    if (personal.has(t.toLowerCase())) return '';
+    return t;
+  };
+  const consentBusiness =
+    prefer(values.client_legal_name) ||
+    prefer(values.security_business_name) ||
+    prefer(values.business_legal_name) ||
+    prefer(values.authorization_client_name) ||
+    prefer(values.doing_business_as) ||
+    String(
+      values.client_legal_name ||
+        values.security_business_name ||
+        values.business_legal_name ||
+        values.authorization_client_name ||
+        '',
+    ).trim();
+  if (consentBusiness) {
+    values.ach_authorization_concent_account_holder_name = consentBusiness;
+  }
+}
+
 function expandPrefillValues(values: Record<string, string>): Record<string, string> {
   const out = { ...values };
   for (const [canonical, aliases] of Object.entries(PREFILL_VALUE_ALIASES)) {
@@ -573,6 +607,7 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
   forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
 
   isolateBalanceTransferMerchantLegalName(out);
+  forceAchConsentAccountHolderBusinessName(out);
 
   return out;
 }
@@ -907,6 +942,18 @@ function resolveTextPlacementValue(
       ? formatFlexAddendumMoneyUsd(raw)
       : raw;
 
+  // ACH page-2 consent title always prefers business / legal name over a stale client name.
+  if (key === 'ach_authorization_concent_account_holder_name') {
+    const business = String(
+      values.client_legal_name ||
+        values.security_business_name ||
+        values.business_legal_name ||
+        values.authorization_client_name ||
+        '',
+    ).trim();
+    if (business) return formatIfMoney(business);
+  }
+
   if (isStateDisclosureTextPlacement(placement)) {
     const uniqueKey = String(placement?.sourceTabLabel || '').trim();
     if (uniqueKey) {
@@ -1125,6 +1172,9 @@ export async function renderFlattenedLayoutPdf(
   let layoutValues = buildScopedValuesForLayout(layout, values);
   if (isMainContractLayoutKey(String(layout.key || ''))) {
     layoutValues = expandPrefillValues(layoutValues);
+  } else if (/ach_authorization/i.test(String(layout.key || ''))) {
+    layoutValues = { ...layoutValues };
+    forceAchConsentAccountHolderBusinessName(layoutValues);
   }
   const layoutKey = String(layout.key || '');
   const alliancePrefillActive =
@@ -1396,6 +1446,9 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     if (isMainContractLayoutKey(String(layout.key || ''))) {
       layoutValues = expandPrefillValues(layoutValues);
       isolateBalanceTransferMerchantLegalName(layoutValues);
+    } else if (/ach_authorization/i.test(String(layout.key || ''))) {
+      layoutValues = { ...layoutValues };
+      forceAchConsentAccountHolderBusinessName(layoutValues);
     }
     const layoutAlliancePrefill =
       envelopeAlliancePrefill ||

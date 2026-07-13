@@ -122,7 +122,6 @@ export function mapDriverLicenseKeyDataToPrefill(
   set('guarantyGuarantor1Name', displayName);
   set('securityGuarantor', displayName);
   set('achAuthorizationAccountHolderName', displayName);
-  set('achAuthorizationConcentAccountHolderName', displayName);
 
   if (dlNumber) {
     set('guarantyOwner1DriverLicense', dlNumber);
@@ -207,9 +206,12 @@ export function mapVoidedCheckKeyDataToPrefill(
   }
   if (accountHolder) {
     set('achAuthorizationAccountHolderName', accountHolder);
-    set('achAuthorizationConcentAccountHolderName', accountHolder);
   } else if (!businessName && legalName) {
     set('achAuthorizationAccountHolderName', legalName);
+  }
+  if (businessName) {
+    set('achAuthorizationConcentAccountHolderName', businessName);
+  } else if (legalName) {
     set('achAuthorizationConcentAccountHolderName', legalName);
   }
   if (dbaName) {
