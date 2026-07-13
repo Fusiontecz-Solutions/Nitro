@@ -87,7 +87,7 @@ model DocuSignAccountProfile {
   integrationKey     String
   clientSecret       String?
   impersonatedUserId String
-  rsaPrivateKey      String          @db.Text
+  rsaPrivateKey      String
   accountId          String?
   baseUri            String?
   defaultRoleName    String          @default("Signer")
@@ -113,8 +113,6 @@ model FunderProfile {
   contractPdfFileName      String?
   /// State codes/names when this funder appears in dropdown; empty = all states.
   allowedStates            Json?
-  /// State codes/names where this funder is hidden; empty = no exclusions.
-  excludedStates           Json?
   organization             String?
   legalName                String?
   contactEmail             String?
@@ -126,13 +124,15 @@ model FunderProfile {
   docusignAccountProfileId String?                 @db.Uuid
   sortOrder                Int                     @default(0)
   isActive                 Boolean                 @default(true)
+  createdAt                DateTime                @default(now())
+  updatedAt                DateTime                @updatedAt
+  /// State codes/names where this funder is hidden; empty = no exclusions.
+  excludedStates           Json?
   /// Addendum/disclosure PDF source: platform | own | shared (contract PDF is always per-funder).
   documentsSource          String                  @default("own")
   /// When documentsSource is shared, layout keys use this funder's uploaded PDFs.
-  sharedDocumentsFunderId   String?                 @db.Uuid
-  createdAt                DateTime                @default(now())
-  updatedAt                DateTime                @updatedAt
-  docusignAccountProfile   DocuSignAccountProfile? @relation(fields: [docusignAccountProfileId], references: [id], onDelete: SetNull)
+  sharedDocumentsFunderId  String?                 @db.Uuid
+  docusignAccountProfile   DocuSignAccountProfile? @relation(fields: [docusignAccountProfileId], references: [id])
 
   @@index([docusignAccountProfileId])
   @@index([isActive])

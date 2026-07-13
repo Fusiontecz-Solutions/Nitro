@@ -1,17 +1,17 @@
 /// Durable idempotency ledger for Gmail PDF auto-create (read + unread inbox scan).
 model GmailAutoCreateLedger {
-  id              String       @id @default(uuid()) @db.Uuid
-  userId          String       @db.Uuid
-  gmailMessageId  String
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @db.Uuid
+  gmailMessageId String
   /// SHA-256 hex of `${userId}:${gmailMessageId}` — stable unique processing key.
-  messageKey      String       @unique
+  messageKey     String       @unique
   /// SHA-256 hex of primary PDF bytes when available.
-  pdfContentHash  String?
-  applicationId   String?      @db.Uuid
-  outcome         String
-  createdAt       DateTime     @default(now())
-  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  application     Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  pdfContentHash String?
+  applicationId  String?      @db.Uuid
+  outcome        String
+  createdAt      DateTime     @default(now())
+  application    Application? @relation(fields: [applicationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, gmailMessageId])
   @@index([userId])

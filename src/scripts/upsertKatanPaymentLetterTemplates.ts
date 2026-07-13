@@ -29,7 +29,6 @@ const LETTER_SEEDS: LetterSeed[] = [
       'payoff_amount',
       'client_name',
       'letter_date',
-      'beneficiary_name',
       'bank_name',
       'bank_address_line1',
       'bank_city_state_zip',
