@@ -1,7 +1,10 @@
 import { APP_LOGO_SRC } from "@/constants/appLogo";
 import type { TemplateComponentProps, TemplateVariable } from "./types";
 import { pick } from "./types";
-import { resolveApplicationRejectionEmailFields } from "./applicationRejectionEmailShared";
+import {
+  resolveApplicationRejectionEmailFields,
+  splitDeclineReasonsForColumns,
+} from "./applicationRejectionEmailShared";
 
 export const APPLICATION_REJECTION_EMAIL_VARIABLES: TemplateVariable[] = [
   {
@@ -11,14 +14,20 @@ export const APPLICATION_REJECTION_EMAIL_VARIABLES: TemplateVariable[] = [
     defaultValue: "John Doe",
   },
   {
+    key: "decline_reasons",
+    label: "Decline reason(s)",
+    placeholder: "Bad balances|||Bouncing|||Leverage",
+    defaultValue: "Bad Balances|||Negative Days|||Low Revenue",
+  },
+  {
     key: "primary_reason",
-    label: "Primary reason",
+    label: "Primary reason (legacy)",
     placeholder: "Bad Balances",
     defaultValue: "Bad Balances",
   },
   {
     key: "other_reasons",
-    label: "Other reason(s)",
+    label: "Other reason(s) (legacy)",
     placeholder: "Negative Days, Low Revenue",
   },
 ];
@@ -35,9 +44,55 @@ export default function ApplicationRejectionEmail({
 }: TemplateComponentProps) {
   const fields = resolveApplicationRejectionEmailFields({
     client_name: pick(values, v.client_name),
+    decline_reasons: values[v.decline_reasons.key] ?? "",
     primary_reason: pick(values, v.primary_reason),
     other_reasons: values[v.other_reasons.key] ?? "",
   });
+  const reasonsHeading =
+    fields.declineReasons.length > 1 ? "Decline Reasons" : "Decline Reason";
+  const { left: leftDeclineReasons, right: rightDeclineReasons } =
+    splitDeclineReasonsForColumns(fields.declineReasons);
+
+  const renderDeclineReasonBullet = (reason: string, index: number, total: number) => (
+    <table
+      key={`${reason}-${index}`}
+      role="presentation"
+      border={0}
+      cellPadding={0}
+      cellSpacing={0}
+      width="100%"
+      style={{ marginBottom: index < total - 1 ? 12 : 0 }}
+    >
+      <tbody>
+        <tr>
+          <td
+            style={{
+              fontSize: 18,
+              color: "#da1e28",
+              paddingRight: 8,
+              lineHeight: 1,
+              verticalAlign: "top",
+              width: 16,
+            }}
+          >
+            &bull;
+          </td>
+          <td
+            style={{
+              fontFamily: "Georgia, Times, serif",
+              fontSize: 18,
+              fontWeight: "bold",
+              color: "#111111",
+              lineHeight: 1.3,
+              verticalAlign: "top",
+            }}
+          >
+            {reason}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  );
 
   return (
     <table
@@ -328,125 +383,72 @@ export default function ApplicationRejectionEmail({
                                               fontSize: 11,
                                               fontWeight: "bold",
                                               color: "#da1e28",
-                                              paddingBottom: 5,
+                                              paddingBottom: 8,
                                             }}
                                           >
-                                            Primary Reason
+                                            {reasonsHeading}
                                           </td>
                                         </tr>
                                         <tr>
-                                          <td
-                                            style={{
-                                              paddingBottom: 15,
-                                              verticalAlign: "middle",
-                                            }}
-                                          >
-                                            <table
-                                              role="presentation"
-                                              border={0}
-                                              cellPadding={0}
-                                              cellSpacing={0}
-                                            >
-                                              <tbody>
-                                                <tr>
-                                                  <td
-                                                    style={{
-                                                      fontSize: 18,
-                                                      color: "#da1e28",
-                                                      paddingRight: 8,
-                                                      lineHeight: 1,
-                                                      verticalAlign: "middle",
-                                                    }}
-                                                  >
-                                                    &bull;
-                                                  </td>
-                                                  <td
-                                                    style={{
-                                                      fontFamily:
-                                                        "Georgia, Times, serif",
-                                                      fontSize: 18,
-                                                      fontWeight: "bold",
-                                                      color: "#111111",
-                                                      lineHeight: 1,
-                                                      verticalAlign: "middle",
-                                                    }}
-                                                  >
-                                                    {fields.primaryReason}
-                                                  </td>
-                                                </tr>
-                                              </tbody>
-                                            </table>
+                                          <td style={{ verticalAlign: "top" }}>
+                                            {rightDeclineReasons.length === 0 ? (
+                                              leftDeclineReasons.map((reason, index) =>
+                                                renderDeclineReasonBullet(
+                                                  reason,
+                                                  index,
+                                                  leftDeclineReasons.length,
+                                                ),
+                                              )
+                                            ) : (
+                                              <table
+                                                role="presentation"
+                                                border={0}
+                                                cellPadding={0}
+                                                cellSpacing={0}
+                                                width="100%"
+                                              >
+                                                <tbody>
+                                                  <tr>
+                                                    <td
+                                                      width="50%"
+                                                      valign="top"
+                                                      style={{
+                                                        width: "50%",
+                                                        paddingRight: 10,
+                                                        verticalAlign: "top",
+                                                      }}
+                                                    >
+                                                      {leftDeclineReasons.map((reason, index) =>
+                                                        renderDeclineReasonBullet(
+                                                          reason,
+                                                          index,
+                                                          leftDeclineReasons.length,
+                                                        ),
+                                                      )}
+                                                    </td>
+                                                    <td
+                                                      width="50%"
+                                                      valign="top"
+                                                      style={{
+                                                        width: "50%",
+                                                        paddingLeft: 10,
+                                                        verticalAlign: "top",
+                                                      }}
+                                                    >
+                                                      {rightDeclineReasons.map((reason, index) =>
+                                                        renderDeclineReasonBullet(
+                                                          reason,
+                                                          index,
+                                                          rightDeclineReasons.length,
+                                                        ),
+                                                      )}
+                                                    </td>
+                                                  </tr>
+                                                </tbody>
+                                              </table>
+                                            )}
                                           </td>
                                         </tr>
-
-                                        {fields.otherReasons ? (
-                                          <>
-                                            <tr>
-                                              <td
-                                                style={{
-                                                  borderTop: "1px dashed #cccccc",
-                                                  fontSize: 0,
-                                                  lineHeight: 0,
-                                                  paddingBottom: 12,
-                                                }}
-                                              >
-                                                &nbsp;
-                                              </td>
-                                            </tr>
-                                            <tr>
-                                              <td
-                                                style={{
-                                                  fontSize: 12,
-                                                  fontWeight: "bold",
-                                                  color: "#333333",
-                                                  paddingBottom: 8,
-                                                }}
-                                              >
-                                                Other Reason(s)
-                                              </td>
-                                            </tr>
-                                            <tr>
-                                              <td>
-                                                <table
-                                                  role="presentation"
-                                                  border={0}
-                                                  cellPadding={0}
-                                                  cellSpacing={0}
-                                                  style={{
-                                                    backgroundColor: "#f2f4f7",
-                                                    borderRadius: 4,
-                                                  }}
-                                                >
-                                                  <tbody>
-                                                    <tr>
-                                                      <td
-                                                        style={{
-                                                          padding: "6px 12px",
-                                                          fontSize: 11,
-                                                          color: "#666666",
-                                                          verticalAlign:
-                                                            "middle",
-                                                        }}
-                                                      >
-                                                        <span
-                                                          style={{
-                                                            color: "#666666",
-                                                            fontSize: 12,
-                                                            paddingRight: 5,
-                                                            lineHeight: 1,
-                                                          }}
-                                                        >
-                                                          &bull;
-                                                        </span>{" "}
-                                                        {fields.otherReasons}
-                                                      </td>
-                                                    </tr>
-                                                  </tbody>
-                                                </table>
-                                              </td>
-                                            </tr>
-                                          </>
-                                        ) : null}
                                       </tbody>
                                     </table>
                                   </td>

@@ -105,6 +105,9 @@ export interface Application {
     assignedTo?: string;
     claimedByUnderwriterId?: string | null;
     claimedAt?: string | null;
+    /** Set when the deal was soft-deleted (Recently Deleted). */
+    deletedAt?: string | null;
+    deletedById?: string | null;
     claimedByUnderwriter?: ApplicationUserLite | null;
     assignedUnderwriterId?: string | null;
     assignedUnderwriter?: ApplicationUserLite | null;

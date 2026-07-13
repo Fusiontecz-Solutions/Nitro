@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -27,6 +28,10 @@ import {
   renderBuiltinReactTemplateHtml,
 } from "@/pages/templates";
 import type { TemplateDefinition, TemplateValues } from "@/pages/templates";
+import {
+  DECLINE_REASONS_DELIMITER,
+  DECLINE_REASON_OPTIONS,
+} from "@/pages/templates/applicationRejectionEmailShared";
 
 function buildInitialValues(def: TemplateDefinition): TemplateValues {
   const base = previewValuesForBuiltinDefinition(def);
@@ -64,6 +69,19 @@ export default function TemplatePlayground() {
 
   const setField = useCallback((key: string, next: string) => {
     setValues((prev) => ({ ...prev, [key]: next }));
+  }, []);
+
+  const toggleDeclineReason = useCallback((key: string, reason: string) => {
+    setValues((prev) => {
+      const current = String(prev[key] ?? "")
+        .split(DECLINE_REASONS_DELIMITER)
+        .map((r) => r.trim())
+        .filter(Boolean);
+      const next = current.includes(reason)
+        ? current.filter((r) => r !== reason)
+        : [...current, reason];
+      return { ...prev, [key]: next.join(DECLINE_REASONS_DELIMITER) };
+    });
   }, []);
 
   const fillPlaceholders = useCallback(() => {
@@ -163,6 +181,43 @@ export default function TemplatePlayground() {
                   const long =
                     (v.placeholder?.length ?? 0) > 100 ||
                     /message|body|notes/i.test(v.key);
+                  if (v.key === "decline_reasons") {
+                    const selectedReasons = String(values[v.key] ?? "")
+                      .split(DECLINE_REASONS_DELIMITER)
+                      .map((r) => r.trim())
+                      .filter(Boolean);
+                    return (
+                      <div key={v.key} className="space-y-2">
+                        <Label className="text-xs font-medium">
+                          {v.label}
+                          <span className="text-muted-foreground ml-1 font-normal">
+                            ({selectedReasons.length} selected)
+                          </span>
+                        </Label>
+                        <div className="grid max-h-56 grid-cols-1 gap-1.5 overflow-y-auto rounded-md border p-2 sm:grid-cols-2">
+                          {DECLINE_REASON_OPTIONS.map((reason) => {
+                            const id = `reason-${reason.replace(/\s+/g, "-")}`;
+                            return (
+                              <label
+                                key={reason}
+                                htmlFor={id}
+                                className="hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm"
+                              >
+                                <Checkbox
+                                  id={id}
+                                  checked={selectedReasons.includes(reason)}
+                                  onCheckedChange={() =>
+                                    toggleDeclineReason(v.key, reason)
+                                  }
+                                />
+                                <span>{reason}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <div key={v.key} className="space-y-1.5">
                       <Label htmlFor={`field-${v.key}`} className="text-xs font-medium">

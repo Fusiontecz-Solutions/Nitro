@@ -57,7 +57,7 @@ import { fetchMainContractTemplatePreview } from "./contractdata/contractTemplat
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
 import ACHViewerModal from "./ACHViewerModal";
 import ReverseDisbursementScheduleSection from "./ReverseDisbursementScheduleSection";
-import { applicationNeedsContractReinitiation, isIsoUpdatedOfferApproved } from "@/lib/contractReinitiation";
+import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
 import { mergeContractCcEmailList } from "./boldsignCcList";
 import { axiosDelete, axiosGet, axiosPost } from "@/redux/axios";
 import { DOCUSIGN_ADDENDUM_LAYOUT_KEYS } from "./contractdata/docusignAddendumTemplates";
@@ -551,9 +551,6 @@ export default function ContractTab({
     }, [latestTermsOffer, fetchedContract]);
 
     const needsContractReinitiation = applicationNeedsContractReinitiation(
-        applicationData as Record<string, unknown> | null,
-    );
-    const isoApprovedUpdatedOffer = isIsoUpdatedOfferApproved(
         applicationData as Record<string, unknown> | null,
     );
     const hasGeneratedContract = useMemo(() => {
@@ -1746,56 +1743,6 @@ export default function ContractTab({
         !isReadOnly &&
         needsContractReinitiation;
 
-    const handleRegenerateContract = async () => {
-        if (!applicationUuid) {
-            toast.error("Missing application ID.");
-            return;
-        }
-        const template = await resolveContractTemplateForOpen(
-            (fetchedContract as { funderName?: string | null } | null)?.funderName,
-        );
-        if (!template?.url) {
-            toast.error(
-                "No contract template uploaded. Please upload it from the Underwriter dashboard.",
-            );
-            return;
-        }
-
-        setRegeneratingContract(true);
-        try {
-            await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
-            const byApp = await dispatch(
-                getByApplicationIdContract(String(applicationUuid)),
-            ).unwrap();
-            const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
-            if (contract && typeof contract === "object") {
-                setFetchedContract(contract);
-                const contractId = Number((contract as { id?: unknown }).id);
-                setSelectedContractId(Number.isFinite(contractId) ? contractId : null);
-            }
-            if (applicationUuid) {
-                void dispatch(getApplicationById(String(applicationUuid)));
-            }
-            const reopenedTemplate = await resolveContractTemplateForOpen(
-                (contract as { funderName?: string | null } | undefined)?.funderName,
-            );
-            setPdfUrl(reopenedTemplate?.url ?? template.url);
-            setPdfName(reopenedTemplate?.name ?? template.name);
-            setPdfViewerInitialRightPaneTab("template");
-            setPdfViewerOpen(true);
-            toast.success("Contract reinitiated. Review and send the updated contract.");
-        } catch (error: unknown) {
-            const message =
-                typeof error === "string"
-                    ? error
-                    : (error as { message?: string })?.message ||
-                      "Failed to reinitiate contract.";
-            toast.error(String(message));
-        } finally {
-            setRegeneratingContract(false);
-        }
-    };
-
     const handleGenerateContract = async () => {
         if (isReadOnly) {
             const opened = await tryOpenExistingDraftViewer();
@@ -1820,10 +1767,7 @@ export default function ContractTab({
             return;
         }
 
-        const awaitingFreshContractAfterIsoApproval =
-            needsContractReinitiation && isoApprovedUpdatedOffer;
-
-        if (awaitingFreshContractAfterIsoApproval) {
+        if (needsContractReinitiation) {
             setRegeneratingContract(true);
             try {
                 await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
@@ -1850,7 +1794,7 @@ export default function ContractTab({
             } finally {
                 setRegeneratingContract(false);
             }
-        } else {
+        } else if (!needsContractReinitiation) {
             // Re-open existing contract before any DB-mutating createContract call so a webhook-driven
             // status (SENT/VIEWED/SIGNED/COMPLETED) is never clobbered back to DRAFT by the upsert.
             const reopenedExisting = await tryOpenExistingDraftViewer();
@@ -3099,7 +3043,7 @@ export default function ContractTab({
             ).unwrap();
 
             if (nextPrefillOverrides) {
-                setFetchedContract((prev) =>
+                setFetchedContract((prev: Record<string, unknown> | null) =>
                     prev && typeof prev === "object"
                         ? { ...prev, contractPrefillOverrides: nextPrefillOverrides }
                         : prev,
@@ -3196,11 +3140,7 @@ export default function ContractTab({
             void handleGenerateContract();
             return;
         }
-        if (needsContractReinitiation && isoApprovedUpdatedOffer) {
-            void handleGenerateContract();
-            return;
-        }
-        void handleRegenerateContract();
+        void handleGenerateContract();
     };
 
     return (

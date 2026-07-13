@@ -10,6 +10,7 @@ import {
   Loader2,
   AlertCircle,
   Trash2,
+  Undo2,
   EyeIcon,
   LayoutGrid,
   LayoutList,
@@ -20,6 +21,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
+import RestoreApplicationToScrubberModal from "@/components/application/RestoreApplicationToScrubberModal";
 import { motion } from "framer-motion";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
 import { useLocation, useNavigate } from "react-router";
@@ -31,6 +33,7 @@ import {
   claimFinalUnderwriterDeal,
   getApplicationStats,
   deleteApplication,
+  permanentlyDeleteApplication,
   extractBusinessDetails,
   normalizeApplicationStatsData,
 } from "@/redux/actions/applicationActions";
@@ -261,6 +264,15 @@ const Applications = () => {
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
+
+  const isRecentlyDeletedView = useMemo(() => {
+    return (
+      isOperationsDashboardView &&
+      normalizeOperationsDashboardStatusParam(dashboardStateFilter) ===
+        "Recently_Deleted"
+    );
+  }, [isOperationsDashboardView, dashboardStateFilter]);
+
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(true);
   /** Scrubber inbox: Queue / Claimed / My deals; underwriter keeps Queue / My deals. */
   const [underwriterPoolTab, setUnderwriterPoolTab] = useState<ScrubberPoolTab>(
@@ -270,6 +282,9 @@ const Applications = () => {
     return underwriterClaimFromPoolTab(underwriterPoolTab, sessionRoleKey);
   }, [sessionRoleKey, underwriterPoolTab]);
   const [claimBusyAppId, setClaimBusyAppId] = useState<string | null>(null);
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [restoreTargetIds, setRestoreTargetIds] = useState<string[]>([]);
+  const [permanentDeleteLoading, setPermanentDeleteLoading] = useState(false);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [isExtractingPDF, setIsExtractingPDF] = useState(false);
   const [showAlreadyExistsDialog, setShowAlreadyExistsDialog] = useState(false);
@@ -305,6 +320,7 @@ const Applications = () => {
     errors: [],
   });
   const isBulkDeleteRef = useRef(false);
+  const fetchApplicationsRef = useRef<(() => Promise<void>) | null>(null);
 
   // TanStack Table state
   const [sorting, setSorting] = useState<SortingState>([
@@ -696,6 +712,15 @@ const Applications = () => {
       normalizedStatus === "Final_Approval"
     );
   }, [dashboardStateFilter, effectiveRoleKey]);
+
+  const openRestoreModal = useCallback((ids: string[]) => {
+    const validIds = ids.filter(
+      (id) => typeof id === "string" && id.length > 0 && id !== "undefined",
+    );
+    if (validIds.length === 0) return;
+    setRestoreTargetIds(validIds);
+    setRestoreModalOpen(true);
+  }, []);
 
   // Define columns
   const columns: ColumnDef<Application>[] = useMemo(() => {
@@ -1147,6 +1172,95 @@ const Applications = () => {
           },
         ] satisfies ColumnDef<Application>[])
         : []),
+      ...(isRecentlyDeletedView
+        ? ([
+          {
+            id: "deletedAt",
+            size: 160,
+            accessorFn: (row) => row.deletedAt ?? "",
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                Deleted On
+              </span>
+            ),
+            cell: ({ row }) => (
+              <span className="text-foreground text-sm">
+                {row.original.deletedAt
+                  ? formatDateTime(row.original.deletedAt)
+                  : "—"}
+              </span>
+            ),
+            enableSorting: true,
+          },
+          {
+            id: "recentlyDeletedActions",
+            size: 220,
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                Actions
+              </span>
+            ),
+            cell: ({ row }) => {
+              const app = row.original;
+              const appUuid =
+                app._id ?? (app as { id?: string }).id ?? "";
+              return (
+                <div
+                  className="flex flex-wrap items-center gap-1.5"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs gap-1"
+                    disabled={!appUuid}
+                    onClick={() => openRestoreModal([String(appUuid)])}
+                  >
+                    <Undo2 className="size-3.5" />
+                    Revert
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="h-8 text-xs gap-1"
+                    disabled={!appUuid || permanentDeleteLoading}
+                    onClick={() => {
+                      const confirmed = window.confirm(
+                        "Permanently delete this application? This cannot be undone.",
+                      );
+                      if (!confirmed || !appUuid) return;
+                      setPermanentDeleteLoading(true);
+                      void dispatch(permanentlyDeleteApplication(String(appUuid)))
+                        .unwrap()
+                        .then(() => {
+                          toast.success("Application permanently deleted!");
+                          void fetchApplicationsRef.current?.();
+                          dispatch(getApplicationStats());
+                        })
+                        .catch((err: unknown) => {
+                          const message =
+                            typeof err === "string"
+                              ? err
+                              : "Failed to permanently delete application";
+                          toast.error(message);
+                        })
+                        .finally(() => setPermanentDeleteLoading(false));
+                    }}
+                  >
+                    <Trash2 className="size-3.5" />
+                    Delete
+                  </Button>
+                </div>
+              );
+            },
+            enableSorting: false,
+            enableHiding: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       {
         id: "view",
         size: 90,
@@ -1198,6 +1312,10 @@ const Applications = () => {
     effectiveRoleKey,
     isOperationsDashboardView,
     dashboardStateFilter,
+    isRecentlyDeletedView,
+    openRestoreModal,
+    permanentDeleteLoading,
+    dispatch,
   ]);
 
   const totalItems = apiPagination?.total ?? applications?.length ?? 0;
@@ -1341,6 +1459,8 @@ const Applications = () => {
     await applicationsListQuery.refetch();
   }, [applicationsListQuery]);
 
+  fetchApplicationsRef.current = fetchApplications;
+
   /** Sync one-time refresh flag cleanup after query-triggered fetch. */
   useEffect(() => {
     if (!isListFilterInitialized) return;
@@ -1446,7 +1566,7 @@ const Applications = () => {
     );
     if (idsToDelete.length === 0) return;
     const confirmed = window.confirm(
-      `Are you sure you want to delete ${idsToDelete.length} selected application(s)?`,
+      `Move ${idsToDelete.length} selected application(s) to Recently Deleted?`,
     );
     if (!confirmed) return;
 
@@ -1457,8 +1577,8 @@ const Applications = () => {
       );
       toast.success(
         idsToDelete.length === 1
-          ? "Application deleted successfully!"
-          : `${idsToDelete.length} applications deleted successfully!`,
+          ? "Application moved to Recently Deleted!"
+          : `${idsToDelete.length} applications moved to Recently Deleted!`,
       );
       dispatch(resetDeleteApplication());
       setRowSelection({});
@@ -1472,6 +1592,9 @@ const Applications = () => {
       }
       fetchApplications();
       dispatch(getApplicationStats());
+      if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+        void dispatch(fetchOperationsDashboardSummary());
+      }
       if (showUwDealPoolUi) {
         void fetchUwDealPoolStats().catch((err: unknown) => {
           console.error("Failed to refresh scrubbing pool stats after delete", err);
@@ -1496,6 +1619,60 @@ const Applications = () => {
     viewApplication,
     showUwDealPoolUi,
     fetchUwDealPoolStats,
+    sessionRoleKey,
+  ]);
+
+  const handleBulkPermanentDelete = useCallback(async () => {
+    const idsToDelete = selectedApplicationIds.filter(
+      (id) => typeof id === "string" && id.length > 0 && id !== "undefined",
+    );
+    if (idsToDelete.length === 0) return;
+    const confirmed = window.confirm(
+      `Permanently delete ${idsToDelete.length} selected application(s)? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    setPermanentDeleteLoading(true);
+    try {
+      await Promise.all(
+        idsToDelete.map((id) => dispatch(permanentlyDeleteApplication(id)).unwrap()),
+      );
+      toast.success(
+        idsToDelete.length === 1
+          ? "Application permanently deleted!"
+          : `${idsToDelete.length} applications permanently deleted!`,
+      );
+      setRowSelection({});
+      if (
+        viewApplication &&
+        idsToDelete.includes(
+          String(viewApplication._id ?? (viewApplication as { id?: string }).id ?? ""),
+        )
+      ) {
+        setViewApplication(null);
+      }
+      fetchApplications();
+      dispatch(getApplicationStats());
+      if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+        void dispatch(fetchOperationsDashboardSummary());
+      }
+    } catch (err: unknown) {
+      const message =
+        err && typeof err === "object" && "message" in err
+          ? String((err as { message: string }).message)
+          : "Failed to permanently delete some applications";
+      toast.error(message);
+      fetchApplications();
+      setRowSelection({});
+    } finally {
+      setPermanentDeleteLoading(false);
+    }
+  }, [
+    selectedApplicationIds,
+    dispatch,
+    fetchApplications,
+    viewApplication,
+    sessionRoleKey,
   ]);
 
   // Fetch stats for dashboard
@@ -1510,10 +1687,13 @@ const Applications = () => {
         dispatch(resetDeleteApplication());
         return;
       }
-      toast.success("Application deleted successfully!");
+      toast.success("Application moved to Recently Deleted!");
       dispatch(resetDeleteApplication());
       fetchApplications();
       dispatch(getApplicationStats());
+      if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+        void dispatch(fetchOperationsDashboardSummary());
+      }
       if (showUwDealPoolUi) {
         void fetchUwDealPoolStats().catch((err: unknown) => {
           console.error(
@@ -1534,6 +1714,7 @@ const Applications = () => {
     fetchApplications,
     showUwDealPoolUi,
     fetchUwDealPoolStats,
+    sessionRoleKey,
   ]);
 
   useEffect(() => {
@@ -1821,6 +2002,9 @@ const Applications = () => {
     }
     if (normalizedStatus === "Contracted") {
       return "CONTRACT APPLICATIONS";
+    }
+    if (normalizedStatus === "Recently_Deleted") {
+      return "RECENTLY DELETED APPLICATIONS";
     }
     const label = normalizedStatus
       ? operationsDashboardStatusTitle(normalizedStatus)
@@ -2443,16 +2627,43 @@ const Applications = () => {
                 <span className="hidden sm:inline">Select page</span>
               </label>
             )}
-            <Button
-              variant="destructive"
-              size="sm"
-              className="gap-1 cursor-pointer text-xs shrink-0"
-              disabled={selectedApplicationIds.length === 0 || deleteLoading}
-              onClick={handleBulkDelete}
-            >
-              <Trash2 className="size-3" />
-              Delete
-            </Button>
+            {isRecentlyDeletedView ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1 cursor-pointer text-xs shrink-0"
+                  disabled={selectedApplicationIds.length === 0}
+                  onClick={() => openRestoreModal(selectedApplicationIds)}
+                >
+                  <Undo2 className="size-3" />
+                  Revert
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="gap-1 cursor-pointer text-xs shrink-0"
+                  disabled={
+                    selectedApplicationIds.length === 0 || permanentDeleteLoading
+                  }
+                  onClick={() => void handleBulkPermanentDelete()}
+                >
+                  <Trash2 className="size-3" />
+                  Delete Permanently
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="gap-1 cursor-pointer text-xs shrink-0"
+                disabled={selectedApplicationIds.length === 0 || deleteLoading}
+                onClick={handleBulkDelete}
+              >
+                <Trash2 className="size-3" />
+                Delete
+              </Button>
+            )}
           </div>
         </div>
         <div
@@ -2938,6 +3149,20 @@ const Applications = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <RestoreApplicationToScrubberModal
+        open={restoreModalOpen}
+        onOpenChange={setRestoreModalOpen}
+        applicationIds={restoreTargetIds}
+        onRestored={() => {
+          setRowSelection({});
+          fetchApplications();
+          dispatch(getApplicationStats());
+          if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+            void dispatch(fetchOperationsDashboardSummary());
+          }
+        }}
+      />
     </div>
   );
 };

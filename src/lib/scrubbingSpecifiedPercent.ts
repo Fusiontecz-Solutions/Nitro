@@ -173,17 +173,6 @@ const ACTIVE_POSITION_STATUSES = new Set([
     "SELECT",
 ]);
 
-function getPaymentsPerMonth(freq?: string): number {
-    const f = String(freq ?? "")
-        .toLowerCase()
-        .replace(/\s+/g, "");
-    if (f === "daily") return 22;
-    if (f === "weekly") return 4.2;
-    if (f === "bi-weekly" || f === "biweekly") return 2;
-    if (f === "monthly") return 1;
-    return 0;
-}
-
 /** Map raw `/positions` API rows to scrubbing-table field names. */
 function normalizePositionRowForSpa(row: Record<string, unknown>): Record<string, unknown> {
     return {
@@ -313,11 +302,6 @@ export type SpaCalculationBreakdown = {
     monthsUsedForAverage: string[];
     spa: string | null;
 };
-
-function positionPaymentLabel(row: Record<string, unknown>, index: number): string {
-    const lender = String(row.lender ?? row.funder ?? row.fundingCompany ?? "").trim();
-    return lender || `Position ${index + 1}`;
-}
 
 /** Per-month net credit across all banks; flags last N months used for SPA average. */
 export function buildSpaMonthlyRevenueRows(
