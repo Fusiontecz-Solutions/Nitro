@@ -93,7 +93,7 @@ import {
 import { isDocumentLayoutKey } from './platform-document-registry';
 import { isFunderContractLayoutKey } from '../../utils/funderContractLayout';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
-import { isFillAtSigningTabRef } from './utils/build-envelope-from-layout';
+import { isClearedAtSendTabRef, isFillAtSigningTabRef } from './utils/build-envelope-from-layout';
 import {
   findAchEnvelopeAuthHints,
   findApplicationIdByAchEnvelopeId,
@@ -1121,6 +1121,11 @@ export class DocusignService {
       for (const tab of tabs) {
         const tabId = String(tab.tabId || '').trim();
         if (!tabId || updatedTabIds.has(tabId)) continue;
+        if (isClearedAtSendTabRef(tab as { tabLabel?: string; name?: string })) {
+          // Always blank for merchant fill-at-signing (e.g. authorized_business_phone, page 15).
+          pending.push({ tabId, value: '', tab });
+          continue;
+        }
         const prefill = resolvePrefillForTab(valueMap, tab as DocusignTextTabRef);
         if (!prefill) continue;
         pending.push({ tabId, value: prefill, tab });
@@ -2682,6 +2687,7 @@ export class DocusignService {
         if (!tabLabel) continue;
 
         const signerEditable = isFillAtSigningTabRef(tab as { tabLabel?: string; name?: string });
+        const clearsAtSend = isClearedAtSendTabRef(tab as { tabLabel?: string; name?: string });
         const row: Record<string, string> = {
           tabLabel,
           ...(signerEditable
@@ -2690,7 +2696,9 @@ export class DocusignService {
         };
 
         const prefill = resolvePrefillForTab(valueMap, tab as DocusignTextTabRef);
-        if (prefill) {
+        if (clearsAtSend) {
+          row[valueKey] = '';
+        } else if (prefill) {
           row[valueKey] = prefill;
         } else if (!signerEditable) {
           for (const key of DocusignService.TAB_VALUE_PRESERVE_KEYS) {

@@ -110,6 +110,22 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'guaranty_owner1_name',
     'guaranty_guarantor1_name',
   ],
+  authorization_client_name: [
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+  ],
+  authorization_client_signer_name: [
+    'customer_name',
+    'client_name',
+    'owner1_guarantor_name',
+  ],
+  authorization_client_name_print: [
+    'authorization_client_signer_name',
+    'customer_name',
+    'client_name',
+    'owner1_guarantor_name',
+  ],
   ach_authorization_account_holder_name: [
     'owner1_guarantor_name',
     'customer_name',
@@ -249,7 +265,7 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'appendix_merchant2_name',
   ],
   doing_business_as: ['dba', 'security_doing_business_as'],
-  client_phone: ['authorized_business_phone', 'guarantor_phone'],
+  client_phone: ['guarantor_phone'],
   exhibit_company_name_1: ['exhibit_a_value_1'],
   exhibit_company_name_2: ['exhibit_a_value_2'],
   exhibit_company_name_3: ['exhibit_a_value_3'],
@@ -380,11 +396,15 @@ const PARTY2_NAME_PREFERRED = [
   'business_name_2',
 ] as const;
 
-/** Contract page 1 — merchant confirms or enters phone at signing (prefilled when available). */
-export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set(['client_phone']);
+/** Contract page 1 phone + page 14 authorized business phone — merchant fills/confirms at signing. */
+export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set([
+  'client_phone',
+  'authorized_business_phone',
+]);
 
-/** Contract page 15 — ACH portal, credentials, and references (merchant fills at signing). */
+/** Cleared at send; merchant fills at signing (page 14 phone + page 15 ACH portal/credentials). */
 export const FILL_AT_SIGNING_VARIABLES = new Set([
+  'authorized_business_phone',
   'ach_authorization_bank_portal_website',
   'ach_authorization_username',
   'ach_authorization_password',
@@ -418,7 +438,7 @@ function isRequiredSignerEditablePlacement(placement: DocumentLayoutPlacement): 
   return REQUIRED_SIGNER_EDITABLE_VARIABLES.has(variable);
 }
 
-/** Page-15 ACH fields start blank; page-1 editable fields keep CRM prefill. */
+/** Cleared at send for fill-at-signing tabs (page 14 phone + page 15 ACH); page-1 phone keeps CRM prefill. */
 function clearsValueAtSend(placement: DocumentLayoutPlacement): boolean {
   if (placement.fillAtSigning === true) return true;
   const variable = String(placement.variable || '').trim().toLowerCase();
@@ -434,7 +454,7 @@ function isSignerEditableTextPlacement(placement: DocumentLayoutPlacement): bool
   );
 }
 
-/** Page-15 ACH fields and page-1 client phone are required signer text. */
+/** Page-15 ACH fields and required signer-editable tabs (page 1 phone, page 14 business phone). */
 function isRequiredSignerTextField(placement: DocumentLayoutPlacement): boolean {
   if (placement.type !== 'text') return false;
   if (isRequiredSignerEditablePlacement(placement)) return true;
@@ -484,6 +504,15 @@ export function isFillAtSigningTabRef(tab: {
       (FILL_AT_SIGNING_VARIABLES.has(label) ||
         REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label)),
   );
+}
+
+/** True when CRM prefill must not be written (merchant fills blank at signing). */
+export function isClearedAtSendTabRef(tab: {
+  tabLabel?: string;
+  name?: string;
+}): boolean {
+  const label = resolveSignerEditableTabVariable(tab);
+  return Boolean(label && FILL_AT_SIGNING_VARIABLES.has(label));
 }
 
 function isolateBalanceTransferMerchantLegalName(values: Record<string, string>): void {
