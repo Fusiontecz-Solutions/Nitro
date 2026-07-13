@@ -108,8 +108,9 @@ export const PREFILL_DISPLAY_LABEL_BY_VARIABLE: Record<string, string> = {
   authorization_client_bank_routing: 'Routing number',
   authorization_client_bank_account: 'Account number',
   authorization_client_name: 'Business name',
-  authorization_client_name_print: 'Business name (print)',
-  authorized_business_phone: 'Business phone',
+  authorization_client_name_print: 'Printed name',
+  authorization_client_signer_name: 'Signer name',
+  authorized_business_phone: 'Business phone (merchant fills)',
   signature_date: 'Agreement date',
   exhibit_owner_name: 'Exhibit owner',
 };

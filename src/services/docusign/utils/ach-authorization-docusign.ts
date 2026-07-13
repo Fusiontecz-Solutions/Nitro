@@ -369,20 +369,27 @@ export async function linkAchAuthorizationEnvelopeToContract(
   return true;
 }
 
-/** Remove ACH envelope metadata when it incorrectly points at the main contract envelope. */
+/** Remove ACH envelope metadata when it incorrectly points at a main-contract envelope. */
 export async function clearAchAuthorizationIfMatchesMainContract(
   applicationId: string,
-  mainContractEnvelopeId: string,
+  mainContractEnvelopeId: string | string[],
 ): Promise<boolean> {
-  const mainEid = String(mainContractEnvelopeId || '').trim();
+  const excludeIds = new Set(
+    (Array.isArray(mainContractEnvelopeId)
+      ? mainContractEnvelopeId
+      : [mainContractEnvelopeId]
+    )
+      .map((id) => String(id || '').trim())
+      .filter(Boolean),
+  );
   const appId = String(applicationId || '').trim();
-  if (!mainEid || !appId) return false;
+  if (!excludeIds.size || !appId) return false;
 
   const contracts = await loadContractsForAchLink(appId);
   let cleared = false;
   for (const contract of contracts) {
     const prior = parseAchAuthorizationDocuSignFromPrefill(contract.contractPrefillOverrides);
-    if (!prior || prior.envelopeId !== mainEid) continue;
+    if (!prior || !excludeIds.has(prior.envelopeId)) continue;
     const base =
       contract.contractPrefillOverrides &&
       typeof contract.contractPrefillOverrides === 'object' &&

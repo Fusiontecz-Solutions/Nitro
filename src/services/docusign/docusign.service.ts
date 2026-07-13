@@ -93,7 +93,7 @@ import {
 import { isDocumentLayoutKey } from './platform-document-registry';
 import { isFunderContractLayoutKey } from '../../utils/funderContractLayout';
 import { applyDocuSignPrefillTabStyle } from './utils/docusign-tab-style';
-import { isFillAtSigningTabRef } from './utils/build-envelope-from-layout';
+import { isClearedAtSendTabRef, isFillAtSigningTabRef } from './utils/build-envelope-from-layout';
 import {
   findAchEnvelopeAuthHints,
   findApplicationIdByAchEnvelopeId,
@@ -1007,7 +1007,7 @@ export class DocusignService {
 
   /** Decrypt CRM `enc:v1:` values and drop empty fields before sending to DocuSign. */
   private sanitizePrefillFieldsForDocuSign(prefillFields?: PrefillField[]): PrefillField[] {
-    return (prefillFields || [])
+    const sanitized = (prefillFields || [])
       .map((f) => {
         const id = String(f?.id ?? '').trim();
         let value = String(f?.value ?? '').trim();
@@ -1023,6 +1023,45 @@ export class DocusignService {
         return { id, value };
       })
       .filter((f): f is PrefillField => f != null);
+
+    const byNorm = new Map<string, string>();
+    for (const f of sanitized) {
+      byNorm.set(normalizeFieldKey(f.id), f.value);
+    }
+    const personal = new Set(
+      [
+        byNorm.get('customer_name'),
+        byNorm.get('client_name'),
+        byNorm.get('owner1_guarantor_name'),
+        byNorm.get('authorization_client_signer_name'),
+        byNorm.get('ach_authorization_account_holder_name'),
+      ]
+        .map((v) => String(v || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const prefer = (key: string): string => {
+      const t = String(byNorm.get(key) || '').trim();
+      if (!t || personal.has(t.toLowerCase())) return '';
+      return t;
+    };
+    const consentBusiness =
+      prefer('client_legal_name') ||
+      prefer('security_business_name') ||
+      prefer('business_legal_name') ||
+      prefer('authorization_client_name') ||
+      prefer('doing_business_as');
+    if (!consentBusiness) return sanitized;
+
+    return sanitized.map((f) => {
+      const key = normalizeFieldKey(f.id);
+      if (
+        key === 'ach_authorization_concent_account_holder_name' ||
+        key === 'achauthorizationconcentaccountholdername'
+      ) {
+        return { ...f, value: consentBusiness };
+      }
+      return f;
+    });
   }
 
   /**
@@ -1121,6 +1160,11 @@ export class DocusignService {
       for (const tab of tabs) {
         const tabId = String(tab.tabId || '').trim();
         if (!tabId || updatedTabIds.has(tabId)) continue;
+        if (isClearedAtSendTabRef(tab as { tabLabel?: string; name?: string })) {
+          // Always blank for merchant fill-at-signing (e.g. authorized_business_phone, page 15).
+          pending.push({ tabId, value: '', tab });
+          continue;
+        }
         const prefill = resolvePrefillForTab(valueMap, tab as DocusignTextTabRef);
         if (!prefill) continue;
         pending.push({ tabId, value: prefill, tab });
@@ -2682,6 +2726,7 @@ export class DocusignService {
         if (!tabLabel) continue;
 
         const signerEditable = isFillAtSigningTabRef(tab as { tabLabel?: string; name?: string });
+        const clearsAtSend = isClearedAtSendTabRef(tab as { tabLabel?: string; name?: string });
         const row: Record<string, string> = {
           tabLabel,
           ...(signerEditable
@@ -2690,7 +2735,9 @@ export class DocusignService {
         };
 
         const prefill = resolvePrefillForTab(valueMap, tab as DocusignTextTabRef);
-        if (prefill) {
+        if (clearsAtSend) {
+          row[valueKey] = '';
+        } else if (prefill) {
           row[valueKey] = prefill;
         } else if (!signerEditable) {
           for (const key of DocusignService.TAB_VALUE_PRESERVE_KEYS) {
@@ -2925,7 +2972,10 @@ export class DocusignService {
       });
     }
 
-    await clearAchAuthorizationIfMatchesMainContract(applicationId, newEnvelopeId);
+    await clearAchAuthorizationIfMatchesMainContract(applicationId, [
+      priorEnvelopeId,
+      newEnvelopeId,
+    ].filter(Boolean));
 
     await prisma.document.upsert({
       where: { applicationId },

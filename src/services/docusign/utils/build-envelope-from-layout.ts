@@ -110,6 +110,22 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'guaranty_owner1_name',
     'guaranty_guarantor1_name',
   ],
+  authorization_client_name: [
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+  ],
+  authorization_client_signer_name: [
+    'customer_name',
+    'client_name',
+    'owner1_guarantor_name',
+  ],
+  authorization_client_name_print: [
+    'authorization_client_signer_name',
+    'customer_name',
+    'client_name',
+    'owner1_guarantor_name',
+  ],
   ach_authorization_account_holder_name: [
     'owner1_guarantor_name',
     'customer_name',
@@ -119,12 +135,10 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'guaranty_client_name',
   ],
   ach_authorization_concent_account_holder_name: [
-    'owner1_guarantor_name',
-    'customer_name',
-    'client_name',
-    'guaranty_owner1_name',
-    'guaranty_guarantor1_name',
-    'guaranty_client_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'authorization_client_name',
   ],
   ach_authorization_account_holder_bank_state: ['achauthorizationaccountholderbankstate'],
   ach_authorization_account_holder_bank_zip: ['achauthorizationaccountholderbankzip'],
@@ -249,7 +263,7 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'appendix_merchant2_name',
   ],
   doing_business_as: ['dba', 'security_doing_business_as'],
-  client_phone: ['authorized_business_phone', 'guarantor_phone'],
+  client_phone: ['guarantor_phone'],
   exhibit_company_name_1: ['exhibit_a_value_1'],
   exhibit_company_name_2: ['exhibit_a_value_2'],
   exhibit_company_name_3: ['exhibit_a_value_3'],
@@ -380,11 +394,15 @@ const PARTY2_NAME_PREFERRED = [
   'business_name_2',
 ] as const;
 
-/** Contract page 1 — merchant confirms or enters phone at signing (prefilled when available). */
-export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set(['client_phone']);
+/** Contract page 1 phone + page 14 authorized business phone — merchant fills/confirms at signing. */
+export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set([
+  'client_phone',
+  'authorized_business_phone',
+]);
 
-/** Contract page 15 — ACH portal, credentials, and references (merchant fills at signing). */
+/** Cleared at send; merchant fills at signing (page 14 phone + page 15 ACH portal/credentials). */
 export const FILL_AT_SIGNING_VARIABLES = new Set([
+  'authorized_business_phone',
   'ach_authorization_bank_portal_website',
   'ach_authorization_username',
   'ach_authorization_password',
@@ -418,7 +436,7 @@ function isRequiredSignerEditablePlacement(placement: DocumentLayoutPlacement): 
   return REQUIRED_SIGNER_EDITABLE_VARIABLES.has(variable);
 }
 
-/** Page-15 ACH fields start blank; page-1 editable fields keep CRM prefill. */
+/** Cleared at send for fill-at-signing tabs (page 14 phone + page 15 ACH); page-1 phone keeps CRM prefill. */
 function clearsValueAtSend(placement: DocumentLayoutPlacement): boolean {
   if (placement.fillAtSigning === true) return true;
   const variable = String(placement.variable || '').trim().toLowerCase();
@@ -434,7 +452,7 @@ function isSignerEditableTextPlacement(placement: DocumentLayoutPlacement): bool
   );
 }
 
-/** Page-15 ACH fields and page-1 client phone are required signer text. */
+/** Page-15 ACH fields and required signer-editable tabs (page 1 phone, page 14 business phone). */
 function isRequiredSignerTextField(placement: DocumentLayoutPlacement): boolean {
   if (placement.type !== 'text') return false;
   if (isRequiredSignerEditablePlacement(placement)) return true;
@@ -486,6 +504,15 @@ export function isFillAtSigningTabRef(tab: {
   );
 }
 
+/** True when CRM prefill must not be written (merchant fills blank at signing). */
+export function isClearedAtSendTabRef(tab: {
+  tabLabel?: string;
+  name?: string;
+}): boolean {
+  const label = resolveSignerEditableTabVariable(tab);
+  return Boolean(label && FILL_AT_SIGNING_VARIABLES.has(label));
+}
+
 function isolateBalanceTransferMerchantLegalName(values: Record<string, string>): void {
   const entityLegal = String(values.client_legal_name || values.business_legal_name || '').trim();
   const balanceTransfer = String(values.balance_transfer_client_legal_name || '').trim();
@@ -495,6 +522,42 @@ function isolateBalanceTransferMerchantLegalName(values: Record<string, string>)
     balanceTransfer.toLowerCase() === entityLegal.toLowerCase()
   ) {
     delete values.balance_transfer_client_legal_name;
+  }
+}
+
+function forceAchConsentAccountHolderBusinessName(values: Record<string, string>): void {
+  const personal = new Set(
+    [
+      values.customer_name,
+      values.client_name,
+      values.owner1_guarantor_name,
+      values.authorization_client_signer_name,
+      values.ach_authorization_account_holder_name,
+    ]
+      .map((v) => String(v || '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const prefer = (raw: string | undefined): string => {
+    const t = String(raw || '').trim();
+    if (!t) return '';
+    if (personal.has(t.toLowerCase())) return '';
+    return t;
+  };
+  const consentBusiness =
+    prefer(values.client_legal_name) ||
+    prefer(values.security_business_name) ||
+    prefer(values.business_legal_name) ||
+    prefer(values.authorization_client_name) ||
+    prefer(values.doing_business_as) ||
+    String(
+      values.client_legal_name ||
+        values.security_business_name ||
+        values.business_legal_name ||
+        values.authorization_client_name ||
+        '',
+    ).trim();
+  if (consentBusiness) {
+    values.ach_authorization_concent_account_holder_name = consentBusiness;
   }
 }
 
@@ -544,6 +607,7 @@ function expandPrefillValues(values: Record<string, string>): Record<string, str
   forceMirrorIdentityFields(out, PARTY2_DL_KEYS);
 
   isolateBalanceTransferMerchantLegalName(out);
+  forceAchConsentAccountHolderBusinessName(out);
 
   return out;
 }
@@ -878,6 +942,18 @@ function resolveTextPlacementValue(
       ? formatFlexAddendumMoneyUsd(raw)
       : raw;
 
+  // ACH page-2 consent title always prefers business / legal name over a stale client name.
+  if (key === 'ach_authorization_concent_account_holder_name') {
+    const business = String(
+      values.client_legal_name ||
+        values.security_business_name ||
+        values.business_legal_name ||
+        values.authorization_client_name ||
+        '',
+    ).trim();
+    if (business) return formatIfMoney(business);
+  }
+
   if (isStateDisclosureTextPlacement(placement)) {
     const uniqueKey = String(placement?.sourceTabLabel || '').trim();
     if (uniqueKey) {
@@ -1096,6 +1172,9 @@ export async function renderFlattenedLayoutPdf(
   let layoutValues = buildScopedValuesForLayout(layout, values);
   if (isMainContractLayoutKey(String(layout.key || ''))) {
     layoutValues = expandPrefillValues(layoutValues);
+  } else if (/ach_authorization/i.test(String(layout.key || ''))) {
+    layoutValues = { ...layoutValues };
+    forceAchConsentAccountHolderBusinessName(layoutValues);
   }
   const layoutKey = String(layout.key || '');
   const alliancePrefillActive =
@@ -1367,6 +1446,9 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     if (isMainContractLayoutKey(String(layout.key || ''))) {
       layoutValues = expandPrefillValues(layoutValues);
       isolateBalanceTransferMerchantLegalName(layoutValues);
+    } else if (/ach_authorization/i.test(String(layout.key || ''))) {
+      layoutValues = { ...layoutValues };
+      forceAchConsentAccountHolderBusinessName(layoutValues);
     }
     const layoutAlliancePrefill =
       envelopeAlliancePrefill ||
