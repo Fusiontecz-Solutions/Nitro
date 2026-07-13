@@ -6,6 +6,7 @@ export interface KatanAchAuthorizationAddendumPrefillFields {
     authorizationClientBankName?: string;
     authorizationClientBankRouting?: string;
     authorizationClientBankAccount?: string;
+    authorizationClientSignerName?: string;
     authorizationClientNamePrint?: string;
     authorizationClientTaxId?: string;
     authorizedBusinessPhone?: string;
@@ -34,9 +35,10 @@ const FIELD_DEFS: Array<{ id: keyof KatanAchAuthorizationAddendumPrefillFields; 
     { id: "authorizationClientBankName", label: "Name of Bank" },
     { id: "authorizationClientBankRouting", label: "ABA Transit/Routing #" },
     { id: "authorizationClientBankAccount", label: "Checking Account" },
+    { id: "authorizationClientSignerName", label: "Name" },
     { id: "authorizationClientNamePrint", label: "Print Name" },
     { id: "authorizationClientTaxId", label: "Seller's Tax ID" },
-    { id: "authorizedBusinessPhone", label: "Authorized Business Phone Number" },
+    { id: "authorizedBusinessPhone", label: "Authorized Business Phone Number (merchant fills)" },
     { id: "achAuthorizationAccountHolderName", label: "Account Holder Name" },
     {
         id: "achAuthorizationAccountHolderDba",

@@ -33,6 +33,21 @@ const SECTION_LABEL_CLASS =
     "text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400";
 const MONEY_INPUT_CLASS = "h-8 w-full min-w-[7rem] text-right tabular-nums";
 
+const MONTH_NAMES = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+] as const;
+
 function parseInputMoney(value: string): number {
     const cleaned = value.replace(/[$,\s]/g, "");
     const n = Number(cleaned);
@@ -49,10 +64,43 @@ function paymentRowKey(row: SpaMonthlyPaymentRow, index: number): string {
     return `position:${row.positionId ?? `${row.label}:${index}`}`;
 }
 
+/** Empty repayment row when scrubbing has no active position totals. */
+function buildManualPaymentRows(): SpaMonthlyPaymentRow[] {
+    return [
+        {
+            label: "Total of repayments",
+            amount: 0,
+            source: "positions_total",
+        },
+    ];
+}
+
+/**
+ * Last N full calendar months (current MTD excluded) so SPA can be entered
+ * when bank analysis has no revenue months.
+ */
+function buildManualRevenueRows(
+    monthWindow: number = SPA_AVG_REVENUE_MONTH_WINDOW,
+): { rows: SpaMonthlyRevenueRow[]; monthsUsedForAverage: string[] } {
+    const now = new Date();
+    const months: string[] = [];
+    for (let i = 1; i <= monthWindow; i += 1) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        months.push(`${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`);
+    }
+    const rows: SpaMonthlyRevenueRow[] = months.map((month) => ({
+        month,
+        netCredit: 0,
+        includedInSpaAverage: true,
+    }));
+    return { rows, monthsUsedForAverage: months };
+}
+
 async function fetchSpaSourceData(
     applicationUuid: string,
 ): Promise<{
     banks: SpaBankApiRecord[];
+    positions: Array<Record<string, unknown>>;
     breakdown: ReturnType<typeof buildSpaCalculationBreakdown>;
 }> {
     const [banksResp, positionsResp] = await Promise.all([
@@ -70,14 +118,16 @@ async function fetchSpaSourceData(
     const positionsRaw =
         (positionsResp as { data?: { data?: unknown } })?.data?.data ??
         (positionsResp as { data?: unknown })?.data;
-    const positions = Array.isArray(positionsRaw) ? positionsRaw : [];
+    const positions = Array.isArray(positionsRaw)
+        ? (positionsRaw as Array<Record<string, unknown>>)
+        : [];
 
     const breakdown = buildSpaCalculationBreakdown({
         banks: banks as Array<{ rows?: Array<Record<string, unknown>> }>,
-        positions: positions as Array<Record<string, unknown>>,
+        positions,
     });
 
-    return { banks, breakdown };
+    return { banks, positions, breakdown };
 }
 
 export function SpaCalculationModal({
@@ -92,6 +142,9 @@ export function SpaCalculationModal({
     const [loading, setLoading] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [sourceBanks, setSourceBanks] = useState<SpaBankApiRecord[]>([]);
+    const [sourcePositions, setSourcePositions] = useState<Array<Record<string, unknown>>>(
+        [],
+    );
     const [paymentRows, setPaymentRows] = useState<SpaMonthlyPaymentRow[]>([]);
     const [revenueRows, setRevenueRows] = useState<SpaMonthlyRevenueRow[]>([]);
     const [initialPaymentRows, setInitialPaymentRows] = useState<SpaMonthlyPaymentRow[]>([]);
@@ -99,37 +152,66 @@ export function SpaCalculationModal({
     const [paymentInputs, setPaymentInputs] = useState<Record<string, string>>({});
     const [revenueInputs, setRevenueInputs] = useState<Record<string, string>>({});
     const [monthsUsedForAverage, setMonthsUsedForAverage] = useState<string[]>([]);
+    const [usingManualPayments, setUsingManualPayments] = useState(false);
+    const [usingManualRevenues, setUsingManualRevenues] = useState(false);
+    const [syncing, setSyncing] = useState(false);
 
     const appKey = String(applicationUuid ?? "").trim();
+    const isBusy = loading || saving || syncing;
 
     const reloadBreakdown = useCallback(async () => {
         if (!appKey) {
             setLoadError("Application id is required.");
             setPaymentRows([]);
             setRevenueRows([]);
+            setUsingManualPayments(false);
+            setUsingManualRevenues(false);
             return;
         }
         setLoading(true);
         setLoadError(null);
         try {
-            const { banks, breakdown } = await fetchSpaSourceData(appKey);
+            const { banks, positions, breakdown } = await fetchSpaSourceData(appKey);
             setSourceBanks(banks);
-            setPaymentRows(breakdown.monthlyPayments);
-            setRevenueRows(breakdown.monthlyRevenues);
-            setInitialPaymentRows(breakdown.monthlyPayments.map((row) => ({ ...row })));
-            setInitialRevenueRows(
-                breakdown.monthlyRevenues.map((row) => ({
-                    ...row,
-                    bankContributions: row.bankContributions?.map((c) => ({ ...c })),
-                })),
+            setSourcePositions(positions);
+
+            const paymentsMissing = breakdown.monthlyPayments.length === 0;
+            const revenuesMissing = breakdown.monthlyRevenues.length === 0;
+            const paymentRowsNext = paymentsMissing
+                ? buildManualPaymentRows()
+                : breakdown.monthlyPayments;
+            const revenueSeed = revenuesMissing
+                ? buildManualRevenueRows()
+                : {
+                      rows: breakdown.monthlyRevenues,
+                      monthsUsedForAverage: breakdown.monthsUsedForAverage,
+                  };
+
+            setUsingManualPayments(paymentsMissing);
+            setUsingManualRevenues(revenuesMissing);
+            setPaymentRows(paymentRowsNext);
+            setRevenueRows(revenueSeed.rows);
+            // Initial snapshots stay empty when manual so scrubber sync skips no-op writes.
+            setInitialPaymentRows(
+                paymentsMissing
+                    ? []
+                    : breakdown.monthlyPayments.map((row) => ({ ...row })),
             );
-            setMonthsUsedForAverage(breakdown.monthsUsedForAverage);
+            setInitialRevenueRows(
+                revenuesMissing
+                    ? []
+                    : breakdown.monthlyRevenues.map((row) => ({
+                          ...row,
+                          bankContributions: row.bankContributions?.map((c) => ({ ...c })),
+                      })),
+            );
+            setMonthsUsedForAverage(revenueSeed.monthsUsedForAverage);
             const nextPaymentInputs: Record<string, string> = {};
-            breakdown.monthlyPayments.forEach((row, index) => {
+            paymentRowsNext.forEach((row, index) => {
                 nextPaymentInputs[paymentRowKey(row, index)] = formatMoneyInputValue(row.amount);
             });
             const nextRevenueInputs: Record<string, string> = {};
-            breakdown.monthlyRevenues.forEach((row) => {
+            revenueSeed.rows.forEach((row) => {
                 nextRevenueInputs[row.month] = formatMoneyInputValue(row.netCredit);
             });
             setPaymentInputs(nextPaymentInputs);
@@ -138,6 +220,10 @@ export function SpaCalculationModal({
             setLoadError("Failed to load bank analysis and positions.");
             setPaymentRows([]);
             setRevenueRows([]);
+            setSourceBanks([]);
+            setSourcePositions([]);
+            setUsingManualPayments(false);
+            setUsingManualRevenues(false);
         } finally {
             setLoading(false);
         }
@@ -159,11 +245,18 @@ export function SpaCalculationModal({
 
     const currentRevenueRows = useMemo(
         () =>
-            revenueRows.map((row) => ({
-                ...row,
-                netCredit: parseInputMoney(revenueInputs[row.month] ?? ""),
-            })),
-        [revenueRows, revenueInputs],
+            revenueRows.map((row) => {
+                const netCredit = parseInputMoney(revenueInputs[row.month] ?? "");
+                return {
+                    ...row,
+                    netCredit,
+                    // Manual placeholders: only months with entered credits join the SPA average.
+                    includedInSpaAverage: usingManualRevenues
+                        ? netCredit > 0
+                        : row.includedInSpaAverage,
+                };
+            }),
+        [revenueRows, revenueInputs, usingManualRevenues],
     );
 
     const breakdown = useMemo(
@@ -189,11 +282,14 @@ export function SpaCalculationModal({
             toast.warn("Application id is required.");
             return;
         }
+        if (syncing || saving) return;
+        setSyncing(true);
         try {
             await persistSpaEditsToScrubber({
                 dispatch,
                 applicationUuid: appKey,
                 banks: sourceBanks,
+                positions: sourcePositions,
                 initialPayments: initialPaymentRows,
                 currentPayments: currentPaymentRows,
                 initialRevenues: initialRevenueRows,
@@ -202,6 +298,8 @@ export function SpaCalculationModal({
             await onApply(breakdown.spa);
         } catch {
             toast.error("Failed to save SPA and scrubber values.");
+        } finally {
+            setSyncing(false);
         }
     }, [
         appKey,
@@ -212,7 +310,10 @@ export function SpaCalculationModal({
         initialPaymentRows,
         initialRevenueRows,
         onApply,
+        saving,
         sourceBanks,
+        sourcePositions,
+        syncing,
     ]);
 
     return (
@@ -243,152 +344,168 @@ export function SpaCalculationModal({
                         <>
                             <section className="space-y-2">
                                 <h3 className={SECTION_LABEL_CLASS}>Repayments</h3>
-                                {paymentRows.length === 0 ? (
-                                    <p className="text-xs italic text-slate-500">
-                                        No active position total repayments found in scrubbing.
+                                {usingManualPayments ? (
+                                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                                        No active position repayments found in scrubbing — enter
+                                        the total repayment amount below.
                                     </p>
-                                ) : (
-                                    <div className="overflow-hidden rounded-md border border-slate-200 dark:border-slate-700">
-                                        <table className="w-full text-sm">
-                                            <thead>
-                                                <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
-                                                    <th className="px-3 py-2 font-semibold">Source</th>
-                                                    <th className="px-3 py-2 text-right font-semibold">
-                                                        Repayment
-                                                    </th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {paymentRows.map((row, index) => {
-                                                    const key = paymentRowKey(row, index);
-                                                    return (
-                                                        <tr
-                                                            key={key}
-                                                            className="border-t border-slate-100 dark:border-slate-800"
-                                                        >
-                                                            <td className="px-3 py-2 text-slate-700 dark:text-slate-200">
-                                                                {row.label}
-                                                            </td>
-                                                            <td className="px-3 py-2">
-                                                                <Input
-                                                                    type="text"
-                                                                    inputMode="decimal"
-                                                                    className={MONEY_INPUT_CLASS}
-                                                                    value={paymentInputs[key] ?? ""}
-                                                                    onChange={(e) => {
-                                                                        setPaymentInputs((prev) => ({
-                                                                            ...prev,
-                                                                            [key]: e.target.value,
-                                                                        }));
-                                                                    }}
-                                                                    onBlur={() => {
-                                                                        const amount = parseInputMoney(
-                                                                            paymentInputs[key] ?? "",
-                                                                        );
-                                                                        setPaymentInputs((prev) => ({
-                                                                            ...prev,
-                                                                            [key]: formatMoneyInputValue(amount),
-                                                                        }));
-                                                                    }}
-                                                                />
-                                                            </td>
-                                                        </tr>
-                                                    );
-                                                })}
-                                                <tr className="border-t border-slate-200 bg-slate-50/80 dark:border-slate-700 dark:bg-slate-900/40">
-                                                    <td className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-200">
-                                                        Total monthly repayments
-                                                    </td>
-                                                    <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-                                                        {formatCurrencyFull(breakdown.totalMonthlyPayments)}
-                                                    </td>
-                                                </tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
-                            </section>
-
-                            <section className="space-y-2">
-                                <h3 className={SECTION_LABEL_CLASS}>
-                                    Monthly revenue (credits)
-                                </h3>
-                                {revenueRows.length === 0 ? (
-                                    <p className="text-xs italic text-slate-500">
-                                        No bank analysis months with revenue data found.
-                                    </p>
-                                ) : (
-                                    <div className="overflow-hidden rounded-md border border-slate-200 dark:border-slate-700">
-                                        <table className="w-full text-sm">
-                                            <thead>
-                                                <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
-                                                    <th className="px-3 py-2 font-semibold">Month</th>
-                                                    <th className="px-3 py-2 text-right font-semibold">
-                                                        Credits
-                                                    </th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {revenueRows.map((row) => (
+                                ) : null}
+                                <div className="overflow-hidden rounded-md border border-slate-200 dark:border-slate-700">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
+                                                <th className="px-3 py-2 font-semibold">Source</th>
+                                                <th className="px-3 py-2 text-right font-semibold">
+                                                    Repayment
+                                                </th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {paymentRows.map((row, index) => {
+                                                const key = paymentRowKey(row, index);
+                                                return (
                                                     <tr
-                                                        key={row.month}
-                                                        className={cn(
-                                                            "border-t border-slate-100 dark:border-slate-800",
-                                                            row.includedInSpaAverage &&
-                                                                "bg-[#276D9C]/5 dark:bg-[#276D9C]/10",
-                                                        )}
+                                                        key={key}
+                                                        className="border-t border-slate-100 dark:border-slate-800"
                                                     >
                                                         <td className="px-3 py-2 text-slate-700 dark:text-slate-200">
-                                                            {row.month}
-                                                            {row.includedInSpaAverage ? (
-                                                                <span className="ml-2 text-[10px] font-medium uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
-                                                                    Used in avg
-                                                                </span>
-                                                            ) : null}
+                                                            {row.label}
                                                         </td>
                                                         <td className="px-3 py-2">
                                                             <Input
                                                                 type="text"
                                                                 inputMode="decimal"
                                                                 className={MONEY_INPUT_CLASS}
-                                                                value={revenueInputs[row.month] ?? ""}
+                                                                placeholder="$0.00"
+                                                                value={paymentInputs[key] ?? ""}
                                                                 onChange={(e) => {
-                                                                    setRevenueInputs((prev) => ({
+                                                                    setPaymentInputs((prev) => ({
                                                                         ...prev,
-                                                                        [row.month]: e.target.value,
+                                                                        [key]: e.target.value,
                                                                     }));
                                                                 }}
                                                                 onBlur={() => {
                                                                     const amount = parseInputMoney(
-                                                                        revenueInputs[row.month] ?? "",
+                                                                        paymentInputs[key] ?? "",
                                                                     );
-                                                                    setRevenueInputs((prev) => ({
+                                                                    setPaymentInputs((prev) => ({
                                                                         ...prev,
-                                                                        [row.month]:
-                                                                            formatMoneyInputValue(amount),
+                                                                        [key]: formatMoneyInputValue(
+                                                                            amount,
+                                                                        ),
                                                                     }));
                                                                 }}
                                                             />
                                                         </td>
                                                     </tr>
-                                                ))}
-                                                <tr className="border-t border-slate-200 bg-slate-50/80 dark:border-slate-700 dark:bg-slate-900/40">
-                                                    <td className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-200">
-                                                        Average (last {SPA_AVG_REVENUE_MONTH_WINDOW}{" "}
-                                                        months)
+                                                );
+                                            })}
+                                            <tr className="border-t border-slate-200 bg-slate-50/80 dark:border-slate-700 dark:bg-slate-900/40">
+                                                <td className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-200">
+                                                    Total monthly repayments
+                                                </td>
+                                                <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                                                    {formatCurrencyFull(
+                                                        breakdown.totalMonthlyPayments,
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+
+                            <section className="space-y-2">
+                                <h3 className={SECTION_LABEL_CLASS}>
+                                    Monthly revenue (credits)
+                                </h3>
+                                {usingManualRevenues ? (
+                                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                                        No bank analysis months found — enter monthly credits for
+                                        the last {SPA_AVG_REVENUE_MONTH_WINDOW} months below.
+                                    </p>
+                                ) : null}
+                                <div className="overflow-hidden rounded-md border border-slate-200 dark:border-slate-700">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
+                                                <th className="px-3 py-2 font-semibold">Month</th>
+                                                <th className="px-3 py-2 text-right font-semibold">
+                                                    Credits
+                                                </th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {revenueRows.map((row) => {
+                                                const current = currentRevenueRows.find(
+                                                    (r) => r.month === row.month,
+                                                );
+                                                const includedInAvg =
+                                                    current?.includedInSpaAverage ??
+                                                    row.includedInSpaAverage;
+                                                return (
+                                                <tr
+                                                    key={row.month}
+                                                    className={cn(
+                                                        "border-t border-slate-100 dark:border-slate-800",
+                                                        includedInAvg &&
+                                                            "bg-[#276D9C]/5 dark:bg-[#276D9C]/10",
+                                                    )}
+                                                >
+                                                    <td className="px-3 py-2 text-slate-700 dark:text-slate-200">
+                                                        {row.month}
+                                                        {includedInAvg ? (
+                                                            <span className="ml-2 text-[10px] font-medium uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                                Used in avg
+                                                            </span>
+                                                        ) : null}
                                                     </td>
-                                                    <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-                                                        {breakdown.avgRevenueLast3Months != null
-                                                            ? formatCurrencyFull(
-                                                                  breakdown.avgRevenueLast3Months,
-                                                              )
-                                                            : "—"}
+                                                    <td className="px-3 py-2">
+                                                        <Input
+                                                            type="text"
+                                                            inputMode="decimal"
+                                                            className={MONEY_INPUT_CLASS}
+                                                            placeholder="$0.00"
+                                                            value={revenueInputs[row.month] ?? ""}
+                                                            onChange={(e) => {
+                                                                setRevenueInputs((prev) => ({
+                                                                    ...prev,
+                                                                    [row.month]: e.target.value,
+                                                                }));
+                                                            }}
+                                                            onBlur={() => {
+                                                                const amount = parseInputMoney(
+                                                                    revenueInputs[row.month] ?? "",
+                                                                );
+                                                                setRevenueInputs((prev) => ({
+                                                                    ...prev,
+                                                                    [row.month]:
+                                                                        formatMoneyInputValue(
+                                                                            amount,
+                                                                        ),
+                                                                }));
+                                                            }}
+                                                        />
                                                     </td>
                                                 </tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                )}
+                                                );
+                                            })}
+                                            <tr className="border-t border-slate-200 bg-slate-50/80 dark:border-slate-700 dark:bg-slate-900/40">
+                                                <td className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-200">
+                                                    Average (last {SPA_AVG_REVENUE_MONTH_WINDOW}{" "}
+                                                    months)
+                                                </td>
+                                                <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                                                    {breakdown.avgRevenueLast3Months != null
+                                                        ? formatCurrencyFull(
+                                                              breakdown.avgRevenueLast3Months,
+                                                          )
+                                                        : "—"}
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
                             </section>
 
                             <section className="rounded-md border border-slate-200 bg-slate-50/60 px-3 py-3 dark:border-slate-700 dark:bg-slate-900/40">
@@ -418,7 +535,7 @@ export function SpaCalculationModal({
                         variant="outline"
                         size="sm"
                         onClick={() => onOpenChange(false)}
-                        disabled={saving}
+                        disabled={isBusy}
                     >
                         Cancel
                     </Button>
@@ -426,17 +543,17 @@ export function SpaCalculationModal({
                         type="button"
                         size="sm"
                         className="gap-1.5 bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
-                        disabled={loading || saving || !canCalculate}
+                        disabled={isBusy || !canCalculate}
                         onClick={() => {
                             void handleCalculate();
                         }}
                     >
-                        {saving ? (
+                        {saving || syncing ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                         ) : (
                             <Calculator className="h-3.5 w-3.5" aria-hidden />
                         )}
-                        Calculate &amp; sync
+                        {saving || syncing ? "Saving…" : "Calculate & sync"}
                     </Button>
                 </div>
             </DialogContent>

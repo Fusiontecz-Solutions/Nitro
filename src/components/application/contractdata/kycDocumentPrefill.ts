@@ -85,7 +85,6 @@ const VOIDED_CHECK_BANK_PREFILL_KEYS = [
     "achAuthorizationAccountHolderBankZip",
     "legalName",
     "authorizationClientName",
-    "authorizationClientNamePrint",
     "authorizationApplication",
     "doingBusinessAs",
     "securityDoingBusinessAs",
@@ -295,7 +294,6 @@ function rebuildVoidedCheckContractPrefill(
     if (holderName) {
         set("legalName", holderName);
         set("authorizationClientName", holderName);
-        set("authorizationClientNamePrint", holderName);
         set("authorizationApplication", holderName);
         set("achAuthorizationAccountHolderName", holderName);
         set("achAuthorizationConcentAccountHolderName", holderName);

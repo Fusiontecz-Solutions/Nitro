@@ -605,6 +605,7 @@ function dotKatanAch(): KatanAchAuthorizationAddendumPrefillFields {
         authorizationClientBankName: d,
         authorizationClientBankRouting: d,
         authorizationClientBankAccount: d,
+        authorizationClientSignerName: d,
         authorizationClientNamePrint: d,
         authorizationClientTaxId: d,
         authorizedBusinessPhone: d,
@@ -653,12 +654,19 @@ function buildKatanAchComputed(
     const achOwnerName =
         resolveDisclosureOwnerNamePrefill(c, application) ||
         resolveAchAccountHolderNamePrefill(c, "achAuthorizationAccountHolderName");
+    const achBusinessName =
+        str(c.authorizationClientName) ||
+        resolveDisclosureBusinessNamePrefill(c, application);
+    const achSignerName =
+        str(c.authorizationClientSignerName) ||
+        achOwnerName;
     return buildKatanAchAuthorizationAddendumPrefillFields({
-        authorizationClientName: str(c.authorizationClientName),
+        authorizationClientName: achBusinessName,
         authorizationClientBankName: str(c.authorizationClientBankName),
         authorizationClientBankRouting: str(c.authorizationClientBankRouting),
         authorizationClientBankAccount: str(c.authorizationClientBankAccount),
-        authorizationClientNamePrint: str(c.authorizationClientNamePrint),
+        authorizationClientSignerName: achSignerName,
+        authorizationClientNamePrint: str(c.authorizationClientNamePrint) || achSignerName,
         authorizationClientTaxId: str(c.authorizationClientTaxId),
         authorizedBusinessPhone: str(c.authorizedBusinessPhone),
         achAuthorizationAccountHolderName: achOwnerName,
