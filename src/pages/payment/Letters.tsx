@@ -29,8 +29,6 @@ import { savePaymentMailLogEntry } from "./paymentMailLogStorage";
 import {
   getPaymentTemplates,
   readPaymentTemplatesCache,
-  TEMPLATE_CATEGORY_LABELS,
-  type TemplateCategory,
   type TemplateItem as ApiTemplateItem,
 } from "./paymentTemplateApi";
 import {
@@ -277,6 +275,18 @@ function isPayoffOrZeroBalanceLetter(templateName: string): boolean {
   );
 }
 
+/** Merchant Communications funder filter (Katan vs Alliance letter packs). */
+type LetterFunder = "katan" | "alliance";
+
+function isAllianceTemplate(template: {
+  id?: string;
+  name?: string;
+}): boolean {
+  const id = String(template.id ?? "").toLowerCase();
+  const name = String(template.name ?? "").toLowerCase();
+  return id.includes("alliance") || name.includes("alliance");
+}
+
 function letterTypeLabelForSubject(templateName: string): string {
   const n = templateName.trim().toLowerCase();
   if (n === "zero balance letter" || n.includes("zero balance")) {
@@ -401,7 +411,7 @@ function resolveFundedAmount(
   return 0;
 }
 
-/** Default wire destination shown in payoff letter merge fields (edit per send if needed). */
+/** Default wire destination shown in Katan payoff letter merge fields. */
 const DEFAULT_PAYOFF_WIRE_DETAILS = {
   beneficiary_name: "KATAN CAPITAL LLC",
   bank_name: "OPTIMUM BANK",
@@ -410,6 +420,27 @@ const DEFAULT_PAYOFF_WIRE_DETAILS = {
   routing_number: "067015096",
   account_number: "0210047692",
 } as const;
+
+/** Default Alliance Bridge Capital wire / payment details. */
+const DEFAULT_ALLIANCE_PAYOFF_WIRE_DETAILS = {
+  bank_name: "Optimum Bank",
+  bank_address_line1: "8401 Myland Dr Ste A",
+  bank_city_state_zip: "RICHMOND VA 23294",
+  routing_number: "067015096",
+  account_number: "0110039633",
+} as const;
+
+const DEFAULT_SENDER_NAME = "Admin Team";
+
+function alliancePaymentDefaults(): Record<string, string> {
+  return {
+    payment_company_name: DEFAULT_ALLIANCE_PAYOFF_WIRE_DETAILS.bank_name,
+    payment_address_line1: DEFAULT_ALLIANCE_PAYOFF_WIRE_DETAILS.bank_address_line1,
+    payment_address_line2: DEFAULT_ALLIANCE_PAYOFF_WIRE_DETAILS.bank_city_state_zip,
+    payment_routing_number: DEFAULT_ALLIANCE_PAYOFF_WIRE_DETAILS.routing_number,
+    payment_account_number: DEFAULT_ALLIANCE_PAYOFF_WIRE_DETAILS.account_number,
+  };
+}
 
 function buildDefaultValues(
   application: Application | null | undefined,
@@ -519,8 +550,8 @@ function buildDefaultValues(
     payment_address_line2: DEFAULT_PAYOFF_WIRE_DETAILS.bank_city_state_zip,
     payment_routing_number: DEFAULT_PAYOFF_WIRE_DETAILS.routing_number,
     payment_account_number: DEFAULT_PAYOFF_WIRE_DETAILS.account_number,
-    sender_name: senderName,
-    account_status: "Paid in Full",
+    sender_name: senderName.trim() || DEFAULT_SENDER_NAME,
+    account_status: "Zero Balance",
   };
 }
 
@@ -636,15 +667,7 @@ export default function Letters() {
 
   const templateSource = templates;
 
-  const categories = useMemo(
-    () =>
-      Array.from(
-        new Set(templateSource.map((t) => t.category))
-      ) as TemplateCategory[],
-    [templateSource]
-  );
-
-  const [templateType, setTemplateType] = useState<TemplateCategory>("letter");
+  const [funder, setFunder] = useState<LetterFunder>("katan");
   const [templateId, setTemplateId] = useState<string>("");
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [recipientEmail, setRecipientEmail] = useState("");
@@ -652,10 +675,16 @@ export default function Letters() {
   const [isSending, setIsSending] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
-  const templatesForType = useMemo(
-    () => templateSource.filter((t) => t.category === templateType),
-    [templateSource, templateType]
-  );
+  const templatesForFunder = useMemo(() => {
+    return templateSource.filter((t) => {
+      if (funder === "alliance") return isAllianceTemplate(t);
+      // Katan: payoff letter, zero balance letter, and payoff wire only
+      return (
+        !isAllianceTemplate(t) &&
+        isPayoffOrZeroBalanceLetter(t.name ?? "")
+      );
+    });
+  }, [templateSource, funder]);
 
   const selectedTemplate = useMemo(
     () => templateSource.find((t) => t.id === templateId) ?? null,
@@ -663,11 +692,11 @@ export default function Letters() {
   );
 
   useEffect(() => {
-    const list = templateSource.filter((t) => t.category === templateType);
+    const list = templatesForFunder;
     const nextId =
       list.find((t) => t.id === templateId)?.id ?? list[0]?.id ?? "";
     if (nextId !== templateId) setTemplateId(nextId);
-  }, [templateSource, templateType, templateId]);
+  }, [templatesForFunder, templateId]);
 
   const activeTemplateIdRef = useRef("");
 
@@ -688,6 +717,12 @@ export default function Letters() {
     const next: Record<string, string> = {};
     for (const k of keys) {
       next[k] = defaults[k] ?? "";
+    }
+    if (isAllianceTemplate(selectedTemplate)) {
+      Object.assign(next, alliancePaymentDefaults());
+    }
+    if (!mergeFieldStr(next.sender_name)) {
+      next.sender_name = DEFAULT_SENDER_NAME;
     }
     setFieldValues(next);
     setRecipientEmail(
@@ -714,15 +749,24 @@ export default function Letters() {
   useEffect(() => {
     if (!selectedTemplate) return;
     const keys = templateMergeKeys(selectedTemplate);
+    const alliancePayments = isAllianceTemplate(selectedTemplate)
+      ? alliancePaymentDefaults()
+      : null;
     setFieldValues((prev) => {
       let changed = false;
       const next = { ...prev };
       for (const k of keys) {
-        const defaultVal = mergeFieldStr(defaults[k]);
+        const defaultVal = mergeFieldStr(
+          alliancePayments?.[k] ?? defaults[k],
+        );
         if (!mergeFieldStr(prev[k]) && defaultVal) {
           next[k] = defaultVal;
           changed = true;
         }
+      }
+      if (!mergeFieldStr(next.sender_name)) {
+        next.sender_name = DEFAULT_SENDER_NAME;
+        changed = true;
       }
       return changed ? next : prev;
     });
@@ -784,6 +828,12 @@ export default function Letters() {
     const next: Record<string, string> = {};
     for (const key of keys) {
       next[key] = defaults[key] ?? "";
+    }
+    if (isAllianceTemplate(selectedTemplate)) {
+      Object.assign(next, alliancePaymentDefaults());
+    }
+    if (!mergeFieldStr(next.sender_name)) {
+      next.sender_name = DEFAULT_SENDER_NAME;
     }
     setFieldValues(next);
     setRecipientEmail(
@@ -967,18 +1017,19 @@ export default function Letters() {
             <CardContent className="space-y-7 p-5">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium text-foreground">Communication Type</Label>
+                  <Label className="text-sm font-medium text-foreground">Funder</Label>
                   <Select
-                    value={templateType}
-                    onValueChange={(value: string) => setTemplateType(value as TemplateCategory)}
+                    value={funder}
+                    onValueChange={(value: string) =>
+                      setFunder(value as LetterFunder)
+                    }
                   >
                     <SelectTrigger className="w-full border-border bg-background dark:border-white/10 dark:bg-white/[0.04]">
-                      <SelectValue placeholder="Select type..." />
+                      <SelectValue placeholder="Select funder..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {categories.map((c) => (
-                        <SelectItem key={c} value={c}>{TEMPLATE_CATEGORY_LABELS[c]}</SelectItem>
-                      ))}
+                      <SelectItem value="katan">Katan</SelectItem>
+                      <SelectItem value="alliance">Alliance</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -988,13 +1039,13 @@ export default function Letters() {
                   <Select
                     value={templateId}
                     onValueChange={setTemplateId}
-                    disabled={!templatesForType.length}
+                    disabled={!templatesForFunder.length}
                   >
                     <SelectTrigger className="w-full border-border bg-background dark:border-white/10 dark:bg-white/[0.04]">
                       <SelectValue placeholder="Select template..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {templatesForType.map((t) => (
+                      {templatesForFunder.map((t) => (
                         <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                       ))}
                     </SelectContent>

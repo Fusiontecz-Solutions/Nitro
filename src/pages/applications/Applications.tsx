@@ -19,6 +19,7 @@ import {
   Upload,
   Download,
   TrendingUp,
+  Send,
 } from "lucide-react";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
 import RestoreApplicationToScrubberModal from "@/components/application/RestoreApplicationToScrubberModal";
@@ -146,6 +147,28 @@ import {
 } from "@/lib/contractReinitiation";
 import { formatFinalApprovalSourceLabel } from "@/lib/finalApprovalSource";
 import FinalApprovalSourceBadge from "@/components/application/FinalApprovalSourceBadge";
+import SendLetterModal from "@/pages/letterGenerator/SendLetterModal";
+import {
+  LetterFunderFilterDropdown,
+  LetterKindFilterDropdown,
+  LetterSendStatusFilterDropdown,
+} from "@/pages/letterGenerator/LetterGeneratorFilterDropdowns";
+import {
+  fetchPaymentMailLogsForApplication,
+  type PaymentMailLogEntry,
+} from "@/pages/payment/paymentMailLogStorage";
+import {
+  classifyLetterFunder,
+  classifyLetterKind,
+  formatLetterSendWhen,
+  letterSendStatusBadgeClass,
+  letterSendStatusLabel,
+  matchLetterSendStatusFilter,
+  resolveLetterSendStatus,
+  type LetterFunderFilterValue,
+  type LetterKindFilterValue,
+  type LetterSendStatusFilterValue,
+} from "@/pages/letterGenerator/letterSendStatus";
 
 /** List/table: imported `dealId` when set, otherwise business `applicationId`. */
 function getApplicationDealIdDisplay(app: Application): string {
@@ -182,10 +205,16 @@ function getApplicationsStatCardIcon(title: string) {
   }
 }
 
-const Applications = () => {
+export type ApplicationsProps = {
+  /** Letter generator: same table as Applications; row opens send-letters flow. */
+  mode?: "default" | "letterGenerator";
+};
+
+const Applications = ({ mode = "default" }: ApplicationsProps) => {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
   const location = useLocation();
+  const isLetterGeneratorMode = mode === "letterGenerator";
   const sessionRoleKey = normalizeRoleKey(localStorage.getItem("role") || "");
   const loginData = useSelector((state: RootState) => state.login.data);
   const loginUser = loginData?.user;
@@ -261,6 +290,12 @@ const Applications = () => {
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [underwriterFilter, setUnderwriterFilter] = useState<string>("all");
+  const [letterSendStatusFilter, setLetterSendStatusFilter] =
+    useState<LetterSendStatusFilterValue>("all");
+  const [letterKindFilter, setLetterKindFilter] =
+    useState<LetterKindFilterValue>("all");
+  const [letterFunderFilter, setLetterFunderFilter] =
+    useState<LetterFunderFilterValue>("all");
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
@@ -344,6 +379,15 @@ const Applications = () => {
   const [uwDealPoolPrevStats, setUwDealPoolPrevStats] =
     useState<ApplicationStatsData | null>(null);
   const [viewApplication, setViewApplication] = useState<Application | null>(null);
+  const [sendLetterApplication, setSendLetterApplication] =
+    useState<Application | null>(null);
+  const [letterHistoryApplication, setLetterHistoryApplication] =
+    useState<Application | null>(null);
+  const [viewedLetterLog, setViewedLetterLog] =
+    useState<PaymentMailLogEntry | null>(null);
+  const [mailLogsByAppId, setMailLogsByAppId] = useState<
+    Record<string, PaymentMailLogEntry[]>
+  >({});
   const [isNavigatingToBrowse, setIsNavigatingToBrowse] = useState(false);
   const [listViewMode, setListViewMode] = useState<"list" | "grid">(() => {
     if (typeof window === "undefined") return "list";
@@ -371,6 +415,47 @@ const Applications = () => {
     pagination: apiPagination,
     error,
   } = useSelector((state: RootState) => state.applications);
+
+  useEffect(() => {
+    if (!isLetterGeneratorMode) {
+      setMailLogsByAppId({});
+      return;
+    }
+    const ids = (applications ?? [])
+      .map((app) => app._id?.trim())
+      .filter((id): id is string => Boolean(id));
+    if (ids.length === 0) {
+      setMailLogsByAppId({});
+      return;
+    }
+
+    let cancelled = false;
+    const loadLogs = async () => {
+      const entries = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const logs = await fetchPaymentMailLogsForApplication(id);
+            return [id, logs] as const;
+          } catch {
+            return [id, [] as PaymentMailLogEntry[]] as const;
+          }
+        }),
+      );
+      if (!cancelled) {
+        setMailLogsByAppId(Object.fromEntries(entries));
+      }
+    };
+
+    void loadLogs();
+    const onUpdated = () => {
+      void loadLogs();
+    };
+    window.addEventListener("payment-mail-log-updated", onUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("payment-mail-log-updated", onUpdated);
+    };
+  }, [isLetterGeneratorMode, applications]);
 
   const { data: statsData } = useSelector(
     (state: RootState) => state.applicationStats,
@@ -608,6 +693,10 @@ const Applications = () => {
 
   const handleNavigateToApplication = useCallback(
     (app: Application, options?: { tab?: string }) => {
+      if (isLetterGeneratorMode) {
+        setSendLetterApplication(app);
+        return;
+      }
       const role = (localStorage.getItem("role") || "").toUpperCase();
       const usePipelineTabs =
         role === "OPERATIONS" ||
@@ -644,7 +733,7 @@ const Applications = () => {
         state: { applicationPreview: app },
       });
     },
-    [dashboardStateFilter, navigate],
+    [dashboardStateFilter, isLetterGeneratorMode, navigate],
   );
 
   const handleUwClaimDeal = useCallback(
@@ -724,6 +813,189 @@ const Applications = () => {
 
   // Define columns
   const columns: ColumnDef<Application>[] = useMemo(() => {
+    if (isLetterGeneratorMode) {
+      return [
+        {
+          id: "dealId",
+          size: 120,
+          accessorFn: (row) => getApplicationDealIdDisplay(row),
+          enableSorting: true,
+          header: ({ column }) => (
+            <DataTableSortHeader column={column} label="APPLICATION ID" />
+          ),
+          cell: ({ row }) => (
+            <span className="font-medium text-foreground">
+              {getApplicationDealIdDisplay(row.original)}
+            </span>
+          ),
+        },
+        {
+          id: "businessName",
+          size: 240,
+          accessorFn: (row) => getApplicationBusinessDisplayName(row),
+          enableSorting: true,
+          header: ({ column }) => (
+            <DataTableSortHeader column={column} label="BUSINESS NAME" />
+          ),
+          cell: ({ row }) => (
+            <span
+              className="block truncate text-foreground"
+              title={getApplicationBusinessDisplayName(row.original)}
+            >
+              {getApplicationBusinessDisplayName(row.original)}
+            </span>
+          ),
+        },
+        {
+          id: "approvedAmount",
+          size: 150,
+          accessorFn: (row) => getApplicationApprovedAmount(row),
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              Approved Amount
+            </span>
+          ),
+          cell: ({ row }) => {
+            const approvedAmount = getApplicationApprovedAmount(row.original);
+            if (approvedAmount == null) {
+              return <span className="text-foreground">-</span>;
+            }
+            return (
+              <span className="text-foreground">
+                {formatCurrency(approvedAmount)}
+              </span>
+            );
+          },
+        },
+        {
+          id: "status",
+          size: 150,
+          accessorFn: (row) => getApplicationQueueLabel(row),
+          enableSorting: true,
+          header: ({ column }) => (
+            <DataTableSortHeader column={column} label="Status" />
+          ),
+          cell: ({ row }) => {
+            const queueLabel = getApplicationQueueLabel(row.original);
+            return (
+              <span
+                className={`px-2 py-1 rounded-full text-xs font-medium ${getApplicationQueueBadgeClass(queueLabel)}`}
+              >
+                {queueLabel}
+              </span>
+            );
+          },
+        },
+        {
+          id: "letterSendStatus",
+          size: 160,
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              Send Status
+            </span>
+          ),
+          cell: ({ row }) => {
+            const appId = row.original._id?.trim() ?? "";
+            const latest = mailLogsByAppId[appId]?.[0];
+            if (!latest) {
+              return (
+                <span className="text-xs text-muted-foreground">Not sent</span>
+              );
+            }
+            const status = resolveLetterSendStatus(latest);
+            const statusText = letterSendStatusLabel(status);
+            const kind = classifyLetterKind(latest.templateName);
+            const letterKey =
+              kind === "zbl"
+                ? "Zbl"
+                : kind === "payoff"
+                  ? "PayOff"
+                  : latest.templateName.trim() || "Letter";
+            return (
+              <span
+                className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${letterSendStatusBadgeClass(status)}`}
+                title={`${statusText}, ${latest.templateName}`}
+              >
+                ({statusText}, {letterKey})
+              </span>
+            );
+          },
+          enableSorting: false,
+        },
+        {
+          id: "letterHistory",
+          size: 90,
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              History
+            </span>
+          ),
+          cell: ({ row }) => {
+            const appId = row.original._id?.trim() ?? "";
+            const count = mailLogsByAppId[appId]?.length ?? 0;
+            return (
+              <div
+                className="flex justify-start"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  disabled={count === 0}
+                  onClick={() => setLetterHistoryApplication(row.original)}
+                  className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={
+                    count > 0
+                      ? `View ${count} sent letter${count === 1 ? "" : "s"}`
+                      : "No sent letters"
+                  }
+                  title={
+                    count > 0
+                      ? `View ${count} sent letter${count === 1 ? "" : "s"}`
+                      : "No sent letters"
+                  }
+                >
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current">
+                    <EyeIcon className="h-4 w-4" />
+                  </span>
+                </button>
+              </div>
+            );
+          },
+          enableSorting: false,
+        },
+        {
+          id: "sendLetter",
+          size: 140,
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              Action
+            </span>
+          ),
+          cell: ({ row }) => (
+            <div
+              className="flex justify-start"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <Button
+                type="button"
+                size="sm"
+                variant="success"
+                className="h-8 gap-1.5 cursor-pointer"
+                onClick={() => setSendLetterApplication(row.original)}
+              >
+                <Send className="size-3.5" />
+                Send Letter
+              </Button>
+            </div>
+          ),
+          enableSorting: false,
+          enableHiding: false,
+        },
+      ];
+    }
+
     const selectColumn: ColumnDef<Application> = {
       id: "select",
       size: 48,
@@ -1274,10 +1546,18 @@ const Applications = () => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
+              if (isLetterGeneratorMode) {
+                handleNavigateToApplication(row.original);
+                return;
+              }
               handleOpenApplicationDetails(row.original);
             }}
             className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
-            aria-label="View application in drawer"
+            aria-label={
+              isLetterGeneratorMode
+                ? "Send letters for this application"
+                : "View application in drawer"
+            }
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
               <EyeIcon className="h-4 w-4" />
@@ -1297,7 +1577,10 @@ const Applications = () => {
     getApplicationIsoLabel,
     getApplicationBusinessDisplayName,
     getApplicationQueueLabel,
+    handleNavigateToApplication,
     handleOpenApplicationDetails,
+    isLetterGeneratorMode,
+    mailLogsByAppId,
     expandedProgressRowId,
     handleToggleApplicationProgress,
     showUwDealPoolUi,
@@ -1323,8 +1606,56 @@ const Applications = () => {
     apiPagination?.totalPages ??
     (Math.ceil(totalItems / pagination.pageSize) || 1);
 
+  const letterGeneratorFilteredApplications = useMemo(() => {
+    const rows = applications ?? [];
+    if (!isLetterGeneratorMode) return rows;
+
+    const hasLetterFilters =
+      letterSendStatusFilter !== "all" ||
+      letterKindFilter !== "all" ||
+      letterFunderFilter !== "all";
+    if (!hasLetterFilters) return rows;
+
+    return rows.filter((app) => {
+      const appId = app._id?.trim() ?? "";
+      const latest = appId ? mailLogsByAppId[appId]?.[0] : undefined;
+      if (!latest) return false;
+
+      if (
+        letterSendStatusFilter !== "all" &&
+        !matchLetterSendStatusFilter(
+          resolveLetterSendStatus(latest),
+          letterSendStatusFilter,
+        )
+      ) {
+        return false;
+      }
+
+      if (letterKindFilter !== "all") {
+        if (classifyLetterKind(latest.templateName) !== letterKindFilter) {
+          return false;
+        }
+      }
+
+      if (letterFunderFilter !== "all") {
+        if (classifyLetterFunder(latest.templateName) !== letterFunderFilter) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [
+    applications,
+    isLetterGeneratorMode,
+    letterSendStatusFilter,
+    letterKindFilter,
+    letterFunderFilter,
+    mailLogsByAppId,
+  ]);
+
   const table = useReactTable({
-    data: applications ?? [],
+    data: letterGeneratorFilteredApplications,
     columns,
     pageCount,
     onSortingChange: setSorting,
@@ -1391,9 +1722,10 @@ const Applications = () => {
       searchTerm: debouncedSearchTerm,
       dashboardStateFilter,
       statusFilter,
-      typeFilter,
-      priorityFilter,
-      underwriterFilter: showClaimedByColumn ? underwriterFilter : "all",
+      typeFilter: isLetterGeneratorMode ? "all" : typeFilter,
+      priorityFilter: isLetterGeneratorMode ? "all" : priorityFilter,
+      underwriterFilter:
+        !isLetterGeneratorMode && showClaimedByColumn ? underwriterFilter : "all",
       useDashboardStageFilter: isOperationsDashboardView,
       ...sort,
     });
@@ -1404,6 +1736,7 @@ const Applications = () => {
     priorityFilter,
     underwriterFilter,
     showClaimedByColumn,
+    isLetterGeneratorMode,
     isOperationsDashboardView,
     showUwDealPoolUi,
     showUnderwriterPipelineView,
@@ -1723,6 +2056,10 @@ const Applications = () => {
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+  }, [letterSendStatusFilter, letterKindFilter, letterFunderFilter]);
+
+  useEffect(() => {
+    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
   }, [dashboardStateFilter, statusFilter, underwriterPoolTab]);
 
   useEffect(() => {
@@ -1770,7 +2107,7 @@ const Applications = () => {
   const roleKey = normalizeRoleKey(userRole);
   const isSuperAdmin = roleKey === "SUPER_ADMIN";
   const canCreateNewApplication =
-    roleKey === "AGENT" || isSuperAdmin;
+    !isLetterGeneratorMode && (roleKey === "AGENT" || isSuperAdmin);
   const isUnderwriterRole =
     roleKey === "SCRUBBING" || roleKey === "UNDERWRITER";
   const { resolvedTheme } = useTheme();
@@ -2229,15 +2566,25 @@ const Applications = () => {
           className={`flex items-center justify-between p-6 rounded-lg shadow-[0px_4px_20px_0px_#00000005] ${isDark ? "bg-[#141517]" : "bg-white"
             }`}
         >
-          <h1 className="text-[1.3rem] font-semibold text-foreground uppercase">
-            {showUnderwriterPipelineView && underwriterPipelineFilter
-              ? underwriterPipelineTitle(underwriterPipelineFilter)
-              : showUwDealPoolUi
-              ? sessionRoleKey === "UNDERWRITER"
-                ? "Underwriter applications"
-                : "Scrubbing applications"
-              : "All Applications"}
-          </h1>
+          <div>
+            <h1 className="text-[1.3rem] font-semibold text-foreground uppercase">
+              {isLetterGeneratorMode
+                ? "Letters"
+                : showUnderwriterPipelineView && underwriterPipelineFilter
+                ? underwriterPipelineTitle(underwriterPipelineFilter)
+                : showUwDealPoolUi
+                ? sessionRoleKey === "UNDERWRITER"
+                  ? "Underwriter applications"
+                  : "Scrubbing applications"
+                : "All Applications"}
+            </h1>
+            {isLetterGeneratorMode ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Click Send Letter to open the composer. Send status and history update after each send.
+              </p>
+            ) : null}
+          </div>
+          {!isLetterGeneratorMode ? (
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <input
@@ -2317,11 +2664,12 @@ const Applications = () => {
               </Button>
             )}
           </div>
+          ) : null}
         </div>
       )}
 
       {/* Stats — layout matches commission portal MonthHistoryCommission (CornerSummaryCard) */}
-      {!isOperationsDashboardView && (
+      {!isOperationsDashboardView && !isLetterGeneratorMode && (
         <section
           className={`mt-6 mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 ${statsGridCols} transition-opacity duration-200 ${isNavigatingToBrowse ? "opacity-80 pointer-events-none" : "opacity-100"
             }`}
@@ -2510,31 +2858,59 @@ const Applications = () => {
               }}
             />
           ) : null}
-          <ApplicationTypeFilterDropdown
-            value={typeFilter}
-            onChange={(next) => {
-              setTypeFilter(next);
-              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-            }}
-          />
-          <ApplicationPriorityFilterDropdown
-            value={priorityFilter}
-            onChange={(next) => {
-              setPriorityFilter(next);
-              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-            }}
-          />
-          {showClaimedByColumn ? (
-            <ApplicationClaimUserFilterDropdown
-              allLabel="All underwriters"
-              value={underwriterFilter}
-              options={underwriterFilterOptions}
-              onChange={(next) => {
-                setUnderwriterFilter(next);
-                setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-              }}
-            />
-          ) : null}
+          {isLetterGeneratorMode ? (
+            <>
+              <LetterSendStatusFilterDropdown
+                value={letterSendStatusFilter}
+                onChange={(next) => {
+                  setLetterSendStatusFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              <LetterKindFilterDropdown
+                value={letterKindFilter}
+                onChange={(next) => {
+                  setLetterKindFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              <LetterFunderFilterDropdown
+                value={letterFunderFilter}
+                onChange={(next) => {
+                  setLetterFunderFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <ApplicationTypeFilterDropdown
+                value={typeFilter}
+                onChange={(next) => {
+                  setTypeFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              <ApplicationPriorityFilterDropdown
+                value={priorityFilter}
+                onChange={(next) => {
+                  setPriorityFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              {showClaimedByColumn ? (
+                <ApplicationClaimUserFilterDropdown
+                  allLabel="All underwriters"
+                  value={underwriterFilter}
+                  options={underwriterFilterOptions}
+                  onChange={(next) => {
+                    setUnderwriterFilter(next);
+                    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                  }}
+                />
+              ) : null}
+            </>
+          )}
           <div className="relative min-w-[12rem] flex-1 max-w-xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
@@ -2550,6 +2926,8 @@ const Applications = () => {
           role="group"
           aria-label="Applications display layout"
         >
+          {!isLetterGeneratorMode ? (
+            <>
           <span className="text-xs text-muted-foreground hidden sm:inline">
             View
           </span>
@@ -2579,6 +2957,8 @@ const Applications = () => {
               <span className="text-xs font-medium">Grid</span>
             </Button>
           </div>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -2599,7 +2979,7 @@ const Applications = () => {
             }`}
         >
           <span className="font-semibold text-[1rem] text-foreground font-roboto inline-flex items-center gap-2 uppercase tracking-wide">
-            Applications
+            {isLetterGeneratorMode ? "Send Letters" : "Applications"}
             {isRefreshing ? (
               <Loader2
                 className="size-4 animate-spin text-muted-foreground shrink-0"
@@ -2608,7 +2988,7 @@ const Applications = () => {
             ) : null}
           </span>
           <div className="flex flex-wrap items-center gap-3 ml-auto">
-            {listViewMode === "grid" && (
+            {!isLetterGeneratorMode && listViewMode === "grid" && (
               <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -2627,7 +3007,8 @@ const Applications = () => {
                 <span className="hidden sm:inline">Select page</span>
               </label>
             )}
-            {isRecentlyDeletedView ? (
+            {!isLetterGeneratorMode &&
+              (isRecentlyDeletedView ? (
               <>
                 <Button
                   variant="outline"
@@ -2663,14 +3044,14 @@ const Applications = () => {
                 <Trash2 className="size-3" />
                 Delete
               </Button>
-            )}
+            ))}
           </div>
         </div>
         <div
           className={`p-1 transition-opacity duration-300 ${isRefreshing ? "opacity-85" : "opacity-100"
             }`}
         >
-          {listViewMode === "list" ? (
+          {(listViewMode === "list" || isLetterGeneratorMode) ? (
             <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable] min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
               <DataTableContent
                 table={table}
@@ -2809,9 +3190,19 @@ const Applications = () => {
                         >
                           <button
                             type="button"
-                            onClick={() => void handleOpenApplicationDetails(app)}
+                            onClick={() => {
+                              if (isLetterGeneratorMode) {
+                                handleNavigateToApplication(app);
+                                return;
+                              }
+                              void handleOpenApplicationDetails(app);
+                            }}
                             className="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
-                            aria-label="View application in drawer"
+                            aria-label={
+                              isLetterGeneratorMode
+                                ? "Send letters for this application"
+                                : "View application in drawer"
+                            }
                           >
                             <EyeIcon className="h-4 w-4" />
                           </button>
@@ -3147,6 +3538,178 @@ const Applications = () => {
               Close
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <SendLetterModal
+        open={Boolean(sendLetterApplication)}
+        application={sendLetterApplication}
+        onOpenChange={(open: boolean) => {
+          if (!open) setSendLetterApplication(null);
+        }}
+      />
+
+      <Dialog
+        open={Boolean(letterHistoryApplication)}
+        onOpenChange={(nextOpen: boolean) => {
+          if (!nextOpen) {
+            setLetterHistoryApplication(null);
+            setViewedLetterLog(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="text-left">
+              Sent letters
+              {letterHistoryApplication?.applicationId != null
+                ? ` — APP-${letterHistoryApplication.applicationId}`
+                : ""}
+            </DialogTitle>
+            <DialogDescription className="text-left">
+              {letterHistoryApplication
+                ? `${getApplicationBusinessDisplayName(letterHistoryApplication)} — status, send time, and templates.`
+                : "Previously sent Payoff and Zero Balance letters."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="overflow-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-muted/80 backdrop-blur-sm">
+                <tr className="text-left">
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    When
+                  </th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    Letter
+                  </th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    Status
+                  </th>
+                  <th className="px-3 py-2 font-semibold">Recipient</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    View
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {(letterHistoryApplication?._id
+                  ? mailLogsByAppId[letterHistoryApplication._id] ?? []
+                  : []
+                ).map((log) => {
+                  const status = resolveLetterSendStatus(log);
+                  return (
+                    <tr key={log.id} className="border-t even:bg-muted/30">
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {formatLetterSendWhen(log.at)}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {log.templateName || "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${letterSendStatusBadgeClass(status)}`}
+                        >
+                          {letterSendStatusLabel(status)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 break-all text-muted-foreground">
+                        {log.recipient || "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setViewedLetterLog(log)}
+                          className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
+                          aria-label={`View ${log.templateName || "letter"} template`}
+                          title="View sent template"
+                        >
+                          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current">
+                            <EyeIcon className="h-4 w-4" />
+                          </span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {(letterHistoryApplication?._id
+                  ? mailLogsByAppId[letterHistoryApplication._id] ?? []
+                  : []
+                ).length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-3 py-8 text-center text-muted-foreground"
+                    >
+                      No letters sent yet for this application.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(viewedLetterLog)}
+        onOpenChange={(nextOpen: boolean) => {
+          if (!nextOpen) setViewedLetterLog(null);
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-left">
+              {viewedLetterLog?.templateName || "Sent template"}
+            </DialogTitle>
+            <DialogDescription className="text-left">
+              {viewedLetterLog
+                ? `${letterSendStatusLabel(resolveLetterSendStatus(viewedLetterLog))} · ${formatLetterSendWhen(viewedLetterLog.at)}`
+                : "Preview of the letter that was sent."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Recipient
+              </p>
+              <p className="break-all text-foreground">
+                {viewedLetterLog?.recipient || "—"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Subject
+              </p>
+              <p className="text-foreground">
+                {viewedLetterLog?.subject || "—"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Template
+              </p>
+              <div className="rounded-md border border-border bg-muted/20 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                {viewedLetterLog?.body?.trim() ? (
+                  /<\/?(?:table|html|div|p|pre|br|span|strong|ul|ol|li)\b/i.test(
+                    viewedLetterLog.body,
+                  ) ? (
+                    <div
+                      className="max-h-[52vh] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 break-words font-sans text-slate-900 [&_table]:w-full [&_td]:align-top"
+                      dangerouslySetInnerHTML={{ __html: viewedLetterLog.body }}
+                    />
+                  ) : (
+                    <pre className="max-h-[52vh] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-slate-200 bg-white p-3 font-sans text-slate-900">
+                      {viewedLetterLog.body}
+                    </pre>
+                  )
+                ) : (
+                  <p className="text-muted-foreground">
+                    No template body is stored for this send.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

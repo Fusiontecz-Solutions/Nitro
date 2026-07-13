@@ -11,6 +11,14 @@ import PayOffLetter, {
   PAY_OFF_LETTER_VARIABLES,
 } from "./PayOffLetter";
 import { renderPayOffLetterEmailHtml } from "./payOffLetterEmailHtml";
+import AlliancePayoffLetter, {
+  ALLIANCE_PAYOFF_LETTER_VARIABLES,
+} from "./AlliancePayoffLetter";
+import { renderAlliancePayoffLetterHtml } from "./Allicance_Payoff_Letterhtml";
+import AllianceZeroBalanceLetter, {
+  ALLIANCE_ZERO_BALANCE_LETTER_VARIABLES,
+} from "./AllianceZeroBalanceLetter";
+import { renderAllianceZeroBalanceLetterHtml } from "./Allicance_Zero_Balance_Letterhtml";
 import ZeroBalanceLetter, {
   ZERO_BALANCE_LETTER_VARIABLES,
 } from "./ZeroBalanceLetter";
@@ -50,8 +58,25 @@ const BUILTIN_REACT_DEFINITIONS: TemplateDefinition[] = [
     id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}payoff-letter`,
     name: "Payoff letter",
     category: "letter",
+    description: "Katan Capital payoff letter (purple/cyan brand).",
     variables: PAY_OFF_LETTER_VARIABLES,
     Component: PayOffLetter,
+  },
+  {
+    id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}alliance-payoff-letter`,
+    name: "Alliance payoff letter",
+    category: "letter",
+    description: "Alliance Bridge Capital payoff letter (navy brand).",
+    variables: ALLIANCE_PAYOFF_LETTER_VARIABLES,
+    Component: AlliancePayoffLetter,
+  },
+  {
+    id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}alliance-zero-balance-letter`,
+    name: "Alliance zero balance letter",
+    category: "letter",
+    description: "Alliance Bridge Capital zero balance letter (navy brand).",
+    variables: ALLIANCE_ZERO_BALANCE_LETTER_VARIABLES,
+    Component: AllianceZeroBalanceLetter,
   },
   {
     id: `${BUILTIN_FE_TEMPLATE_ID_PREFIX}zero-balance-letter`,
@@ -133,6 +158,12 @@ export function renderBuiltinReactTemplateHtml(
   }
   if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}payoff-letter`) {
     return renderPayOffLetterEmailHtml(values as TemplateValues);
+  }
+  if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}alliance-payoff-letter`) {
+    return renderAlliancePayoffLetterHtml(values as TemplateValues);
+  }
+  if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}alliance-zero-balance-letter`) {
+    return renderAllianceZeroBalanceLetterHtml(values as TemplateValues);
   }
   if (id === `${BUILTIN_FE_TEMPLATE_ID_PREFIX}application-approval-email`) {
     return renderApplicationApprovalEmailHtml(values as TemplateValues);

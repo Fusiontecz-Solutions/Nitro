@@ -9,7 +9,6 @@ import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApp
 import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY } from "@/constants/operationsDashboardApplications";
 import DashboardPage from "../pages/dashboard/DashboardPage";
 import OperationsDashboard from "../pages/dashboard/OperationsDashboard";
-import ToShowApplication from "../pages/dashboard/ToShowApplication";
 import RootLayout from "../components/layout/RootLayout";
 import LoginPage from "../pages/auth/LoginPage";
 import SignupPage from "../pages/auth/SignupPage";
@@ -229,7 +228,7 @@ const Routes: RouteObject[] = [
             },
             { path: 'applications/browse', element: <ApplicationsBrowsePage /> },
             { path: 'operations-applications', element: <OperationsApplicationsLegacyRedirect /> },
-            { path: 'letter-generator', element: <ToShowApplication variant="letterGenerator" /> },
+            { path: 'letter-generator', element: <Applications mode="letterGenerator" /> },
             { path: 'letter-generator/:letterGeneratorDealId', element: <LetterGeneratorDealById /> },
             { path: 'deals', element: <Deals /> },
             { path: 'deals/create', element: <CreateDeal /> },

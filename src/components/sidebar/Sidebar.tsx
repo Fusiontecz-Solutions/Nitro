@@ -16,6 +16,7 @@ import Article from "@mui/icons-material/Article";
 import CheckCircle from "@mui/icons-material/CheckCircle";
 import Payments from "@mui/icons-material/Payments";
 import Paid from "@mui/icons-material/Paid";
+import Mail from "@mui/icons-material/Mail";
 import AccountBalance from "@mui/icons-material/AccountBalance";
 import Notifications from "@mui/icons-material/Notifications";
 import PieChart from "@mui/icons-material/PieChart";
@@ -465,6 +466,7 @@ const operationsSections: SidebarNavSection[] = [
       { label: "Syndicators", url: "/syndicators/dashboard", icon: SyndicatorsSidebarIcon },
       { label: "Commissions", url: "/commission-portal", icon: BarChart },
       { label: "All Deals", url: "/payments", icon: Payments },
+      { label: "Letters", url: "/letter-generator", icon: Mail },
     ],
   },
   {
@@ -591,6 +593,7 @@ const superAdminSections: SidebarNavSection[] = [
     title: "OPERATIONS",
     items: [
       { label: "All Deals", url: "/payments", icon: Payments },
+      { label: "Letters", url: "/letter-generator", icon: Mail },
       { label: "Commission", url: "/commission-portal", icon: BarChart },
       { label: "Reports", url: "/reports", icon: Description },
     ],

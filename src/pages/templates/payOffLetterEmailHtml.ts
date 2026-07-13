@@ -63,13 +63,6 @@ function pickOrNA(values: TemplateValues, variable: TemplateVariable): string {
  */
 export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
   const letterDate = escapeHtml(pickOrNA(values, v.letter_date));
-  const recipientName = escapeHtml(pickOrNA(values, v.recipient_name));
-  const recipientAddress1 = escapeHtml(
-    pickOrNA(values, v.recipient_address_line1),
-  );
-  const recipientAddress2 = escapeHtml(
-    pickOrNA(values, v.recipient_address_line2),
-  );
   const accountName = escapeHtml(pickOrNA(values, v.account_name));
   const payoffAmount = escapeHtml(pickOrNA(values, v.payoff_amount));
   const goodThroughDate = escapeHtml(pickOrNA(values, v.good_through_date));
@@ -192,10 +185,26 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
               <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
 
                 <tr>
-                  <td align="center" style="padding:0 0 30px 0;">
-                    <h1 style="margin:0;font-family:Georgia,'Times New Roman',Times,serif;font-size:32px;font-weight:bold;line-height:1.2;color:#0ea5e9;letter-spacing:1px;text-transform:uppercase;">
-                      Payoff Letter
+                  <td style="padding:0 0 12px 0;">
+                    <h1 style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:1.4;color:#0ea5e9;letter-spacing:0.5px;text-transform:uppercase;">
+                      To Whom It May Concern
                     </h1>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:0 0 20px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:#4b5563;">
+                    This letter is to confirm that the payoff amount and wire instructions provided below are valid until ${goodThroughDate}.
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="padding:0 0 20px 0;">
+                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+                      <tr>
+                        <td style="border-top:1px solid #e5e7eb;font-size:0;line-height:0;">&nbsp;</td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
 
@@ -206,24 +215,14 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                 </tr>
 
                 <tr>
-                  <td style="padding:0 0 5px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;line-height:1.4;color:#1f2937;">
-                    ${recipientName}
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:0 0 5px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.4;color:#4b5563;">
-                    ${recipientAddress1}
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:0 0 16px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.4;color:#4b5563;">
-                    ${recipientAddress2}
+                  <td style="padding:0 0 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;line-height:1.4;color:#1f2937;">
+                    ${accountName}
                   </td>
                 </tr>
 
                 <tr>
                   <td style="padding:0 0 20px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:bold;color:#1f2937;">
-                    Re: ${accountName}
+                    Subject : Payoff Letter
                   </td>
                 </tr>
 
@@ -238,7 +237,7 @@ export function renderPayOffLetterEmailHtml(values: TemplateValues): string {
                     <table role="presentation" class="info-table" border="0" cellpadding="0" cellspacing="0" width="${INFO_TABLE_WIDTH}" style="width:${INFO_TABLE_WIDTH}px;max-width:100%;border-collapse:collapse;background-color:#ffffff;border:2px solid #0ea5e9;border-radius:8px;overflow:hidden;">
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.account, "&#128179;", iconAccount), "Account Name", accountName, "font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#666666;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.payoff, "$", iconPayoff), "Payoff Amount", payoffAmount, "font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;color:#111111;")}
-                      ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.date, "&#128197;", iconDate), "Good Through Date", goodThroughDate, "font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#666666;")}
+                      ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.date, "&#128197;", iconDate), "Valid Till", goodThroughDate, "font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#666666;")}
                       ${infoRow(iconCell(PAY_OFF_LETTER_EMAIL_ICON_SRC.note, "&#128196;", iconNote), "Note", noteText, "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.4;color:#777777;", false)}
                     </table>
                   </td>

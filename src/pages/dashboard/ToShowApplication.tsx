@@ -102,11 +102,8 @@ function applicationRouteId(application: Application): string {
 const thClass =
   "px-6 py-4 text-left text-[11px] font-semibold text-gray-600 dark:text-muted-foreground uppercase tracking-widest";
 
-/** API spelling for disbursement queue (see `operationsDashboardApplications`). */
-const LETTER_GENERATOR_STATUS: OperationsApplicationsListStatus = "Disbursment";
-
 export type ToShowApplicationProps = {
-  /** `letterGenerator`: fixed Disbursement list; opens `/letter-generator/:uuid` for templates & letters only. */
+  /** `letterGenerator`: all applications; opens `/letter-generator/:uuid` for templates & letters only. */
   variant?: "operations" | "letterGenerator";
 };
 
@@ -137,7 +134,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
 
   const listMode = useMemo((): OperationsListMode => {
     if (variant === "letterGenerator") {
-      return { kind: "stage", status: LETTER_GENERATOR_STATUS };
+      return { kind: "all" };
     }
     const raw = statusParam?.trim() ?? "";
     if (!raw) return { kind: "invalid" };
@@ -158,7 +155,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
 
   const title =
     variant === "letterGenerator"
-      ? "Letter generator"
+      ? "Letters"
       : listMode.kind === "all"
         ? "All applications"
         : listMode.kind === "stage"
@@ -293,7 +290,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
               </h1>
               <p className="text-sm text-gray-700 dark:text-muted-foreground">
                 {variant === "letterGenerator"
-                  ? "Disbursement applications — open one to use templates and letters."
+                  ? "Click an application to send Payoff or Zero Balance letters."
                   : listMode.kind === "all"
                     ? "All applications across pipeline stages."
                     : listMode.kind === "stage"

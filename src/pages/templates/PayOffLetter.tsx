@@ -8,28 +8,11 @@ import { pick } from "./types";
 /** Merge fields surfaced by this template (preserves UI order). */
 export const PAY_OFF_LETTER_VARIABLES: TemplateVariable[] = [
   { key: "letter_date", label: "Letter Date", placeholder: "May 20, 2024" },
-  { key: "recipient_name", label: "Recipient Name", placeholder: "John Doe" },
-  {
-    key: "recipient_address_line1",
-    label: "Recipient Address Line 1",
-    placeholder: "123 Client Street",
-  },
-  {
-    key: "recipient_address_line2",
-    label: "Recipient Address Line 2",
-    placeholder: "City, State, 12345",
-  },
-  {
-    key: "account_number",
-    label: "Account Number",
-    placeholder: "1234567890",
-  },
   {
     key: "account_name",
     label: "Account Name (Business Name)",
     placeholder: "Acme LLC",
   },
-  { key: "salutation_name", label: "Salutation Name", placeholder: "John Doe" },
   { key: "payoff_amount", label: "Payoff Amount", placeholder: "$5,678.90" },
   {
     key: "good_through_date",
@@ -61,7 +44,7 @@ export const PAY_OFF_LETTER_VARIABLES: TemplateVariable[] = [
     label: "Payment Account Number",
     placeholder: "0210047692",
   },
-  { key: "sender_name", label: "Sender Name", placeholder: "Your Name" },
+  { key: "sender_name", label: "Sender Name", placeholder: "Admin Team", defaultValue: "Admin Team" },
 ];
 
 /** Fixed line under the sender name in payoff letter preview + email (not a merge field). */
@@ -77,9 +60,6 @@ const v = PAY_OFF_LETTER_VARIABLES.reduce<Record<string, TemplateVariable>>(
 
 export default function PayOffLetter({ values }: TemplateComponentProps) {
   const letterDate = pick(values, v.letter_date);
-  const recipientName = pick(values, v.recipient_name);
-  const recipientAddress1 = pick(values, v.recipient_address_line1);
-  const recipientAddress2 = pick(values, v.recipient_address_line2);
   const accountName = pick(values, v.account_name);
   const payoffAmount = pick(values, v.payoff_amount);
   const goodThroughDate = pick(values, v.good_through_date);
@@ -122,11 +102,6 @@ export default function PayOffLetter({ values }: TemplateComponentProps) {
               Payoff Letter
             </h1>
             <p style={{ margin: "0 0 16px", color: "#6b7280" }}>{letterDate}</p>
-            <p style={{ margin: "0 0 5px", fontWeight: "bold", color: "#1f2937" }}>
-              {recipientName}
-            </p>
-            <p style={{ margin: "0 0 5px" }}>{recipientAddress1}</p>
-            <p style={{ margin: "0 0 16px" }}>{recipientAddress2}</p>
             <p style={{ margin: "0 0 20px", fontWeight: "bold", color: "#1f2937" }}>
               Re: {accountName}
             </p>
