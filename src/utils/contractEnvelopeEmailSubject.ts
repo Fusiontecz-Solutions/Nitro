@@ -28,7 +28,7 @@ export function formatContractOfferAmountForSubject(
   }).format(amount);
 }
 
-/** Contract envelope subject / PDF name: {FunderName} : BusinessName - $12,345.67 */
+/** Contract envelope subject / PDF name: {FunderName}: BusinessName $12,345.67 */
 export function buildContractEnvelopeEmailSubject(
   businessName: string,
   offerAmount?: number | string | null,
@@ -38,7 +38,16 @@ export function buildContractEnvelopeEmailSubject(
   const amount = formatContractOfferAmountForSubject(offerAmount);
   const lender =
     String(funderName || '').trim() || CONTRACT_ENVELOPE_LENDER_NAME;
-  return `${lender} : ${business} - ${amount}`;
+  return `${lender}: ${business} ${amount}`;
+}
+
+/** ACH / standalone — same subject pattern as contract. */
+export function buildAchFormEnvelopeEmailSubject(
+  businessName: string,
+  offerAmount?: number | string | null,
+  funderName?: string | null,
+): string {
+  return buildContractEnvelopeEmailSubject(businessName, offerAmount, funderName);
 }
 
 export function buildContractEnvelopePdfFilename(subject: string): string {

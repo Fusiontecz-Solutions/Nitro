@@ -1,8 +1,10 @@
 import prisma from '../../config/prismaClient';
 import {
   DOCUMENT_LAYOUT_KEYS,
+  getDocumentLayout,
   type DocumentLayoutKey,
 } from './layouts/document-layout.registry';
+import { downloadLegacyDocuSignTemplatePdfBase64 } from './utils/download-legacy-docusign-template-pdf';
 
 export type PlatformDocumentDefinition = {
   layoutKey: DocumentLayoutKey;
@@ -57,6 +59,16 @@ export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [
 
 const LAYOUT_KEY_SET = new Set<string>(Object.values(DOCUMENT_LAYOUT_KEYS));
 
+/** When a layout key has no uploaded PDF, also try these sibling keys' uploads. */
+const PDF_URL_ALIASES: Partial<Record<DocumentLayoutKey, DocumentLayoutKey[]>> = {
+  [DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone]: [
+    DOCUMENT_LAYOUT_KEYS.achAuthorization,
+  ],
+  [DOCUMENT_LAYOUT_KEYS.achAuthorization]: [
+    DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone,
+  ],
+};
+
 export function isDocumentLayoutKey(value: string): value is DocumentLayoutKey {
   return LAYOUT_KEY_SET.has(String(value || '').trim());
 }
@@ -94,7 +106,14 @@ export async function findBoldSignTemplatePdfUrlByExactLayoutKey(
 export async function findBoldSignTemplatePdfUrlForLayout(
   layoutKey: DocumentLayoutKey,
 ): Promise<string | null> {
-  return findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
+  const exact = await findBoldSignTemplatePdfUrlByExactLayoutKey(layoutKey);
+  if (exact) return exact;
+
+  for (const alias of PDF_URL_ALIASES[layoutKey] ?? []) {
+    const aliased = await findBoldSignTemplatePdfUrlByExactLayoutKey(alias);
+    if (aliased) return aliased;
+  }
+  return null;
 }
 
 async function fetchRemotePdfAsBase64(url: string, documentName: string): Promise<string> {
@@ -105,6 +124,23 @@ async function fetchRemotePdfAsBase64(url: string, documentName: string): Promis
   return Buffer.from(await res.arrayBuffer()).toString('base64');
 }
 
+async function loadDefaultPdfFromLegacyDocuSign(
+  layoutKey: DocumentLayoutKey,
+): Promise<string | null> {
+  const layout = getDocumentLayout(layoutKey);
+  const legacyId = String(layout.legacyDocuSignTemplateId || '').trim();
+  if (!legacyId) return null;
+  try {
+    return await downloadLegacyDocuSignTemplatePdfBase64(legacyId, layout.name);
+  } catch (err) {
+    console.warn(
+      `[platform-docs] Default DocuSign PDF failed for "${layoutKey}" (${legacyId}):`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 export async function resolvePlatformDocumentPdfUrl(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
@@ -113,21 +149,35 @@ export async function resolvePlatformDocumentPdfUrl(
   if (fromDb) return fromDb;
 
   throw new Error(
-    `Missing PDF URL for "${def.name}". Upload the PDF to Cloudinary and set pdfUrl on the BoldSignTemplate row with layoutKey "${layoutKey}".`,
+    `Missing PDF URL for "${def.name}". Upload the PDF to Cloudinary and set pdfUrl on the BoldSignTemplate row with layoutKey "${layoutKey}", or rely on the default DocuSign template PDF via loadPlatformDocumentPdfBase64.`,
   );
 }
 
+/**
+ * Load platform document PDF bytes.
+ * Priority: uploaded BoldSignTemplate.pdfUrl → sibling layout upload → default DocuSign template PDF.
+ * Uploaded PDFs always win; DocuSign defaults are only used when nothing is uploaded.
+ */
 export async function loadPlatformDocumentPdfBase64(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
   const def = PLATFORM_DOCUMENTS[layoutKey];
   const fromDb = await findBoldSignTemplatePdfUrlForLayout(layoutKey);
-  if (!fromDb) {
-    throw new Error(
-      `No PDF configured for "${def.name}". Upload to Cloudinary and set BoldSignTemplate.pdfUrl with layoutKey "${layoutKey}".`,
-    );
+  if (fromDb) {
+    return fetchRemotePdfAsBase64(fromDb, def.name);
   }
-  return fetchRemotePdfAsBase64(fromDb, def.name);
+
+  const fromLegacy = await loadDefaultPdfFromLegacyDocuSign(layoutKey);
+  if (fromLegacy) return fromLegacy;
+
+  for (const alias of PDF_URL_ALIASES[layoutKey] ?? []) {
+    const aliasLegacy = await loadDefaultPdfFromLegacyDocuSign(alias);
+    if (aliasLegacy) return aliasLegacy;
+  }
+
+  throw new Error(
+    `No PDF configured for "${def.name}". Upload to Cloudinary (BoldSignTemplate.pdfUrl, layoutKey "${layoutKey}") or ensure the default DocuSign template is available.`,
+  );
 }
 
 export function normalizeSupplementalLayoutKeys(refs: string[]): DocumentLayoutKey[] {

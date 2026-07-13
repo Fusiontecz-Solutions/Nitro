@@ -110,21 +110,23 @@ export async function loadMainContractLayoutPackage(
     const coordinateKey = await resolveCoordinateLayoutKeyForFunderPdf(key, contractState);
     const layout = getDocumentLayout(coordinateKey);
     const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(key);
-    if (!pdfUrl) {
-      throw new Error('No contract PDF uploaded for this funder.');
+    if (pdfUrl) {
+      const documentBase64 = await fetchPdfAsBase64(pdfUrl);
+      const row = await prisma.boldSignTemplate.findFirst({
+        where: { OR: [{ layoutKey: key }, { templateId: key }] },
+        orderBy: { createdAt: 'desc' },
+        select: { name: true },
+      });
+      return {
+        ...layout,
+        key,
+        name: row?.name || layout.name,
+        documentBase64,
+      };
     }
-    const documentBase64 = await fetchPdfAsBase64(pdfUrl);
-    const row = await prisma.boldSignTemplate.findFirst({
-      where: { OR: [{ layoutKey: key }, { templateId: key }] },
-      orderBy: { createdAt: 'desc' },
-      select: { name: true },
-    });
-    return {
-      ...layout,
-      key,
-      name: row?.name || layout.name,
-      documentBase64,
-    };
+    // No funder upload — fall back to platform default contract PDF.
+    const documentBase64 = await loadPlatformDocumentPdfBase64(coordinateKey);
+    return { ...layout, key, name: layout.name, documentBase64 };
   }
 
   const platformKey = isDocumentLayoutKey(key) ? key : DOCUMENT_LAYOUT_KEYS.contract;
@@ -132,22 +134,21 @@ export async function loadMainContractLayoutPackage(
   try {
     const documentBase64 = await loadPlatformDocumentPdfBase64(platformKey);
     return { ...layout, documentBase64 };
-  } catch {
-    if (platformKey !== DOCUMENT_LAYOUT_KEYS.contract) {
-      throw new Error(
-        `No PDF configured for "${layout.name}". Upload to Cloudinary and set BoldSignTemplate.pdfUrl with layoutKey "${platformKey}".`,
-      );
+  } catch (primaryErr) {
+    if (platformKey === DOCUMENT_LAYOUT_KEYS.contract) {
+      const latest = await prisma.contractTemplate.findFirst({
+        orderBy: { createdAt: 'desc' },
+      });
+      if (latest?.url) {
+        const documentBase64 = await fetchPdfAsBase64(latest.url);
+        return { ...layout, documentBase64 };
+      }
     }
-    const latest = await prisma.contractTemplate.findFirst({
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!latest?.url) {
-      throw new Error(
-        `No contract PDF configured. Upload a contract PDF or set BoldSignTemplate.pdfUrl for layoutKey "${platformKey}".`,
-      );
-    }
-    const documentBase64 = await fetchPdfAsBase64(latest.url);
-    return { ...layout, documentBase64 };
+    throw primaryErr instanceof Error
+      ? primaryErr
+      : new Error(
+          `No PDF configured for "${layout.name}". Upload to Cloudinary or ensure the default DocuSign template is available.`,
+        );
   }
 }
 
@@ -220,23 +221,26 @@ export async function loadSupplementalLayoutPackage(
     if (coordinateKey) {
       const layout = getDocumentLayout(coordinateKey);
       const pdfUrl = await findBoldSignTemplatePdfUrlByExactLayoutKey(sourceRef);
-      if (!pdfUrl) {
-        throw new Error(
-          `No PDF configured for funder document "${sourceRef}". Upload the addendum/disclosure PDF for this funder.`,
-        );
+      if (pdfUrl) {
+        const documentBase64 = await fetchPdfAsBase64(pdfUrl, sourceRef);
+        const row = await prisma.boldSignTemplate.findFirst({
+          where: { OR: [{ layoutKey: sourceRef }, { templateId: sourceRef }] },
+          orderBy: { createdAt: 'desc' },
+          select: { name: true, type: true },
+        });
+        return {
+          ...layout,
+          key: sourceRef,
+          name: String(row?.name || '').trim() || layout.name,
+          documentBase64,
+        };
       }
-      const documentBase64 = await fetchPdfAsBase64(pdfUrl, sourceRef);
-      const row = await prisma.boldSignTemplate.findFirst({
-        where: { OR: [{ layoutKey: sourceRef }, { templateId: sourceRef }] },
-        orderBy: { createdAt: 'desc' },
-        select: { name: true, type: true },
-      });
+      // No funder upload — fall back to platform default PDF (uploaded or DocuSign legacy).
+      const documentBase64 = await loadPlatformDocumentPdfBase64(coordinateKey);
       return {
         ...layout,
         key: sourceRef,
-        name:
-          String(row?.name || '').trim() ||
-          layout.name,
+        name: layout.name,
         documentBase64,
       };
     }
@@ -249,13 +253,16 @@ export async function loadSupplementalLayoutPackage(
   if (!layout) {
     throw new Error(`Supplemental document "${resolved.name || ref}" has no layout.`);
   }
-  const pdfUrl = String(resolved.pdfUrl || '').trim();
-  if (!pdfUrl || pdfUrl.startsWith('platform://')) {
-    throw new Error(
-      `Supplemental document "${resolved.name || ref}" is missing a Cloudinary pdfUrl.`,
-    );
+  let documentBase64 = String(resolved.documentBase64 || '').trim();
+  if (!documentBase64) {
+    const pdfUrl = String(resolved.pdfUrl || '').trim();
+    if (!pdfUrl || pdfUrl.startsWith('platform://')) {
+      throw new Error(
+        `Supplemental document "${resolved.name || ref}" is missing a Cloudinary pdfUrl.`,
+      );
+    }
+    documentBase64 = await fetchPdfAsBase64(pdfUrl, resolved.name || ref);
   }
-  const documentBase64 = await fetchPdfAsBase64(pdfUrl, resolved.name || ref);
   if (!documentBase64) {
     throw new Error(`Supplemental document "${resolved.name || ref}" PDF could not be loaded.`);
   }

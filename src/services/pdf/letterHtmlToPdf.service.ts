@@ -20,15 +20,24 @@ const CRM_EMAIL_WIDTH_PX = 600;
 
 type PdfHtmlKind = 'crm-letter' | 'crm-email' | 'compliance-report' | 'fragment';
 
+/** Tight Letter margins for multi-page compliance reports (not content-height pages). */
+const COMPLIANCE_PDF_MARGIN = {
+  top: '0.35in',
+  right: '0.35in',
+  bottom: '0.4in',
+  left: '0.35in',
+} as const;
+
 const COMPLIANCE_PDF_PRINT_STYLE = `<style id="compliance-pdf-print-inject">
   @page {
     size: letter;
-    margin: 0;
+    margin: 0.35in 0.35in 0.4in 0.35in;
     background: #ffffff;
   }
   html, body {
     margin: 0 !important;
     padding: 0 !important;
+    width: 100%;
     background: #ffffff !important;
     overflow-x: hidden;
     -webkit-print-color-adjust: exact !important;
@@ -37,6 +46,10 @@ const COMPLIANCE_PDF_PRINT_STYLE = `<style id="compliance-pdf-print-inject">
   }
   *, *::before, *::after {
     box-sizing: border-box;
+  }
+  .compliance-pdf-root {
+    width: 100%;
+    background: #ffffff;
   }
   table {
     border-collapse: collapse;
@@ -174,12 +187,20 @@ function prepareHtmlForPdf(html: string, kind: PdfHtmlKind): string {
         return buildEmailPdfDocument(inner);
     }
     if (kind === 'compliance-report') {
-        return injectPrintStylesIntoFullDocument(
-            looksLikeFullHtmlDocument(trimmed)
-                ? trimmed
-                : `<!DOCTYPE html><html><body>${trimmed}</body></html>`,
-            COMPLIANCE_PDF_PRINT_STYLE,
-        );
+        const inner = looksLikeFullHtmlDocument(trimmed)
+            ? extractBodyInnerHtml(trimmed)
+            : trimmed;
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+${COMPLIANCE_PDF_PRINT_STYLE}
+</head>
+<body>
+  <div class="compliance-pdf-root">${inner}</div>
+</body>
+</html>`;
     }
     return injectPrintStylesIntoFullDocument(
         looksLikeFullHtmlDocument(trimmed)
@@ -248,32 +269,65 @@ async function waitForNextPaint(page: Page): Promise<void> {
 
 async function measureContentSize(page: Page): Promise<{ width: number; height: number }> {
     return page.evaluate(() => {
+        type Measurable = {
+            scrollWidth: number;
+            scrollHeight: number;
+            offsetWidth?: number;
+            offsetHeight?: number;
+            getBoundingClientRect?: () => { width: number; height: number };
+        };
         const g = globalThis as unknown as {
             document: {
-                documentElement: { scrollWidth: number; clientWidth: number; scrollHeight: number; clientHeight: number };
-                body: {
-                    scrollWidth: number;
-                    offsetWidth: number;
-                    scrollHeight: number;
-                    offsetHeight: number;
-                } | null;
+                documentElement: Measurable;
+                body: Measurable | null;
+                querySelector: (sel: string) => Measurable | null;
             };
         };
         const doc = g.document.documentElement;
         const body = g.document.body;
+        const root =
+            g.document.querySelector('.compliance-pdf-root') ||
+            g.document.querySelector('.email-pdf-stage') ||
+            body;
+        const rootRect = root?.getBoundingClientRect?.();
+        // Do not use clientHeight — that is the viewport (Letter tall) and pads short
+        // content with blank space / stretches tall PDFs incorrectly.
         const width = Math.ceil(
-            Math.max(body?.scrollWidth ?? 0, body?.offsetWidth ?? 0, doc?.scrollWidth ?? 0, doc?.clientWidth ?? 0),
+            Math.max(
+                rootRect?.width ?? 0,
+                root?.scrollWidth ?? 0,
+                body?.scrollWidth ?? 0,
+                body?.offsetWidth ?? 0,
+                doc?.scrollWidth ?? 0,
+            ),
         );
         const height = Math.ceil(
             Math.max(
+                rootRect?.height ?? 0,
+                root?.scrollHeight ?? 0,
                 body?.scrollHeight ?? 0,
                 body?.offsetHeight ?? 0,
                 doc?.scrollHeight ?? 0,
-                doc?.clientHeight ?? 0,
             ),
         );
         return { width, height };
     });
+}
+
+async function renderComplianceReportPdf(page: Page): Promise<Buffer> {
+    const pdfUint8 = await page.pdf({
+        format: 'letter',
+        printBackground: true,
+        preferCSSPageSize: true,
+        margin: { ...COMPLIANCE_PDF_MARGIN },
+        omitBackground: false,
+        tagged: false,
+    });
+    const buf = Buffer.from(pdfUint8);
+    if (!buf.length) {
+        throw new Error('Puppeteer returned an empty PDF buffer');
+    }
+    return buf;
 }
 
 /**
@@ -373,12 +427,13 @@ export async function renderLetterHtmlToPdfBuffer(htmlBody: string): Promise<Buf
         });
 
         const page = await browser.newPage();
-        await page.emulateMediaType('screen');
+        // Compliance reports paginate like print; letters keep screen layout for WYSIWYG.
+        await page.emulateMediaType(kind === 'compliance-report' ? 'print' : 'screen');
 
         await page.setViewport({
             width: pageWidthPx,
             height: 1056,
-            deviceScaleFactor: 2,
+            deviceScaleFactor: kind === 'compliance-report' ? 1 : 2,
         });
 
         await page.setContent(documentHtml, {
@@ -389,11 +444,17 @@ export async function renderLetterHtmlToPdfBuffer(htmlBody: string): Promise<Buf
         await waitForFonts(page);
         await waitForNextPaint(page);
 
-        const measured = await measureContentSize(page);
-        await scaleContentToFitPageIfNeeded(page, pageWidthPx, measured.height);
-        await waitForNextPaint(page);
-
-        const buf = await renderPdfFromMeasuredContent(page, pageWidthPx);
+        let buf: Buffer;
+        if (kind === 'compliance-report') {
+            // Fixed Letter pages — content-height measurement was leaving large blank
+            // bands at the top/bottom when viewed in standard PDF readers.
+            buf = await renderComplianceReportPdf(page);
+        } else {
+            const measured = await measureContentSize(page);
+            await scaleContentToFitPageIfNeeded(page, pageWidthPx, measured.height);
+            await waitForNextPaint(page);
+            buf = await renderPdfFromMeasuredContent(page, pageWidthPx);
+        }
 
         console.info(
             `${LOG_PREFIX} kind=${kind} pdf bytes=${buf.length} elapsedMs=${Date.now() - started}`,

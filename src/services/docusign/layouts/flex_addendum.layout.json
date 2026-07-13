@@ -23,7 +23,7 @@
     "addendum_date",
     "agreement_date",
     "client_legal_name",
-    "client_name",
+    "addendum_client_name",
     "merchant2_name",
     "installment_day_1",
     "installment_day_2",
@@ -88,14 +88,14 @@
     {
       "id": "p5",
       "type": "text",
-      "variable": "client_name",
+      "variable": "addendum_client_name",
       "documentId": "1",
       "pageNumber": "2",
       "x": "106",
       "y": "403",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "client_name"
+      "sourceTabLabel": "addendum_client_name"
     },
     {
       "id": "p6",

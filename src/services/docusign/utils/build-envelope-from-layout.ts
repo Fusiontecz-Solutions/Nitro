@@ -112,10 +112,19 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   ],
   client_name: [
     'client_name_by',
+    'addendum_client_name',
     'guaranty_client_name',
     'owner1_guarantor_name',
     'guaranty_owner1_name',
     'guaranty_guarantor1_name',
+    'security_guarantor',
+  ],
+  addendum_client_name: [
+    'client_name',
+    'owner1_guarantor_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'guaranty_client_name',
     'security_guarantor',
   ],
   business_address: [
@@ -144,12 +153,28 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
     'guarantor_address_zip',
     'ach_authorization_account_holder_zip',
   ],
-  ach_authorization_concent_account_holder_name: [
-    'owner1_guarantor_name',
+  authorization_client_name: [
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+  ],
+  authorization_client_signer_name: [
+    'customer_name',
     'client_name',
-    'guaranty_owner1_name',
-    'guaranty_guarantor1_name',
-    'guaranty_client_name',
+    'owner1_guarantor_name',
+  ],
+  ach_authorization_concent_account_holder_name: [
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'authorization_client_name',
+  ],
+  ach_authorization_concent_account_holder_name_2: [
+    'ach_authorization_concent_account_holder_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'authorization_client_name',
   ],
   entity_type: ['typeOfEntity1', 'typeofentity1'],
   typeofentity1: ['entity_type', 'typeOfEntity1'],
@@ -193,10 +218,44 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   disbursement_amount: ['disclosure_recipient_funds', 'total_amount_fund_disbursed', 'net_to_merchant'],
   total_repayment_amount: ['disclosure_total_payment', 'purchase_price', 'estimatedTotalPaymentAmount'],
   estimated_number_of_payement: ['disclosure_term_days', 'estimated_number_of_payments'],
-  disclosure_name: ['client_name', 'recipient_name'],
+  disclosure_name: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_merchant_name',
+    'recipient_name',
+    'client_name',
+  ],
+  disclosure_merchant_name: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_name',
+    'recipient_name',
+    'client_name',
+  ],
   disclosure_date2: ['disclosure_date', 'agreement_date', 'signature_date'],
-  recipient_name: ['client_name', 'disclosure_name'],
-  recipient_name2: ['client_name', 'recipient_name'],
+  recipient_name: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_merchant_name',
+    'disclosure_name',
+    'client_name',
+  ],
+  recipient_name2: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_merchant_name',
+    'recipient_name',
+    'disclosure_name',
+    'client_name',
+  ],
   recipient_address2: ['recipient_address', 'recipient_address1'],
   recipient_address: ['recipient_address1', 'business_address'],
   total_amount_commercial_financing: ['disclosure_amount_financed', 'funding_provided', 'total_amount_business_fund'],
@@ -305,6 +364,7 @@ const PARTY2_NAME_PRIORITY = [
 
 const PARTY1_NAME_KEYS = [
   'client_name',
+  'addendum_client_name',
   'owner1_guarantor_name',
   'guaranty_owner1_name',
   'guaranty_guarantor1_name',
@@ -319,6 +379,7 @@ const PARTY1_NAME_PRIORITY = [
   'guaranty_client_name',
   'security_guarantor',
   'client_name',
+  'addendum_client_name',
 ] as const;
 
 const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss'] as const;
@@ -382,8 +443,10 @@ function isWoodmereContractFillAtSigningPlacement(
   layoutKey: string | undefined,
   placement: DocumentLayoutPlacement,
 ): boolean {
+  if (!usesWoodmereStyleNonTexasContractLayout(layoutKey)) return false;
+  // Explicit fillAtSigning works on any page (e.g. page-14 business phone).
+  if (placement.fillAtSigning === true) return true;
   return (
-    usesWoodmereStyleNonTexasContractLayout(layoutKey) &&
     String(placement.pageNumber || '') === WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE &&
     isFillAtSigningPlacement(placement)
   );
@@ -401,10 +464,9 @@ function isSignerEditableTextPlacement(
   layoutKey: string | undefined,
   placement: DocumentLayoutPlacement,
 ): boolean {
+  // Page-1 client_phone is always signer-editable (required) on every contract layout.
+  if (isRequiredSignerEditablePlacement(placement)) return true;
   if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
-  if (usesWoodmereStyleNonTexasContractLayout(layoutKey) && isRequiredSignerEditablePlacement(placement)) {
-    return true;
-  }
   return false;
 }
 
@@ -414,9 +476,7 @@ function isRequiredSignerTextField(
   layoutKey?: string,
 ): boolean {
   if (placement.type !== 'text') return false;
-  if (usesWoodmereStyleNonTexasContractLayout(layoutKey) && isRequiredSignerEditablePlacement(placement)) {
-    return true;
-  }
+  if (isRequiredSignerEditablePlacement(placement)) return true;
   return isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
 }
 
@@ -431,7 +491,8 @@ export function isFillAtSigningTabRef(tab: {
   return Boolean(
     label &&
       (FILL_AT_SIGNING_VARIABLES.has(label) ||
-        REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label)),
+        REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label) ||
+        label === 'authorized_business_phone'),
   );
 }
 
@@ -445,10 +506,15 @@ function shouldIncludeEmptyTextPlacement(
   return includeEmptyLockedOptionalTextPlacement(placement);
 }
 
-/** Contract ACH consent / account-holder name lines (pages 14 & 15 — same prefill for both owners). */
+/** Contract ACH account-holder name lines (pages 14 & 15 — owner person name). */
 const WOODMERE_ACH_OWNER_NAME_VARIABLES = new Set([
   'ach_authorization_account_holder_name',
+]);
+
+/** Consent / title lines on ACH pages — merchant business name (not owner). */
+const WOODMERE_ACH_CONSENT_BUSINESS_NAME_VARIABLES = new Set([
   'ach_authorization_concent_account_holder_name',
+  'ach_authorization_concent_account_holder_name_2',
 ]);
 
 /** Woodmere ACH pages 1/14/15/16 — explicit owner-2 tabs; do not auto-mirror initials here. */
@@ -731,6 +797,7 @@ const PRIMARY_GUARANTOR_NAME_VARIABLES = [
   'guaranty_guarantor1_name',
   'guaranty_client_name',
   'client_name',
+  'addendum_client_name',
   'security_guarantor',
 ] as const;
 
@@ -820,6 +887,35 @@ function resolveTextPlacementValue(
     FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
       ? formatFlexAddendumMoneyUsd(raw)
       : raw;
+
+  if (
+    layoutKey === 'contract' &&
+    (String(placement?.pageNumber || '') === '14' ||
+      String(placement?.pageNumber || '') === '15') &&
+    WOODMERE_ACH_CONSENT_BUSINESS_NAME_VARIABLES.has(key.toLowerCase())
+  ) {
+    const business = String(
+      values.client_legal_name ||
+        values.security_business_name ||
+        values.business_legal_name ||
+        values.authorization_client_name ||
+        values.ach_authorization_concent_account_holder_name ||
+        values.ach_authorization_concent_account_holder_name_2 ||
+        '',
+    ).trim();
+    if (business) return formatIfMoney(business);
+  }
+
+  if (
+    key.toLowerCase() === 'client_name' ||
+    key.toLowerCase() === 'addendum_client_name'
+  ) {
+    // Always prefer Owner 1 person name — never merchant legal name.
+    for (const aliasKey of PARTY1_NAME_PRIORITY) {
+      const owner1 = String(values[aliasKey] || '').trim();
+      if (owner1) return owner1;
+    }
+  }
 
   if (
     layoutKey === 'contract' &&
@@ -972,9 +1068,8 @@ export async function renderFlattenedLayoutPdf(
     if (placement.type !== 'text' && placement.type !== 'date') continue;
     if (!placementAllowed(placement, counts, expanded, layout.key)) continue;
     if (isWoodmereContractFillAtSigningPlacement(layout.key, placement)) continue;
-    if (usesWoodmereStyleNonTexasContractLayout(layout.key) && isRequiredSignerEditablePlacement(placement)) {
-      continue;
-    }
+    // Keep client_phone as a live DocuSign tab (required + writable), never burn into PDF.
+    if (isRequiredSignerEditablePlacement(placement)) continue;
     const text = resolveTextPlacementValue(placement.variable || '', expanded, placement, layout.key);
     if (!text) continue;
 

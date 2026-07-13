@@ -37,6 +37,7 @@
     "ach_authorization_account_holder_zip",
     "ach_authorization_bank_portal_website",
     "ach_authorization_concent_account_holder_name",
+    "ach_authorization_concent_account_holder_name_2",
     "ach_authorization_other_infomation",
     "ach_authorization_password",
     "ach_authorization_reference_name1",
@@ -63,6 +64,7 @@
     "authorization_client_bank_routing",
     "authorization_client_name",
     "authorization_client_name_print",
+    "authorization_client_signer_name",
     "authorization_client_tax_id",
     "authorized_business_phone",
     "business_address",
@@ -196,6 +198,19 @@
       "signerRole": "Signer",
       "optional": false,
       "sourceTabLabel": "Signature aaf4da23-81e0-4b15-acc5-7283b334e351",
+      "signerParty": "primary"
+    },
+    {
+      "id": "p166",
+      "type": "attachment",
+      "slot": "attachment_p13_285_683",
+      "documentId": "1",
+      "pageNumber": "13",
+      "x": "285",
+      "y": "683",
+      "signerRole": "Signer",
+      "optional": true,
+      "sourceTabLabel": "Voided Check",
       "signerParty": "primary"
     },
     {
@@ -687,8 +702,9 @@
       "variable": "entity_type",
       "documentId": "1",
       "pageNumber": "1",
-      "x": "88",
-      "y": "199",
+      "x": "90",
+      "y": "197",
+      "width": "160",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "entity_type"
@@ -772,10 +788,14 @@
       "documentId": "1",
       "pageNumber": "14",
       "x": "370",
-      "y": "98",
+      "y": "99",
+      "width": "232",
+      "height": "19",
       "signerRole": "Signer",
-      "optional": true,
-      "sourceTabLabel": "authorized_business_phone"
+      "optional": false,
+      "fillAtSigning": true,
+      "sourceTabLabel": "authorized_business_phone",
+      "signerParty": "primary"
     },
     {
       "id": "p46",
@@ -969,7 +989,7 @@
       "y": "98",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "authorized_business_phone"
+      "sourceTabLabel": "authorized_business_phone_page15"
     },
     {
       "id": "p61",
@@ -1198,6 +1218,7 @@
       "x": "89",
       "y": "314",
       "signerRole": "Signer",
+      "optional": false,
       "sourceTabLabel": "client_phone"
     },
     {
@@ -1704,14 +1725,14 @@
     {
       "id": "p119",
       "type": "text",
-      "variable": "ach_authorization_concent_account_holder_name",
+      "variable": "ach_authorization_concent_account_holder_name_2",
       "documentId": "1",
       "pageNumber": "15",
       "x": "339",
       "y": "642",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "ach_authorization_concent_account_holder_name"
+      "sourceTabLabel": "ach_authorization_concent_account_holder_name_2"
     },
     {
       "id": "p120",
@@ -1888,14 +1909,14 @@
     {
       "id": "p131",
       "type": "text",
-      "variable": "authorization_client_name",
+      "variable": "authorization_client_signer_name",
       "documentId": "1",
       "pageNumber": "13",
       "x": "114",
       "y": "506",
       "signerRole": "Signer",
       "optional": true,
-      "sourceTabLabel": "authorization_client_name"
+      "sourceTabLabel": "authorization_client_signer_name"
     },
     {
       "id": "p132",
