@@ -22,7 +22,6 @@ import type {
   BankTotalTableAverageCells,
   BankTotalTableRow,
 } from "@/components/application/BankTotalTable";
-import { SPA_SCRUBBER_SYNCED_EVENT } from "@/components/application/contractdata/spaScrubberSync";
 
 interface MonthlyData {
   month: string;
@@ -518,40 +517,12 @@ const BankAnalysisTable = ({
                 )
               : createDefaultRows(),
         })),
-
-    const load = async (opts?: { silent?: boolean }) => {
-      if (!applicationId) {
-        setIsInitialLoading(false);
-        return;
-      }
-      try {
-        const resp = await axiosGet(
-          `/bank-analysis?${new URLSearchParams({ application: applicationId }).toString()}`,
       );
-        const payload = resp.data;
-        const list: BankAnalysis[] = payload?.data ?? payload ?? [];
-        if (!Array.isArray(list) || list.length === 0) {
-          if (!opts?.silent) setIsInitialLoading(false);
-          return;
-        }
-
-        setBanks(mapBanksFromApi(list));
     } catch (error) {
       console.error("Failed to load bank analysis", error);
     } finally {
       setIsInitialLoading(false);
     }
-
-    const onSpaSynced = (event: Event) => {
-      const detail = (event as CustomEvent<{ applicationUuid?: string }>).detail;
-      const syncedApp = String(detail?.applicationUuid ?? "").trim();
-      if (!syncedApp || syncedApp !== applicationId) return;
-      void load({ silent: true });
-    };
-    window.addEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaSynced);
-    return () => {
-      window.removeEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaSynced);
-    };
   }, [applicationId]);
 
   useEffect(() => {
