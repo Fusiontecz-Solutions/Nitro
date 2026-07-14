@@ -4,7 +4,6 @@ import { axiosGet } from "../axios";
 export type OperationsDashboardRecentCase = {
   id: string;
   applicationId: string;
-  dealId: string;
   /** Mongo application id — required for preview sheet tabs (comments, files API, etc.). */
   applicationMongoId: string;
   /** Passed to `getClientByClientId` when opening the preview (numeric client id or client mongo id). */
@@ -66,14 +65,9 @@ export function mapRawApplicationToOperationsRecentCase(
   const createdRaw = application?.createdAt;
   const updatedRaw = application?.updatedAt;
 
-  const dealIdRaw = application?.dealId;
-  const dealId =
-    dealIdRaw != null && String(dealIdRaw).trim() ? String(dealIdRaw).trim() : "";
-
   return {
     id: applicationId != null ? `APP-${applicationId}` : `APP-${fallbackId}`,
     applicationId: applicationId != null ? String(applicationId) : "",
-    dealId,
     applicationMongoId,
     clientLookupId,
     merchant,
@@ -96,7 +90,6 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
       totalCases: number;
       contractPending: number;
       contractGenerated: number;
-      contractSent: number;
       contractsOut: number;
       signedContracts: number;
       fundingCall: number;
@@ -105,8 +98,6 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
     };
     summaryAmounts: {
       contractPending: number;
-      contractGenerated: number;
-      contractSent: number;
       contractsOut: number;
       signedContracts: number;
       fundingCall: number;
@@ -114,6 +105,7 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
       funded: number;
     };
     caseStageCounts: Record<string, number>;
+    caseStageAmounts: Record<string, number>;
     operationsMetricsMode?: string;
   },
   void,
@@ -132,11 +124,11 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         summaryCounts: {
           totalCases: Number(data.summaryCounts.totalCases) || 0,
           contractPending: Number(data.summaryCounts.contractPending) || 0,
-          contractGenerated: Number(data.summaryCounts.contractGenerated) || 0,
-          contractSent:
-            Number(data.summaryCounts.contractSent ?? data.summaryCounts.contractsOut) || 0,
-          contractsOut:
-            Number(data.summaryCounts.contractsOut ?? data.summaryCounts.contractSent) || 0,
+          contractGenerated:
+            Number(data.summaryCounts.contractGenerated) ||
+            Number(data.summaryCounts.contractsGenerated) ||
+            0,
+          contractsOut: Number(data.summaryCounts.contractsOut) || 0,
           signedContracts: Number(data.summaryCounts.signedContracts) || 0,
           fundingCall: Number(data.summaryCounts.fundingCall) || 0,
           disbursment: Number(data.summaryCounts.disbursment) || 0,
@@ -144,11 +136,7 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         },
         summaryAmounts: {
           contractPending: Number(data.summaryAmounts?.contractPending) || 0,
-          contractGenerated: Number(data.summaryAmounts?.contractGenerated) || 0,
-          contractSent:
-            Number(data.summaryAmounts?.contractSent ?? data.summaryAmounts?.contractsOut) || 0,
-          contractsOut:
-            Number(data.summaryAmounts?.contractsOut ?? data.summaryAmounts?.contractSent) || 0,
+          contractsOut: Number(data.summaryAmounts?.contractsOut) || 0,
           signedContracts: Number(data.summaryAmounts?.signedContracts) || 0,
           fundingCall: Number(data.summaryAmounts?.fundingCall) || 0,
           disbursment: Number(data.summaryAmounts?.disbursment) || 0,
@@ -156,11 +144,39 @@ export const fetchOperationsDashboardSummary = createAsyncThunk<
         },
         caseStageCounts: {
           Agent: Number(data.caseStageCounts.Agent) || 0,
-          Underwriter: Number(data.caseStageCounts.Underwriter) || 0,
-          "Final Underwriter": Number(data.caseStageCounts["Final Underwriter"]) || 0,
+          Scrubbing: Number(data.caseStageCounts.Scrubbing) || 0,
+          "Underwriter": Number(data.caseStageCounts["Underwriter"]) || 0,
+          Final_Approval: Number(data.caseStageCounts.Final_Approval) || 0,
+          Approved_By_UW: Number(data.caseStageCounts.Approved_By_UW) || 0,
+          Approval_Sent: Number(data.caseStageCounts.Approval_Sent) || 0,
+          Approved_By_ISO: Number(data.caseStageCounts.Approved_By_ISO) || 0,
           Contracted: Number(data.caseStageCounts.Contracted) || 0,
           Final: Number(data.caseStageCounts.Final) || 0,
           "Funding Call": Number(data.caseStageCounts["Funding Call"]) || 0,
+          On_Hold: Number(data.caseStageCounts.On_Hold) || 0,
+          Declined: Number(data.caseStageCounts.Declined) || 0,
+          Contract_Pending: Number(data.caseStageCounts.Contract_Pending) || 0,
+          Contract_Sent: Number(data.caseStageCounts.Contract_Sent) || 0,
+          Contract_Signed: Number(data.caseStageCounts.Contract_Signed) || 0,
+          Reinitiate_Contract:
+            Number(data.caseStageCounts.Reinitiate_Contract) || 0,
+          Recently_Deleted:
+            Number(data.caseStageCounts.Recently_Deleted) || 0,
+        },
+        caseStageAmounts: {
+          Agent: Number(data.caseStageAmounts?.Agent) || 0,
+          Scrubbing: Number(data.caseStageAmounts?.Scrubbing) || 0,
+          "Underwriter":
+            Number(data.caseStageAmounts?.["Underwriter"]) || 0,
+          Contracted: Number(data.caseStageAmounts?.Contracted) || 0,
+          Final: Number(data.caseStageAmounts?.Final) || 0,
+          "Funding Call": Number(data.caseStageAmounts?.["Funding Call"]) || 0,
+          Declined: Number(data.caseStageAmounts?.Declined) || 0,
+          Contract_Pending: Number(data.caseStageAmounts?.Contract_Pending) || 0,
+          Contract_Sent: Number(data.caseStageAmounts?.Contract_Sent) || 0,
+          Contract_Signed: Number(data.caseStageAmounts?.Contract_Signed) || 0,
+          Disbursment: Number(data.caseStageAmounts?.Disbursment) || 0,
+          Funded: Number(data.caseStageAmounts?.Funded) || 0,
         },
         operationsMetricsMode:
           typeof data.operationsMetricsMode === "string"

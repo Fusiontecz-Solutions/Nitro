@@ -145,7 +145,7 @@ export default function UserSetting() {
         <Card className="border-border">
           <CardContent className="pt-6 flex flex-col items-center md:items-center gap-4">
             <div className="relative flex items-center justify-center">
-              <div className="h-24 w-24 rounded-full flex items-center justify-center border border-border/70 shadow-sm text-3xl font-semibold text-white bg-[var(--brand)]">
+              <div className="h-24 w-24 rounded-full flex items-center justify-center border border-border/70 shadow-sm text-3xl font-semibold text-white bg-[image:var(--brand-gradient)]">
                 {initials}
               </div>
             </div>
@@ -231,7 +231,7 @@ export default function UserSetting() {
                   className={cn(
                     'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer',
                     'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182]',
-                    'data-[state=active]:bg-[var(--brand)] data-[state=active]:text-white data-[state=active]:shadow-sm',
+                    'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm',
                   )}
                 >
                   <User className="h-4 w-4 shrink-0" />
@@ -242,7 +242,7 @@ export default function UserSetting() {
                   className={cn(
                     'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer',
                     'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182]',
-                    'data-[state=active]:bg-[var(--brand)] data-[state=active]:text-white data-[state=active]:shadow-sm',
+                    'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm',
                   )}
                 >
                   <FileSignature className="h-4 w-4 shrink-0" />
@@ -253,7 +253,7 @@ export default function UserSetting() {
                   className={cn(
                     'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer',
                     'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182]',
-                    'data-[state=active]:bg-[var(--brand)] data-[state=active]:text-white data-[state=active]:shadow-sm',
+                    'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm',
                   )}
                 >
                   <Building2 className="h-4 w-4 shrink-0" />

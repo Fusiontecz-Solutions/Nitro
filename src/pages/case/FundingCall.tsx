@@ -1,23 +1,94 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import MyNotes from '@/components/application/MyNotes';
 import RejectApplicationModal from '@/components/application/RejectApplicationModal';
+import RequestMissingDocumentsModal from '@/components/application/RequestMissingDocumentsModal';
+import ApproveForDisbursementModal from '@/components/application/ApproveForDisbursementModal';
+import ApprovedApplicationModal from '@/components/application/ApprovedApplicationModal';
+import ApprovedByUnderwriterBadge from '@/components/application/ApprovedByUnderwriterBadge';
+import { Button } from '@/components/ui/button';
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
-import { createFundingCall, getFundingCalls } from '@/redux/actions/fundingCallActions';
 import {
-  resetCreateFundingCall,
-  setFundingCallDraft,
-  clearFundingCallDraft,
-} from '@/redux/slices/fundingCallSlice';
-import { notifyOperationsForDisbursement } from '@/redux/actions/notificationActions';
-import { resetNotifyOperationsDisbursement } from '@/redux/slices/notificationSlice';
+  approveFundingCallForDisbursement,
+  createFundingCall,
+  getFundingCalls,
+} from '@/redux/actions/fundingCallActions';
+import {
+  getApplicationById,
+  sendApplicationForFinalUnderwriterApproval,
+  updateApplicationQueue,
+} from '@/redux/actions/applicationActions';
+import { FINAL_APPROVAL_SOURCE_FUNDING_CALL } from '@/lib/finalApprovalSource';
+import { resetCreateFundingCall } from '@/redux/slices/fundingCallSlice';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { isFundingCallStatusCallDone, isFundingCallStatusRejected } from '@/constants/operationsDashboardApplications';
+import { useTheme } from '@/context/ThemeContext';
+import { normalizeRoleKey, resolveEffectiveRole } from '@/lib/sessionRole';
+import { normalizeFundingCallStatus } from '@/constants/operationsDashboardApplications';
+import { applicationNeedsContractReinitiation } from '@/lib/contractReinitiation';
+import { isApplicationInFinalApprovalStage } from '@/lib/applicationWorkflowState';
+import {
+  formatApprovedByUnderwriterLabel,
+  resolveFinalApprovalTargetUnderwriter,
+} from '@/lib/underwriterApprovalLabel';
+import {
+  OFFER_DECISION_UPDATED_EVENT,
+  offerDecisionUpdateMatchesApplication,
+} from '@/lib/offerDecisionSync';
+import {
+  APPLICATION_APPROVED_EMAIL_SUBJECT,
+  buildApplicationApprovedEmailServerPlaceholderValues,
+  renderApplicationApprovedEmailHtml,
+} from '@/pages/templates';
+
+const looksLikeEmail = (value: unknown): boolean => {
+  const s = String(value ?? '').trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+};
+
+/** Prefer business owner email over the generic business inbox for client-facing approval mail. */
+const resolveLinkedClientEmail = (application: unknown): string => {
+  const client = (application as { client?: unknown } | null)?.client;
+  if (!client || typeof client !== 'object') return '';
+
+  const nested = client as {
+    ownerEmail?: string | null;
+    business?: { email?: string | null };
+    owner?: { email?: string | null };
+    owners?: Array<{ email?: string | null; sortOrder?: number | null }>;
+  };
+
+  const primaryOwnerEmail = String(nested.owner?.email ?? '').trim();
+  if (looksLikeEmail(primaryOwnerEmail)) return primaryOwnerEmail;
+
+  const ownerRows = Array.isArray(nested.owners)
+    ? [...nested.owners].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+    : [];
+  for (const owner of ownerRows) {
+    const email = String(owner?.email ?? '').trim();
+    if (looksLikeEmail(email)) return email;
+  }
+
+  const flatOwnerEmail = String(nested.ownerEmail ?? '').trim();
+  if (looksLikeEmail(flatOwnerEmail)) return flatOwnerEmail;
+
+  const businessEmail = String(nested.business?.email ?? '').trim();
+  if (looksLikeEmail(businessEmail)) return businessEmail;
+
+  return '';
+};
+
+const decisionButtonBase =
+  'rounded-md text-white h-auto min-h-[3.75rem] py-2.5 px-3 box-border cursor-pointer flex flex-col gap-1 items-center justify-center text-center w-full overflow-hidden transition-colors outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--brand)] disabled:opacity-50 disabled:cursor-not-allowed';
+
+/** Shared height for MyNotes + decision sidebar when shown side-by-side. */
+const DECISION_PANEL_HEIGHT_CLASS = 'h-[560px]';
 
 type FundingCallProps = {
   applicationId?: string;
+  /** Refetch application detail after save (e.g. when backend moves currentQueue to Funding Call). */
   onSaved?: () => void;
+  /** Notify parent when call status changes (saved or in-form selection). */
   onCallStatusChange?: (status: string) => void;
 };
 
@@ -28,8 +99,9 @@ interface CallFormState {
   followUpDate: string;
 }
 
-
 export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: FundingCallProps) => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
   const dispatch = useDispatch<AppDispatch>();
   const { loading: saving, success, error } = useSelector(
     (state: RootState) => state.createFundingCall,
@@ -37,22 +109,76 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const { data: existingCalls, loading: fetchingExistingCalls } = useSelector(
     (state: RootState) => state.fundingCalls,
   );
-  const {
-    loading: notifyingOps,
-    success: notifyOpsSuccess,
-    error: notifyOpsError,
-    data: notifyOpsData,
-  } = useSelector((state: RootState) => state.notifyOperationsDisbursement);
-  const loginUser = useSelector((state: RootState) => state.login.data?.user);
+  const loginUser = useSelector((state: RootState) => state.login?.data?.user);
+  const applicationDetail = useSelector((state: RootState) => state.applicationDetail.data);
 
-  // Super Admin (and Admin as a safety hatch) are allowed to push the
-  // "Notify Operations" signal. Mirrors backend role enforcement.
-  const isSuperAdmin = useMemo(() => {
-    const role = String(loginUser?.role || localStorage.getItem('role') || '')
-      .toUpperCase()
-      .replace(/[\s_-]+/g, '');
-    return role === 'SUPERADMIN' || role === 'ADMIN';
-  }, [loginUser?.role]);
+  const linkedClientEmail = useMemo(
+    () => resolveLinkedClientEmail(applicationDetail),
+    [applicationDetail],
+  );
+
+  /** Numeric applicationId (preferred) or _id for offer-decision read/write in the approval modal. */
+  const offerApplicationId = useMemo(() => {
+    const data = applicationDetail as
+      | { applicationId?: string | number; _id?: string; id?: string }
+      | null;
+    return data?.applicationId ?? data?._id ?? data?.id ?? applicationId ?? null;
+  }, [applicationDetail, applicationId]);
+
+  const requestLoanAmount = useMemo(() => {
+    const raw = (applicationDetail as { loanAmount?: number | string | null } | null)
+      ?.loanAmount;
+    if (raw == null) return null;
+    const num = typeof raw === 'number' ? raw : Number(raw);
+    return Number.isFinite(num) ? num : null;
+  }, [applicationDetail]);
+
+  /** UUID (_id) used to refetch the application detail after an offer edit. */
+  const applicationUuid = useMemo(() => {
+    const data = applicationDetail as { _id?: string; id?: string } | null;
+    return data?._id ?? data?.id ?? applicationId ?? null;
+  }, [applicationDetail, applicationId]);
+
+  const needsContractReinitiation = useMemo(
+    () => applicationNeedsContractReinitiation(applicationDetail as Record<string, unknown> | null),
+    [applicationDetail],
+  );
+
+  const roleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
+  const isSuperAdmin = roleKey === 'SUPER_ADMIN';
+  const isOperations = roleKey === 'OPERATIONS';
+  const isUnderwriter = roleKey === 'UNDERWRITER';
+  /** Super Admin, Operations and Underwriter can put a deal on hold from the funding-call sidebar. */
+  const canHoldDeal = isSuperAdmin || isOperations || isUnderwriter;
+  /** The decision sidebar renders for any role allowed to act on the deal here. */
+  const showDecisionSidebar = isSuperAdmin || isOperations || isUnderwriter;
+
+  const applicationQueue = useMemo(() => {
+    const data = applicationDetail as { currentQueue?: string; queue?: string } | null;
+    return data?.currentQueue ?? data?.queue ?? '';
+  }, [applicationDetail]);
+
+  const applicationState = useMemo(() => {
+    const data = applicationDetail as { currentState?: string; state?: string } | null;
+    return data?.currentState ?? data?.state ?? '';
+  }, [applicationDetail]);
+
+  const normalizeQueueKey = (value: string | null | undefined) =>
+    String(value ?? '')
+      .trim()
+      .replace(/[\s_-]+/g, '')
+      .toLowerCase();
+
+  const isAtDisbursementQueue = useMemo(() => {
+    const q = normalizeQueueKey(applicationQueue);
+    return q === 'disbursement' || q === 'disbursment';
+  }, [applicationQueue]);
+
+  const isAtHoldQueue = useMemo(() => {
+    const queueHeld = normalizeQueueKey(applicationQueue) === 'onhold';
+    const stateHeld = normalizeQueueKey(applicationState) === 'onhold';
+    return queueHeld || stateHeld;
+  }, [applicationQueue, applicationState]);
 
   const [form, setForm] = useState<CallFormState>({
     callStatus: '',
@@ -65,25 +191,57 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [errors, setErrors] = useState({ callStatus: false });
   const [showSuccess, setShowSuccess] = useState(false);
-  // `canNotifyOps` is enabled only after a successful save in this session OR
-  // when the latest persisted funding call already exists (re-visiting page).
-  const [canNotifyOps, setCanNotifyOps] = useState(false);
-  const [opsNotified, setOpsNotified] = useState(false);
-  const [showNotifyTooltip, setShowNotifyTooltip] = useState(false);
-  const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
-  const [rejectPending, setRejectPending] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const rejectFlowCompletedRef = useRef(false);
-  const callStatusBeforeRejectRef = useRef('');
 
   // Calendar state
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [documentsModalOpen, setDocumentsModalOpen] = useState(false);
+  const [approveModalOpen, setApproveModalOpen] = useState(false);
+  const [isoResendModalOpen, setIsoResendModalOpen] = useState(false);
+  /** True once the Super Admin edits the offer terms — unlocks the ISO resend + contract reinitiation CTA. */
+  const [offerUpdated, setOfferUpdated] = useState(false);
+  const [isSendingFinalApproval, setIsSendingFinalApproval] = useState(false);
+  const [approveForDisbursementPending, setApproveForDisbursementPending] = useState(false);
+  const [holdingDeal, setHoldingDeal] = useState(false);
+  const [dealOnHold, setDealOnHold] = useState(false);
+  const [disbursementApproved, setDisbursementApproved] = useState(false);
+  const [disbursementEmailSent, setDisbursementEmailSent] = useState<boolean | null>(null);
+  const [disbursementEmailSkippedReason, setDisbursementEmailSkippedReason] = useState<string | null>(
+    null,
+  );
   const calendarRef = useRef<HTMLDivElement | null>(null);
 
   const options = ["Call Done", "Not Reachable", "Call Back Later", "Rejected", "Interested"];
 
-  const isBusy = saving || fetchingExistingCalls || notifyingOps;
+  const isBusy =
+    saving ||
+    fetchingExistingCalls ||
+    approveForDisbursementPending ||
+    isSendingFinalApproval ||
+    holdingDeal;
+
+  const latestFromCalls = useMemo(() => {
+    if (!existingCalls?.length) return '';
+    return (existingCalls[0] as { callStatus?: string })?.callStatus ?? '';
+  }, [existingCalls]);
+
+  const isApprovedForDisbursement = useMemo(() => {
+    if (disbursementApproved || isAtDisbursementQueue) return true;
+    const status = form.callStatus || latestFromCalls;
+    return normalizeFundingCallStatus(status) === 'approvedfordisbursement';
+  }, [disbursementApproved, isAtDisbursementQueue, form.callStatus, latestFromCalls]);
+
+  useEffect(() => {
+    const status = form.callStatus || latestFromCalls;
+    if (
+      isAtDisbursementQueue ||
+      normalizeFundingCallStatus(status) === 'approvedfordisbursement'
+    ) {
+      setDisbursementApproved(true);
+    }
+  }, [isAtDisbursementQueue, form.callStatus, latestFromCalls]);
 
   useEffect(() => {
     if (isBusy) setShowSuccess(false);
@@ -111,9 +269,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     }
   }, [applicationId, dispatch]);
 
-  // When existing calls load, populate form from latest entry. A persisted
-  // funding call also means Super Admin can immediately notify Operations
-  // (e.g. when the page is re-opened after an earlier save).
+  // When existing calls load, populate form from latest entry
   useEffect(() => {
     if (!existingCalls || existingCalls.length === 0) {
       onCallStatusChange?.('');
@@ -130,121 +286,67 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
         ? new Date(latest.followUpDate).toLocaleDateString('en-US')
         : '',
     }));
-    if (applicationId) {
-      dispatch(
-        setFundingCallDraft({
-          applicationId,
-          callStatus: callStatus || null,
-        }),
-      );
-    }
-    setCanNotifyOps(true);
-    if (isFundingCallStatusCallDone(latest.callStatus)) {
-      setOpsNotified(true);
-    }
     onCallStatusChange?.(callStatus);
-  }, [existingCalls, applicationId, dispatch, onCallStatusChange]);
+  }, [existingCalls, onCallStatusChange]);
 
-  const syncFundingCallDraft = useCallback(
-    (callStatus: string) => {
-      if (!applicationId) return;
-      dispatch(
-        setFundingCallDraft({
-          applicationId,
-          callStatus: callStatus || null,
-        }),
-      );
-    },
-    [applicationId, dispatch],
-  );
-
-  const openRejectModal = useCallback(
-    (previousCallStatus: string) => {
-      rejectFlowCompletedRef.current = false;
-      callStatusBeforeRejectRef.current = previousCallStatus;
-      setRejectPending(true);
-      setIsRejectModalOpen(true);
-    },
-    [],
-  );
-
-  const handleRejectModalOpenChange = useCallback(
-    (open: boolean) => {
-      setIsRejectModalOpen(open);
-      if (!open && !rejectFlowCompletedRef.current) {
-        const previousStatus = callStatusBeforeRejectRef.current;
-        setForm((prev) => ({ ...prev, callStatus: previousStatus }));
-        syncFundingCallDraft(previousStatus);
-        setRejectPending(false);
-      }
-      if (!open) {
-        rejectFlowCompletedRef.current = false;
-      }
-    },
-    [syncFundingCallDraft],
-  );
-
-  const handleAfterReject = useCallback(
-    async (reason: string) => {
-      if (!applicationId) {
-        throw new Error('Application ID is missing for this funding call.');
-      }
-
-      await dispatch(
-        createFundingCall({
-          application: applicationId,
-          callStatus: 'Rejected',
-          applicationStatus: form.applicationStatus || null,
-          remarks: reason,
-          followUpDate: form.followUpDate || null,
-        }),
-      ).unwrap();
-
-      rejectFlowCompletedRef.current = true;
-      setRejectPending(false);
-      setForm((prev) => ({
-        ...prev,
-        callStatus: 'Rejected',
-        remarks: reason,
-      }));
-      syncFundingCallDraft('Rejected');
-      onCallStatusChange?.('Rejected');
-    },
-    [
-      applicationId,
-      dispatch,
-      form.applicationStatus,
-      form.followUpDate,
-      syncFundingCallDraft,
-      onCallStatusChange,
-    ],
-  );
-
-  const handleSelect = (status: string) => {
-    if (isBusy) return;
-
-    if (isFundingCallStatusRejected(status)) {
-      openRejectModal(form.callStatus);
-      setForm((prev) => ({ ...prev, callStatus: status }));
-      setErrors({ callStatus: false });
-      syncFundingCallDraft(status);
-      onCallStatusChange?.(status);
-      setIsDropdownOpen(false);
+  const submitFundingCall = (data: CallFormState) => {
+    if (!data.callStatus) {
+      setErrors({ callStatus: true });
       return;
     }
 
-    setForm((prev) => ({ ...prev, callStatus: status }));
-    setErrors({ callStatus: false });
-    syncFundingCallDraft(status);
-    onCallStatusChange?.(status);
-    setIsDropdownOpen(false);
+    if (!applicationId) {
+      toast.error('Application ID is missing for this funding call.');
+      return;
+    }
+
+    dispatch(
+      createFundingCall({
+        application: applicationId,
+        callStatus: data.callStatus,
+        applicationStatus: data.applicationStatus || null,
+        remarks: data.remarks || null,
+        followUpDate: data.followUpDate || null,
+      }),
+    );
   };
 
-  useEffect(() => {
-    return () => {
-      dispatch(clearFundingCallDraft());
-    };
-  }, [dispatch, applicationId]);
+  const handleSelect = (status: string) => {
+    if (isBusy) return;
+    setIsDropdownOpen(false);
+
+    if (status === 'Rejected') {
+      setRejectModalOpen(true);
+      return;
+    }
+
+    const snapshot: CallFormState = { ...form, callStatus: status };
+    setForm(snapshot);
+    setErrors({ callStatus: false });
+    onCallStatusChange?.(status);
+  };
+
+  const handleAfterReject = async (reason: string) => {
+    if (!applicationId) {
+      toast.error('Application ID is missing for this funding call.');
+      throw new Error('Application ID is missing');
+    }
+
+    const snapshot: CallFormState = { ...form, callStatus: 'Rejected' };
+    setForm(snapshot);
+    setErrors({ callStatus: false });
+    onCallStatusChange?.('Rejected');
+
+    await dispatch(
+      createFundingCall({
+        application: applicationId,
+        callStatus: 'Rejected',
+        applicationStatus: form.applicationStatus || null,
+        remarks: reason,
+        followUpDate: form.followUpDate || null,
+      }),
+    ).unwrap();
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -255,28 +357,14 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
   useEffect(() => {
     if (success) {
       setShowSuccess(true);
-      setCanNotifyOps(true);
-      const callDone = isFundingCallStatusCallDone(form.callStatus);
-      const rejected = isFundingCallStatusRejected(form.callStatus);
-      if (rejected) {
-        setOpsNotified(false);
-      } else if (callDone) {
-        setOpsNotified(true);
-        toast.success(
-          'Funding call saved. Operations has been notified to proceed with disbursement.',
-        );
-      } else {
-        setOpsNotified(false);
+      const declined = form.callStatus === 'Rejected';
+      if (!declined) {
         toast.success('Funding call saved successfully.');
       }
-      if (applicationId) {
-        dispatch(getFundingCalls({ application: applicationId }));
-      }
       onSaved?.();
-      onCallStatusChange?.(form.callStatus);
       dispatch(resetCreateFundingCall());
     }
-  }, [success, dispatch, onSaved, onCallStatusChange, form.callStatus, applicationId]);
+  }, [success, dispatch, onSaved, form.callStatus]);
 
   useEffect(() => {
     if (error) {
@@ -284,159 +372,309 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
     }
   }, [error]);
 
-  // React to notify-operations result (DB + socket push + email fan-out).
-  useEffect(() => {
-    if (!notifyOpsSuccess) return;
-    setOpsNotified(true);
-    const notified = notifyOpsData?.notified ?? 0;
-    const emails = notifyOpsData?.emailsSent ?? 0;
-    if (notified > 0) {
-      toast.success(
-        `Operations notified${emails > 0 ? ` (email sent to ${emails})` : ''}. You can now proceed with disbursement.`,
-      );
-    } else {
-      toast.info('No active Operations users available to notify.');
-    }
-    dispatch(resetNotifyOperationsDisbursement());
-  }, [notifyOpsSuccess, notifyOpsData, dispatch]);
-
-  useEffect(() => {
-    if (notifyOpsError) {
-      toast.error(notifyOpsError);
-      dispatch(resetNotifyOperationsDisbursement());
-    }
-  }, [notifyOpsError, dispatch]);
-
-  const handleNotifyOperations = () => {
-    if (!applicationId) {
-      toast.error('Application ID is missing — cannot notify Operations.');
+  const handleSave = () => {
+    if (form.callStatus === 'Rejected') {
+      setRejectModalOpen(true);
       return;
     }
-    if (notifyingOps || opsNotified || !canNotifyOps) return;
-    dispatch(notifyOperationsForDisbursement({ applicationId }));
+    submitFundingCall(form);
   };
 
-  const handleSave = () => {
-    if (!form.callStatus) {
-      setErrors({ callStatus: true });
-      return;
-    }
+  const isApproveActionComplete = isApprovedForDisbursement && disbursementEmailSent === true;
 
+  const handleApproveForDisbursement = useCallback(async (overrideClientEmail?: string): Promise<boolean> => {
     if (!applicationId) {
+      toast.error('Application ID is missing for this funding call.');
+      return false;
+    }
+    if (isApproveActionComplete) return false;
+
+    const approvalEmailHtml = renderApplicationApprovedEmailHtml(
+      buildApplicationApprovedEmailServerPlaceholderValues(),
+    );
+
+    const clientEmail = (overrideClientEmail ?? linkedClientEmail).trim();
+
+    setApproveForDisbursementPending(true);
+    const toastId = toast.loading('Approving application for disbursement...');
+
+    try {
+      const result = await dispatch(
+        approveFundingCallForDisbursement({
+          application: applicationId,
+          clientEmail: clientEmail || undefined,
+          emailHtml: approvalEmailHtml,
+          emailSubject: APPLICATION_APPROVED_EMAIL_SUBJECT,
+        }),
+      ).unwrap();
+
+      setDisbursementApproved(true);
+      setForm((prev) => ({
+        ...prev,
+        callStatus: 'Approved for Disbursement',
+        applicationStatus: 'Approved for Disbursement',
+      }));
+      onCallStatusChange?.('Approved for Disbursement');
+
+      if (applicationId) {
+        void dispatch(getFundingCalls({ application: applicationId }));
+      }
+
+      const emailSent = Boolean(result?.emailSent);
+      const skippedReason =
+        typeof result?.emailSkippedReason === 'string' ? result.emailSkippedReason : null;
+
+      setDisbursementEmailSent(emailSent);
+      setDisbursementEmailSkippedReason(emailSent ? null : skippedReason);
+
+      toast.update(toastId, {
+        render: emailSent
+          ? 'Application approved for disbursement. Client emailed and Operations notified.'
+          : skippedReason ||
+            result?.message ||
+            'Application approved for disbursement. Operations has been notified.',
+        type: emailSent ? 'success' : 'warning',
+        isLoading: false,
+        autoClose: 5000,
+      });
+
+      onSaved?.();
+      return true;
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string'
+          ? err
+          : (err as { message?: string })?.message ||
+            'Failed to approve application for disbursement.';
+      toast.update(toastId, {
+        render: message,
+        type: 'error',
+        isLoading: false,
+        autoClose: 5000,
+      });
+      return false;
+    } finally {
+      setApproveForDisbursementPending(false);
+    }
+  }, [
+    applicationId,
+    dispatch,
+    isApproveActionComplete,
+    linkedClientEmail,
+    onCallStatusChange,
+    onSaved,
+  ]);
+
+  const handleConfirmApproval = useCallback(
+    async (clientEmail: string) => {
+      const ok = await handleApproveForDisbursement(clientEmail);
+      if (ok) setApproveModalOpen(false);
+    },
+    [handleApproveForDisbursement],
+  );
+
+  const refreshApplicationDetail = useCallback(() => {
+    if (applicationUuid) {
+      void dispatch(getApplicationById(String(applicationUuid)));
+    }
+  }, [applicationUuid, dispatch]);
+
+  /** After the offer terms are edited (in the approval modal), surface the final-approval CTA. */
+  const handleOfferUpdated = useCallback(() => {
+    setOfferUpdated(true);
+    refreshApplicationDetail();
+  }, [refreshApplicationDetail]);
+
+  /** Move the application's currentQueue and currentState to "On Hold". */
+  const handleHoldDeal = useCallback(async () => {
+    const recordId = applicationUuid ?? applicationId;
+    if (!recordId) {
       toast.error('Application ID is missing for this funding call.');
       return;
     }
-
-    if (isFundingCallStatusRejected(form.callStatus)) {
-      if (rejectPending) {
-        setIsRejectModalOpen(true);
-        return;
-      }
-
-      dispatch(
-        createFundingCall({
-          application: applicationId,
-          callStatus: form.callStatus,
-          applicationStatus: form.applicationStatus || null,
-          remarks: form.remarks || null,
-          followUpDate: form.followUpDate || null,
+    setHoldingDeal(true);
+    const toastId = toast.loading('Putting the deal on hold...');
+    try {
+      await dispatch(
+        updateApplicationQueue({
+          id: String(recordId),
+          data: { currentQueue: 'On Hold' },
         }),
-      );
-      return;
+      ).unwrap();
+      setDealOnHold(true);
+      onCallStatusChange?.('On Hold');
+      refreshApplicationDetail();
+      toast.update(toastId, {
+        render: 'Deal placed on hold.',
+        type: 'success',
+        isLoading: false,
+        autoClose: 3000,
+      });
+      onSaved?.();
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string'
+          ? err
+          : (err as { message?: string })?.message || 'Failed to put the deal on hold.';
+      toast.update(toastId, {
+        render: message,
+        type: 'error',
+        isLoading: false,
+        autoClose: 4000,
+      });
+    } finally {
+      setHoldingDeal(false);
     }
+  }, [
+    applicationId,
+    applicationUuid,
+    dispatch,
+    onCallStatusChange,
+    onSaved,
+    refreshApplicationDetail,
+  ]);
 
-    dispatch(
-      createFundingCall({
-        application: applicationId,
-        callStatus: form.callStatus,
-        applicationStatus: form.applicationStatus || null,
-        remarks: form.remarks || null,
-        followUpDate: form.followUpDate || null,
-      }),
+  const finalApprovalTarget = useMemo(
+    () =>
+      resolveFinalApprovalTargetUnderwriter(
+        (applicationDetail ?? {}) as Parameters<typeof resolveFinalApprovalTargetUnderwriter>[0],
+      ),
+    [applicationDetail],
+  );
+  const approvingUnderwriterId = finalApprovalTarget?.id ?? '';
+  const isFinalApprovalStage = useMemo(
+    () => isApplicationInFinalApprovalStage(applicationDetail as Record<string, unknown> | null),
+    [applicationDetail],
+  );
+  const approvingUnderwriterName = useMemo(() => {
+    if (finalApprovalTarget) {
+      const fn = String(finalApprovalTarget.user?.firstName ?? '').trim();
+      const ln = String(finalApprovalTarget.user?.lastName ?? '').trim();
+      const full = [fn, ln].filter(Boolean).join(' ');
+      if (full) return full;
+      if (finalApprovalTarget.user?.email?.trim()) return finalApprovalTarget.user.email.trim();
+    }
+    return formatApprovedByUnderwriterLabel(
+      (applicationDetail ?? {}) as Parameters<typeof formatApprovedByUnderwriterLabel>[0],
     );
-  };
+  }, [applicationDetail, finalApprovalTarget]);
+
+  const showResendApprovalMailToIso =
+    isSuperAdmin && needsContractReinitiation && !offerUpdated;
+
+  const handleSendForFinalUnderwriterApproval = useCallback(async (): Promise<boolean> => {
+    const recordId = applicationUuid ?? applicationId;
+    if (!recordId) {
+      toast.error('Missing application id. Please reload and try again.');
+      return false;
+    }
+    if (!approvingUnderwriterId) {
+      toast.error('No approving Underwriter is recorded for this application.');
+      return false;
+    }
+    setIsSendingFinalApproval(true);
+    const toastId = toast.loading('Sending to Underwriter for final approval...');
+    try {
+      await dispatch(
+        sendApplicationForFinalUnderwriterApproval({
+          applicationId: String(recordId),
+          source: FINAL_APPROVAL_SOURCE_FUNDING_CALL,
+        }),
+      ).unwrap();
+      refreshApplicationDetail();
+      toast.update(toastId, {
+        render: approvingUnderwriterName
+          ? `Application sent to ${approvingUnderwriterName} for final approval.`
+          : 'Application sent to the approving Underwriter for final approval.',
+        type: 'success',
+        isLoading: false,
+        autoClose: 3000,
+      });
+      return true;
+    } catch (err: unknown) {
+      const message =
+        typeof err === 'string'
+          ? err
+          : 'Failed to send application for final Underwriter approval. Please try again.';
+      toast.update(toastId, {
+        render: message,
+        type: 'error',
+        isLoading: false,
+        autoClose: 4000,
+      });
+      return false;
+    } finally {
+      setIsSendingFinalApproval(false);
+    }
+  }, [
+    applicationId,
+    applicationUuid,
+    approvingUnderwriterId,
+    approvingUnderwriterName,
+    dispatch,
+    refreshApplicationDetail,
+  ]);
+
+  // Reset the local offer-updated flag when switching applications.
+  useEffect(() => {
+    setOfferUpdated(false);
+    setDealOnHold(false);
+  }, [offerApplicationId]);
+
+  const isDealHeld = dealOnHold || isAtHoldQueue;
+
+  // Offer edits made elsewhere (e.g. contract tab) also unlock the final-approval CTA.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { applicationId?: unknown } | undefined;
+      if (offerDecisionUpdateMatchesApplication(detail?.applicationId, offerApplicationId)) {
+        setOfferUpdated(true);
+        refreshApplicationDetail();
+      }
+    };
+    window.addEventListener(OFFER_DECISION_UPDATED_EVENT, handler);
+    return () => window.removeEventListener(OFFER_DECISION_UPDATED_EVENT, handler);
+  }, [offerApplicationId, refreshApplicationDetail]);
 
   return (
     <div
       className={cn(
-        'relative mx-auto rounded-[18px] border border-slate-200/80 bg-gradient-to-br from-white to-[#f4f7fb] p-6 pb-5 font-sans shadow-[0_18px_35px_rgba(15,23,42,0.1),0_2px_6px_rgba(15,23,42,0.06)]',
-        'dark:border-slate-700 dark:from-[#1c1d21] dark:to-[#141517] dark:shadow-[0_18px_35px_rgba(0,0,0,0.45),0_2px_6px_rgba(0,0,0,0.25)]',
+        'relative mx-auto rounded-lg border border-slate-200/80 bg-white p-4 font-sans shadow-sm',
+        'dark:border-slate-700 dark:bg-[#1c1d21] dark:shadow-black/20',
       )}
     >
-      {(fetchingExistingCalls || saving || notifyingOps) && (
+      {(fetchingExistingCalls || saving) && (
         <div
           className={cn(
-            'mb-4 flex items-center gap-2.5 rounded-xl border px-3 py-3 text-[13px]',
+            'mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs',
             fetchingExistingCalls
               ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/45 dark:text-blue-200'
-              : notifyingOps
-                ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200'
-                : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
+              : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
           )}
         >
-          <span>⏳</span>
-          {fetchingExistingCalls
-            ? 'Loading existing call details...'
-            : notifyingOps
-              ? 'Sending notification to Operations...'
-              : 'Saving... please wait'}
+          <span>{saving ? '⏳' : '⏳'}</span>
+          {fetchingExistingCalls ? 'Loading existing call details...' : 'Saving... please wait'}
         </div>
       )}
-
-      {opsNotified && (
-        <div
-          className={cn(
-            'mb-4 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-[13px] text-emerald-800',
-            'dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
-          )}
-        >
-          <span aria-hidden="true">✓</span>
-          <span>
-            Operations team has been notified. They will receive an in-app notification
-            {(notifyOpsData?.emailsSent ?? 0) > 0 ? ' and an email' : ''} to proceed with the
-            disbursement.
-          </span>
-        </div>
-      )}
-
-      {/* Header Section */}
-      <div className="mb-5 flex items-center justify-between">
-        <div>
-          <h2 className="m-0 text-[22px] font-bold text-slate-900 dark:text-slate-100">Funding Call</h2>
-          <p className="mt-1 text-[13px] text-slate-500 dark:text-slate-400">
-            Capture the latest call outcome.
-          </p>
-        </div>
-        {applicationId && (
-          <div
-            className={cn(
-              'rounded-full border border-blue-200/80 bg-blue-500/10 px-2.5 py-1 text-[11px] font-semibold text-blue-700',
-              'dark:border-blue-800/60 dark:bg-blue-500/15 dark:text-blue-300',
-            )}
-          >
-            ID: {applicationId}
-          </div>
-        )}
-      </div>
 
       {showSuccess && (
         <div
           className={cn(
-            'mb-4 flex items-center gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-[13px] text-emerald-800',
+            'mb-2 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800',
             'dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
           )}
         >
           <span>✓</span>{' '}
-          {isFundingCallStatusRejected(form.callStatus)
-            ? 'Deal declined successfully.'
+          {form.callStatus === 'Rejected'
+            ? 'Application declined successfully.'
             : 'Application status updated successfully.'}
         </div>
       )}
 
-      <div className="mb-4 grid grid-cols-1 gap-[18px] md:grid-cols-2">
-        {/* CUSTOM DROPDOWN */}
-        <div className="flex flex-col gap-1.5" ref={dropdownRef}>
-          <label className="text-[13px] font-medium text-slate-900 dark:text-slate-100">
+      {/* Header + Call Status */}
+      <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="order-2 flex w-full flex-col gap-1 lg:order-1 lg:w-1/2 lg:shrink-0" ref={dropdownRef}>
+          <label className="text-xs font-medium text-slate-900 dark:text-slate-100">
             Call Status <span className="text-red-500">*</span>
           </label>
 
@@ -449,8 +687,8 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
               }}
               disabled={isBusy}
               className={cn(
-                'flex w-full cursor-pointer items-center justify-between rounded-xl border bg-white px-4 py-2.5 text-left text-sm shadow-sm',
-                'dark:bg-slate-900 dark:text-slate-100 dark:shadow-black/20',
+                'flex w-full cursor-pointer items-center justify-between rounded-lg border bg-white px-3 py-2 text-left text-sm',
+                'dark:bg-slate-900 dark:text-slate-100',
                 errors.callStatus
                   ? 'border-red-500 dark:border-red-500'
                   : 'border-slate-300 dark:border-slate-600',
@@ -458,7 +696,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                 isBusy && 'cursor-not-allowed opacity-60',
               )}
             >
-              {form.callStatus || "Select call status"}
+              {form.callStatus || 'Select call status'}
               <span
                 className="text-[10px] transition-transform duration-200"
                 style={{ transform: isDropdownOpen ? 'rotate(180deg)' : 'rotate(0)' }}
@@ -470,7 +708,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
             {isDropdownOpen && (
               <div
                 className={cn(
-                  'absolute left-0 right-0 top-[110%] z-50 overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-lg',
+                  'absolute left-0 right-0 top-[calc(100%+4px)] z-50 overflow-hidden rounded-lg border border-slate-200 bg-white p-1 shadow-lg',
                   'dark:border-slate-600 dark:bg-slate-900 dark:shadow-black/40',
                 )}
               >
@@ -487,7 +725,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
                       }
                     }}
                     className={cn(
-                      'cursor-pointer rounded-lg px-3 py-2.5 text-[13px] transition-colors',
+                      'cursor-pointer rounded-md px-3 py-2 text-xs transition-colors',
                       form.callStatus === opt
                         ? 'bg-blue-50 font-semibold text-blue-900 dark:bg-blue-950/50 dark:text-blue-200'
                         : 'font-normal text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800',
@@ -500,16 +738,35 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
             )}
           </div>
           {errors.callStatus && (
-            <span className="text-xs text-red-700 dark:text-red-400">Call status is required</span>
+            <span className="text-[11px] text-red-700 dark:text-red-400">Call status is required</span>
           )}
+        </div>
+
+        <div className="order-1 min-w-0 lg:order-2 lg:ml-auto lg:w-1/2 lg:text-right">
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+            <h2 className="m-0 text-lg font-bold text-slate-900 dark:text-slate-100">Funding Call</h2>
+            {applicationId && (
+              <div
+                className={cn(
+                  'rounded-full border border-blue-200/80 bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-700',
+                  'dark:border-blue-800/60 dark:bg-blue-500/15 dark:text-blue-300',
+                )}
+              >
+                ID: {applicationId}
+              </div>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+            Capture the latest call outcome.
+          </p>
         </div>
       </div>
 
       {/* Follow-up Date */}
       {form.callStatus === 'Call Back Later' && (
-        <div className="relative mb-4 max-w-[260px]" ref={calendarRef}>
+        <div className="relative mb-3 max-w-[220px]" ref={calendarRef}>
           <label
-            className="mb-1.5 block text-[13px] font-medium text-slate-900 dark:text-slate-100"
+            className="mb-1 block text-xs font-medium text-slate-900 dark:text-slate-100"
           >
             Next Follow-up Date
           </label>
@@ -526,7 +783,7 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
               }}
               disabled={isBusy}
               className={cn(
-                'w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-3 pr-9 text-[13px] text-slate-900 placeholder:text-slate-400',
+                'w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-9 text-xs text-slate-900 placeholder:text-slate-400',
                 'dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500',
                 isBusy && 'cursor-not-allowed opacity-60',
               )}
@@ -643,112 +900,259 @@ export const FundingCall = ({ applicationId, onSaved, onCallStatusChange }: Fund
 
       <div
         className={cn(
-          'mb-4 mt-1 rounded-[14px] border border-dashed border-slate-300/80 bg-slate-900/[0.02] p-3',
-          'dark:border-slate-600 dark:bg-slate-950/40',
+          'w-full',
+          showDecisionSidebar && 'flex flex-row items-stretch gap-4',
         )}
       >
-        <MyNotes applicationId={applicationId} />
-      </div>
+        <div className={cn('flex min-w-0 flex-col', showDecisionSidebar && 'flex-[7]')}>
+          <MyNotes applicationId={applicationId} compact tall />
+        </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        {isSuperAdmin && (
-          <div
-            className="relative"
-            onMouseEnter={() => setShowNotifyTooltip(true)}
-            onMouseLeave={() => setShowNotifyTooltip(false)}
-            onFocus={() => setShowNotifyTooltip(true)}
-            onBlur={() => setShowNotifyTooltip(false)}
-          >
-            <button
-              type="button"
-              onClick={handleNotifyOperations}
-              disabled={
-                !canNotifyOps ||
-                notifyingOps ||
-                isBusy ||
-                !isFundingCallStatusCallDone(form.callStatus) ||
-                isFundingCallStatusRejected(form.callStatus)
-              }
-              aria-disabled={
-                !canNotifyOps ||
-                notifyingOps ||
-                isBusy ||
-                !isFundingCallStatusCallDone(form.callStatus) ||
-                isFundingCallStatusRejected(form.callStatus)
-              }
-              aria-describedby="notify-ops-tooltip"
+        {showDecisionSidebar && (
+          <div className="flex min-w-0 flex-[3] flex-col">
+            <div
               className={cn(
-                'group inline-flex items-center gap-2 rounded-full px-6 py-3 font-[550] text-sm transition',
-                opsNotified
-                  ? 'cursor-default border border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800/60 dark:bg-emerald-950/40 dark:text-emerald-200'
-                  : canNotifyOps && !isBusy
-                    ? 'cursor-pointer border border-amber-300 bg-amber-50 text-amber-800 shadow-[0_8px_18px_rgba(245,158,11,0.25)] hover:bg-amber-100 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200 dark:hover:bg-amber-900/40'
-                    : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-500',
+                'flex w-full flex-col overflow-hidden rounded-lg border border-[#FDFDFD] pt-0 shadow-[0px_4px_20px_0px_#00000005]',
+                DECISION_PANEL_HEIGHT_CLASS,
+                isDark ? 'border-white bg-card' : 'bg-white',
               )}
             >
-              <span aria-hidden="true" className="text-base leading-none">
-                {opsNotified ? '✓' : notifyingOps ? '⏳' : '🔔'}
-              </span>
-              <span>
-                {opsNotified
-                  ? 'Operations Notified'
-                  : notifyingOps
-                    ? 'Notifying Operations...'
-                    : 'Notify Operations'}
-              </span>
-            </button>
-
-            {showNotifyTooltip && (
-              <div
-                id="notify-ops-tooltip"
-                role="tooltip"
+              <h2
                 className={cn(
-                  'pointer-events-none absolute bottom-full right-0 z-50 mb-2 w-[280px] rounded-lg border border-slate-200 bg-slate-900 px-3 py-2 text-[12px] leading-snug text-white shadow-xl',
-                  'dark:border-slate-700 dark:bg-slate-800',
+                  'w-full shrink-0 px-6 py-2 font-roboto text-base font-semibold',
+                  isDark ? 'bg-card text-gray-200' : 'bg-[#F9FAFD] text-[#374151]',
                 )}
               >
-                {!canNotifyOps
-                  ? 'Save the funding call first to enable this.'
-                  : !isFundingCallStatusCallDone(form.callStatus)
-                    ? 'Set call status to "Call Done" and save — Operations are notified automatically. Use this button to send a reminder.'
-                    : opsNotified
-                      ? 'Operations have been notified. Use this button to send a reminder if needed.'
-                      : 'Save with status "Call Done" to notify Operations automatically, or click to notify now.'}
-                <span
-                  aria-hidden="true"
-                  className="absolute right-6 top-full -mt-px h-0 w-0 border-x-[6px] border-t-[6px] border-x-transparent border-t-slate-900 dark:border-t-slate-800"
+                {isSuperAdmin ? 'Approve for Disbursement' : 'Deal Actions'}
+              </h2>
+
+              {isSuperAdmin && (
+                <ApprovedByUnderwriterBadge
+                  app={
+                    (applicationDetail ?? {}) as Parameters<
+                      typeof ApprovedByUnderwriterBadge
+                    >[0]['app']
+                  }
+                  fallback="an underwriter"
+                  className="mx-4 shrink-0"
                 />
+              )}
+
+              {isSuperAdmin && isApprovedForDisbursement && (
+                <div
+                  className={cn(
+                    'mx-4 flex shrink-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-xs',
+                    disbursementEmailSent === false
+                      ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200',
+                  )}
+                >
+                  <span>{disbursementEmailSent === false ? '!' : '✓'}</span>
+                  {disbursementEmailSent === true
+                    ? 'Approved — client emailed and Operations notified.'
+                    : disbursementEmailSent === false
+                      ? disbursementEmailSkippedReason ||
+                        'Approved — Operations notified, but the client email could not be sent. Retry below or add a client email on the application.'
+                      : 'Approved — Operations notified.'}
+                </div>
+              )}
+
+              <div
+                className={cn(
+                  'flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3',
+                )}
+              >
+                {isSuperAdmin && (
+                  <>
+                <button
+                  type="button"
+                  onClick={() => setApproveModalOpen(true)}
+                  disabled={isBusy || isApproveActionComplete}
+                  className={cn(
+                    decisionButtonBase,
+                    'bg-[#16A34A] shadow-md shadow-green-700/25 hover:bg-green-700',
+                  )}
+                >
+                  <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                    {approveForDisbursementPending
+                      ? 'Approving…'
+                      : isApproveActionComplete
+                        ? 'Approved for Disbursement'
+                        : isApprovedForDisbursement
+                          ? 'Resend approval email'
+                          : 'Approve Application'}
+                  </span>
+                  <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                    {isApprovedForDisbursement && disbursementEmailSent === false
+                      ? 'Retry sending the approval email to the client'
+                      : 'Send approval email to client and notify Operations'}
+                  </span>
+                </button>
+
+                {showResendApprovalMailToIso && (
+                  <button
+                    type="button"
+                    onClick={() => setIsoResendModalOpen(true)}
+                    disabled={isBusy}
+                    className={cn(
+                      decisionButtonBase,
+                      'bg-[image:var(--brand-gradient)] shadow-md shadow-[var(--brand)]/25 hover:opacity-90',
+                    )}
+                  >
+                    <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                      Resend approval mail to ISO and reinitiate contract
+                    </span>
+                    <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                      Offer values changed after a contract was generated. Send the updated offer
+                      email and reset the contract for regeneration.
+                    </span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setDocumentsModalOpen(true)}
+                  disabled={isBusy}
+                  className={cn(
+                    decisionButtonBase,
+                    'bg-[#EAA95A] hover:bg-[#EAA95A]/90',
+                  )}
+                >
+                  <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                    Send back for documents
+                  </span>
+                  <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                    Request additional documents
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRejectModalOpen(true)}
+                  disabled={isBusy}
+                  className={cn(
+                    decisionButtonBase,
+                    'bg-[#DC331D] hover:bg-[#DC331D]/90',
+                  )}
+                >
+                  <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                    Decline
+                  </span>
+                  <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                    Decline this application
+                  </span>
+                </button>
+                  </>
+                )}
+
+                {canHoldDeal && (
+                  <button
+                    type="button"
+                    onClick={handleHoldDeal}
+                    disabled={isBusy || isDealHeld}
+                    className={cn(
+                      decisionButtonBase,
+                      'bg-[#64748B] shadow-md shadow-slate-700/25 hover:bg-[#475569]',
+                    )}
+                  >
+                    <span className="w-full whitespace-normal break-words px-1 font-roboto text-base font-bold">
+                      {holdingDeal ? 'Putting on hold…' : isDealHeld ? 'On Hold' : 'Hold the deal'}
+                    </span>
+                    <span className="w-full whitespace-normal break-words px-1 text-xs font-normal leading-snug opacity-90">
+                      {isDealHeld
+                        ? 'This deal is currently on hold'
+                        : 'Pause this deal and set its queue to On Hold'}
+                    </span>
+                  </button>
+                )}
               </div>
-            )}
+            </div>
           </div>
         )}
+      </div>
 
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={isBusy}
+      <div
+        className={cn(
+          'mt-4 shrink-0 border-t border-slate-200/80 pt-4 dark:border-slate-700',
+          showDecisionSidebar && 'flex flex-row gap-4',
+        )}
+      >
+        {showDecisionSidebar && <div className="min-w-0 flex-[7]" aria-hidden="true" />}
+        <div
           className={cn(
-            'cursor-pointer rounded-full border-none bg-[#1e60a3] px-8 py-3 font-[550] text-white shadow-[0_10px_20px_rgba(30,96,163,0.3)]',
-            'disabled:cursor-not-allowed disabled:opacity-60 dark:shadow-[0_10px_24px_rgba(30,96,163,0.35)]',
+            'flex justify-end',
+            showDecisionSidebar ? 'min-w-0 flex-[3]' : 'w-full',
           )}
         >
-          {saving ? 'Saving...' : 'Update Status'}
-        </button>
+          <Button
+            type="button"
+            variant="default"
+            onClick={handleSave}
+            disabled={isBusy}
+            className="min-w-[10rem] px-6 py-2.5 text-sm font-semibold disabled:opacity-60"
+          >
+            {saving ? 'Saving...' : 'Send for Disbursement'}
+          </Button>
+        </div>
       </div>
 
       {isBusy && (
         <div
           aria-hidden="true"
-          className="pointer-events-auto absolute inset-0 z-[999] rounded-[18px] bg-transparent"
+          className="pointer-events-auto absolute inset-0 z-[999] rounded-lg bg-transparent"
         />
       )}
 
       <RejectApplicationModal
-        open={isRejectModalOpen}
-        onOpenChange={handleRejectModalOpenChange}
+        open={rejectModalOpen}
+        onOpenChange={setRejectModalOpen}
         onAfterReject={handleAfterReject}
         confirmLoading={saving}
       />
+
+      <RequestMissingDocumentsModal
+        open={documentsModalOpen}
+        onOpenChange={setDocumentsModalOpen}
+        onSuccess={() => {
+          toast.success('Document request sent.');
+        }}
+      />
+
+      <ApproveForDisbursementModal
+        open={approveModalOpen}
+        onOpenChange={setApproveModalOpen}
+        applicationId={offerApplicationId}
+        loanAmount={requestLoanAmount}
+        defaultClientEmail={linkedClientEmail}
+        confirming={approveForDisbursementPending}
+        confirmLabel={
+          isApprovedForDisbursement && disbursementEmailSent === false
+            ? 'Resend approval email'
+            : 'Approve & send email'
+        }
+        onConfirm={handleConfirmApproval}
+        onOfferUpdated={handleOfferUpdated}
+        offerUpdated={offerUpdated}
+        onSendForFinalApproval={
+          isSuperAdmin && approvingUnderwriterId
+            ? handleSendForFinalUnderwriterApproval
+            : undefined
+        }
+        sendingFinalApproval={isSendingFinalApproval}
+        isFinalApprovalStage={isFinalApprovalStage}
+      />
+
+      {isSuperAdmin && (
+        <ApprovedApplicationModal
+          open={isoResendModalOpen}
+          onOpenChange={setIsoResendModalOpen}
+          isFinalUnderwriter
+          showIsoRecipientFields
+          resendApprovalEmail
+          reinitiateContract={needsContractReinitiation || offerUpdated}
+          onOfferUpdated={refreshApplicationDetail}
+        />
+      )}
     </div>
   );
 };

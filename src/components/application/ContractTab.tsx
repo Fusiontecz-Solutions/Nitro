@@ -7,8 +7,10 @@ import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActi
 import {
     getApplicationByApplicationId,
     getApplicationById,
+    reinitiateContract,
     updateApplication,
 } from "@/redux/actions/applicationActions";
+import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
 import {
     createContract,
     getBoldSignTemplates,
@@ -400,6 +402,7 @@ export default function ContractTab({
         null,
     );
     const [creatingEnvelope, setCreatingEnvelope] = useState(false);
+    const [regeneratingContract, setRegeneratingContract] = useState(false);
     const [viewingSignedContract, setViewingSignedContract] = useState(false);
     const [viewingSignedEnvelopeId, setViewingSignedEnvelopeId] = useState<string | null>(null);
     const [voidingContract, setVoidingContract] = useState(false);
@@ -849,6 +852,10 @@ export default function ContractTab({
             )
         );
     }, [latestTermsOffer, fetchedContract]);
+
+    const needsContractReinitiation = applicationNeedsContractReinitiation(
+        applicationData as Record<string, unknown> | null,
+    );
 
     const contractsForTable = termsOffers ?? [];
     const hasGeneratedContract = useMemo(() => {
@@ -1787,10 +1794,39 @@ export default function ContractTab({
             return;
         }
 
-        // Re-open existing contract before any DB-mutating createContract call so a webhook-driven
-        // status (SENT/VIEWED/SIGNED/COMPLETED) is never clobbered back to DRAFT by the upsert.
-        const reopenedExisting = await tryOpenExistingDraftViewer();
-        if (reopenedExisting) return;
+        if (needsContractReinitiation) {
+            setRegeneratingContract(true);
+            try {
+                await dispatch(reinitiateContract(String(applicationUuid))).unwrap();
+                const byApp = await dispatch(
+                    getByApplicationIdContract(String(applicationUuid)),
+                ).unwrap();
+                const contract = (byApp as { data?: Record<string, unknown> } | null)?.data ?? byApp;
+                if (contract && typeof contract === "object") {
+                    setFetchedContract(contract);
+                    const contractId = Number((contract as { id?: unknown }).id);
+                    setSelectedContractId(Number.isFinite(contractId) ? contractId : null);
+                }
+                if (applicationUuid) {
+                    void dispatch(getApplicationById(String(applicationUuid)));
+                }
+            } catch (error: unknown) {
+                const message =
+                    typeof error === "string"
+                        ? error
+                        : (error as { message?: string })?.message ||
+                          "Failed to archive the prior contract before generating a new one.";
+                toast.error(String(message));
+                return;
+            } finally {
+                setRegeneratingContract(false);
+            }
+        } else {
+            // Re-open existing contract before any DB-mutating createContract call so a webhook-driven
+            // status (SENT/VIEWED/SIGNED/COMPLETED) is never clobbered back to DRAFT by the upsert.
+            const reopenedExisting = await tryOpenExistingDraftViewer();
+            if (reopenedExisting) return;
+        }
 
         const anyApp = applicationData as any;
 
@@ -1881,10 +1917,14 @@ export default function ContractTab({
             setPdfViewerInitialRightPaneTab("template");
             setPdfViewerOpen(true);
         } catch (error: any) {
+            // `createContract` is a thunk that rejects via `rejectWithValue(<string>)`, so
+            // `.unwrap()` throws a plain string. Fall back to object shapes for other errors.
             const message =
-                error?.response?.data?.message ||
-                error?.message ||
-                "Failed to create contract.";
+                typeof error === "string"
+                    ? error
+                    : error?.response?.data?.message ||
+                      error?.message ||
+                      "Failed to create contract.";
             toast.error(String(message));
         } finally {
             setCreatingEnvelope(false);
@@ -2993,7 +3033,7 @@ export default function ContractTab({
 
     const brandActionButtonClass = isDark
         ? "text-[#5AACEA] hover:bg-[#5AACEA]/10"
-        : "text-[#276D9C] hover:bg-[#276D9C]/10";
+        : "text-[var(--brand)] hover:bg-[var(--brand)]/10";
 
     const renderContractSendTableRow = (row: ContractSendTableRow) => {
         const isAchRow = row.rowType === "ach";
@@ -3059,7 +3099,7 @@ export default function ContractTab({
                             />
                         ) : (
                             <FileText
-                                className={`h-3.5 w-3.5 shrink-0 ${isDark ? "text-[#5AACEA]" : "text-[#276D9C]"}`}
+                                className={`h-3.5 w-3.5 shrink-0 ${isDark ? "text-[#5AACEA]" : "text-[var(--brand)]"}`}
                                 aria-hidden
                             />
                         )}
@@ -3323,7 +3363,7 @@ export default function ContractTab({
                                 type="button"
                                 onClick={() => void openAchViewer()}
                                 disabled={creatingEnvelope || preparingAchViewer}
-                                className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
+                                className="rounded-md bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
                             >
                                 {preparingAchViewer ? (
                                     <span className="inline-flex items-center gap-2">
@@ -3338,16 +3378,20 @@ export default function ContractTab({
                         <Button
                             type="button"
                             onClick={handleGenerateContract}
-                            disabled={creatingEnvelope}
-                            className="rounded-md bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer  px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
+                            disabled={creatingEnvelope || regeneratingContract}
+                            className="rounded-md bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer  px-6 py-2 h-10 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
 
 
                         >
-                            {creatingEnvelope ? (
+                            {creatingEnvelope || regeneratingContract ? (
                                 <span className="inline-flex items-center gap-2">
                                     <Loader2 className="h-4 w-4 animate-spin" />
-                                    Generating contract...
+                                    {regeneratingContract
+                                        ? "Reinitiating contract..."
+                                        : "Generating contract..."}
                                 </span>
+                            ) : needsContractReinitiation ? (
+                                "Regenerate Contract"
                             ) : isReadOnly || hasGeneratedContract ? (
                                 "View Contract"
                             ) : (
@@ -3375,7 +3419,7 @@ export default function ContractTab({
                             type="button"
                             variant="outline"
                             onClick={handleEditContractValues}
-                            className="h-9 px-4 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                            className="h-9 px-4 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                         >
                             Edit Values
                         </Button>
@@ -3626,7 +3670,7 @@ export default function ContractTab({
                             type="button"
                             onClick={handleSaveContractValues}
                             disabled={savingContractValues}
-                            className="h-9 px-4 bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+                            className="h-9 px-4 bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
                         >
                             {savingContractValues ? "Saving..." : "Save Values"}
                         </Button>

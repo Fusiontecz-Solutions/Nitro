@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { toast } from 'react-toastify';
-import { getGmailMessageDetails, getGmailAttachments, syncGmail, sendGmailCompose } from '@/redux/actions/gmailActions';
+import { getGmailMessageDetails, getGmailAttachments, syncGmail, sendGmailCompose, fetchGmailConnection, markGmailMessageInCrmLabel } from '@/redux/actions/gmailActions';
 import { parseApplicationPdfForClientPrefill } from '@/redux/actions/applicationActions';
 import { getIsos } from '@/redux/actions/isoActions';
 import type { GmailLabel } from '@/redux/actions/gmailActions';
@@ -19,6 +19,17 @@ import {
   LogOut,
 } from 'lucide-react';
 import { buildGoogleOAuthConnectUrl } from '@/lib/googleOAuth';
+
+function isGmailReconnectNeeded(message: string | null | undefined): boolean {
+  const m = String(message || '').toLowerCase();
+  return (
+    m.includes('invalid authentication credentials') ||
+    m.includes('invalid_grant') ||
+    m.includes('reconnect google') ||
+    m.includes('gmail connection expired') ||
+    m.includes('gmail is not connected')
+  );
+}
 import {
   Dialog,
   DialogContent,
@@ -192,11 +203,15 @@ const GmailPage = () => {
     loadingList,
     loadingDetail,
     detailError,
-    listError,
+    syncError,
     nextPageToken,
     activeLabel,
     autoCreating,
     sendingEmail,
+    gmailConnected,
+    gmailEmail,
+    connectionLoading,
+    connectionChecked,
   } = useSelector((state: RootState) => state.gmail);
   const { data: loginData } = useSelector((state: RootState) => state.login);
   const userRole =
@@ -278,8 +293,14 @@ const GmailPage = () => {
   }, [messages, searchQuery]);
 
   useEffect(() => {
+    dispatch(fetchGmailConnection());
+  }, [dispatch]);
+
+  useEffect(() => {
+    if (!connectionChecked || connectionLoading) return;
+    if (!gmailConnected) return;
     dispatch(syncGmail({ label: activeLabel }));
-  }, [dispatch, activeLabel]);
+  }, [dispatch, activeLabel, connectionChecked, connectionLoading, gmailConnected]);
 
   const cleanEmailAddress = (email: string): string =>
     email.replace(/[<>]/g, '').trim()
@@ -435,7 +456,7 @@ const GmailPage = () => {
         </div>
 
         <div className="flex-1 max-w-3xl">
-          <div className="flex items-center gap-3 w-full rounded-lg border border-border bg-background px-4 py-2.5 transition-colors focus-within:border-[#276D9C]">
+          <div className="flex items-center gap-3 w-full rounded-lg border border-border bg-background px-4 py-2.5 transition-colors focus-within:border-[var(--brand)]">
             <Search className="h-4 w-4 text-muted-foreground" />
             <input
               type="text"
@@ -454,7 +475,7 @@ const GmailPage = () => {
           <button
             type="button"
             onClick={() => setIsAccountSwitcherOpen(true)}
-            className="h-8 w-8 shrink-0 rounded-full bg-[#276D9C] flex items-center justify-center text-white text-[10px] font-semibold cursor-pointer ring-offset-2 ring-offset-background transition-shadow hover:ring-2 hover:ring-[#276D9C]/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]"
+            className="h-8 w-8 shrink-0 rounded-full bg-[image:var(--brand-gradient)] flex items-center justify-center text-white text-[10px] font-semibold cursor-pointer ring-offset-2 ring-offset-background transition-shadow hover:ring-2 hover:ring-[var(--brand)]/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
             title="Google account"
             aria-label="Open account menu"
           >
@@ -471,7 +492,7 @@ const GmailPage = () => {
           <DialogTitle className="sr-only">Account switcher</DialogTitle>
           <div className="relative border-b border-slate-200/80 bg-slate-100 px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center gap-2 pr-10">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#276D9C] text-[10px] font-semibold text-white">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[image:var(--brand-gradient)] text-[10px] font-semibold text-white">
                 {accountInitials}
               </div>
               <span className="min-w-0 truncate text-center text-sm font-medium text-slate-800 dark:text-slate-100">
@@ -490,14 +511,16 @@ const GmailPage = () => {
 
           <div className="space-y-4 px-6 pb-6 pt-5">
             <div className="flex flex-col items-center text-center">
-              <div className="relative mb-3 flex h-20 w-20 items-center justify-center rounded-full border-4 border-white bg-[#276D9C] text-2xl font-semibold text-white shadow-md ring-2 ring-slate-200 dark:ring-slate-700">
+              <div className="relative mb-3 flex h-20 w-20 items-center justify-center rounded-full border-4 border-white bg-[image:var(--brand-gradient)] text-2xl font-semibold text-white shadow-md ring-2 ring-slate-200 dark:ring-slate-700">
                 {accountInitials.slice(0, 1)}
               </div>
               <p className="text-xl font-normal text-slate-800 dark:text-slate-100">
                 Hi, {sessionUser?.firstName?.trim() || accountEmail.split('@')[0] || 'there'}!
               </p>
               <p className="mt-0.5 max-w-[280px] text-xs text-slate-600 dark:text-slate-400">
-                {accountEmail}
+                {gmailConnected && gmailEmail
+                  ? `Connected as ${gmailEmail}`
+                  : accountEmail}
               </p>
               <a
                 href="https://myaccount.google.com/"
@@ -522,7 +545,7 @@ const GmailPage = () => {
                   className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm transition-colors hover:bg-slate-50 dark:hover:bg-slate-900"
                   onClick={handleConnectGmailFromSwitcher}
                 >
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#276D9C]/15 text-[#276D9C]">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--brand)]/15 text-[var(--brand)]">
                     <Plus className="h-5 w-5" />
                   </span>
                   <span className="min-w-0 flex-1">
@@ -579,7 +602,7 @@ const GmailPage = () => {
         <aside className={`transition-all duration-300 flex flex-col rounded-xl border border-border bg-card ${isSidebarOpen ? 'w-64' : 'w-20'} p-2`}>
           <div className="px-1 py-1">
             <button
-              className={`w-full flex items-center gap-3 transition-all hover:shadow-sm border border-[#276D9C]/25 ${isSidebarOpen ? 'px-4 py-3 rounded-lg bg-[#276D9C]/10 text-[#276D9C]' : 'p-3 rounded-lg bg-[#276D9C]/10 justify-center'}`}
+              className={`w-full flex items-center gap-3 transition-all hover:shadow-sm border border-[var(--brand)]/25 ${isSidebarOpen ? 'px-4 py-3 rounded-lg bg-[var(--brand)]/10 text-[var(--brand)]' : 'p-3 rounded-lg bg-[var(--brand)]/10 justify-center'}`}
               onClick={() => { setIsComposeOpen(true); setIsComposeMinimized(false); }}
             >
               <Plus className="h-5 w-5" />
@@ -594,7 +617,7 @@ const GmailPage = () => {
                   key={item.value}
                   onClick={() => handleLabelChange(item.value)}
                   className={`flex items-center gap-3 cursor-pointer text-sm rounded-md transition-colors ${isSidebarOpen ? 'px-3 py-2' : 'px-2 py-2 justify-center'} ${isActive
-                    ? 'bg-[#276D9C] text-white font-semibold'
+                    ? 'bg-[image:var(--brand-gradient)] text-white font-semibold'
                     : 'text-foreground/80 hover:bg-muted'
                     }`}
                 >
@@ -634,31 +657,75 @@ const GmailPage = () => {
                 </div>
               </div>
 
+              {gmailConnected && syncError && messages.length > 0 && (
+                <div className="flex items-center justify-between gap-3 border-b border-amber-200/80 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span className="truncate">Sync failed — showing last loaded mail. {syncError}</span>
+                  </div>
+                  {isGmailReconnectNeeded(syncError) ? (
+                    <GoogleOAuthButton onClick={handleGoogleConnect} className="shrink-0" />
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => dispatch(syncGmail({ label: activeLabel }))}
+                    >
+                      Retry
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <div className="flex-1 overflow-y-auto bg-background">
-                {loadingList && messages.length === 0 ? (
+                {connectionLoading && !connectionChecked ? (
+                  <div className="flex items-center justify-center py-16">
+                    <RefreshCw className="h-5 w-5 animate-spin opacity-50 mr-2" />
+                    <span className="text-sm opacity-60">Checking Gmail connection…</span>
+                  </div>
+                ) : connectionChecked && !gmailConnected ? (
+                  <div className="flex flex-col items-center justify-center py-16 px-4 min-h-[min(60vh,420px)]">
+                    <div className="flex flex-col items-center text-center opacity-60">
+                      <Mail className="h-10 w-10 mb-3 opacity-40" />
+                      <span className="text-sm mb-2">Connect Gmail to view your inbox</span>
+                      <span className="text-xs opacity-50 mb-6 max-w-xs">
+                        Sign in with the Google account linked to your CRM email.
+                      </span>
+                    </div>
+                    <GoogleOAuthButton onClick={handleGoogleConnect} className="w-full max-w-sm" />
+                  </div>
+                ) : loadingList && messages.length === 0 ? (
                   <div className="flex items-center justify-center py-16">
                     <RefreshCw className="h-5 w-5 animate-spin opacity-50 mr-2" />
                     <span className="text-sm opacity-60">Loading {activeLabel.toLowerCase()} mails…</span>
                   </div>
-                ) : listError && messages.length === 0 ? (
+                ) : syncError && messages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 px-4 min-h-[min(60vh,420px)]">
                     <div className="flex flex-col items-center text-center opacity-60">
                       <AlertCircle className="h-10 w-10 mb-3 text-red-400" />
-                      <span className="text-sm text-red-500 mb-2">Failed to load {activeLabel.toLowerCase()} mails</span>
-                      <span className="text-xs opacity-50 mb-6 max-w-xs">{listError}</span>
+                      <span className="text-sm text-red-500 mb-2">
+                        {isGmailReconnectNeeded(syncError) ? 'Gmail connection expired' : 'Sync failed'}
+                      </span>
+                      <span className="text-xs opacity-50 mb-2 max-w-xs">{syncError}</span>
+                      {gmailEmail && !isGmailReconnectNeeded(syncError) && (
+                        <span className="text-xs text-muted-foreground mb-6">
+                          Connected as {gmailEmail}
+                        </span>
+                      )}
                     </div>
-                    <div className="flex flex-col items-stretch gap-3 w-full max-w-sm mx-auto">
+                    {isGmailReconnectNeeded(syncError) ? (
+                      <GoogleOAuthButton onClick={handleGoogleConnect} className="w-full max-w-sm" />
+                    ) : (
                       <Button
                         variant="outline"
                         size="sm"
-                        className="w-full"
+                        className="w-full max-w-sm"
                         onClick={() => dispatch(syncGmail({ label: activeLabel }))}
                       >
-                        Retry
+                        Retry sync
                       </Button>
-
-                      <GoogleOAuthButton onClick={handleGoogleConnect} className="w-full" />
-                    </div>
+                    )}
                   </div>
                 ) : filteredMessages.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16 opacity-50">
@@ -670,7 +737,7 @@ const GmailPage = () => {
                 ) : (
                   <>
                     {filteredMessages.map((m: any) => (
-                      <div key={m.id} onClick={() => handleSelectMessage(m.id)} className={`group flex items-center px-4 py-2.5 border-b border-border cursor-pointer transition-colors ${selectedMessageId === m.id ? 'bg-[#276D9C]/10' : 'hover:bg-muted/70'}`}>
+                      <div key={m.id} onClick={() => handleSelectMessage(m.id)} className={`group flex items-center px-4 py-2.5 border-b border-border cursor-pointer transition-colors ${selectedMessageId === m.id ? 'bg-[var(--brand)]/10' : 'hover:bg-muted/70'}`}>
                         {/* <Square className="h-4 w-4 mr-4 opacity-20 group-hover:opacity-60" /> */}
                         {/* <Star className="h-4 w-4 mr-4 opacity-20 group-hover:opacity-60" /> */}
                         <div className={`w-64 truncate text-sm mr-4 ${m.isRead ? 'font-normal text-muted-foreground' : 'font-semibold text-foreground'}`}>
@@ -783,6 +850,13 @@ const GmailPage = () => {
                       }),
                     ).unwrap();
 
+                    try {
+                      await dispatch(markGmailMessageInCrmLabel(selectedMessageId)).unwrap();
+                      void dispatch(syncGmail({ label: 'INBOX' }));
+                    } catch (labelError) {
+                      console.warn('Application created but Gmail in-crm label failed:', labelError);
+                    }
+
                     toast.success("Application created successfully");
 
                     if (isOperationsRole) {
@@ -807,7 +881,7 @@ const GmailPage = () => {
                   }
                 }}
                 disabled={autoCreating || isBypassProcessing}
-                className="absolute cursor-pointer bottom-6 right-6 z-40 flex items-center gap-2 px-5 py-2.5 bg-[#276D9C] hover:bg-[#1e567d] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg shadow-lg hover:shadow-xl transition-all"
+                className="absolute cursor-pointer bottom-6 right-6 z-40 flex items-center gap-2 px-5 py-2.5 bg-[image:var(--brand-gradient)] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg shadow-lg hover:shadow-xl transition-all"
               >
                 {autoCreating || isBypassProcessing ? (
                   <>

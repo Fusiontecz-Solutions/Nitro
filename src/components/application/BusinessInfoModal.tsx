@@ -417,7 +417,7 @@ export default function BusinessInfoModal({
             type="button"
             onClick={handleSave}
             disabled={readOnly || loading || saving}
-            className="bg-[#3B8BD1] hover:bg-[#2d6fad] text-white disabled:opacity-70 disabled:cursor-not-allowed"
+            className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white disabled:opacity-70 disabled:cursor-not-allowed"
           >
             {saving ? "Saving..." : "Save"}
           </Button>

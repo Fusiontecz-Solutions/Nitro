@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
@@ -10,9 +10,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { updateClient } from "@/redux/actions/clientActions";
-import { getApplicationById } from "@/redux/actions/applicationActions";
-import { axiosPostFormData } from "@/redux/axios";
-import { invalidateApplicationDetailCache } from "@/lib/applicationDetailCache";
+import { resetUpdateClient } from "@/redux/slices/clientSlice";
+import { getApplicationById, uploadApplicationDocuments } from "@/redux/actions/applicationActions";
 import { toast } from "react-toastify";
 import {
     CheckCircle2,
@@ -24,8 +23,11 @@ import {
     Banknote,
     Files,
     Pin,
+    ChevronDown,
+    ChevronUp,
 } from "lucide-react";
 import { normalizeDocumentSlug } from "@/constants/documentRequestTypes";
+import { useApplicationClientOwners } from "@/hooks/useApplicationClientOwners";
 
 type ApprovalSummary = {
     borrowerName?: string;
@@ -130,11 +132,79 @@ const fromDobDisplay = (display: string): string | null => {
     return null;
 };
 
+type OwnerForm = {
+    firstName: string;
+    lastName: string;
+    email: string;
+    mobileNumber: string;
+    ssn: string;
+    dateOfBirth: string;
+    address1: string;
+    city: string;
+    state: string;
+    zipCode: string;
+};
+
+type MandatoryFieldKey =
+    | "businessName"
+    | "businessEmail"
+    | "businessNumber"
+    | "einNumber"
+    | "businessAddress1"
+    | `owner-${number}-ssn`;
+
+const buildFormPlaceholder = () => ({
+    businessName: "",
+    businessEmail: "",
+    businessNumber: "",
+    einNumber: "",
+    businessAddress1: "",
+    businessCity: "",
+    businessState: "",
+    businessZipCode: "",
+});
+
+const getMandatoryFieldErrors = (
+    businessForm: ReturnType<typeof buildFormPlaceholder>,
+    ownerForms: OwnerForm[],
+): Partial<Record<MandatoryFieldKey, string>> => {
+    const errors: Partial<Record<MandatoryFieldKey, string>> = {};
+    if (!businessForm.businessName.trim()) errors.businessName = "Required";
+    if (!businessForm.businessEmail.trim()) errors.businessEmail = "Required";
+    if (!businessForm.businessNumber.trim()) errors.businessNumber = "Required";
+    if (!businessForm.einNumber.trim()) errors.einNumber = "Required";
+    if (!businessForm.businessAddress1.trim()) errors.businessAddress1 = "Required";
+    ownerForms.forEach((owner, index) => {
+        if (!owner.ssn.trim()) errors[`owner-${index}-ssn`] = "Required";
+    });
+    return errors;
+};
+
+const buildOwnerForm = (owner: any): OwnerForm => ({
+    firstName: String(owner?.firstName ?? ""),
+    lastName: String(owner?.lastName ?? ""),
+    email: String(owner?.email ?? ""),
+    mobileNumber: String(owner?.mobileNumber ?? ""),
+    ssn: String(owner?.ssn ?? ""),
+    dateOfBirth: toDobDisplay(owner?.dateOfBirth),
+    address1: String(owner?.address?.address1 ?? ""),
+    city: String(owner?.address?.city ?? ""),
+    state: String(owner?.address?.state ?? ""),
+    zipCode: String(owner?.address?.zipCode ?? ""),
+});
+
 const buildUploadedFromFiles = (files: unknown[] | undefined): Record<string, string[]> => {
     const map: Record<string, string[]> = {};
     for (const f of files ?? []) {
-        const file = f as { originalName?: string; documentType?: string; requestedDocumentSlug?: string };
-        const slug = normalizeDocumentSlug(file.documentType || file.requestedDocumentSlug);
+        const file = f as {
+            originalName?: string;
+            documentType?: string;
+            requestedDocumentSlug?: string;
+            type?: string;
+        };
+        const slug = normalizeDocumentSlug(
+            file.requestedDocumentSlug || file.documentType || file.type,
+        );
         if (!slug) continue;
         const name = String(file.originalName || "Uploaded file");
         map[slug] = [...(map[slug] ?? []), name];
@@ -142,23 +212,58 @@ const buildUploadedFromFiles = (files: unknown[] | undefined): Record<string, st
     return map;
 };
 
+const buildUploadedSlotsFromFiles = (files: unknown[] | undefined): Record<string, boolean> => {
+    const slots: Record<string, boolean> = {};
+    for (const [slug, names] of Object.entries(buildUploadedFromFiles(files))) {
+        if (names.length > 0) slots[slug] = true;
+    }
+    return slots;
+};
+
+const mergeUploadedMaps = (
+    fromServer: Record<string, string[]>,
+    local: Record<string, string[]>,
+): Record<string, string[]> => {
+    const merged = { ...fromServer };
+    for (const [slot, names] of Object.entries(local)) {
+        const existing = merged[slot] ?? [];
+        const extra = names.filter((name) => !existing.includes(name));
+        if (extra.length > 0) merged[slot] = [...existing, ...extra];
+        else if (existing.length > 0) merged[slot] = existing;
+        else if (names.length > 0) merged[slot] = names;
+    }
+    return merged;
+};
+
+const mergeUploadedSlots = (
+    fromServer: Record<string, boolean>,
+    local: Record<string, boolean>,
+): Record<string, boolean> => ({ ...local, ...fromServer });
+
 const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, onApprove, approving }: Props) => {
     const dispatch = useDispatch<AppDispatch>();
     const reduxApp = useSelector((s: RootState) => s.applicationDetail.data) as any;
     const app = reduxApp ?? applicationData;
 
-    const clientId = String(app?.client?.id ?? app?.client?._id ?? "");
+    const clientId = String(
+        typeof app?.client === "string"
+            ? app.client
+            : (app?.client?.id ?? app?.client?._id ?? ""),
+    );
     const applicationId = String(app?.id ?? app?._id ?? applicationData?.id ?? applicationData?._id ?? "");
     const business = app?.client?.business ?? {};
-    const owner = app?.client?.owner ?? {};
+    const { owners: resolvedOwnerRecords } = useApplicationClientOwners(open ? app?.client : null);
 
     const [step, setStep] = useState(0);
     const [saving, setSaving] = useState(false);
     const [uploading, setUploading] = useState<string | null>(null);
-    /** In-session uploads merged with server files so the row shows "Uploaded" immediately. */
-    const [sessionUploads, setSessionUploads] = useState<Record<string, string[]>>({});
+    const [uploaded, setUploaded] = useState<Record<string, string[]>>({});
+    const [uploadedSlots, setUploadedSlots] = useState<Record<string, boolean>>({});
+    const [expandedOwnerIndex, setExpandedOwnerIndex] = useState(0);
+    const dialogSessionKeyRef = useRef("");
 
     const buildForm = () => ({
+        ...buildFormPlaceholder(),
         businessName: String(business?.name ?? ""),
         businessEmail: String(business?.email ?? ""),
         businessNumber: String(business?.number ?? ""),
@@ -167,67 +272,121 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
         businessCity: String(business?.address?.city ?? ""),
         businessState: String(business?.address?.state ?? ""),
         businessZipCode: String(business?.address?.zipCode ?? ""),
-        ownerFirstName: String(owner?.firstName ?? ""),
-        ownerLastName: String(owner?.lastName ?? ""),
-        ownerEmail: String(owner?.email ?? ""),
-        ownerMobileNumber: String(owner?.mobileNumber ?? ""),
-        ownerSsn: String(owner?.ssn ?? ""),
-        ownerDateOfBirth: toDobDisplay(owner?.dateOfBirth),
-        ownerAddress1: String(owner?.address?.address1 ?? ""),
-        ownerCity: String(owner?.address?.city ?? ""),
-        ownerState: String(owner?.address?.state ?? ""),
-        ownerZipCode: String(owner?.address?.zipCode ?? ""),
     });
     const [form, setForm] = useState(buildForm);
+    const [owners, setOwners] = useState<OwnerForm[]>([buildOwnerForm({})]);
+    const [fieldErrors, setFieldErrors] = useState<Partial<Record<MandatoryFieldKey, string>>>({});
 
-    // Reset the wizard when the dialog opens; clear in-session uploads when it closes.
+    const mapResolvedOwnersToForm = () =>
+        resolvedOwnerRecords.length
+            ? resolvedOwnerRecords.map(buildOwnerForm)
+            : [buildOwnerForm({})];
+
+    // Reset wizard only when the dialog opens for a (new) application — not when
+    // client/files refetch mid-flow (that was clearing upload button state).
     useEffect(() => {
-        if (open) {
-            setStep(0);
-        } else {
-            setSessionUploads({});
-            setUploading(null);
+        if (!open) {
+            dialogSessionKeyRef.current = "";
+            return;
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
+        if (!applicationId) return;
+        if (dialogSessionKeyRef.current === applicationId) return;
+        dialogSessionKeyRef.current = applicationId;
 
-    // Repopulate the form when the merchant data loads/changes (without touching
-    // the current step or upload state).
+        setStep(0);
+        setForm(buildForm());
+        setOwners(mapResolvedOwnersToForm());
+        setExpandedOwnerIndex(resolvedOwnerRecords.length > 1 ? -1 : 0);
+        const initialUploaded = buildUploadedFromFiles(app?.files);
+        setUploaded(initialUploaded);
+        setUploadedSlots(buildUploadedSlotsFromFiles(app?.files));
+        setFieldErrors({});
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, applicationId]);
+
     useEffect(() => {
-        if (open) setForm(buildForm());
+        if (!open) return;
+        const nextOwners = mapResolvedOwnersToForm();
+        setOwners(nextOwners);
+        setExpandedOwnerIndex(nextOwners.length > 1 ? -1 : 0);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open, clientId]);
+    }, [open, resolvedOwnerRecords]);
 
-    // The single source of truth for what's uploaded: server-persisted files
-    // merged with in-session optimistic uploads. Deriving (instead of storing in
-    // state) means a completed upload always shows as "Uploaded" and never
-    // reverts when the application refetches.
-    const uploaded = useMemo(() => {
-        const merged = buildUploadedFromFiles(app?.files);
-        for (const [slot, names] of Object.entries(sessionUploads)) {
-            const key = normalizeDocumentSlug(slot);
-            if (!key) continue;
-            const existing = merged[key] ?? [];
-            const extra = names.filter((n) => !existing.includes(n));
-            merged[key] = [...existing, ...extra];
+    // Keep the uploaded list in sync with the server without disturbing step or slots.
+    useEffect(() => {
+        if (!open) return;
+        const fromServer = buildUploadedFromFiles(app?.files);
+        const fromServerSlots = buildUploadedSlotsFromFiles(app?.files);
+        setUploaded((prev) => mergeUploadedMaps(fromServer, prev));
+        setUploadedSlots((prev) => mergeUploadedSlots(fromServerSlots, prev));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [app?.files, open]);
+
+    const clearFieldError = (key: MandatoryFieldKey) => {
+        setFieldErrors((prev) => {
+            if (!prev[key]) return prev;
+            const next = { ...prev };
+            delete next[key];
+            return next;
+        });
+    };
+
+    const set = (k: keyof ReturnType<typeof buildForm>, v: string) => {
+        setForm((p) => ({ ...p, [k]: v }));
+        clearFieldError(k as MandatoryFieldKey);
+    };
+
+    const setOwner = (index: number, k: keyof OwnerForm, v: string) => {
+        setOwners((prev) => prev.map((o, i) => (i === index ? { ...o, [k]: v } : o)));
+        if (k === "ssn") clearFieldError(`owner-${index}-ssn`);
+    };
+
+    const validateMandatoryFields = () => {
+        const errors = getMandatoryFieldErrors(form, owners);
+        setFieldErrors(errors);
+        if (Object.keys(errors).length > 0) {
+            const ownerErrorIndex = owners.findIndex((_, i) => errors[`owner-${i}-ssn`]);
+            if (ownerErrorIndex >= 0) setExpandedOwnerIndex(ownerErrorIndex);
+            toast.error("Business name, email, phone, EIN, address, and owner SSN are required before approving.");
+            return false;
         }
-        return merged;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [app?.files, sessionUploads]);
+        return true;
+    };
 
-    const set = (k: keyof ReturnType<typeof buildForm>, v: string) => setForm((p) => ({ ...p, [k]: v }));
-
-    const saveCorrections = async () => {
+    const validateMerchantDetails = () => {
         if (!clientId) {
             toast.info("Merchant details are still loading — please wait a moment.");
             return false;
         }
-        if (form.ownerDateOfBirth.trim() && !fromDobDisplay(form.ownerDateOfBirth)) {
+        if (!validateMandatoryFields()) return false;
+        const hasInvalidDob = owners.some(
+            (o) => o.dateOfBirth.trim() && !fromDobDisplay(o.dateOfBirth),
+        );
+        if (hasInvalidDob) {
             toast.error("Date of birth must be in mm-dd-yy format (e.g. 03-15-85). You can also use mm-dd-yyyy.");
             return false;
         }
+        return true;
+    };
+
+    const saveCorrections = async () => {
+        if (!validateMerchantDetails()) return false;
         setSaving(true);
         try {
+            const ownersPayload = owners.map((o) => ({
+                firstName: o.firstName,
+                lastName: o.lastName,
+                email: o.email,
+                mobileNumber: o.mobileNumber,
+                ssn: o.ssn,
+                dateOfBirth: fromDobDisplay(o.dateOfBirth),
+                address: {
+                    address1: o.address1,
+                    city: o.city,
+                    state: o.state,
+                    zipCode: o.zipCode,
+                },
+            }));
             await dispatch(
                 updateClient({
                     id: clientId,
@@ -244,20 +403,8 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                                 zipCode: form.businessZipCode,
                             },
                         },
-                        owner: {
-                            firstName: form.ownerFirstName,
-                            lastName: form.ownerLastName,
-                            email: form.ownerEmail,
-                            mobileNumber: form.ownerMobileNumber,
-                            ssn: form.ownerSsn,
-                            dateOfBirth: fromDobDisplay(form.ownerDateOfBirth),
-                            address: {
-                                address1: form.ownerAddress1,
-                                city: form.ownerCity,
-                                state: form.ownerState,
-                                zipCode: form.ownerZipCode,
-                            },
-                        },
+                        owners: ownersPayload,
+                        owner: ownersPayload[0],
                     } as any,
                 }),
             ).unwrap();
@@ -265,9 +412,10 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             toast.success("Merchant details updated.");
             return true;
         } catch (e: any) {
-            toast.error(e?.message || String(e) || "Couldn't Verify and .");
+            toast.error(e?.message || String(e) || "Couldn't verify and save.");
             return false;
         } finally {
+            dispatch(resetUpdateClient());
             setSaving(false);
         }
     };
@@ -278,41 +426,50 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
             toast.info("Application is still loading — please wait a moment.");
             return;
         }
-        const canonicalSlot = normalizeDocumentSlug(slot);
-        const fileNames = Array.from(fileList).map((f) => f.name);
-        setUploading(canonicalSlot);
-        try {
-            const fd = new FormData();
-            Array.from(fileList).forEach((f) => fd.append("files", f));
-            // The backend maps `documentType` to the canonical requestedDocumentSlug,
-            // which drives the CRM badge + pinning for key docs.
-            fd.append("documentType", canonicalSlot);
-            const response = await axiosPostFormData(`/applications/${applicationId}/files`, fd);
 
-            setSessionUploads((prev) => ({
+        const fileNames = Array.from(fileList).map((f) => f.name);
+        setUploading(slot);
+        setUploadedSlots((prev) => ({ ...prev, [slot]: true }));
+        setUploaded((prev) => ({
+            ...prev,
+            [slot]: [...(prev[slot] ?? []), ...fileNames],
+        }));
+
+        try {
+            const response = await dispatch(
+                uploadApplicationDocuments({
+                    id: applicationId,
+                    files: Array.from(fileList),
+                    requestedDocumentSlug: slot,
+                }),
+            ).unwrap();
+            const updatedApp = response?.data ?? response;
+            const fromResponse = buildUploadedFromFiles(updatedApp?.files);
+
+            setUploaded((prev) => mergeUploadedMaps(fromResponse, prev));
+            setUploadedSlots((prev) => ({
                 ...prev,
-                [canonicalSlot]: [...(prev[canonicalSlot] ?? []), ...fileNames],
+                ...buildUploadedSlotsFromFiles(updatedApp?.files),
+                [slot]: true,
             }));
 
-            const apiApp =
-                (response.data as { data?: { files?: unknown[] } })?.data ??
-                (response.data as { files?: unknown[] });
-            if (apiApp?.files?.length) {
-                const fromApi = buildUploadedFromFiles(apiApp.files);
-                setSessionUploads((prev) => {
-                    const next = { ...prev };
-                    for (const [s, names] of Object.entries(fromApi)) {
-                        if (!names.length) continue;
-                        next[s] = [...new Set([...(next[s] ?? []), ...names])];
-                    }
-                    return next;
-                });
-            }
-
-            invalidateApplicationDetailCache(applicationId);
             if (applicationId) void dispatch(getApplicationById(applicationId));
             toast.success("Document uploaded.");
         } catch (e: any) {
+            setUploaded((prev) => {
+                const remaining = (prev[slot] ?? []).filter((name) => !fileNames.includes(name));
+                const next = { ...prev };
+                if (remaining.length > 0) next[slot] = remaining;
+                else delete next[slot];
+                return next;
+            });
+            setUploadedSlots((prev) => {
+                const hadBefore = buildUploadedSlotsFromFiles(app?.files)[slot];
+                if (hadBefore) return { ...prev, [slot]: true };
+                const next = { ...prev };
+                delete next[slot];
+                return next;
+            });
             toast.error(e?.response?.data?.message || e?.message || "Upload failed.");
         } finally {
             setUploading(null);
@@ -321,30 +478,37 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
 
     const totalUploaded = Object.values(uploaded).reduce((sum, names) => sum + names.length, 0);
 
+    const handleStep0Next = () => {
+        if (validateMerchantDetails()) setStep(1);
+    };
+
     const finalApprove = async () => {
+        if (!validateMerchantDetails()) {
+            setStep(0);
+            return;
+        }
         await onApprove();
         onOpenChange(false);
     };
 
-    const fullName = `${form.ownerFirstName} ${form.ownerLastName}`.trim() || "—";
+    const ownerLabel = (owner: OwnerForm, index: number) => {
+        const name = `${owner.firstName} ${owner.lastName}`.trim();
+        return name || `Owner ${index + 1}`;
+    };
+
+    const primaryOwner = owners[0];
+    const primaryOwnerName = primaryOwner
+        ? `${primaryOwner.firstName} ${primaryOwner.lastName}`.trim()
+        : "";
+    const fullName =
+        (primaryOwnerName || "—") + (owners.length > 1 ? ` (+${owners.length - 1} more)` : "");
 
     return (
-        <Dialog
-            open={open}
-            onOpenChange={(next: boolean) => {
-                if (!next && uploading) return;
-                onOpenChange(next);
-            }}
-        >
-            <DialogContent
-                className="sm:max-w-2xl max-h-[88vh] overflow-y-auto"
-                onInteractOutside={(e: Event) => {
-                    if (uploading) e.preventDefault();
-                }}
-            >
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-2xl max-h-[88vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
-                        <ClipboardCheck className="h-5 w-5 text-[#2563EB]" /> Review &amp; approve application
+                        <ClipboardCheck className="h-5 w-5 text-[var(--brand)]" /> Review &amp; approve application
                     </DialogTitle>
                 </DialogHeader>
 
@@ -368,7 +532,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                 <div className="flex items-center gap-2 mt-3 mb-3">
                     {STEPS.map((label, i) => (
                         <div key={label} className="flex items-center gap-2">
-                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${i <= step ? "bg-[#2563EB] text-white" : "bg-muted text-muted-foreground"}`}>{i + 1}</span>
+                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${i <= step ? "bg-[image:var(--brand-gradient)] text-white" : "bg-muted text-muted-foreground"}`}>{i + 1}</span>
                             <span className={`text-xs ${i === step ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{label}</span>
                             {i < STEPS.length - 1 && <span className="mx-1 h-px w-5 bg-border" />}
                         </div>
@@ -378,43 +542,71 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                 {/* Step 1 — Review details */}
                 {step === 0 && (
                     <div className="space-y-4">
-                        <p className="text-sm text-muted-foreground">Please confirm the merchant's details are correct. Fix anything that's wrong before approving.</p>
+                        <p className="text-sm text-muted-foreground">Please confirm the merchant's details are correct. Fields marked with <span className="text-red-500">*</span> are required before you can approve.</p>
                         <Section title="Business">
-                            <Field label="Business name" value={form.businessName} onChange={(v) => set("businessName", v)} />
-                            <Field label="Business email" value={form.businessEmail} onChange={(v) => set("businessEmail", v)} />
-                            <Field label="Business phone" value={form.businessNumber} onChange={(v) => set("businessNumber", v)} />
-                            <Field label="EIN" value={form.einNumber} onChange={(v) => set("einNumber", v)} />
-                            <Field label="Address" value={form.businessAddress1} onChange={(v) => set("businessAddress1", v)} full />
+                            <Field label="Business name" value={form.businessName} onChange={(v) => set("businessName", v)} required error={fieldErrors.businessName} />
+                            <Field label="Business email" value={form.businessEmail} onChange={(v) => set("businessEmail", v)} required error={fieldErrors.businessEmail} />
+                            <Field label="Business phone" value={form.businessNumber} onChange={(v) => set("businessNumber", v)} required error={fieldErrors.businessNumber} />
+                            <Field label="EIN" value={form.einNumber} onChange={(v) => set("einNumber", v)} required error={fieldErrors.einNumber} />
+                            <Field label="Address" value={form.businessAddress1} onChange={(v) => set("businessAddress1", v)} full required error={fieldErrors.businessAddress1} />
                             <Field label="City" value={form.businessCity} onChange={(v) => set("businessCity", v)} />
                             <Field label="State" value={form.businessState} onChange={(v) => set("businessState", v)} />
                             <Field label="Zip" value={form.businessZipCode} onChange={(v) => set("businessZipCode", v)} />
                         </Section>
-                        <Section title="Owner">
-                            <Field label="First name" value={form.ownerFirstName} onChange={(v) => set("ownerFirstName", v)} />
-                            <Field label="Last name" value={form.ownerLastName} onChange={(v) => set("ownerLastName", v)} />
-                            <Field label="Email" value={form.ownerEmail} onChange={(v) => set("ownerEmail", v)} />
-                            <Field label="Mobile" value={form.ownerMobileNumber} onChange={(v) => set("ownerMobileNumber", v)} />
-                            <Field label="SSN" value={form.ownerSsn} onChange={(v) => set("ownerSsn", v)} />
-                            <Field
-                                label="Date of birth"
-                                value={form.ownerDateOfBirth}
-                                onChange={(v) => set("ownerDateOfBirth", v)}
-                                placeholder="mm-dd-yy"
-                                onBlur={() => {
-                                    const iso = fromDobDisplay(form.ownerDateOfBirth);
-                                    if (iso) set("ownerDateOfBirth", toDobDisplay(iso));
-                                }}
-                            />
-                            <Field label="Address" value={form.ownerAddress1} onChange={(v) => set("ownerAddress1", v)} full />
-                            <Field label="City" value={form.ownerCity} onChange={(v) => set("ownerCity", v)} />
-                            <Field label="State" value={form.ownerState} onChange={(v) => set("ownerState", v)} />
-                            <Field label="Zip" value={form.ownerZipCode} onChange={(v) => set("ownerZipCode", v)} />
-                        </Section>
+                        <div className="space-y-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {owners.length > 1 ? `Owners (${owners.length})` : "Owner"}
+                            </p>
+                            {owners.map((owner, index) => {
+                                const isExpanded = expandedOwnerIndex === index;
+                                return (
+                                    <div key={index} className="rounded-lg border overflow-hidden">
+                                        <button
+                                            type="button"
+                                            onClick={() => setExpandedOwnerIndex(isExpanded ? -1 : index)}
+                                            className="flex w-full items-center justify-between gap-2 bg-muted/40 px-3 py-2 text-left"
+                                        >
+                                            <span className="text-sm font-medium">{ownerLabel(owner, index)}</span>
+                                            {isExpanded ? (
+                                                <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                                            ) : (
+                                                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                            )}
+                                        </button>
+                                        {isExpanded && (
+                                            <div className="grid grid-cols-2 gap-x-4 gap-y-3 p-3">
+                                                <Field label="First name" value={owner.firstName} onChange={(v) => setOwner(index, "firstName", v)} />
+                                                <Field label="Last name" value={owner.lastName} onChange={(v) => setOwner(index, "lastName", v)} />
+                                                <Field label="Email" value={owner.email} onChange={(v) => setOwner(index, "email", v)} />
+                                                <Field label="Mobile" value={owner.mobileNumber} onChange={(v) => setOwner(index, "mobileNumber", v)} />
+                                                <Field label="SSN" value={owner.ssn} onChange={(v) => setOwner(index, "ssn", v)} required error={fieldErrors[`owner-${index}-ssn`]} />
+                                                <Field
+                                                    label="Date of birth"
+                                                    value={owner.dateOfBirth}
+                                                    onChange={(v) => setOwner(index, "dateOfBirth", v)}
+                                                    placeholder="mm-dd-yy"
+                                                    onBlur={() => {
+                                                        const iso = fromDobDisplay(owner.dateOfBirth);
+                                                        if (iso) setOwner(index, "dateOfBirth", toDobDisplay(iso));
+                                                    }}
+                                                />
+                                                <Field label="Address" value={owner.address1} onChange={(v) => setOwner(index, "address1", v)} full />
+                                                <Field label="City" value={owner.city} onChange={(v) => setOwner(index, "city", v)} />
+                                                <Field label="State" value={owner.state} onChange={(v) => setOwner(index, "state", v)} />
+                                                <Field label="Zip" value={owner.zipCode} onChange={(v) => setOwner(index, "zipCode", v)} />
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
                         <div className="flex justify-between gap-2 pt-1">
                             <Button variant="outline" onClick={() => void saveCorrections()} disabled={saving}>
                                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileCheck2 className="h-4 w-4" />} Verify and Save
                             </Button>
-                            <Button onClick={() => setStep(1)} className="bg-[#2563EB] hover:bg-[#1d4ed8] text-white">Next →</Button>
+                            <Button onClick={handleStep0Next} disabled={saving} className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white">
+                                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Next →
+                            </Button>
                         </div>
                     </div>
                 )}
@@ -436,6 +628,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                                     slot={doc.slug}
                                     pinned={doc.pinned}
                                     uploaded={uploaded[doc.slug] ?? []}
+                                    isUploaded={Boolean(uploadedSlots[doc.slug]) || (uploaded[doc.slug]?.length ?? 0) > 0}
                                     uploading={uploading}
                                     onPick={uploadFiles}
                                 />
@@ -446,6 +639,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                                 slot={OTHER_DOC_SLOT.slug}
                                 multiple={OTHER_DOC_SLOT.multiple}
                                 uploaded={uploaded[OTHER_DOC_SLOT.slug] ?? []}
+                                isUploaded={Boolean(uploadedSlots[OTHER_DOC_SLOT.slug]) || (uploaded[OTHER_DOC_SLOT.slug]?.length ?? 0) > 0}
                                 uploading={uploading}
                                 onPick={uploadFiles}
                             />
@@ -453,7 +647,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
 
                         <div className="flex justify-between gap-2 pt-1">
                             <Button variant="outline" onClick={() => setStep(0)}>← Back</Button>
-                            <Button onClick={() => setStep(2)} className="bg-[#2563EB] hover:bg-[#1d4ed8] text-white">Next →</Button>
+                            <Button onClick={() => setStep(2)} className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white">Next →</Button>
                         </div>
                     </div>
                 )}
@@ -464,7 +658,7 @@ const IsoApproveReviewDialog = ({ open, onOpenChange, applicationData, summary, 
                         <p className="text-sm text-muted-foreground">You're approving this application:</p>
                         <div className="rounded-lg border bg-muted/30 p-4 text-sm space-y-1.5">
                             <Row label="Business" value={form.businessName || "—"} />
-                            <Row label="Owner" value={fullName} />
+                            <Row label={owners.length > 1 ? "Owners" : "Owner"} value={fullName} />
                             <Row label="Documents uploaded" value={`${totalUploaded} file(s)`} />
                         </div>
                         <div className="flex justify-between gap-2 pt-1">
@@ -489,11 +683,43 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     );
 }
 
-function Field({ label, value, onChange, full, type, placeholder, onBlur }: { label: string; value: string; onChange: (v: string) => void; full?: boolean; type?: string; placeholder?: string; onBlur?: () => void }) {
+function Field({
+    label,
+    value,
+    onChange,
+    full,
+    type,
+    placeholder,
+    onBlur,
+    required,
+    error,
+}: {
+    label: string;
+    value: string;
+    onChange: (v: string) => void;
+    full?: boolean;
+    type?: string;
+    placeholder?: string;
+    onBlur?: () => void;
+    required?: boolean;
+    error?: string;
+}) {
     return (
         <div className={full ? "col-span-2" : ""}>
-            <label className="text-[11px] font-medium text-muted-foreground">{label}</label>
-            <Input type={type ?? "text"} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} onBlur={onBlur} className="h-8 mt-0.5 text-sm" />
+            <label className="text-[11px] font-medium text-muted-foreground">
+                {label}
+                {required ? <span className="text-red-500"> *</span> : null}
+            </label>
+            <Input
+                type={type ?? "text"}
+                value={value}
+                placeholder={placeholder}
+                onChange={(e) => onChange(e.target.value)}
+                onBlur={onBlur}
+                aria-invalid={Boolean(error)}
+                className={`h-8 mt-0.5 text-sm ${error ? "border-red-500 focus-visible:ring-red-500" : ""}`}
+            />
+            {error ? <p className="text-[10px] text-red-500 mt-0.5">{error}</p> : null}
         </div>
     );
 }
@@ -521,6 +747,7 @@ function DocRow({
     label,
     slot,
     uploaded,
+    isUploaded,
     uploading,
     multiple,
     pinned,
@@ -530,34 +757,34 @@ function DocRow({
     label: string;
     slot: string;
     uploaded: string[];
+    isUploaded: boolean;
     uploading: string | null;
     multiple?: boolean;
     pinned?: boolean;
     onPick: (slot: string, files: FileList | null) => void;
 }) {
     const ref = useRef<HTMLInputElement>(null);
-    const slotKey = normalizeDocumentSlug(slot);
-    const busy = uploading === slotKey;
-    const hasUpload = uploaded.length > 0;
+    const busy = uploading === slot;
+    const hasUpload = isUploaded || uploaded.length > 0;
     const buttonLabel = busy ? "Uploading…" : hasUpload ? "Uploaded" : "Upload";
     const buttonDisabled = busy || (hasUpload && !multiple);
 
     return (
         <div
             className={`flex items-center justify-between gap-3 rounded-lg border p-3 ${pinned
-                ? "border-[#2563EB]/40 bg-[#EAF1FA]/50 dark:border-[#5AACEA]/30 dark:bg-[#1f2937]/40"
+                ? "border-[var(--brand)]/40 bg-[#EAF1FA]/50 dark:border-[#C07BE0]/30 dark:bg-[#1f2937]/40"
                 : ""
                 }`}
         >
             <div className="flex items-center gap-3 min-w-0">
-                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[#2563EB] dark:bg-[#1f2937] dark:text-[#5AACEA]">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[var(--brand)] dark:bg-[#1f2937] dark:text-[#C07BE0]">
                     <Icon className="h-[18px] w-[18px]" />
                 </span>
                 <div className="min-w-0">
                     <p className="flex items-center gap-1.5 text-sm font-medium leading-tight">
                         {label}
                         {pinned && (
-                            <span className="inline-flex items-center gap-0.5 rounded-md bg-[#2563EB] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
+                            <span className="inline-flex items-center gap-0.5 rounded-md bg-[image:var(--brand-gradient)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-white">
                                 <Pin className="h-2.5 w-2.5" /> Pinned
                             </span>
                         )}

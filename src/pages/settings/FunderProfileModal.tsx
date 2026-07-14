@@ -872,7 +872,7 @@ export default function FunderProfileModal({
 
               <Button
                 type="button"
-                className="w-full bg-[var(--brand)] hover:bg-[var(--brand)]/90"
+                className="w-full bg-[image:var(--brand-gradient)] hover:opacity-90"
                 disabled={disclosureUploading || !disclosureFile}
                 onClick={() => void handleUploadDisclosure()}
               >
@@ -952,7 +952,7 @@ export default function FunderProfileModal({
                     }
                     className={
                       addendumCoordKey === preset.type && addendumName === preset.name
-                        ? "bg-[var(--brand)] hover:bg-[var(--brand)]/90"
+                        ? "bg-[image:var(--brand-gradient)] hover:opacity-90"
                         : undefined
                     }
                     onClick={() => applyAddendumPreset(preset)}
@@ -1020,7 +1020,7 @@ export default function FunderProfileModal({
 
               <Button
                 type="button"
-                className="w-full bg-[var(--brand)] hover:bg-[var(--brand)]/90"
+                className="w-full bg-[image:var(--brand-gradient)] hover:opacity-90"
                 disabled={addendumUploading || !addendumFile || !addendumName.trim()}
                 onClick={() => void handleUploadAddendum()}
               >
@@ -1093,7 +1093,7 @@ export default function FunderProfileModal({
           </Button>
           {activeTab === "setup" ? (
             <Button
-              className="bg-[var(--brand)] hover:bg-[var(--brand)]/90"
+              className="bg-[image:var(--brand-gradient)] hover:opacity-90"
               disabled={saving || !form.name.trim()}
               onClick={() => void handleSubmit()}
             >
@@ -1105,7 +1105,7 @@ export default function FunderProfileModal({
                 Back to setup
               </Button>
               <Button
-                className="bg-[var(--brand)] hover:bg-[var(--brand)]/90"
+                className="bg-[image:var(--brand-gradient)] hover:opacity-90"
                 disabled={saving || !form.name.trim()}
                 onClick={() => void handleSubmit()}
               >

@@ -9,9 +9,7 @@ import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApp
 import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY } from "@/constants/operationsDashboardApplications";
 import DashboardPage from "../pages/dashboard/DashboardPage";
 import OperationsDashboard from "../pages/dashboard/OperationsDashboard";
-import ToShowApplication from "../pages/dashboard/ToShowApplication";
 import RootLayout from "../components/layout/RootLayout";
-import RouteErrorBoundary from "../components/RouteErrorBoundary";
 import LoginPage from "../pages/auth/LoginPage";
 import SignupPage from "../pages/auth/SignupPage";
 import ForgotPasswordPage from "../pages/auth/ForgotPasswordPage";
@@ -61,8 +59,8 @@ import Cases from '../pages/case/Cases';
 import { CasesDashboard } from '../pages/case/CasesDashboard';
 import UserSetting from '../pages/Userssettings/UserSetting';
 import PublicApprovalPage from '../pages/public/PublicApprovalPage';
+import PublicDocumentRequestPage from '../pages/public/PublicDocumentRequestPage';
 import PublicApplicationStatusPage from '../pages/public/PublicApplicationStatusPage';
-import PublicDocumentUploadPage from '../pages/public/PublicDocumentUploadPage';
 import DecisionLogicPage from '../pages/public/DecisionLogicPage';
 import DecisionLogicSuccessPage from '../pages/public/DecisionLogicSuccessPage';
 import DealPipeline from '../pages/Dealpipeline/DealPipeline';
@@ -121,9 +119,6 @@ const createRoute = (config: RouteConfig): RouteObject => {
     return {
         path,
         element,
-        // Recover gracefully (and override React Router's raw default screen) when
-        // a route throws during render/commit — e.g. transient removeChild DOM crashes.
-        errorElement: <RouteErrorBoundary />,
         ...(children?.length ? { children: mapChildRoutes(children) } : {}),
     } as RouteObject;
 };
@@ -183,10 +178,6 @@ const Routes: RouteObject[] = [
         element: <DecisionLogicSuccessPage />
     }),
     createRoute({
-        path: '/template-playground',
-        element: <TemplatePlayground />
-    }),
-    createRoute({
         path: '/login',
         element: <LoginPage />
     }),
@@ -197,6 +188,32 @@ const Routes: RouteObject[] = [
     createRoute({
         path: '/forgot-password',
         element: <ForgotPasswordPage />
+    }),
+    // Public shareable links (no CRM login — top-level so SPA routing always matches email URLs)
+    createRoute({
+        path: '/public/application/status/:token',
+        element: <PublicApplicationStatusPage />,
+    }),
+    createRoute({
+        path: '/public/application/approval/:token',
+        element: <PublicApprovalPage />,
+    }),
+    createRoute({
+        path: '/public/application/documents/:token',
+        element: <PublicDocumentRequestPage />,
+    }),
+    createRoute({
+        path: '/templates/playground',
+        element: <Navigate to="/template/playground" replace />,
+    }),
+    createRoute({
+        path: '/templat/playground',
+        element: <Navigate to="/template/playground" replace />,
+    }),
+    createRoute({
+        path: '/template/playground',
+        element: <RootLayout />,
+        children: [{ index: true, element: <TemplatePlayground /> }],
     }),
     createRoute({
         path: '/',
@@ -215,14 +232,13 @@ const Routes: RouteObject[] = [
             },
             { path: 'applications/browse', element: <ApplicationsBrowsePage /> },
             { path: 'operations-applications', element: <OperationsApplicationsLegacyRedirect /> },
-            { path: 'letter-generator', element: <ToShowApplication variant="letterGenerator" /> },
+            { path: 'letter-generator', element: <Applications mode="letterGenerator" /> },
             { path: 'letter-generator/:letterGeneratorDealId', element: <LetterGeneratorDealById /> },
             { path: 'deals', element: <Deals /> },
             { path: 'deals/create', element: <CreateDeal /> },
             { path: 'agents', element: <Agents /> },
-            { path: 'underwriters', element: <Underwriters /> },
-            // { path: 'underwriters/final', element: <UnderwritersFinal /> },
-            { path: 'final-underwriters', element: <FinalUnderwriters /> },
+            { path: 'scrubbing', element: <Underwriters /> },
+            { path: 'underwriters', element: <FinalUnderwriters /> },
             { path: 'syndicators', element: <Navigate to="/syndicators/dashboard" replace /> },
             {
                 path: 'syndicators/dashboard',
@@ -297,10 +313,6 @@ const Routes: RouteObject[] = [
             { path: 'cases', element: <Cases /> },
             { path: 'cases-dashboard', element: <CasesDashboard /> },
             { path: 'user-setting', element: <UserSetting /> },
-            // Public shareable links (no CRM login)
-            { path: 'public/application/status/:token', element: <PublicApplicationStatusPage /> },
-            { path: 'public/application/documents/:token', element: <PublicDocumentUploadPage /> },
-            { path: 'public/application/approval/:token', element: <PublicApprovalPage /> },
             { path: 'syndicator-portfolio', element: <SyndicatorPortfolio /> },
             { path: 'syndicator-funding', element: <SyndicatorFunding /> },
             { path: 'syndicator-payouts', element: <SyndicatorPayouts /> },

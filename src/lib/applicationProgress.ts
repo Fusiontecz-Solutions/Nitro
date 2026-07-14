@@ -13,10 +13,10 @@ export type ApplicationProgressStageKey =
   | "SCRUBBING"
   | "UNDERWRITER"
   | "APPROVED"
+  | "FINAL_APPROVAL"
   | "CONTRACT_GENERATED"
   | "CONTRACT_SIGNED"
-  | "FINAL"
-  | "FUNDING_CALL"
+  | "FINAL_AND_FUNDING"
   | "DISBURSEMENT"
   | "FUNDED";
 
@@ -29,9 +29,9 @@ export interface ApplicationProgressStage {
 
 /** Ordered lifecycle. Index === progress position. */
 export const APPLICATION_PROGRESS_STAGES: ApplicationProgressStage[] = [
-  { key: "SCRUBBING", label: "Scrubbing", description: "First review by scrubbing team" },
-  { key: "UNDERWRITER", label: "Underwriter", description: "Final underwriter review" },
-  { key: "APPROVED", label: "Approved", description: "Approved and ready for contract" },
+  { key: "SCRUBBING", label: "Scrubbing", description: "Under review during scrubbing" },
+  { key: "UNDERWRITER", label: "Underwriter", description: "Underwriter review" },
+  { key: "APPROVED", label: "Approved", description: "Approved pending contract" },
   {
     key: "CONTRACT_GENERATED",
     label: "Contract Generated",
@@ -42,8 +42,16 @@ export const APPLICATION_PROGRESS_STAGES: ApplicationProgressStage[] = [
     label: "Contract Signed",
     description: "Contract has been signed",
   },
-  { key: "FINAL", label: "Final", description: "Final review before funding call" },
-  { key: "FUNDING_CALL", label: "Funding Call", description: "Funding call in progress" },
+  {
+    key: "FINAL_AND_FUNDING",
+    label: "Final & Funding",
+    description: "Final review and funding call",
+  },
+  {
+    key: "FINAL_APPROVAL",
+    label: "Final Approval",
+    description: "Awaiting underwriter final approval after funding call",
+  },
   { key: "DISBURSEMENT", label: "Disbursement", description: "Funds being disbursed" },
   { key: "FUNDED", label: "Funded", description: "Deal funded and complete" },
 ];
@@ -78,27 +86,34 @@ const NEGATIVE_TOKENS = new Set([
 /** Maps a normalized queue/state/status token to its lifecycle index. */
 const TOKEN_TO_INDEX: Record<string, number> = {
   // Intake / agent (no separate Agent step on the bar — earliest visible stage is Underwriting)
-  "": STAGE_INDEX_BY_KEY.UNDERWRITER,
-  new: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  agent: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  onhold: STAGE_INDEX_BY_KEY.UNDERWRITER,
+  "": STAGE_INDEX_BY_KEY.SCRUBBING,
+  new: STAGE_INDEX_BY_KEY.SCRUBBING,
+  agent: STAGE_INDEX_BY_KEY.SCRUBBING,
+  onhold: STAGE_INDEX_BY_KEY.SCRUBBING,
   review: STAGE_INDEX_BY_KEY.SCRUBBING,
   draft: STAGE_INDEX_BY_KEY.SCRUBBING,
   pending: STAGE_INDEX_BY_KEY.SCRUBBING,
   submitted: STAGE_INDEX_BY_KEY.SCRUBBING,
 
-  // Scrubbing (first review)
+  // Scrubbing
   scrubbing: STAGE_INDEX_BY_KEY.SCRUBBING,
   underwriting: STAGE_INDEX_BY_KEY.SCRUBBING,
   inprogress: STAGE_INDEX_BY_KEY.SCRUBBING,
 
-  // Underwriter (final review)
+  // Final scrubbing
   underwriter: STAGE_INDEX_BY_KEY.UNDERWRITER,
-  finalunderwriter: STAGE_INDEX_BY_KEY.UNDERWRITER,
   finalreview: STAGE_INDEX_BY_KEY.UNDERWRITER,
 
-  // Approved
+  // Approved (incl. UW sign-off before ISO outreach)
   approved: STAGE_INDEX_BY_KEY.APPROVED,
+  underwriterapproved: STAGE_INDEX_BY_KEY.APPROVED,
+  approvedbyuw: STAGE_INDEX_BY_KEY.APPROVED,
+  approvalsent: STAGE_INDEX_BY_KEY.APPROVED,
+  isoapproved: STAGE_INDEX_BY_KEY.APPROVED,
+  approvedbyiso: STAGE_INDEX_BY_KEY.APPROVED,
+
+  // Final approval (underwriter second sign-off after contract — often sent from Funding Call)
+  finalapproval: STAGE_INDEX_BY_KEY.FINAL_APPROVAL,
 
   // Contract generated (pending, sent, out, etc.)
   contracted: STAGE_INDEX_BY_KEY.CONTRACT_GENERATED,
@@ -112,11 +127,15 @@ const TOKEN_TO_INDEX: Record<string, number> = {
   contractsigned: STAGE_INDEX_BY_KEY.CONTRACT_SIGNED,
   signedcontracts: STAGE_INDEX_BY_KEY.CONTRACT_SIGNED,
 
-  // Final (ops bucket — distinct from Final Underwriter)
-  final: STAGE_INDEX_BY_KEY.FINAL,
+  // Underwriter granted final approval (post-contract; Funding Call or Decision Logic path)
+  finalapprovedbyuw: STAGE_INDEX_BY_KEY.DISBURSEMENT,
 
-  // Funding call
-  fundingcall: STAGE_INDEX_BY_KEY.FUNDING_CALL,
+  // Ops "Final" queue after UW final approval — past Final Approval on the bar
+  final: STAGE_INDEX_BY_KEY.DISBURSEMENT,
+
+  // Final & funding call (funding call tab / finals questions)
+  fundingcall: STAGE_INDEX_BY_KEY.FINAL_AND_FUNDING,
+  finalsandfundingcall: STAGE_INDEX_BY_KEY.FINAL_AND_FUNDING,
 
   // Disbursement
   disbursment: STAGE_INDEX_BY_KEY.DISBURSEMENT,
@@ -152,6 +171,9 @@ interface ResolveProgressInput {
   state?: string | null;
   statsCurrentState?: string | null;
   status?: string | null;
+  /** "Approved By UW", "Final Approved by UW", etc. */
+  underwriterAction?: string | null;
+  finalApprovalSource?: string | null;
 }
 
 function indexForToken(token: string): number | null {
@@ -171,6 +193,7 @@ export function resolveApplicationProgress(
     normalizeToken(application?.currentState ?? application?.state),
     normalizeToken(application?.statsCurrentState),
     normalizeToken(application?.status),
+    normalizeToken(application?.underwriterAction),
   ];
 
   const negativeToken = tokens.find((t) => NEGATIVE_TOKENS.has(t));

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, useRef, useCallback, useEffect, type ReactNode } from "react";
 import { useSelector } from "react-redux";
 import type { RootState } from "@/redux/store";
 
@@ -11,6 +11,8 @@ export type DecisionTabSectionContext = {
   componentsReadOnly: boolean;
   /** Bulk-save hook for bank cards — wired to Approve & Save. */
   onRegisterBankSaveAll?: (saveAll: () => Promise<boolean>) => void;
+  applicationId?: string;
+  positionsForBankTable?: unknown[];
 };
 
 type DecisionMakeFinalValuesProps = {
@@ -85,6 +87,31 @@ function mapPositionsForCalculator(positions: any[]): any[] {
   });
 }
 
+function positionsHaveMeaningfulData(arr: unknown): boolean {
+  if (!Array.isArray(arr) || arr.length === 0) return false;
+  return arr.some((row) => {
+    if (!row || typeof row !== "object") return false;
+    const r = row as Record<string, unknown>;
+    for (const key of [
+      "lender",
+      "installment",
+      "amountFunded",
+      "totalRepayments",
+      "monthlyMcaPmts",
+      "mcaRemit",
+      "startingDate",
+    ]) {
+      const v = r[key];
+      if (v != null && String(v).trim() !== "") return true;
+    }
+    const status = String(r.status ?? "").trim().toUpperCase();
+    if (status && status !== "SELECT") return true;
+    const frequency = String(r.frequency ?? "").trim();
+    if (frequency && frequency !== "Select") return true;
+    return false;
+  });
+}
+
 export default function DecisionMakeFinalValues({
   applicationId,
   allowOfferEdit = false,
@@ -99,8 +126,6 @@ export default function DecisionMakeFinalValues({
     (state: RootState) => state.applicationDetail,
   );
   const positionsState = useSelector((state: RootState) => state.positions);
-
-
 
   const fromRedux =
     (applicationData as any)?.applicationId ??
@@ -117,6 +142,54 @@ export default function DecisionMakeFinalValues({
   const [bankNetCreditAvg, setBankNetCreditAvg] = useState<number | null>(
     null,
   );
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [livePositions, setLivePositions] = useState<any[]>([]);
+  const livePositionsRef = useRef<any[]>([]);
+  const lastPositionsSeedSigRef = useRef("");
+  const lastSeededAppRef = useRef<string | null>(null);
+
+  const saveAllPositionsRef = useRef<(() => Promise<boolean>) | null>(null);
+  const saveAllBanksRef = useRef<(() => Promise<boolean>) | null>(null);
+
+  const handleRegisterSaveAllPositions = useCallback(
+    (saveAll: () => Promise<boolean>) => {
+      saveAllPositionsRef.current = saveAll;
+    },
+    [],
+  );
+
+  const handleRegisterSaveAllBanks = useCallback(
+    (saveAll: () => Promise<boolean>) => {
+      saveAllBanksRef.current = saveAll;
+    },
+    [],
+  );
+
+  const useDeferredSave = allowOfferEdit || allowPositionsEdit;
+
+  const handleApproveSaveAll = useCallback(async (): Promise<boolean> => {
+    if (!useDeferredSave) return true;
+
+    try {
+      const banksOk = (await saveAllBanksRef.current?.()) ?? true;
+      if (!banksOk) return false;
+    } catch (err) {
+      console.error("Failed to save bank analysis on approve:", err);
+      return false;
+    }
+
+    try {
+      const positionsOk = (await saveAllPositionsRef.current?.()) ?? true;
+      if (!positionsOk) return false;
+    } catch (err) {
+      console.error("Failed to save positions on approve:", err);
+      return false;
+    }
+
+    return true;
+  }, [useDeferredSave]);
+
+  const componentsReadOnly = isPreviewMode || !allowPositionsEdit;
 
   const scopedPositions = useMemo(() => {
     if (!effectiveApplicationId) return [];
@@ -147,9 +220,64 @@ export default function DecisionMakeFinalValues({
     return mapPositionsForCalculator(scopedPositions);
   }, [scopedPositions]);
 
+  const positionsForCalculator = useMemo(() => {
+    if (positionsHaveMeaningfulData(livePositions)) {
+      return livePositions;
+    }
+    return calculatorPositions;
+  }, [livePositions, calculatorPositions]);
+
+  useEffect(() => {
+    livePositionsRef.current = livePositions;
+  }, [livePositions]);
+
+  useEffect(() => {
+    if (!effectiveApplicationId) {
+      setLivePositions([]);
+      lastSeededAppRef.current = null;
+      lastPositionsSeedSigRef.current = "";
+      return;
+    }
+    const appKey = String(effectiveApplicationId);
+    const sig = JSON.stringify(
+      (calculatorPositions || []).map((p: any) => ({
+        _id: String(p._id ?? ""),
+        lender: String(p.lender ?? ""),
+        amountFunded: String(p.amountFunded ?? ""),
+      })),
+    );
+
+    if (lastSeededAppRef.current !== appKey) {
+      lastSeededAppRef.current = appKey;
+      lastPositionsSeedSigRef.current = sig;
+      setLivePositions(calculatorPositions);
+      return;
+    }
+
+    if (sig === lastPositionsSeedSigRef.current) return;
+    lastPositionsSeedSigRef.current = sig;
+
+    if (
+      !positionsHaveMeaningfulData(calculatorPositions) &&
+      positionsHaveMeaningfulData(livePositionsRef.current)
+    ) {
+      return;
+    }
+
+    setLivePositions(calculatorPositions);
+  }, [effectiveApplicationId, calculatorPositions]);
+
+  const handleRowsChange = useCallback((nextRows: any[]) => {
+    setLivePositions((prev) => (prev === nextRows ? prev : nextRows || []));
+  }, []);
+
   const sectionContext: DecisionTabSectionContext = {
-    componentsReadOnly: !allowPositionsEdit,
-    onRegisterBankSaveAll: undefined,
+    componentsReadOnly,
+    onRegisterBankSaveAll: useDeferredSave
+      ? handleRegisterSaveAllBanks
+      : undefined,
+    applicationId: effectiveApplicationId ?? undefined,
+    positionsForBankTable: positionsForCalculator,
   };
 
   const betweenSection =
@@ -169,34 +297,41 @@ export default function DecisionMakeFinalValues({
           showOnlyTotals
           onNetCreditAverageChange={(avg) => setBankNetCreditAvg(avg)}
           applicationId={effectiveApplicationId || undefined}
-          positions={calculatorPositions as any}
+          positions={positionsForCalculator as any}
         />
       </div>
 
-      {aboveOffer}
-
       <OfferDecisionToggle
-        positions={calculatorPositions as any}
+        positions={positionsForCalculator as any}
         bankTables={undefined}
         bankTotalAvgNetCredit={bankNetCreditAvg ?? undefined}
         applicationId={effectiveApplicationId || undefined}
         disabled={!allowOfferEdit}
         showFooterActions={allowOfferEdit}
+        actionsAtTop
+        showPreviewBadge
+        onPreviewModeChange={setIsPreviewMode}
         showLeverageTable
         onSummaryMetricsChange={onSummaryMetricsChange}
+        onApprove={useDeferredSave ? handleApproveSaveAll : undefined}
+        aboveOffer={aboveOffer}
       />
 
       {betweenSection}
 
       <PositionTableCalculator
         applicationId={effectiveApplicationId || undefined}
-        positions={calculatorPositions as any}
+        positions={positionsForCalculator as any}
         avgBankNetCredit={bankNetCreditAvg ?? undefined}
-        readOnly={!allowPositionsEdit}
+        onRowsChange={handleRowsChange}
+        readOnly={componentsReadOnly}
         disableDelete={allowPositionsEdit && positionsDisableDelete}
         disableCreate={allowPositionsEdit && positionsDisableCreate}
+        onRegisterSaveAll={
+          useDeferredSave ? handleRegisterSaveAllPositions : undefined
+        }
+        autoSave={useDeferredSave && !componentsReadOnly}
       />
     </div>
   );
 }
-

@@ -90,51 +90,47 @@ const ComplianceChecksQuestionnaire = ({
     const [questions, setQuestions] = useState<CheckQuestion[]>(
         DEFAULT_COMPLIANCE_QUESTIONS,
     );
-    const initialLoadDoneRef = useRef(false);
-    const savingQuestionsRef = useRef(new Set<string>());
-    const [isInitialLoading, setIsInitialLoading] = useState(true);
+    /** Questions currently being saved — merge from Redux must not overwrite these. */
+    const pendingSaveQuestionsRef = useRef<Set<string>>(new Set());
+    const hasHydratedFromServerRef = useRef(false);
+    const [savingQuestions, setSavingQuestions] = useState<Set<string>>(new Set());
 
-    const mergeServerChecksIntoQuestions = useCallback(
-        (checks: ComplianceCheck[]): CheckQuestion[] => {
+    const mergeQuestionsFromServer = useCallback(
+        (checks: ComplianceCheck[] | null | undefined) => {
+            if (!checks || !Array.isArray(checks)) return;
+
             const checksMap = new Map<string, ComplianceCheck>();
             checks.forEach((check) => {
                 checksMap.set(check.question, check);
             });
 
-            return DEFAULT_COMPLIANCE_QUESTIONS.map((q) => {
-                const existingCheck = checksMap.get(q.question);
-                if (existingCheck) {
-                    return {
-                        id: existingCheck._id,
-                        question: existingCheck.question,
-                        answer: existingCheck.answer,
-                        reason: existingCheck.reason,
-                        signature: existingCheck.signature,
-                        date: existingCheck.date,
-                    };
-                }
-                return q;
-            });
+            setQuestions((prev) =>
+                DEFAULT_COMPLIANCE_QUESTIONS.map((q) => {
+                    if (pendingSaveQuestionsRef.current.has(q.question)) {
+                        const pending = prev.find((item) => item.question === q.question);
+                        if (pending?.answer !== undefined) {
+                            return pending;
+                        }
+                    }
+
+                    const existingCheck = checksMap.get(q.question);
+                    if (existingCheck) {
+                        return {
+                            id: existingCheck._id,
+                            question: existingCheck.question,
+                            answer: existingCheck.answer,
+                            reason: existingCheck.reason,
+                            signature: existingCheck.signature,
+                            date: existingCheck.date,
+                        };
+                    }
+                    return q;
+                }),
+            );
+            hasHydratedFromServerRef.current = true;
         },
         [],
     );
-
-    const applySavedCheckToQuestions = useCallback((savedCheck: ComplianceCheck) => {
-        setQuestions((prev) =>
-            prev.map((q) =>
-                q.question === savedCheck.question
-                    ? {
-                          id: savedCheck._id,
-                          question: savedCheck.question,
-                          answer: savedCheck.answer,
-                          reason: savedCheck.reason,
-                          signature: savedCheck.signature,
-                          date: savedCheck.date,
-                      }
-                    : q,
-            ),
-        );
-    }, []);
 
     useEffect(() => {
         setUser(loginData?.user);
@@ -147,34 +143,22 @@ const ComplianceChecksQuestionnaire = ({
     }, [loginData, loginLoading]);
 
     useEffect(() => {
-        initialLoadDoneRef.current = false;
-        savingQuestionsRef.current.clear();
-        setIsInitialLoading(true);
-        setQuestions(DEFAULT_COMPLIANCE_QUESTIONS);
-
-        if (!applicationId) {
-            setIsInitialLoading(false);
-            return;
-        }
+        if (!applicationId) return;
+        hasHydratedFromServerRef.current = false;
         dispatch(getComplianceChecks({ application: String(applicationId) }));
     }, [applicationId, dispatch]);
 
     useEffect(() => {
-        if (complianceChecksLoading || initialLoadDoneRef.current) return;
-
         if (complianceChecksData && Array.isArray(complianceChecksData)) {
-            setQuestions(mergeServerChecksIntoQuestions(complianceChecksData));
-        } else {
+            mergeQuestionsFromServer(complianceChecksData);
+        } else if (
+            !complianceChecksLoading &&
+            complianceChecksData === null &&
+            !hasHydratedFromServerRef.current
+        ) {
             setQuestions(DEFAULT_COMPLIANCE_QUESTIONS);
         }
-
-        initialLoadDoneRef.current = true;
-        setIsInitialLoading(false);
-    }, [
-        complianceChecksData,
-        complianceChecksLoading,
-        mergeServerChecksIntoQuestions,
-    ]);
+    }, [complianceChecksData, complianceChecksLoading, mergeQuestionsFromServer]);
 
     const progress = useMemo((): ComplianceChecksProgress => {
         const total = questions.length;
@@ -204,12 +188,8 @@ const ComplianceChecksQuestionnaire = ({
                 return;
             }
 
-            if (savingQuestionsRef.current.has(questionText)) {
-                return;
-            }
-
-            const previousQuestions = questions;
-            savingQuestionsRef.current.add(questionText);
+            pendingSaveQuestionsRef.current.add(questionText);
+            setSavingQuestions((prev) => new Set(prev).add(questionText));
 
             setQuestions((prev) =>
                 prev.map((q) =>
@@ -226,29 +206,38 @@ const ComplianceChecksQuestionnaire = ({
             );
 
             try {
-                const result = await dispatch(
+                await dispatch(
                     createOrUpdateComplianceCheck({
                         question: questionText,
                         answer: "no",
                         application: String(applicationId),
                     }),
                 ).unwrap();
-                const savedCheck = (result as { data?: ComplianceCheck }).data ?? result;
-                if (savedCheck && typeof savedCheck === "object" && "question" in savedCheck) {
-                    applySavedCheckToQuestions(savedCheck as ComplianceCheck);
-                }
             } catch (error: unknown) {
                 console.error("Save compliance check error:", error);
-                setQuestions(previousQuestions);
+                setQuestions((prev) =>
+                    prev.map((q) =>
+                        q.question === questionText
+                            ? DEFAULT_COMPLIANCE_QUESTIONS.find(
+                                  (item) => item.question === questionText,
+                              ) ?? q
+                            : q,
+                    ),
+                );
                 toast.error(
                     (error as { message?: string })?.message ||
                         "Failed to save compliance check",
                 );
             } finally {
-                savingQuestionsRef.current.delete(questionText);
+                pendingSaveQuestionsRef.current.delete(questionText);
+                setSavingQuestions((prev) => {
+                    const next = new Set(prev);
+                    next.delete(questionText);
+                    return next;
+                });
             }
         },
-        [applicationId, applySavedCheckToQuestions, dispatch, questions],
+        [applicationId, dispatch],
     );
 
     const handleSaveDetails = useCallback(
@@ -265,24 +254,23 @@ const ComplianceChecksQuestionnaire = ({
                           /\b\w/g,
                           (l) => l.toUpperCase(),
                       )
-                    : "Underwriter";
+                    : "Scrubbing";
 
-            const question = questions.find((q) => q.id === questionId);
+            const question = questions.find(
+                (q) => q.id === questionId || q.question === questionId,
+            );
             if (!question) {
                 toast.error("Question not found");
                 return;
             }
 
-            if (savingQuestionsRef.current.has(question.question)) {
-                return;
-            }
-
-            const previousQuestions = questions;
-            savingQuestionsRef.current.add(question.question);
+            const questionKey = question.question;
+            pendingSaveQuestionsRef.current.add(questionKey);
+            setSavingQuestions((prev) => new Set(prev).add(questionKey));
 
             setQuestions((prev) =>
                 prev.map((q) =>
-                    q.id === questionId
+                    q.id === questionId || q.question === questionKey
                         ? {
                               ...q,
                               answer: "yes",
@@ -296,9 +284,9 @@ const ComplianceChecksQuestionnaire = ({
             setOpenModalQuestionId(null);
 
             try {
-                const result = await dispatch(
+                await dispatch(
                     createOrUpdateComplianceCheck({
-                        question: question.question,
+                        question: questionKey,
                         answer: "yes",
                         reason: details,
                         signature: userName,
@@ -306,25 +294,36 @@ const ComplianceChecksQuestionnaire = ({
                         application: String(applicationId),
                     }),
                 ).unwrap();
-                const savedCheck = (result as { data?: ComplianceCheck }).data ?? result;
-                if (savedCheck && typeof savedCheck === "object" && "question" in savedCheck) {
-                    applySavedCheckToQuestions(savedCheck as ComplianceCheck);
-                }
-
                 toast.success("Compliance check saved successfully");
             } catch (error: unknown) {
                 console.error("Save compliance check error:", error);
-                setQuestions(previousQuestions);
+                setQuestions((prev) =>
+                    prev.map((q) =>
+                        q.question === questionKey
+                            ? DEFAULT_COMPLIANCE_QUESTIONS.find(
+                                  (item) => item.question === questionKey,
+                              ) ?? q
+                            : q,
+                    ),
+                );
                 toast.error(
                     (error as { message?: string })?.message ||
                         "Failed to save compliance check",
                 );
             } finally {
-                savingQuestionsRef.current.delete(question.question);
+                pendingSaveQuestionsRef.current.delete(questionKey);
+                setSavingQuestions((prev) => {
+                    const next = new Set(prev);
+                    next.delete(questionKey);
+                    return next;
+                });
             }
         },
-        [applicationId, applySavedCheckToQuestions, dispatch, questions, user],
+        [applicationId, dispatch, questions, user],
     );
+
+    const isInitialLoading =
+        complianceChecksLoading && complianceChecksData === null;
 
     const getBorderColor = (answer?: "yes" | "no") => {
         if (answer === "yes") return "border-[#DC331D]";
@@ -398,7 +397,7 @@ const ComplianceChecksQuestionnaire = ({
                         }`}
                     >
                         <div
-                            className="h-full rounded-full bg-[#276D9C] transition-all duration-300"
+                            className="h-full rounded-full bg-[image:var(--brand-gradient)] transition-all duration-300"
                             style={{ width: `${progressPercentage}%` }}
                         />
                     </div>
@@ -441,14 +440,16 @@ const ComplianceChecksQuestionnaire = ({
                             : undefined
                     }
                 >
-                    {questions.map((question) => (
+                    {questions.map((question) => {
+                        const isSaving = savingQuestions.has(question.question);
+                        return (
                         <div
                             key={question.id}
                             className={`rounded-lg border-2 px-4 py-3 ${
                                 isDark ? "bg-card" : "bg-white"
                             } ${getBorderColor(question.answer)} ${
                                 compact ? "shadow-sm" : "shadow-[0px_4px_20px_0px_#00000005]"
-                            }`}
+                            } ${isSaving ? "opacity-70" : ""}`}
                         >
                             <p
                                 className={`text-sm font-medium mb-3 ${
@@ -461,6 +462,7 @@ const ComplianceChecksQuestionnaire = ({
                             <div className="flex items-center gap-4 mb-2">
                                 <button
                                     type="button"
+                                    disabled={isSaving}
                                     onClick={() =>
                                         handleAnswerChange(
                                             question.id,
@@ -478,6 +480,7 @@ const ComplianceChecksQuestionnaire = ({
                                 </button>
                                 <button
                                     type="button"
+                                    disabled={isSaving}
                                     onClick={() =>
                                         handleAnswerChange(
                                             question.id,
@@ -529,7 +532,8 @@ const ComplianceChecksQuestionnaire = ({
                                 </div>
                             ) : null}
                         </div>
-                    ))}
+                    );
+                    })}
                 </div>
             )}
 

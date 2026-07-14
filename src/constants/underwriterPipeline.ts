@@ -1,11 +1,14 @@
 /** Underwriter sidebar pipeline filters — must match backend `underwriterPipelineFilter`. */
 export const UNDERWRITER_PIPELINE_FILTERS = {
+  /** Underwriter queue — available to claim. */
   UNCLAIMED: "unclaimed",
   CLAIMED: "claimed",
   APPROVED_BY_UW: "approved-by-uw",
   DECLINED_BY_UW: "declined-by-uw",
   FINAL_APPROVAL: "final-approval",
   FINAL_APPROVED_BY_UW: "final-approved-by-uw",
+  ISO_QUERY: "iso-query",
+  ON_HOLD: "on-hold",
 } as const;
 
 export type UnderwriterPipelineFilter =
@@ -35,6 +38,10 @@ export function underwriterPipelineTitle(
       return "Admin Sent for final Approval";
     case UNDERWRITER_PIPELINE_FILTERS.FINAL_APPROVED_BY_UW:
       return "Final Approved";
+    case UNDERWRITER_PIPELINE_FILTERS.ISO_QUERY:
+      return "ISO Query";
+    case UNDERWRITER_PIPELINE_FILTERS.ON_HOLD:
+      return "On Hold";
     default:
       return "Applications";
   }

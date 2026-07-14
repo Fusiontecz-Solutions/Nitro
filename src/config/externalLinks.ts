@@ -9,6 +9,7 @@ export type BackgroundCheckResource = {
   description: string;
   href?: string | ((ctx: BackgroundCheckLinkContext) => string);
   isApi?: boolean;
+  hasPanel?: boolean;
 };
 
 /**
@@ -25,6 +26,7 @@ export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
     id: "opencorporates",
     title: "OpenCorporates",
     description: "Entity registration & status",
+    hasPanel: true,
     href: ({ businessName }) =>
       businessName.trim()
         ? `https://opencorporates.com/companies?q=${encodeURIComponent(businessName.trim())}`
@@ -40,7 +42,8 @@ export const BACKGROUND_CHECK_RESOURCES: BackgroundCheckResource[] = [
     id: "nyscef",
     title: "NY Court",
     description: "Civil / judgment search",
-    href: "https://iapps.courts.state.ny.us/nyscef/CaseSearch",
+    hasPanel: true,
+    href: "https://iapps.courts.state.ny.us/nyscef/CaseSearch?TAB=name",
   },
   {
     id: "google",
@@ -67,9 +70,3 @@ export function resolveBackgroundCheckHref(
   if (!resource.href) return undefined;
   return typeof resource.href === "function" ? resource.href(ctx) : resource.href;
 }
-
-/** Legacy quick links (Underwriter summary row). */
-export const EXTERNAL_LINKS = [
-  { label: "SOS Search", url: "https://iapps.courts.state.ny.us/nyscef/CaseSearch" },
-  { label: "Open Corporates", url: "https://opencorporates.com/" },
-] as const;

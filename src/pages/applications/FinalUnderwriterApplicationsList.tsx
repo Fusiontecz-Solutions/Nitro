@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, getPreviousMonthDateRangeET } from "@/lib/utils";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import { useDispatch, useSelector } from 'react-redux';
 import type { AppDispatch, RootState } from '@/redux/store';
 import {
@@ -360,16 +361,16 @@ export default function FinalUnderwriterApplicationsList() {
             },
             {
                 id: "loanAmount",
-                accessorFn: (row) => row.loanAmount,
+                accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
                 header: () => (
                     <div className="flex items-center gap-2">
                         <span className="font-medium text-foreground">Loan Amount</span>
                     </div>
                 ),
                 cell: ({ row }) => {
-                    const loanAmount = row.original.loanAmount;
+                    const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
                     if (loanAmount == null) return <span className="text-foreground">-</span>;
-                    const rounded = Math.round(Number(loanAmount) || 0);
+                    const rounded = Math.round(loanAmount);
                     return <span className="text-foreground">${rounded}</span>;
                 },
             },
@@ -428,7 +429,7 @@ export default function FinalUnderwriterApplicationsList() {
                     <button
                         type="button"
                         onClick={() => handleOpenApplicationDetails(row.original)}
-                        className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+                        className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
                         aria-label="View application details"
                     >
                         <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -554,25 +555,10 @@ export default function FinalUnderwriterApplicationsList() {
     }, [dispatch]);
 
     useEffect(() => {
-        const now = new Date();
-        const currentYear = now.getFullYear();
-        const currentMonthIndex = now.getMonth();
-        let year = currentYear;
-        let monthIndex = currentMonthIndex - 1;
-        if (monthIndex < 0) {
-            monthIndex = 11;
-            year -= 1;
-        }
-        const formatYmd = (d: Date) => {
-            const y = d.getFullYear();
-            const m = String(d.getMonth() + 1).padStart(2, "0");
-            const day = String(d.getDate()).padStart(2, "0");
-            return `${y}-${m}-${day}`;
-        };
-        const start = new Date(year, monthIndex, 1);
-        const end = new Date(year, monthIndex + 1, 0);
-        const startDate = formatYmd(start);
-        const endDate = formatYmd(end);
+        const range = getPreviousMonthDateRangeET();
+        if (!range) return;
+        const startDate = range.start;
+        const endDate = range.end;
 
         const fetchPrevStats = async () => {
             try {
@@ -706,7 +692,7 @@ export default function FinalUnderwriterApplicationsList() {
                                 const q = statCardTitleToApplicationsQuery(c.title);
                                 navigate(buildApplicationsBrowseUrl(q));
                             }}
-                            className={`rounded-lg border py-3 px-5 shadow-[0px_4px_20px_0px_#00000005] cursor-pointer transition duration-300 hover:ring-2 hover:ring-[#276D9C]/25 ${isDark ? "hover:shadow-lg" : "hover:shadow-lg"
+                            className={`rounded-lg border py-3 px-5 shadow-[0px_4px_20px_0px_#00000005] cursor-pointer transition duration-300 hover:ring-2 hover:ring-[var(--brand)]/25 ${isDark ? "hover:shadow-lg" : "hover:shadow-lg"
                                 } ${isDark
                                     ? "bg-[#141517] border-[#374151]"
                                     : "bg-card border-[#FDFDFD]"

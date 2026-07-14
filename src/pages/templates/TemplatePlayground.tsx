@@ -1,4 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { resolveLetterEmailBrandingByFunderId } from "./letterEmailBranding";
+import { renderPayOffLetterEmailHtml } from "./payOffLetterEmailHtml";
+import { renderZeroBalanceLetterEmailHtml } from "./zeroBalanceLetterEmailHtml";
 import { TEMPLATE_REGISTRY } from "./registry";
 import { TEMPLATE_CATEGORY_LABELS } from "./types";
 import type { TemplateDefinition, TemplateValues } from "./types";
@@ -14,6 +18,29 @@ function buildInitialValues(template: TemplateDefinition): TemplateValues {
 }
 
 export default function TemplatePlayground() {
+  const { funders, funderSelectEntries, resolveDefaultFunder } = useFunderProfiles(null);
+  const [funderProfileId, setFunderProfileId] = useState("");
+
+  useEffect(() => {
+    if (funderProfileId) return;
+    const defaultFunderName = resolveDefaultFunder();
+    const match = funderSelectEntries.find(
+      (entry) => entry.funderName === defaultFunderName,
+    );
+    if (match?.value) {
+      setFunderProfileId(match.value);
+      return;
+    }
+    if (funderSelectEntries[0]?.value) {
+      setFunderProfileId(funderSelectEntries[0].value);
+    }
+  }, [funderProfileId, funderSelectEntries, resolveDefaultFunder]);
+
+  const letterEmailBranding = useMemo(
+    () => resolveLetterEmailBrandingByFunderId(funders, funderProfileId),
+    [funders, funderProfileId],
+  );
+
   const [selectedId, setSelectedId] = useState<string>(
     TEMPLATE_REGISTRY[0]?.id ?? "",
   );
@@ -37,10 +64,20 @@ export default function TemplatePlayground() {
     ? valuesByTemplate[selectedTemplate.id] ?? {}
     : {};
 
-  const html = useMemo(
-    () => (selectedTemplate?.renderHtml ? selectedTemplate.renderHtml(values) : ""),
-    [selectedTemplate, values],
-  );
+  const html = useMemo(() => {
+    if (!selectedTemplate?.renderHtml) return "";
+    if (selectedTemplate.id === "pay-off-letter") {
+      return renderPayOffLetterEmailHtml(values, letterEmailBranding);
+    }
+    if (selectedTemplate.id === "zero-balance-letter") {
+      return renderZeroBalanceLetterEmailHtml(values, letterEmailBranding);
+    }
+    return selectedTemplate.renderHtml(values);
+  }, [selectedTemplate, values, letterEmailBranding]);
+
+  const showFunderBrandingControls =
+    selectedTemplate?.id === "pay-off-letter" ||
+    selectedTemplate?.id === "zero-balance-letter";
 
   const hasHtml = Boolean(selectedTemplate?.renderHtml);
   const hasComponent = Boolean(selectedTemplate?.Component);
@@ -75,6 +112,12 @@ export default function TemplatePlayground() {
   const selectTemplate = (id: string) => {
     setSelectedId(id);
     setCopied(false);
+    setValuesByTemplate((prev) => {
+      if (prev[id]) return prev;
+      const template = TEMPLATE_REGISTRY.find((t) => t.id === id);
+      if (!template) return prev;
+      return { ...prev, [id]: buildInitialValues(template) };
+    });
   };
 
   const copyHtml = async () => {
@@ -121,6 +164,31 @@ export default function TemplatePlayground() {
             </span>
           </div>
         </div>
+
+        {showFunderBrandingControls ? (
+          <div style={styles.selectGroup}>
+            <label htmlFor="funder-select" style={styles.selectLabel}>
+              Funder branding
+            </label>
+            <div style={styles.selectWrap}>
+              <select
+                id="funder-select"
+                value={funderProfileId}
+                onChange={(e) => setFunderProfileId(e.target.value)}
+                style={styles.select}
+              >
+                {funderSelectEntries.map((entry) => (
+                  <option key={entry.value} value={entry.value}>
+                    {entry.label}
+                  </option>
+                ))}
+              </select>
+              <span style={styles.selectCaret} aria-hidden="true">
+                ▾
+              </span>
+            </div>
+          </div>
+        ) : null}
 
         {selectedTemplate ? (
           <div style={styles.fields}>

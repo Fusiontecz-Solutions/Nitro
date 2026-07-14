@@ -1,75 +1,27 @@
-import { useEffect, useRef, useState } from "react";
-import { Loader2, Printer } from "lucide-react";
-import { Document, Page, pdfjs } from "react-pdf";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
+import { Printer } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "react-toastify";
-
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+import { DocumentViewerPanel } from "@/components/documents/DocumentViewerPanel";
+import { isPdfMimeOrName, resolveClientPreviewMime } from "@/lib/documentPreview";
+import { cn } from "@/lib/utils";
 
 interface PDFViewerDocsModalProps {
     isOpen: boolean;
     onClose: () => void;
-    fileUrl: string | null | undefined; // Explicitly allow undefined
-    fileName?: string | null | undefined; // Explicitly allow undefined
+    fileUrl: string | null | undefined;
+    fileName?: string | null | undefined;
     showPrintButton?: boolean;
     onSendToBoldSign?: (ccEmails: string[]) => void;
     prefillFieldsPreview?: Array<{ id: string; label?: string; value: string }>;
     onSendToDocusign?: (ccEmails: string[]) => void;
-}
-
-function DirectPdfViewer({ fileUrl }: { fileUrl: string }) {
-    const wrapRef = useRef<HTMLDivElement>(null);
-    const [numPages, setNumPages] = useState<number | null>(null);
-    const [pageWidth, setPageWidth] = useState(640);
-
-    useEffect(() => {
-        const el = wrapRef.current;
-        if (!el) return;
-        const measure = () => {
-            const w = el.clientWidth;
-            if (w > 0) setPageWidth(Math.max(280, w - 24));
-        };
-        measure();
-        const ro = new ResizeObserver(measure);
-        ro.observe(el);
-        return () => ro.disconnect();
-    }, []);
-
-    return (
-        <div ref={wrapRef} className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-slate-100">
-            <Document
-                file={fileUrl}
-                onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-                loading={
-                    <div className="flex min-h-[300px] items-center justify-center">
-                        <Loader2 className="h-8 w-8 animate-spin text-slate-400" aria-hidden />
-                    </div>
-                }
-                error={
-                    <div className="flex min-h-[300px] items-center justify-center px-4 text-center text-xs text-slate-500">
-                        Could not render this PDF. Please check that the PDF URL is reachable and allows browser access.
-                    </div>
-                }
-                className="flex w-full flex-col items-center gap-3 py-3"
-            >
-                {numPages
-                    ? Array.from({ length: numPages }, (_, i) => (
-                        <Page
-                            key={i + 1}
-                            pageNumber={i + 1}
-                            width={pageWidth}
-                            className="bg-white shadow-md"
-                            renderTextLayer
-                            renderAnnotationLayer
-                        />
-                    ))
-                    : null}
-            </Document>
-        </div>
-    );
+    /** Use direct Cloudinary URLs (e.g. public portal without auth). */
+    preferDirectUrl?: boolean;
+    /** Public document portal token — fetches inline preview without CRM login. */
+    publicPortalToken?: string;
+    mimeTypeHint?: string;
+    overlayClassName?: string;
+    contentClassName?: string;
 }
 
 const PDFViewerDocsModal = ({
@@ -81,21 +33,24 @@ const PDFViewerDocsModal = ({
     onSendToBoldSign,
     prefillFieldsPreview = [],
     onSendToDocusign,
+    preferDirectUrl = false,
+    publicPortalToken,
+    mimeTypeHint,
+    overlayClassName,
+    contentClassName,
 }: PDFViewerDocsModalProps) => {
-    // Prevent linting errors for unused props
     void onSendToBoldSign;
     void prefillFieldsPreview;
     void onSendToDocusign;
 
-    // --- PRODUCTION SAFETY CHECKS ---
-    // 1. Strictly check that fileUrl is actually a string before doing anything
     const safeUrl = typeof fileUrl === "string" ? fileUrl.trim() : "";
     const isValidUrl = safeUrl !== "";
-
-    // 2. Strictly check fileName to prevent React render crashes
-    const safeFileName = typeof fileName === "string" && fileName.trim() !== "" 
-        ? fileName.trim() 
-        : "Document Viewer";
+    const safeFileName =
+        typeof fileName === "string" && fileName.trim() !== ""
+            ? fileName.trim()
+            : "Document Viewer";
+    const mimeType = resolveClientPreviewMime(safeFileName, safeUrl, "", undefined, mimeTypeHint ?? "");
+    const canPrint = showPrintButton && isPdfMimeOrName(mimeType, safeFileName);
 
     const handlePrint = () => {
         const printWindow = window.open(safeUrl, "_blank", "noopener,noreferrer");
@@ -126,18 +81,21 @@ const PDFViewerDocsModal = ({
                 if (!open) onClose();
             }}
         >
-            <DialogContent className="max-w-5xl h-[95vh] p-0 flex flex-col">
-                <DialogHeader className="p-3 pb-0 flex-row items-center justify-between space-y-0">
-                    <DialogTitle className="text-black truncate pr-2">
+            <DialogContent
+                className={cn("flex h-[95vh] max-w-5xl flex-col p-0", contentClassName)}
+                overlayClassName={overlayClassName}
+            >
+                <DialogHeader className="flex-row items-center justify-between space-y-0 p-3 pb-0">
+                    <DialogTitle className="truncate pr-2 text-black dark:text-white">
                         {safeFileName}
                     </DialogTitle>
-                    {showPrintButton ? (
+                    {canPrint ? (
                         <Button
                             type="button"
                             variant="ghost"
                             size="icon"
                             onClick={handlePrint}
-                            className="h-8 w-8 shrink-0 mr-8"
+                            className="mr-8 h-8 w-8 shrink-0"
                             title="Print PDF"
                             aria-label="Print PDF"
                         >
@@ -146,9 +104,16 @@ const PDFViewerDocsModal = ({
                     ) : null}
                 </DialogHeader>
 
-                {/* PDF Viewer */}
-                <div className="relative m-3 min-h-0 flex-1 overflow-hidden rounded-lg border bg-gray-50">
-                    <DirectPdfViewer fileUrl={safeUrl} />
+                <div className="relative m-3 min-h-0 flex-1 overflow-hidden">
+                    <DocumentViewerPanel
+                        fileUrl={safeUrl}
+                        fileName={safeFileName}
+                        className="h-full"
+                        minHeightClassName="min-h-[calc(95vh-6rem)]"
+                        preferDirectUrl={preferDirectUrl}
+                        publicPortalToken={publicPortalToken}
+                        mimeTypeHint={mimeTypeHint}
+                    />
                 </div>
             </DialogContent>
         </Dialog>

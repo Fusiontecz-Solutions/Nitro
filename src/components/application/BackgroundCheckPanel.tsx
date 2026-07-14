@@ -160,7 +160,7 @@ const BackgroundCheckPanel = ({ applicationId }: Props) => {
             <div className="rounded-xl border bg-card overflow-hidden">
                 <div className="flex items-center justify-between gap-3 px-4 py-3.5">
                     <div className="flex items-center gap-3 min-w-0">
-                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[#276D9C] dark:bg-[#1f2937] dark:text-[#5AACEA]">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EAF1FA] text-[var(--brand)] dark:bg-[#1f2937] dark:text-[#5AACEA]">
                             <ShieldCheck className="h-[18px] w-[18px]" />
                         </span>
                         <div className="min-w-0">
@@ -173,7 +173,7 @@ const BackgroundCheckPanel = ({ applicationId }: Props) => {
                     </span>
                 </div>
                 <div className="h-1 w-full bg-muted">
-                    <div className="h-full bg-[#276D9C] transition-all" style={{ width: `${pct}%` }} />
+                    <div className="h-full bg-[image:var(--brand-gradient)] transition-all" style={{ width: `${pct}%` }} />
                 </div>
             </div>
 
@@ -263,7 +263,7 @@ const BackgroundCheckPanel = ({ applicationId }: Props) => {
                             <div className="relative h-[58px] w-[58px] shrink-0">
                                 <svg viewBox="0 0 50 50" className="h-full w-full -rotate-90">
                                     <circle cx="25" cy="25" r="21" fill="none" strokeWidth="5" className="stroke-muted" />
-                                    <circle cx="25" cy="25" r="21" fill="none" strokeWidth="5" strokeLinecap="round" className="stroke-[#276D9C]" strokeDasharray={ringDash} />
+                                    <circle cx="25" cy="25" r="21" fill="none" strokeWidth="5" strokeLinecap="round" className="stroke-[var(--brand)]" strokeDasharray={ringDash} />
                                 </svg>
                                 <span className="absolute inset-0 flex items-center justify-center text-[12px] font-semibold">{pct}%</span>
                             </div>

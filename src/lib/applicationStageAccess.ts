@@ -59,15 +59,17 @@ const AGENT_STAGE_TOKENS = new Set([
   "draft",
 ]);
 
-const SCRUBBING_STAGE_TOKENS = new Set([
+const UNDERWRITER_STAGE_TOKENS = new Set([
   "scrubbing",
   "underwriting",
 ]);
 
-const UNDERWRITER_STAGE_TOKENS = new Set([
+const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
   "underwriter",
-  "finalunderwriter",
   "finalreview",
+  "finalscrubbing",
+  "underwriterapproved",
+  "finalapproval",
 ]);
 
 const POST_FINAL_STAGE_TOKENS = new Set([
@@ -103,11 +105,11 @@ export function getApplicationPipelineStageKey(
   const queueToken = normalizeToken(currentQueue);
   const stateToken = normalizeToken(currentState);
 
-  // Queue drives stage. FU keeps queue "Final Underwriter" with state "Approved" after
+  // Queue drives stage. FU keeps queue "Underwriter" with state "Approved" after
   // sending approval mail (and while resending after ISO comments) — still FU-owned.
   if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return "POST_FINAL";
-  if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "UNDERWRITER";
-  if (SCRUBBING_STAGE_TOKENS.has(queueToken)) return "SCRUBBING";
+  if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "UNDERWRITER";
+  if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return "SCRUBBING";
   if (AGENT_STAGE_TOKENS.has(queueToken)) return "AGENT";
 
   // Some imports use `currentState` for the deal stage (e.g. "FINAL").

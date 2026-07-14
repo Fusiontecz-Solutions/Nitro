@@ -29,17 +29,47 @@ import { savePaymentMailLogEntry } from "./paymentMailLogStorage";
 import {
   getPaymentTemplates,
   readPaymentTemplatesCache,
-  TEMPLATE_CATEGORY_LABELS,
-  type TemplateCategory,
   type TemplateItem as ApiTemplateItem,
 } from "./paymentTemplateApi";
-import { sendPaymentMail } from "@/redux/actions/paymentMailActions";
+import {
+  downloadPaymentLetterPdf,
+  sendPaymentMail,
+} from "@/redux/actions/paymentMailActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import { resolveOfferDecisionFundedAmount } from "@/lib/offerDecisionFees";
 import { cn, formatCurrency } from "@/lib/utils";
-import { FileText, Mail, RotateCcw, Send } from "lucide-react";
+import {
+  PAY_OFF_LETTER_VARIABLES,
+} from "@/pages/templates/PayOffLetter";
+import {
+  ZERO_BALANCE_LETTER_VARIABLES,
+} from "@/pages/templates/ZeroBalanceLetter";
+import { renderPayOffLetterEmailHtml } from "@/pages/templates/payOffLetterEmailHtml";
+import { renderZeroBalanceLetterEmailHtml } from "@/pages/templates/zeroBalanceLetterEmailHtml";
+import { resolveLetterEmailBrandingByFunderId } from "@/pages/templates/letterEmailBranding";
+import { useFunderProfiles } from "@/hooks/useFunderProfiles";
+import { Download, FileText, Loader2, Mail, RotateCcw, Send } from "lucide-react";
 import type { TermsOffer } from "@/types/termsOfferTypes";
+
+/** Stable catalog entries for the branded email HTML letters (preview + send). */
+const BRANDED_PAYOFF_LETTER_TEMPLATE: ApiTemplateItem = {
+  id: "branded:pay-off-letter",
+  name: "Payoff Letter",
+  category: "letter",
+  variables: PAY_OFF_LETTER_VARIABLES.map((v) => v.key),
+  body: "",
+  status: "active",
+};
+
+const BRANDED_ZERO_BALANCE_LETTER_TEMPLATE: ApiTemplateItem = {
+  id: "branded:zero-balance-letter",
+  name: "Zero Balance Letter",
+  category: "letter",
+  variables: ZERO_BALANCE_LETTER_VARIABLES.map((v) => v.key),
+  body: "",
+  status: "active",
+};
 
 type ApplicationFundingExtras = Application & {
   termsOffers?: Array<{ approvedAmount?: unknown }>;
@@ -74,8 +104,26 @@ function normalizeMergeKey(raw: string): string {
   return (m ? m[1] : t.replace(/^\{\{|\}\}$/g, "")).trim();
 }
 
-/** Use both body placeholders and template.variables so fields still render for plain-text bodies. */
+function isZeroBalanceLetterName(templateName: string): boolean {
+  const n = templateName.trim().toLowerCase();
+  return n === "zero balance letter" || n.includes("zero balance");
+}
+
+function isPayoffLetterName(templateName: string): boolean {
+  const n = templateName.trim().toLowerCase();
+  if (isZeroBalanceLetterName(n)) return false;
+  return n.includes("payoff") || n.includes("pay off");
+}
+
+/** Prefer branded HTML variable lists for payoff / zero-balance letters. */
 function templateMergeKeys(template: ApiTemplateItem): string[] {
+  if (isZeroBalanceLetterName(template.name)) {
+    return ZERO_BALANCE_LETTER_VARIABLES.map((v) => v.key);
+  }
+  if (isPayoffLetterName(template.name)) {
+    return PAY_OFF_LETTER_VARIABLES.map((v) => v.key);
+  }
+
   const seen = new Set<string>();
   const out: string[] = [];
   const push = (raw: string) => {
@@ -87,6 +135,27 @@ function templateMergeKeys(template: ApiTemplateItem): string[] {
   for (const k of placeholderKeysFromBody(template.body)) push(k);
   for (const k of template.variables ?? []) push(String(k ?? ""));
   return out;
+}
+
+/**
+ * Replace legacy DB payoff / zero-balance rows with the branded HTML catalog
+ * so Letters always shows and sends the new email layouts.
+ */
+function withBrandedLetterTemplates(
+  apiTemplates: ApiTemplateItem[]
+): ApiTemplateItem[] {
+  const withoutLegacyBranded = apiTemplates.filter(
+    (t) =>
+      !(
+        t.category === "letter" &&
+        isPayoffOrZeroBalanceLetter(t.name)
+      )
+  );
+  return [
+    ...withoutLegacyBranded,
+    BRANDED_PAYOFF_LETTER_TEMPLATE,
+    BRANDED_ZERO_BALANCE_LETTER_TEMPLATE,
+  ];
 }
 
 /** Trimmed string for merge fields (values may be non-strings at runtime). */
@@ -106,6 +175,19 @@ function mergeFieldLabel(key: string): string {
         word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
     )
     .join(" ");
+}
+
+/** Prefer branded template variable labels when present (e.g. Valid Till). */
+function templateFieldLabel(template: ApiTemplateItem | null, key: string): string {
+  if (template && isZeroBalanceLetterName(template.name)) {
+    const fromVars = ZERO_BALANCE_LETTER_VARIABLES.find((v) => v.key === key)?.label;
+    if (fromVars) return fromVars;
+  }
+  if (template && isPayoffLetterName(template.name)) {
+    const fromVars = PAY_OFF_LETTER_VARIABLES.find((v) => v.key === key)?.label;
+    if (fromVars) return fromVars;
+  }
+  return mergeFieldLabel(key);
 }
 
 function escapeHtmlForMerge(text: string): string {
@@ -178,21 +260,16 @@ function formatUsShortDate(iso?: string): string {
 }
 
 function isPayoffOrZeroBalanceLetter(templateName: string): boolean {
-  const n = templateName.trim().toLowerCase();
   return (
-    n === "zero balance letter" ||
-    n.includes("zero balance") ||
-    n.includes("payoff") ||
-    n.includes("pay off")
+    isZeroBalanceLetterName(templateName) || isPayoffLetterName(templateName)
   );
 }
 
 function letterTypeLabelForSubject(templateName: string): string {
-  const n = templateName.trim().toLowerCase();
-  if (n === "zero balance letter" || n.includes("zero balance")) {
+  if (isZeroBalanceLetterName(templateName)) {
     return "Zero Balance Letter";
   }
-  if (n.includes("payoff") || n.includes("pay off")) {
+  if (isPayoffLetterName(templateName)) {
     return "Pay off Letter";
   }
   return templateName;
@@ -241,11 +318,51 @@ function resolveFundedAmountFromOfferDecision(
 }
 
 /** Payoff / zero-balance letters: `Client Name: Letter Type - Funded Amount`. */
+function buildLetterPdfFilename(
+  templateName: string,
+  dealLabel: string,
+  subject: string
+): string {
+  const base =
+    subject.trim() ||
+    `${templateName.trim() || "letter"}-${dealLabel.trim() || "deal"}`;
+  const sanitized = base
+    .replace(/[^\w\s.-]+/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 120);
+  return sanitized || "letter";
+}
+
+async function parseLetterPdfErrorMessage(error: unknown): Promise<string> {
+  if (!error || typeof error !== "object") {
+    return "Could not generate the letter PDF.";
+  }
+  const axiosError = error as {
+    response?: { data?: Blob };
+    message?: string;
+  };
+  const data = axiosError.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text();
+      const parsed = JSON.parse(text) as { message?: string };
+      if (parsed.message?.trim()) return parsed.message.trim();
+    } catch {
+      // Response was not JSON.
+    }
+  }
+  if (axiosError.message?.trim()) return axiosError.message.trim();
+  return "Could not generate the letter PDF.";
+}
+
 function buildLetterEmailSubject(
   templateName: string,
   values: Record<string, string>
 ): string {
   const clientName =
+    values.account_name?.trim() ||
     values.business_name?.trim() ||
     values.client_name?.trim() ||
     values.merchant_name?.trim() ||
@@ -323,9 +440,17 @@ function buildDefaultValues(
   });
   const d = new Date();
   const letterDate = `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+  const goodThrough = new Date(d);
+  goodThrough.setDate(goodThrough.getDate() + 7);
+  const goodThroughDate = goodThrough.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
   const agreementDate =
     formatUsShortDate(application?.createdAt) || letterDate;
   const legalEntityName = (business?.name ?? merchantName).trim();
+  const accountName = legalEntityName || merchantName;
 
   return {
     merchant_name: merchantName,
@@ -355,11 +480,38 @@ function buildDefaultValues(
     customer_id: dealLabel,
     ...DEFAULT_PAYOFF_WIRE_DETAILS,
     client_name: merchantName,
-    letter_date: letterDate,
+    letter_date: today,
     merchant_legal_name: legalEntityName,
     agreement_date: agreementDate,
     zero_balance_statement: "$0.00 (zero dollars)",
+    // Branded payoff / zero-balance email HTML merge fields
+    account_name: accountName,
+    salutation_name: merchantName || accountName,
+    good_through_date: goodThroughDate,
+    payment_company_name: DEFAULT_PAYOFF_WIRE_DETAILS.beneficiary_name,
+    payment_address_line1: DEFAULT_PAYOFF_WIRE_DETAILS.bank_address_line1,
+    payment_address_line2: DEFAULT_PAYOFF_WIRE_DETAILS.bank_city_state_zip,
+    payment_routing_number: DEFAULT_PAYOFF_WIRE_DETAILS.routing_number,
+    payment_account_number: DEFAULT_PAYOFF_WIRE_DETAILS.account_number,
+    sender_name: "Admin team",
+    account_status: "Zero Balance",
   };
+}
+
+function resolveApplicationContractState(
+  application: Application | null | undefined,
+): string {
+  const client = application?.client;
+  if (typeof client !== "object" || !client) return "";
+  const businessState = client.business?.address?.state;
+  if (typeof businessState === "string" && businessState.trim()) {
+    return businessState.trim();
+  }
+  const ownerState = client.owner?.address?.state;
+  if (typeof ownerState === "string" && ownerState.trim()) {
+    return ownerState.trim();
+  }
+  return "";
 }
 
 export default function Letters() {
@@ -383,6 +535,19 @@ export default function Letters() {
     (s: RootState) => s.termsOffers.data
   ) as TermsOffer[];
   const applicationUuid = application?._id ?? "";
+
+  const contractState = useMemo(
+    () => resolveApplicationContractState(application),
+    [application],
+  );
+
+  const {
+    funders,
+    funderSelectEntries,
+    loading: fundersLoading,
+    findFunderById,
+    resolveDefaultFunder,
+  } = useFunderProfiles(contractState || null);
 
   const fundingSources = useMemo((): LetterFundingSources => {
     const offerDecision = offerDecisionBelongsToApplication(
@@ -439,31 +604,52 @@ export default function Letters() {
     };
   }, []);
 
-  const templateSource = templates;
-
-  const categories = useMemo(
-    () =>
-      Array.from(
-        new Set(templateSource.map((t) => t.category))
-      ) as TemplateCategory[],
-    [templateSource]
+  const templateSource = useMemo(
+    () => withBrandedLetterTemplates(templates),
+    [templates]
   );
 
-  const [templateType, setTemplateType] = useState<TemplateCategory>("letter");
   const [templateId, setTemplateId] = useState<string>("");
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [recipientEmail, setRecipientEmail] = useState("");
   const [subject, setSubject] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [funderProfileId, setFunderProfileId] = useState("");
 
-  const templatesForType = useMemo(
-    () => templateSource.filter((t) => t.category === templateType),
-    [templateSource, templateType]
+  useEffect(() => {
+    if (funderProfileId) return;
+    const defaultFunderName = resolveDefaultFunder();
+    const match = funderSelectEntries.find(
+      (entry) => entry.funderName === defaultFunderName,
+    );
+    if (match?.value) {
+      setFunderProfileId(match.value);
+      return;
+    }
+    if (funderSelectEntries[0]?.value) {
+      setFunderProfileId(funderSelectEntries[0].value);
+    }
+  }, [funderProfileId, funderSelectEntries, resolveDefaultFunder]);
+
+  const letterEmailBranding = useMemo(
+    () => resolveLetterEmailBrandingByFunderId(funders, funderProfileId),
+    [funders, funderProfileId],
   );
+
+  const selectedFunderLabel = useMemo(() => {
+    const profile = findFunderById(funderProfileId);
+    if (!profile) return "";
+    return profile.displayName?.trim() || profile.name;
+  }, [findFunderById, funderProfileId]);
 
   const selectedTemplate = useMemo(
     () => templateSource.find((t) => t.id === templateId) ?? null,
     [templateSource, templateId]
+  );
+
+  const showBrandedLetterControls = Boolean(
+    selectedTemplate && isPayoffOrZeroBalanceLetter(selectedTemplate.name),
   );
 
   useEffect(() => {
@@ -471,11 +657,12 @@ export default function Letters() {
   }, [defaults.__recipient_email]);
 
   useEffect(() => {
-    const list = templateSource.filter((t) => t.category === templateType);
     const nextId =
-      list.find((t) => t.id === templateId)?.id ?? list[0]?.id ?? "";
+      templateSource.find((t) => t.id === templateId)?.id ??
+      templateSource[0]?.id ??
+      "";
     if (nextId !== templateId) setTemplateId(nextId);
-  }, [templateSource, templateType, templateId]);
+  }, [templateSource, templateId]);
 
   useEffect(() => {
     if (!selectedTemplate) {
@@ -512,6 +699,12 @@ export default function Letters() {
 
   const mergedBody = useMemo(() => {
     if (!selectedTemplate) return "";
+    if (isZeroBalanceLetterName(selectedTemplate.name)) {
+      return renderZeroBalanceLetterEmailHtml(fieldValues, letterEmailBranding);
+    }
+    if (isPayoffLetterName(selectedTemplate.name)) {
+      return renderPayOffLetterEmailHtml(fieldValues, letterEmailBranding);
+    }
     const escapeVals = templateBodyIsHtml(selectedTemplate.body);
     return mergeTemplate(
       selectedTemplate.body,
@@ -519,10 +712,12 @@ export default function Letters() {
       escapeVals,
       placeholderKeys
     );
-  }, [selectedTemplate, fieldValues, placeholderKeys]);
+  }, [selectedTemplate, fieldValues, placeholderKeys, letterEmailBranding]);
 
   const previewIsHtml = Boolean(
-    selectedTemplate && templateBodyIsHtml(selectedTemplate.body)
+    selectedTemplate &&
+      (isPayoffOrZeroBalanceLetter(selectedTemplate.name) ||
+        templateBodyIsHtml(selectedTemplate.body))
   );
 
   const autofillFromDefaults = () => {
@@ -546,6 +741,55 @@ export default function Letters() {
     setSubject("");
   };
 
+  const downloadLetterPdf = async () => {
+    if (!selectedTemplate) {
+      toast.error("Choose a template first.");
+      return;
+    }
+    if (!mergedBody.trim()) {
+      toast.error("Nothing to download yet.");
+      return;
+    }
+
+    setIsDownloadingPdf(true);
+    try {
+      const bodyForPdf = previewIsHtml
+        ? mergedBody
+        : `<pre style="white-space:pre-wrap;font-family:Georgia,serif;font-size:13px;line-height:1.75">${escapeHtmlForMerge(mergedBody)}</pre>`;
+      const filenameBase = buildLetterPdfFilename(
+        selectedTemplate.name,
+        dealLabel,
+        subject
+      );
+      const blob = await downloadPaymentLetterPdf({
+        body: bodyForPdf,
+        filename: filenameBase,
+      });
+
+      if (blob.type.includes("json")) {
+        const text = await blob.text();
+        const parsed = JSON.parse(text) as { message?: string };
+        throw new Error(parsed.message || "Failed to generate letter PDF");
+      }
+
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${filenameBase}.pdf`;
+      anchor.rel = "noopener noreferrer";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      toast.success("PDF downloaded.");
+    } catch (error: unknown) {
+      const message = await parseLetterPdfErrorMessage(error);
+      toast.error(message);
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
   const sendLetter = async () => {
     if (!selectedTemplate) {
       toast.error("Choose a template first.");
@@ -556,7 +800,7 @@ export default function Letters() {
     );
     if (unresolved.length) {
       toast.error(
-        `Fill all fields: ${unresolved.map((k) => mergeFieldLabel(k)).join(", ")}`
+        `Fill all fields: ${unresolved.map((k) => templateFieldLabel(selectedTemplate, k)).join(", ")}`
       );
       return;
     }
@@ -621,7 +865,7 @@ export default function Letters() {
     <div className="mx-auto w-full max-w-[1600px] p-3">
       <div className="mb-5 rounded-xl border border-border/70 bg-card/95 px-5 py-4 dark:border-white/10 dark:bg-white/[0.03]">
         <div>
-          {/* <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-[#276D9C]">
+          {/* <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--brand)]">
             <Mail className="size-3.5" />
             Correspondence
           </div> */}
@@ -641,8 +885,8 @@ export default function Letters() {
           <Card className="overflow-hidden border-border/70 bg-card shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
             <CardHeader className="border-b border-border/60 bg-muted/30 py-4 dark:border-white/10 dark:bg-white/[0.03]">
               <CardTitle className="text-md flex items-center gap-2 font-medium text-foreground">
-                <span className="flex size-8 items-center justify-center rounded-lg bg-[#276D9C]/12">
-                  <FileText className="size-4 text-[#276D9C]" />
+                <span className="flex size-8 items-center justify-center rounded-lg bg-[var(--brand)]/12">
+                  <FileText className="size-4 text-[var(--brand)]" />
                 </span>
                 Template Configuration
               </CardTitle>
@@ -651,20 +895,36 @@ export default function Letters() {
             <CardContent className="space-y-7 p-5">
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label className="text-sm font-medium text-foreground">Communication Type</Label>
+                  <Label className="text-sm font-medium text-foreground">Funder</Label>
                   <Select
-                    value={templateType}
-                    onValueChange={(value: string) => setTemplateType(value as TemplateCategory)}
+                    value={funderProfileId}
+                    onValueChange={setFunderProfileId}
+                    disabled={fundersLoading || !funderSelectEntries.length}
                   >
                     <SelectTrigger className="w-full border-border bg-background dark:border-white/10 dark:bg-white/[0.04]">
-                      <SelectValue placeholder="Select type..." />
+                      <SelectValue
+                        placeholder={
+                          fundersLoading ? "Loading funders..." : "Select funder..."
+                        }
+                      />
                     </SelectTrigger>
                     <SelectContent>
-                      {categories.map((c) => (
-                        <SelectItem key={c} value={c}>{TEMPLATE_CATEGORY_LABELS[c]}</SelectItem>
+                      {funderSelectEntries.map((entry) => (
+                        <SelectItem key={entry.value} value={entry.value}>
+                          {entry.label}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {showBrandedLetterControls && selectedFunderLabel ? (
+                    <p className="text-xs text-muted-foreground">
+                      Logo, watermark, and accent colors update for{" "}
+                      <span className="font-medium text-foreground">
+                        {selectedFunderLabel}
+                      </span>
+                      .
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="space-y-2">
@@ -672,13 +932,13 @@ export default function Letters() {
                   <Select
                     value={templateId}
                     onValueChange={setTemplateId}
-                    disabled={!templatesForType.length}
+                    disabled={!templateSource.length}
                   >
                     <SelectTrigger className="w-full border-border bg-background dark:border-white/10 dark:bg-white/[0.04]">
                       <SelectValue placeholder="Select template..." />
                     </SelectTrigger>
                     <SelectContent>
-                      {templatesForType.map((t) => (
+                      {templateSource.map((t) => (
                         <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                       ))}
                     </SelectContent>
@@ -732,7 +992,7 @@ export default function Letters() {
                     {placeholderKeys.map((key) => (
                       <div key={key} className="space-y-1.5">
                         <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          {mergeFieldLabel(key)}
+                          {templateFieldLabel(selectedTemplate, key)}
                         </Label>
                         <Input
                           value={fieldValues[key] || ""}
@@ -773,14 +1033,14 @@ export default function Letters() {
           <div className="space-y-4">
             <div className="flex items-center justify-between rounded-xl border border-border/70 bg-card/95 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
               <div className="flex items-center gap-3">
-                <span className="hidden h-8 w-1 rounded-full bg-[#276D9C] sm:block" aria-hidden />
+                <span className="hidden h-8 w-1 rounded-full bg-[image:var(--brand-gradient)] sm:block" aria-hidden />
                 <Mail className="size-5" />
                 <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                   Live Preview
                 </h3>
               </div>
               {isSending && (
-                <span className="rounded-full bg-blue-50 px-3 py-1 text-[10px] font-medium text-[#276D9C] animate-pulse">
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-[10px] font-medium text-[var(--brand)] animate-pulse">
                   Processing...
                 </span>
               )}
@@ -789,31 +1049,53 @@ export default function Letters() {
               <CardContent className="flex-1 overflow-hidden p-0">
                 {selectedTemplate ? (
                   <div className="m-4 min-h-[460px] rounded-xl border border-border/70 bg-card p-6 text-foreground dark:border-white/10 dark:bg-white/[0.03] sm:m-5 sm:p-3">
-                    <div className="mb-5 space-y-2 rounded-lg border border-border/60 bg-muted/25 p-4 dark:border-white/10 dark:bg-white/[0.03]">
-                      <p className="text-[13px] text-muted-foreground">
-                        Template:{" "}
-                        <span className="font-medium text-foreground">
-                          {selectedTemplate.name}
-                        </span>
-                      </p>
-                      <p className="text-[13px] text-muted-foreground">
-                        Type:{" "}
-                        <span className="font-medium capitalize text-foreground">
-                          {selectedTemplate.category}
-                        </span>
-                      </p>
-                      <p className="text-[13px] text-muted-foreground">
-                        To:{" "}
-                        <span className="break-all font-medium text-foreground">
-                          {recipientEmail || "(Empty)"}
-                        </span>
-                      </p>
-                      <p className="text-[13px] text-muted-foreground">
-                        Subject:{" "}
-                        <span className="break-words font-medium text-foreground">
-                          {subject || "(No Subject)"}
-                        </span>
-                      </p>
+                    <div className="mb-5 flex items-start justify-between gap-4 rounded-lg border border-border/60 bg-muted/25 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <p className="text-[13px] text-muted-foreground">
+                          Template:{" "}
+                          <span className="font-medium text-foreground">
+                            {selectedTemplate.name}
+                          </span>
+                        </p>
+                        <p className="text-[13px] text-muted-foreground">
+                          Type:{" "}
+                          <span className="font-medium capitalize text-foreground">
+                            {selectedTemplate.category}
+                          </span>
+                        </p>
+                        <p className="text-[13px] text-muted-foreground">
+                          To:{" "}
+                          <span className="break-all font-medium text-foreground">
+                            {recipientEmail || "(Empty)"}
+                          </span>
+                        </p>
+                        <p className="text-[13px] text-muted-foreground">
+                          Subject:{" "}
+                          <span className="break-words font-medium text-foreground">
+                            {subject || "(No Subject)"}
+                          </span>
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 cursor-pointer border-border dark:border-white/10"
+                        disabled={!mergedBody.trim() || isDownloadingPdf || isSending}
+                        onClick={() => void downloadLetterPdf()}
+                      >
+                        {isDownloadingPdf ? (
+                          <>
+                            <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                            Preparing…
+                          </>
+                        ) : (
+                          <>
+                            <Download className="mr-2 size-4" aria-hidden />
+                            Download PDF
+                          </>
+                        )}
+                      </Button>
                     </div>
                     <div
                       className={cn(
@@ -849,7 +1131,7 @@ export default function Letters() {
                 <Button
                   onClick={() => void sendLetter()}
                   disabled={!selectedTemplate || isSending}
-                  className="w-full bg-[#276D9C] py-5 text-base font-semibold text-white cursor-pointer hover:bg-[#1e547a]"
+                  className="w-full bg-[image:var(--brand-gradient)] py-5 text-base font-semibold text-white cursor-pointer hover:opacity-90"
                 >
                   {isSending ? (
                     "Sending..."

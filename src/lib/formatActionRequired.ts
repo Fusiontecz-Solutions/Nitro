@@ -77,6 +77,17 @@ const isStructuredContractSectionPart = (part: string): boolean => {
  */
 const normalizeNoteNewlines = (note: string): string => note.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
+/** Internal Application.note marker when Gmail subject-fallback auto-creates a deal (dedupe guard). */
+const GMAIL_AUTO_CREATE_MSG_NOTE_RE = /^\s*gmail-msg:[a-f0-9]+\s*$/i;
+
+const stripInternalSystemNotes = (note: string): string =>
+  normalizeNoteNewlines(note)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !GMAIL_AUTO_CREATE_MSG_NOTE_RE.test(line))
+    .join("\n\n")
+    .trim();
+
 const splitStructuredNoteParts = (note: string): string[] =>
   normalizeNoteNewlines(note)
     .trim()
@@ -124,7 +135,7 @@ export const formatActionRequired = (value: unknown): string => {
   if (value == null) return "--";
 
   if (typeof value === "string") {
-    const trimmed = normalizeNoteNewlines(value).trim();
+    const trimmed = stripInternalSystemNotes(value);
     if (!trimmed) return "--";
 
     const messageOnly = messageOnlyFromCombinedNote(trimmed);

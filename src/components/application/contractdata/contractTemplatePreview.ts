@@ -11,8 +11,62 @@ export type MainContractTemplatePreview = {
     url: string;
     name: string;
     layoutKey: string;
-    source: "contract-templates" | "docusign-download" | "fallback";
+    source: "contract-templates" | "crm-pdf-url" | "docusign-download" | "fallback";
 };
+
+function isFunderOwnedContractLayout(layoutKey: string, profile?: FunderProfile): boolean {
+    const key = String(layoutKey || "").trim();
+    if (key.startsWith("funder_")) return true;
+    if (key === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract) return true;
+    if (profile && isTexasFundingGroupFunderProfile(profile)) return true;
+    const profileKey = String(profile?.mainContractLayoutKey ?? "").trim();
+    if (profileKey.startsWith("funder_")) return true;
+    if (profileKey && profileKey !== PLATFORM_LAYOUT_KEYS.contract) return true;
+    return false;
+}
+
+async function fetchCrmTemplatePdfByLayoutKey(
+    layoutKey: string,
+    previewName: string,
+): Promise<MainContractTemplatePreview | null> {
+    const key = String(layoutKey || "").trim();
+    if (!key) return null;
+    try {
+        const res = await axiosGet("/contract/templates", {
+            params: { type: "contract" },
+        });
+        const rows = (
+            (res as { data?: { data?: unknown } })?.data?.data ??
+            (res as { data?: unknown })?.data ??
+            []
+        ) as Array<{
+            layoutKey?: string;
+            templateId?: string;
+            pdfUrl?: string;
+            name?: string;
+            originalFileName?: string;
+        }>;
+        if (!Array.isArray(rows)) return null;
+        const match = rows.find(
+            (row) =>
+                String(row.layoutKey || "").trim() === key ||
+                String(row.templateId || "").trim() === key,
+        );
+        const pdfUrl = String(match?.pdfUrl || "").trim();
+        if (!pdfUrl || !/^https?:\/\//i.test(pdfUrl)) return null;
+        const name =
+            String(match?.originalFileName || match?.name || "").trim() || previewName;
+        const viewUrl = await resolvePdfViewUrl(pdfUrl, name);
+        return {
+            url: viewUrl,
+            name,
+            layoutKey: key,
+            source: "crm-pdf-url",
+        };
+    } catch {
+        return null;
+    }
+}
 
 export async function fetchMainContractTemplatePreview(options: {
     funderName?: string | null;
@@ -36,19 +90,11 @@ export async function fetchMainContractTemplatePreview(options: {
         funderProfileId && !funderProfileId.startsWith("fallback-")
             ? funderProfileId
             : persistedFunderProfileIdForApi(profile);
-    const profileLayoutKey = String(profile?.mainContractLayoutKey ?? "").trim();
-    const funderSpecificLayout =
-        Boolean(profile && isTexasFundingGroupFunderProfile(profile)) ||
-        Boolean(profile?.contractPdfFileName) ||
-        (profileLayoutKey && profileLayoutKey !== PLATFORM_LAYOUT_KEYS.contract) ||
-        layoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract ||
-        layoutKey.startsWith("funder_");
-    const useGlobalContractTemplateLatest =
-        layoutKey === PLATFORM_LAYOUT_KEYS.contract &&
-        !funderSpecificLayout &&
-        !funderName;
+    const funderOwnedLayout = isFunderOwnedContractLayout(layoutKey, profile);
+    const usePlatformContractTemplateLatest =
+        layoutKey === PLATFORM_LAYOUT_KEYS.contract && !funderOwnedLayout;
 
-    if (useGlobalContractTemplateLatest) {
+    if (usePlatformContractTemplateLatest) {
         try {
             const res = await axiosGet("/contract-templates/latest", {
                 params: {
@@ -72,9 +118,13 @@ export async function fetchMainContractTemplatePreview(options: {
                 };
             }
         } catch {
-            /* try platform layout / CRM template download */
+            /* try CRM layout download / fallback */
         }
     }
+
+    // Prefer CRM BoldSignTemplate.pdfUrl (Cloudinary) — works for funder_* layout keys.
+    const crmPreview = await fetchCrmTemplatePdfByLayoutKey(layoutKey, options.previewName);
+    if (crmPreview?.url) return crmPreview;
 
     try {
         const response = await axiosGet(
@@ -92,7 +142,7 @@ export async function fetchMainContractTemplatePreview(options: {
             response?.data instanceof Blob
                 ? response.data
                 : new Blob([response?.data], { type: "application/pdf" });
-        if (blob.size > 0) {
+        if (blob.size > 0 && blob.type !== "application/json") {
             return {
                 url: URL.createObjectURL(blob),
                 name: options.previewName,
@@ -106,7 +156,7 @@ export async function fetchMainContractTemplatePreview(options: {
 
     const fallbackUrl = String(options.fallbackUrl ?? "").trim();
     // Never fall back to the global Woodmere template when this funder has its own contract PDF.
-    if (fallbackUrl && !funderSpecificLayout) {
+    if (fallbackUrl && !funderOwnedLayout) {
         const viewUrl = await resolvePdfViewUrl(
             fallbackUrl,
             options.fallbackName || options.previewName,

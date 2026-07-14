@@ -27,8 +27,8 @@ import { getCollectionPayments } from "@/redux/actions/collectionPaymentActions"
 import type { AppDispatch, RootState } from "@/redux/store";
 import type { CollectionPayment } from "@/types/collectionPaymentTypes";
 
-/** Platform primary — #276D9C */
-const PLATFORM = "#276D9C";
+/** Platform primary — var(--brand) */
+const PLATFORM = "var(--brand)";
 /** Paid segment — lighter sky blue (positive, on-brand) */
 const BLUE_PAID = "#3FA3D6";
 /** Failed / at-risk — deeper navy (distinct but still blue family) */
@@ -154,13 +154,13 @@ export function DealPaymentSummaryModal({
         className="max-h-[90vh] max-w-[min(100vw-1.5rem,52rem)] overflow-hidden rounded-3xl border border-border/70 bg-background p-0 shadow-2xl sm:rounded-3xl dark:border-white/12 dark:bg-gradient-to-b dark:from-slate-950 dark:to-card"
       >
         <div
-          className="h-[3px] w-full shrink-0 bg-gradient-to-r from-transparent via-[#276D9C] to-transparent opacity-95 dark:via-sky-500/90"
+          className="h-[3px] w-full shrink-0 bg-gradient-to-r from-transparent via-[var(--brand)] to-transparent opacity-95 dark:via-sky-500/90"
           aria-hidden
         />
-        <DialogHeader className="space-y-3 border-b border-border/60 bg-gradient-to-br from-muted/35 via-transparent to-transparent px-6 pb-6 pt-5 text-left dark:from-[#276D9C]/[0.07] dark:via-transparent">
+        <DialogHeader className="space-y-3 border-b border-border/60 bg-gradient-to-br from-muted/35 via-transparent to-transparent px-6 pb-6 pt-5 text-left dark:from-[var(--brand)]/[0.07] dark:via-transparent">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0 space-y-2">
-              {/* <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#276D9C]/90 dark:text-sky-400/90">
+              {/* <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--brand)]/90 dark:text-sky-400/90">
                 Collections
               </p> */}
               <DialogTitle className="flex flex-wrap items-center gap-x-4 gap-y-3 text-lg font-bold leading-tight tracking-tight text-foreground sm:text-2xl">
@@ -170,7 +170,7 @@ export function DealPaymentSummaryModal({
                     <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground sm:text-xs">
                       Deal ID
                     </span>
-                    <span className="inline-flex items-center rounded-full border border-[#276D9C]/20 bg-[#276D9C]/10 px-3 py-1.5 text-sm font-semibold tabular-nums leading-none text-[#276D9C] dark:border-sky-500/25 dark:bg-sky-500/10 dark:text-sky-300">
+                    <span className="inline-flex items-center rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/10 px-3 py-1.5 text-sm font-semibold tabular-nums leading-none text-[var(--brand)] dark:border-sky-500/25 dark:bg-sky-500/10 dark:text-sky-300">
                       {dealLabel?.trim() || dealIdTrim}
                     </span>
                   </span>
@@ -182,19 +182,19 @@ export function DealPaymentSummaryModal({
               </DialogDescription>
             </div>
             <div
-              className="hidden h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-[#276D9C]/15 bg-[#276D9C]/[0.08] shadow-inner sm:flex dark:border-sky-500/15 dark:bg-sky-500/10"
+              className="hidden h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-[var(--brand)]/15 bg-[var(--brand)]/[0.08] shadow-inner sm:flex dark:border-sky-500/15 dark:bg-sky-500/10"
               aria-hidden
             >
-              <PieChart className="size-7 text-[#276D9C] dark:text-sky-400" strokeWidth={1.75} />
+              <PieChart className="size-7 text-[var(--brand)] dark:text-sky-400" strokeWidth={1.75} />
             </div>
           </div>
         </DialogHeader>
 
         <div className="max-h-[calc(90vh-8rem)] space-y-6 overflow-y-auto overscroll-contain px-6 py-6">
           {showLoading ? (
-            <div className="flex flex-col items-center justify-center gap-5 rounded-2xl border border-dashed border-[#276D9C]/20 bg-muted/20 py-16 dark:border-sky-500/20">
+            <div className="flex flex-col items-center justify-center gap-5 rounded-2xl border border-dashed border-[var(--brand)]/20 bg-muted/20 py-16 dark:border-sky-500/20">
               <Loader2
-                className="size-12 animate-spin text-[#276D9C] dark:text-sky-400"
+                className="size-12 animate-spin text-[var(--brand)] dark:text-sky-400"
                 aria-hidden
               />
               <div className="text-center">
@@ -265,7 +265,7 @@ export function DealPaymentSummaryModal({
                   accentSoft="sky"
                   valueTone="muted"
                   icon={
-                    <TrendingUp className="size-[18px] text-[#276D9C] dark:text-sky-400" />
+                    <TrendingUp className="size-[18px] text-[var(--brand)] dark:text-sky-400" />
                   }
                   value={recoveryPctLabel}
                   sub={
@@ -280,7 +280,7 @@ export function DealPaymentSummaryModal({
                 aria-labelledby="deal-payment-status-breakdown"
                 className="overflow-hidden rounded-2xl border border-border/70 bg-card/85 shadow-[0_8px_30px_-12px_rgba(39,109,156,0.18)] ring-1 ring-black/[0.03] dark:border-white/10 dark:bg-card/50 dark:ring-white/[0.05]"
               >
-                <div className="border-b border-border/50 bg-gradient-to-r from-[#276D9C]/[0.06] via-sky-500/[0.05] to-[#276D9C]/[0.04] px-5 py-4 dark:from-[#276D9C]/12 dark:via-sky-400/10">
+                <div className="border-b border-border/50 bg-gradient-to-r from-[var(--brand)]/[0.06] via-sky-500/[0.05] to-[var(--brand)]/[0.04] px-5 py-4 dark:from-[var(--brand)]/12 dark:via-sky-400/10">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3
                       id="deal-payment-status-breakdown"
@@ -311,7 +311,7 @@ export function DealPaymentSummaryModal({
                     <div className="flex flex-col items-center gap-8 lg:flex-row lg:items-center lg:gap-12">
                       <div className="relative flex shrink-0 items-center justify-center">
                         <div
-                          className="pointer-events-none absolute inset-0 m-auto size-[120px] rounded-full bg-gradient-to-br from-[#276D9C]/14 via-transparent to-sky-400/15 blur-2xl dark:from-sky-500/18 dark:to-[#276D9C]/20"
+                          className="pointer-events-none absolute inset-0 m-auto size-[120px] rounded-full bg-gradient-to-br from-[var(--brand)]/14 via-transparent to-sky-400/15 blur-2xl dark:from-sky-500/18 dark:to-[var(--brand)]/20"
                           aria-hidden
                         />
                         <div className="relative h-[220px] w-[220px]">
@@ -356,7 +356,7 @@ export function DealPaymentSummaryModal({
                         {pieData.map((row) => (
                           <div
                             key={row.name}
-                            className="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border/50 bg-muted/20 px-4 py-3.5 shadow-sm transition-all duration-200 hover:border-[#276D9C]/25 hover:bg-muted/35 dark:bg-white/[0.03] dark:hover:border-sky-500/25"
+                            className="group flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-border/50 bg-muted/20 px-4 py-3.5 shadow-sm transition-all duration-200 hover:border-[var(--brand)]/25 hover:bg-muted/35 dark:bg-white/[0.03] dark:hover:border-sky-500/25"
                           >
                             <div className="flex min-w-0 items-center gap-3">
                               <span
@@ -419,7 +419,7 @@ function SummaryStatCard({
         ? "text-[#173e56] dark:text-sky-200/95"
         : valueTone === "bluePending"
           ? "text-[#4d6f8c] dark:text-sky-300/90"
-          : "text-[#276D9C] dark:text-sky-300";
+          : "text-[var(--brand)] dark:text-sky-300";
 
   const softRing =
     accentSoft === "bluePaid"
@@ -428,10 +428,10 @@ function SummaryStatCard({
         ? "bg-[#1A5376]/18 dark:bg-sky-500/14"
         : accentSoft === "bluePending"
           ? "bg-[#6B9CBD]/22 dark:bg-sky-400/12"
-          : "bg-[#276D9C]/15 dark:bg-sky-500/15";
+          : "bg-[var(--brand)]/15 dark:bg-sky-500/15";
 
   return (
-    <div className="group relative flex min-h-[142px] flex-col overflow-hidden rounded-2xl border border-border/60 bg-background/95 p-4 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.08)] transition-shadow duration-300 hover:border-[#276D9C]/22 hover:shadow-[0_8px_24px_-8px_rgba(39,109,156,0.2)] dark:border-white/[0.08] dark:bg-gradient-to-br dark:from-card dark:to-muted/40 dark:hover:border-sky-500/22">
+    <div className="group relative flex min-h-[142px] flex-col overflow-hidden rounded-2xl border border-border/60 bg-background/95 p-4 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.08)] transition-shadow duration-300 hover:border-[var(--brand)]/22 hover:shadow-[0_8px_24px_-8px_rgba(39,109,156,0.2)] dark:border-white/[0.08] dark:bg-gradient-to-br dark:from-card dark:to-muted/40 dark:hover:border-sky-500/22">
       <div
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,rgba(255,255,255,0.14),transparent_55%)] opacity-70 dark:bg-[radial-gradient(ellipse_at_top_right,rgba(255,255,255,0.05),transparent_52%)]"
         aria-hidden

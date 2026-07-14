@@ -105,7 +105,7 @@ export function HorizontalScrollFade({
 
       <div
         ref={scrollRef}
-        className="scrollbar-hide min-w-0 flex-1 overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch]"
+        className="scrollbar-hide min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-webkit-overflow-scrolling:touch] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&::-webkit-scrollbar]:h-0"
       >
         {children}
       </div>

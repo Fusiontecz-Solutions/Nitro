@@ -11,7 +11,6 @@ const defaultSummaryCounts = {
   totalCases: 0,
   contractPending: 0,
   contractGenerated: 0,
-  contractSent: 0,
   contractsOut: 0,
   signedContracts: 0,
   fundingCall: 0,
@@ -21,8 +20,6 @@ const defaultSummaryCounts = {
 
 const defaultSummaryAmounts = {
   contractPending: 0,
-  contractGenerated: 0,
-  contractSent: 0,
   contractsOut: 0,
   signedContracts: 0,
   fundingCall: 0,
@@ -32,17 +29,45 @@ const defaultSummaryAmounts = {
 
 const defaultCaseStageCounts: Record<string, number> = {
   Agent: 0,
-  Underwriter: 0,
-  "Final Underwriter": 0,
+  Scrubbing: 0,
+  "Underwriter": 0,
+  Final_Approval: 0,
+  Approved_By_UW: 0,
+  Approval_Sent: 0,
+  Approved_By_ISO: 0,
+  Contracted: 0,
+  Contract_Pending: 0,
+  Contract_Sent: 0,
+  Contract_Signed: 0,
+  Reinitiate_Contract: 0,
+  Final: 0,
+  "Funding Call": 0,
+  On_Hold: 0,
+  Declined: 0,
+  Recently_Deleted: 0,
+};
+
+const defaultCaseStageAmounts: Record<string, number> = {
+  Agent: 0,
+  Scrubbing: 0,
+  "Underwriter": 0,
   Contracted: 0,
   Final: 0,
   "Funding Call": 0,
+  Declined: 0,
+  Contract_Pending: 0,
+  Contract_Sent: 0,
+  Contract_Signed: 0,
+  Reinitiate_Contract: 0,
+  Disbursment: 0,
+  Funded: 0,
 };
 
 export interface OperationsDashboardState {
   summaryCounts: typeof defaultSummaryCounts;
   summaryAmounts: typeof defaultSummaryAmounts;
   caseStageCounts: Record<string, number>;
+  caseStageAmounts: Record<string, number>;
   /** Backend filter mode: `state` (OPERATIONS summary cards) vs `queue` (Super Admin pipeline). */
   operationsMetricsMode: string | null;
   /** True until the first successful summary load completes. */
@@ -66,6 +91,7 @@ const emptyState = (): OperationsDashboardState => ({
   summaryCounts: { ...defaultSummaryCounts },
   summaryAmounts: { ...defaultSummaryAmounts },
   caseStageCounts: { ...defaultCaseStageCounts },
+  caseStageAmounts: { ...defaultCaseStageAmounts },
   operationsMetricsMode: null,
   summaryLoading: false,
   summaryRefreshing: false,
@@ -116,6 +142,7 @@ export const operationsDashboardSlice = createSlice({
         state.summaryCounts = action.payload.summaryCounts;
         state.summaryAmounts = action.payload.summaryAmounts;
         state.caseStageCounts = action.payload.caseStageCounts;
+        state.caseStageAmounts = action.payload.caseStageAmounts;
         state.operationsMetricsMode =
           action.payload.operationsMetricsMode ?? null;
       })

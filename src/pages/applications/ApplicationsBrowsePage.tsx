@@ -6,13 +6,21 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Filter, ChevronDown, Search, Trash2, EyeIcon, ArrowLeft } from "lucide-react";
+import {
+  Filter,
+  ChevronDown,
+  Search,
+  Trash2,
+  EyeIcon,
+  ArrowLeft,
+  Loader2,
+} from "lucide-react";
 import { useLocation, useNavigate } from "react-router";
 import { useState, useMemo, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { deleteApplication } from "@/redux/actions/applicationActions";
-import { clearApplications, resetDeleteApplication } from "@/redux/slices/applicationSlice";
+import { resetDeleteApplication } from "@/redux/slices/applicationSlice";
 import { toast } from "react-toastify";
 import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
 import {
@@ -23,11 +31,16 @@ import {
   type PaginationState,
   getCoreRowModel,
   getFilteredRowModel,
+  getSortedRowModel,
+  getPaginationRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import { DataTableContent, DataTablePagination } from "@/components/DataTable";
 import { useTheme } from "@/context/ThemeContext";
-import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
+import {
+  CONTRACT_OUT_QUEUE_BADGE_CLASS,
+  isContractOutQueueBadgeLabel,
+} from "@/lib/contractOutQueueBadge";
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
@@ -37,30 +50,24 @@ import { getClientByClientId } from "@/redux/actions/clientActions";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import {
   buildApplicationsListParams,
-  applicationsListSortFromTable,
+  DEFAULT_APPLICATIONS_PAGE_SIZE,
 } from "@/lib/applicationsListParams";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
+import { formatDealPipelineCurrentStateLabel } from "@/lib/dealPipelineCurrentState";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
-import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
-import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
-import { isListBlockingLoad } from "@/lib/listLoading";
 
 const QUEUE_OPTIONS = [
   { label: "Agent", value: "Agent" },
+  { label: "Scrubbing", value: "Scrubbing" },
   { label: "Underwriter", value: "Underwriter" },
-  { label: "Final Underwriter", value: "Final Underwriter" },
-  { label: "Contract Generated", value: "Contract Generated" },
-  { label: "Contract Sent", value: "Contract Sent" },
-  { label: "Contract Cancelled", value: "Contract Cancelled" },
+  { label: "Contract Out", value: "Contract Out" },
   { label: "Contract Signed", value: "Contract_Signed" },
   { label: "Final", value: "Final" },
   { label: "Funding call", value: "Funding Call" },
   { label: "Disbursement", value: "Disbursment" },
   { label: "Funded", value: "Funded" },
 ] as const;
-
 
 const STATS_BUCKET_TITLE_MAP: Record<string, string> = {
   funded: "Funded",
@@ -76,7 +83,7 @@ const STATS_BUCKET_TITLE_MAP: Record<string, string> = {
 /**
  * Table-only applications list (filter + search + grid + pagination).
  * Used when opening a dashboard stat card; query: statsBucket, currentQueue,
- * underwriterClaim (UNDERWRITER pool), viewOnly.
+ * underwriterClaim (SCRUBBING pool), viewOnly.
  */
 export default function ApplicationsBrowsePage() {
   const dispatch = useDispatch<AppDispatch>();
@@ -87,13 +94,11 @@ export default function ApplicationsBrowsePage() {
 
   const [viewOnlyMode, setViewOnlyMode] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const debouncedSearchTerm = useDebouncedValue(searchTerm, 350);
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [priorityFilter, setPriorityFilter] = useState("all");
   const [statsBucketFilter, setStatsBucketFilter] = useState("");
   const [underwriterClaimFilter, setUnderwriterClaimFilter] = useState<
-    "" | "unclaimed" | "mine"
+    "" | "unclaimed" | "claimed" | "mine"
   >("");
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(false);
 
@@ -103,7 +108,7 @@ export default function ApplicationsBrowsePage() {
   const [rowSelection, setRowSelection] = useState({});
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
-    pageSize: 10,
+    pageSize: DEFAULT_APPLICATIONS_PAGE_SIZE,
   });
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<string[]>([]);
   const [viewApplication, setViewApplication] = useState<Application | null>(null);
@@ -155,18 +160,10 @@ export default function ApplicationsBrowsePage() {
       const qs = new URLSearchParams();
       if (viewOnlyMode) qs.set("viewOnly", "1");
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      navigate(`/application-details/${id}${suffix}`, {
-        state: { applicationPreview: app },
-      });
+      navigate(`/application-details/${id}${suffix}`);
     },
     [navigate, viewOnlyMode],
   );
-
-  const handlePrefetchApplicationDetail = useCallback((app: Application) => {
-    const id =
-      app.applicationId != null ? String(app.applicationId) : String(app._id ?? "");
-    if (id) prefetchApplicationDetail(id);
-  }, []);
 
   const formatDate = useCallback((dateString?: string) => {
     return formatDateUtil(dateString ?? "", "-");
@@ -187,19 +184,27 @@ export default function ApplicationsBrowsePage() {
     return "-";
   }, []);
 
-  /** Same pipeline label rules as `Applications.tsx` (approved in currentState → "Final Underwriter-Approved"). */
+  /** Same pipeline label rules as `Applications.tsx`. */
   const getApplicationQueueLabel = useCallback((application: Application): string => {
     const stRaw = application.currentState ?? application.state;
     const stStr = String(stRaw ?? "").trim();
-    const hasApprovedInCurrentState = /\bapproved\b/i.test(stStr);
-
-    if (hasApprovedInCurrentState) {
-      return "Final Underwriter-Approved";
+    const stateCompact = stStr.replace(/[\s_-]+/g, "").toLowerCase();
+    if (stateCompact === "underwriterapproved") {
+      return "Underwriter-Approved";
     }
 
     const q = application.currentQueue || application.queue;
     if (q == null || String(q).trim() === "") return "-";
     const raw = String(q).trim();
+
+    const pipelineLabel = formatDealPipelineCurrentStateLabel({
+      currentQueue: raw,
+      queue: raw,
+      currentState: application.currentState ?? application.state,
+      state: application.currentState ?? application.state,
+    });
+    if (pipelineLabel !== "—") return pipelineLabel;
+
     if (raw.toLowerCase() !== "new") return raw;
 
     const creator = application.createdBy as
@@ -231,13 +236,14 @@ export default function ApplicationsBrowsePage() {
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
-    const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
-    if (contractWorkflowClass) return contractWorkflowClass;
+    if (isContractOutQueueBadgeLabel(queueLabel)) {
+      return CONTRACT_OUT_QUEUE_BADGE_CLASS;
+    }
     if (isContractSignedQueueBadgeLabel(queueLabel)) {
       return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
     }
     const n = queueLabel.toLowerCase();
-    if (n === "final underwriter-approved") {
+    if (n === "final scrubbing-approved") {
       return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
     }
     if (n === "funded" || n === "disbursement") {
@@ -251,10 +257,11 @@ export default function ApplicationsBrowsePage() {
     }
     if (
       n === "underwriting" ||
+      n === "scrubbing" ||
       n === "underwriter" ||
       n === "review" ||
       n === "final review" ||
-      n === "final underwriter" ||
+      n === "final scrubbing" ||
       n === "final" ||
       n === "funding call"
     ) {
@@ -298,7 +305,6 @@ export default function ApplicationsBrowsePage() {
     const dataColumns: ColumnDef<Application>[] = [
       {
         accessorKey: "applicationId",
-        enableSorting: true,
         header: () => (
           <div className="flex items-center gap-2">
             <span className="font-medium text-foreground">ID</span>
@@ -350,18 +356,18 @@ export default function ApplicationsBrowsePage() {
       },
       {
         id: "loanAmount",
-        accessorFn: (row) => row.loanAmount,
+        accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
         header: () => (
           <div className="flex items-center gap-2">
             <span className="font-medium text-foreground">Loan Amount</span>
           </div>
         ),
         cell: ({ row }) => {
-          const loanAmount = row.original.loanAmount;
+          const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
           if (loanAmount == null) return <span className="text-foreground">-</span>;
           return (
             <span className="text-foreground">
-              {formatCurrency(Number(loanAmount) || 0)}
+              {formatCurrency(loanAmount)}
             </span>
           );
         },
@@ -418,7 +424,7 @@ export default function ApplicationsBrowsePage() {
               e.stopPropagation();
               void handleOpenApplicationDetails(row.original);
             }}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
             aria-label="Preview application in drawer"
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -443,19 +449,22 @@ export default function ApplicationsBrowsePage() {
     viewOnlyMode,
   ]);
 
-  const totalItems = apiPagination?.total ?? applications?.length ?? 0;
+  const tableRows = applications ?? [];
+  const totalItems = apiPagination?.total ?? tableRows.length;
   const pageCount =
     apiPagination?.totalPages ??
-    (Math.ceil(totalItems / pagination.pageSize) || 1);
+    Math.max(1, Math.ceil(totalItems / pagination.pageSize) || 1);
 
   const table = useReactTable({
-    data: applications ?? [],
+    data: tableRows,
     columns,
     pageCount,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
@@ -481,22 +490,27 @@ export default function ApplicationsBrowsePage() {
   }, [rowSelection]);
 
   const listFetchParams = useMemo((): GetApplicationsParams => {
-    const params = buildApplicationsListParams({
+    const base = buildApplicationsListParams({
       pageIndex: pagination.pageIndex,
       pageSize: pagination.pageSize,
       searchTerm: debouncedSearchTerm,
       dashboardStateFilter: "",
       statusFilter: statsBucketFilter ? "all" : statusFilter,
-      statsBucket: statsBucketFilter || undefined,
-      underwriterClaim: underwriterClaimFilter || undefined,
-      ...applicationsListSortFromTable(sorting),
     });
-    params.clearListOnFetch = true;
-    if (typeFilter !== "all") {
-      params.type = typeFilter;
+    const params: GetApplicationsParams = {
+      ...base,
+      lite: true,
+      skipListCache: true,
+      skipListCacheRead: true,
+      clearListOnFetch: true,
+    };
+    if (underwriterClaimFilter) {
+      params.underwriterClaim = underwriterClaimFilter;
     }
-    if (priorityFilter !== "all") {
-      params.priority = priorityFilter;
+    if (statsBucketFilter) {
+      params.statsBucket = statsBucketFilter;
+      delete params.currentQueue;
+      delete params.operationsStatus;
     }
     return params;
   }, [
@@ -506,20 +520,20 @@ export default function ApplicationsBrowsePage() {
     pagination.pageIndex,
     pagination.pageSize,
     debouncedSearchTerm,
-    sorting,
   ]);
 
-  const applicationsListQuery = useApplicationsListQuery(listFetchParams, {
+  const {
+    refetch: refetchApplicationsList,
+    isPending: applicationsListQueryPending,
+  } = useApplicationsListQuery(listFetchParams, {
     enabled: isListFilterInitialized,
   });
 
   const fetchApplications = useCallback(async () => {
-    await applicationsListQuery.refetch();
-  }, [applicationsListQuery]);
+    await refetchApplicationsList();
+  }, [refetchApplicationsList]);
 
   useLayoutEffect(() => {
-    // Prevent stale rows from flashing while a new drilldown status is loading.
-    dispatch(clearApplications());
     setIsListFilterInitialized(false);
     const query = new URLSearchParams(location.search);
     setViewOnlyMode(query.get("viewOnly") === "1");
@@ -527,7 +541,7 @@ export default function ApplicationsBrowsePage() {
     const currentQueueRaw = query.get("currentQueue")?.trim() ?? "";
     const uwRaw = query.get("underwriterClaim")?.trim().toLowerCase() ?? "";
     setUnderwriterClaimFilter(
-      uwRaw === "unclaimed" || uwRaw === "mine" ? uwRaw : "",
+      uwRaw === "unclaimed" || uwRaw === "claimed" || uwRaw === "mine" ? uwRaw : "",
     );
 
     if (statsBucketRaw) {
@@ -540,22 +554,14 @@ export default function ApplicationsBrowsePage() {
 
     if (pagination.pageIndex !== 0) {
       setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-      return;
     }
-    setIsListFilterInitialized(true);
   }, [dispatch, location.search]);
 
+  /** Enable list fetch once pagination is on page 1 (after URL-driven reset above). */
   useEffect(() => {
-    if (isListFilterInitialized) return;
-    if (!statsBucketFilter && !underwriterClaimFilter) return;
     if (pagination.pageIndex !== 0) return;
     setIsListFilterInitialized(true);
-  }, [
-    isListFilterInitialized,
-    statsBucketFilter,
-    underwriterClaimFilter,
-    pagination.pageIndex,
-  ]);
+  }, [pagination.pageIndex]);
 
   const handleBulkDelete = useCallback(async () => {
     const idsToDelete = selectedApplicationIds.filter(
@@ -617,12 +623,13 @@ export default function ApplicationsBrowsePage() {
   }, [deleteSuccess, deleteError, dispatch, fetchApplications]);
 
   useEffect(() => {
-    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [debouncedSearchTerm, statusFilter, statsBucketFilter, underwriterClaimFilter]);
+    const t = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 400);
+    return () => window.clearTimeout(t);
+  }, [searchTerm]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [sorting]);
+  }, [debouncedSearchTerm, statusFilter, statsBucketFilter, underwriterClaimFilter]);
 
   const pipelineLabel = useMemo(() => {
     if (statusFilter === "all") return "All";
@@ -651,13 +658,14 @@ export default function ApplicationsBrowsePage() {
     navigate(-1);
   }, [navigate]);
 
-  const listBlockingLoad = isListBlockingLoad({
-    rowCount: applications?.length ?? 0,
-    loading,
-    isRefreshing,
-    isFetching: applicationsListQuery.isFetching,
-    awaitingFirstLoad: applicationsListQuery.isPending && !applications?.length,
-  });
+  const listHeaderLoading =
+    !isListFilterInitialized ||
+    loading ||
+    isRefreshing ||
+    applicationsListQueryPending;
+
+  const listBlockingLoad =
+    (applications?.length ?? 0) === 0 && listHeaderLoading;
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
@@ -666,7 +674,7 @@ export default function ApplicationsBrowsePage() {
           }`}
       >
         {/* <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center rounded-full border border-[#276D9C]/30 bg-[#276D9C]/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-[#276D9C]">
+          <span className="inline-flex items-center rounded-full border border-[var(--brand)]/30 bg-[var(--brand)]/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-[var(--brand)]">
             Applications
           </span>
         </div> */}
@@ -679,7 +687,7 @@ export default function ApplicationsBrowsePage() {
       </div>
 
       <div className="mt-4 flex flex-col md:flex-row items-stretch md:items-center gap-3 justify-between">
-        <div className="flex items-center gap-3 w-full md:max-w-[680px]">
+        <div className="flex items-center gap-3 w-full md:max-w-[520px]">
           <Button
             type="button"
             variant="outline"
@@ -727,25 +735,11 @@ export default function ApplicationsBrowsePage() {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <ApplicationTypeFilterDropdown
-            value={typeFilter}
-            onChange={(next) => {
-              setTypeFilter(next);
-              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-            }}
-          />
-          <ApplicationPriorityFilterDropdown
-            value={priorityFilter}
-            onChange={(next) => {
-              setPriorityFilter(next);
-              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-            }}
-          />
-          <div className="relative min-w-[12rem] flex-1">
+          <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
               placeholder="Search by name, email, ISO..."
-              className="pl-9 h-10 w-full bg-card"
+              className="pl-9 h-10 bg-card"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -767,8 +761,14 @@ export default function ApplicationsBrowsePage() {
           className={`px-4 md:px-5 py-2 rounded-t-[5px] flex items-center justify-between gap-6 ${isDark ? "bg-[#2A2B2F]" : "bg-[#F9FAFD]"
             }`}
         >
-          <span className="font-semibold text-[1rem] text-foreground font-roboto">
+          <span className="font-semibold text-[1rem] text-foreground font-roboto inline-flex items-center gap-2">
             Applications
+            {listHeaderLoading ? (
+              <Loader2
+                className="size-4 animate-spin text-muted-foreground shrink-0"
+                aria-label="Loading applications"
+              />
+            ) : null}
           </span>
           {!viewOnlyMode && (
             <Button
@@ -783,7 +783,13 @@ export default function ApplicationsBrowsePage() {
             </Button>
           )}
         </div>
-        <div className="p-1">
+        <div
+          className={`p-1 transition-opacity duration-300 ${
+            listHeaderLoading && (applications?.length ?? 0) > 0
+              ? "opacity-85"
+              : "opacity-100"
+          }`}
+        >
           <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable] min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
             <DataTableContent
               table={table}
@@ -800,14 +806,11 @@ export default function ApplicationsBrowsePage() {
                   : "Try adjusting your search or filter criteria"
               }
               onRowClick={(row) => handleNavigateToApplication(row.original)}
-              onRowMouseEnter={(row) =>
-                handlePrefetchApplicationDetail(row.original)
-              }
             />
           </div>
         </div>
 
-        {!listBlockingLoad && applications && applications.length > 0 && (
+        {!listBlockingLoad && totalItems > 0 && (
           <DataTablePagination
             table={table}
             totalItems={totalItems}

@@ -9,9 +9,12 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+          "text-primary-foreground bg-[image:var(--brand-gradient)] hover:opacity-90",
         destructive:
           "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
+        success:
+          "bg-green-600 text-white hover:bg-green-700 focus-visible:ring-green-600/20 dark:focus-visible:ring-green-600/40",
         outline:
           "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50",
         secondary:
@@ -48,10 +51,19 @@ function Button({
   }) {
   const Comp = asChild ? Slot : "button"
 
+  // Keep primary CTAs on the platform gradient even when callers pass solid brand bg overrides.
+  const normalizedClassName =
+    typeof className === "string"
+      ? className
+          .replace(/\bbg-\[var\(--brand\)\](?!\/)/g, "bg-[image:var(--brand-gradient)]")
+          .replace(/\bhover:bg-\[var\(--brand\)\]\/90\b/g, "hover:opacity-90")
+          .replace(/\bhover:bg-\[var\(--brand-hover\)\]\b/g, "hover:opacity-90")
+      : className
+
   return (
     <Comp
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
+      className={cn(buttonVariants({ variant, size }), normalizedClassName)}
       {...props}
     />
   )

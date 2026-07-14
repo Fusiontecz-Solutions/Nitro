@@ -94,7 +94,7 @@ export default function FundersSettings() {
           only appear for certain states, or excluded states to hide a funder in specific states only.
         </p>
         <Button
-          className="gap-2 bg-[var(--brand)] hover:bg-[var(--brand)]/90 shrink-0"
+          className="gap-2 bg-[image:var(--brand-gradient)] hover:opacity-90 shrink-0"
           onClick={() => {
             setEditing(null);
             setModalOpen(true);

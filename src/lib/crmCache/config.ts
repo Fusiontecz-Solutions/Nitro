@@ -20,7 +20,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const CRM_CACHE_NS_CONFIG: Record<CrmCacheNamespace, CrmCacheNamespaceConfig> =
   {
     [CRM_CACHE_NS.APPLICATIONS_LIST]: {
-      ttlMs: 60_000,
+      ttlMs: 5 * 60_000,
       maxEntries: 40,
       persistIdb: true,
       hydrateOnBoot: true,

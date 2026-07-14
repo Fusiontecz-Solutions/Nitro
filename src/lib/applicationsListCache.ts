@@ -1,17 +1,16 @@
 import type { Application, GetApplicationsParams } from "@/types/applicationTypes";
-import {
-  applicationDetailCacheKeyFromApplication,
-  findApplicationListRowForRoute,
-  getCachedApplicationDetail,
-  setCachedApplicationDetail,
-} from "@/lib/applicationDetailCache";
 import { axiosGet } from "@/redux/axios";
+import { routeParamMatchesApplication } from "@/lib/applicationRouteMatch";
+import { writeApplicationDetailCache } from "@/lib/applicationDetailCache";
 import {
   idbClearNamespace,
   idbDelete,
+  idbGet,
   idbGetAllInNamespace,
   idbSet,
 } from "@/lib/persistentCache/idbStore";
+import { invalidateApplicationsListQueries } from "@/lib/applicationsListQuerySync";
+import { invalidateUnderwriterPipelineCounts } from "@/lib/underwriterPipelineCounts";
 
 const TTL_MS = 60_000;
 const MAX_ENTRIES = 40;
@@ -62,6 +61,9 @@ export async function hydrateApplicationsListCacheFromIdb(): Promise<void> {
 }
 
 /** Stable key for list requests (defaults match list first-page fetch). */
+export const listFetchKeyFromGetApplicationsParams =
+  applicationsListParamsCacheKey;
+
 export function applicationsListParamsCacheKey(
   params: GetApplicationsParams,
 ): string {
@@ -82,6 +84,9 @@ export function applicationsListParamsCacheKey(
     sortOrder: params.sortOrder ?? "",
     lite: params.lite ? "1" : "",
     underwriterClaim: params.underwriterClaim ?? "",
+    underwriterPipeline: params.underwriterPipeline ?? "",
+    claimedByUnderwriterId: params.claimedByUnderwriterId ?? "",
+    assignedUnderwriterId: params.assignedUnderwriterId ?? "",
   };
   return JSON.stringify(p);
 }
@@ -112,6 +117,15 @@ export function buildApplicationsListUrl(
   if (params.lite) queryParams.append("lite", "1");
   if (params.underwriterClaim) {
     queryParams.append("underwriterClaim", params.underwriterClaim);
+  }
+  if (params.underwriterPipeline) {
+    queryParams.append("underwriterPipeline", params.underwriterPipeline);
+  }
+  if (params.claimedByUnderwriterId) {
+    queryParams.append("claimedByUnderwriterId", params.claimedByUnderwriterId);
+  }
+  if (params.assignedUnderwriterId) {
+    queryParams.append("assignedUnderwriterId", params.assignedUnderwriterId);
   }
   const q = queryParams.toString();
   return `/applications${q ? `?${q}` : ""}`;
@@ -180,6 +194,8 @@ export function coalesceApplicationsListFetch(
 export function invalidateApplicationsListCache() {
   cache.clear();
   void idbClearNamespace(IDB_NAMESPACE);
+  invalidateApplicationsListQueries();
+  invalidateUnderwriterPipelineCounts();
 }
 
 /**
@@ -199,40 +215,57 @@ export function prefetchApplicationsList(
   });
 }
 
-function applicationsListRowsFromCachedPayload(
-  cached: unknown,
-): Application[] {
-  if (!cached) return [];
-  if (Array.isArray(cached)) return cached as Application[];
-  const payload = cached as { data?: Application[] };
-  return Array.isArray(payload.data) ? payload.data : [];
-}
-
-/** Find a row in any non-expired cached applications list (L1). */
-export function findApplicationInListCache(
-  routeParam: string,
-): Application | undefined {
-  for (const entry of cache.values()) {
-    if (isExpired(entry)) continue;
-    const row = findApplicationListRowForRoute(
-      routeParam,
-      applicationsListRowsFromCachedPayload(entry.data),
-    );
-    if (row) return row;
+function applicationsFromListPayload(data: unknown): Application[] | undefined {
+  if (!data) return undefined;
+  if (Array.isArray(data)) return data as Application[];
+  if (typeof data === "object") {
+    const payload = data as { data?: Application[] };
+    if (Array.isArray(payload.data)) return payload.data;
   }
   return undefined;
 }
 
-/**
- * Seed application detail cache from cached list rows (after IDB hydrate).
- */
+/** Load one list cache key from IndexedDB into L1 (when memory miss on filter change). */
+export async function warmApplicationsListCacheFromIdb(
+  key: string,
+): Promise<void> {
+  const row = await idbGet<CacheEntry>(IDB_NAMESPACE, key);
+  if (!row?.payload || typeof row.payload.at !== "number") return;
+  if (isExpired(row.payload)) {
+    void idbDeleteEntry(key);
+    return;
+  }
+  if (!cache.has(key) || row.payload.at > (cache.get(key)?.at ?? 0)) {
+    cache.set(key, row.payload);
+    pruneIfNeeded();
+  }
+}
+
+/** Find a lite list row across all cached list responses for instant detail paint. */
+export function findApplicationInListCache(
+  routeParam: string,
+): Application | undefined {
+  if (!routeParam?.trim()) return undefined;
+  for (const entry of cache.values()) {
+    if (isExpired(entry)) continue;
+    const rows = applicationsFromListPayload(entry.data);
+    if (!rows?.length) continue;
+    const found = rows.find((row) =>
+      routeParamMatchesApplication(routeParam, row),
+    );
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Seed detail cache from every non-expired cached applications list. */
 export function hydrateApplicationDetailCacheFromCachedLists(): void {
   for (const entry of cache.values()) {
     if (isExpired(entry)) continue;
-    for (const row of applicationsListRowsFromCachedPayload(entry.data)) {
-      const key = applicationDetailCacheKeyFromApplication(row);
-      if (!key || getCachedApplicationDetail(key) !== undefined) continue;
-      setCachedApplicationDetail(key, { success: true, data: row });
+    const rows = applicationsFromListPayload(entry.data);
+    if (!rows?.length) continue;
+    for (const row of rows) {
+      writeApplicationDetailCache(row);
     }
   }
 }

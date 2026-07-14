@@ -125,7 +125,7 @@ export default function PaymentCommunicationTab() {
           onClick={() => setMode("sms")}
           className={`inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition-colors sm:px-4 ${
             mode === "sms"
-              ? "bg-[#276D9C] text-white shadow-sm"
+              ? "bg-[image:var(--brand-gradient)] text-white shadow-sm"
               : "text-muted-foreground hover:bg-background hover:text-foreground dark:hover:bg-white/[0.06]"
           }`}
         >
@@ -137,7 +137,7 @@ export default function PaymentCommunicationTab() {
           onClick={() => setMode("calling")}
           className={`inline-flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition-colors sm:px-4 ${
             mode === "calling"
-              ? "bg-[#276D9C] text-white shadow-sm"
+              ? "bg-[image:var(--brand-gradient)] text-white shadow-sm"
               : "text-muted-foreground hover:bg-background hover:text-foreground dark:hover:bg-white/[0.06]"
           }`}
         >

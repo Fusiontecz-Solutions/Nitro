@@ -9,6 +9,8 @@ export type FetchPaymentDashboardTrendArg = {
     view: PaymentDashboardTrendView;
     year: number;
     month: number | 'all';
+    /** Organization filter — omit or `all` for no filter. */
+    organization?: string;
 };
 
 export type PaymentDashboardTrendPayload = {
@@ -31,11 +33,16 @@ export const fetchPaymentDashboardCreditDebitTrend = createAsyncThunk<
     { rejectValue: string }
 >('paymentDashboardTrend/fetch', async (arg, { rejectWithValue }) => {
     try {
+        const organization =
+            arg.organization?.trim() && arg.organization.trim().toLowerCase() !== 'all'
+                ? arg.organization.trim()
+                : undefined;
         const response = await axiosGet('/collection-payments/dashboard/credit-debit-trend', {
             params: {
                 view: arg.view,
                 year: arg.year,
                 month: arg.month === 'all' ? 'all' : arg.month,
+                ...(organization ? { organization } : {}),
             },
             timeout: 120_000,
         });

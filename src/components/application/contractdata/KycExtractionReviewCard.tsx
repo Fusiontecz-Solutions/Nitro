@@ -157,7 +157,7 @@ export default function KycExtractionReviewCard({
                 "rounded-xl border p-3 shadow-sm",
                 synced
                     ? "border-emerald-200 bg-emerald-50/60"
-                    : "border-[#276D9C]/25 bg-gradient-to-br from-white to-slate-50/90",
+                    : "border-[var(--brand)]/25 bg-gradient-to-br from-white to-slate-50/90",
             )}
         >
             <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
@@ -225,7 +225,7 @@ export default function KycExtractionReviewCard({
                     <Button
                         type="button"
                         size="sm"
-                        className="h-8 gap-1.5 bg-[#276D9C] text-xs text-white hover:bg-[#276D9C]/90"
+                        className="h-8 gap-1.5 bg-[image:var(--brand-gradient)] text-xs text-white hover:opacity-90"
                         disabled={syncing}
                         onClick={onSync}
                     >

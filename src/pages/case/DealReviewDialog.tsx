@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import type React from "react";
 import {
@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import DealReviewPaymentSchedule from "./DealReviewPaymentSchedule";
+import { DisbursementCommissionSection } from "./DisbursementCommissionSection";
 
 import {
   Dialog,
@@ -36,26 +37,23 @@ import type { AppDispatch, RootState } from "@/redux/store";
 import {
   cn,
   formatCurrency,
-  formatFactorRateUS,
   formatNumberUS,
   formatNumberUSForInput,
   parseNumberUS,
 } from "@/lib/utils";
 import {
-  deriveOfferRepaymentStack,
+  computeMonthlyPayment,
   recalculateOfferFields,
   resolveOfferFactorRate,
   resolveOfferPayback,
   type OfferCalcDriverField,
 } from "@/lib/offerRepaymentCalculations";
-import { OFFER_DECISION_UPDATED_EVENT } from "@/lib/offerDecisionSync";
 import {
   buildPaymentSchedule,
   getDefaultPaymentStartDate,
   getScheduleEndDate,
   getScheduleFrequencyLabel,
   isWeekend,
-  patchPaymentScheduleEntry,
   toNextBusinessDay,
   type PaymentScheduleEntry,
 } from "@/lib/paymentScheduleDates";
@@ -120,6 +118,14 @@ const parseNumberInput = (raw: string): number => {
   return Number.isFinite(num) ? num : 0;
 };
 
+const formatNumber = (value: number | null | undefined, fractionDigits = 2) => {
+  if (value == null || Number.isNaN(value)) return "—";
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
+};
+
 type EditableState = {
   advance: number;
   factorRate: number;
@@ -178,27 +184,23 @@ function uniqueApplicationKeys(...candidates: Array<string | null | undefined>) 
   return out;
 }
 
-/** Matches BE `offerDecisionEffectiveRecord` — nested `offer` JSON holds saved field values. */
-function offerDecisionEffectiveRow(raw: Record<string, unknown>): Record<string, unknown> {
-  const inner = raw.offer;
-  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
-    return { ...raw, ...(inner as Record<string, unknown>) };
-  }
-  return raw;
-}
-
 /** API may return flat fields or nested `offer` JSON — normalize for the form. */
 function normalizeOfferDecision(raw: unknown): OfferDecisionRecord | null {
   if (!raw || typeof raw !== "object") return null;
-  const row = offerDecisionEffectiveRow(raw as Record<string, unknown>);
+  const row = raw as Record<string, unknown>;
+  const inner =
+    row.offer && typeof row.offer === "object" && !Array.isArray(row.offer)
+      ? (row.offer as Record<string, unknown>)
+      : null;
 
   const offer =
-    toValidNumber(row.offer) ?? toValidNumber(row.approvedAmount);
+    toValidNumber(row.offer) ??
+    toValidNumber(inner?.offer) ??
+    toValidNumber(inner?.approvedAmount);
 
   if (
     offer == null &&
     row.rate == null &&
-    row.factorRate == null &&
     row.fees == null &&
     row.totalRemit == null &&
     row.repayPerPeriod == null
@@ -207,65 +209,29 @@ function normalizeOfferDecision(raw: unknown): OfferDecisionRecord | null {
   }
 
   return {
-    _id:
-      row._id != null
-        ? String(row._id)
-        : row.id != null
-          ? String(row.id)
-          : undefined,
+    _id: row._id != null ? String(row._id) : undefined,
     offer,
-    rate: toValidNumber(row.rate) ?? toValidNumber(row.factorRate),
+    rate:
+      toValidNumber(row.rate) ??
+      toValidNumber(row.factorRate) ??
+      toValidNumber(inner?.rate),
     factorRate: toValidNumber(row.factorRate),
-    term: row.term as number | string | null | undefined,
-    frequency: String(row.frequency ?? "").trim() || null,
+    term: (row.term ?? inner?.term) as number | string | null | undefined,
+    frequency: String(row.frequency ?? inner?.frequency ?? "").trim() || null,
     repayPerPeriod:
-      toValidNumber(row.repayPerPeriod) ?? toValidNumber(row.daysWeeks),
-    fees: toValidNumber(row.fees),
+      toValidNumber(row.repayPerPeriod) ??
+      toValidNumber(inner?.repayPerPeriod) ??
+      toValidNumber(inner?.daysWeeks),
+    fees: toValidNumber(row.fees) ?? toValidNumber(inner?.fees),
     totalRemit:
-      toValidNumber(row.totalRemit) ?? toValidNumber(row.paybackAmount),
+      toValidNumber(row.totalRemit) ??
+      toValidNumber(inner?.totalRemit) ??
+      toValidNumber(inner?.paybackAmount),
     paybackAmount: toValidNumber(row.paybackAmount),
-    monthlyPayment: toValidNumber(row.monthlyPayment),
-    decision:
-      row.decision != null
-        ? String(row.decision)
-        : row.status != null
-          ? String(row.status)
-          : null,
+    monthlyPayment:
+      toValidNumber(row.monthlyPayment) ?? toValidNumber(inner?.monthlyPayment),
+    decision: row.decision != null ? String(row.decision) : null,
   };
-}
-
-function parseOfferDecisionApiResponse(
-  res: { data?: unknown } | null | undefined
-): OfferDecisionRecord | null {
-  const envelope = res?.data;
-  if (!envelope || typeof envelope !== "object") return null;
-  const body = envelope as Record<string, unknown>;
-  if (body.data != null) {
-    return normalizeOfferDecision(body.data);
-  }
-  return normalizeOfferDecision(body);
-}
-
-function normalizeOfferDecisionFromApplication(
-  applicationData: Record<string, unknown> | null | undefined
-): OfferDecisionRecord | null {
-  if (!applicationData) return null;
-  const raw =
-    applicationData.OfferDecision ?? applicationData.offerDecision ?? null;
-  return normalizeOfferDecision(raw);
-}
-
-function hasUsableOfferDecision(od: OfferDecisionRecord | null): boolean {
-  if (!od) return false;
-  if (String(od.decision ?? "").toLowerCase() === "declined") return false;
-  const offer = toValidNumber(od.offer);
-  const rate = toValidNumber(od.rate) ?? toValidNumber(od.factorRate);
-  return (offer != null && offer > 0) || (rate != null && rate >= 1);
-}
-
-function formatOfferTerm(term: number | string | null | undefined): string {
-  if (term == null || String(term).trim() === "") return "";
-  return String(term).replace(/\s*payments?/i, "").trim();
 }
 
 /** `Application.commissionAmount` (DB) — prefer over collections/terms when set. */
@@ -291,180 +257,89 @@ function resolveApplicationCommissionAmount(
   return null;
 }
 
-function resolveFormCommission(
-  applicationData: Record<string, unknown> | null,
-  advance: number,
-  offerDecision: OfferDecisionRecord | null,
-  dealView: DealCollectionsView | null,
-  latestTerms: TermsOffer | null
-): number {
-  const applicationCommission = resolveApplicationCommissionAmount(
-    applicationData,
-    advance
-  );
-  const offerDecisionCommission =
-    toValidNumber(
-      (offerDecision as { commissionAmount?: number | null } | null)
-        ?.commissionAmount
-    ) ?? null;
-
-  return (
-    applicationCommission ??
-    offerDecisionCommission ??
-    toValidNumber(dealView?.offerSummary?.commissionOnDeal) ??
-    toValidNumber(latestTerms?.commissionAmount) ??
-    0
-  );
-}
-
-
-function buildFormFromOfferDecision(
-  offerDecision: OfferDecisionRecord,
-  dealView: DealCollectionsView | null,
-  latestTerms: TermsOffer | null,
-  applicationData: Record<string, unknown> | null
-): EditableState {
-  const advance = toValidNumber(offerDecision.offer) ?? 0;
-  const factorRate = resolveOfferFactorRate({
-    offerDecisionRate: toValidNumber(offerDecision.rate),
-    offerDecisionFactorRate: toValidNumber(offerDecision.factorRate),
-    summaryFactor: toValidNumber(dealView?.offerSummary?.factorRate),
-    termsFactorRate: toValidNumber(latestTerms?.factorRate),
-    fallback: 1.5,
-  });
-
-  const term =
-    formatOfferTerm(offerDecision.term) ||
-    (latestTerms?.termLength != null ? String(latestTerms.termLength) : "");
-
-  const frequency = getScheduleFrequencyLabel(
-    offerDecision.frequency || latestTerms?.frequency || "Daily"
-  );
-
-  const payback = resolveOfferPayback(advance, factorRate, {
-    offerPaybackAmount: toValidNumber(offerDecision.paybackAmount),
-    totalRemit: toValidNumber(offerDecision.totalRemit),
-    termsPaybackAmount: toValidNumber(latestTerms?.paybackAmount),
-    paybackNum: toValidNumber(dealView?.offerSummary?.paybackNum),
-  });
-
-  const stack =
-    advance > 0 && term.trim() !== ""
-      ? deriveOfferRepaymentStack({
-          advance,
-          factorRate,
-          term,
-          frequency,
-        })
-      : null;
-
-  const daily =
-    stack?.perPeriodPayment ??
-    toValidNumber(offerDecision.repayPerPeriod) ??
-    toValidNumber(latestTerms?.paymentAmount) ??
-    0;
-
-  const monthlyPayment =
-    stack?.monthlyPayment ?? toValidNumber(offerDecision.monthlyPayment) ?? 0;
-
-  const resolvedPayback = stack?.payback ?? payback;
-
-  return {
-    advance: stack?.advance ?? advance,
-    factorRate: stack?.factorRate ?? factorRate,
-    payback: resolvedPayback,
-    daily,
-    feesAmount: toValidNumber(offerDecision.fees) ?? 0,
-    commissionAmount: resolveFormCommission(
-      applicationData,
-      advance,
-      offerDecision,
-      dealView,
-      latestTerms
-    ),
-    monthlyPayment,
-    term,
-    frequency,
-  };
-}
-
 function buildFormFromSources(
   dealView: DealCollectionsView | null,
   offerDecision: OfferDecisionRecord | null,
   latestTerms: TermsOffer | null,
   applicationData: Record<string, unknown> | null
 ): EditableState {
-  if (hasUsableOfferDecision(offerDecision)) {
-    return buildFormFromOfferDecision(
-      offerDecision!,
-      dealView,
-      latestTerms,
-      applicationData
-    );
-  }
-
   const summary = dealView?.offerSummary;
   const schedule = dealView?.schedule;
 
   const advance =
     toValidNumber(summary?.advanceNum) ??
+    toValidNumber(offerDecision?.offer) ??
     toValidNumber(latestTerms?.approvedAmount) ??
     toValidNumber(applicationData?.loanAmount) ??
     0;
 
   const factorRate = resolveOfferFactorRate({
     summaryFactor: toValidNumber(summary?.factorRate),
+    offerDecisionRate: toValidNumber(offerDecision?.rate),
+    offerDecisionFactorRate: toValidNumber(offerDecision?.factorRate),
     termsFactorRate: toValidNumber(latestTerms?.factorRate),
     fallback: 1.5,
   });
 
-  const term =
-    latestTerms?.termLength != null ? String(latestTerms.termLength) : "";
-
-  const frequency = getScheduleFrequencyLabel(
-    summary?.frequencyLabel ||
-      summary?.frequency ||
-      latestTerms?.frequency ||
-      "Daily"
-  );
-
   const payback = resolveOfferPayback(advance, factorRate, {
     paybackNum: toValidNumber(summary?.paybackNum),
     termsPaybackAmount: toValidNumber(latestTerms?.paybackAmount),
+    offerPaybackAmount: toValidNumber(offerDecision?.paybackAmount),
+    totalRemit: toValidNumber(offerDecision?.totalRemit),
   });
 
-  const stack =
-    advance > 0 && term.trim() !== ""
-      ? deriveOfferRepaymentStack({
-          advance,
-          factorRate,
-          term,
-          frequency,
-        })
-      : null;
-
   const daily =
-    stack?.perPeriodPayment ??
     toValidNumber(summary?.paymentAmount) ??
     toValidNumber(schedule?.dailyPayment) ??
+    toValidNumber(offerDecision?.repayPerPeriod) ??
     toValidNumber(latestTerms?.paymentAmount) ??
     0;
 
-  const monthlyPayment = stack?.monthlyPayment ?? 0;
+  const feesAmount =
+    toValidNumber(summary?.feesAmount) ?? toValidNumber(offerDecision?.fees) ?? 0;
+
+  const offerDecisionCommission =
+    toValidNumber(
+      (offerDecision as { commissionAmount?: number | null } | null)?.commissionAmount
+    ) ?? null;
+
+  const applicationCommission = resolveApplicationCommissionAmount(
+    applicationData,
+    advance
+  );
+
+  const commissionAmount =
+    applicationCommission ??
+    offerDecisionCommission ??
+    toValidNumber(summary?.commissionOnDeal) ??
+    toValidNumber(latestTerms?.commissionAmount) ??
+    0;
+
+  const term =
+    offerDecision?.term != null && String(offerDecision.term).trim() !== ""
+      ? String(offerDecision.term)
+      : latestTerms?.termLength != null
+        ? String(latestTerms.termLength)
+        : "";
+
+  const frequency =
+    summary?.frequencyLabel ||
+    offerDecision?.frequency ||
+    latestTerms?.frequency ||
+    "Daily";
+
+  const monthlyPayment =
+    payback > 0 && term.trim() !== ""
+      ? computeMonthlyPayment({ payback, term, frequency })
+      : toValidNumber(offerDecision?.monthlyPayment) ?? 0;
 
   return {
-    advance: stack?.advance ?? advance,
-    factorRate: stack?.factorRate ?? factorRate,
-    payback: stack?.payback ?? payback,
+    advance,
+    factorRate,
+    payback,
     daily,
-    feesAmount: toValidNumber(summary?.feesAmount) ?? 0,
-    commissionAmount: resolveFormCommission(
-      applicationData,
-      advance,
-      null,
-      dealView,
-      latestTerms
-    ),
+    feesAmount,
+    commissionAmount,
     monthlyPayment,
     term,
     frequency,
@@ -498,10 +373,6 @@ export default function DealReviewDialog({
   const [editableSchedule, setEditableSchedule] = useState<
     PaymentScheduleEntry[]
   >([]);
-  const lastScheduleInputsKeyRef = useRef<string | null>(null);
-  const scheduleEditedRef = useRef(false);
-  const applicationDataRef = useRef(applicationData);
-  applicationDataRef.current = applicationData;
 
   useEffect(() => {
     editModeRef.current = editMode;
@@ -514,8 +385,6 @@ export default function DealReviewDialog({
       setPaymentStartTouched(false);
       setPaymentStartDate("");
       setEditableSchedule([]);
-      lastScheduleInputsKeyRef.current = null;
-      scheduleEditedRef.current = false;
     }
   }, [open]);
   const [offerDecision, setOfferDecision] = useState<OfferDecisionRecord | null>(
@@ -567,10 +436,10 @@ export default function DealReviewDialog({
 
   const loadOfferData = useCallback(async () => {
     const lookupKeys = uniqueApplicationKeys(
-      applicationId,
+      primaryApplicationId,
       numericApplicationId,
       applicationDealId,
-      primaryApplicationId
+      applicationId
     );
     if (!lookupKeys.length) return;
 
@@ -578,8 +447,6 @@ export default function DealReviewDialog({
     let fetchedDealView: DealCollectionsView | null = null;
     let od: OfferDecisionRecord | null = null;
     let latest: TermsOffer | null = null;
-    let resolvedAppRecord: Record<string, unknown> | null =
-      applicationDataRef.current as Record<string, unknown> | null;
 
     try {
       // Collection payments require a resolvable deal id — try each key; ignore 404s.
@@ -628,8 +495,8 @@ export default function DealReviewDialog({
       );
       for (const result of offerResults) {
         if (result.status !== "fulfilled") continue;
-        const parsed = parseOfferDecisionApiResponse(result.value);
-        if (hasUsableOfferDecision(parsed)) {
+        const parsed = normalizeOfferDecision(result.value?.data?.data);
+        if (parsed) {
           od = parsed;
           break;
         }
@@ -654,6 +521,8 @@ export default function DealReviewDialog({
         }
       }
 
+      let resolvedAppRecord: Record<string, unknown> | null =
+        applicationData as Record<string, unknown> | null;
       try {
         if (numericApplicationId) {
           const appRes = await axiosGet(
@@ -674,13 +543,6 @@ export default function DealReviewDialog({
         }
       } catch {
         // Keep Redux application detail if direct fetch fails.
-      }
-
-      if (!hasUsableOfferDecision(od)) {
-        const embedded = normalizeOfferDecisionFromApplication(resolvedAppRecord);
-        if (hasUsableOfferDecision(embedded)) {
-          od = embedded;
-        }
       }
 
       setLocalDealView(fetchedDealView);
@@ -723,43 +585,6 @@ export default function DealReviewDialog({
     numericApplicationId,
   ]);
 
-  // If Redux application detail arrives after offer fetch, hydrate from embedded OfferDecision.
-  useEffect(() => {
-    if (!open || loadingOffer || editMode || hasUsableOfferDecision(offerDecision)) {
-      return;
-    }
-    const embedded = normalizeOfferDecisionFromApplication(appRecord);
-    if (!hasUsableOfferDecision(embedded)) return;
-    setOfferDecision(embedded);
-    setForm(buildFormFromSources(dealView, embedded, termsOffer, appRecord));
-  }, [
-    open,
-    loadingOffer,
-    editMode,
-    offerDecision,
-    appRecord,
-    dealView,
-    termsOffer,
-  ]);
-
-  // Re-sync when offer decision is saved elsewhere (approval modal, bank analysis toggle).
-  useEffect(() => {
-    if (!open && !preload) return;
-
-    const onOfferDecisionUpdated = () => {
-      if (editModeRef.current) return;
-      void loadOfferData();
-    };
-
-    window.addEventListener(OFFER_DECISION_UPDATED_EVENT, onOfferDecisionUpdated);
-    return () => {
-      window.removeEventListener(
-        OFFER_DECISION_UPDATED_EVENT,
-        onOfferDecisionUpdated
-      );
-    };
-  }, [open, preload, loadOfferData]);
-
   // When application detail lands in Redux after load, apply DB commissionAmount.
   useEffect(() => {
     if (!open || loadingOffer || !appRecord || editMode) return;
@@ -778,6 +603,10 @@ export default function DealReviewDialog({
 
   const appNumericId = (applicationData as { applicationId?: number } | null)
     ?.applicationId;
+
+  const advanceForCommission = form.advance > 0
+    ? form.advance
+    : toValidNumber(appRecord?.loanAmount) ?? 0;
 
   const loanAmountFallback = toValidNumber(appRecord?.loanAmount) ?? 0;
   const hasOfferData =
@@ -801,71 +630,23 @@ export default function DealReviewDialog({
           ? toNextBusinessDay(fromDeal)
           : fromDeal
         : getDefaultPaymentStartDate();
-    setPaymentStartDate((prev) => (prev === initial ? prev : initial));
+    setPaymentStartDate(initial);
   }, [open, dealView?.schedule?.startDate, form.frequency, paymentStartTouched]);
 
-  const scheduleInputsKey = useMemo(() => {
-    const roundedDaily =
-      Number.isFinite(form.daily) && form.daily > 0
-        ? Math.round(form.daily * 100) / 100
-        : 0;
-    return [
-      paymentStartDate,
-      form.term,
-      form.frequency,
-      String(roundedDaily),
-    ].join("|");
-  }, [paymentStartDate, form.term, form.frequency, form.daily]);
-
-  useEffect(() => {
-    if (!open) return;
-    if (lastScheduleInputsKeyRef.current === scheduleInputsKey) return;
-
-    const prevKey = lastScheduleInputsKeyRef.current;
-    if (scheduleEditedRef.current && prevKey) {
-      const [prevDate = "", prevTerm = "", prevFreq = ""] = prevKey.split("|");
-      const [nextDate = "", nextTerm = "", nextFreq = ""] =
-        scheduleInputsKey.split("|");
-      if (
-        prevDate === nextDate &&
-        prevTerm === nextTerm &&
-        prevFreq === nextFreq
-      ) {
-        lastScheduleInputsKeyRef.current = scheduleInputsKey;
-        return;
-      }
-    }
-
-    lastScheduleInputsKeyRef.current = scheduleInputsKey;
-    scheduleEditedRef.current = false;
-    setEditableSchedule(
+  const generatedSchedule = useMemo(
+    () =>
       buildPaymentSchedule({
         startDate: paymentStartDate,
         term: form.term,
         frequency: form.frequency,
         paymentAmount: form.daily,
       }),
-    );
-  }, [
-    open,
-    scheduleInputsKey,
-    paymentStartDate,
-    form.term,
-    form.frequency,
-    form.daily,
-  ]);
-
-  const handleScheduleRowPatch = useCallback(
-    (index: number, patch: { date?: string; amount?: number }) => {
-      scheduleEditedRef.current = true;
-      setEditableSchedule((prev) =>
-        prev.map((row) =>
-          row.index === index ? patchPaymentScheduleEntry(row, patch) : row,
-        ),
-      );
-    },
-    [],
+    [paymentStartDate, form.term, form.frequency, form.daily],
   );
+
+  useEffect(() => {
+    setEditableSchedule(generatedSchedule);
+  }, [generatedSchedule]);
 
   const paymentSchedule = editableSchedule;
 
@@ -1096,7 +877,7 @@ export default function DealReviewDialog({
         <DialogHeader className="px-6 pt-5 pb-4 border-b border-slate-100/80 bg-gradient-to-b from-slate-50/80 to-white dark:from-slate-900/50 dark:to-[#141517] dark:border-slate-700">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-start gap-3 min-w-0">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-md shadow-blue-600/25">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-blue-600/25">
                 <BadgeCheck className="h-5 w-5" />
               </div>
               <div className="min-w-0">
@@ -1104,7 +885,7 @@ export default function DealReviewDialog({
                   Review deal details
                 </DialogTitle>
                 <p className="text-sm text-slate-500 mt-1 dark:text-slate-400">
-                  Verify the offer, fees, and commission before disbursing funds.
+                  Verify the offer and fees before disbursing funds.
                 </p>
               </div>
             </div>
@@ -1133,20 +914,28 @@ export default function DealReviewDialog({
             />
           </section>
 
+          <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm ring-1 ring-slate-900/[0.03] dark:border-slate-800 dark:bg-[#1A1B1F]/60 dark:ring-white/[0.04]">
+            <DisbursementCommissionSection
+              variant="embedded"
+              applicationRecordId={applicationRecordId ?? null}
+              refetchApplicationId={applicationId ?? null}
+              offerAmountOverride={advanceForCommission}
+            />
+          </section>
+
           {!editMode ? (
             <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm ring-1 ring-slate-900/[0.03] dark:border-slate-800 dark:bg-[#1A1B1F]/60 dark:ring-white/[0.04]">
               <DealReviewPaymentSchedule
                 paymentStartDate={paymentStartDate}
                 onPaymentStartDateChange={(value) => {
                   setPaymentStartTouched(true);
-                  scheduleEditedRef.current = false;
                   setPaymentStartDate(value);
                 }}
                 frequency={form.frequency}
                 term={form.term}
                 paymentAmount={form.daily}
                 schedule={paymentSchedule}
-                onPatchScheduleRow={handleScheduleRowPatch}
+                onScheduleChange={setEditableSchedule}
                 scheduleEndDate={scheduleEndDate}
                 effectiveFirstPaymentDate={effectiveFirstPaymentDate}
                 skipsWeekendsForDaily={skipsWeekendsForDaily}
@@ -1186,7 +975,8 @@ export default function DealReviewDialog({
                 type="button"
                 onClick={() => void handleSave()}
                 disabled={saving}
-                className="cursor-pointer rounded-lg h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
+                variant="default"
+                className="cursor-pointer rounded-lg h-10 px-4 font-semibold shadow-sm"
               >
                 {saving ? (
                   <span className="inline-flex items-center gap-2">
@@ -1215,9 +1005,10 @@ export default function DealReviewDialog({
               {canScheduleDisbursement ? (
                 <Button
                   type="button"
+                  variant="default"
                   onClick={() => void handleConfirmDisbursement()}
                   disabled={confirming || saving}
-                  className="cursor-pointer rounded-lg h-10 px-5 bg-[#1e60a3] hover:bg-[#184c80] text-white font-semibold shadow-md shadow-blue-900/15"
+                  className="cursor-pointer rounded-lg h-10 px-5 font-semibold shadow-sm"
                 >
                   {confirming ? (
                     <span className="inline-flex items-center gap-2">
@@ -1376,7 +1167,7 @@ function OfferFieldsGrid({
         editable={editMode}
         fractionDigits={3}
         onChange={(v) => onFieldChange("factorRate", v)}
-        display={formatFactorRateUS(form.factorRate) || "—"}
+        display={formatNumber(form.factorRate, 3)}
       />
       <EditableMoneyField
         label="Payback"
@@ -1430,13 +1221,6 @@ function OfferFieldsGrid({
         onChange={(v) => onFieldChange("feesAmount", v)}
         display={formatCurrency(form.feesAmount)}
       />
-      <EditableMoneyField
-        label="Commission"
-        value={form.commissionAmount}
-        editable={editMode}
-        onChange={(v) => onFieldChange("commissionAmount", v)}
-        display={formatCurrency(form.commissionAmount)}
-      />
     </div>
   );
 }
@@ -1447,7 +1231,11 @@ function formatUsMoneyInputValue(value: number): string {
 }
 
 function formatUsFactorInputValue(value: number): string {
-  return formatFactorRateUS(value);
+  if (!Number.isFinite(value)) return "";
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 3,
+  });
 }
 
 function EditableMoneyField({

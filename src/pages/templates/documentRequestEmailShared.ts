@@ -4,6 +4,8 @@ export const DOCUMENT_REQUEST_UPLOAD_URL_PLACEHOLDER =
 
 export function documentRequestEmailSubject(
   applicationNumber: string | number,
+  _clientName?: string | null,
+  _applicationOwnerName?: string | null,
 ): string {
   const num = String(applicationNumber || "").trim() || "N/A";
   return `Document request — Application #${num}`;

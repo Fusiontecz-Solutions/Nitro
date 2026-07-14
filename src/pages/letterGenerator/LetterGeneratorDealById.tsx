@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useParams, useNavigate } from "react-router";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { useApplicationDetailLoader } from "@/hooks/useApplicationDetailLoader";
 import { Button } from "@/components/ui/button";
 
-import Templates from "@/pages/payment/Templates";
 import Letters from "@/pages/payment/Letters";
 import { prefetchPaymentTemplates } from "@/pages/payment/paymentTemplateApi";
 
@@ -15,21 +14,13 @@ function isApplicationUuid(value: string): boolean {
   return UUID_REGEX.test(value.trim());
 }
 
-type TabId = "templates" | "letters";
-
-const tabs: { id: TabId; label: string }[] = [
-  { id: "templates", label: "Templates" },
-  { id: "letters", label: "Letters" },
-];
-
 /**
- * Letter generator drill-in: same Templates / Letters experience as Payments,
- * without overview, collections, or logs.
+ * Letter generator drill-in: open an application and go straight to
+ * Payoff / Zero Balance letter send (no Templates tab).
  */
 export default function LetterGeneratorDealById() {
   const { letterGeneratorDealId } = useParams<{ letterGeneratorDealId: string }>();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<TabId>("templates");
 
   const applicationId = useMemo(() => {
     const raw = letterGeneratorDealId?.trim();
@@ -55,7 +46,7 @@ export default function LetterGeneratorDealById() {
     return (
       <div className="min-h-screen bg-background p-6 lg:p-10">
         <p className="text-center text-destructive" role="alert">
-          Invalid application link. Use Letter generator and pick an application from the list.
+          Invalid application link. Use Letters and pick an application from the list.
         </p>
         <div className="mt-4 flex justify-center">
           <Button type="button" variant="outline" onClick={() => navigate("/letter-generator")}>
@@ -75,39 +66,25 @@ export default function LetterGeneratorDealById() {
               <button
                 type="button"
                 onClick={() => navigate("/letter-generator")}
-                className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-all hover:border-[#276D9C]/40 hover:text-[#276D9C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/30 focus-visible:ring-offset-2"
-                aria-label="Back to disbursement list"
+                className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-all hover:border-[var(--brand)]/40 hover:text-[var(--brand)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/30 focus-visible:ring-offset-2"
+                aria-label="Back to application list"
                 title="Back to list"
               >
                 <ArrowLeft className="h-5 w-5 transition-transform group-hover:-translate-x-0.5" />
               </button>
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Letter generator
+                  Letters
                 </p>
                 <p className="mt-1 text-lg font-semibold text-foreground">
                   {applicationData?.applicationId != null
                     ? `APP-${applicationData.applicationId}`
                     : "Application"}
                 </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Choose Payoff or Zero Balance and send.
+                </p>
               </div>
-            </div>
-
-            <div className="mt-5 inline-flex max-w-full flex-wrap gap-1 rounded-xl border border-border bg-muted/40 p-1">
-              {tabs.map(({ id, label }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setActiveTab(id)}
-                  className={`rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition-colors sm:px-4 ${
-                    activeTab === id
-                      ? "bg-[#276D9C] text-white shadow-sm"
-                      : "text-muted-foreground hover:bg-background hover:text-foreground"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
             </div>
           </div>
 
@@ -125,8 +102,7 @@ export default function LetterGeneratorDealById() {
               </p>
             )}
 
-            {ready && activeTab === "templates" && <Templates />}
-            {ready && activeTab === "letters" && <Letters />}
+            {ready && <Letters />}
           </div>
         </div>
       </div>

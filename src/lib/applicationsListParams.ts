@@ -2,6 +2,7 @@ import {
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
 } from "@/constants/operationsDashboardApplications";
+import { normalizeUnderwriterPipelineParam } from "@/constants/underwriterPipeline";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
 import type { SortingState } from "@tanstack/react-table";
 
@@ -85,6 +86,22 @@ export function applicationPriorityFilterLabel(priorityFilter: string): string {
   return match?.label ?? priorityFilter;
 }
 
+/** Auto-tagged organization for imported deals. */
+export const APPLICATION_ORGANIZATION_FILTER_OPTIONS = [
+  { label: "Katan 2", value: "Katan II" },
+  { label: "Katan 3", value: "Katan III" },
+] as const;
+
+export function applicationOrganizationFilterLabel(
+  organizationFilter: string,
+): string {
+  if (organizationFilter === "all") return "All organizations";
+  const match = APPLICATION_ORGANIZATION_FILTER_OPTIONS.find(
+    (o) => o.value === organizationFilter,
+  );
+  return match?.label ?? organizationFilter;
+}
+
 /** Default ordering for the main applications table (newest first). */
 export const APPLICATIONS_LIST_DEFAULT_SORT: Pick<
   GetApplicationsParams,
@@ -93,6 +110,51 @@ export const APPLICATIONS_LIST_DEFAULT_SORT: Pick<
   sortBy: "createdAt",
   sortOrder: "desc",
 };
+
+/** URL → underwriter sidebar pipeline (`/applications?underwriterPipeline=`). */
+export function parseUnderwriterPipelineFromSearch(
+  search: string,
+): ReturnType<typeof normalizeUnderwriterPipelineParam> {
+  const raw = new URLSearchParams(search).get("underwriterPipeline");
+  return normalizeUnderwriterPipelineParam(raw);
+}
+
+/** URL → scrubber / underwriter deal-pool tab (`/applications?underwriterClaim=`). */
+export type UnderwriterClaimParam = "unclaimed" | "claimed" | "mine";
+
+export type ScrubberPoolTab = "queue" | "claimed" | "my";
+
+export function parseUnderwriterClaimFromSearch(
+  search: string,
+): UnderwriterClaimParam | undefined {
+  const raw = new URLSearchParams(search)
+    .get("underwriterClaim")
+    ?.trim()
+    .toLowerCase();
+  if (raw === "unclaimed" || raw === "claimed" || raw === "mine") return raw;
+  return undefined;
+}
+
+export function poolTabFromUnderwriterClaim(
+  claim: UnderwriterClaimParam | undefined,
+): ScrubberPoolTab {
+  if (claim === "claimed") return "claimed";
+  if (claim === "mine") return "my";
+  return "queue";
+}
+
+export function underwriterClaimFromPoolTab(
+  tab: ScrubberPoolTab,
+  roleKey: string,
+): UnderwriterClaimParam {
+  const normalizedRole = roleKey.toUpperCase().replace(/-/g, "_");
+  if (normalizedRole === "SCRUBBING") {
+    if (tab === "claimed") return "claimed";
+    if (tab === "my") return "mine";
+    return "unclaimed";
+  }
+  return tab === "my" ? "mine" : "unclaimed";
+}
 
 /** URL → list filters (operations dashboard drill-down). */
 export function parseApplicationsListRouteFilters(search: string): {
@@ -123,11 +185,24 @@ export function buildApplicationsListParams(options: {
   typeFilter?: string;
   /** `all` or priority value (Low, Medium, High, Urgent). */
   priorityFilter?: string;
-  /** UNDERWRITER: server-side pool / my-claimed (Underwriter queue only). Overrides queue dropdown. */
-  underwriterClaim?: "unclaimed" | "mine";
+  /** `all` or organization value (Katan II, Katan III). */
+  organizationFilter?: string;
+  /** SCRUBBING / UNDERWRITER: narrow list to pool vs claimed vs my deals. */
+  underwriterClaim?: UnderwriterClaimParam;
+  /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
+  underwriterPipeline?: string;
+  /** SUPER_ADMIN / OPERATIONS: scrubbing-stage claim user id. */
+  scrubberFilter?: string;
+  /** SUPER_ADMIN / OPERATIONS: assigned underwriter user id. */
+  underwriterFilter?: string;
   statsBucket?: string;
   sortBy?: string;
   sortOrder?: "asc" | "desc";
+  /**
+   * When true (operations sidebar: `fromDashboard=operations`), `dashboardStateFilter`
+   * drives `operationsStatus`. When false, the pipeline dropdown (`statusFilter`) wins.
+   */
+  useDashboardStageFilter?: boolean;
 }): GetApplicationsParams {
   const params: GetApplicationsParams = {
     page: options.pageIndex + 1,
@@ -148,14 +223,27 @@ export function buildApplicationsListParams(options: {
   if (options.priorityFilter && options.priorityFilter !== "all") {
     params.priority = options.priorityFilter;
   }
+  if (options.organizationFilter && options.organizationFilter !== "all") {
+    params.organization = options.organizationFilter;
+  }
+  if (options.scrubberFilter && options.scrubberFilter !== "all") {
+    params.claimedByUnderwriterId = options.scrubberFilter;
+  }
+  if (options.underwriterFilter && options.underwriterFilter !== "all") {
+    params.assignedUnderwriterId = options.underwriterFilter;
+  }
   if (options.statsBucket) {
+    return params;
+  }
+  if (options.underwriterPipeline) {
+    params.underwriterPipeline = options.underwriterPipeline;
     return params;
   }
   if (options.underwriterClaim) {
     params.underwriterClaim = options.underwriterClaim;
     return params;
   }
-  if (options.dashboardStateFilter) {
+  if (options.useDashboardStageFilter && options.dashboardStateFilter) {
     const isAllPipeline =
       options.dashboardStateFilter === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY ||
       options.dashboardStateFilter.toLowerCase() === "all";
@@ -166,6 +254,15 @@ export function buildApplicationsListParams(options: {
   }
   if (options.statusFilter !== "all") {
     Object.assign(params, pipelineStatusFilterToApiFields(options.statusFilter));
+    return params;
+  }
+  if (options.dashboardStateFilter) {
+    const isAllPipeline =
+      options.dashboardStateFilter === OPERATIONS_APPLICATIONS_LIST_ALL_QUERY ||
+      options.dashboardStateFilter.toLowerCase() === "all";
+    if (!isAllPipeline) {
+      params.operationsStatus = options.dashboardStateFilter;
+    }
   }
   return params;
 }

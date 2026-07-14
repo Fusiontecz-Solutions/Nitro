@@ -32,7 +32,6 @@ export function groupInflowByTimeframe(
     });
   }
 
-  
   if (timeframe === 'weekly') {
     const startThisWeek = startOfWeek(now, { weekStartsOn: 0 });
     const endToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);

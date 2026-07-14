@@ -1,7 +1,7 @@
-import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel";
-import { isContractSignedQueueBadgeLabel } from "@/lib/contractSignedQueueBadge";
-import { resolveApplicationProgress } from "@/lib/applicationProgress";
 import { inferOperationsListStatusFromApplication } from "@/constants/operationsDashboardApplications";
+import { resolveApplicationProgress } from "@/lib/applicationProgress";
+import { isContractSignedQueueBadgeLabel } from "@/lib/contractSignedQueueBadge";
+import { isUnderwriterApprovedApplication } from "@/lib/underwriterApprovalLabel";
 
 /**
  * Workflow labels for "Current state" / summary — aligned with API `mapApplicationToApi` / `toWorkflowApiState`.
@@ -16,7 +16,7 @@ export function isScrubbingWorkflowQueue(queue: string | null | undefined): bool
 /** Final review stage queue (stored as `Underwriter`; legacy: Final Review / Final Underwriter). */
 export function isFinalUnderwriterWorkflowQueue(queue: string | null | undefined): boolean {
   const q = String(queue ?? "").trim().toLowerCase();
-  return q === "underwriter" || q === "final review" || q === "final underwriter";
+  return q === "underwriter" || q === "final review" || q === "final scrubbing";
 }
 
 /** Final approval stage queue (stored as `Final Approval`). */
@@ -34,6 +34,7 @@ type WorkflowDecisionApp = {
   statsCurrentState?: string | null;
 };
 
+/** Raw DB state + mapped API fields — `statsCurrentState` wins when the API collapses workflow labels. */
 export function resolveApplicationWorkflowQueueAndStates(
   app: WorkflowDecisionApp | null | undefined,
 ): {
@@ -75,6 +76,7 @@ export function isContractSignedApplication(
   );
 }
 
+/** True when the deal is awaiting underwriter final approval (queue and/or raw DB state). */
 export function isApplicationInFinalApprovalStage(
   app: WorkflowDecisionApp | null | undefined,
 ): boolean {
@@ -87,6 +89,10 @@ export function isApplicationInFinalApprovalStage(
   );
 }
 
+/**
+ * Queues/states where the UNDERWRITER role should keep decision CTAs visible
+ * (first approval in `Underwriter`, post-approve `Underwriter Approved`, admin-sent `Final Approval`).
+ */
 export function isUnderwriterWorkflowDecisionStage(
   app: WorkflowDecisionApp | null | undefined,
 ): boolean {
@@ -124,7 +130,7 @@ export function getWorkflowCurrentStateLabel(app: {
   if (queue === "Underwriting" || queue === "Scrubbing" || queue === "Review") {
     return "In Progress";
   }
-  if (queue === "Final Review" || queue === "Underwriter" || queue === "Final Underwriter") {
+  if (queue === "Final Review" || queue === "Underwriter") {
     if (state === "Approved" || state === "Completed") return "Approved";
     return "In Progress";
   }

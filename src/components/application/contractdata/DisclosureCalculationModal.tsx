@@ -262,10 +262,10 @@ export function DisclosureCalculationModal({
                 ) : (
                     <div className="grid gap-5 px-5 py-4 lg:grid-cols-2">
                         <div className="space-y-4">
-                            <div className="rounded-lg border border-[#276D9C]/25 bg-[#276D9C]/5 p-4">
+                            <div className="rounded-lg border border-[var(--brand)]/25 bg-[var(--brand)]/5 p-4">
                                 <div className="mb-3 flex items-center gap-2">
-                                    <Calendar className="h-4 w-4 text-[#276D9C]" />
-                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C]">
+                                    <Calendar className="h-4 w-4 text-[var(--brand)]" />
+                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)]">
                                         Payment schedule dates
                                     </h4>
                                 </div>
@@ -485,7 +485,7 @@ export function DisclosureCalculationModal({
                                         Merchant monthly revenue (bank analysis)
                                     </Label>
                                     {loadingBankAnalysis ? (
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[#276D9C]" />
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--brand)]" />
                                     ) : null}
                                 </div>
                                 <p className="text-[11px] text-slate-500">
@@ -562,8 +562,8 @@ export function DisclosureCalculationModal({
                         </div>
 
                         <div className="space-y-4">
-                            <div className="rounded-lg border border-[#276D9C]/20 bg-slate-50/80 p-4 dark:border-slate-700 dark:bg-slate-900/50">
-                                <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C]">
+                            <div className="rounded-lg border border-[var(--brand)]/20 bg-slate-50/80 p-4 dark:border-slate-700 dark:bg-slate-900/50">
+                                <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)]">
                                     Calculation results
                                 </h4>
                                 {!metrics ? (
@@ -611,7 +611,7 @@ export function DisclosureCalculationModal({
                             <div className="flex flex-wrap items-center gap-2">
                                 <Button
                                     type="button"
-                                    className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+                                    className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
                                     disabled={!canCalculate || saving}
                                     onClick={handleCalculate}
                                 >

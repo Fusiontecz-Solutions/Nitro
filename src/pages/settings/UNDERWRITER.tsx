@@ -1,6 +1,4 @@
-                import { memo } from 'react';
-import { useDispatch } from 'react-redux';
-import { Trash2 } from 'lucide-react';
+import { memo } from 'react';
 import {
   Table,
   TableBody,
@@ -10,9 +8,8 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { User } from '@/types/userTypes';
-import type { AppDispatch } from '@/redux/store';
-import { deleteUser } from '@/redux/actions/settingsUserActions';
 import { formatDate as formatDateUtil } from "@/lib/utils";
+import DeleteUserButton from './DeleteUserButton';
 
 function formatDate(dateStr: string | undefined): string {
   return formatDateUtil(dateStr ?? "", "—");
@@ -25,7 +22,6 @@ interface UnderwriterProps {
 }
 
 function UNDERWRITER({ users, loading, error }: UnderwriterProps) {
-  const dispatch = useDispatch<AppDispatch>();
   const list = users ?? [];
 
   if (loading) {
@@ -54,7 +50,7 @@ function UNDERWRITER({ users, loading, error }: UnderwriterProps) {
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="bg-[#276D9C] hover:bg-[#276D9C] dark:bg-primary border-b-0">
+          <TableRow className="bg-[#003465] dark:bg-primary hover:bg-[#003465] dark:hover:bg-primary border-b-0">
             <TableHead className="text-white font-medium">REPRESENTATIVE</TableHead>
             <TableHead className="text-white font-medium">EMAIL</TableHead>
             <TableHead className="text-white font-medium">PHONE</TableHead>
@@ -74,23 +70,7 @@ function UNDERWRITER({ users, loading, error }: UnderwriterProps) {
                 <TableCell className="text-muted-foreground">{user.phone ?? '—'}</TableCell>
                 <TableCell className="text-muted-foreground">{formatDate(user.createdAt)}</TableCell>
                 <TableCell className="text-left">
-                  <button
-                    type="button"
-                    className="inline-flex items-center justify-center rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/5 transition-colors"
-                    onClick={() => {
-                      if (!id) return;
-                      dispatch(
-                        deleteUser({
-                          roleId,
-                          userId: id,
-                          user,
-                        })
-                      );
-                    }}
-                  >
-                    <Trash2 className="h-3 w-3 mr-1" />
-                    Delete
-                  </button>
+                  <DeleteUserButton user={user} roleId={roleId} />
                 </TableCell>
               </TableRow>
             );

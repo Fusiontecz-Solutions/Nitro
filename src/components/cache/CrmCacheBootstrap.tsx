@@ -11,7 +11,12 @@ export default function CrmCacheBootstrap() {
       localStorage.getItem("token") || sessionStorage.getItem("token");
     if (!token) return;
     void bootstrapCrmCache().then(() => {
-      hydrateApplicationDetailCacheFromCachedLists();
+      const run = () => hydrateApplicationDetailCacheFromCachedLists();
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(run);
+      } else {
+        setTimeout(run, 0);
+      }
     });
   }, []);
 

@@ -564,7 +564,7 @@ export default function Templates() {
   };
 
   const accentBtn =
-    "bg-[#276D9C] text-white shadow-sm hover:bg-[#276D9C]/90 focus-visible:ring-[#276D9C]/30";
+    "bg-[image:var(--brand-gradient)] text-white shadow-sm hover:opacity-90 focus-visible:ring-[var(--brand)]/30";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5 lg:flex-row lg:gap-6">
@@ -638,9 +638,9 @@ export default function Templates() {
                     onClick={() => setSelected(t)}
                     className={cn(
                       "w-full rounded-xl border p-4 text-left shadow-sm transition-all",
-                      "bg-card hover:border-[#276D9C]/35 hover:shadow-md dark:border-white/10 dark:bg-white/[0.03]",
+                      "bg-card hover:border-[var(--brand)]/35 hover:shadow-md dark:border-white/10 dark:bg-white/[0.03]",
                       isSel
-                        ? "border-[#276D9C]/50 ring-2 ring-[#276D9C]/20"
+                        ? "border-[var(--brand)]/50 ring-2 ring-[var(--brand)]/20"
                         : "border-border"
                     )}
                   >

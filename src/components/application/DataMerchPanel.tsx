@@ -389,7 +389,10 @@ export default function DataMerchPanel({
     setError("");
     setHasSearched(true);
     setResultsExpanded(true);
-    const response = await fetchDataMerchForApplication(applicationId);
+    const response = await fetchDataMerchForApplication(applicationId, {
+      businessName: dealBusinessName,
+      ein: dealEin,
+    });
     setLoading(false);
     if (!response.success) {
       setError(response.message);
@@ -541,7 +544,7 @@ export default function DataMerchPanel({
                 </>
               ) : (
                 <>
-                  <p className="font-semibold">No DataMerch records found</p>
+                  <p className="font-semibold">No record found</p>
                   {resultsExpanded ? (
                     <p className="mt-0.5">
                       {result.searchType === "ein"

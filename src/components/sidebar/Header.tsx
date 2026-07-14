@@ -6,6 +6,7 @@ import type { user } from "../../redux/slices/authSlice";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import NotificationDropdown from "@/components/notifications/NotificationDropdown";
 
 import { useLocation, useNavigate } from "react-router";
 
@@ -76,13 +77,13 @@ const Header = () => {
                     </div>
                     <div className="flex items-center gap-3">
                         <ThemeToggle />
-                        {/* <NotificationDropdown /> */}
+                        <NotificationDropdown />
                         <button
                             type="button"
                             onClick={() => navigate("/user-setting")}
                             className="flex items-center gap-2 cursor-pointer"
                         >
-                            <div className="h-8 w-8 rounded-full bg-[#276D9C] text-white text-xs font-semibold flex items-center justify-center">{user?.firstName?.slice(0, 1).toUpperCase()}{user?.lastName?.slice(0, 1).toUpperCase()}</div>
+                            <div className="h-8 w-8 rounded-full bg-[image:var(--brand-gradient)] text-white text-xs font-semibold flex items-center justify-center">{user?.firstName?.slice(0, 1).toUpperCase()}{user?.lastName?.slice(0, 1).toUpperCase()}</div>
                             <div className="hidden sm:block">
                                 <div className="text-sm font-medium text-foreground capitalize">{user?.firstName + ' ' + user?.lastName || 'John Doe'}</div>
                             </div>

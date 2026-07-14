@@ -46,4 +46,27 @@ export const getFundingCalls = createAsyncThunk(
   },
 );
 
+export interface ApproveForDisbursementPayload {
+  application: string;
+  /** Resolved from the application linked client (business / owner / owners). */
+  clientEmail?: string;
+  emailHtml?: string;
+  emailSubject?: string;
+}
+
+export const approveFundingCallForDisbursement = createAsyncThunk(
+  'fundingCall/approveForDisbursement',
+  async (data: ApproveForDisbursementPayload, { rejectWithValue }) => {
+    try {
+      const response = await axiosPost('/funding-calls/approve-for-disbursement', data);
+      return response.data;
+    } catch (error: any) {
+      console.error('Approve for disbursement error:', error);
+      return rejectWithValue(
+        error?.response?.data?.message || 'Failed to approve application for disbursement',
+      );
+    }
+  },
+);
+
 

@@ -145,3 +145,48 @@ export function saveBoldSignCcEmailList(
     ];
     localStorage.setItem(BOLDSIGN_CC_LIST_STORAGE_KEY, JSON.stringify(unique));
 }
+
+/** User-added contract CC emails — stored on `Contract.contractPrefillOverrides`. */
+export const CONTRACT_CC_EMAILS_PREFILL_KEY = "contractCcEmails";
+
+export function parseContractCcEmailsFromPrefill(raw: unknown): string[] {
+    if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const list = (raw as Record<string, unknown>)[CONTRACT_CC_EMAILS_PREFILL_KEY];
+    if (!Array.isArray(list)) return [];
+    const out: string[] = [];
+    for (const entry of list) {
+        if (typeof entry === "string" && entry.trim()) {
+            out.push(entry.trim());
+        }
+    }
+    return [...new Set(out.map((e) => e.toLowerCase()))].map(
+        (lower) => out.find((e) => e.toLowerCase() === lower) || lower,
+    );
+}
+
+export function mergeContractPrefillWithCcEmails(
+    baseRaw: unknown,
+    userEmails: string[],
+): Record<string, unknown> {
+    const base =
+        baseRaw != null && typeof baseRaw === "object" && !Array.isArray(baseRaw)
+            ? { ...(baseRaw as Record<string, unknown>) }
+            : {};
+    const normalized = [
+        ...new Set(
+            userEmails
+                .map((e) => String(e ?? "").trim())
+                .filter(Boolean)
+                .filter((e) => !isDefaultCcEmail(e)),
+        ),
+    ];
+    if (!normalized.length) {
+        const next = { ...base };
+        delete next[CONTRACT_CC_EMAILS_PREFILL_KEY];
+        return next;
+    }
+    return {
+        ...base,
+        [CONTRACT_CC_EMAILS_PREFILL_KEY]: normalized,
+    };
+}

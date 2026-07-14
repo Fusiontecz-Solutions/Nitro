@@ -63,8 +63,8 @@ const STATUS_FILTERS: ReadonlyArray<{
     key: "all",
     label: "All",
     icon: LayoutList,
-    accent: "text-[#276D9C]",
-    activeRing: "ring-[#276D9C]/40 border-[#276D9C]",
+    accent: "text-[var(--brand)]",
+    activeRing: "ring-[var(--brand)]/40 border-[var(--brand)]",
   },
   {
     key: "upcoming",
@@ -155,7 +155,7 @@ const ScheduleTrackingTable = memo(function ScheduleTrackingTable({
             <TableRow>
               <TableCell colSpan={4} className="h-[220px] align-middle text-center">
                 <div className="flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
-                  <Loader2 className="h-9 w-9 animate-spin text-[#276D9C]" aria-hidden />
+                  <Loader2 className="h-9 w-9 animate-spin text-[var(--brand)]" aria-hidden />
                   <span>Loading scheduled payments…</span>
                 </div>
               </TableCell>
@@ -252,7 +252,7 @@ function StatusFilterCards({
             onClick={() => onFilterChange(key)}
             className={cn(
               "group relative flex flex-col rounded-xl border p-3.5 text-left transition-all",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/50",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/50",
               disabled && "pointer-events-none opacity-60",
               isActive
                 ? cn(
@@ -413,8 +413,8 @@ export function SchedulePaymentTrackingModal({
           className={cn(
             "border-b px-6 py-5",
             isDark
-              ? "border-white/10 bg-gradient-to-br from-[#276D9C]/20 via-[#141517] to-[#141517]"
-              : "border-slate-200/80 bg-gradient-to-br from-[#276D9C]/8 via-white to-slate-50",
+              ? "border-white/10 bg-gradient-to-br from-[var(--brand)]/20 via-[#141517] to-[#141517]"
+              : "border-slate-200/80 bg-gradient-to-br from-[var(--brand)]/8 via-white to-slate-50",
           )}
         >
           <DialogHeader className="space-y-3 text-left">
@@ -422,7 +422,7 @@ export function SchedulePaymentTrackingModal({
               <div
                 className={cn(
                   "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl shadow-sm",
-                  isDark ? "bg-[#276D9C]/30 text-[#7eb8dc]" : "bg-[#276D9C]/15 text-[#276D9C]",
+                  isDark ? "bg-[var(--brand)]/30 text-[#7eb8dc]" : "bg-[var(--brand)]/15 text-[var(--brand)]",
                 )}
               >
                 <CalendarClock className="h-5 w-5" aria-hidden />
@@ -488,7 +488,7 @@ export function SchedulePaymentTrackingModal({
                 <p className="text-xs text-muted-foreground">
                   {activeFilter === "all" ? "Grand total" : `${activeFilterMeta?.label} total`}
                 </p>
-                <p className="text-base font-bold tabular-nums text-[#276D9C] dark:text-[#7eb8dc]">
+                <p className="text-base font-bold tabular-nums text-[var(--brand)] dark:text-[#7eb8dc]">
                   {formatCurrencyFull(activeStat.sum)}
                 </p>
               </div>
@@ -508,7 +508,7 @@ export function SchedulePaymentTrackingModal({
           {!isLoading && error ? (
             <Button
               type="button"
-              className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+              className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white"
               onClick={() => void fetchRows()}
             >
               Retry
@@ -538,7 +538,7 @@ export const SchedulePaymentTrackingLauncher = memo(
       <>
         <Button
           type="button"
-          className="h-10 gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white"
+          className="h-10 gap-2 bg-[image:var(--brand-gradient)] hover:opacity-90 text-white"
           disabled={!applicationId}
           onClick={() => setOpen(true)}
         >

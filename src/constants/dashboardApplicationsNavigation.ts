@@ -1,7 +1,7 @@
 /**
  * Operations dashboard / Super Admin deal pipeline: opens main `Applications` with
  * `fromDashboard=operations` and `operationsStatus` (backend bucket), same table UX
- * as agent/underwriter `buildApplicationsBrowseUrl` drill-downs.
+ * as agent/scrubbing `buildApplicationsBrowseUrl` drill-downs.
  */
 export function buildOperationsPipelineApplicationsUrl(
   operationsStatus: string,
@@ -12,11 +12,17 @@ export function buildOperationsPipelineApplicationsUrl(
   return `/applications?${qs.toString()}`;
 }
 
-/** Underwriter sidebar — deal pool queue vs claimed deals. */
+/** Underwriter sidebar pipeline — deal pool, action history, or queue drill-down. */
 export function buildUnderwriterPipelineApplicationsUrl(options: {
   operationsStatus?: string;
-  underwriterClaim?: "unclaimed" | "mine";
+  underwriterClaim?: "unclaimed" | "claimed" | "mine";
+  underwriterPipeline?: string;
 }): string {
+  if (options.underwriterPipeline?.trim()) {
+    const qs = new URLSearchParams();
+    qs.set("underwriterPipeline", options.underwriterPipeline.trim());
+    return `/applications?${qs.toString()}`;
+  }
   if (options.underwriterClaim) {
     const qs = new URLSearchParams();
     qs.set("underwriterClaim", options.underwriterClaim);
@@ -49,8 +55,8 @@ export function buildApplicationsBrowseUrl(options: {
   statsBucket?: DashboardApplicationStatsBucket | string;
   currentQueue?: string;
   viewOnly?: boolean;
-  /** UNDERWRITER: scope drill-down to Queue (unclaimed) vs My deals (claimed by viewer). */
-  underwriterClaim?: "unclaimed" | "mine";
+  /** SCRUBBING: scope drill-down to Queue / Claimed / My deals. */
+  underwriterClaim?: "unclaimed" | "claimed" | "mine";
 }): string {
   const qs = new URLSearchParams();
   if (options.statsBucket) {

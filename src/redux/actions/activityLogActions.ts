@@ -51,6 +51,9 @@ export interface ActivityLogContent {
   contractId?: string | null;
   description?: string;
   metadata?: Record<string, unknown>;
+  attachments?: string[];
+  delivery?: Record<string, unknown>;
+  note?: string;
   createdAt?: string;
 }
 

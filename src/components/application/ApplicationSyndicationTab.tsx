@@ -850,7 +850,7 @@ export default function ApplicationSyndicationTab({
                     {isAdmin && (
                       <Button
                         type="button"
-                        className="gap-2 shrink-0 self-start bg-[#276D9C] hover:bg-[#276D9C]/90"
+                        className="gap-2 shrink-0 self-start bg-[image:var(--brand-gradient)] hover:opacity-90"
                         onClick={() => setInviteSyndicatorOpen(true)}
                       >
                         <UserPlus className="h-4 w-4" aria-hidden />
@@ -934,7 +934,7 @@ export default function ApplicationSyndicationTab({
                     {isAdmin && (
                       <Button
                         type="button"
-                        className="gap-2 shrink-0 bg-[#276D9C] hover:bg-[#276D9C]/90"
+                        className="gap-2 shrink-0 bg-[image:var(--brand-gradient)] hover:opacity-90"
                         onClick={() => setInviteSyndicatorOpen(true)}
                         disabled={pickingSyndicator}
                       >

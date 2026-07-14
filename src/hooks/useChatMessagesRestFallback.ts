@@ -3,7 +3,7 @@ import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { fetchMessages } from "@/redux/actions/chatActions";
 import { useSocket } from "@/context/SocketContext";
-import { CHAT_MESSAGES_FALLBACK_POLL_MS } from "@/lib/querySyncConstants";
+import { CHAT_MESSAGES_FALLBACK_POLL_MS } from "@/lib/queryDefaults";
 
 /**
  * Poll `fetchMessages` only when Socket.IO is disconnected (~30s).

@@ -145,7 +145,7 @@ export function renderOfferUpdatedEmailHtml(values: TemplateValues): string {
 
                 <tr>
                   <td align="left" style="padding:0 0 24px 0;text-align:left;">
-                    ${buildStyledCtaButton(isoApprovalHref, "Review Updated Offer", 0)}
+                    ${buildStyledCtaButton(isoApprovalHref, "Review Approval", 0)}
                   </td>
                 </tr>
 

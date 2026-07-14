@@ -37,38 +37,24 @@ import type { ApplicationStatsData } from '@/redux/actions/applicationActions';
 import { useNavigate } from 'react-router';
 import { DropdownMenu, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  formatDate as formatDateUtil,
+  getCurrentMonthDateRangeET,
+  getPreviousMonthDateRangeET,
+} from "@/lib/utils";
 import { formatUSPhoneNumber, handleUSPhoneInputChange } from '@/utils/formatPhoneNumber';
 
 const ROLE_ID = 'AGENT';
 
 function getCurrentMonthDateRange(): { start: string; end: string } {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const formatYmd = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  return {
-    start: formatYmd(new Date(y, m, 1)),
-    end: formatYmd(new Date(y, m + 1, 0)),
-  };
+  const range = getCurrentMonthDateRangeET();
+  return { start: range.start, end: range.end };
 }
 
 function getPreviousMonthDateRange(referenceDate?: string): { start: string; end: string } | null {
-  const formatYmd = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const base = referenceDate ? new Date(referenceDate) : new Date();
-  if (isNaN(base.getTime())) return null;
-  let year = base.getFullYear();
-  let monthIndex = base.getMonth() - 1;
-  if (monthIndex < 0) {
-    monthIndex = 11;
-    year -= 1;
-  }
-  return {
-    start: formatYmd(new Date(year, monthIndex, 1)),
-    end: formatYmd(new Date(year, monthIndex + 1, 0)),
-  };
+  const range = getPreviousMonthDateRangeET(referenceDate);
+  if (!range) return null;
+  return { start: range.start, end: range.end };
 }
 
 function formatDate(dateStr: string | undefined): string {
@@ -278,7 +264,7 @@ export default function Agents() {
         <div className="flex items-center gap-3">
           <Button
             onClick={openAddModal}
-            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
+            className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
           >
             <UserPlus className="h-4 w-4" />
             New Agent
@@ -395,11 +381,11 @@ export default function Agents() {
                 <TableRow
                   className={`${isDark
                     ? 'bg-[#1e293b] hover:bg-[#1e293b]'
-                    : 'bg-[#276D9C] hover:bg-[#276D9C]'
+                    : 'bg-[image:var(--brand-gradient)] hover:bg-[image:var(--brand-gradient)]'
                     } border-b-0`}
                 >
                   <TableHead className="text-white font-medium text-xs w-[40px] px-3">
-                    <input type="checkbox" className="h-4 w-4 rounded border-slate-300 accent-[#276D9C] cursor-pointer" />
+                    <input type="checkbox" className="h-4 w-4 rounded border-slate-300 accent-[var(--brand)] cursor-pointer" />
                   </TableHead>
                   <TableHead className="text-white font-medium text-xs">NAME</TableHead>
                   <TableHead className="text-white font-medium text-xs">EMAIL</TableHead>
@@ -423,7 +409,7 @@ export default function Agents() {
                         }`}
                     >
                       <TableCell className="w-[40px] px-3">
-                        <input type="checkbox" className="h-4 w-4 rounded border-slate-300 accent-[#276D9C] cursor-pointer" />
+                        <input type="checkbox" className="h-4 w-4 rounded border-slate-300 accent-[var(--brand)] cursor-pointer" />
                       </TableCell>
                       <TableCell className="font-medium text-sm">{name}</TableCell>
                       <TableCell className="text-sm opacity-80">{agent.email}</TableCell>

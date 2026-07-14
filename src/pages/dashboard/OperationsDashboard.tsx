@@ -1,10 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  DASHBOARD_STALE_MS,
-  dashboardRefetchWhenVisible,
-} from "@/lib/dashboardQueryDefaults";
-import {
   CheckCircle2,
   Clock,
   ShieldCheck,
@@ -13,17 +9,14 @@ import {
   LayoutGrid,
   LayoutList,
   Loader2,
-  Check,
   FileInput,
   CircleDollarSign,
   Landmark,
-  FileCheck2,
   PhoneCall,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  FileUser
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useDispatch, useSelector } from "react-redux";
@@ -54,21 +47,29 @@ import {
   AreaChart,
   Area,
 } from "recharts";
-import { formatCurrency, formatInt, formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  formatCurrency,
+  formatInt,
+  formatDate as formatDateUtil,
+  getMonthRangeET,
+  getRecentMonthShortLabelsET,
+} from "@/lib/utils";
 import { axiosGet } from "@/redux/axios";
-import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY } from "@/constants/operationsDashboardApplications";
+import { OPERATIONS_APPLICATIONS_LIST_ALL_QUERY, operationsDashboardStatusTitle } from "@/constants/operationsDashboardApplications";
 import { buildOperationsPipelineApplicationsUrl } from "@/constants/dashboardApplicationsNavigation";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import type { Application } from "@/types/applicationTypes";
 import {
-  getContractWorkflowQueueBadgeClass,
-  isContractSentQueueBadgeLabel,
+  CONTRACT_OUT_QUEUE_BADGE_CLASS,
+  isContractOutQueueBadgeLabel,
 } from "@/lib/contractOutQueueBadge";
 import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
+import { isListBlockingLoad } from "@/lib/listLoading";
+import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
 
 type SummaryCard = {
   label: string;
@@ -93,11 +94,10 @@ type PaymentTrendPoint = {
 
 const caseStageStatuses = [
   { label: "AGENT", value: "Agent" },
+  { label: "SCRUBBING", value: "Scrubbing" },
   { label: "UNDERWRITER", value: "Underwriter" },
-  { label: "FINAL UNDERWRITER", value: "Final Underwriter" },
   { label: "Contract Signed", value: "Contract Signed" },
-  { label: "FINAL", value: "Final" },
-  { label: "FUNDING CALL", value: "Funding Call" },
+  { label: "FINALS & FUNDING CALL", value: "Finals_And_Funding_Call" },
 ] as const;
 
 type MonthlyTrendApiRow = {
@@ -108,8 +108,9 @@ type MonthlyTrendApiRow = {
 
 /** Queue pills: light mode tinted bg; dark mode light pill + dark text for contrast on dark tables. */
 const getRecentCaseQueueBadgeClass = (queueLabel: string) => {
-  const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
-  if (contractWorkflowClass) return contractWorkflowClass;
+  if (isContractOutQueueBadgeLabel(queueLabel)) {
+    return CONTRACT_OUT_QUEUE_BADGE_CLASS;
+  }
   if (isContractSignedQueueBadgeLabel(queueLabel)) {
     return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
   }
@@ -125,10 +126,10 @@ const getRecentCaseQueueBadgeClass = (queueLabel: string) => {
   }
   if (
     n === "underwriting" ||
-    n === "underwriter" ||
+    n === "scrubbing" ||
     n === "review" ||
     n === "final review" ||
-    n === "final underwriter" ||
+    n === "final scrubbing" ||
     n === "final" ||
     n === "funding call"
   ) {
@@ -146,18 +147,6 @@ const formatApplicationIdDisplay = (id: unknown) => {
   if (!raw) return "—";
   const n = Number(raw);
   return Number.isFinite(n) ? Math.trunc(n).toLocaleString("en-US") : raw;
-};
-
-const formatRecentCaseIdDisplay = (
-  item: OperationsDashboardRecentCase,
-  preferDealId: boolean,
-) => {
-  if (preferDealId) {
-    const dealId = String(item.dealId ?? "").trim();
-    if (dealId) return dealId;
-  }
-  if (item.applicationId) return formatApplicationIdDisplay(item.applicationId);
-  return "—";
 };
 
 const normalizeQueueLabel = (value: unknown) =>
@@ -224,6 +213,7 @@ export const OperationsDashboard = () => {
     summaryCounts,
     summaryAmounts,
     caseStageCounts,
+    caseStageAmounts,
     summaryLoading,
     summaryRefreshing,
     summaryError,
@@ -231,7 +221,16 @@ export const OperationsDashboard = () => {
     recentCases,
     recentLoading,
     recentError,
+    recentInFlight,
+    hasLoadedRecentOnce,
+    lastSummaryFetchedAt,
+    lastRecentFetchedAt,
   } = useSelector((state: RootState) => state.operationsDashboard);
+
+  const summaryPrefetchFresh =
+    hasLoadedSummaryOnce && isShellPrefetchFresh(lastSummaryFetchedAt);
+  const recentPrefetchFresh =
+    hasLoadedRecentOnce && isShellPrefetchFresh(lastRecentFetchedAt);
 
   /** First paint after login: avoid showing zeros while the summary API is still in flight. */
   const statCardsShowSkeleton =
@@ -265,18 +264,16 @@ export const OperationsDashboard = () => {
   useQuery({
     queryKey: ["operations-dashboard-summary", userRole],
     queryFn: async () => dispatch(fetchOperationsDashboardSummary()).unwrap(),
-    staleTime: DASHBOARD_STALE_MS,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
-    refetchInterval: dashboardRefetchWhenVisible,
+    enabled: !summaryPrefetchFresh,
+    staleTime: 60_000,
+    refetchOnMount: !summaryPrefetchFresh,
+    refetchOnWindowFocus: false,
   });
 
   const { data: monthlyTrendRows = [] } = useQuery<MonthlyTrendApiRow[]>({
     queryKey: ["operations-dashboard-monthly-trend", userRole],
     queryFn: async () => {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const { start, end } = getMonthRangeET(5);
       const qs = new URLSearchParams({
         startDate: start.toISOString(),
         endDate: end.toISOString(),
@@ -285,19 +282,24 @@ export const OperationsDashboard = () => {
       const payload = response?.data ?? {};
       return Array.isArray(payload?.data) ? (payload.data as MonthlyTrendApiRow[]) : [];
     },
-    staleTime: DASHBOARD_STALE_MS,
-    refetchOnMount: "always",
+    refetchOnMount: true,
     refetchOnWindowFocus: true,
-    refetchInterval: dashboardRefetchWhenVisible,
   });
 
-  useQuery({
+  const recentCasesQuery = useQuery({
     queryKey: ["operations-dashboard-recent-cases", userRole],
     queryFn: async () => dispatch(fetchOperationsDashboardRecentCases()).unwrap(),
-    staleTime: DASHBOARD_STALE_MS,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
-    refetchInterval: dashboardRefetchWhenVisible,
+    enabled: !recentPrefetchFresh,
+    staleTime: 60_000,
+    refetchOnMount: !recentPrefetchFresh,
+    refetchOnWindowFocus: false,
+  });
+
+  const recentCasesBlockingLoad = isListBlockingLoad({
+    rowCount: recentCases.length,
+    loading: recentLoading,
+    isFetching: recentCasesQuery.isPending || recentCasesQuery.isFetching,
+    awaitingFirstLoad: !hasLoadedRecentOnce && recentInFlight,
   });
 
   const summaryCards: SummaryCard[] = useMemo(
@@ -317,18 +319,11 @@ export const OperationsDashboard = () => {
         operationsStatus: "Contract_Pending",
       },
       {
-        label: "Contract Generated",
-        value: summaryCounts.contractGenerated ?? 0,
-        helper: "Total Amount",
-        icon: <FileInput className="w-6 h-6 text-amber-500" />,
-        operationsStatus: "Contract_Generated",
-      },
-      {
-        label: "Contract Sent",
-        value: summaryCounts.contractSent ?? summaryCounts.contractsOut ?? 0,
+        label: "Contract Out",
+        value: summaryCounts.contractsOut,
         helper: "Total Amount",
         icon: <FileInput className="w-6 h-6 text-emerald-500" />,
-        operationsStatus: "Contract_Sent",
+        operationsStatus: "Contract_Out",
       },
       {
         label: "Contract Signed",
@@ -338,11 +333,13 @@ export const OperationsDashboard = () => {
         operationsStatus: "Contract_Signed",
       },
       {
-        label: "Funding Call",
-        value: summaryCounts.fundingCall,
+        label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
+        value:
+          summaryCounts.fundingCall +
+          (caseStageCounts.Final ?? 0),
         helper: "Total Amount",
-      icon: <PhoneCall className="w-6 h-6 text-red-500" />,
-        operationsStatus: "Funding Call",
+        icon: <PhoneCall className="w-6 h-6 text-red-500" />,
+        operationsStatus: "Finals_And_Funding_Call",
       },
       {
         label: "Disbursment",
@@ -359,64 +356,76 @@ export const OperationsDashboard = () => {
         operationsStatus: "Funded",
       },
     ],
-    [summaryCounts],
+    [summaryCounts, caseStageCounts.Final],
   );
+
+  /** Ops works post-signature only — hide Contract Pending / Contract Out queue cards. */
+  const summaryCardsForRole = useMemo(() => {
+    if (!isOperationsUser) return summaryCards;
+    return summaryCards.filter(
+      (card) =>
+        card.operationsStatus !== "Contract_Out" &&
+        card.operationsStatus !== "Contract_Pending",
+    );
+  }, [summaryCards, isOperationsUser]);
 
   /** Deal pipeline stages — aligned with Super Admin sidebar (DEAL PIPELINE). */
   const superAdminPipelineCards: SummaryCard[] = useMemo(
     () => [
       {
-        label: "Agent",
-        value: caseStageCounts.Agent ?? 0,
-        helper: "Applications with the agent",
-        icon: <FileUser className="h-8 w-8 text-[#0A78C8]" />,
-        operationsStatus: "Agent",
+        label: "Scrubbing",
+        value: caseStageCounts.Scrubbing ?? 0,
+        helper: "In underwriting review",
+        icon: <Search className="h-6 w-6 text-[var(--brand)]" />,
+        operationsStatus: "Scrubbing",
       },
       {
         label: "Underwriter",
-        value: caseStageCounts.Underwriter ?? 0,
-        helper: "In underwriting review",
-        icon: <Search className="h-6 w-6 text-[#276D9C]" />,
+        value: caseStageCounts["Underwriter"] ?? 0,
+        helper: "Final underwriting stage",
+        icon: <ShieldCheck className="h-6 w-6 text-[#1E88E5]" />,
         operationsStatus: "Underwriter",
       },
       {
-        label: "Final Underwriter",
-        value: caseStageCounts["Final Underwriter"] ?? 0,
-        helper: "Final underwriting stage",
-        icon: <ShieldCheck className="h-6 w-6 text-[#1E88E5]" />,
-        operationsStatus: "Final Underwriter",
+        label: "Contract Pending",
+        value: caseStageCounts.Contract_Pending ?? summaryCounts.contractPending ?? 0,
+        helper: "Awaiting contract generation",
+        icon: <Clock className="h-6 w-6 text-sky-500" />,
+        operationsStatus: "Contract_Pending",
       },
       {
-        label: "Contract",
-        value: summaryCounts.signedContracts ?? 0,
+        label: "Contract Sent",
+        value: caseStageCounts.Contract_Sent ?? summaryCounts.contractsOut ?? 0,
+        helper: "Contracts sent for signature",
+        icon: <FileInput className="h-6 w-6 text-emerald-500" />,
+        operationsStatus: "Contract_Sent",
+      },
+      {
+        label: "Contract Signed",
+        value: caseStageCounts.Contract_Signed ?? summaryCounts.signedContracts ?? 0,
         helper: "Contract signed applications",
-        icon: <FileCheck2 className="h-6 w-6 text-[#F97316]" />,
+        icon: <CheckCircle2 className="h-6 w-6 text-amber-500" />,
         operationsStatus: "Contract_Signed",
       },
       {
-        label: "Final",
-        value: caseStageCounts.Final ?? 0,
-        helper: "Final stage before funding",
-        icon: <Check className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />,
-        operationsStatus: "Final",
-      },
-      {
-        label: "Funding call",
-        value: caseStageCounts["Funding Call"] ?? 0,
-        helper: "Funding call queue",
+        label: operationsDashboardStatusTitle("Finals_And_Funding_Call"),
+        value:
+          (caseStageCounts.Final ?? 0) +
+          (caseStageCounts["Funding Call"] ?? summaryCounts.fundingCall ?? 0),
+        helper: "Final review and funding call queue",
         icon: <PhoneCall className="h-6 w-6 text-[#7C3AED]" />,
-        operationsStatus: "Funding Call",
+        operationsStatus: "Finals_And_Funding_Call",
       },
       {
         label: "Disbursement",
-        value: summaryCounts.disbursment,
+        value: caseStageCounts.Disbursment ?? summaryCounts.disbursment ?? 0,
         helper: "Pending disbursement",
         icon: <Landmark className="h-6 w-6 text-sky-600 dark:text-sky-400" />,
         operationsStatus: "Disbursment",
       },
       {
         label: "Funded",
-        value: summaryCounts.funded,
+        value: caseStageCounts.Funded ?? summaryCounts.funded ?? 0,
         helper: "Funded deals",
         icon: <CircleDollarSign className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />,
         operationsStatus: "Funded",
@@ -424,8 +433,11 @@ export const OperationsDashboard = () => {
     ],
     [
       caseStageCounts,
+      summaryCounts.contractPending,
+      summaryCounts.contractsOut,
       summaryCounts.disbursment,
       summaryCounts.funded,
+      summaryCounts.fundingCall,
       summaryCounts.signedContracts,
     ],
   );
@@ -441,7 +453,7 @@ export const OperationsDashboard = () => {
       const qs = new URLSearchParams();
       qs.set(
         "operationsStatus",
-        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Sent" : "Contracted",
+        isSuperAdmin ? "Funded" : isOperationsUser ? "Contract_Signed" : "Contracted",
       );
       navigate(
         `/application-details/${recentCase.applicationId}?${qs.toString()}`,
@@ -464,29 +476,40 @@ export const OperationsDashboard = () => {
 
   const getSummaryCardAmount = useCallback(
     (card: SummaryCard) => {
-      const helperText = String(card.helper ?? "").trim().toLowerCase();
-      if (helperText !== "total amount") return 0;
       switch (card.operationsStatus) {
+        case "Agent":
+          return caseStageAmounts.Agent ?? 0;
+        case "Scrubbing":
+          return caseStageAmounts.Scrubbing ?? 0;
+        case "Underwriter":
+          return caseStageAmounts["Underwriter"] ?? 0;
+        case "Final":
+          return caseStageAmounts.Final ?? 0;
+        case "Finals_And_Funding_Call":
+          return (
+            (caseStageAmounts.Final ?? 0) +
+            (summaryAmounts.fundingCall ?? caseStageAmounts["Funding Call"] ?? 0)
+          );
         case "Contract_Pending":
-          return summaryAmounts.contractPending ?? 0;
-        case "Contract_Generated":
-          return summaryAmounts.contractGenerated ?? 0;
-        case "Contract_Sent":
+          return summaryAmounts.contractPending ?? caseStageAmounts.Contract_Pending ?? 0;
         case "Contract_Out":
-          return summaryAmounts.contractSent ?? summaryAmounts.contractsOut ?? 0;
+        case "Contract_Sent":
+          return summaryAmounts.contractsOut ?? caseStageAmounts.Contract_Sent ?? 0;
         case "Contract_Signed":
-          return summaryAmounts.signedContracts ?? 0;
+          return summaryAmounts.signedContracts ?? caseStageAmounts.Contract_Signed ?? 0;
         case "Funding Call":
-          return summaryAmounts.fundingCall ?? 0;
+          return summaryAmounts.fundingCall ?? caseStageAmounts["Funding Call"] ?? 0;
         case "Disbursment":
-          return summaryAmounts.disbursment ?? 0;
+          return summaryAmounts.disbursment ?? caseStageAmounts.Disbursment ?? 0;
         case "Funded":
-          return summaryAmounts.funded ?? 0;
+          return summaryAmounts.funded ?? caseStageAmounts.Funded ?? 0;
+        case "Declined":
+          return caseStageAmounts.Declined ?? 0;
         default:
           return 0;
       }
     },
-    [summaryAmounts],
+    [caseStageAmounts, summaryAmounts],
   );
 
   const renderSummaryCard = (card: SummaryCard) => {
@@ -508,7 +531,7 @@ export const OperationsDashboard = () => {
           e.preventDefault();
           handleSummaryCardClick(card);
         }}
-        className={`h-full overflow-hidden rounded-xl text-left transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40 ${sectionShadowClass} ${
+        className={`h-full overflow-hidden rounded-xl text-left transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 ${sectionShadowClass} ${
           card.operationsStatus && !statCardsShowSkeleton
             ? "cursor-pointer"
             : "cursor-default"
@@ -537,11 +560,18 @@ export const OperationsDashboard = () => {
         const useSignedForContractBar =
           (isSuperAdmin || isOperationsUser) &&
           status.value === "Contract Signed";
+        const mergedFinalsAndFundingCall =
+          status.value === "Finals_And_Funding_Call"
+            ? (caseStageCounts.Final ?? 0) +
+              (caseStageCounts["Funding Call"] ?? 0)
+            : null;
         return {
           label: status.label,
           cases: useSignedForContractBar
             ? summaryCounts.signedContracts ?? 0
-            : (caseStageCounts[status.value] ?? 0),
+            : mergedFinalsAndFundingCall != null
+              ? mergedFinalsAndFundingCall
+              : (caseStageCounts[status.value] ?? 0),
         };
       }),
     [
@@ -557,13 +587,7 @@ export const OperationsDashboard = () => {
   );
 
   const paymentTrend = useMemo<PaymentTrendPoint[]>(() => {
-    const now = new Date();
-    const labels = Array.from({ length: 6 }, (_, i) =>
-      new Date(now.getFullYear(), now.getMonth() - 5 + i, 1).toLocaleString(
-        "en-US",
-        { month: "short" },
-      ),
-    );
+    const labels = getRecentMonthShortLabelsET(6);
     const byName = new Map(
       monthlyTrendRows.map((row) => [String(row.name ?? "").trim(), row]),
     );
@@ -588,9 +612,8 @@ export const OperationsDashboard = () => {
       });
     }
     if (isOperationsUser) {
-      return recentCases.filter((item) =>
-        isContractSentQueueBadgeLabel(String(item.status ?? "")),
-      );
+      // Recent-cases API is already scoped to Contract_Signed for OPERATIONS.
+      return recentCases;
     }
     return recentCases;
   }, [isOperationsUser, isSuperAdmin, recentCases]);
@@ -602,7 +625,6 @@ export const OperationsDashboard = () => {
       (item) =>
         item.id.toLowerCase().includes(term) ||
         item.applicationId.toLowerCase().includes(term) ||
-        String(item.dealId ?? "").toLowerCase().includes(term) ||
         item.merchant.toLowerCase().includes(term) ||
         item.status.toLowerCase().includes(term) ||
         (item.email ?? "").toLowerCase().includes(term),
@@ -655,7 +677,7 @@ export const OperationsDashboard = () => {
 
       {/* Summary cards — skeleton on first load; stale values kept while refreshing */}
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
-        {(isSuperAdmin ? superAdminPipelineCards : summaryCards).map((card) =>
+        {(isSuperAdmin ? superAdminPipelineCards : summaryCardsForRole).map((card) =>
           renderSummaryCard(card),
         )}
       </section>
@@ -730,7 +752,7 @@ export const OperationsDashboard = () => {
                   <Bar
                     dataKey="cases"
                     radius={[4, 4, 0, 0]}
-                    fill="#276D9C"
+                    fill="var(--brand)"
                   />
                 </BarChart>
               </ResponsiveContainer>
@@ -751,7 +773,7 @@ export const OperationsDashboard = () => {
             </div>
             <div className="flex items-center gap-4 text-xs font-medium text-muted-foreground">
               <div className="inline-flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full bg-[#276D9C]" />
+                <span className="h-2.5 w-2.5 rounded-full bg-[image:var(--brand-gradient)]" />
                 <span>Collected</span>
               </div>
               <div className="inline-flex items-center gap-2">
@@ -769,8 +791,8 @@ export const OperationsDashboard = () => {
               >
                 <defs>
                   <linearGradient id="collectedArea" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#276D9C" stopOpacity={0.7} />
-                    <stop offset="95%" stopColor="#276D9C" stopOpacity={0.05} />
+                    <stop offset="5%" stopColor="var(--brand)" stopOpacity={0.7} />
+                    <stop offset="95%" stopColor="var(--brand)" stopOpacity={0.05} />
                   </linearGradient>
                   <linearGradient id="pendingArea" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#F97316" stopOpacity={0.7} />
@@ -811,7 +833,7 @@ export const OperationsDashboard = () => {
                   type="monotone"
                   dataKey="collected"
                   name="collected"
-                  stroke="#276D9C"
+                  stroke="var(--brand)"
                   strokeWidth={2}
                   fill="url(#collectedArea)"
                   dot={{ strokeWidth: 1, r: 3 }}
@@ -848,14 +870,14 @@ export const OperationsDashboard = () => {
                 {isSuperAdmin
                   ? "Latest Funded Deals"
                   : isOperationsUser
-                    ? "Contract Sent Applications"
+                    ? "Contract Signed Applications"
                     : "Recent Applications"}
               </span>
               <p className="mt-0.5 text-xs text-muted-foreground hidden sm:block">
                 {isSuperAdmin
                   ? "Most recently funded or disbursed deals."
                   : isOperationsUser
-                    ? "Applications with contracts sent for signature."
+                    ? "Deals with a fully signed contract — ready for Final, funding call, and disbursement."
                     : "Latest contracted applications."}
               </p>
               {recentError ? (
@@ -877,10 +899,10 @@ export const OperationsDashboard = () => {
                     isSuperAdmin
                       ? "Search funded deals..."
                       : isOperationsUser
-                        ? "Search contract sent..."
+                        ? "Search contract signed..."
                         : "Search contracted..."
                   }
-                  className="h-10 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#276D9C]/30"
+                  className="h-10 w-full rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/30"
                 />
               </div>
               <div
@@ -923,7 +945,7 @@ export const OperationsDashboard = () => {
 
           <div className="p-1">
             <div className="overflow-x-auto rounded-xl">
-              {recentLoading && recentCases.length === 0 ? (
+              {recentCasesBlockingLoad ? (
                 <div className="flex items-center justify-center py-20">
                   <Loader2 className="h-8 w-8 animate-spin text-primary shrink-0" />
                   <span className="ml-2 text-muted-foreground">
@@ -935,7 +957,7 @@ export const OperationsDashboard = () => {
                   {isSuperAdmin
                     ? "No funded deals found."
                     : isOperationsUser
-                      ? "No contract sent applications found."
+                      ? "No contract signed applications found."
                       : "No contracted applications found."}
                 </div>
               ) : recentCasesViewMode === "list" ? (
@@ -944,7 +966,7 @@ export const OperationsDashboard = () => {
                     <TableRow>
                       <TableHead className="px-6">
                         <span className="font-medium text-xs uppercase tracking-wide text-muted-foreground">
-                          {isSuperAdmin ? "Deal ID" : "ID"}
+                          ID
                         </span>
                       </TableHead>
                       <TableHead className="px-6">
@@ -1016,7 +1038,9 @@ export const OperationsDashboard = () => {
                         >
                           <TableCell className="px-6 text-[0.85rem] text-[#4B5563] dark:text-foreground">
                             <span className="font-semibold text-foreground">
-                              {formatRecentCaseIdDisplay(item, isSuperAdmin)}
+                              {item.applicationId
+                                ? formatApplicationIdDisplay(item.applicationId)
+                                : "-"}
                             </span>
                           </TableCell>
                           <TableCell className="px-6 text-[0.85rem] text-[#4B5563] dark:text-foreground">
@@ -1056,7 +1080,7 @@ export const OperationsDashboard = () => {
                                 e.stopPropagation();
                                 void handleOpenRecentCasePreview(item);
                               }}
-                              className="inline-flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] dark:text-sky-400 dark:hover:text-sky-300 cursor-pointer"
+                              className="inline-flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] dark:text-sky-400 dark:hover:text-sky-300 cursor-pointer"
                               aria-label="View application details"
                             >
                               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current">
@@ -1093,7 +1117,7 @@ export const OperationsDashboard = () => {
                             }
                           }}
                           onClick={() => handleNavigateRecentCase(item)}
-                          className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${
+                          className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${
                             isDark
                               ? "bg-[#1a1b1e] border-[#374151]"
                               : "bg-card border-[#F0F0F0]"
@@ -1105,9 +1129,11 @@ export const OperationsDashboard = () => {
                                 {item.merchant}
                               </p>
                               <p className="text-xs text-muted-foreground mt-0.5">
-                                {isSuperAdmin ? "Deal ID" : "ID"}{" "}
+                                ID{" "}
                                 <span className="text-sky-600 font-medium">
-                                  {formatRecentCaseIdDisplay(item, isSuperAdmin)}
+                                  {item.applicationId
+                                    ? formatApplicationIdDisplay(item.applicationId)
+                                    : "—"}
                                 </span>
                               </p>
                             </div>
@@ -1117,7 +1143,7 @@ export const OperationsDashboard = () => {
                                 e.stopPropagation();
                                 void handleOpenRecentCasePreview(item);
                               }}
-                              className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                              className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                               aria-label="Preview application"
                             >
                               <EyeIcon className="h-4 w-4" />

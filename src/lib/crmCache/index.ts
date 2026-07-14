@@ -19,7 +19,8 @@ import type { CrmCacheNamespace } from "./namespaces";
 
 export { CRM_CACHE_NS, type CrmCacheNamespace } from "./namespaces";
 export type { CrmCacheEntry } from "./config";
-export { memoryEntriesForNamespace } from "./memoryStore";
+export { memoryClearNamespace, memoryEntriesForNamespace } from "./memoryStore";
+export { idbClearNamespace } from "./indexedDbStore";
 
 /** L1 read (sync). */
 export function crmCacheGet<T>(

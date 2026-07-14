@@ -97,6 +97,12 @@ import {
     DOCUSIGN_PRIMARY_SIGNER_ROLE,
 } from "./docusignTemplateConfig";
 
+/** Resolve CRM role label to DocuSign signer role (defaults to platform signer role). */
+export function resolveDocuSignSignerRole(role?: string | null): string {
+    const trimmed = String(role ?? "").trim();
+    return trimmed || DOCUSIGN_DEFAULT_SIGNER_ROLE;
+}
+
 /** Role payload for `/docusign/send-template` and sync-envelope-cc. */
 export type DocuSignTemplateRolePayload = {
     roleIndex: number;

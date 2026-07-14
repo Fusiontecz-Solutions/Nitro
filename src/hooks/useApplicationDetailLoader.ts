@@ -9,15 +9,12 @@ import {
   isNumericApplicationRouteParam,
   routeParamMatchesApplication,
 } from "@/lib/applicationRouteMatch";
-import type { Application } from "@/types/applicationTypes";
 import {
-  applicationDetailCacheKeyFromApplication,
-  buildDetailHydrationPayload,
-  getCachedApplicationDetail,
-  setCachedApplicationDetail,
+  readApplicationDetailCache,
+  writeApplicationDetailCache,
 } from "@/lib/applicationDetailCache";
 import { findApplicationInListCache } from "@/lib/applicationsListCache";
-import { hydrateApplicationDetailFromCache } from "@/redux/slices/applicationSlice";
+import { setApplicationDetail } from "@/redux/slices/applicationSlice";
 
 /**
  * Loads application detail once per route param: reuse Redux, detail cache, or
@@ -45,19 +42,15 @@ export function useApplicationDetailLoader(applicationId: string | undefined) {
   useEffect(() => {
     if (!applicationId) return;
 
-    const cachedBody = getCachedApplicationDetail(applicationId);
-    const fromDetail = buildDetailHydrationPayload(cachedBody)?.data;
+    const fromDetail = readApplicationDetailCache(applicationId);
     const fromList =
       fromDetail === undefined
         ? findApplicationInListCache(applicationId)
         : undefined;
-    const cachedRow: Application | undefined = fromDetail ?? fromList;
+    const cachedRow = fromDetail ?? fromList;
 
     if (fromList) {
-      const key = applicationDetailCacheKeyFromApplication(fromList);
-      if (key) {
-        setCachedApplicationDetail(key, { success: true, data: fromList });
-      }
+      writeApplicationDetailCache(fromList);
     }
 
     const current = dataRef.current;
@@ -65,11 +58,7 @@ export function useApplicationDetailLoader(applicationId: string | undefined) {
       !!current && routeParamMatchesApplication(applicationId, current);
 
     if (!matchesCurrent && cachedRow) {
-      dispatch(
-        hydrateApplicationDetailFromCache(
-          cachedBody ?? { success: true, data: cachedRow },
-        ),
-      );
+      dispatch(setApplicationDetail(cachedRow));
       dataRef.current = cachedRow;
     }
 

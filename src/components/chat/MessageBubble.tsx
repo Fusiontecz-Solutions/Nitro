@@ -1,14 +1,14 @@
 import type React from 'react';
 import { Check, CheckCheck } from 'lucide-react';
 import type { Message } from '@/redux/slices/chatSlice';
-import { formatDate } from '@/lib/utils';
+import { formatDate, formatTimeET, isTodayET, isYesterdayET } from '@/lib/utils';
 
 const roleLabel = (role: string | undefined): string => {
   if (!role) return '';
   const labels: Record<string, string> = {
     AGENT: 'Agent',
+    SCRUBBING: 'Scrubbing',
     UNDERWRITER: 'Underwriter',
-    FINAL_UNDERWRITER: 'Final Underwriter',
     ACCOUNTANT: 'Accountant',
     ADMIN: 'Admin',
     SUPER_ADMIN: 'Super Admin',
@@ -43,18 +43,9 @@ function renderContentWithMentions(content: string): React.ReactNode {
 /** "Today at 14:13" or "Yesterday at 14:13" or short date */
 const formatMessageTime = (dateString: string): string => {
   const date = new Date(dateString);
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const isYesterday = date.toDateString() === yesterday.toDateString();
-  const time = date.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
-  if (isToday) return `Today at ${time}`;
-  if (isYesterday) return `Yesterday at ${time}`;
+  const time = formatTimeET(date);
+  if (isTodayET(date)) return `Today at ${time}`;
+  if (isYesterdayET(date)) return `Yesterday at ${time}`;
   return `${formatDate(date)} ${time}`;
 };
 
@@ -146,7 +137,7 @@ export const MessageBubble = ({
         <div
           className={`px-4 py-2.5 rounded-2xl ${
             isOwnMessage
-              ? 'bg-blue-600 text-white rounded-br-md'
+              ? 'bg-primary text-primary-foreground rounded-br-md'
               : 'bg-gray-700 text-gray-100 rounded-bl-md'
           }`}
         >

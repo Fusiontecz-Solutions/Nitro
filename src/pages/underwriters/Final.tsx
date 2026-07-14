@@ -37,13 +37,7 @@ export default function DecisionLogicExecutor({
     document.body.appendChild(script);
 
     return () => {
-      // The DecisionLogic widget can relocate or remove this <script> from
-      // <body>, so an unconditional removeChild throws "Failed to execute
-      // 'removeChild' on 'Node': The node to be removed is not a child of this
-      // node." Only remove it if it's still a direct child.
-      if (script.parentNode) {
-        script.parentNode.removeChild(script);
-      }
+      document.body.removeChild(script);
     };
   }, []);
 

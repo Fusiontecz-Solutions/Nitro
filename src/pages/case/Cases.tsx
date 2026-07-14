@@ -25,6 +25,7 @@ import { useTheme } from "@/context/ThemeContext";
 import { CONTRACT_OUT_QUEUE_BADGE_CLASS } from "@/lib/contractOutQueueBadge";
 import { CONTRACT_SIGNED_QUEUE_BADGE_CLASS } from "@/lib/contractSignedQueueBadge";
 import { formatCurrency } from "@/lib/utils";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import { toast } from "react-toastify";
 import { formatDate as formatDateUtil } from "@/lib/utils";
 import { isListBlockingLoad } from "@/lib/listLoading";
@@ -92,6 +93,8 @@ const Cases = () => {
       return application.status;
     }
 
+    if (queue === "Contract Pending") return "Contract Pending";
+    if (queue === "Contract Generated") return "Contract Generated";
     if (queue === "Contract Out") return "Contract Out";
     if (queue === "Contracts Out") return "Contract Out";
     if (
@@ -116,7 +119,7 @@ const Cases = () => {
     }
     if (queue === "Declined") return "Declined";
     if (queue === "On Hold") return "Pending";
-    if (queue === "Underwriting" || queue === "Review" || queue === "Final Review")
+    if (queue === "Scrubbing" || queue === "Underwriter" || queue === "Underwriting" || queue === "Review" || queue === "Final Review")
       return "In Progress";
     if (queue === "New") return "Pending";
 
@@ -197,18 +200,18 @@ const Cases = () => {
       },
       {
         id: "loanAmount",
-        accessorFn: (row) => row.loanAmount,
+        accessorFn: (row) => resolveApplicationDisplayLoanAmount(row),
         header: () => (
           <span className="font-medium text-foreground">LOAN AMOUNT</span>
         ),
         cell: ({ row }) => {
-          const loanAmount = row.original.loanAmount;
+          const loanAmount = resolveApplicationDisplayLoanAmount(row.original);
           if (loanAmount == null) {
             return <span className="text-foreground">-</span>;
           }
           return (
             <span className="text-foreground">
-              {formatCurrency(Number(loanAmount) || 0)}
+              {formatCurrency(loanAmount)}
             </span>
           );
         },
@@ -272,7 +275,7 @@ const Cases = () => {
           <button
             type="button"
             onClick={() => setViewApplication(row.original)}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
             aria-label="View case details"
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -443,7 +446,7 @@ const Cases = () => {
           </h1>
           <p className="text-sm text-muted-foreground">
             View and manage all applications that have reached the{" "}
-            <span className="font-medium text-[#276D9C]">Contracted</span> stage.
+            <span className="font-medium text-[var(--brand)]">Contracted</span> stage.
           </p>
         </div>
         <div className="flex items-center gap-3 justify-end">

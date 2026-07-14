@@ -6,22 +6,35 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuTrigger,
-    DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Bell } from "lucide-react";
-import { getNotifications, markNotificationAsRead, markAllNotificationsAsRead } from "@/redux/actions/notificationActions";
-import { useTheme } from "@/context/ThemeContext";
+import {
+    getNotifications,
+    markAllNotificationsAsRead,
+    getNotificationSummary,
+} from "@/redux/actions/notificationActions";
+import { markAllNotificationsReadOptimistic } from "@/redux/slices/notificationSlice";
 import type { Notification } from "@/redux/slices/notificationSlice";
-import { formatDate } from "@/lib/utils";
+import NotificationItem from "./NotificationItem";
+import { useNotificationActions } from "./useNotificationActions";
+import { compareNotifications, isHiddenBySnooze } from "./notificationTaxonomy";
+
+type Tab = { key: string; label: string };
+const TABS: Tab[] = [
+    { key: "all", label: "All" },
+    { key: "urgent", label: "Urgent" },
+    { key: "todo", label: "To-do" },
+    { key: "follow_up", label: "Follow-up" },
+];
 
 const NotificationDropdown = () => {
-    const { resolvedTheme } = useTheme();
-    const isDark = resolvedTheme === 'dark';
     const dispatch = useDispatch<AppDispatch>();
     const navigate = useNavigate();
+    const actions = useNotificationActions();
     const [open, setOpen] = useState(false);
-    
+    const [tab, setTab] = useState<string>("all");
+
     const { data: loginData } = useSelector((state: RootState) => state.login);
     const userRole = loginData?.user?.role || localStorage.getItem("role") || "";
     const isSuperAdmin = userRole === "SUPER_ADMIN" || userRole === "SUPERADMIN";
@@ -31,97 +44,38 @@ const NotificationDropdown = () => {
     );
 
     const { data: notifications, loading } = useSelector((state: RootState) => state.notifications);
-  
-    const { loading: markAsReadLoading } = useSelector((state: RootState) => state.markNotificationAsRead);
-    
-    // Get unread count
-    const unreadCount = notifications?.filter((notif: Notification) => !notif.isRead).length || 0;
+    const summary = useSelector((state: RootState) => state.notificationSummary.data);
 
-    // Refresh when dropdown opens (inbox sync runs at app shell via NotificationsSync)
+    // Visible inbox = not archived, not snoozed-until-future.
+    const visible = useMemo(
+        () => (notifications || []).filter((n: Notification) => !n.isArchived && !isHiddenBySnooze(n)),
+        [notifications],
+    );
+    const unreadCount = summary?.unread ?? visible.filter((n) => !n.isRead).length;
+
+    const filtered = useMemo(() => {
+        let list = visible;
+        if (tab === "urgent") list = list.filter((n) => n.importance === "urgent");
+        else if (tab === "todo") list = list.filter((n) => n.bucket === "todo");
+        else if (tab === "follow_up") list = list.filter((n) => n.bucket === "follow_up");
+        return [...list].sort(compareNotifications);
+    }, [visible, tab]);
+
     useEffect(() => {
         if (open) {
             dispatch(getNotifications(inboxParams));
+            dispatch(getNotificationSummary());
         }
     }, [open, dispatch, inboxParams]);
 
-    const handleNotificationClick = async (notification: Notification) => {
-        if (!notification.isRead) {
-            try {
-                await dispatch(markNotificationAsRead(notification._id)).unwrap();
-            } catch (error) {
-                console.error('Failed to mark notification as read:', error);
-            }
-        }
-        
-        // If notification has an application, navigate to it
-        if (notification.application && typeof notification.application === 'object') {
-            const appId = (notification.application as any).applicationId || (notification.application as any)._id;
-            if (appId) {
-                // Navigate to application details page
-                navigate(`/application-details/${appId}`);
-            }
-        }
-    
-        setOpen(false);
-    }
     const handleMarkAllAsRead = async () => {
+        dispatch(markAllNotificationsReadOptimistic());
         try {
             await dispatch(markAllNotificationsAsRead()).unwrap();
-            // Refresh not
-            dispatch(getNotifications(inboxParams));
+            dispatch(getNotificationSummary());
         } catch (error) {
-            console.error('Failed to mark all notifications as read:', error);
+            console.error("Failed to mark all notifications as read:", error);
         }
-    };
-
-    const formatTime = (dateString: string) => {
-        try {
-            const date = new Date(dateString);
-            const now = new Date();
-            const diffMs = now.getTime() - date.getTime();
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
-
-            if (diffMins < 1) return 'just now';
-            if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
-            if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-            if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-            
-            // For older dates, show formatted date
-            return formatDate(date, "");
-        } catch {
-            return '';
-        }
-    };
-
-    const getNotificationIcon = (type: string) => {
-        switch (type) {
-            case 'document_request':
-                return '📄';
-            case 'application_update':
-                return '📋';
-            case 'contract_status_update':
-                return '✍️';
-            case 'system':
-                return '⚙️';
-            default:
-                return '🔔';
-        }
-    };
-
-    const getSenderName = (notification: Notification): string => {
-        const actor =
-            notification.createdBy && typeof notification.createdBy === "object"
-                ? notification.createdBy
-                : notification.recipient && typeof notification.recipient === "object"
-                    ? notification.recipient
-                    : null;
-
-        if (!actor) return "Unknown";
-
-        const fullName = `${actor.firstName || ""} ${actor.lastName || ""}`.trim();
-        return fullName || actor.email || "Unknown";
     };
 
     return (
@@ -136,113 +90,99 @@ const NotificationDropdown = () => {
                     <Bell className="h-5 w-5" />
                     {unreadCount > 0 && (
                         <span className="absolute top-0 right-0 h-4 w-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                            {unreadCount > 9 ? '9+' : unreadCount}
+                            {unreadCount > 9 ? "9+" : unreadCount}
                         </span>
                     )}
                 </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
                 align="end"
-                className={`w-80 max-h-[500px] overflow-y-auto ${isDark ? 'bg-card border-border' : 'bg-white border-gray-200'}`}
+                className="w-[26rem] max-w-[92vw] p-0 overflow-hidden bg-background border-border"
             >
-                <div className={`flex items-center justify-between px-3 py-2 border-b ${isDark ? 'border-gray-700' : 'border-gray-200'}`}>
-                    <h3 className={`text-sm font-semibold ${isDark ? 'text-gray-200' : 'text-gray-900'}`}>
-                        Notifications
-                    </h3>
+                {/* Header */}
+                <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+                    <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold text-foreground">Notifications</h3>
+                        {unreadCount > 0 && (
+                            <span className="rounded-full bg-[var(--brand)]/10 px-2 py-0.5 text-[11px] font-semibold text-[var(--brand)]">
+                                {unreadCount} new
+                            </span>
+                        )}
+                    </div>
                     {unreadCount > 0 && (
-                        <Button
-                            variant="ghost"
-                            size="sm"
+                        <button
+                            type="button"
                             onClick={handleMarkAllAsRead}
-                            disabled={markAsReadLoading}
-                            className="text-xs h-auto py-1 px-2 text-blue-600 hover:text-blue-700"
+                            className="cursor-pointer text-xs font-medium text-[var(--brand)] hover:text-[var(--brand-hover)]"
                         >
-                            Mark all as read
-                        </Button>
+                            Mark all read
+                        </button>
                     )}
                 </div>
 
-                {loading ? (
-                    <div className="p-4 text-center text-sm text-muted-foreground">
-                        Loading notifications...
-                    </div>
-                ) : notifications && notifications.length > 0 ? (
-                    <div className="py-1">
-                        {notifications.map((notification: Notification) => {
-                            const senderName = getSenderName(notification);
-                            const title =
-                                notification.title?.replace("Unknown Client", senderName) ||
-                                notification.title ||
-                                "";
-                            const message =
-                                notification.message?.replace("Unknown Client", senderName) ||
-                                notification.message ||
-                                "";
-
-                            return (
-                            <DropdownMenuItem
-                                key={notification._id}
-                                className={`cursor-pointer p-3 border-b last:border-b-0 ${isDark ? 'border-gray-700 hover:bg-gray-800' : 'border-gray-100 hover:bg-gray-50'} ${
-                                    !notification.isRead ? (isDark ? 'bg-blue-950/20' : 'bg-blue-50') : ''
+                {/* Tabs */}
+                <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border">
+                    {TABS.map((t) => {
+                        const count =
+                            t.key === "urgent"
+                                ? summary?.urgent ?? 0
+                                : t.key === "todo"
+                                  ? summary?.byBucket?.todo ?? 0
+                                  : t.key === "follow_up"
+                                    ? summary?.byBucket?.follow_up ?? 0
+                                    : 0;
+                        return (
+                            <button
+                                key={t.key}
+                                type="button"
+                                onClick={() => setTab(t.key)}
+                                className={`cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                                    tab === t.key
+                                        ? "bg-[image:var(--brand-gradient)] text-white shadow-sm"
+                                        : "text-muted-foreground hover:bg-muted"
                                 }`}
-                                onClick={() => handleNotificationClick(notification)}
                             >
-                                <div className="flex items-start gap-3 w-full">
-                                    <div className="text-xl mt-0.5">
-                                        {getNotificationIcon(notification.type)}
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="flex items-start justify-between gap-2">
-                                            <p className={`text-sm font-medium ${isDark ? 'text-gray-200' : 'text-gray-900'}`}>
-                                                {title}
-                                            </p>
-                                            {!notification.isRead && (
-                                                <div className="h-2 w-2 rounded-full bg-blue-500 shrink-0 mt-1.5" />
-                                            )}
-                                        </div>
-                                        <p className={`text-xs mt-1 ${isDark ? 'text-gray-400' : 'text-gray-600'} line-clamp-2`}>
-                                            {message}
-                                        </p>
-                                        {notification.documentRequestDetails && (
-                                            <div className={`mt-2 p-2 rounded text-xs ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
-                                                <p className={`font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-                                                    Requested Documents:
-                                                </p>
-                                                <ul className={`list-disc list-inside space-y-0.5 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                                                    {notification.documentRequestDetails.requestedDocuments.map((doc, idx) => (
-                                                        <li key={idx}>{doc}</li>
-                                                    ))}
-                                                </ul>
-                                                {notification.documentRequestDetails.requestAdditional && (
-                                                    <p className={`mt-1 italic ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                                                        Additional documents may be required
-                                                    </p>
-                                                )}
-                                            </div>
-                                        )}
-                                        <p className={`text-xs mt-2 ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>
-                                            {formatTime(notification.createdAt)}
-                                        </p>
-                                    </div>
-                                </div>
-                            </DropdownMenuItem>
-                        )})}
-                    </div>
-                ) : (
-                    <div className="p-6 text-center">
-                        <Bell className={`h-8 w-8 mx-auto mb-2 ${isDark ? 'text-gray-600' : 'text-gray-400'}`} />
-                        <p className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-                            No notifications
-                        </p>
-                        <p className={`text-xs mt-1 ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
-                            You're all caught up!
-                        </p>
-                    </div>
-                )}
+                                {t.label}
+                                {t.key !== "all" && count > 0 && (
+                                    <span className="ml-1 opacity-80">{count}</span>
+                                )}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {/* List */}
+                <div className="max-h-[60vh] overflow-y-auto">
+                    {loading && filtered.length === 0 ? (
+                        <div className="p-4 text-center text-sm text-muted-foreground">Loading…</div>
+                    ) : filtered.length > 0 ? (
+                        filtered.map((n) => (
+                            <NotificationItem key={n._id} notification={n} actions={actions} compact />
+                        ))
+                    ) : (
+                        <div className="p-6 text-center">
+                            <Bell className="mx-auto mb-2 h-8 w-8 text-muted-foreground/50" />
+                            <p className="text-sm text-muted-foreground">You're all caught up!</p>
+                        </div>
+                    )}
+                </div>
+
+                {/* Footer */}
+                <div className="border-t border-border px-4 py-2">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setOpen(false);
+                            navigate("/notifications");
+                        }}
+                        className="w-full cursor-pointer text-center text-xs font-medium text-[var(--brand)] hover:text-[var(--brand-hover)]"
+                    >
+                        Open notifications dashboard
+                    </button>
+                </div>
             </DropdownMenuContent>
         </DropdownMenu>
     );
 };
 
 export default NotificationDropdown;
-

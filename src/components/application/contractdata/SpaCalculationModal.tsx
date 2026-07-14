@@ -220,7 +220,7 @@ export function SpaCalculationModal({
             <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto p-0 sm:max-w-xl">
                 <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-700">
                     <DialogTitle className="flex items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100">
-                        <Calculator className="h-4 w-4 text-[#276D9C]" aria-hidden />
+                        <Calculator className="h-4 w-4 text-[var(--brand)]" aria-hidden />
                         Calculate SPA
                     </DialogTitle>
                     <p className="mt-1 text-xs leading-snug text-slate-500 dark:text-slate-400">
@@ -335,13 +335,13 @@ export function SpaCalculationModal({
                                                         className={cn(
                                                             "border-t border-slate-100 dark:border-slate-800",
                                                             row.includedInSpaAverage &&
-                                                                "bg-[#276D9C]/5 dark:bg-[#276D9C]/10",
+                                                                "bg-[var(--brand)]/5 dark:bg-[var(--brand)]/10",
                                                         )}
                                                     >
                                                         <td className="px-3 py-2 text-slate-700 dark:text-slate-200">
                                                             {row.month}
                                                             {row.includedInSpaAverage ? (
-                                                                <span className="ml-2 text-[10px] font-medium uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                                <span className="ml-2 text-[10px] font-medium uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                                                     Used in avg
                                                                 </span>
                                                             ) : null}
@@ -396,7 +396,7 @@ export function SpaCalculationModal({
                                     <span className="text-slate-600 dark:text-slate-300">
                                         Calculated SPA
                                     </span>
-                                    <span className="text-lg font-bold tabular-nums text-[#276D9C] dark:text-[#5a9fd4]">
+                                    <span className="text-lg font-bold tabular-nums text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                         {breakdown.spa ? `${breakdown.spa}%` : "—"}
                                     </span>
                                 </div>
@@ -425,7 +425,7 @@ export function SpaCalculationModal({
                     <Button
                         type="button"
                         size="sm"
-                        className="gap-1.5 bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+                        className="gap-1.5 bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
                         disabled={loading || saving || !canCalculate}
                         onClick={() => {
                             void handleCalculate();

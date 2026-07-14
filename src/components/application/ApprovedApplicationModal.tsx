@@ -8,21 +8,21 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTheme } from "@/context/ThemeContext";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
-import { updateApplicationQueue, sendApprovalEmail } from "@/redux/actions/applicationActions";
+import { updateApplicationQueue, updateApplication, sendApprovalEmail, getApplicationById, reinitiateContract as reinitiateContractAction } from "@/redux/actions/applicationActions";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
-import { notifyFinalUnderwriterOnAssignment } from "@/redux/actions/notificationActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import { toast } from "react-toastify";
 import {
-    formatFactorRateUS,
     formatNumberUS,
     formatNumberUSForInput,
+    formatRateUS,
     formatRateUSCommit,
     parseNumberUS,
 } from "@/lib/utils";
@@ -32,12 +32,19 @@ import {
 } from "@/lib/offerRepaymentCalculations";
 import { emitOfferDecisionUpdated } from "@/lib/offerDecisionSync";
 import { feesPercentToDollarsFromFunded } from "@/lib/offerDecisionFees";
-import { DollarSign, Pencil } from "lucide-react";
-import ComplianceChecksQuestionnaire, {
-    type ComplianceChecksProgress,
-} from "./ComplianceChecksQuestionnaire";
-import { getComplianceChecks } from "@/redux/actions/complianceCheckActions";
+import { AlertTriangle, DollarSign, Mail, Pencil, Phone, X } from "lucide-react";
+import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
 import AgentDealIsoTag from "./AgentDealIsoTag";
+import {
+    APPLICATION_APPROVAL_EMAIL_SUBJECT,
+    APPLICATION_APPROVAL_URL_PLACEHOLDER,
+    APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+    APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+    OFFER_UPDATED_EMAIL_SUBJECT,
+    renderApplicationApprovalEmailHtml,
+    renderOfferUpdatedEmailHtml,
+} from "@/pages/templates";
+import { applicationNeedsContractReinitiation } from "@/lib/contractReinitiation";
 
 const ORIGINATION_FEE_FIXED = "10";
 
@@ -128,12 +135,13 @@ function applyCalculatedFieldsToStack(
     const derived = deriveCalculatedFieldsFromDrivers({
         approvedAmount:
             apiOffer != null ? formatMoneyField(apiOffer) : "",
-        factorRate: apiRate != null ? formatFactorRateUS(apiRate) : "",
+        factorRate: apiRate != null ? formatRateUS(apiRate) : "",
         tenure: termLabel,
         achFrequency: frequency,
     });
     return derived ?? empty;
 }
+
 
 function buildApprovalFormFromApi(
     apiData: Record<string, unknown> | null,
@@ -163,7 +171,7 @@ function buildApprovalFormFromApi(
         paybackAmount,
         originationFee: ORIGINATION_FEE_FIXED,
         approvedAmount: offer != null ? formatMoneyField(offer) : "",
-        factorRate: rate != null ? formatFactorRateUS(rate) : "",
+        factorRate: rate != null ? formatRateUS(rate) : "",
         repay,
         monthlyRepayment,
         achFrequency: frequency,
@@ -291,18 +299,30 @@ function ReadOnlyDetailField({
     );
 }
 
-interface ApprovedApplicationModalProps {
+export interface ApprovedApplicationModalProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    /** When true, show "Proceed to Generate Contract" and read-only details (FINAL_UNDERWRITER only) */
+    /** Plain SCRUBBING scrubbing flow — recommend for approval wording. */
+    isPlainUnderwriter?: boolean;
+    /** When true, show ISO approval-mail CTA (Underwriter or Super Admin). */
     isFinalUnderwriter?: boolean;
-    /** Called when FINAL_UNDERWRITER clicks Proceed to Generate Contract */
+    /** UNDERWRITER role: review/edit offer terms, then mark as Underwriter Approved. */
+    isUnderwriterDirectApprove?: boolean;
+    /** Called when UNDERWRITER clicks Proceed to Generate Contract */
     onProceedToContract?: () => void;
     /** When true, send the "offer updated" resend template to ISO. */
     resendApprovalEmail?: boolean;
-    /** Called after offer-decision is saved (e.g. Final Underwriter refresh for resend-mail state). */
+    /** Pre-check reinitiate contract when resending (user can toggle in the modal). */
+    reinitiateContract?: boolean;
+    /** Underwriter role — show reinitiate contract in approval modals. */
+    showReinitiateContractCheckbox?: boolean;
+    /** Called after offer-decision is saved (e.g. Underwriter refresh for resend-mail state). */
     onOfferUpdated?: () => void;
+    /** Underwriter ISO mail flow — editable To/CC recipients below offer details. */
+    showIsoRecipientFields?: boolean;
 }
+
+const ISO_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function formatCurrencyInputLive(raw: string): string {
     return formatNumberUSForInput(raw);
@@ -385,17 +405,23 @@ const UsRateInput = forwardRef<HTMLInputElement, UsNumberInputProps>(
     },
 );
 
+const UNDERWRITER_APPROVED_STAGE = "Underwriter Approved";
+
 const ApprovedApplicationModal = ({
     open,
     onOpenChange,
+    isPlainUnderwriter,
     isFinalUnderwriter,
+    isUnderwriterDirectApprove,
     onProceedToContract,
     resendApprovalEmail,
+    reinitiateContract,
+    showReinitiateContractCheckbox,
     onOfferUpdated,
+    showIsoRecipientFields,
 }: ApprovedApplicationModalProps) => {
     const dispatch = useDispatch<AppDispatch>();
     const { data: applicationData } = useSelector((state: RootState) => state.applicationDetail);
-    const { data: loginData } = useSelector((state: RootState) => state.login);
 
     const { control, handleSubmit, formState: { errors }, reset, setValue, getValues } = useForm<ApprovalFormValues>({
         mode: "onSubmit",
@@ -423,12 +449,6 @@ const ApprovedApplicationModal = ({
         (applicationData as any)?.id ??
         null;
 
-    const currentUser = (loginData as any)?.user;
-    const underwriterName =
-        currentUser && (currentUser.firstName || currentUser.lastName)
-            ? `${currentUser.firstName || ""} ${currentUser.lastName || ""}`.trim()
-            : "Underwriter";
-
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isUpdatingOffer, setIsUpdatingOffer] = useState(false);
     const [offerDecisionLoading, setOfferDecisionLoading] = useState(false);
@@ -440,17 +460,37 @@ const ApprovedApplicationModal = ({
         position: string | null;
         ourRemit: number | null;
     }>({ position: null, ourRemit: null });
-    const [checksProgress, setChecksProgress] = useState<ComplianceChecksProgress>({
-        completed: 0,
-        total: 6,
-        flagsRaised: 0,
-        allComplete: false,
-    });
+    const [isoRecipientEmail, setIsoRecipientEmail] = useState("");
+    const [ccEmails, setCcEmails] = useState<string[]>([]);
+    const [ccDraft, setCcDraft] = useState("");
+    const [reinitiateContractChecked, setReinitiateContractChecked] = useState(false);
+    const isoEmailTouchedRef = useRef(false);
+    const isoRecipientWasOpenRef = useRef(false);
+    const reinitiateContractTouchedRef = useRef(false);
+    const showReinitiateContractOption = Boolean(showReinitiateContractCheckbox);
+    const effectiveResendApprovalEmail =
+        Boolean(resendApprovalEmail) ||
+        (showReinitiateContractOption && reinitiateContractChecked);
+
+    const linkedIso = (applicationData as { iso?: { name?: string; email?: string; phone?: string } | null })
+        ?.iso;
+    const hasLinkedIso = Boolean(linkedIso?.name || linkedIso?.email || linkedIso?.phone);
+    const linkedIsoName = String(linkedIso?.name ?? "").trim();
+    const linkedIsoEmail = String(linkedIso?.email ?? "").trim();
+    const linkedIsoPhone = String(linkedIso?.phone ?? "").trim();
+    const merchantClientEmail = String(
+        (applicationData as { client?: { business?: { email?: string }; owner?: { email?: string } } })
+            ?.client?.business?.email ||
+            (applicationData as { client?: { owner?: { email?: string } } })?.client?.owner?.email ||
+            "",
+    ).trim();
 
     const complianceApplicationId =
         applicationUuid ??
         (applicationData as { applicationId?: string | number })?.applicationId?.toString() ??
         (applicationId != null ? String(applicationId) : null);
+
+    const useWideApprovalLayout = false;
 
     const loadOfferDecision = async () => {
         if (!open || !applicationId) return;
@@ -503,10 +543,121 @@ const ApprovedApplicationModal = ({
             return;
         }
         void loadOfferDecision();
-        if (complianceApplicationId) {
-            dispatch(getComplianceChecks({ application: complianceApplicationId }));
+    }, [open, applicationId, applicationData?.loanAmount]);
+
+    const resetIsoRecipientFields = () => {
+        setIsoRecipientEmail("");
+        setCcEmails([]);
+        setCcDraft("");
+        isoEmailTouchedRef.current = false;
+    };
+
+    useEffect(() => {
+        if (!open) {
+            setReinitiateContractChecked(false);
+            reinitiateContractTouchedRef.current = false;
+            return;
         }
-    }, [open, applicationId, applicationData?.loanAmount, complianceApplicationId, dispatch]);
+        if (!showReinitiateContractOption) {
+            setReinitiateContractChecked(false);
+            reinitiateContractTouchedRef.current = false;
+            return;
+        }
+        if (reinitiateContractTouchedRef.current) return;
+        setReinitiateContractChecked(
+            reinitiateContract ??
+                applicationNeedsContractReinitiation(
+                    applicationData as Record<string, unknown> | null,
+                ),
+        );
+    }, [open, showReinitiateContractOption, reinitiateContract, applicationData]);
+
+    useEffect(() => {
+        if (!showIsoRecipientFields) {
+            if (isoRecipientWasOpenRef.current) {
+                resetIsoRecipientFields();
+            }
+            isoRecipientWasOpenRef.current = false;
+            return;
+        }
+
+        if (!open) {
+            if (isoRecipientWasOpenRef.current) {
+                resetIsoRecipientFields();
+            }
+            isoRecipientWasOpenRef.current = false;
+            return;
+        }
+
+        if (!isoRecipientWasOpenRef.current) {
+            isoEmailTouchedRef.current = false;
+            const prefillCc =
+                merchantClientEmail && ISO_EMAIL_PATTERN.test(merchantClientEmail)
+                    ? [merchantClientEmail]
+                    : [];
+            setCcEmails(prefillCc);
+            setCcDraft("");
+            setIsoRecipientEmail(linkedIsoEmail || "");
+        }
+
+        isoRecipientWasOpenRef.current = true;
+    }, [open, showIsoRecipientFields, linkedIsoEmail, merchantClientEmail]);
+
+    useEffect(() => {
+        if (!open || !showIsoRecipientFields || isoEmailTouchedRef.current) return;
+        if (linkedIsoEmail) {
+            setIsoRecipientEmail(linkedIsoEmail);
+        }
+    }, [open, showIsoRecipientFields, linkedIsoEmail]);
+
+    const addCcEmail = (raw: string) => {
+        const email = raw.trim();
+        if (!email) return;
+        if (!ISO_EMAIL_PATTERN.test(email)) {
+            toast.error("Enter a valid email address");
+            return;
+        }
+        if (ccEmails.some((e) => e.toLowerCase() === email.toLowerCase())) {
+            toast.warning("Email already added");
+            return;
+        }
+        setCcEmails([...ccEmails, email]);
+        setCcDraft("");
+    };
+
+    const resolveCcRecipientsForSend = (
+        recipientEmail: string,
+    ): { emails: string[]; draftError?: string } => {
+        const merged = [...ccEmails];
+        const trimmedDraft = ccDraft.trim();
+        if (trimmedDraft) {
+            if (!ISO_EMAIL_PATTERN.test(trimmedDraft)) {
+                return {
+                    emails: [],
+                    draftError:
+                        "Enter a valid CC email address or clear the CC field before sending",
+                };
+            }
+            if (!merged.some((e) => e.toLowerCase() === trimmedDraft.toLowerCase())) {
+                merged.push(trimmedDraft);
+            }
+        }
+        return {
+            emails: merged.filter(
+                (e) => e.toLowerCase() !== recipientEmail.toLowerCase(),
+            ),
+        };
+    };
+
+    const isoRecipientHelper = (() => {
+        if (hasLinkedIso && linkedIsoEmail) {
+            return "Prefilled from the linked ISO record. Edit if needed.";
+        }
+        if (hasLinkedIso && !linkedIsoEmail) {
+            return "Linked ISO has no email on file — enter one below.";
+        }
+        return "Enter the ISO email that should receive the approval template.";
+    })();
 
     const handleStartEdit = () => {
         editSnapshotRef.current = getValues();
@@ -545,101 +696,104 @@ const ApprovedApplicationModal = ({
         setIsEditMode(false);
     };
 
-    const handleUpdateOffer = handleSubmit(async (data) => {
+    const persistOfferDecisionFromForm = async (data: ApprovalFormValues) => {
         if (!applicationId) {
-            toast.error("Missing application id. Please reload and try again.");
-            return;
+            throw new Error("Missing application id. Please reload and try again.");
         }
+
+        const feesDollars = feesPercentToDollarsFromFunded(
+            data.approvedAmount,
+            ORIGINATION_FEE_FIXED,
+        );
+
+        const offerNum = parseNumberUS(data.approvedAmount);
+        const rateNum = parseNumberUS(data.factorRate);
+        const termStr = parseTermFromTenure(data.tenure) ?? "";
+        const repaymentStack =
+            offerNum > 0 && rateNum > 0 && termStr
+                ? deriveOfferRepaymentStack({
+                      advance: offerNum,
+                      factorRate: rateNum,
+                      term: termStr,
+                      frequency: data.achFrequency || "Daily",
+                  })
+                : null;
+
+        const derivedForSave = deriveCalculatedFieldsFromDrivers({
+            approvedAmount: data.approvedAmount,
+            factorRate: data.factorRate,
+            tenure: data.tenure,
+            achFrequency: data.achFrequency,
+        });
+
+        const paybackSaved =
+            repaymentStack?.payback ??
+            (parseNumberUS(derivedForSave?.paybackAmount ?? data.paybackAmount) ||
+                null);
+
+        const saveRes = await axiosPost("/offer-decisions", {
+            applicationId,
+            decision: persistedDecision,
+            position: offerPreserveRef.current.position,
+            ourRemit: offerPreserveRef.current.ourRemit,
+            offer: offerNum > 0 ? offerNum : null,
+            rate: rateNum > 0 ? rateNum : null,
+            term: termStr || null,
+            frequency: data.achFrequency || null,
+            fees: feesDollars,
+            totalRemit: paybackSaved,
+            repayPerPeriod:
+                repaymentStack && repaymentStack.perPeriodPayment > 0
+                    ? repaymentStack.perPeriodPayment
+                    : null,
+            monthlyPayment:
+                repaymentStack && repaymentStack.monthlyPayment > 0
+                    ? repaymentStack.monthlyPayment
+                    : null,
+        });
+
+        const saved = (saveRes?.data && saveRes.data.data) || null;
+        if (saved) {
+            offerPreserveRef.current = {
+                position:
+                    saved.position != null && String(saved.position).trim() !== ""
+                        ? String(saved.position)
+                        : offerPreserveRef.current.position,
+                ourRemit: (() => {
+                    const n = parseNumberUS(saved.ourRemit);
+                    return Number.isFinite(n) ? n : offerPreserveRef.current.ourRemit;
+                })(),
+            };
+        }
+
+        emitOfferDecisionUpdated(applicationId);
+        await dispatch(getOfferDecisionByApplication(String(applicationId))).unwrap();
+        onOfferUpdated?.();
+
+        const refreshedDerived =
+            derivedForSave ??
+            (repaymentStack ? stackToCalculatedFormFields(repaymentStack) : null);
+
+        const refreshed = {
+            ...data,
+            paybackAmount: refreshedDerived?.paybackAmount ?? data.paybackAmount,
+            repay: refreshedDerived?.repay ?? data.repay,
+            monthlyRepayment:
+                refreshedDerived?.monthlyRepayment ?? data.monthlyRepayment,
+            originationFee: ORIGINATION_FEE_FIXED,
+        };
+        reset(refreshed);
+        editSnapshotRef.current = refreshed;
+        setIsEditMode(false);
+
+        return refreshed;
+    };
+
+    const handleUpdateOffer = handleSubmit(async (data) => {
         setIsUpdatingOffer(true);
         const toastId = toast.loading("Updating offer details...");
         try {
-            const feesDollars = feesPercentToDollarsFromFunded(
-                data.approvedAmount,
-                ORIGINATION_FEE_FIXED,
-            );
-
-            const offerNum = parseNumberUS(data.approvedAmount);
-            const rateNum = parseNumberUS(data.factorRate);
-            const termStr = parseTermFromTenure(data.tenure) ?? "";
-            const repaymentStack =
-                offerNum > 0 && rateNum > 0 && termStr
-                    ? deriveOfferRepaymentStack({
-                          advance: offerNum,
-                          factorRate: rateNum,
-                          term: termStr,
-                          frequency: data.achFrequency || "Daily",
-                      })
-                    : null;
-
-            const derivedForSave = deriveCalculatedFieldsFromDrivers({
-                approvedAmount: data.approvedAmount,
-                factorRate: data.factorRate,
-                tenure: data.tenure,
-                achFrequency: data.achFrequency,
-            });
-
-            const paybackSaved =
-                repaymentStack?.payback ??
-                (parseNumberUS(derivedForSave?.paybackAmount ?? data.paybackAmount) ||
-                    null);
-
-            const saveRes = await axiosPost("/offer-decisions", {
-                applicationId,
-                decision: persistedDecision,
-                position: offerPreserveRef.current.position,
-                ourRemit: offerPreserveRef.current.ourRemit,
-                offer: offerNum > 0 ? offerNum : null,
-                rate: rateNum > 0 ? rateNum : null,
-                term: termStr || null,
-                frequency: data.achFrequency || null,
-                fees: feesDollars,
-                totalRemit: paybackSaved,
-                repayPerPeriod:
-                    repaymentStack && repaymentStack.perPeriodPayment > 0
-                        ? repaymentStack.perPeriodPayment
-                        : null,
-                monthlyPayment:
-                    repaymentStack && repaymentStack.monthlyPayment > 0
-                        ? repaymentStack.monthlyPayment
-                        : null,
-            });
-
-            const saved = (saveRes?.data && saveRes.data.data) || null;
-            if (saved) {
-                offerPreserveRef.current = {
-                    position:
-                        saved.position != null && String(saved.position).trim() !== ""
-                            ? String(saved.position)
-                            : offerPreserveRef.current.position,
-                    ourRemit: (() => {
-                        const n = parseNumberUS(saved.ourRemit);
-                        return Number.isFinite(n) ? n : offerPreserveRef.current.ourRemit;
-                    })(),
-                };
-            }
-
-            emitOfferDecisionUpdated(applicationId);
-            await dispatch(getOfferDecisionByApplication(String(applicationId))).unwrap();
-            onOfferUpdated?.();
-
-            const refreshedDerived =
-                derivedForSave ??
-                (repaymentStack
-                    ? stackToCalculatedFormFields(repaymentStack)
-                    : null);
-
-            const refreshed = {
-                ...data,
-                paybackAmount: refreshedDerived?.paybackAmount ?? data.paybackAmount,
-                repay: refreshedDerived?.repay ?? data.repay,
-                monthlyRepayment:
-                    refreshedDerived?.monthlyRepayment ?? data.monthlyRepayment,
-                originationFee: ORIGINATION_FEE_FIXED,
-            };
-            reset(refreshed);
-            editSnapshotRef.current = refreshed;
-            setIsEditMode(false);
-
+            await persistOfferDecisionFromForm(data);
             toast.update(toastId, {
                 render: "Offer details updated successfully.",
                 type: "success",
@@ -659,58 +813,292 @@ const ApprovedApplicationModal = ({
         }
     });
 
-    const onSubmit = async (data: ApprovalFormValues) => {
-        if (!applicationUuid || !applicationId) {
-            console.error("No application ID available");
-            onOpenChange(false);
-            return;
-        }
-        if (!checksProgress.allComplete) {
-            toast.error(
-                `Please complete all compliance checks (${checksProgress.completed} of ${checksProgress.total} answered).`,
-            );
+    const handleUnderwriterDirectApprove = handleSubmit(async (data) => {
+        if (!applicationUuid) {
+            toast.error("Missing application id. Please reload and try again.");
             return;
         }
         setIsSubmitting(true);
-        const toastId = toast.loading("Sending application to Final Underwriter...");
+        const toastId = toast.loading("Approving application...");
         try {
-            await dispatch(updateApplicationQueue({
-                id: applicationUuid,
-                data: { currentQueue: "Final Underwriter" },
-            })).unwrap();
-
-            // Trigger in-app notification for Final Underwriter (non-blocking)
-            try {
-                await dispatch(
-                    notifyFinalUnderwriterOnAssignment({
-                        applicationId,
-                        underwriterName,
-                    })
-                ).unwrap();
-            } catch (notifyError) {
-                console.error("Failed to notify Final Underwriter:", notifyError);
+            await persistOfferDecisionFromForm(data);
+            await dispatch(
+                updateApplicationQueue({
+                    id: applicationUuid,
+                    data: { currentQueue: UNDERWRITER_APPROVED_STAGE },
+                }),
+            ).unwrap();
+            if (showReinitiateContractOption && reinitiateContractChecked) {
+                await dispatch(reinitiateContractAction(String(applicationUuid))).unwrap();
             }
-
+            await dispatch(getApplicationById(String(applicationId ?? applicationUuid)));
             toast.update(toastId, {
-                render: "Application has been sent to Final Underwriter and they have been notified.",
+                render:
+                    showReinitiateContractOption && reinitiateContractChecked
+                        ? "Application set to Underwriter Approved and contract reinitiated for regeneration."
+                        : "Application set to Underwriter Approved.",
                 type: "success",
                 isLoading: false,
                 autoClose: 3000,
             });
             onOpenChange(false);
         } catch (err) {
-            console.error("Failed to send to Final Underwriter:", err);
-            const apiMessage =
-                typeof err === "string"
-                    ? err
-                    : (err as { message?: string })?.message;
+            console.error("Failed to approve application:", err);
             toast.update(toastId, {
-                render:
-                    apiMessage ||
-                    "Failed to send application to Final Underwriter. Please try again.",
+                render: "Failed to approve application. Please try again.",
                 type: "error",
                 isLoading: false,
-                autoClose: 5000,
+                autoClose: 4000,
+            });
+        } finally {
+            setIsSubmitting(false);
+        }
+    });
+
+    const handleSendIsoApprovalMail = handleSubmit(async (data) => {
+        if (!applicationUuid) {
+            onProceedToContract?.();
+            onOpenChange(false);
+            return;
+        }
+
+        if (showIsoRecipientFields) {
+            const recipientEmail = isoRecipientEmail.trim();
+            if (!recipientEmail) {
+                toast.error("Enter an ISO email address for the approval template");
+                return;
+            }
+            if (!ISO_EMAIL_PATTERN.test(recipientEmail)) {
+                toast.error("Enter a valid ISO email address");
+                return;
+            }
+            const ccResolution = resolveCcRecipientsForSend(recipientEmail);
+            if (ccResolution.draftError) {
+                toast.error(ccResolution.draftError);
+                return;
+            }
+
+            setIsSubmitting(true);
+            const toastId = toast.loading(
+                effectiveResendApprovalEmail
+                    ? "Sending updated offer email to ISO..."
+                    : "Sending approval email to ISO...",
+            );
+            try {
+                await persistOfferDecisionFromForm(data);
+                const approvalEmailHtml = effectiveResendApprovalEmail
+                    ? renderOfferUpdatedEmailHtml({
+                          client_name: APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+                          company_name: APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+                          calculate_approval_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                          view_application_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                      })
+                    : renderApplicationApprovalEmailHtml({
+                          client_name: APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+                          company_name: APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+                          calculate_approval_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                          view_application_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                      });
+                await dispatch(
+                    sendApprovalEmail({
+                        applicationId: applicationUuid,
+                        resend: effectiveResendApprovalEmail,
+                        reinitiateContract: reinitiateContractChecked,
+                        emailHtml: approvalEmailHtml,
+                        emailSubject: effectiveResendApprovalEmail
+                            ? OFFER_UPDATED_EMAIL_SUBJECT
+                            : APPLICATION_APPROVAL_EMAIL_SUBJECT,
+                        isoEmail: recipientEmail,
+                        ccEmails: ccResolution.emails,
+                    }),
+                ).unwrap();
+                if (applicationId ?? applicationUuid) {
+                    await dispatch(
+                        getApplicationById(String(applicationId ?? applicationUuid)),
+                    );
+                }
+                toast.update(toastId, {
+                    render: reinitiateContractChecked
+                        ? "Updated offer email sent to the ISO and contract reinitiated for regeneration."
+                        : effectiveResendApprovalEmail
+                          ? "Updated offer email sent to the ISO. Application marked as approved by you."
+                          : "Approval email sent to the ISO. Application marked as approved by you.",
+                    type: "success",
+                    isLoading: false,
+                    autoClose: 3000,
+                });
+                onProceedToContract?.();
+                onOpenChange(false);
+                resetIsoRecipientFields();
+            } catch (emailError) {
+                console.error("Failed to send approval email:", emailError);
+                const backendMessage =
+                    typeof emailError === "string"
+                        ? emailError
+                        : emailError &&
+                            typeof emailError === "object" &&
+                            "message" in emailError
+                          ? String((emailError as { message?: string }).message)
+                          : null;
+                toast.update(toastId, {
+                    render:
+                        backendMessage ||
+                        (effectiveResendApprovalEmail
+                            ? "The ISO updated-offer email could not be sent."
+                            : "The ISO approval email could not be sent."),
+                    type: "error",
+                    isLoading: false,
+                    autoClose: 5000,
+                });
+            } finally {
+                setIsSubmitting(false);
+            }
+            return;
+        }
+
+        setIsSubmitting(true);
+        const toastId = toast.loading(
+            effectiveResendApprovalEmail
+                ? "Sending updated offer email to ISO..."
+                : "Sending approval email to ISO...",
+        );
+        try {
+            try {
+                await persistOfferDecisionFromForm(data);
+                const approvalEmailHtml = effectiveResendApprovalEmail
+                    ? renderOfferUpdatedEmailHtml({
+                          client_name: APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+                          company_name: APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+                          calculate_approval_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                          view_application_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                      })
+                    : renderApplicationApprovalEmailHtml({
+                          client_name: APPLICATION_APPROVAL_CLIENT_NAME_PLACEHOLDER,
+                          company_name: APPLICATION_APPROVAL_COMPANY_NAME_PLACEHOLDER,
+                          calculate_approval_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                          view_application_url: APPLICATION_APPROVAL_URL_PLACEHOLDER,
+                      });
+                await dispatch(
+                    sendApprovalEmail({
+                        applicationId: applicationUuid,
+                        resend: effectiveResendApprovalEmail,
+                        reinitiateContract: reinitiateContractChecked,
+                        emailHtml: approvalEmailHtml,
+                        emailSubject: effectiveResendApprovalEmail
+                            ? OFFER_UPDATED_EMAIL_SUBJECT
+                            : APPLICATION_APPROVAL_EMAIL_SUBJECT,
+                    }),
+                ).unwrap();
+                if (applicationId ?? applicationUuid) {
+                    await dispatch(
+                        getApplicationById(String(applicationId ?? applicationUuid)),
+                    );
+                }
+                toast.update(toastId, {
+                    render: reinitiateContractChecked
+                        ? "Updated offer email sent to the ISO and contract reinitiated for regeneration."
+                        : effectiveResendApprovalEmail
+                          ? "Updated offer email sent to the linked ISO when that ISO has an email on file."
+                          : "Approval email sent to the linked ISO when that ISO has an email on file.",
+                    type: "success",
+                    isLoading: false,
+                    autoClose: 3000,
+                });
+            } catch (emailError) {
+                console.error("Failed to send approval email:", emailError);
+                const backendMessage =
+                    typeof emailError === "string"
+                        ? emailError
+                        : emailError &&
+                            typeof emailError === "object" &&
+                            "message" in emailError
+                          ? String((emailError as { message?: string }).message)
+                          : null;
+                toast.update(toastId, {
+                    render:
+                        backendMessage ||
+                        (effectiveResendApprovalEmail
+                            ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
+                            : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again)."),
+                    type: "warning",
+                    isLoading: false,
+                    autoClose: 5000,
+                });
+            }
+
+            onProceedToContract?.();
+            onOpenChange(false);
+        } finally {
+            setIsSubmitting(false);
+        }
+    });
+
+    const onSubmit = async (
+        data: ApprovalFormValues,
+        scrubberRecommendation?: "Recommend Approval" | "Recommend Decline",
+    ) => {
+        if (!applicationUuid || !applicationId) {
+            console.error("No application ID available");
+            onOpenChange(false);
+            return;
+        }
+        const isDeclineRecommendation =
+            scrubberRecommendation === "Recommend Decline";
+        setIsSubmitting(true);
+        const toastId = toast.loading(
+            isPlainUnderwriter
+                ? isDeclineRecommendation
+                    ? "Sending recommend request for decline..."
+                    : "Sending recommend request for approval..."
+                : "Sending application to Underwriter...",
+        );
+        try {
+            if (isPlainUnderwriter) {
+                await dispatch(
+                    updateApplicationQueue({
+                        id: applicationUuid,
+                        data: {
+                            currentQueue: "Underwriter",
+                            ...(scrubberRecommendation
+                                ? { scrubberRecommendation }
+                                : {}),
+                        },
+                    }),
+                ).unwrap();
+                await dispatch(getApplicationById(String(applicationId ?? applicationUuid)));
+            } else {
+                await dispatch(updateApplicationQueue({
+                    id: applicationUuid,
+                    data: { currentQueue: "Underwriter" },
+                })).unwrap();
+                await dispatch(updateApplication({
+                    id: applicationUuid,
+                    data: {
+                        status: "Sent to Underwriter",
+                        underwriterApproval: true,
+                        approvedAt: new Date().toISOString(),
+                    },
+                })).unwrap();
+            }
+
+            toast.update(toastId, {
+                render: isPlainUnderwriter
+                    ? isDeclineRecommendation
+                        ? "Decline recommendation sent. Underwriters can review it from their queue."
+                        : "Approval recommendation sent. Underwriters can claim this application from their queue."
+                    : "Application has been sent to Underwriter and they have been notified.",
+                type: "success",
+                isLoading: false,
+                autoClose: 3000,
+            });
+            onOpenChange(false);
+        } catch (err) {
+            console.error("Failed to send to Underwriter:", err);
+            toast.update(toastId, {
+                render: "Failed to send application to Underwriter. Please try again.",
+                type: "error",
+                isLoading: false,
+                autoClose: 4000,
             });
         } finally {
             setIsSubmitting(false);
@@ -722,13 +1110,13 @@ const ApprovedApplicationModal = ({
 
     const inputClass = `${FIELD_CONTROL_H} ${isDark ? "bg-muted border-gray-700 text-gray-200" : "bg-white border-gray-200"} px-3 py-0 text-sm rounded-sm outline-none`;
 
-    const loanFieldsGridClass = isFinalUnderwriter
-        ? "grid grid-cols-2 gap-x-4 gap-y-3"
-        : "grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4";
+    const loanFieldsGridClass = useWideApprovalLayout
+        ? "grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4"
+        : "grid grid-cols-2 gap-x-4 gap-y-3";
 
-    const loanDetailsPanelClass = isFinalUnderwriter
-        ? `${isDark ? "bg-[#262827]" : "bg-green-50"} p-4 rounded-lg`
-        : `${isDark ? "bg-[#262827]" : "bg-green-50"} p-6 rounded-lg`;
+    const loanDetailsPanelClass = `${isDark ? "bg-[#262827]" : "bg-green-50"} ${
+        useWideApprovalLayout ? "p-6" : "p-4"
+    } rounded-lg`;
 
     const formValues = useWatch({ control });
     const watchedApprovedAmount = useWatch({ control, name: "approvedAmount" });
@@ -758,33 +1146,121 @@ const ApprovedApplicationModal = ({
         formValues.achFrequency ?? watchedAchFrequency ?? "",
     );
 
+    const reinitiateContractCheckbox = showReinitiateContractOption ? (
+        <div
+            className={`flex items-start gap-3 rounded-lg border px-4 py-3 ${
+                isDark
+                    ? "border-gray-700 bg-muted/30"
+                    : "border-gray-200 bg-[#F9FAFD]"
+            }`}
+        >
+            <Checkbox
+                id="reinitiate-contract-on-resend"
+                checked={reinitiateContractChecked}
+                onCheckedChange={(checked: boolean | "indeterminate") => {
+                    reinitiateContractTouchedRef.current = true;
+                    setReinitiateContractChecked(checked === true);
+                }}
+                disabled={isSubmitting}
+                className="mt-0.5"
+            />
+            <div className="min-w-0">
+                <Label
+                    htmlFor="reinitiate-contract-on-resend"
+                    className={`cursor-pointer text-sm font-semibold ${
+                        isDark ? "text-gray-200" : "text-gray-900"
+                    }`}
+                >
+                    Reinitiate contract
+                </Label>
+                <p
+                    className={`mt-1 text-xs leading-snug ${
+                        isDark ? "text-gray-400" : "text-gray-600"
+                    }`}
+                >
+                    Archive the prior contract envelope and reset the deal so
+                    Operations can regenerate the contract after the ISO
+                    re-approves the updated offer.
+                </p>
+            </div>
+        </div>
+    ) : null;
+
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
-                className="sm:max-w-6xl max-h-[min(88vh,780px)] overflow-hidden flex flex-col"
+                className={
+                    useWideApprovalLayout
+                        ? "sm:max-w-6xl max-h-[min(88vh,780px)] overflow-hidden flex flex-col"
+                        : "sm:max-w-2xl w-[calc(100%-2rem)] max-h-[90vh] overflow-y-auto flex flex-col gap-3"
+                }
             >
                 <DialogHeader>
                     <DialogTitle className={`text-xl font-semibold ${isDark ? 'text-gray-200' : 'text-black'}`}>
-                        {isFinalUnderwriter ? "Approved Application" : "Send application to Final-underwriter"}
+                        {showIsoRecipientFields
+                            ? resendApprovalEmail
+                                ? "Resend Approval Mail to ISO"
+                                : "Send Approval Mail to ISO"
+                            : isUnderwriterDirectApprove
+                            ? "Approve Application"
+                            : isFinalUnderwriter
+                              ? "Approved Application"
+                              : isPlainUnderwriter
+                                ? "Recommend for approval"
+                                : "Send application to Final-scrubbing"}
                     </DialogTitle>
                     <DialogDescription className={`text-sm ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                        {isFinalUnderwriter
-                            ? "Review loan terms, complete compliance checks, then send the approval email to the ISO."
-                            : "Review loan terms, complete compliance checks, then send this application to the Final Underwriter."}
+                        {showIsoRecipientFields
+                            ? resendApprovalEmail
+                                ? "Review loan terms, edit the offer if needed, then send the updated offer email to the ISO."
+                                : "Review loan terms, edit the offer if needed, then send the approval email to the ISO."
+                            : isUnderwriterDirectApprove
+                            ? "Review loan terms, update the offer if needed, then approve this application."
+                            : isFinalUnderwriter
+                              ? "Review loan terms, update the offer if needed, then send the approval email to the ISO."
+                              : isPlainUnderwriter
+                                ? "Review loan terms, then send this application to the Underwriter queue for review."
+                                : "Review loan terms, then send this application to the Underwriter."}
                     </DialogDescription>
                 </DialogHeader>
 
                 <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+                    {isPlainUnderwriter ? (
+                        <div
+                            className={`rounded-lg border p-4 ${
+                                isDark
+                                    ? "border-gray-700 bg-[#262827]"
+                                    : "border-gray-200 bg-[#F9FAFD]"
+                            }`}
+                        >
+                            <p
+                                className={`text-sm ${
+                                    isDark ? "text-gray-300" : "text-[#374151]"
+                                }`}
+                            >
+                                This application will be added to the Underwriter queue. Any
+                                underwriter can claim it before making a decision.
+                            </p>
+                        </div>
+                    ) : null}
                     {isFinalUnderwriter ? (
                         <AgentDealIsoTag
                             applicationId={
-                                applicationId != null ? String(applicationId) : undefined
+                                complianceApplicationId ??
+                                (applicationId != null ? String(applicationId) : null)
                             }
                             alwaysEditable={false}
                             variant="compact"
                         />
                     ) : null}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+
+                    <div
+                        className={
+                            useWideApprovalLayout
+                                ? "grid grid-cols-1 lg:grid-cols-2 gap-4 items-start"
+                                : "space-y-4"
+                        }
+                    >
                     {/* Requested & Approval Loan Details — left column */}
                     <div className={loanDetailsPanelClass}>
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1072,7 +1548,7 @@ const ApprovedApplicationModal = ({
                                                 onValueChange={field.onChange}
                                                 value={field.value || undefined}
                                             >
-                                                <SelectTrigger className={`${FIELD_CONTROL_H} w-full cursor-pointer rounded-sm px-3 py-0 text-sm outline-none disabled:cursor-not-allowed ${isDark ? "bg-muted border-gray-700 text-gray-200" : "bg-white border-gray-200"}`}>
+                                                <SelectTrigger className={`${FIELD_CONTROL_H} w-full rounded-sm px-3 py-0 text-sm outline-none ${isDark ? "bg-muted border-gray-700 text-gray-200" : "bg-white border-gray-200"}`}>
                                                     <SelectValue placeholder="Select frequency" />
                                                 </SelectTrigger>
                                                 <SelectContent>
@@ -1125,7 +1601,7 @@ const ApprovedApplicationModal = ({
                                 type="button"
                                 onClick={() => void handleUpdateOffer()}
                                 disabled={isUpdatingOffer}
-                                className="cursor-pointer bg-[#3B8BD1] px-6 text-white hover:bg-[#3B8BD1]/90 disabled:cursor-not-allowed"
+                                className="px-6"
                             >
                                 {isUpdatingOffer ? "Updating…" : "Update"}
                             </Button>
@@ -1134,35 +1610,135 @@ const ApprovedApplicationModal = ({
                         )}
                     </div>
 
-                    <div
-                        className={`rounded-lg p-5 ${
-                            isDark
-                                ? "bg-[#262827] lg:border-l lg:border-gray-700"
-                                : "bg-white lg:border-l lg:border-gray-200 shadow-sm"
-                        }`}
-                    >
-                        <h3
-                            className={`text-sm font-semibold mb-1 ${
-                                isDark ? "text-gray-200" : "text-black"
-                            }`}
-                        >
-                            Compliance Checks
-                        </h3>
-                        <p
-                            className={`text-xs mb-4 shrink-0 ${
-                                isDark ? "text-gray-400" : "text-gray-600"
-                            }`}
-                        >
-                            Answer each question before sending. Selecting
-                            &quot;Yes&quot; requires details.
-                        </p>
-                        <ComplianceChecksQuestionnaire
-                            applicationId={complianceApplicationId}
-                            compact
-                            onProgressChange={setChecksProgress}
-                        />
                     </div>
-                    </div>
+
+                    {showIsoRecipientFields ? (
+                        <div className="space-y-4 rounded-lg border border-border/60 p-4">
+                            {hasLinkedIso ? (
+                                <div
+                                    className={`flex items-start gap-3 rounded-lg border p-4 ${isDark ? "border-gray-700 bg-muted/40" : "border-gray-200 bg-gray-50"}`}
+                                >
+                                    <Mail
+                                        className={`h-4 w-4 shrink-0 ${isDark ? "text-gray-400" : "text-gray-500"}`}
+                                        strokeWidth={2}
+                                        aria-hidden
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                        <p
+                                            className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-gray-900"}`}
+                                        >
+                                            {linkedIsoName || "Linked ISO"}
+                                        </p>
+                                        {linkedIsoPhone ? (
+                                            <span
+                                                className={`mt-1 flex items-center gap-1.5 text-sm ${isDark ? "text-gray-300" : "text-gray-700"}`}
+                                            >
+                                                <Phone
+                                                    className="h-3.5 w-3.5 shrink-0"
+                                                    strokeWidth={2}
+                                                    aria-hidden
+                                                />
+                                                <span className="truncate">
+                                                    {formatUSPhoneNumber(linkedIsoPhone) || linkedIsoPhone}
+                                                </span>
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div
+                                    className={`flex items-start gap-3 rounded-lg border p-4 ${isDark ? "border-amber-500/30 bg-amber-500/10" : "border-amber-200 bg-amber-50"}`}
+                                >
+                                    <AlertTriangle
+                                        className={`h-4 w-4 shrink-0 ${isDark ? "text-amber-400" : "text-amber-600"}`}
+                                        strokeWidth={2}
+                                        aria-hidden
+                                    />
+                                    <p
+                                        className={`text-sm ${isDark ? "text-amber-200" : "text-amber-800"}`}
+                                    >
+                                        No ISO is linked to this application. Enter a recipient email below to send the approval template.
+                                    </p>
+                                </div>
+                            )}
+
+                            <div className="space-y-2">
+                                <Label className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
+                                    ISO email (To) <span className="text-red-500">*</span>
+                                </Label>
+                                <Input
+                                    type="email"
+                                    placeholder="Enter ISO email"
+                                    value={isoRecipientEmail}
+                                    onChange={(e) => {
+                                        isoEmailTouchedRef.current = true;
+                                        setIsoRecipientEmail(e.target.value);
+                                    }}
+                                    className={isDark ? "bg-muted border-gray-700" : ""}
+                                />
+                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                                    {isoRecipientHelper}
+                                </p>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label className={`text-sm font-semibold ${isDark ? "text-gray-200" : "text-black"}`}>
+                                    CC
+                                </Label>
+                                <div className="mb-2 flex flex-wrap gap-2">
+                                    {ccEmails.map((email) => (
+                                        <span
+                                            key={email}
+                                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs ${isDark ? "border-gray-600 bg-gray-800" : "border-gray-200 bg-gray-50"}`}
+                                        >
+                                            {email}
+                                            <button
+                                                type="button"
+                                                className="text-gray-500 hover:text-red-600"
+                                                onClick={() =>
+                                                    setCcEmails(ccEmails.filter((e) => e !== email))
+                                                }
+                                            >
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        </span>
+                                    ))}
+                                </div>
+                                <div className="flex gap-2">
+                                    <Input
+                                        type="email"
+                                        placeholder="cc@example.com"
+                                        value={ccDraft}
+                                        onChange={(e) => setCcDraft(e.target.value)}
+                                        className={isDark ? "bg-muted border-gray-700" : ""}
+                                        onKeyDown={(e) => {
+                                            if (e.key === "Enter") {
+                                                e.preventDefault();
+                                                addCcEmail(ccDraft);
+                                            }
+                                        }}
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => addCcEmail(ccDraft)}
+                                    >
+                                        Add
+                                    </Button>
+                                </div>
+                                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
+                                    Press Enter or Add for each CC address. Any valid address left in the field is included when you send.
+                                </p>
+                            </div>
+
+                            {reinitiateContractCheckbox}
+                        </div>
+                    ) : null}
+
+                    {showReinitiateContractOption && !showIsoRecipientFields
+                        ? reinitiateContractCheckbox
+                        : null}
                 </div>
 
                 {/* Action Buttons */}
@@ -1176,73 +1752,34 @@ const ApprovedApplicationModal = ({
                     >
                         Cancel
                     </Button>
-                    {isFinalUnderwriter ? (
+                    {isUnderwriterDirectApprove ? (
                         <Button
                             type="button"
-                            onClick={async () => {
-                                if (!applicationUuid) {
-                                    onProceedToContract?.();
-                                    onOpenChange(false);
-                                    return;
-                                }
-                                if (!checksProgress.allComplete) {
-                                    toast.error(
-                                        `Please complete all compliance checks (${checksProgress.completed} of ${checksProgress.total} answered).`,
-                                    );
-                                    return;
-                                }
-                                setIsSubmitting(true);
-                                const toastId = toast.loading(
-                                    resendApprovalEmail
-                                        ? "Sending updated offer email to ISO..."
-                                        : "Sending approval email to ISO..."
-                                );
-                                try {
-                                    await dispatch(
-                                        sendApprovalEmail({
-                                            applicationId: applicationUuid,
-                                            resend: !!resendApprovalEmail,
-                                        })
-                                    ).unwrap();
-                                    toast.update(toastId, {
-                                        render: resendApprovalEmail
-                                            ? "Updated offer email sent to the linked ISO when that ISO has an email on file."
-                                            : "Approval email sent to the linked ISO when that ISO has an email on file.",
-                                        type: "success",
-                                        isLoading: false,
-                                        autoClose: 3000,
-                                    });
-                                    onProceedToContract?.();
-                                    onOpenChange(false);
-                                } catch (emailError) {
-                                    console.error("Failed to send approval email:", emailError);
-                                    const backendMessage =
-                                        typeof emailError === "string"
-                                            ? emailError
-                                            : emailError instanceof Error
-                                              ? emailError.message
-                                              : "";
-                                    const fallbackMessage = resendApprovalEmail
-                                        ? "The ISO updated-offer email could not be sent (link an ISO with email, check SMTP, or try again)."
-                                        : "The ISO approval email could not be sent (link an ISO with email, check SMTP, or try again).";
-                                    toast.update(toastId, {
-                                        render: backendMessage || fallbackMessage,
-                                        type: "warning",
-                                        isLoading: false,
-                                        autoClose: 7000,
-                                    });
-                                } finally {
-                                    setIsSubmitting(false);
-                                }
-                            }}
+                            onClick={() => void handleUnderwriterDirectApprove()}
+                            disabled={
+                                offerDecisionLoading ||
+                                isSubmitting ||
+                                isUpdatingOffer
+                            }
+                            className="bg-green-600 hover:bg-green-700 text-white px-6"
+                        >
+                            {offerDecisionLoading || isSubmitting
+                                ? "Approving…"
+                                : isUpdatingOffer
+                                  ? "Updating…"
+                                  : "Approve Application"}
+                        </Button>
+                    ) : isFinalUnderwriter ? (
+                        <Button
+                            type="button"
+                            onClick={() => void handleSendIsoApprovalMail()}
                             disabled={
                                 offerDecisionLoading ||
                                 isSubmitting ||
                                 isEditMode ||
-                                isUpdatingOffer ||
-                                !checksProgress.allComplete
+                                isUpdatingOffer
                             }
-                            className="cursor-pointer bg-green-600 px-6 text-white hover:bg-green-700 disabled:cursor-not-allowed"
+                            className="bg-green-600 hover:bg-green-700 text-white px-6"
                         >
                             {offerDecisionLoading || isSubmitting
                                 ? "Processing…"
@@ -1250,32 +1787,78 @@ const ApprovedApplicationModal = ({
                                   ? "Updating…"
                                   : isEditMode
                                     ? "Save offer changes first"
-                                    : !checksProgress.allComplete
-                                      ? `Complete checks (${checksProgress.completed}/${checksProgress.total})`
-                                      : resendApprovalEmail
-                                        ? "Resend approval mail"
-                                        : "Send approval mail"}
+                                    : resendApprovalEmail
+                                      ? "Resend approval mail"
+                                      : "Send approval mail"}
                         </Button>
+                    ) : isPlainUnderwriter ? (
+                        (() => {
+                            const recommendDisabled =
+                                offerDecisionLoading ||
+                                isSubmitting ||
+                                isEditMode ||
+                                isUpdatingOffer;
+                            // While the offer is loading/saving keep a single guided
+                            // button; otherwise reveal the two recommendation choices.
+                            if (recommendDisabled) {
+                                return (
+                                    <Button
+                                        type="button"
+                                        disabled
+                                        className="bg-green-600 hover:bg-green-700 cursor-pointer text-white px-6"
+                                    >
+                                        {isSubmitting
+                                            ? "Sending…"
+                                            : offerDecisionLoading
+                                              ? "Loading…"
+                                              : isEditMode
+                                                ? "Save offer changes first"
+                                                : "Updating…"}
+                                    </Button>
+                                );
+                            }
+                            return (
+                                <div className="flex items-center gap-3">
+                                    <Button
+                                        type="button"
+                                        variant="destructive"
+                                        onClick={handleSubmit((data) =>
+                                            onSubmit(data, "Recommend Decline"),
+                                        )}
+                                        className="cursor-pointer px-6"
+                                    >
+                                        Recommend Decline
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="success"
+                                        onClick={handleSubmit((data) =>
+                                            onSubmit(data, "Recommend Approval"),
+                                        )}
+                                        className="cursor-pointer px-6"
+                                    >
+                                        Recommend Approval
+                                    </Button>
+                                </div>
+                            );
+                        })()
                     ) : (
                         <Button
                             type="button"
-                            onClick={handleSubmit(onSubmit)}
+                            onClick={handleSubmit((data) => onSubmit(data))}
                             disabled={
                                 offerDecisionLoading ||
                                 isSubmitting ||
                                 isEditMode ||
-                                isUpdatingOffer ||
-                                !checksProgress.allComplete
+                                isUpdatingOffer
                             }
-                            className="cursor-pointer bg-green-600 px-6 text-white hover:bg-green-700 disabled:cursor-not-allowed"
+                            className="bg-green-600 hover:bg-green-700 cursor-pointer text-white px-6"
                         >
                             {isSubmitting
                                 ? "Sending…"
                                 : offerDecisionLoading
                                     ? "Loading…"
-                                    : !checksProgress.allComplete
-                                      ? `Complete checks (${checksProgress.completed}/${checksProgress.total})`
-                                      : "Send to Final-Underwriter"}
+                                    : "Send to Final-Scrubbing"}
                         </Button>
                     )}
                 </div>

@@ -54,7 +54,7 @@ function FINALUNDERWRITER({ users, loading, error }: FinalUnderwriterProps) {
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <Table>
         <TableHeader>
-          <TableRow className="bg-[#276D9C] hover:bg-[#276D9C] dark:bg-primary border-b-0">
+          <TableRow className="bg-[image:var(--brand-gradient)] hover:bg-[image:var(--brand-gradient)] dark:bg-primary border-b-0">
             <TableHead className="text-white font-medium">REPRESENTATIVE</TableHead>
             <TableHead className="text-white font-medium">EMAIL</TableHead>
             <TableHead className="text-white font-medium">PHONE</TableHead>

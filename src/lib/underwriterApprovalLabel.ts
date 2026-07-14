@@ -1,11 +1,16 @@
 import type { Application, ApplicationUserLite } from "@/types/applicationTypes";
-import { isApplicationInFinalApprovalStage } from "@/lib/applicationWorkflowState";
 
 export const normalizeWorkflowLabel = (value: string): string =>
     value.replace(/[\s_-]+/g, "").toLowerCase();
 
 const isUnderwriterApprovedToken = (value: string): boolean =>
     normalizeWorkflowLabel(value) === "underwriterapproved";
+
+const isIsoApprovedToken = (value: string): boolean =>
+    normalizeWorkflowLabel(value) === "isoapproved";
+
+const isFinalApprovalToken = (value: string): boolean =>
+    normalizeWorkflowLabel(value) === "finalapproval";
 
 /** True when the deal is in the Underwriter Approved stage (queue is source of truth). */
 export function isUnderwriterApprovedApplication(
@@ -19,9 +24,6 @@ export function isUnderwriterApprovedApplication(
         | undefined,
 ): boolean {
     if (!app) return false;
-    if (isApplicationInFinalApprovalStage(app as Record<string, unknown>)) {
-        return false;
-    }
     const record = app as Record<string, unknown>;
     const queueNorm = normalizeWorkflowLabel(
         String(record.currentQueue ?? record.queue ?? ""),
@@ -29,9 +31,42 @@ export function isUnderwriterApprovedApplication(
     const stateNorm = normalizeWorkflowLabel(
         String(record.currentState ?? record.status ?? ""),
     );
+    const rawStateNorm = normalizeWorkflowLabel(
+        String(record.statsCurrentState ?? record.currentState ?? record.status ?? ""),
+    );
+    if (
+        isFinalApprovalToken(queueNorm) ||
+        isFinalApprovalToken(stateNorm) ||
+        isFinalApprovalToken(rawStateNorm)
+    ) {
+        return false;
+    }
     if (isUnderwriterApprovedToken(queueNorm)) return true;
     if (isUnderwriterApprovedToken(stateNorm)) return true;
     return false;
+}
+
+/** True when the deal is in the ISO Approved stage (queue or state). */
+export function isIsoApprovedApplication(
+    app:
+        | Pick<Application, "currentQueue" | "currentState" | "queue" | "status">
+        | Record<string, unknown>
+        | null
+        | undefined,
+): boolean {
+    if (!app) return false;
+    const record = app as Record<string, unknown>;
+    const queueNorm = normalizeWorkflowLabel(
+        String(record.currentQueue ?? record.queue ?? ""),
+    );
+    const stateNorm = normalizeWorkflowLabel(
+        String(record.currentState ?? record.status ?? ""),
+    );
+    return (
+        isIsoApprovedToken(queueNorm) ||
+        isIsoApprovedToken(stateNorm) ||
+        (queueNorm === "approved" && stateNorm === "approved")
+    );
 }
 
 type UnderwriterApprovalAppFields = Pick<
@@ -49,6 +84,31 @@ const resolveUserLiteId = (user?: ApplicationUserLite | null): string => {
     return String(user.id ?? user._id ?? "").trim();
 };
 
+/** True when the viewer is assigned to or recorded as approving underwriter on the deal. */
+export function isUnderwriterLinkedToApplication(
+    app: UnderwriterApprovalAppFields | null | undefined,
+    viewerUserId: string | null | undefined,
+): boolean {
+    const viewerId = String(viewerUserId ?? "").trim();
+    if (!viewerId || !app) return false;
+    const linkedIds = [
+        app.approvedByUnderwriterId,
+        resolveUserLiteId(app.approvedByUnderwriter),
+        app.assignedUnderwriterId,
+        resolveUserLiteId(app.assignedUnderwriter),
+        app.claimedByUnderwriterId,
+        resolveUserLiteId(app.claimedByUnderwriter),
+    ]
+        .map((id) => String(id ?? "").trim())
+        .filter(Boolean);
+    return linkedIds.some((id) => id === viewerId);
+}
+
+/**
+ * Resolve the underwriter to credit on the deal. Always prefer the deal's
+ * assigned/claimed underwriter over whoever recorded the approval (which can be
+ * a scrubber/admin acting on the underwriter's behalf).
+ */
 export function resolveApprovingUnderwriter(
     app: UnderwriterApprovalAppFields,
 ): { id: string; user?: ApplicationUserLite | null } | null {
@@ -113,6 +173,7 @@ export function resolveFinalApprovalTargetUnderwriter(
     );
 }
 
+/** Populated from `GET /applications` include `approvedByUnderwriter` (name/email). */
 export function formatApprovedByUnderwriterLabel(
     app: UnderwriterApprovalAppFields,
     viewerUserId?: string | null,

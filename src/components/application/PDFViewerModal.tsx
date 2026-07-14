@@ -56,6 +56,7 @@ import {
     funderNamesEquivalent,
     formatFunderSelectLabel,
     findFunderProfileById,
+    isTexasFundingGroupFunderProfile,
     persistedFunderProfileIdForApi,
     useFunderProfiles,
 } from "@/hooks/useFunderProfiles";
@@ -150,7 +151,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 
 /** Primary DocuSign actions in the contract modal footer (matches Review & send / Done). */
 const DOCUSIGN_PRIMARY_BTN_CLASS =
-    "h-9 shrink-0 cursor-pointer border-0 bg-[#276D9C] px-6 text-white shadow-sm hover:bg-[#276D9C]/90 focus-visible:ring-[#276D9C]/40";
+    "h-9 shrink-0 cursor-pointer border-0 bg-[image:var(--brand-gradient)] px-6 text-white shadow-sm hover:opacity-90 focus-visible:ring-[var(--brand)]/40";
 import {
     getBoldSignTemplateRecipients,
     voidBoldSignDocument,
@@ -190,7 +191,7 @@ import {
     stripDocumentTemplateBlobFromPrefillOverrides,
     upsertDocumentSendHistory,
 } from "./contractdata/documentTemplateMappingPrefill";
-import { isPlatformLayoutKey, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
+import { isPlatformLayoutKey, PLATFORM_LAYOUT_KEYS, supplementalOptionLabel } from "./contractdata/platformDocumentConfig";
 import {
     contractSendPackageFingerprint,
     canSendWithoutMainContract,
@@ -275,7 +276,7 @@ function writeDocuSignLoadingTab(doc: Document): void {
     doc.open();
     doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Opening DocuSign</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc;color:#334155}
-.box{text-align:center;padding:2rem}.spin{width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#276D9C;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 1rem}
+.box{text-align:center;padding:2rem}.spin{width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 1rem}
 @keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="box"><div class="spin"></div><p>Opening DocuSign…</p></div></body></html>`);
     doc.close();
 }
@@ -6082,12 +6083,28 @@ const PDFViewerModal = ({
 
     if (!isOpen || !fileUrl) return null;
 
+    const selectedLayoutKey = selectedFunderProfile
+        ? resolveLayoutKeyForProfile(selectedFunderProfile)
+        : "";
+    const selectedFunderUsesOwnContract = selectedFunderProfile
+        ? String(selectedLayoutKey).startsWith("funder_") ||
+          selectedLayoutKey === PLATFORM_LAYOUT_KEYS.texasFundingGroupContract ||
+          isTexasFundingGroupFunderProfile(selectedFunderProfile)
+        : false;
+
     const currentPreviewUrl =
-        (activeStep === "documents" || activeStep === "info" || activeStep === "summary") && uploadedPreviewUrl
+        (activeStep === "documents" || activeStep === "info" || activeStep === "summary") &&
+        uploadedPreviewUrl
             ? uploadedPreviewUrl
             : activeStep === "documents" && activePreview && documentUrls[activePreview]
                 ? documentUrls[activePreview]
-                : fileUrl;
+                : selectedFunderUsesOwnContract &&
+                    (activeStep === "documents" ||
+                        activeStep === "info" ||
+                        activeStep === "summary")
+                  ? // Prefer blank over showing the platform Woodmere PDF for funder-owned contracts.
+                    uploadedPreviewUrl || ""
+                  : fileUrl;
 
     return (
         <>
@@ -6118,7 +6135,7 @@ const PDFViewerModal = ({
                                     sentStepUnlocked ||
                                     isContractAlreadySent(resolvedContract, sentAt);
 
-                                const circleDone = "w-5 h-5 shrink-0 rounded-full border-2 border-[#276D9C] bg-[#276D9C]/10 text-[#276D9C] flex items-center justify-center text-[10px]";
+                                const circleDone = "w-5 h-5 shrink-0 rounded-full border-2 border-[var(--brand)] bg-[var(--brand)]/10 text-[var(--brand)] flex items-center justify-center text-[10px]";
                                 const circleCurrent = "w-5 h-5 shrink-0 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-semibold";
                                 const circlePending = "w-5 h-5 shrink-0 rounded-full border border-slate-300 text-slate-500 flex items-center justify-center text-[10px]";
 
@@ -6131,7 +6148,7 @@ const PDFViewerModal = ({
                                                 setActiveStep("documents");
                                             }}
                                             className={`flex cursor-pointer items-center gap-2 transition-colors ${docGreenActive
-                                                ? "text-[#276D9C] font-semibold"
+                                                ? "text-[var(--brand)] font-semibold"
                                                 : onDocuments
                                                     ? "text-blue-600 font-semibold"
                                                     : "text-slate-500"
@@ -6154,7 +6171,7 @@ const PDFViewerModal = ({
                                         <button
                                             type="button"
                                             onClick={() => setActiveStep("info")}
-                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${infoGreenActive ? "text-[#276D9C] font-semibold" : "text-slate-500"
+                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${infoGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
                                                 }`}
                                         >
                                             <span className={infoGreenActive ? circleDone : circlePending}>
@@ -6166,7 +6183,7 @@ const PDFViewerModal = ({
                                         <button
                                             type="button"
                                             onClick={() => setActiveStep("summary")}
-                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${summaryGreenActive ? "text-[#276D9C] font-semibold" : "text-slate-500"
+                                            className={`flex cursor-pointer items-center gap-2 transition-colors ${summaryGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
                                                 }`}
                                         >
                                             <span className={summaryGreenActive ? circleDone : circlePending}>
@@ -6181,7 +6198,7 @@ const PDFViewerModal = ({
                                             onClick={() => {
                                                 if (canOpenSentStep) setActiveStep("sent");
                                             }}
-                                            className={`flex cursor-pointer items-center  gap-2 transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${sentGreenActive ? "text-[#276D9C] font-semibold" : "text-slate-500"
+                                            className={`flex cursor-pointer items-center  gap-2 transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${sentGreenActive ? "text-[var(--brand)] font-semibold" : "text-slate-500"
                                                 }`}
                                         >
                                             <span className={sentGreenActive ? circleDone : circlePending}>
@@ -6205,8 +6222,8 @@ const PDFViewerModal = ({
                                 {/* Dynamic Section Heading */}
                                 <section>
                                     {activeStep === "info" ? (
-                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[#276D9C]/20 bg-gradient-to-r from-[#276D9C]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[#276D9C]/25 dark:from-[#276D9C]/15 dark:via-slate-900 dark:to-slate-900">
-                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#276D9C] text-white shadow-md shadow-[#276D9C]/25">
+                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[var(--brand)]/20 bg-gradient-to-r from-[var(--brand)]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[var(--brand)]/25 dark:from-[var(--brand)]/15 dark:via-slate-900 dark:to-slate-900">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[image:var(--brand-gradient)] text-white shadow-md shadow-[var(--brand)]/25">
                                                 <ScrollText className="h-5 w-5" aria-hidden />
                                             </div>
                                             <div className="min-w-0 pt-0.5">
@@ -6220,8 +6237,8 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
                                     ) : activeStep === "sent" ? (
-                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[#276D9C]/20 bg-gradient-to-r from-[#276D9C]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[#276D9C]/25 dark:from-[#276D9C]/15 dark:via-slate-900 dark:to-slate-900">
-                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#276D9C] text-white shadow-md shadow-[#276D9C]/25">
+                                        <div className="mb-1 flex items-start gap-3 rounded-xl border border-[var(--brand)]/20 bg-gradient-to-r from-[var(--brand)]/8 via-white to-slate-50/90 px-4 py-3 shadow-sm dark:border-[var(--brand)]/25 dark:from-[var(--brand)]/15 dark:via-slate-900 dark:to-slate-900">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[image:var(--brand-gradient)] text-white shadow-md shadow-[var(--brand)]/25">
                                                 <BadgeCheck className="h-5 w-5" aria-hidden />
                                             </div>
                                             <div className="min-w-0 pt-0.5">
@@ -6588,7 +6605,7 @@ const PDFViewerModal = ({
                                         {/* Section header */}
                                         {/* <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900">
                                             <div className="flex items-start gap-3">
-                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/10 text-[#276D9C]">
+                                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/10 text-[var(--brand)]">
                                                     <Info className="h-4 w-4" />
                                                 </div>
                                                 <div className="min-w-0">
@@ -6635,16 +6652,16 @@ const PDFViewerModal = ({
                                         </div> */}
 
                                         {canSendWithoutContract ? (
-                                            <div className="rounded-xl border border-[#276D9C]/20 bg-gradient-to-br from-[#276D9C]/5 to-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:from-slate-900 dark:to-slate-900 dark:ring-slate-700/80">
+                                            <div className="rounded-xl border border-[var(--brand)]/20 bg-gradient-to-br from-[var(--brand)]/5 to-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:from-slate-900 dark:to-slate-900 dark:ring-slate-700/80">
                                                 <div className="mb-3 flex items-start gap-2.5">
                                                     <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                         aria-hidden
                                                     >
                                                         <FileText className="h-4 w-4" />
                                                     </div>
                                                     <div>
-                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                                             Send options
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -6675,17 +6692,17 @@ const PDFViewerModal = ({
                                         ) : null}
 
                                         {/* Addendum template picker */}
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
                                                 <div className="flex min-w-0 items-start gap-2.5">
                                                     <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                         aria-hidden
                                                     >
                                                         <FileText className="h-4 w-4" />
                                                     </div>
                                                     <div className="min-w-0">
-                                                        <label className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        <label className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                                             Addendum Template
                                                         </label>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -6701,7 +6718,7 @@ const PDFViewerModal = ({
                                                 )}
                                             </div>
                                             <select
-                                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs text-slate-800 outline-none transition focus:border-[#276D9C] focus:ring-2 focus:ring-[#276D9C]/20 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100"
+                                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-xs text-slate-800 outline-none transition focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/20 dark:border-slate-600 dark:bg-slate-950 dark:text-slate-100"
                                                 value={selectedAddendumOption}
                                                 onChange={(e) => {
                                                     const value = e.target.value;
@@ -6761,16 +6778,16 @@ const PDFViewerModal = ({
                                                 ) : null}
                                             </select>
                                         </div>
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start gap-2.5">
                                                 <div
-                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                     aria-hidden
                                                 >
                                                     <Landmark className="h-4 w-4" />
                                                 </div>
                                                 <div>
-                                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                                         Contract Meta
                                                     </h4>
                                                     <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -6784,7 +6801,7 @@ const PDFViewerModal = ({
                                             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                                 <div className="space-y-1.5">
                                                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300" htmlFor="pdf-viewer-contract-state-info">
-                                                        <MapPin className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <MapPin className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Select State
                                                     </label>
                                                     <SearchableStateSelect
@@ -6921,7 +6938,7 @@ const PDFViewerModal = ({
                                                 </div>
                                                 <div className="space-y-1.5">
                                                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300" htmlFor="pdf-viewer-contract-funder-info">
-                                                        <Building2 className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <Building2 className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Select Funder
                                                     </label>
                                                     <div className="flex items-start gap-2">
@@ -6996,7 +7013,7 @@ const PDFViewerModal = ({
                                                         >
                                                             <SelectTrigger
                                                                 id="pdf-viewer-contract-funder-info"
-                                                                className="h-10 min-w-0 flex-1 rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600"
+                                                                className="h-10 min-w-0 flex-1 rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600"
                                                             >
                                                                 <SelectValue placeholder="Select funder" />
                                                             </SelectTrigger>
@@ -7012,7 +7029,7 @@ const PDFViewerModal = ({
                                                             type="button"
                                                             size="icon"
                                                             variant="outline"
-                                                            className="h-10 w-10 shrink-0 border-[#276D9C]/20"
+                                                            className="h-10 w-10 shrink-0 border-[var(--brand)]/20"
                                                             title="View contract template"
                                                             aria-label="View contract template"
                                                             disabled={!selectedFunder || previewingMainContract}
@@ -7038,17 +7055,17 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
 
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
                                                 <div className="flex min-w-0 items-start gap-2.5">
                                                     <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                         aria-hidden
                                                     >
                                                         <ScrollText className="h-4 w-4" />
                                                     </div>
                                                     <div className="min-w-0">
-                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                                             State disclosure
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -7057,7 +7074,7 @@ const PDFViewerModal = ({
                                                     </div>
                                                 </div>
                                                 {linkingDisclosureTemplate ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#276D9C]">
+                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--brand)]">
                                                         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                                                         Loading
                                                     </span>
@@ -7072,9 +7089,9 @@ const PDFViewerModal = ({
 
                                             <div className="space-y-2">
                                                 {linkingDisclosureTemplate ? (
-                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[#276D9C]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
+                                                    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-[var(--brand)]/25 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
                                                         <Loader2
-                                                            className="h-8 w-8 animate-spin text-[#276D9C]"
+                                                            className="h-8 w-8 animate-spin text-[var(--brand)]"
                                                             aria-hidden
                                                         />
                                                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
@@ -7117,7 +7134,7 @@ const PDFViewerModal = ({
                                                                     type="button"
                                                                     size="icon"
                                                                     variant="ghost"
-                                                                    className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                    className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                     title="View disclosure PDF"
                                                                     disabled={
                                                                         previewingTemplateId ===
@@ -7153,7 +7170,7 @@ const PDFViewerModal = ({
                                                         <Button
                                                             type="button"
                                                             variant="outline"
-                                                            className="h-9 w-full border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                            className="h-9 w-full border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                                             onClick={() => setDisclosureCalcModalOpen(true)}
                                                         >
                                                             <Calculator className="mr-2 h-4 w-4" />
@@ -7162,7 +7179,7 @@ const PDFViewerModal = ({
                                                     </>
                                                 ) : (
                                                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
-                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
                                                             <ScrollText className="h-5 w-5" aria-hidden />
                                                         </div>
                                                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
@@ -7179,17 +7196,17 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
 
-                                        <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start justify-between gap-2">
                                                 <div className="flex min-w-0 items-start gap-2.5">
                                                     <div
-                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                        className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                         aria-hidden
                                                     >
                                                         <Layers className="h-4 w-4" />
                                                     </div>
                                                     <div className="min-w-0">
-                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                        <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                                             Addendum
                                                         </h4>
                                                         <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -7198,7 +7215,7 @@ const PDFViewerModal = ({
                                                     </div>
                                                 </div>
                                                 {loadingTemplateMappings ? (
-                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[#276D9C]">
+                                                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-[var(--brand)]">
                                                         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
                                                         Loading
                                                     </span>
@@ -7206,7 +7223,7 @@ const PDFViewerModal = ({
                                             </div>
 
                                             <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                <FileSignature className="h-3 w-3 text-[#276D9C]" aria-hidden />
+                                                <FileSignature className="h-3 w-3 text-[var(--brand)]" aria-hidden />
                                                 DocuSign templates
                                             </p>
                                             <div className="space-y-2">
@@ -7243,7 +7260,7 @@ const PDFViewerModal = ({
                                                                         type="button"
                                                                         size="icon"
                                                                         variant="ghost"
-                                                                        className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                        className="h-8 w-8 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                         title="View template PDF"
                                                                         disabled={
                                                                             previewingTemplateId ===
@@ -7294,7 +7311,7 @@ const PDFViewerModal = ({
                                                             </div>
                                                 ) : (
                                                     <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 py-6 text-center dark:border-slate-600 dark:bg-slate-800/30">
-                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+                                                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
                                                             <Layers className="h-5 w-5" aria-hidden />
                                                         </div>
                                                         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
@@ -7334,7 +7351,7 @@ const PDFViewerModal = ({
                                                                         type="button"
                                                                         size="icon"
                                                                         variant="ghost"
-                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                         title="View PDF"
                                                                         onClick={() =>
                                                                             void handlePreviewUploadedDocument(String(file?.id || ""))
@@ -7387,7 +7404,7 @@ const PDFViewerModal = ({
                                                                         type="button"
                                                                         size="icon"
                                                                         variant="ghost"
-                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[#276D9C]/10 hover:text-[#276D9C]"
+                                                                        className="h-7 w-7 cursor-pointer text-slate-600 hover:bg-[var(--brand)]/10 hover:text-[var(--brand)]"
                                                                         title="View PDF"
                                                                         onClick={() =>
                                                                             void handlePreviewUploadedDocument(String(file?.id || ""))
@@ -7425,16 +7442,16 @@ const PDFViewerModal = ({
                                             ) : null}
                                         </div>
 
-                                        {/* <div className="rounded-xl border border-[#276D9C]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
+                                        {/* <div className="rounded-xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm ring-1 ring-slate-200/80 dark:border-slate-700 dark:bg-slate-900 dark:ring-slate-700/80">
                                             <div className="mb-3 flex items-start gap-2.5">
                                                 <div
-                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]"
+                                                    className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]"
                                                     aria-hidden
                                                 >
                                                     <ClipboardList className="h-4 w-4" />
                                                 </div>
                                                 <div>
-                                                    <p className="text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                                                    <p className="text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                                         Add / Edit Information
                                                     </p>
                                                     <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
@@ -7458,10 +7475,10 @@ const PDFViewerModal = ({
                                                             className={cn(
                                                                 "group flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-medium transition-all",
                                                                 isActive
-                                                                    ? "border-[#276D9C] bg-[#276D9C]/10 text-[#276D9C] shadow-sm ring-1 ring-[#276D9C]/30"
+                                                                    ? "border-[var(--brand)] bg-[var(--brand)]/10 text-[var(--brand)] shadow-sm ring-1 ring-[var(--brand)]/30"
                                                                     : isSelected
-                                                                        ? "border-[#276D9C]/40 bg-[#276D9C]/5 text-slate-800 dark:text-slate-200"
-                                                                        : "border-slate-200 bg-white text-slate-600 hover:border-[#276D9C]/35 hover:bg-[#276D9C]/5 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300",
+                                                                        ? "border-[var(--brand)]/40 bg-[var(--brand)]/5 text-slate-800 dark:text-slate-200"
+                                                                        : "border-slate-200 bg-white text-slate-600 hover:border-[var(--brand)]/35 hover:bg-[var(--brand)]/5 dark:border-slate-600 dark:bg-slate-900/50 dark:text-slate-300",
                                                             )}
                                                         >
                                                             <Checkbox
@@ -7482,7 +7499,7 @@ const PDFViewerModal = ({
                                                                         });
                                                                     }
                                                                 }}
-                                                                className="border-[#276D9C]/60 data-[state=checked]:bg-[#276D9C] data-[state=checked]:border-[#276D9C]"
+                                                                className="border-[var(--brand)]/60 data-[state=checked]:bg-[image:var(--brand-gradient)] data-[state=checked]:border-[var(--brand)]"
                                                             />
                                                             <TabIcon
                                                                 className={cn(
@@ -7500,13 +7517,13 @@ const PDFViewerModal = ({
 
 
                                         {activeInfoPanel && (
-                                            <div className="overflow-hidden rounded-xl border border-[#276D9C]/20 bg-white shadow-sm animate-in fade-in slide-in-from-top-1 duration-200 dark:border-slate-700 dark:bg-slate-900">
-                                                <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-[#276D9C]/5 to-transparent px-4 py-3">
+                                            <div className="overflow-hidden rounded-xl border border-[var(--brand)]/20 bg-white shadow-sm animate-in fade-in slide-in-from-top-1 duration-200 dark:border-slate-700 dark:bg-slate-900">
+                                                <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-gradient-to-r from-[var(--brand)]/5 to-transparent px-4 py-3">
                                                     <div className="flex items-center gap-2">
-                                                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#276D9C]/10 text-[#276D9C]">
+                                                        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--brand)]/10 text-[var(--brand)]">
                                                             <Pencil className="h-3.5 w-3.5" />
                                                         </span>
-                                                        <p className="text-xs font-bold uppercase tracking-wider text-[#276D9C]">
+                                                        <p className="text-xs font-bold uppercase tracking-wider text-[var(--brand)]">
                                                             {activeInfoPanel} Details
                                                         </p>
                                                     </div>
@@ -7517,7 +7534,7 @@ const PDFViewerModal = ({
                                                                 type="button"
                                                                 size="sm"
                                                                 variant="ghost"
-                                                                className="h-7 gap-1 text-[10px] text-[#276D9C] hover:text-[#276D9C]/90 hover:bg-[#276D9C]/10 cursor-pointer"
+                                                                className="h-7 gap-1 text-[10px] text-[var(--brand)] hover:text-[var(--brand)]/90 hover:bg-[var(--brand)]/10 cursor-pointer"
                                                                 onClick={() => {
                                                                     if (activeInfoPanel === "addendum") {
                                                                         setAddendumEntries((prev) => [...prev, {
@@ -7835,7 +7852,7 @@ const PDFViewerModal = ({
 
                                                 <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50/50 px-4 py-3">
                                                     {infoPanelMessage && (
-                                                        <p className="mr-auto inline-flex items-center gap-1.5 text-[11px] font-medium text-[#276D9C]">
+                                                        <p className="mr-auto inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--brand)]">
                                                             <Info className="h-3 w-3" />
                                                             {infoPanelMessage}
                                                         </p>
@@ -7843,7 +7860,7 @@ const PDFViewerModal = ({
                                                     <Button type="button" variant="ghost" size="sm" className="h-8 text-slate-500 cursor-pointer" onClick={resetActivePanel}>
                                                         Cancel
                                                     </Button>
-                                                    <Button type="button" className="h-8 cursor-pointer bg-[#276D9C] px-6 text-xs text-white hover:bg-[#276D9C]/90" onClick={saveActivePanel}>
+                                                    <Button type="button" className="h-8 cursor-pointer bg-[image:var(--brand-gradient)] px-6 text-xs text-white hover:opacity-90" onClick={saveActivePanel}>
                                                         Save Details
                                                     </Button>
                                                 </div>
@@ -7858,7 +7875,7 @@ const PDFViewerModal = ({
                                                 <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
                                                     Saved Records
                                                 </h4>
-                                                <span className="h-px flex-1 bg-gradient-to-r from-[#276D9C]/25 to-slate-200 dark:to-slate-700" />
+                                                <span className="h-px flex-1 bg-gradient-to-r from-[var(--brand)]/25 to-slate-200 dark:to-slate-700" />
                                             </div>
 
                                         
@@ -8110,9 +8127,9 @@ const PDFViewerModal = ({
                                                     return (
                                                         <div
                                                             key={`${signer.role}-${index}`}
-                                                            className={`group relative flex items-center gap-4 rounded-xl border p-3 transition-all hover:shadow-sm cursor-pointer ${isOwner ? "border-[#276D9C]/10 bg-[#276D9C]/10/30" :
-                                                                isGuarantor ? "border-[#276D9C]/10 bg-[#276D9C]/10/30" :
-                                                                    "border-[#276D9C]/10 bg-[#276D9C]/10/30"
+                                                            className={`group relative flex items-center gap-4 rounded-xl border p-3 transition-all hover:shadow-sm cursor-pointer ${isOwner ? "border-[var(--brand)]/10 bg-[var(--brand)]/10/30" :
+                                                                isGuarantor ? "border-[var(--brand)]/10 bg-[var(--brand)]/10/30" :
+                                                                    "border-[var(--brand)]/10 bg-[var(--brand)]/10/30"
                                                                 }`}
                                                         >
                                                             {/* Role Icon/Avatar */}
@@ -8174,7 +8191,7 @@ const PDFViewerModal = ({
                                                             <div className="ml-auto shrink-0">
                                                                 <button
                                                                     type="button"
-                                                                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:border-[#276D9C]/40 hover:bg-[#276D9C]/5 hover:text-[#276D9C]"
+                                                                    className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition-colors hover:border-[var(--brand)]/40 hover:bg-[var(--brand)]/5 hover:text-[var(--brand)]"
                                                                     title="Edit recipient email"
                                                                     aria-label={`Edit recipient email for ${signer.role}`}
                                                                     onClick={(e) => {
@@ -8245,7 +8262,7 @@ const PDFViewerModal = ({
                                                 <Button
                                                     type="button"
                                                     variant="outline"
-                                                    className="h-8 text-xs cursor-pointer border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                    className="h-8 text-xs cursor-pointer border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                                     onClick={() => {
                                                         if (showRecipientEditor) {
                                                             setShowRecipientEditor(false);
@@ -8678,7 +8695,7 @@ const PDFViewerModal = ({
                                                         type="button"
                                                         variant="outline"
                                                         size="sm"
-                                                        className="h-8 shrink-0 gap-1.5 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                        className="h-8 shrink-0 gap-1.5 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                                         onClick={() => setSpaCalcModalOpen(true)}
                                                     >
                                                         <Calculator className="h-3.5 w-3.5" aria-hidden />
@@ -8897,8 +8914,8 @@ const PDFViewerModal = ({
                                             </div>
                                         ) : null}
 
-                                        <div className="overflow-hidden rounded-2xl border border-[#276D9C]/20 bg-white shadow-sm dark:border-[#276D9C]/25 dark:bg-slate-950">
-                                            <div className="bg-gradient-to-r from-[#276D9C] to-[#1f83b4] px-5 py-5 text-white">
+                                        <div className="overflow-hidden rounded-2xl border border-[var(--brand)]/20 bg-white shadow-sm dark:border-[var(--brand)]/25 dark:bg-slate-950">
+                                            <div className="bg-[image:var(--brand-gradient)] px-5 py-5 text-white">
                                                 <div className="flex items-start gap-3">
                                                     <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/25">
                                                         <CheckCircle2 className="h-7 w-7" aria-hidden />
@@ -8930,7 +8947,7 @@ const PDFViewerModal = ({
                                             <div className="grid gap-3 p-4 sm:grid-cols-2">
                                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
                                                     <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                        <FileSignature className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <FileSignature className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Document
                                                     </div>
                                                     <p className="break-words text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -8942,7 +8959,7 @@ const PDFViewerModal = ({
                                                 </div>
                                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60">
                                                     <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                                                        <Clock className="h-3.5 w-3.5 text-[#276D9C]" aria-hidden />
+                                                        <Clock className="h-3.5 w-3.5 text-[var(--brand)]" aria-hidden />
                                                         Sent time
                                                     </div>
                                                     <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -8998,10 +9015,10 @@ const PDFViewerModal = ({
                                             </div>
                                         </div>
 
-                                        <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                        <div className="rounded-2xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                                             <div className="mb-3 flex items-center justify-between gap-3">
                                                 <div className="flex items-center gap-2">
-                                                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#276D9C]/10 text-[#276D9C]">
+                                                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--brand)]/10 text-[var(--brand)]">
                                                         <Mail className="h-4 w-4" aria-hidden />
                                                     </div>
                                                     <div>
@@ -9023,7 +9040,7 @@ const PDFViewerModal = ({
                                                     {sentCcEmails.map((email) => (
                                                         <span
                                                             key={email}
-                                                            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/8 px-2.5 py-1 text-xs font-medium text-[#276D9C]"
+                                                            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/8 px-2.5 py-1 text-xs font-medium text-[var(--brand)]"
                                                         >
                                                             <Mail className="h-3.5 w-3.5 shrink-0" aria-hidden />
                                                             <span className="truncate">{email}</span>
@@ -9037,10 +9054,10 @@ const PDFViewerModal = ({
                                             )}
                                         </div>
 
-                                        <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                        <div className="rounded-2xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                                             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                                                 <div className="flex items-start gap-2">
-                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#276D9C]/10 text-[#276D9C]">
+                                                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--brand)]/10 text-[var(--brand)]">
                                                         <Info className="h-4 w-4" aria-hidden />
                                                     </div>
                                                     <div>
@@ -9081,7 +9098,7 @@ const PDFViewerModal = ({
                                                 return (
                                                     <div className="space-y-3">
                                                         <div className="flex flex-wrap items-center gap-2">
-                                                            <span className="inline-flex items-center rounded-full bg-[#276D9C]/12 px-3 py-1 text-xs font-semibold text-[#276D9C]">
+                                                            <span className="inline-flex items-center rounded-full bg-[var(--brand)]/12 px-3 py-1 text-xs font-semibold text-[var(--brand)]">
                                                                 {latestEnvelopeStatusLabel}
                                                             </span>
                                                         </div>
@@ -9097,7 +9114,7 @@ const PDFViewerModal = ({
                                                                                     className={cn(
                                                                                         "flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold transition-colors",
                                                                                         isDone
-                                                                                            ? "border-[#276D9C] bg-[#276D9C] text-white shadow-sm shadow-[#276D9C]/25"
+                                                                                            ? "border-[var(--brand)] bg-[image:var(--brand-gradient)] text-white shadow-sm shadow-[var(--brand)]/25"
                                                                                             : "border-slate-300 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-950",
                                                                                     )}
                                                                                 >
@@ -9109,7 +9126,7 @@ const PDFViewerModal = ({
                                                                                 <div
                                                                                     className={cn(
                                                                                         "mt-0.5 text-[10px] leading-snug",
-                                                                                        isCurrent ? "text-[#276D9C]" : "text-slate-400",
+                                                                                        isCurrent ? "text-[var(--brand)]" : "text-slate-400",
                                                                                     )}
                                                                                 >
                                                                                     {step.hint}
@@ -9119,7 +9136,7 @@ const PDFViewerModal = ({
                                                                                 <div
                                                                                     className={cn(
                                                                                         "mt-4 h-0.5 w-8 shrink-0 rounded-full",
-                                                                                        activeIndex > index ? "bg-[#276D9C]" : "bg-slate-200 dark:bg-slate-700",
+                                                                                        activeIndex > index ? "bg-[image:var(--brand-gradient)]" : "bg-slate-200 dark:bg-slate-700",
                                                                                     )}
                                                                                 />
                                                                             ) : null}
@@ -9154,7 +9171,7 @@ const PDFViewerModal = ({
                                                             forceReloadDocuSignPdfPreview();
                                                         })();
                                                     }}
-                                                    className="inline-flex cursor-pointer h-5 w-5 shrink-0 items-center justify-center rounded-full text-[#276D9C] transition-colors hover:bg-[#276D9C]/10 disabled:cursor-not-allowed disabled:opacity-60"
+                                                    className="inline-flex cursor-pointer h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--brand)] transition-colors hover:bg-[var(--brand)]/10 disabled:cursor-not-allowed disabled:opacity-60"
                                                 >
                                                     <RefreshCw
                                                         className={cn(
@@ -9189,7 +9206,7 @@ const PDFViewerModal = ({
                                             </p>
                                         </div>
 
-                                        <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+                                        <div className="rounded-2xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
                                             <h3 className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">
                                                 Latest contract details
                                             </h3>
@@ -9217,7 +9234,7 @@ const PDFViewerModal = ({
                                             )}
                                             {offerDecisionSummaryRows.length > 0 ? (
                                                 <>
-                                                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-[#276D9C]">
+                                                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-[var(--brand)]">
                                                         Offer decision
                                                     </h4>
                                                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
@@ -9258,7 +9275,7 @@ const PDFViewerModal = ({
                                         <Button
                                             type="button"
                                             size="sm"
-                                            className="ml-auto h-9 rounded-sm bg-[#276D9C] px-4 text-sm text-white hover:bg-[#276D9C]/90"
+                                            className="ml-auto h-9 rounded-sm bg-[image:var(--brand-gradient)] px-4 text-sm text-white hover:opacity-90"
                                             onClick={goToNextStep}
                                         >
                                             Next
@@ -9325,14 +9342,32 @@ const PDFViewerModal = ({
                             </div>
                             <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded bg-white shadow-2xl">
                                 {pdfRightPaneTab === "template" ? (
+                                    currentPreviewUrl ? (
                                     <DirectPdfViewer
                                         key={`${selectedFunderProfileId || selectedFunder}:${currentPreviewUrl}`}
                                         fileUrl={currentPreviewUrl}
                                         errorMessage="Could not render this PDF. Please check that the PDF URL is reachable and allows browser access."
                                     />
+                                    ) : (
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
+                                            {previewingMainContract ? (
+                                                <>
+                                                    <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
+                                                    <span>Loading funder contract template…</span>
+                                                </>
+                                            ) : (
+                                                <span>
+                                                    {documentUploadMessage ||
+                                                        (selectedFunder
+                                                            ? `No contract PDF configured for ${selectedFunder}.`
+                                                            : "Select a funder to preview the contract template.")}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )
                                 ) : prefilledBoldSignPdfLoading ? (
                                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white px-4 text-center text-xs text-slate-500">
-                                        <Loader2 className="h-6 w-6 animate-spin text-[#276D9C]" aria-hidden />
+                                        <Loader2 className="h-6 w-6 animate-spin text-[var(--brand)]" aria-hidden />
                                         <span>Loading contract from DocuSign…</span>
                                     </div>
                                 ) : prefilledBoldSignPdfUrl ? (
@@ -9350,18 +9385,18 @@ const PDFViewerModal = ({
                     </div>
 
                     {/* 3. Global Footer — CC + send (shrink-0 + compact so PDF pane keeps maximum height) */}
-                    <div className="flex shrink-0 flex-col gap-2 border-t border-[#276D9C]/10 bg-gradient-to-r from-slate-50/90 via-white to-[#276D9C]/5 px-6 py-3 dark:border-slate-700 dark:from-slate-900 dark:via-slate-900 dark:to-[#276D9C]/10 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
+                    <div className="flex shrink-0 flex-col gap-2 border-t border-[var(--brand)]/10 bg-gradient-to-r from-slate-50/90 via-white to-[var(--brand)]/5 px-6 py-3 dark:border-slate-700 dark:from-slate-900 dark:via-slate-900 dark:to-[var(--brand)]/10 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
                         <div className="min-w-0 flex-1 space-y-2">
                             <div className="space-y-1.5">
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-[11px] font-semibold text-[#276D9C] dark:text-[#5a9fd4]">
+                                    <span className="text-[11px] font-semibold text-[var(--brand)] dark:text-[var(--brand-accent)]">
                                         DocuSign signers ({docuSignSignerRolesForSend.length}):
                                     </span>
                                     <Button
                                         type="button"
                                         variant="outline"
                                         size="sm"
-                                        className="h-7 border-[#276D9C]/30 px-2 text-[10px] text-[#276D9C] hover:bg-[#276D9C]/10"
+                                        className="h-7 border-[var(--brand)]/30 px-2 text-[10px] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                         disabled={canCancelSentContract || isCancellingContract}
                                         onClick={() => {
                                             setActiveStep("summary");
@@ -9399,8 +9434,8 @@ const PDFViewerModal = ({
                                 )}
                             </div>
                             <div className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-                                <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
-                                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#276D9C]/12">
+                                <span className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
+                                    <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--brand)]/12">
                                         <Mail className="h-3.5 w-3.5" aria-hidden />
                                     </span>
                                     CC (copy by email on send — not a signer)
@@ -9413,7 +9448,7 @@ const PDFViewerModal = ({
                                         className={`inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:text-slate-100 ${
                                             contractDefaultCcUsesFunderOverride
                                                 ? "border-emerald-500/30 bg-emerald-500/10 dark:border-emerald-500/40 dark:bg-emerald-500/15"
-                                                : "border-[#276D9C]/30 bg-[#276D9C]/12 dark:border-[#276D9C]/40 dark:bg-[#276D9C]/20"
+                                                : "border-[var(--brand)]/30 bg-[var(--brand)]/12 dark:border-[var(--brand)]/40 dark:bg-[var(--brand)]/20"
                                         }`}
                                         title={
                                             contractDefaultCcUsesFunderOverride
@@ -9425,7 +9460,7 @@ const PDFViewerModal = ({
                                             className={`h-3 w-3 shrink-0 opacity-80 ${
                                                 contractDefaultCcUsesFunderOverride
                                                     ? "text-emerald-600 dark:text-emerald-400"
-                                                    : "text-[#276D9C]"
+                                                    : "text-[var(--brand)]"
                                             }`}
                                             aria-hidden
                                         />
@@ -9434,7 +9469,7 @@ const PDFViewerModal = ({
                                             className={`text-[10px] font-normal uppercase tracking-wide ${
                                                 contractDefaultCcUsesFunderOverride
                                                     ? "text-emerald-700/80 dark:text-emerald-300/80"
-                                                    : "text-[#276D9C]/80"
+                                                    : "text-[var(--brand)]/80"
                                             }`}
                                         >
                                             {contractDefaultCcUsesFunderOverride ? "Funder" : "Default"}
@@ -9444,9 +9479,9 @@ const PDFViewerModal = ({
                                 {ccEmails.map((email) => (
                                     <span
                                         key={email}
-                                        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[#276D9C]/20 bg-[#276D9C]/8 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[#276D9C]/30 dark:bg-[#276D9C]/15 dark:text-slate-100"
+                                        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--brand)]/20 bg-[var(--brand)]/8 px-2.5 py-0.5 text-xs font-medium text-slate-800 shadow-sm dark:border-[var(--brand)]/30 dark:bg-[var(--brand)]/15 dark:text-slate-100"
                                     >
-                                        <Mail className="h-3 w-3 shrink-0 text-[#276D9C] opacity-80" aria-hidden />
+                                        <Mail className="h-3 w-3 shrink-0 text-[var(--brand)] opacity-80" aria-hidden />
                                         <span className="max-w-[220px] truncate" title={email}>
                                             {email}
                                         </span>
@@ -9487,7 +9522,7 @@ const PDFViewerModal = ({
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    className="h-9 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                    className="h-9 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                     disabled={canCancelSentContract || isCancellingContract}
                                     onClick={addPdfCcFromDraft}
                                 >

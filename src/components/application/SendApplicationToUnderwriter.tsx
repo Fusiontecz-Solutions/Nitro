@@ -292,7 +292,7 @@ export default function SendApplicationToUnderwriter({
                 </div>
                 <Button
                     type="button"
-                    className="w-full shrink-0 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white sm:w-auto sm:min-w-[220px]"
+                    className="w-full shrink-0 bg-[image:var(--brand-gradient)] hover:opacity-90 text-white sm:w-auto sm:min-w-[220px]"
                     disabled={!selectedUnderwriterId || isAssigningUnderwriter}
                     onClick={() => void handleAssignToUnderwriter()}
                 >

@@ -1,100 +1,135 @@
 /**
- * Origination / commission fee % and dollars for contract final calculation.
- * Priority: terms commission % → application commission % → inferred from OfferDecision.fees → 10%.
+ * Offer Decision fees: UI is % of funded amount (`OfferDecision.offer`);
+ * DB column `OfferDecision.fees` stores the dollar fee amount.
  */
 
-const DEFAULT_FEE_PERCENT = 10;
-const MAX_PLAUSIBLE_FEE_PERCENT = 25;
-
-function parseMoney(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-  const s = String(value).replace(/[^0-9.-]/g, "");
-  if (!s) return null;
+function parseAmount(value: unknown): number {
+  if (value == null || value === "") return NaN;
+  if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
+  const s = String(value).replace(/[$,%\s]/g, "").replace(/,/g, "").trim();
   const n = Number(s);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : NaN;
 }
 
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
+/** Scalar funded amount from GET/POST payload (`offer` may be a nested snapshot object). */
+export function resolveOfferDecisionFundedAmount(
+  apiData: Record<string, unknown> | null | undefined,
+): number | null {
+  if (!apiData || typeof apiData !== "object") return null;
+  const offer = apiData.offer;
+  if (offer != null && typeof offer === "object" && !Array.isArray(offer)) {
+    const inner = offer as Record<string, unknown>;
+    const fromInner = parseAmount(
+      inner.offer ?? inner.approvedAmount ?? inner.fundedAmount ?? inner.amount,
+    );
+    if (Number.isFinite(fromInner) && fromInner > 0) return fromInner;
+  }
+  const scalar = parseAmount(offer);
+  return Number.isFinite(scalar) && scalar > 0 ? scalar : null;
 }
 
-function isPlausibleFeePercent(pct: number): boolean {
-  return Number.isFinite(pct) && pct > 0 && pct <= MAX_PLAUSIBLE_FEE_PERCENT;
+/** Fee value from root or nested `offer` snapshot. */
+export function resolveOfferDecisionFeesRaw(
+  apiData: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!apiData || typeof apiData !== "object") return undefined;
+  const root = apiData.fees;
+  if (root != null && String(root).trim() !== "") return root;
+  const offer = apiData.offer;
+  if (offer != null && typeof offer === "object" && !Array.isArray(offer)) {
+    return (offer as Record<string, unknown>).fees;
+  }
+  return root;
 }
 
 /**
- * Infer fee % from `OfferDecision.fees` (often stored as dollars).
- * Legacy rows may store ~1% of payback instead of funded amount.
+ * Map stored `OfferDecision.fees` → fee % for the Decision Making form.
+ * Handles: dollars (new), legacy payback-based dollars, and rare percent-in-DB rows.
  */
-export function inferFeePercentFromFeesRaw(
+export function resolveOfferFeesPercentForForm(
+  fundedAmount: unknown,
+  factorRate: unknown,
   feesRaw: unknown,
-  fundedAmount: number,
-  paybackAmount?: number | null,
 ): number | null {
-  const fees = parseMoney(feesRaw);
-  if (fees == null || fees <= 0) return null;
+  const fundedN = parseAmount(fundedAmount);
+  const rateN = parseAmount(factorRate);
+  const feesN = parseAmount(feesRaw);
+  if (!Number.isFinite(fundedN) || fundedN <= 0) return null;
+  if (!Number.isFinite(feesN) || feesN <= 0) return null;
 
-  // Small values (e.g. 10) are treated as percent when plausible.
-  if (fees <= MAX_PLAUSIBLE_FEE_PERCENT && fundedAmount > 0 && fees < fundedAmount) {
-    return round2(fees);
+  const looksLikeDollars = feesN > 100 || feesN > fundedN * 0.005;
+
+  if (looksLikeDollars) {
+    const percentOfFunded = (feesN / fundedN) * 100;
+    // Legacy payback fee: $ = funded × rate × p/100. For p = 1%, $ = funded × rate / 100,
+    // and (fees / funded) × 100 equals factor rate (e.g. 1.35) — not the real fee %.
+    const legacyOnePctPaybackDollars =
+      Number.isFinite(rateN) &&
+      rateN > 0 &&
+      Math.abs(feesN - (fundedN * rateN) / 100) < Math.max(1, fundedN * 0.00001);
+    if (legacyOnePctPaybackDollars) {
+      const fromPaybackBasis = (feesN * 100) / (fundedN * rateN);
+      if (fromPaybackBasis > 0 && fromPaybackBasis <= 100) {
+        return fromPaybackBasis;
+      }
+    }
+    if (percentOfFunded > MAX_REASONABLE_OFFER_FEE_PERCENT) {
+      return null;
+    }
+    return percentOfFunded;
   }
 
-  if (fundedAmount > 0) {
-    const pctOfFunded = (fees / fundedAmount) * 100;
-    if (isPlausibleFeePercent(pctOfFunded)) return round2(pctOfFunded);
+  // Already stored as a small percent (e.g. 10). Do not show factor rate as fee %.
+  if (Number.isFinite(rateN) && rateN > 0 && Math.abs(feesN - rateN) < 0.0001) {
+    return null;
   }
-
-  const payback = paybackAmount ?? 0;
-  if (payback > 0) {
-    const pctOfPayback = (fees / payback) * 100;
-    if (Math.abs(pctOfPayback - 1) < 0.2) return 1;
+  if (feesN > 0 && feesN <= 100) {
+    return feesN;
   }
 
   return null;
 }
 
-export type ResolveOfferFeePercentInput = {
+/** Max fee % treated as valid when inferring from stored dollar amounts. */
+export const MAX_REASONABLE_OFFER_FEE_PERCENT = 25;
+
+export const DEFAULT_OFFER_FEE_PERCENT = 10;
+
+/**
+ * Fee % for calculations: terms offer commission % → application ISO % →
+ * offer-decision fees field → default 10%.
+ */
+export function resolveOfferFeePercentForDeal(sources: {
+  fundedAmount: unknown;
+  factorRate?: unknown;
+  feesRaw?: unknown;
   termsCommissionPercent?: unknown;
   applicationCommissionPercentage?: unknown;
-  feesRaw?: unknown;
-  fundedAmount?: unknown;
-  factorRate?: unknown;
-  paybackAmount?: unknown;
-};
+}): number {
+  const termsPct = parseAmount(sources.termsCommissionPercent);
+  if (Number.isFinite(termsPct) && termsPct > 0 && termsPct <= 100) {
+    return termsPct;
+  }
 
-/** Resolve origination fee % for contract funding math. */
-export function resolveOfferFeePercentForDeal(
-  input: ResolveOfferFeePercentInput,
-): number {
-  const funded = parseMoney(input.fundedAmount) ?? 0;
-  const payback = parseMoney(input.paybackAmount);
+  const appPct = parseAmount(sources.applicationCommissionPercentage);
+  if (Number.isFinite(appPct) && appPct > 0 && appPct <= 100) {
+    return appPct;
+  }
 
-  const termsPct = parseMoney(input.termsCommissionPercent);
-  if (termsPct != null && isPlausibleFeePercent(termsPct)) return round2(termsPct);
-
-  const appPct = parseMoney(input.applicationCommissionPercentage);
-  if (appPct != null && isPlausibleFeePercent(appPct)) return round2(appPct);
-
-  const inferred = inferFeePercentFromFeesRaw(
-    input.feesRaw,
-    funded,
-    payback,
+  const fromOfferFees = resolveOfferFeesPercentForForm(
+    sources.fundedAmount,
+    sources.factorRate,
+    sources.feesRaw,
   );
-  if (inferred != null) return inferred;
+  if (
+    fromOfferFees != null &&
+    fromOfferFees > 0 &&
+    fromOfferFees <= MAX_REASONABLE_OFFER_FEE_PERCENT
+  ) {
+    return fromOfferFees;
+  }
 
-  return DEFAULT_FEE_PERCENT;
-}
-
-/** Resolve origination fee dollars for a deal (fee % × funded amount). */
-export function resolveOfferFeeAmountForDeal(
-  input: ResolveOfferFeePercentInput,
-): number {
-  const funded = parseMoney(input.fundedAmount) ?? 0;
-  const pct = resolveOfferFeePercentForDeal(input);
-  return computeOfferFeeAmountDollars(funded, pct);
+  return DEFAULT_OFFER_FEE_PERCENT;
 }
 
 /** Fee dollars = funded amount × (fee % ÷ 100). */
@@ -102,155 +137,92 @@ export function computeOfferFeeAmountDollars(
   fundedAmount: unknown,
   feePercent: unknown,
 ): number {
-  const fundedN = parseMoney(fundedAmount) ?? 0;
-  const pctN = parseMoney(feePercent) ?? 0;
-  if (fundedN <= 0 || pctN <= 0) return 0;
-  return round2((fundedN * pctN) / 100);
-}
-
-/** Alias used when persisting/displaying fee % as dollars on funded amount. */
-export function feesPercentToDollarsFromFunded(
-  fundedAmount: unknown,
-  feePercent: unknown,
-): number {
-  return computeOfferFeeAmountDollars(fundedAmount, feePercent);
-}
-
-/** Matches BE `offerDecisionEffectiveRecord` — nested `offer` JSON holds saved field values. */
-export function offerDecisionEffectiveRecord(
-  odRoot: unknown,
-): Record<string, unknown> | null {
-  if (!odRoot || typeof odRoot !== "object") return null;
-  const root = odRoot as Record<string, unknown>;
-  const inner = root.offer;
-  if (inner && typeof inner === "object" && !Array.isArray(inner)) {
-    return inner as Record<string, unknown>;
-  }
-  return root;
-}
-
-/** Funded/approved amount from an OfferDecision record (`offer` field holds the dollar amount). */
-export function resolveOfferDecisionFundedAmount(
-  odRoot: unknown,
-): number | null {
-  const rec = offerDecisionEffectiveRecord(odRoot);
-  if (!rec) return null;
-  const funded = parseMoney(
-    rec.offer ?? rec.fundedAmount ?? rec.approvedAmount ?? rec.amount,
-  );
-  return funded != null && funded > 0 ? round2(funded) : null;
-}
-
-function resolveOfferAmountFromOfferDecisionRoot(
-  odRoot: unknown,
-): number | null {
-  if (!odRoot || typeof odRoot !== "object") return null;
-  const decisionNorm = String(
-    (odRoot as Record<string, unknown>).decision ?? "",
-  ).toLowerCase();
-  if (decisionNorm === "declined") return null;
-  return resolveOfferDecisionFundedAmount(odRoot);
+  const fundedN = parseAmount(fundedAmount);
+  const pctN = parseAmount(feePercent);
+  if (!Number.isFinite(fundedN) || fundedN <= 0) return 0;
+  if (!Number.isFinite(pctN) || pctN <= 0) return 0;
+  return Math.round(((fundedN * pctN) / 100) * 100) / 100;
 }
 
 /**
- * Approved offer amount for summary/header display.
- * Priority: terms offer → application OfferDecision → fetched offer-decision row.
- * Does not fall back to requested loan amount (that has its own column).
+ * Canonical underwriting / origination fee in dollars for a deal.
+ * Never uses payback−advance, monthly payment, or stale commissionAmount columns.
  */
-export function resolveApplicationOfferAmount(sources: {
-  application?: unknown;
-  offerDecision?: unknown;
-}): number | null {
-  const application = sources.application;
-  if (application && typeof application === "object") {
-    const app = application as Record<string, unknown>;
-    const termsOffers = app.termsOffers;
-    if (Array.isArray(termsOffers) && termsOffers.length > 0) {
-      const latestTerms = termsOffers[0];
-      if (latestTerms && typeof latestTerms === "object") {
-        const fromTerms = parseMoney(
-          (latestTerms as Record<string, unknown>).approvedAmount,
-        );
-        if (fromTerms != null && fromTerms > 0) return round2(fromTerms);
+export function resolveOfferFeeAmountForDeal(sources: {
+  fundedAmount: unknown;
+  factorRate?: unknown;
+  feesRaw?: unknown;
+  termsCommissionPercent?: unknown;
+  applicationCommissionPercentage?: unknown;
+}): number {
+  const fundedN = parseAmount(sources.fundedAmount);
+  if (!Number.isFinite(fundedN) || fundedN <= 0) return 0;
+
+  const termsPct = parseAmount(sources.termsCommissionPercent);
+  if (Number.isFinite(termsPct) && termsPct > 0 && termsPct <= 100) {
+    return computeOfferFeeAmountDollars(fundedN, termsPct);
+  }
+
+  const appPct = parseAmount(sources.applicationCommissionPercentage);
+  if (Number.isFinite(appPct) && appPct > 0 && appPct <= 100) {
+    return computeOfferFeeAmountDollars(fundedN, appPct);
+  }
+
+  const feesN = parseAmount(sources.feesRaw);
+  const rateN = parseAmount(sources.factorRate);
+  if (Number.isFinite(feesN) && feesN > 0) {
+    const looksLikeDollars = feesN > 100 || feesN > fundedN * 0.005;
+    if (looksLikeDollars) {
+      const impliedPct = (feesN / fundedN) * 100;
+      if (impliedPct > 0 && impliedPct <= MAX_REASONABLE_OFFER_FEE_PERCENT) {
+        return Math.round(feesN * 100) / 100;
+      }
+    } else if (feesN > 0 && feesN <= 100) {
+      if (!(Number.isFinite(rateN) && rateN > 0 && Math.abs(feesN - rateN) < 0.0001)) {
+        return computeOfferFeeAmountDollars(fundedN, feesN);
       }
     }
-
-    const fromAppOfferDecision = resolveOfferAmountFromOfferDecisionRoot(
-      app.OfferDecision ?? app.offerDecision ?? null,
-    );
-    if (fromAppOfferDecision != null) return fromAppOfferDecision;
   }
 
-  const fromFetched = resolveOfferAmountFromOfferDecisionRoot(
-    sources.offerDecision ?? null,
-  );
-  if (fromFetched != null) return fromFetched;
-
-  return null;
+  const pct = resolveOfferFeePercentForDeal(sources);
+  return computeOfferFeeAmountDollars(fundedN, pct);
 }
 
-/** Raw `fees` value from an OfferDecision record (may be dollars or a legacy percent). */
-export function resolveOfferDecisionFeesRaw(odRoot: unknown): unknown {
-  const rec = offerDecisionEffectiveRecord(odRoot);
-  if (!rec) return null;
-  return rec.fees ?? null;
+/** Convert fee % (of funded amount) → dollars for `OfferDecision.fees`. */
+export function feesPercentToDollarsFromFunded(
+  fundedAmount: unknown,
+  feesPercent: unknown,
+): number | null {
+  const fundedN = parseAmount(fundedAmount);
+  const pctN = parseAmount(feesPercent);
+  if (!Number.isFinite(fundedN) || fundedN <= 0) return null;
+  if (!Number.isFinite(pctN) || pctN <= 0) return null;
+  return (fundedN * pctN) / 100;
 }
 
-export type ResolveOfferDecisionFeesDisplayOptions = {
-  applicationCommissionPercentage?: unknown;
-  termsCommissionPercent?: unknown;
-};
+/** Convert stored fee dollars → % of funded amount for the offer form. */
+export function feesDollarsToPercentOfFunded(
+  fundedAmount: unknown,
+  feesDollars: unknown,
+  factorRate?: unknown,
+): number | null {
+  return resolveOfferFeesPercentForForm(fundedAmount, factorRate, feesDollars);
+}
 
-/** Fee dollars for offer-decision summary display. */
+/** Display dollars for Fees column on offer-decision panels. */
 export function resolveOfferDecisionFeesDisplayDollars(
-  odRoot: unknown,
-  options: ResolveOfferDecisionFeesDisplayOptions = {},
+  offerDecision: Record<string, unknown> | null | undefined,
+  options?: {
+    termsCommissionPercent?: unknown;
+    applicationCommissionPercentage?: unknown;
+  },
 ): number {
-  const rec = offerDecisionEffectiveRecord(odRoot);
-  const root =
-    odRoot && typeof odRoot === "object"
-      ? (odRoot as Record<string, unknown>)
-      : null;
-
+  if (!offerDecision || typeof offerDecision !== "object") return 0;
   return resolveOfferFeeAmountForDeal({
-    fundedAmount: resolveOfferDecisionFundedAmount(odRoot),
-    factorRate: rec?.rate ?? root?.rate,
-    feesRaw: resolveOfferDecisionFeesRaw(odRoot),
-    termsCommissionPercent: options.termsCommissionPercent,
-    applicationCommissionPercentage: options.applicationCommissionPercentage,
+    fundedAmount: resolveOfferDecisionFundedAmount(offerDecision),
+    factorRate: offerDecision.rate,
+    feesRaw: resolveOfferDecisionFeesRaw(offerDecision),
+    termsCommissionPercent: options?.termsCommissionPercent,
+    applicationCommissionPercentage: options?.applicationCommissionPercentage,
   });
-}
-
-/**
- * Fee percent for the contract form.
- * Mirrors `inferFeePercentFromFeesRaw`, using factor-rate payback as a fallback signal.
- */
-export function resolveOfferFeesPercentForForm(
-  fundedAmount: unknown,
-  factorRate: unknown,
-  feesRaw: unknown,
-): number | null {
-  const funded = parseMoney(fundedAmount) ?? 0;
-  const rate = parseMoney(factorRate);
-  const payback = funded > 0 && rate != null && rate > 0 ? funded * rate : null;
-  return inferFeePercentFromFeesRaw(feesRaw, funded, payback);
-}
-
-/**
- * Fee dollar amount for the contract form.
- * Small `fees` values are treated as a percent of the funded amount; larger values
- * are treated as a dollar amount already, matching `inferFeePercentFromFeesRaw`.
- */
-export function resolveOfferFeesAmountForForm(
-  fundedAmount: unknown,
-  factorRate: unknown,
-  feesRaw: unknown,
-): number | null {
-  const funded = parseMoney(fundedAmount) ?? 0;
-  const fees = parseMoney(feesRaw);
-  if (fees == null || fees <= 0) return null;
-  if (funded > 0 && fees <= MAX_PLAUSIBLE_FEE_PERCENT && fees < funded) {
-    return round2((funded * fees) / 100);
-  }
-  return round2(fees);
 }

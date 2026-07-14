@@ -73,7 +73,22 @@ import type { TermsOffer } from "@/types/termsOfferTypes";
 import { axiosGet } from "@/redux/axios";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import { getClientByClientId } from "@/redux/actions/clientActions";
-import { formatCurrency, formatInt, formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  formatCurrency,
+  formatInt,
+  formatDate as formatDateUtil,
+  getCurrentMonthDateRangeET,
+  getPreviousMonthDateRangeET,
+  formatYmdET,
+  formatMonthDayET,
+  formatMonthShortET,
+  formatDayET,
+  formatYearMonthET,
+  getWeekRangeET,
+  isWithinYmdRangeET,
+  getPeriodStartET,
+  etDayToUtcBounds,
+} from "@/lib/utils";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
 import {
   CONTRACT_OUT_QUEUE_BADGE_CLASS,
@@ -83,12 +98,23 @@ import {
   CONTRACT_SIGNED_QUEUE_BADGE_CLASS,
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
-import { normalizeStateToken } from "@/lib/applicationStatsPredicates";
+import { resolveApplicationDisplayLoanAmount } from "@/lib/applicationLoanAmount";
 import {
   buildApplicationsBrowseUrl,
   DASHBOARD_APPLICATION_STATS_BUCKET,
   statCardTitleToApplicationsQuery,
 } from "@/constants/dashboardApplicationsNavigation";
+
+type TrendPoint = {
+  name: string;
+  approved: number;
+  funded: number;
+};
+
+type CommissionPoint = {
+  name: string;
+  value: number;
+};
 
 // const MONTHS = [
 //   "Jan",
@@ -105,69 +131,24 @@ import {
 //   "Dec",
 // ];
 
-type TrendPoint = {
-  name: string;
-  approved: number;
-  funded: number;
-};
-
-type CommissionPoint = {
-  name: string;
-  value: number;
-};
-
 const getCurrentMonthDateRange = () => {
-  const now = new Date();
-  const year = now.getFullYear();
-  const monthIndex = now.getMonth(); // 0 = Jan
-
-  const startDateObj = new Date(year, monthIndex, 1);
-  const endDateObj = new Date(year, monthIndex + 1, 0);
-
-  const formatYmd = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-
+  const range = getCurrentMonthDateRangeET();
   return {
-    startDateObj,
-    endDateObj,
-    start: formatYmd(startDateObj), // "YYYY-MM-DD"
-    end: formatYmd(endDateObj), // "YYYY-MM-DD"
+    startDateObj: range.startDateObj,
+    endDateObj: range.endDateObj,
+    start: range.start,
+    end: range.end,
   };
 };
 
 const getPreviousMonthDateRange = (referenceDate?: string) => {
-  const formatYmd = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-
-  const base = referenceDate ? new Date(referenceDate) : new Date();
-  if (isNaN(base.getTime())) {
-    return null;
-  }
-
-  let year = base.getFullYear();
-  let monthIndex = base.getMonth() - 1;
-
-  if (monthIndex < 0) {
-    monthIndex = 11;
-    year -= 1;
-  }
-
-  const startDateObj = new Date(year, monthIndex, 1);
-  const endDateObj = new Date(year, monthIndex + 1, 0);
-
+  const range = getPreviousMonthDateRangeET(referenceDate);
+  if (!range) return null;
   return {
-    startDateObj,
-    endDateObj,
-    start: formatYmd(startDateObj),
-    end: formatYmd(endDateObj),
+    startDateObj: range.startDateObj,
+    endDateObj: range.endDateObj,
+    start: range.start,
+    end: range.end,
   };
 };
 
@@ -238,10 +219,10 @@ type AdminDashboardStats = {
 
 const ADMIN_USER_COLOR_CONFIG = [
   { key: 'agents' as const, label: 'Agents', color: '#A8CFF5' },
-  { key: 'clients' as const, label: 'Clients', color: '#DAEDFF' },
+  { key: 'clients' as const, label: 'Clients', color: 'var(--brand-soft)' },
   { key: 'syndicators' as const, label: 'Syndicators', color: '#78BCFD' },
-  { key: 'underwriters' as const, label: 'Underwriters', color: '#39CAFF' },
-  { key: 'finalUnderwriters' as const, label: 'Final Underwriters', color: '#74C5FF' },
+  { key: 'underwriters' as const, label: 'Scrubbing', color: '#39CAFF' },
+  { key: 'finalUnderwriters' as const, label: 'Underwriters', color: '#74C5FF' },
 ]
 
 const DASHBOARD_RECENT_APPLICATIONS_LIMIT = 5;
@@ -304,9 +285,9 @@ const FUNNEL_IN_PROGRESS_QUEUES_LC = new Set([
   "agent",
   "review",
   "underwriting",
-  "underwriter",
+  "scrubbing",
   "final review",
-  "final underwriter",
+  "final scrubbing",
 ]);
 const FUNNEL_WAITING_QUEUES_LC = new Set(["on hold", "waiting for documents"]);
 const FUNNEL_DECISION_QUEUES_LC = new Set(["approved", "declined", "contracted"]);
@@ -327,18 +308,7 @@ function buildPipelineFunnelFromApps(
   pipelineView: "weekly" | "monthly" | "yearly",
 ): { stages: { stage: string; value: number; percentage: number; color: string }[]; conversionText: string } {
   const now = new Date();
-  let periodStart: Date;
-  if (pipelineView === "weekly") {
-    periodStart = new Date(now);
-    periodStart.setDate(now.getDate() - now.getDay());
-    periodStart.setHours(0, 0, 0, 0);
-  } else if (pipelineView === "monthly") {
-    periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    periodStart.setHours(0, 0, 0, 0);
-  } else {
-    periodStart = new Date(now.getFullYear(), 0, 1);
-    periodStart.setHours(0, 0, 0, 0);
-  }
+  const periodStart = getPeriodStartET(pipelineView, now);
 
   let submit = 0;
   let inProgress = 0;
@@ -447,7 +417,11 @@ function ApplicationPipelineFunnelCard({
       <div
         className={`flex shrink-0 items-center justify-between gap-3 border-b px-5 py-4 ${isDark ? "border-white/10" : "border-slate-100"}`}
       >
-        <h3 className="font-semibold text-foreground">Application Pipeline Funnel</h3>
+        <h3
+          className={`text-[11px] font-bold uppercase tracking-[0.14em] ${isDark ? "text-slate-400" : "text-slate-500"}`}
+        >
+          Application Pipeline Funnel
+        </h3>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -455,7 +429,7 @@ function ApplicationPipelineFunnelCard({
               size="sm"
               className={
                 dropdownButtonClassName ??
-                "h-8 gap-2 text-sm shadow-none"
+                "h-8 gap-2 border-slate-200 bg-background text-xs shadow-none"
               }
             >
               {periodLabel}
@@ -559,11 +533,6 @@ export default function DashboardPage() {
   const { data: statsData } = useSelector(
     (state: RootState) => state.applicationStats,
   );
-  const { data: applicationsList, loading: applicationsLoading } =
-    useSelector((state: RootState) => state.applications);
-  const applicationsPagination = useSelector(
-    (state: RootState) => state.applications.pagination,
-  );
   const dashboardLoginUserRole = useSelector(
     (state: RootState) => state.login.data?.user?.role ?? "",
   );
@@ -587,13 +556,13 @@ export default function DashboardPage() {
           (typeof window !== "undefined"
             ? localStorage.getItem("role") || ""
             : "");
-        if (role === "FINAL_UNDERWRITER") {
-          navigate(
-            buildApplicationsBrowseUrl({ currentQueue: "Final Underwriter" }),
-          );
-        } else if (role === "UNDERWRITER") {
+        if (role === "UNDERWRITER") {
           navigate(
             buildApplicationsBrowseUrl({ currentQueue: "Underwriter" }),
+          );
+        } else if (role === "SCRUBBING") {
+          navigate(
+            buildApplicationsBrowseUrl({ currentQueue: "Scrubbing" }),
           );
         } else if (role === "AGENT") {
           navigate(buildApplicationsBrowseUrl({ currentQueue: "Agent" }));
@@ -645,16 +614,72 @@ export default function DashboardPage() {
     return formatCurrency(amount);
   }, []);
 
-  // Load applications for dashboard trend chart (backend getAll has no hard cap on limit)
+  const [dashboardRoleApps, setDashboardRoleApps] = useState<Application[]>([]);
+  const [dashboardRoleAppsTotal, setDashboardRoleAppsTotal] = useState(0);
+  const [dashboardRoleAppsLoading, setDashboardRoleAppsLoading] = useState(false);
+
+  /** Role-scoped list for funnel + recent table (DB-filtered, all pages). */
   useEffect(() => {
-    dispatch(
+    const roleKey = String(dashboardLoginUserRole || localStorage.getItem("role") || "")
+      .toUpperCase()
+      .replace(/-/g, "_");
+    if (roleKey === "ADMIN" || roleKey === "SUPER_ADMIN" || roleKey === "SUPERADMIN") {
+      setDashboardRoleApps([]);
+      setDashboardRoleAppsTotal(0);
+      return;
+    }
+  /** Underwriters filter by queue; agents need all own deals (incl. sent to Scrubbing = "In Progress"). */
+    const queueByRole: Partial<Record<string, string>> = {
+      SCRUBBING: "Scrubbing",
+      UNDERWRITER: "Underwriter",
+    };
+    const queueFilter = queueByRole[roleKey];
+    if (roleKey !== "AGENT" && !queueFilter) {
+      setDashboardRoleApps([]);
+      setDashboardRoleAppsTotal(0);
+      return;
+    }
+    let cancelled = false;
+    setDashboardRoleAppsLoading(true);
+    void dispatch(
       getApplications({
         page: 1,
-        limit: 5000,
+        limit: 500,
+        lite: true,
+        ...(queueFilter ? { currentQueue: queueFilter } : {}),
         sortBy: "createdAt",
         sortOrder: "desc",
+        fetchAllPages: true,
+        skipListCache: true,
+        skipListCacheRead: true,
       }),
-    );
+    )
+      .unwrap()
+      .then((res) => {
+        if (!cancelled) {
+          const rows = Array.isArray(res?.data) ? res.data : [];
+          setDashboardRoleApps(rows);
+          const total =
+            Number(res?.pagination?.totalItems ?? res?.pagination?.total) ||
+            rows.length;
+          setDashboardRoleAppsTotal(total);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDashboardRoleApps([]);
+          setDashboardRoleAppsTotal(0);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDashboardRoleAppsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch, dashboardLoginUserRole]);
+
+  useEffect(() => {
     dispatch(
       getTermsOffers({
         limit: 500,
@@ -834,276 +859,22 @@ export default function DashboardPage() {
   const filterByDateRange = useCallback(
     (recordDate: Date | null | undefined) => {
       if (!recordDate || Number.isNaN(recordDate.getTime())) return false;
-
-      const hasStart = !!startDate;
-      const hasEnd = !!endDate;
-
-      // No bounds selected -> allow everything
-      if (!hasStart && !hasEnd) return true;
-
-      const start = hasStart ? new Date(startDate) : null;
-      const end = hasEnd ? new Date(endDate) : null;
-
-      if (start) start.setHours(0, 0, 0, 0);
-      if (end) end.setHours(23, 59, 59, 999);
-
-      // Both start and end: inclusive range
-      if (start && end) return recordDate >= start && recordDate <= end;
-      // Only start
-      if (start && !end) return recordDate >= start;
-      // Only end
-      if (!start && end) return recordDate <= end;
-
-      return true;
+      return isWithinYmdRangeET(recordDate, startDate || null, endDate || null);
     },
     [startDate, endDate],
   );
 
-  type DashboardTrendRow = {
-    dealStatus: "Approved" | "Funded" | "Declined";
-    applicationAmount: number;
-    date: string;
-  };
-
-  const dashboardTrendRows: DashboardTrendRow[] = useMemo(() => {
-    const apps = (applicationsList as Application[] | undefined) ?? [];
-
-    const rows: DashboardTrendRow[] = [];
-
-    apps.forEach((app) => {
-      const createdAt = app.createdAt ? new Date(app.createdAt) : null;
-      if (!createdAt || Number.isNaN(createdAt.getTime())) return;
-      if (!filterByDateRange(createdAt)) return;
-
-      const toAmount = (value: unknown): number => {
-        if (value == null) return 0;
-        if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-        if (typeof value === "string") {
-          const parsed = Number(value.replace(/[^0-9.-]/g, ""));
-          return Number.isFinite(parsed) ? parsed : 0;
-        }
-        return 0;
-      };
-      const appAny = app as Application & {
-        requestedAmount?: unknown;
-        amountFunded?: unknown;
-        approvedAmount?: unknown;
-        offerDecision?: { approvedAmount?: unknown; amountFunded?: unknown } | null;
-      };
-      const amountCandidates = [
-        appAny.loanAmount,
-        appAny.requestedAmount,
-        appAny.approvedAmount,
-        appAny.offerDecision?.approvedAmount,
-        appAny.offerDecision?.amountFunded,
-        appAny.amountFunded,
-      ];
-      const applicationAmount =
-        amountCandidates.map(toAmount).find((v) => Number.isFinite(v) && v > 0) ?? 0;
-
-      // Dashboard trend uses application current state buckets with amount totals.
-      const currentStateToken = normalizeStateToken(
-        // Prefer raw backend state token so chart buckets match dashboard stats/cards.
-        app.statsCurrentState ?? app.currentState ?? app.state ?? "",
-      );
-      let dealStatus: "Approved" | "Funded" | "Declined" | null = null;
-      if (currentStateToken === "APPROVED") {
-        dealStatus = "Approved";
-      } else if (
-        currentStateToken === "FUNDED" ||
-        currentStateToken === "COMPLETED" ||
-        currentStateToken === "DISBURSEMENT" ||
-        currentStateToken === "DISBURSMENT"
-      ) {
-        dealStatus = "Funded";
-      } else if (currentStateToken === "DECLINED" || currentStateToken === "REJECTED") {
-        dealStatus = "Declined";
-      }
-      if (!dealStatus) return;
-
-      const date = app.createdAt || new Date().toISOString();
-
-      rows.push({
-        dealStatus,
-        applicationAmount,
-        date,
-      });
-    });
-
-    return rows;
-  }, [applicationsList, filterByDateRange]);
-
+  /** Monthly trend chart uses `/applications/stats/trend` aggregates only (no client row sampling). */
   const filteredTrendData = useMemo(() => {
-    const periodData: {
-      [key: string]: {
-        name: string;
-        approved: number;
-        funded: number;
-        declined: number;
-        dateKey: string;
-      };
-    } = {};
-
-    const rows = dashboardTrendRows || [];
-    if (rows.length === 0 && !startDate && !endDate) return [];
-
-    const parseDateOnly = (value: string | null) => {
-      if (!value) return null;
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) return null;
-      d.setHours(0, 0, 0, 0);
-      return d;
-    };
-
-    const start = parseDateOnly(startDate || null);
-    const end = parseDateOnly(endDate || null);
-
-    // If user hasn't picked a range, default to current month.
-    const fallback = getCurrentMonthDateRange();
-    const rangeStart = start ?? fallback.startDateObj;
-    const rangeEnd = (() => {
-      const e = end ?? fallback.endDateObj;
-      const normalized = new Date(e);
-      normalized.setHours(23, 59, 59, 999);
-      return normalized;
-    })();
-
-    const formatYmd = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-        d.getDate(),
-      ).padStart(2, "0")}`;
-
-    const sameMonth =
-      rangeStart.getFullYear() === rangeEnd.getFullYear() &&
-      rangeStart.getMonth() === rangeEnd.getMonth();
-
-    if (trendView === "monthly") {
-      const d = new Date(rangeStart);
-      d.setHours(0, 0, 0, 0);
-      while (d <= rangeEnd) {
-        const periodKey = formatYmd(d);
-        const label = sameMonth
-          ? String(d.getDate())
-          : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-        periodData[periodKey] = {
-          name: label,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-        d.setDate(d.getDate() + 1);
-      }
-    } else if (trendView === "weekly") {
-      const d = new Date(rangeStart);
-      d.setDate(d.getDate() - d.getDay()); // Sunday
-      d.setHours(0, 0, 0, 0);
-      while (d <= rangeEnd) {
-        const weekStart = new Date(d);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        weekEnd.setHours(23, 59, 59, 999);
-        const periodKey = formatYmd(weekStart);
-        const periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
-        periodData[periodKey] = {
-          name: periodLabel,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-        d.setDate(d.getDate() + 7);
-      }
-    } else if (trendView === "yearly") {
-      // Pre-init all months that intersect the selected range (can span years).
-      const d = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
-      d.setHours(0, 0, 0, 0);
-      const endMonth = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
-      endMonth.setHours(0, 0, 0, 0);
-      while (d <= endMonth) {
-        const periodKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-          2,
-          "0",
-        )}`;
-        const periodLabel = d.toLocaleDateString("en-US", { month: "short" });
-        periodData[periodKey] = {
-          name: periodLabel,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-        d.setMonth(d.getMonth() + 1);
-      }
-    }
-
-    rows.forEach((row) => {
-      const date = new Date(row.date);
-      if (isNaN(date.getTime())) return;
-      if (!filterByDateRange(date)) return;
-
-      let periodKey = "";
-      let periodLabel = "";
-
-      if (trendView === "monthly") {
-        periodKey = `${date.getFullYear()}-${String(
-          date.getMonth() + 1,
-        ).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-        periodLabel = sameMonth
-          ? String(date.getDate())
-          : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      } else if (trendView === "weekly") {
-        const weekStart = new Date(date);
-        weekStart.setDate(date.getDate() - date.getDay());
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        periodKey = `${weekStart.getFullYear()}-${String(
-          weekStart.getMonth() + 1,
-        ).padStart(2, "0")}-${String(weekStart.getDate()).padStart(2, "0")}`;
-        periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
-      } else {
-        const monthKey = `${date.getFullYear()}-${String(
-          date.getMonth() + 1,
-        ).padStart(2, "0")}`;
-        periodKey = monthKey;
-        periodLabel = date.toLocaleDateString("en-US", { month: "short" });
-      }
-
-      if (!periodData[periodKey]) {
-        periodData[periodKey] = {
-          name: periodLabel,
-          approved: 0,
-          funded: 0,
-          declined: 0,
-          dateKey: periodKey,
-        };
-      }
-
-      if (row.dealStatus === "Approved") {
-        periodData[periodKey].approved += row.applicationAmount;
-      } else if (row.dealStatus === "Funded") {
-        periodData[periodKey].funded += row.applicationAmount;
-      } else if (row.dealStatus === "Declined") {
-        periodData[periodKey].declined += row.applicationAmount;
-      }
-    });
-
-    return Object.values(periodData).sort((a, b) =>
-      a.dateKey.localeCompare(b.dateKey),
-    );
-  }, [dashboardTrendRows, trendView, startDate, endDate, filterByDateRange]);
+    const trendFromApi = (trendData as Array<Record<string, unknown>>).map((p, idx) => ({
+      name: String(p.name ?? p.period ?? ""),
+      approved: Number(p.approved) || 0,
+      funded: Number(p.funded) || 0,
+      declined: Number(p.declined ?? p.rejected) || 0,
+      dateKey: String(p.dateKey ?? p.name ?? p.period ?? idx),
+    }));
+    return trendFromApi.sort((a, b) => String(a.dateKey).localeCompare(String(b.dateKey)));
+  }, [trendData]);
 
   const trendChartYMax = useMemo(() => {
     let max = 0;
@@ -1130,30 +901,6 @@ export default function DashboardPage() {
               : 10;
     return Math.max(Math.ceil(padded / step) * step, step);
   }, [filteredTrendData]);
-
-  /** Layout for role dashboards (daily / weekly / yearly trend); keeps Y labels readable and bars centered on ticks. */
-  const trendChartLayout = useMemo(() => {
-    const pointCount = filteredTrendData.length;
-    const isDenseDaily = trendView === "monthly" && pointCount > 20;
-    return {
-      margin: { top: 8, right: 14, bottom: 6, left: 2 },
-      yAxisWidth: 94,
-      xInterval: 0 as const,
-      xTickFontSize: isDenseDaily ? 10 : 11,
-      barCategoryGap: isDenseDaily ? "14%" : "18%",
-      maxBarSize: isDenseDaily ? 7 : 12,
-      yLabelOffset: 10,
-    };
-  }, [filteredTrendData.length, trendView]);
-
-  const adminTrendChartLayout = useMemo(
-    () => ({
-      margin: { top: 12, right: 16, bottom: 12, left: 2 },
-      yAxisWidth: 94,
-      yLabelOffset: 10,
-    }),
-    [],
-  );
 
   const filteredCommissionData = useMemo(() => {
     const periodData: {
@@ -1183,14 +930,10 @@ export default function DashboardPage() {
       return normalized;
     })();
 
-    const formatYmd = (d: Date) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-        d.getDate(),
-      ).padStart(2, "0")}`;
+    const formatYmd = (d: Date) => formatYmdET(d);
 
     const sameMonth =
-      rangeStart.getFullYear() === rangeEnd.getFullYear() &&
-      rangeStart.getMonth() === rangeEnd.getMonth();
+      formatYearMonthET(rangeStart) === formatYearMonthET(rangeEnd);
 
     if (commissionChartView === "monthly") {
       const d = new Date(rangeStart);
@@ -1198,30 +941,25 @@ export default function DashboardPage() {
       while (d <= rangeEnd) {
         const periodKey = formatYmd(d);
         const label = sameMonth
-          ? String(d.getDate())
-          : d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          ? formatDayET(d)
+          : formatMonthDayET(d);
         periodData[periodKey] = { name: label, value: 0, dateKey: periodKey };
         d.setDate(d.getDate() + 1);
       }
     } else if (commissionChartView === "weekly") {
       const d = new Date(rangeStart);
-      d.setDate(d.getDate() - d.getDay());
+      const weekRange = getWeekRangeET(d);
+      if (weekRange) {
+        const weekStart = new Date(etDayToUtcBounds(weekRange.startYmd).start);
+        d.setTime(weekStart.getTime());
+      }
       d.setHours(0, 0, 0, 0);
       while (d <= rangeEnd) {
-        const weekStart = new Date(d);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        weekEnd.setHours(23, 59, 59, 999);
-        const periodKey = formatYmd(weekStart);
-        const periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
+        const week = getWeekRangeET(d);
+        if (!week) break;
+        const periodKey = week.startYmd;
         periodData[periodKey] = {
-          name: periodLabel,
+          name: week.label,
           value: 0,
           dateKey: periodKey,
         };
@@ -1233,11 +971,8 @@ export default function DashboardPage() {
       const endMonth = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
       endMonth.setHours(0, 0, 0, 0);
       while (d <= endMonth) {
-        const periodKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-          2,
-          "0",
-        )}`;
-        const periodLabel = d.toLocaleDateString("en-US", { month: "short" });
+        const periodKey = formatYearMonthET(d);
+        const periodLabel = formatMonthShortET(d);
         periodData[periodKey] = {
           name: periodLabel,
           value: 0,
@@ -1256,36 +991,18 @@ export default function DashboardPage() {
       let periodLabel = "";
 
       if (commissionChartView === "monthly") {
-        periodKey = `${created.getFullYear()}-${String(
-          created.getMonth() + 1,
-        ).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
+        periodKey = formatYmdET(created);
         periodLabel = sameMonth
-          ? String(created.getDate())
-          : created.toLocaleDateString("en-US", {
-            month: "short",
-            day: "numeric",
-          });
+          ? formatDayET(created)
+          : formatMonthDayET(created);
       } else if (commissionChartView === "weekly") {
-        const weekStart = new Date(created);
-        weekStart.setDate(created.getDate() - created.getDay());
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
-        periodKey = `${weekStart.getFullYear()}-${String(
-          weekStart.getMonth() + 1,
-        ).padStart(2, "0")}-${String(weekStart.getDate()).padStart(2, "0")}`;
-        periodLabel = `${weekStart.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })} - ${weekEnd.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-        })}`;
+        const week = getWeekRangeET(created);
+        if (!week) return;
+        periodKey = week.startYmd;
+        periodLabel = week.label;
       } else {
-        const monthKey = `${created.getFullYear()}-${String(
-          created.getMonth() + 1,
-        ).padStart(2, "0")}`;
-        periodKey = monthKey;
-        periodLabel = created.toLocaleDateString("en-US", { month: "short" });
+        periodKey = formatYearMonthET(created);
+        periodLabel = formatMonthShortET(created);
       }
 
       if (!periodData[periodKey]) {
@@ -1388,7 +1105,7 @@ export default function DashboardPage() {
     ];
   }, [statsForDashboardCards, prevMonthStats, formatMoney]);
 
-  /** Backend `/applications/stats`: Agent queue ↔ Pending, Underwriter queue ↔ In Progress. */
+  /** Backend `/applications/stats`: Agent queue ↔ Pending, Scrubbing queue ↔ In Progress. */
   const workflowStateCards = useMemo(() => {
     const s = statsForDashboardCards;
     const prev = prevMonthStats;
@@ -1578,13 +1295,12 @@ export default function DashboardPage() {
   }, [statsForDashboardCards, prevMonthStats, formatMoney]);
 
   const clientPipelineFunnel = useMemo(() => {
-    const apps = (applicationsList as Application[] | undefined) ?? [];
-    return buildPipelineFunnelFromApps(apps, pipelineView);
-  }, [applicationsList, pipelineView]);
+    return buildPipelineFunnelFromApps(dashboardRoleApps, pipelineView);
+  }, [dashboardRoleApps, pipelineView]);
 
-  /** Latest N applications filtered by role queue (agent/underwriter/final underwriter). */
+  /** Latest N applications: agents see all own deals; UW/FUW stay queue-scoped. */
   const latestDashboardApplications = useMemo(() => {
-    const apps = (applicationsList as Application[] | undefined) ?? [];
+    const apps = dashboardRoleApps;
 
     const normalizeQueueToken = (value: unknown): string =>
       String(value ?? "")
@@ -1593,31 +1309,35 @@ export default function DashboardPage() {
         .replace(/[^a-z0-9]/g, "");
 
     const roleQueueMap: Record<string, string> = {
-      AGENT: "agent",
+      SCRUBBING: "scrubbing",
       UNDERWRITER: "underwriter",
-      FINAL_UNDERWRITER: "finalunderwriter",
     };
 
     const dashboardRole =
       dashboardLoginUserRole ||
       (typeof window !== "undefined" ? localStorage.getItem("role") || "" : "");
-    const expectedQueueToken = roleQueueMap[dashboardRole] ?? "";
+    const roleKey = String(dashboardRole).toUpperCase().replace(/-/g, "_");
+    const expectedQueueToken = roleQueueMap[roleKey] ?? "";
 
     return [...apps]
-      .filter((a) => a.createdAt)
+      .filter((a) => a.createdAt || a.updatedAt)
       .filter((a) => {
-        // Only role-specific dashboards should be queue-scoped.
+        if (roleKey === "AGENT") return true;
         if (!expectedQueueToken) return true;
         const queueToken = normalizeQueueToken(a.currentQueue ?? a.queue);
         return queueToken === expectedQueueToken;
       })
       .sort((a, b) => {
-        const ta = new Date(a.createdAt!).getTime();
-        const tb = new Date(b.createdAt!).getTime();
+        const ta = new Date(
+          (a.updatedAt ?? a.createdAt) as string,
+        ).getTime();
+        const tb = new Date(
+          (b.updatedAt ?? b.createdAt) as string,
+        ).getTime();
         return tb - ta;
       })
       .slice(0, DASHBOARD_RECENT_APPLICATIONS_LIMIT);
-  }, [applicationsList, dashboardLoginUserRole]);
+  }, [dashboardRoleApps, dashboardLoginUserRole]);
 
   const formatDateForRecentAppsTable = useCallback((dateString?: string) => {
     return formatDateUtil(dateString ?? "", "-");
@@ -1690,10 +1410,10 @@ export default function DashboardPage() {
     }
     if (
       n === "underwriting" ||
-      n === "underwriter" ||
+      n === "scrubbing" ||
       n === "review" ||
       n === "final review" ||
-      n === "final underwriter" ||
+      n === "final scrubbing" ||
       n === "final" ||
       n === "funding call"
     ) {
@@ -1806,20 +1526,20 @@ export default function DashboardPage() {
     }
   }, [data, loading]);
 
-  // Get user role - available roles: 'AGENT', 'UNDERWRITER', 'FINAL_UNDERWRITER', 'ACCOUNTANT', 'ADMIN'
+  // Get user role - available roles: 'AGENT', 'SCRUBBING', 'UNDERWRITER', 'ACCOUNTANT', 'ADMIN'
   const userRole = user?.role || localStorage.getItem("role") || "";
 
-  // UNDERWRITER and FINAL_UNDERWRITER see the same underwriter dashboard
+  // SCRUBBING and UNDERWRITER see the same scrubbing dashboard
   const showUnderwriterDashboard =
-    userRole === "UNDERWRITER" || userRole === "FINAL_UNDERWRITER";
+    userRole === "SCRUBBING" || userRole === "UNDERWRITER";
   const isAdmin = userRole === 'ADMIN' || userRole === 'SUPER_ADMIN'
   const isSyndicator = userRole === 'SYNDICATOR'
 
   const showPipelineWorkflowCards =
     !isAdmin &&
     (userRole === "AGENT" ||
-      userRole === "UNDERWRITER" ||
-      userRole === "FINAL_UNDERWRITER");
+      userRole === "SCRUBBING" ||
+      userRole === "UNDERWRITER");
 
   // Admin dashboard stats (users, application buckets, recent applications)
   const [adminStats, setAdminStats] = useState<AdminDashboardStats | null>(null)
@@ -2073,9 +1793,7 @@ export default function DashboardPage() {
   const surfaceBase = isDark ? 'bg-[#1e293b] border-[#334155]' : 'bg-white border-[#e5eef5]';
 
   const recentAppsFooterTotal =
-    applicationsPagination?.total != null && applicationsPagination.total > 0
-      ? applicationsPagination.total
-      : ((applicationsList as Application[] | undefined) ?? []).length;
+    dashboardRoleAppsTotal > 0 ? dashboardRoleAppsTotal : dashboardRoleApps.length;
   const recentAppsDisplayedCount = latestDashboardApplications.length;
 
   const dashboardRecentApplicationsSection = (
@@ -2129,7 +1847,7 @@ export default function DashboardPage() {
         </div>
         <div className="p-1">
           <div className="overflow-x-auto rounded-xl">
-            {applicationsLoading && latestDashboardApplications.length === 0 ? (
+            {dashboardRoleAppsLoading && latestDashboardApplications.length === 0 ? (
               <div className="flex items-center justify-center py-20">
                 <Loader2 className="h-8 w-8 animate-spin text-primary shrink-0" />
                 <span className="ml-2 text-muted-foreground">Loading applications...</span>
@@ -2194,7 +1912,7 @@ export default function DashboardPage() {
                     latestDashboardApplications.map((app, idx) => {
                       const rowId = getRecentApplicationRowId(app);
                       const queueLabel = getRecentApplicationQueueLabel(app);
-                      const loanAmount = app.loanAmount;
+                      const loanAmount = resolveApplicationDisplayLoanAmount(app);
                       return (
                         <TableRow
                           key={rowId}
@@ -2229,7 +1947,7 @@ export default function DashboardPage() {
                             {loanAmount == null ? (
                               <span>-</span>
                             ) : (
-                              <span>{formatCurrency(Number(loanAmount) || 0)}</span>
+                              <span>{formatCurrency(loanAmount)}</span>
                             )}
                           </TableCell>
                           <TableCell className="px-6 text-[0.85rem] text-foreground">
@@ -2252,7 +1970,7 @@ export default function DashboardPage() {
                                 e.stopPropagation();
                                 void handleOpenDashboardApplicationDetails(app);
                               }}
-                              className="inline-flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+                              className="inline-flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
                               aria-label="View application details"
                             >
                               <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current">
@@ -2276,7 +1994,7 @@ export default function DashboardPage() {
                   {latestDashboardApplications.map((app) => {
                     const rowId = getRecentApplicationRowId(app);
                     const queueLabel = getRecentApplicationQueueLabel(app);
-                    const loanAmount = app.loanAmount;
+                    const loanAmount = resolveApplicationDisplayLoanAmount(app);
                     return (
                       <div
                         key={rowId}
@@ -2290,7 +2008,7 @@ export default function DashboardPage() {
                           }
                         }}
                         onClick={() => handleNavigateDashboardApplication(app)}
-                        className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${isDark
+                        className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${isDark
                           ? "bg-[#1a1b1e] border-[#374151]"
                           : "bg-card border-[#F0F0F0]"
                           }`}
@@ -2315,7 +2033,7 @@ export default function DashboardPage() {
                               e.stopPropagation();
                               void handleOpenDashboardApplicationDetails(app);
                             }}
-                            className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                            className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                             aria-label="Preview application"
                           >
                             <EyeIcon className="h-4 w-4" />
@@ -2332,7 +2050,7 @@ export default function DashboardPage() {
                             <span className="text-foreground/80">Loan: </span>
                             {loanAmount == null
                               ? "—"
-                              : formatCurrency(Number(loanAmount) || 0)}
+                              : formatCurrency(loanAmount)}
                           </p>
                           <p>
                             <span className="text-foreground/80">Created: </span>
@@ -2343,12 +2061,12 @@ export default function DashboardPage() {
                           <span
                             className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${getRecentApplicationQueueBadgeClass(queueLabel)}`}
                           >
-                            {queueLabel}
-                          </span>
-                        </div>
+                          {queueLabel}
+                        </span>
                       </div>
-                    );
-                  })}
+                    </div>
+                  );
+                })}
                 </div>
               </div>
             )}
@@ -2424,7 +2142,7 @@ export default function DashboardPage() {
                     <button
                       className={`flex items-center gap-2 px-3 py-2 h-9 rounded-md transition-colors ${isDark
                         ? 'bg-[#141517] hover:bg-[#374151] text-white'
-                        : 'bg-white hover:bg-gray-50 text-black border border-[#3184BB]'
+                        : 'bg-white hover:bg-gray-50 text-black border border-[var(--brand)]'
                         }`}
                       style={isDark ? { border: '1px solid rgba(118, 183, 226, 0.5)' } : {}}
                     >
@@ -2458,7 +2176,7 @@ export default function DashboardPage() {
                       </div>
                       <Button
                         onClick={handleDateChange}
-                        className="w-full bg-[#3184BB] hover:bg-[#3184BB]/90 text-white"
+                        className="w-full bg-[image:var(--brand-gradient)] hover:opacity-90 text-white"
                       >
                         Apply
                       </Button>
@@ -2572,7 +2290,7 @@ export default function DashboardPage() {
                             isAdminSevenDayTile && c.title === "Pending",
                         })
                       }
-                      className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                      className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                     >
                       <CornerSummaryCard
                         isDark={isDark}
@@ -2618,7 +2336,7 @@ export default function DashboardPage() {
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-[#276D9C]"></div>
+                      <div className="w-3 h-3 rounded-full bg-[image:var(--brand-gradient)]"></div>
                       <span className="text-xs text-muted-foreground">
                         Funded
                         {adminStats?.applications && (
@@ -2663,32 +2381,21 @@ export default function DashboardPage() {
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart
                       data={adminMonthlyTrendChartData}
-                      barGap={2}
-                      barCategoryGap="18%"
-                      margin={adminTrendChartLayout.margin}
+                      barGap={0}
+                      margin={{ top: 20, right: 20, bottom: 20, left: 20 }}
                     >
                       <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="#E5E7EB" />
                       <XAxis
                         dataKey="name"
-                        type="category"
                         tickLine={false}
                         axisLine={{ stroke: '#000000' }}
-                        tick={{ fill: isDark ? "#FFFFFF" : "#000000", fontSize: 11 }}
-                        interval={0}
+                        tick={{ fill: isDark ? "#FFFFFF" : "#000000", fontSize: 12 }}
                       />
                       <YAxis
-                        width={adminTrendChartLayout.yAxisWidth}
                         tickLine={false}
                         axisLine={{ stroke: '#000000' }}
-                        tick={{ fill: isDark ? "#FFFFFF" : "#000000", fontSize: 11 }}
-                        tickMargin={4}
-                        label={{
-                          value: 'Amount',
-                          angle: -90,
-                          position: 'insideLeft',
-                          offset: adminTrendChartLayout.yLabelOffset,
-                          style: { textAnchor: 'middle', fill: isDark ? '#FFFFFF' : '#000000' },
-                        }}
+                        tick={{ fill: isDark ? "#FFFFFF" : "#000000", fontSize: 12 }}
+                        label={{ value: 'Amount', angle: -90, position: 'insideLeft', offset: -10 }}
                         tickFormatter={(value) => formatCurrency(value as number)}
                         domain={[0, adminTrendChartYMax]}
                         tickCount={6}
@@ -2702,15 +2409,15 @@ export default function DashboardPage() {
                       />
 
                       {/* Bars matching the image colors */}
-                      <Bar dataKey="rejected" name="Rejected" fill="#A9CCE3" maxBarSize={10} />
-                      <Bar dataKey="funded" name="Funded" fill="#276D9C" maxBarSize={10} />
-                      <Bar dataKey="approved" name="Approved" fill="#3b82f6" maxBarSize={10} />
+                      <Bar dataKey="rejected" name="Rejected" fill="#A9CCE3" barSize={10} />
+                      <Bar dataKey="funded" name="Funded" fill="var(--brand)" barSize={10} />
+                      <Bar dataKey="approved" name="Approved" fill="#3b82f6" barSize={10} />
 
                       {/* The Connection Line anchoring to the highest bar (Funded) */}
                       <Line
                         type="linear"
                         dataKey="funded"
-                        stroke="#276D9C"
+                        stroke="var(--brand)"
                         strokeWidth={1.5}
                         dot={false}
                         activeDot={false}
@@ -2807,9 +2514,9 @@ export default function DashboardPage() {
                     >
                       <defs>
                         <linearGradient id="colorCommissionAdmin" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#276D9C" stopOpacity={0.3} />
+                          <stop offset="5%" stopColor="var(--brand)" stopOpacity={0.3} />
                           <stop offset="95%" stopColor="#F5FBFF" stopOpacity={0} />
-                          <stop offset="95%" stopColor="#276D9C" stopOpacity={0} />
+                          <stop offset="95%" stopColor="var(--brand)" stopOpacity={0} />
                         </linearGradient>
                       </defs>
                       <CartesianGrid vertical={false} horizontal={false} strokeDasharray="3 3" />
@@ -2844,7 +2551,7 @@ export default function DashboardPage() {
                         ticks={[0, 1000, 2000, 3000, 4000, 5000, 6000]}
                       />
                       <Tooltip
-                        cursor={{ stroke: '#276D9C', strokeWidth: 1 }}
+                        cursor={{ stroke: 'var(--brand)', strokeWidth: 1 }}
                         contentStyle={{
                           backgroundColor: 'white',
                           borderRadius: '8px',
@@ -2859,8 +2566,8 @@ export default function DashboardPage() {
                           return (
                             <div className="bg-white rounded-lg p-3 shadow-lg">
                               <div className="flex items-center gap-2 mb-2">
-                                <div className="w-2 h-2 rounded-full bg-[#276D9C]"></div>
-                                <p className="text-[#276D9C] font-semibold text-sm">{monthName}</p>
+                                <div className="w-2 h-2 rounded-full bg-[image:var(--brand-gradient)]"></div>
+                                <p className="text-[var(--brand)] font-semibold text-sm">{monthName}</p>
                               </div>
                               <p className="text-black text-sm">
                                 <span className="font-medium">Commission: </span>
@@ -2873,11 +2580,11 @@ export default function DashboardPage() {
                       <Area
                         type="linear"
                         dataKey="value"
-                        stroke="#276D9C"
+                        stroke="var(--brand)"
                         strokeWidth={2}
                         fill="url(#colorCommissionAdmin)"
-                        dot={{ r: 4, fill: '#276D9C' }}
-                        activeDot={{ r: 6, fill: '#276D9C' }}
+                        dot={{ r: 4, fill: 'var(--brand)' }}
+                        activeDot={{ r: 6, fill: 'var(--brand)' }}
                       />
                     </AreaChart>
                   </ResponsiveContainer>
@@ -2892,7 +2599,7 @@ export default function DashboardPage() {
               <div className={`rounded-xl border shadow-sm overflow-hidden ${surfaceBase}`}>
                 <div className="p-4 bg-slate-50/50 border-b flex justify-between items-center">
                   <h3 className="text-md font-bold text-black-600">Recent Applications</h3>
-                  <Button variant="ghost" size="sm" className="bg-[#276D9C] hover:bg-[#1e567d] text-white text-sm h-9 px-4">View All</Button>
+                  <Button variant="ghost" size="sm" className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white text-sm h-9 px-4">View All</Button>
                 </div>
                 <Table>
                   <TableHeader className="bg-slate-100/50">
@@ -2920,11 +2627,7 @@ export default function DashboardPage() {
                             #{app.applicationId}
                           </TableCell>
                           <TableCell className="text-xs dark:text-white text-slate-600">
-                            {new Date(app.date).toLocaleDateString('en-US', {
-                              month: 'short',
-                              day: 'numeric',
-                              year: 'numeric',
-                            })}
+                            {formatDateUtil(app.date)}
                           </TableCell>
                           <TableCell className="text-xs dark:text-white text-slate-600">
                             {app.status}
@@ -2961,7 +2664,7 @@ export default function DashboardPage() {
                     <button
                       className={`flex items-center gap-2 px-3 py-2 h-9 rounded-md transition-colors ${isDark
                         ? "bg-[#141517] hover:bg-[#374151] text-white"
-                        : "bg-white hover:bg-gray-50 text-black border border-[#3184BB]"
+                        : "bg-white hover:bg-gray-50 text-black border border-[var(--brand)]"
                         }`}
                       style={isDark ? { border: "1px solid rgba(118, 183, 226, 0.5)" } : {}}
                     >
@@ -3004,7 +2707,7 @@ export default function DashboardPage() {
                       </div>
                       <Button
                         onClick={handleDateChange}
-                        className="w-full bg-[#3184BB] hover:bg-[#3184BB]/90 text-white"
+                        className="w-full bg-[image:var(--brand-gradient)] hover:opacity-90 text-white"
                       >
                         Apply
                       </Button>
@@ -3039,7 +2742,7 @@ export default function DashboardPage() {
                     }
                   }}
                   onClick={() => goToApplicationsForStatCard(c.title)}
-                  className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                  className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                 >
                   <CornerSummaryCard
                     isDark={isDark}
@@ -3087,7 +2790,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="h-4 w-px"></div>
                     <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-[#276D9C]"></div>
+                      <div className="w-3 h-3 rounded-full bg-[image:var(--brand-gradient)]"></div>
                       <span className="text-sm text-muted-foreground">
                         Funded
                       </span>
@@ -3122,9 +2825,14 @@ export default function DashboardPage() {
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart
                       data={filteredTrendData}
-                      barCategoryGap={trendChartLayout.barCategoryGap}
-                      barGap={2}
-                      margin={trendChartLayout.margin}
+                      barCategoryGap={20}
+                      barGap={0}
+                      margin={{
+                        top: 5,
+                        right: 5,
+                        bottom: 5,
+                        left: 30,
+                      }}
                     >
                       <CartesianGrid
                         vertical={false}
@@ -3133,35 +2841,28 @@ export default function DashboardPage() {
                       />
                       <XAxis
                         dataKey="name"
-                        type="category"
                         tickLine={false}
                         axisLine={true}
-                        interval={trendChartLayout.xInterval}
-                        padding={{ left: 0.04, right: 0.04 }}
+                        fontSize={12}
+                        fontWeight={400}
                         stroke={isDark ? "#FFFFFF" : "#000000"}
-                        tick={{
-                          fill: isDark ? "#FFFFFF" : "#000000",
-                          fontSize: trendChartLayout.xTickFontSize,
-                        }}
+                        tick={{ fill: isDark ? "#FFFFFF" : "#000000" }}
                       />
                       <YAxis
-                        width={trendChartLayout.yAxisWidth}
                         tickLine={false}
                         axisLine={true}
                         stroke={isDark ? "#FFFFFF" : "#000000"}
-                        tick={{
-                          fill: isDark ? "#FFFFFF" : "#000000",
-                          fontSize: 11,
-                        }}
-                        tickMargin={4}
+                        fontSize={12}
+                        fontWeight={400}
+                        tick={{ fill: isDark ? "#FFFFFF" : "#000000" }}
                         label={{
                           value: "Amount",
                           angle: -90,
                           position: "insideLeft",
-                          offset: trendChartLayout.yLabelOffset,
+                          offset: -20,
                           style: {
                             textAnchor: "middle",
-                            fill: isDark ? "#FFFFFF" : "#000000",
+                            color: isDark ? "#FFFFFF" : "#000000",
                           },
                         }}
                         tickFormatter={(value) => formatCurrency(value as number)}
@@ -3189,10 +2890,8 @@ export default function DashboardPage() {
                           if (trendView === "monthly" && dateKey) {
                             const d = new Date(dateKey);
                             if (!isNaN(d.getTime())) {
-                              const monthShort = d
-                                .toLocaleDateString("en-US", { month: "short" })
-                                .toUpperCase();
-                              const day = d.getDate();
+                              const monthShort = formatMonthShortET(d).toUpperCase();
+                              const day = formatDayET(d);
                               formattedLabel = `${monthShort}-${day}`;
                             }
                           }
@@ -3219,16 +2918,16 @@ export default function DashboardPage() {
                       <Bar
                         dataKey="funded"
                         name="Funded"
-                        fill="#276D9C"
+                        fill="var(--brand)"
                         radius={[3, 3, 0, 0]}
-                        maxBarSize={trendChartLayout.maxBarSize}
+                        barSize={12}
                       />
                       <Bar
                         dataKey="approved"
                         name="Approved"
                         fill="#76B7E2"
                         radius={[3, 3, 0, 0]}
-                        maxBarSize={trendChartLayout.maxBarSize}
+                        barSize={12}
                       />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -3319,7 +3018,7 @@ export default function DashboardPage() {
                           >
                             <stop
                               offset="5%"
-                              stopColor="#276D9C"
+                              stopColor="var(--brand)"
                               stopOpacity={0.3}
                             />
                             <stop
@@ -3329,7 +3028,7 @@ export default function DashboardPage() {
                             />
                             <stop
                               offset="95%"
-                              stopColor="#276D9C"
+                              stopColor="var(--brand)"
                               stopOpacity={0}
                             />
                           </linearGradient>
@@ -3373,7 +3072,7 @@ export default function DashboardPage() {
                           ]}
                         />
                         <Tooltip
-                          cursor={{ stroke: "#276D9C", strokeWidth: 1 }}
+                          cursor={{ stroke: "var(--brand)", strokeWidth: 1 }}
                           contentStyle={{
                             backgroundColor: "white",
                             borderRadius: "8px",
@@ -3398,9 +3097,7 @@ export default function DashboardPage() {
                                 ? new Date(first.createdAt as any)
                                 : null;
                               if (created && !isNaN(created.getTime())) {
-                                const monthShort = created
-                                  .toLocaleDateString("en-US", { month: "short" })
-                                  .toUpperCase();
+                                const monthShort = formatMonthShortET(created).toUpperCase();
                                 displayLabel = `${monthShort}-${label}`;
                               }
                             } else if (typeof label === "string") {
@@ -3413,8 +3110,8 @@ export default function DashboardPage() {
                             return (
                               <div className="bg-white rounded-lg p-3 shadow-lg">
                                 <div className="flex items-center gap-2 mb-2">
-                                  <div className="w-2 h-2 rounded-full bg-[#276D9C]"></div>
-                                  <p className="text-[#276D9C] font-semibold text-sm">
+                                  <div className="w-2 h-2 rounded-full bg-[image:var(--brand-gradient)]"></div>
+                                  <p className="text-[var(--brand)] font-semibold text-sm">
                                     {displayLabel}
                                   </p>
                                 </div>
@@ -3429,11 +3126,11 @@ export default function DashboardPage() {
                         <Area
                           type="monotone"
                           dataKey="value"
-                          stroke="#276D9C"
+                          stroke="var(--brand)"
                           strokeWidth={2}
                           fill="url(#colorCommission)"
-                          dot={{ r: 4, fill: "#276D9C" }}
-                          activeDot={{ r: 6, fill: "#276D9C" }}
+                          dot={{ r: 4, fill: "var(--brand)" }}
+                          activeDot={{ r: 6, fill: "var(--brand)" }}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -3461,10 +3158,10 @@ export default function DashboardPage() {
                   {/* <span className="text-foreground">Dashboard</span> */}
                 </h1>
                 <div className="flex items-center gap-3">
-                  {userRole !== "FINAL_UNDERWRITER" && (
+                  {userRole !== "UNDERWRITER" && (
                     <Button
                       variant="outline"
-                      className="h-9 gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white hover:text-white border-[#276D9C]"
+                      className="h-9 gap-2 bg-[image:var(--brand-gradient)] hover:opacity-90 text-white hover:text-white border-[var(--brand)]"
                       onClick={() => navigate("/case-management")}
                     >
                       <span className="text-sm font-semibold">
@@ -3480,7 +3177,7 @@ export default function DashboardPage() {
                       <button
                         className={`flex items-center gap-2 px-3 py-2 h-9 rounded-md transition-colors ${isDark
                           ? "bg-[#141517] hover:bg-[#374151] text-white"
-                          : "bg-white hover:bg-gray-50 text-black border border-[#3184BB]"
+                          : "bg-white hover:bg-gray-50 text-black border border-[var(--brand)]"
                           }`}
                         style={
                           isDark
@@ -3531,7 +3228,7 @@ export default function DashboardPage() {
                         </div>
                         <Button
                           onClick={handleDateChange}
-                          className="w-full bg-[#3184BB] hover:bg-[#3184BB]/90 text-white"
+                          className="w-full bg-[image:var(--brand-gradient)] hover:opacity-90 text-white"
                         >
                           Apply
                         </Button>
@@ -3541,7 +3238,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Underwriter/Final Underwriter: keep first 5 KPI cards in one row (agent-style layout). */}
+              {/* Scrubbing/Underwriter: keep first 5 KPI cards in one row (agent-style layout). */}
               <section className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
                 {underwriterStats.slice(0, 5).map((c, i) => (
                   <div
@@ -3555,7 +3252,7 @@ export default function DashboardPage() {
                       }
                     }}
                     onClick={() => goToApplicationsForStatCard(c.title)}
-                    className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                    className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                   >
                     <CornerSummaryCard
                       isDark={isDark}
@@ -3571,7 +3268,7 @@ export default function DashboardPage() {
                 ))}
               </section>
 
-              {/* Underwriter/Final Underwriter: render remaining cards on the next row. */}
+              {/* Scrubbing/Underwriter: render remaining cards on the next row. */}
               {(underwriterStats.length > 5 ||
                 (showPipelineWorkflowCards && showUnderwriterDashboard)) && (
                   <section className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -3587,7 +3284,7 @@ export default function DashboardPage() {
                           }
                         }}
                         onClick={() => goToApplicationsForStatCard(c.title)}
-                        className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                        className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                       >
                         <CornerSummaryCard
                           isDark={isDark}
@@ -3615,7 +3312,7 @@ export default function DashboardPage() {
                             }
                           }}
                           onClick={() => goToApplicationsForStatCard(c.title)}
-                          className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                          className="h-full rounded-xl cursor-pointer transition hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
                         >
                           <CornerSummaryCard
                             isDark={isDark}
@@ -3655,7 +3352,7 @@ export default function DashboardPage() {
                       </div>
                       <div className="h-4 w-px"></div>
                       <div className="flex items-center gap-2">
-                        <div className="w-3 h-3 rounded-full bg-[#276D9C]"></div>
+                        <div className="w-3 h-3 rounded-full bg-[image:var(--brand-gradient)]"></div>
                         <span className="text-sm text-muted-foreground">
                           Funded
                         </span>
@@ -3690,9 +3387,14 @@ export default function DashboardPage() {
                     <ResponsiveContainer width="100%" height="100%">
                       <ComposedChart
                         data={filteredTrendData}
-                        barCategoryGap={trendChartLayout.barCategoryGap}
-                        barGap={2}
-                        margin={trendChartLayout.margin}
+                        barCategoryGap={20}
+                        barGap={0}
+                        margin={{
+                          top: 5,
+                          right: 5,
+                          bottom: 5,
+                          left: 30,
+                        }}
                       >
                         <CartesianGrid
                           vertical={false}
@@ -3701,35 +3403,28 @@ export default function DashboardPage() {
                         />
                         <XAxis
                           dataKey="name"
-                          type="category"
                           tickLine={false}
                           axisLine={true}
-                          interval={trendChartLayout.xInterval}
-                          padding={{ left: 0.04, right: 0.04 }}
+                          fontSize={12}
+                          fontWeight={400}
                           stroke={isDark ? "#FFFFFF" : "#000000"}
-                          tick={{
-                            fill: isDark ? "#FFFFFF" : "#000000",
-                            fontSize: trendChartLayout.xTickFontSize,
-                          }}
+                          tick={{ fill: isDark ? "#FFFFFF" : "#000000" }}
                         />
                         <YAxis
-                          width={trendChartLayout.yAxisWidth}
                           tickLine={false}
                           axisLine={true}
                           stroke={isDark ? "#FFFFFF" : "#000000"}
-                          tick={{
-                            fill: isDark ? "#FFFFFF" : "#000000",
-                            fontSize: 11,
-                          }}
-                          tickMargin={4}
+                          fontSize={12}
+                          fontWeight={400}
+                          tick={{ fill: isDark ? "#FFFFFF" : "#000000" }}
                           label={{
                             value: "Amount",
                             angle: -90,
                             position: "insideLeft",
-                            offset: trendChartLayout.yLabelOffset,
+                            offset: -20,
                             style: {
                               textAnchor: "middle",
-                              fill: isDark ? "#FFFFFF" : "#000000",
+                              color: isDark ? "#FFFFFF" : "#000000",
                             },
                           }}
                           tickFormatter={(value) => formatCurrency(value as number)}
@@ -3757,10 +3452,8 @@ export default function DashboardPage() {
                             if (trendView === "monthly" && dateKey) {
                               const d = new Date(dateKey);
                               if (!isNaN(d.getTime())) {
-                                const monthShort = d
-                                  .toLocaleDateString("en-US", { month: "short" })
-                                  .toUpperCase();
-                                const day = d.getDate();
+                                const monthShort = formatMonthShortET(d).toUpperCase();
+                                const day = formatDayET(d);
                                 formattedLabel = `${monthShort}-${day}`;
                               }
                             }
@@ -3787,16 +3480,16 @@ export default function DashboardPage() {
                         <Bar
                           dataKey="funded"
                           name="Funded"
-                          fill="#276D9C"
+                          fill="var(--brand)"
                           radius={[3, 3, 0, 0]}
-                          maxBarSize={trendChartLayout.maxBarSize}
+                          barSize={12}
                         />
                         <Bar
                           dataKey="approved"
                           name="Approved"
                           fill="#76B7E2"
                           radius={[3, 3, 0, 0]}
-                          maxBarSize={trendChartLayout.maxBarSize}
+                          barSize={12}
                         />
                       </ComposedChart>
                     </ResponsiveContainer>
@@ -3818,7 +3511,7 @@ export default function DashboardPage() {
                   conversionText={pipelineConversionText}
                   pipelineView={pipelineView}
                   onSelectView={setPipelineView}
-                  dropdownButtonClassName="h-8 gap-2 rounded-md border-none bg-background font-inter text-sm text-[#151357] shadow-none"
+                  dropdownButtonClassName="h-8 gap-2 rounded-md border-none bg-background font-inter text-sm text-[var(--brand)] shadow-none"
                 />
               </section>
 

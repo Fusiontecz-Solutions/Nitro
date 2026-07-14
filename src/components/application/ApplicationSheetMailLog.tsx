@@ -49,7 +49,7 @@ type ApplicationSheetMailLogProps = {
 };
 
 const DEFAULT_MAIL_LOG_POLL_MS = Number(
-  import.meta.env.VITE_MAIL_LOG_POLL_MS ?? 10_000,
+  import.meta.env.VITE_MAIL_LOG_POLL_MS ?? 5_000,
 );
 
 type MailLogRow = {
@@ -68,12 +68,15 @@ type MailLogRow = {
 
 function isCommunicationLog(log: ApplicationActivityLog): boolean {
   const meta = log.metadata ?? {};
-  const hasEmailMeta = Boolean(meta.emailSentTo || meta.template);
+  const templateKey = typeof meta.template === 'string' ? meta.template.trim().toLowerCase() : '';
+  const hasEmailMeta = Boolean(meta.emailSentTo || meta.template || meta.outboundCommunicationId);
   return (
     log.category === 'COMMUNICATION' ||
     log.actionType?.startsWith('PAYMENT_MAIL_') ||
     log.action === 'SEND' ||
     (log.actionType === 'APPROVED' && hasEmailMeta) ||
+    (log.actionType === 'APPLICATION_REJECTED' && templateKey === 'rejection') ||
+    (log.actionType === 'DOCUMENT_REQUESTED' && templateKey === 'document-request') ||
     Boolean(log.canView && (log.channel || log.recipientName))
   );
 }
@@ -93,20 +96,24 @@ function resolveActivityMailStatus(log: ApplicationActivityLog): string {
   if (type.includes('FAILED')) return 'failed';
   if (type.includes('QUEUED')) return 'queued';
 
-  const meta = log.metadata ?? {};
-  const deliveryStatus =
-    meta.delivery &&
-    typeof meta.delivery === 'object' &&
-    typeof (meta.delivery as Record<string, unknown>).status === 'string'
-      ? String((meta.delivery as Record<string, unknown>).status).trim().toLowerCase()
-      : '';
-  if (deliveryStatus) return deliveryStatus;
+  const delivery = extractDeliveryMeta(log);
+  if (delivery) return resolveStatusFromDeliveryTimeline(delivery);
 
+  const meta = log.metadata ?? {};
   const metaStatus = meta.status;
   if (typeof metaStatus === 'string' && metaStatus.trim()) {
     return metaStatus.trim().toLowerCase();
   }
   return 'sent';
+}
+
+/** Canonical progression: sent → delivered → opened → clicked */
+function resolveStatusFromDeliveryTimeline(delivery: DeliveryMeta): string {
+  if (delivery.clickedAt) return 'clicked';
+  if (delivery.openedAt || (delivery.openCount ?? 0) > 0) return 'opened';
+  if (delivery.deliveredAt) return 'delivered';
+  if (delivery.sentAt) return 'sent';
+  return delivery.status?.trim().toLowerCase() ?? 'sent';
 }
 
 function extractAttachmentNames(
@@ -120,10 +127,6 @@ function extractAttachmentNames(
     if (typeof value === 'string' && value.trim()) names.push(value.trim());
   };
 
-  push(meta.documentName);
-  push(log.templateName);
-  if (meta.hasLetterPdf === true) names.push('Letter PDF');
-
   if (Array.isArray(meta.attachments)) {
     for (const item of meta.attachments) {
       if (typeof item === 'string') push(item);
@@ -135,10 +138,51 @@ function extractAttachmentNames(
       }
     }
   }
+  if (names.length) return [...new Set(names)];
+
+  push(meta.documentName);
+  if (meta.hasLetterPdf === true) {
+    const template = (log.templateName ?? meta.templateName ?? '').toString().trim();
+    if (template) {
+      return [template.toLowerCase().endsWith('.pdf') ? template : `${template}.pdf`];
+    }
+    return ['Letter PDF'];
+  }
 
   if (content?.documentName) push(content.documentName);
-
   return [...new Set(names)];
+}
+
+function resolveMailLogHeading(row: MailLogRow): string {
+  const meta = row.activityLog?.metadata ?? {};
+  const templateKey =
+    typeof meta.template === 'string' ? meta.template.trim().toLowerCase() : '';
+  const isIsoApprovalEmail =
+    row.activityLog?.actionType === 'APPROVED' ||
+    templateKey === 'approval' ||
+    templateKey === 'application-approved' ||
+    templateKey === 'offer-updated';
+
+  if (templateKey === 'rejection') {
+    return 'Application declined template';
+  }
+  if (templateKey === 'document-request') {
+    return 'Document request template';
+  }
+
+  if (isIsoApprovalEmail) {
+    if (templateKey === 'offer-updated' || meta.resend === true) {
+      return 'Update offer template';
+    }
+    if (templateKey === 'approval' || templateKey === 'application-approved') {
+      return 'Application approved template';
+    }
+    if (row.templateName?.trim()) {
+      return row.templateName.trim();
+    }
+  }
+
+  return row.subject?.trim() || row.templateName?.trim() || '—';
 }
 
 function statusBadgeClass(status: string) {
@@ -195,6 +239,7 @@ function statusLabel(status: string): string {
 
 type DeliveryMeta = {
   status?: string;
+  sentAt?: string;
   deliveredAt?: string;
   openedAt?: string;
   clickedAt?: string;
@@ -202,6 +247,7 @@ type DeliveryMeta = {
   openCount?: number;
   clickCount?: number;
   bounceReason?: string;
+  lastClickedUrl?: string;
   lastEvent?: string;
   lastEventAt?: string;
 };
@@ -324,7 +370,7 @@ export default function ApplicationSheetMailLog({
           'metadata' in row &&
           (row as ApplicationActivityLog).metadata?.paymentMailLogId === viewPayment.id,
       );
-      setViewDelivery(extractDeliveryMeta(linkedActivity));
+      setViewDelivery(viewPayment.delivery ?? extractDeliveryMeta(linkedActivity));
     }
   }, [logs, viewOpen, viewActivityLogId, viewPayment]);
 
@@ -368,9 +414,11 @@ export default function ApplicationSheetMailLog({
       recipient: log.recipient,
       subject: log.subject,
       templateName: log.templateName,
-      channel: 'TEMPLATE',
-      status: log.status,
-      attachments: log.templateName ? [log.templateName] : [],
+      channel: log.category === 'letter' ? 'DOCUMENT' : 'TEMPLATE',
+      status: log.delivery
+        ? resolveStatusFromDeliveryTimeline(log.delivery as DeliveryMeta)
+        : log.status,
+      attachments: log.attachments?.length ? log.attachments : [],
       source: 'payment' as const,
       paymentLog: log,
     }));
@@ -394,7 +442,12 @@ export default function ApplicationSheetMailLog({
         getApplicationActivityLogContent({ applicationId, logId: log.id }),
       ).unwrap();
       setViewContent(content);
-      setViewAttachments(extractAttachmentNames(log, content));
+      setViewAttachments(
+        content.attachments?.length
+          ? content.attachments
+          : extractAttachmentNames(log, content),
+      );
+      if (content.delivery) setViewDelivery(content.delivery as DeliveryMeta);
     } catch (e) {
       setViewError(typeof e === 'string' ? e : 'Failed to load mail content');
     } finally {
@@ -416,8 +469,14 @@ export default function ApplicationSheetMailLog({
         'metadata' in row &&
         (row as ApplicationActivityLog).metadata?.paymentMailLogId === log.id,
     );
-    setViewDelivery(extractDeliveryMeta(linkedActivity));
-    setViewAttachments(log.templateName ? [log.templateName] : []);
+    setViewDelivery(log.delivery ?? extractDeliveryMeta(linkedActivity));
+    setViewAttachments(
+      log.attachments?.length
+        ? log.attachments
+        : log.templateName
+          ? [log.templateName]
+          : [],
+    );
   };
 
   const previewBody =
@@ -477,7 +536,7 @@ export default function ApplicationSheetMailLog({
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="pl-4">When</TableHead>
                   <TableHead>Recipient</TableHead>
-                  <TableHead className="min-w-[140px]">Subject</TableHead>
+                  <TableHead className="min-w-[140px]">Heading</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead className="min-w-[120px]">Attachments</TableHead>
                   <TableHead>Status</TableHead>
@@ -494,7 +553,7 @@ export default function ApplicationSheetMailLog({
                       {row.recipient}
                     </TableCell>
                     <TableCell className="max-w-[200px] whitespace-normal break-words text-xs">
-                      {row.subject}
+                      {resolveMailLogHeading(row)}
                     </TableCell>
                     <TableCell className="text-xs">
                       {channelLabel(row.channel)}
@@ -666,47 +725,82 @@ export default function ApplicationSheetMailLog({
                     <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                       Delivery tracking
                     </p>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {viewDelivery.deliveredAt && (
-                        <div className="flex items-center gap-2 text-xs text-foreground">
-                          <span className="h-2 w-2 shrink-0 rounded-full bg-sky-500" />
-                          <span className="font-medium">Delivered</span>
-                          <span className="text-muted-foreground">
-                            {formatDateTimeUS(viewDelivery.deliveredAt, viewDelivery.deliveredAt)}
-                          </span>
+                    <div className="space-y-2">
+                      {(
+                        [
+                          {
+                            key: 'sent',
+                            label: 'Sent',
+                            at: viewDelivery.sentAt,
+                            color: 'bg-emerald-500',
+                            done: Boolean(
+                              viewDelivery.sentAt ||
+                                viewDelivery.deliveredAt ||
+                                viewDelivery.openedAt ||
+                                viewDelivery.clickedAt,
+                            ),
+                          },
+                          {
+                            key: 'delivered',
+                            label: 'Delivered',
+                            at: viewDelivery.deliveredAt,
+                            color: 'bg-sky-500',
+                            done: Boolean(viewDelivery.deliveredAt),
+                          },
+                          {
+                            key: 'opened',
+                            label: 'Opened',
+                            at: viewDelivery.openedAt,
+                            color: 'bg-violet-500',
+                            done: Boolean(
+                              viewDelivery.openedAt || (viewDelivery.openCount ?? 0) > 0,
+                            ),
+                          },
+                          {
+                            key: 'clicked',
+                            label: 'Clicked',
+                            at: viewDelivery.clickedAt,
+                            color: 'bg-indigo-500',
+                            done: Boolean(viewDelivery.clickedAt),
+                            extra:
+                              viewDelivery.lastClickedUrl &&
+                              viewDelivery.clickedAt
+                                ? viewDelivery.lastClickedUrl
+                                : undefined,
+                          },
+                        ] as const
+                      ).map((step) => (
+                        <div
+                          key={step.key}
+                          className={cn(
+                            'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs',
+                            step.done
+                              ? 'border-border/70 bg-muted/20 text-foreground'
+                              : 'border-dashed border-border/50 text-muted-foreground',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'h-2.5 w-2.5 shrink-0 rounded-full',
+                              step.done ? step.color : 'bg-muted-foreground/30',
+                            )}
+                          />
+                          <span className="min-w-[72px] font-medium">{step.label}</span>
+                          {step.done && step.at ? (
+                            <span className="text-muted-foreground">
+                              {formatDateTimeUS(step.at, step.at)}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">Pending</span>
+                          )}
+                          {'extra' in step && step.extra ? (
+                            <span className="truncate text-muted-foreground">— {step.extra}</span>
+                          ) : null}
                         </div>
-                      )}
-                      {viewDelivery.openedAt && (
-                        <div className="flex items-center gap-2 text-xs text-foreground">
-                          <span className="h-2 w-2 shrink-0 rounded-full bg-violet-500" />
-                          <span className="font-medium">
-                            Opened
-                            {viewDelivery.openCount && viewDelivery.openCount > 1
-                              ? ` (${viewDelivery.openCount}×)`
-                              : ''}
-                          </span>
-                          <span className="text-muted-foreground">
-                            {formatDateTimeUS(viewDelivery.openedAt, viewDelivery.openedAt)}
-                          </span>
-                        </div>
-                      )}
-                      {viewDelivery.clickedAt && (
-                        <div className="flex items-center gap-2 text-xs text-foreground">
-                          <span className="h-2 w-2 shrink-0 rounded-full bg-indigo-500" />
-                          <span className="font-medium">
-                            Clicked
-                            {viewDelivery.clickCount && viewDelivery.clickCount > 1
-                              ? ` (${viewDelivery.clickCount}×)`
-                              : ''}
-                          </span>
-                          <span className="text-muted-foreground">
-                            {formatDateTimeUS(viewDelivery.clickedAt, viewDelivery.clickedAt)}
-                          </span>
-                        </div>
-                      )}
+                      ))}
                       {viewDelivery.bouncedAt && (
-                        <div className="flex items-center gap-2 text-xs text-foreground">
-                          <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
+                        <div className="flex items-center gap-3 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-foreground">
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-500" />
                           <span className="font-medium">Bounced</span>
                           <span className="break-all text-muted-foreground">
                             {formatDateTimeUS(viewDelivery.bouncedAt, viewDelivery.bouncedAt)}

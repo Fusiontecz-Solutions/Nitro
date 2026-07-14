@@ -13,13 +13,13 @@ import ChecksAndDecision from "@/components/application/ChecksAndDecision";
 import DecisionMakeFinalValues from "@/components/application/DecisionMakeFinalValues";
 
 /** Pipeline list stages where deal detail should omit bank/offer/leverage/positions UI */
-const EARLY_PIPELINE_STAGES = new Set(["agent", "underwriter"]);
+const EARLY_PIPELINE_STAGES = new Set(["agent", "scrubbing"]);
 
 /** All deal-pipeline tab values (must match `PipelineStage` / `fromStage` in DealPipeline). */
 const DEAL_PIPELINE_STAGES = new Set([
   "agent",
-  "underwriter",
-  "final-underwriter",
+  "scrubbing",
+  "final-scrubbing",
   "doc-request-contract",
   "final",
   "funding-call",
@@ -105,10 +105,12 @@ export default function DealbyId() {
                     <CommentSection />
                   </div>
                 ) : (
-                  <div className="flex flex-row mt-6 gap-4 w-full">
-                    <ChecksAndDecision hideUnderwritingDecision />
-                    <div className="w-[50%] max-h-[467px] overflow-y-auto">
+                  <div className="flex flex-row mt-6 gap-4 w-full items-stretch">
+                    <div className="flex-[7] min-w-0 max-h-[467px] overflow-y-auto">
                       <CommentSection />
+                    </div>
+                    <div className="flex-[3] min-w-0">
+                      <ChecksAndDecision hideUnderwritingDecision compactLayout />
                     </div>
                   </div>
                 )}

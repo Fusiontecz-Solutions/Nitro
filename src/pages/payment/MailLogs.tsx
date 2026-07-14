@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
 import { useSelector } from "react-redux";
 import { Inbox, Mail } from "lucide-react";
@@ -29,6 +29,7 @@ import {
 import {
   fetchPaymentMailLogsForApplication,
   getPaymentMailLogs,
+  mergePaymentMailLogs,
   type PaymentMailLogEntry,
   type PaymentMailLogStatus,
 } from "./paymentMailLogStorage";
@@ -46,10 +47,59 @@ const STATUS_TABS: { id: "all" | PaymentMailLogStatus; label: string }[] = [
   { id: "all", label: "All" },
   { id: "queued", label: "Queued" },
   { id: "sent", label: "Sent" },
+  { id: "delivered", label: "Delivered" },
+  { id: "opened", label: "Opened" },
+  { id: "clicked", label: "Clicked" },
   { id: "failed", label: "Failed" },
 ];
 
+const DEFAULT_MAIL_LOG_POLL_MS = Number(
+  import.meta.env.VITE_MAIL_LOG_POLL_MS ?? 5_000
+);
 
+function resolveRowStatus(row: PaymentMailLogEntry): PaymentMailLogStatus {
+  const delivery = row.delivery;
+  if (delivery) {
+    if (delivery.clickedAt) return "clicked";
+    if (delivery.openedAt || (delivery.openCount ?? 0) > 0) return "opened";
+    if (delivery.deliveredAt) return "delivered";
+    if (delivery.sentAt) return "sent";
+    const deliveryStatus = delivery.status?.trim().toLowerCase();
+    if (
+      deliveryStatus &&
+      [
+        "queued",
+        "sent",
+        "failed",
+        "delivered",
+        "opened",
+        "clicked",
+        "deferred",
+        "bounced",
+        "dropped",
+        "spam",
+        "unsubscribed",
+      ].includes(deliveryStatus)
+    ) {
+      return deliveryStatus as PaymentMailLogStatus;
+    }
+  }
+  return row.status;
+}
+
+function matchesStatusFilter(
+  status: PaymentMailLogStatus,
+  filter: "all" | PaymentMailLogStatus
+): boolean {
+  if (filter === "all") return true;
+  if (filter === "failed") {
+    return ["failed", "bounced", "dropped", "spam"].includes(status);
+  }
+  if (filter === "sent") {
+    return ["sent", "deferred", "processed"].includes(status);
+  }
+  return status === filter;
+}
 
 function statusBadgeClass(status: string) {
   const normalized = status.toLowerCase();
@@ -159,32 +209,47 @@ export default function MailLogs() {
   const selectedBody = selectedLog?.body?.trim() || "";
   const selectedBodyIsHtml = bodyIsHtml(selectedBody);
 
+  const refreshRows = useCallback(async () => {
+    if (applicationId) {
+      try {
+        const data = await fetchPaymentMailLogsForApplication(applicationId);
+        setRows(data);
+        mergePaymentMailLogs(data);
+        return;
+      } catch {
+        setRows(
+          getPaymentMailLogs().filter(
+            (r) =>
+              r.dealKey === dealLabel || r.applicationId === applicationId
+          )
+        );
+      }
+      return;
+    }
+    setRows(getPaymentMailLogs());
+  }, [applicationId, dealLabel]);
 
   useEffect(() => {
-    const refresh = () => {
-      if (applicationId) {
-        void fetchPaymentMailLogsForApplication(applicationId)
-          .then(setRows)
-          .catch(() => {
-            setRows(
-              getPaymentMailLogs().filter(
-                (r) =>
-                  r.dealKey === dealLabel || r.applicationId === applicationId
-              )
-            );
-          });
-        return;
-      }
-      setRows(getPaymentMailLogs());
-    };
-    refresh();
-    window.addEventListener("payment-mail-log-updated", refresh);
-    window.addEventListener("storage", refresh);
+    void refreshRows();
+    window.addEventListener("payment-mail-log-updated", refreshRows);
+    window.addEventListener("storage", refreshRows);
     return () => {
-      window.removeEventListener("payment-mail-log-updated", refresh);
-      window.removeEventListener("storage", refresh);
+      window.removeEventListener("payment-mail-log-updated", refreshRows);
+      window.removeEventListener("storage", refreshRows);
     };
-  }, [applicationId, dealLabel]);
+  }, [refreshRows]);
+
+  useEffect(() => {
+    if (!applicationId) return;
+
+    const intervalMs = Math.max(5_000, DEFAULT_MAIL_LOG_POLL_MS);
+    const intervalId = window.setInterval(() => {
+      if (document.hidden) return;
+      void refreshRows();
+    }, intervalMs);
+
+    return () => window.clearInterval(intervalId);
+  }, [applicationId, refreshRows]);
 
   let scope: "deal" | "all" = "deal";
   let query: string | undefined = undefined;
@@ -198,7 +263,9 @@ export default function MailLogs() {
       );
     }
     if (statusFilter !== "all") {
-      list = list.filter((r) => r.status === statusFilter);
+      list = list.filter((r) =>
+        matchesStatusFilter(resolveRowStatus(r), statusFilter)
+      );
     }
     const q = (query as any)?.trim().toLowerCase();
     if (q) {
@@ -235,7 +302,7 @@ export default function MailLogs() {
               className={cn(
                 "rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wide transition-colors",
                 scope === id
-                  ? "bg-[#276D9C] text-white shadow-sm"
+                  ? "bg-[image:var(--brand-gradient)] text-white shadow-sm"
                   : "text-muted-foreground hover:bg-background hover:text-foreground"
               )}
             >
@@ -267,7 +334,7 @@ export default function MailLogs() {
               className={cn(
                 "rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors",
                 statusFilter === id
-                  ? "bg-[#276D9C] text-white shadow-sm"
+                  ? "bg-[image:var(--brand-gradient)] text-white shadow-sm"
                   : "text-muted-foreground hover:bg-background hover:text-foreground"
               )}
             >
@@ -280,7 +347,7 @@ export default function MailLogs() {
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-            <div className="flex size-12 items-center justify-center rounded-full bg-[#276D9C]/10 text-[#276D9C]">
+            <div className="flex size-12 items-center justify-center rounded-full bg-[var(--brand)]/10 text-[var(--brand)]">
               <Inbox className="size-6" aria-hidden />
             </div>
             <div className="max-w-md space-y-1">
@@ -309,7 +376,9 @@ export default function MailLogs() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((row) => (
+              {filtered.map((row) => {
+                const displayStatus = resolveRowStatus(row);
+                return (
                 <TableRow key={row.id}>
                   <TableCell className="pl-4 text-foreground">
                     {formatWhen(row.at)}
@@ -351,14 +420,15 @@ export default function MailLogs() {
                       variant="outline"
                       className={cn(
                         "text-[10px] font-semibold uppercase tracking-wide",
-                        statusBadgeClass(row.status)
+                        statusBadgeClass(displayStatus)
                       )}
                     >
-                      {statusLabel(row.status)}
+                      {statusLabel(displayStatus)}
                     </Badge>
                   </TableCell>
                 </TableRow>
-              ))}
+              );
+              })}
             </TableBody>
           </Table>
         )}

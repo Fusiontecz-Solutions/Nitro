@@ -8,7 +8,7 @@ export const FINALS_AND_FUNDING_CALL_TAB: PipelineTab = {
   label: "FINALS & FUNDING CALL",
 };
 
-/** Full pipeline for Super Admin — Decision Logic after Contract, then Finals & Funding Call. */
+/** Full pipeline for Super Admin — Scrubbing (not a separate Bank Analysis tab) plus Finals & Funding Call between Contract and Disbursement. */
 export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
   { id: "documents", label: "DOCUMENTS" },
@@ -22,7 +22,7 @@ export const SUPER_ADMIN_PIPELINE_TABS: PipelineTab[] = [
 
 /**
  * Operations pipeline: same flow with the merged Finals & Funding Call tab
- * between Decision Logic and Disbursement.
+ * between Contract and Disbursement.
  */
 export const OPERATIONS_PIPELINE_TABS: PipelineTab[] = [
   { id: "overview", label: "OVERVIEW" },
@@ -52,7 +52,6 @@ const TAB_INDEX = {
  * - Scrubbing → through CONTRACT (overview → contract)
  * - Underwriter → DECISION MAKING, BACKGROUND CHECK, CONTRACT, DECISION LOGIC
  * - Contract pending / … → through CONTRACT
- * - Contract Signed → through DECISION LOGIC
  * - Final / Funding Call / Finals & Funding Call → through merged tab
  * - Funded / Disbursment → full strip
  * - No / unknown status → full Operations strip
@@ -94,6 +93,14 @@ export function getOperationsTabsForDashboardEntry(
       const eligIdx = full.findIndex((t) => t.id === "eligibility-analysis");
       return eligIdx >= 0 ? full.slice(0, eligIdx + 1) : [...full];
     }
+    case "Final_Approval": {
+      const end = TAB_INDEX.finalsAndFundingCall;
+      return end >= 0 ? full.slice(0, end + 1) : [...full];
+    }
+    case "Reinitiate_Contract": {
+      const end = TAB_INDEX.contract;
+      return end >= 0 ? full.slice(0, end + 1) : [...full];
+    }
     case "Final":
     case "Funding Call":
     case "Finals_And_Funding_Call": {
@@ -133,6 +140,10 @@ export function getOperationsPipelineStageTabId(
     case "Contract_Signed":
     case "Signed_Contracts":
       return "eligibility-analysis";
+    case "Final_Approval":
+      return "eligibility-analysis";
+    case "Reinitiate_Contract":
+      return "contract";
     case "Final":
     case "Funding Call":
     case "Finals_And_Funding_Call":

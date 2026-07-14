@@ -22,7 +22,7 @@ export const ChatButton = ({ onClick, unreadCount = 0 }: ChatButtonProps) => {
     >
       <MessageCircle className="h-6 w-6 text-gray-200" />
       {displayCount > 0 && (
-        <span className="absolute -top-0.5 -right-0.5 bg-blue-500 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 px-1 flex items-center justify-center">
+        <span className="absolute -top-0.5 -right-0.5 bg-primary text-primary-foreground text-xs font-bold rounded-full min-w-[1.25rem] h-5 px-1 flex items-center justify-center">
           {displayCount > 9 ? '9+' : displayCount}
         </span>
       )}

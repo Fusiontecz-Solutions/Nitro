@@ -13,7 +13,7 @@ export type BoldSignMergeAndSendRole = {
   formFields?: unknown[];
 };
 
-/** Filters CRM document-template rows (legacy table: `BoldSignTemplate`; state / frequency / type lowercase in DB). */
+/** Filters `BoldSignTemplate` rows (state / frequency / type stored lowercase in DB). */
 export type BoldSignContractTemplateFilters = {
   state?: string | null;
   frequency?: string | null;
@@ -21,16 +21,12 @@ export type BoldSignContractTemplateFilters = {
 };
 
 export type BoldSignMergeAndSendPayload = {
-  /** Legacy v1 merge: `{ templateId }[]` → resolved to supplemental refs server-side. */
+  /** Legacy v1 merge: `{ templateId }[]` → resolved to `templateIds` server-side. */
   templates?: Array<{ templateId: string }>;
-  /** Legacy: CRM document-template row ids or old DocuSign UUIDs (ignored if not in CRM). */
+  /** BoldSign v1-beta: explicit template GUIDs. */
   templateIds?: string[];
-  /** CRM document-template row ids for addendum / supplemental PDFs (main contract PDF from ContractTemplate). */
-  supplementalDocumentRefs?: string[];
-  /** Standalone docs only (e.g. ACH form) — no main contract PDF in the envelope. */
-  standaloneDocumentRefs?: string[];
-  /** Do not overwrite Application.document.envelopeId (standalone ACH stores envelope on contract mapping). */
-  skipApplicationEnvelopeLink?: boolean;
+  /** Code-defined layout keys (e.g. flex_addendum, balance_transfer). */
+  supplementalLayoutKeys?: string[];
   /** When false, envelope omits the main contract PDF (standalone supplemental send). */
   includeMainContract?: boolean;
   /** Main contract layout key (from funder profile in Settings). */
@@ -41,22 +37,12 @@ export type BoldSignMergeAndSendPayload = {
   funderProfileId?: string | null;
   /** Contract state — disambiguates funders with the same display name. */
   contractState?: string | null;
-  /** Code-defined layout keys (e.g. flex_addendum, balance_transfer). */
-  supplementalLayoutKeys?: string[];
-  /** CRM contract row — used when linking standalone envelopes to prefill. */
-  contractId?: number;
-  /** Documents included in this envelope (Create Contract package picker). */
-  sendPackage?: {
-    includeMainContract?: boolean;
-    includeAddendum?: boolean;
-    includeDisclosure?: boolean;
-  };
-  /** Resolve supplemental refs from CRM document templates (AND on provided fields). */
-  contractTemplateFilters?: BoldSignContractTemplateFilters;
-  /** Active owner count (1 or 2) — controls Owner 2 signature slots. */
+  /** @deprecated Use supplementalLayoutKeys — accepts layout keys or legacy CRM row ids. */
+  supplementalDocumentRefs?: string[];
   ownerCount?: number;
-  /** Active guarantor count (0–2) — controls guarantor signature slots on page 11. */
   guarantorCount?: number;
+  /** Resolve template IDs from CRM `BoldSignTemplate` (AND on provided fields). */
+  contractTemplateFilters?: BoldSignContractTemplateFilters;
   roles: Array<BoldSignMergeAndSendRole | Record<string, unknown>>;
   /** Non-empty BoldSign form-field rows for merged templates after the first (e.g. state disclosure). */
   secondaryMergeRoleFormFields?: Array<Record<string, unknown>>;
@@ -70,13 +56,23 @@ export type BoldSignMergeAndSendPayload = {
   showNavigationButtons?: boolean;
   sendLinkValidTill?: string;
   applicationId?: string;
+  /** CRM contract row — used when linking standalone ACH envelopes to prefill. */
+  contractId?: number;
+  /** Documents included in this envelope (Create Contract package picker). */
+  sendPackage?: {
+    includeMainContract?: boolean;
+    includeAddendum?: boolean;
+    includeDisclosure?: boolean;
+  };
   /** When true, backend uses `/v1/template/mergeAndSend` with minimal roles. */
   useLegacyMergeApi?: boolean;
   /** Non-signers who receive a copy when the merged document is sent from BoldSign. */
   ccEmails?: string[];
   /** When false, creates a draft envelope only (no signing emails). */
   autoSend?: boolean;
+  /** DocuSign envelope email subject (`emailSubject`). */
   title?: string;
+  /** DocuSign envelope email body (`emailBlurb`). */
   message?: string;
   reminderSettings?: {
     enableAutoReminder?: boolean;
@@ -356,11 +352,11 @@ export const getBoldSignTemplateRecipients = createAsyncThunk(
   }
 );
 
-/** DocuSign-only: merge contract + optional supplemental PDFs and create/send envelope. */
-export const mergeAndSendDocuSignEnvelope = mergeAndSendBoldSignTemplates;
-
-/** DocuSign-only: signer roles for envelope create (platform layout or legacy template). */
+/** @deprecated Prefer getBoldSignTemplateRecipients — DocuSign-named alias. */
 export const getDocuSignTemplateRecipients = getBoldSignTemplateRecipients;
+
+/** @deprecated Prefer mergeAndSendBoldSignTemplates — DocuSign-named alias. */
+export const mergeAndSendDocuSignEnvelope = mergeAndSendBoldSignTemplates;
 
 export const prefillBoldSignFields = createAsyncThunk(
   "boldSign/prefillFields",
@@ -382,6 +378,3 @@ export const prefillBoldSignFields = createAsyncThunk(
     }
   }
 );
-
-/** @alias DocuSign merge-and-send payload */
-export type DocuSignMergeAndSendPayload = BoldSignMergeAndSendPayload;

@@ -7,7 +7,8 @@ import type { AppDispatch } from "@/redux/store"
 import BankAnalysisTable from "./BankAnalysisTable"
 import DecisionMakeFinalValues from "./DecisionMakeFinalValues"
 import { getPositions } from "@/redux/actions/positionActions"
-import { resolveEffectiveRole, normalizeRoleKey } from "@/lib/sessionRole"
+import { canRoleEditDecisionMakingTab } from "@/lib/decisionMakingAccess"
+import { resolveEffectiveRole } from "@/lib/sessionRole"
 
 type ApplicationSheetBankAnalysisProps = {
   applicationId?: string | null
@@ -21,9 +22,8 @@ export default function ApplicationSheetBankAnalysis({
   const positionsState = useSelector((state: RootState) => state.positions)
 
   const loginUser = useSelector((state: RootState) => state.login?.data?.user)
-  /** Super Admin may edit/create offer, bank analysis, and positions from this tab. */
-  const isSuperAdmin = useMemo(
-    () => normalizeRoleKey(resolveEffectiveRole(loginUser)) === "SUPER_ADMIN",
+  const canEditDecisionMaking = useMemo(
+    () => canRoleEditDecisionMakingTab(resolveEffectiveRole(loginUser)),
     [loginUser],
   )
 
@@ -64,17 +64,18 @@ export default function ApplicationSheetBankAnalysis({
     <div className="space-y-6">
       <DecisionMakeFinalValues
         applicationId={resolvedApplicationId}
-        allowOfferEdit={isSuperAdmin}
-        allowPositionsEdit={isSuperAdmin}
-        betweenOfferAndPositions={
+        allowOfferEdit={canEditDecisionMaking}
+        allowPositionsEdit={canEditDecisionMaking}
+        betweenOfferAndPositions={({ componentsReadOnly, onRegisterBankSaveAll }) => (
           <BankAnalysisTable
-            showOnlyTotals={!isSuperAdmin}
-            readOnly={!isSuperAdmin}
-            disableCreate={!isSuperAdmin}
+            showOnlyTotals={!canEditDecisionMaking}
+            readOnly={componentsReadOnly || !canEditDecisionMaking}
+            disableCreate={componentsReadOnly || !canEditDecisionMaking}
             applicationId={resolvedApplicationId}
             positions={scopedPositions as any}
+            onRegisterSaveAll={onRegisterBankSaveAll}
           />
-        }
+        )}
       />
     </div>
   )

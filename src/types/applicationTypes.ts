@@ -16,7 +16,6 @@ export type ApplicationIsoLite = {
     id?: string;
     name?: string;
     email?: string | null;
-    phone?: string | null;
 };
 
 /** Minimal bank row used by Decision Logic widgets. */
@@ -38,6 +37,8 @@ export interface Application {
     _id: string;
     /** External / import deal identifier (e.g. Excel). Distinct from autoincrement `applicationId`. */
     dealId?: string | null;
+    /** Derived during bulk import from `dealId` prefix when organization tagging is enabled. */
+    organization?: string | null;
     applicationId?: number;
     priority: 'Low' | 'Medium' | 'High' | 'Urgent';
     type: 'New' | 'Renewal' | 'Modification';
@@ -51,14 +52,23 @@ export interface Application {
         business?: {
             name?: string;
             email?: string;
+            address?: import("./clientTypes").Address;
         };
         owner?: {
             firstName?: string;
             lastName?: string;
             email?: string;
+            address?: import("./clientTypes").Address;
         };
     };
     loanAmount?: number | null;
+    /** Latest terms offer (list/detail when backend includes relations). */
+    termsOffers?: { approvedAmount?: number | string | null }[];
+    /** Offer decision snapshot (list/detail when backend includes relations). */
+    OfferDecision?: {
+        offer?: number | string | Record<string, unknown> | null;
+        decision?: string | null;
+    } | null;
     /** Per-row import / Excel deal name when distinct from client business name (e.g. "… #2"). */
     dealDisplayName?: string | null;
     note?: string;
@@ -67,14 +77,24 @@ export interface Application {
     status?: 'Pending' | 'Approved' | 'Rejected' | 'Funded';
     queue?: string;
     state?: string;
-    currentQueue?: 'New' | 'Agent' | 'Review' | 'Underwriting' | 'Final Review' | 'Approved' | 'Declined' | 'On Hold' | 'Contracted' | 'Contract Pending' | 'Contract Generated' | 'Contract Sent' | 'Contract Cancelled' | 'Contract Signed' | 'Contract Out' | 'Contracts Out';
-    currentState?: 'Draft' | 'Pending' | 'Submitted' | 'In Progress' | 'Completed' | 'Cancelled' | 'Contract Pending' | 'Contract Generated' | 'Contract Sent' | 'Contract Cancelled' | 'Contract Signed' | 'Contract Out' | 'Contracts Out';
+    currentQueue?: 'New' | 'Agent' | 'Review' | 'Scrubbing' | 'Underwriter' | 'Underwriting' | 'Final Review' | 'Final Approval' | 'Approved' | 'Declined' | 'On Hold' | 'Contracted' | 'Contract Out' | 'Contracts Out';
+    currentState?: 'Draft' | 'Pending' | 'Submitted' | 'In Progress' | 'Completed' | 'Cancelled' | 'Contract Out' | 'Contracts Out';
     /** Raw DB state (Prisma) when present — `currentState` is workflow-mapped and can collapse funded vs approved. */
     statsCurrentState?: string;
     /** Application-level commission rate (0–100), persisted on the application record. */
     commissionPercentage?: number;
+    /** Per-deal underwriter commission rate (0–100), distinct from ISO commission. */
+    underwriterCommissionPercentage?: number;
+    /** Per-deal broker commission rate (0–100), set at disbursement. */
+    brokerCommissionPercentage?: number;
     /** Per-deal commission dollars (e.g. bulk import); used with advance/fees for “already net” style metrics. */
     commissionAmount?: number | null;
+    underwriterCommissionAmount?: number | null;
+    brokerCommissionAmount?: number | null;
+    /** Ops-entered broker name at disbursement. */
+    brokerName?: string | null;
+    /** Ops-entered underwriter name at disbursement. */
+    underwriterCommissionName?: string | null;
     /** Set on `GET /applications?statsBucket=funded`: collection payback/repaid/balance (same logic as `/collection-payments/balances`). */
     collectionPaybackAmount?: number | null;
     collectionSumOfRepaid?: number | null;
@@ -85,15 +105,29 @@ export interface Application {
     assignedTo?: string;
     claimedByUnderwriterId?: string | null;
     claimedAt?: string | null;
+    /** Set when the deal was soft-deleted (Recently Deleted). */
+    deletedAt?: string | null;
+    deletedById?: string | null;
     claimedByUnderwriter?: ApplicationUserLite | null;
     assignedUnderwriterId?: string | null;
     assignedUnderwriter?: ApplicationUserLite | null;
     approvedByUnderwriterId?: string | null;
+    approvedAt?: string | null;
     approvedByUnderwriter?: ApplicationUserLite | null;
-    /** Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call". */
-    finalApprovalSource?: 'Decision Logic' | 'Funding Call' | null;
+    /** Last action the Underwriter took: "Approved By UW", "Decline by UW", "Final Approved by UW". */
+    underwriterAction?: string | null;
+    /** Scrubber's recommendation from the compliance-check modal: "Recommend Approval" or "Recommend Decline". */
+    scrubberRecommendation?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"). */
     category?: string | null;
+    /** UW updated offer after contract generation — requires ISO re-approval and contract regeneration. */
+    needsContractReinitiation?: boolean;
+    /** ISO approved the updated offer while {@link needsContractReinitiation} is true. */
+    isoUpdatedOfferApproved?: boolean;
+    /** Underwriter marked ISO comments as resolved — removes deal from ISO Query pipeline. */
+    isoQueryResolved?: boolean;
+    /** Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call". */
+    finalApprovalSource?: 'Decision Logic' | 'Funding Call' | null;
     createdAt?: string;
     updatedAt?: string;
 }
@@ -136,16 +170,30 @@ export interface UpdateApplicationPayload {
     underwriterApproval?: boolean;
     approvedAt?: string;
     commissionPercentage?: number;
+    underwriterCommissionPercentage?: number;
+    brokerCommissionPercentage?: number;
     /** Dollar commission stored on the application row (`Application.commissionAmount`). */
     commissionAmount?: number | null;
+    /** Dollar underwriter commission stored on the application row. */
+    underwriterCommissionAmount?: number | null;
+    /** Dollar broker commission stored on the application row. */
+    brokerCommissionAmount?: number | null;
+    /** Ops-entered broker display name at disbursement. */
+    brokerName?: string | null;
+    /** Ops-entered underwriter display name at disbursement. */
+    underwriterCommissionName?: string | null;
     /** Links the deal to an ISO; backend validates and syncs commission from the ISO record. */
     isoId?: string | null;
     /** Operations-set payment health category (e.g. "Weekly Payments", "Insufficient Funds"); pass null/"" to clear. */
     category?: string | null;
+    /** Mark ISO comment thread as resolved (removes from ISO Query pipeline). */
+    isoQueryResolved?: boolean;
 }
 
 export interface UpdateQueuePayload {
     currentQueue: string;
+    /** Scrubber's recommendation captured on the compliance-check modal ("Recommend Approval" / "Recommend Decline"). */
+    scrubberRecommendation?: string;
 }
 
 export interface UpdateStatePayload {
@@ -198,7 +246,15 @@ export interface GetApplicationsParams {
     sortOrder?: 'asc' | 'desc';
     /** When true, backend returns list-optimized payload (smaller includes, faster response). */
     lite?: boolean;
-    /** UNDERWRITER only: narrow list to pool vs my claimed deals (combined with Underwriter queue). */
-    underwriterClaim?: 'unclaimed' | 'mine';
+    /** SCRUBBING / UNDERWRITER: narrow list to Queue / Claimed / My deals. */
+    underwriterClaim?: 'unclaimed' | 'claimed' | 'mine';
+    /** UNDERWRITER: sidebar pipeline drill-down scoped to the logged-in underwriter. */
+    underwriterPipeline?: string;
+    /** Organization filter for list table. */
+    organization?: string;
+    /** SUPER_ADMIN / OPERATIONS: filter by scrubbing-stage claim (`claimedByUnderwriterId`). */
+    claimedByUnderwriterId?: string;
+    /** SUPER_ADMIN / OPERATIONS: filter by underwriter assignment. */
+    assignedUnderwriterId?: string;
 }
 

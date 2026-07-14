@@ -1,109 +1,76 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { formatUSD } from "@/utils/formatCurrency"
+import {
+  formatDateMonthDayYearET,
+  formatDateShortMonthET,
+  formatDateTimeET,
+  formatTimeET,
+  isTodayET,
+  isYesterdayET,
+  normalizeApiDateToYyyyMmDdET,
+  type DateInput,
+} from "@/lib/dateTime"
 
 export { formatUSD, formatUSDShort, MONEY_LOCALE_US } from "@/utils/formatCurrency"
+export {
+  BUSINESS_TIMEZONE,
+  DATE_LOCALE_US,
+  type DateInput,
+  nowInET,
+  formatYmdET,
+  formatDateET,
+  formatDateShortMonthET,
+  formatDateMonthDayYearET,
+  formatDateTimeET,
+  formatTimeET,
+  formatMonthShortET,
+  formatMonthDayET,
+  isSameCalendarDayET,
+  isTodayET,
+  isYesterdayET,
+  normalizeApiDateToYyyyMmDdET,
+  getCurrentMonthDateRangeET,
+  getPreviousMonthDateRangeET,
+  getMonthRangeET,
+  etDayToUtcBounds,
+  createETDateTimeFormatter,
+  parseDateInput,
+  formatDayET,
+  formatYearMonthET,
+  getWeekRangeET,
+  isWithinYmdRangeET,
+  getRecentMonthShortLabelsET,
+  getPeriodStartET,
+} from "@/lib/dateTime"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-// ---------- Date / time formatting helpers ----------
-
-/** US English for all CRM-facing dates and times (consistent regardless of browser locale). */
-export const DATE_LOCALE_US = "en-US" as const
-
-export type DateInput = string | number | Date | null | undefined
+// ---------- Date / time formatting helpers (Eastern Time) ----------
 
 /**
- * Normalize API/store dates to YYYY-MM-DD so month keys (e.g. loan allocation by YYYY-MM)
- * stay consistent. Handles ISO timestamps, plain YYYY-MM-DD, and US MM/DD/YYYY.
+ * Normalize API/store dates to YYYY-MM-DD in Eastern Time.
+ * Plain YYYY-MM-DD strings are treated as calendar days (no shift).
  */
 export function normalizeApiDateToYyyyMmDd(value: DateInput): string {
-  if (value === null || value === undefined || value === "") return ""
-  if (typeof value === "string") {
-    const trimmed = value.trim()
-    if (!trimmed) return ""
-    const isoPrefix = trimmed.match(/^(\d{4}-\d{2}-\d{2})/)
-    if (isoPrefix) return isoPrefix[1]
-    const us = trimmed.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/)
-    if (us) {
-      const month = parseInt(us[1], 10)
-      const day = parseInt(us[2], 10)
-      const year = parseInt(us[3], 10)
-      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-      }
-    }
-    const d = new Date(trimmed)
-    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
-    return ""
-  }
-  const d = value instanceof Date ? value : new Date(value)
-  return Number.isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10)
+  return normalizeApiDateToYyyyMmDdET(value)
 }
 
-/** Format a date-like value as "Apr 07, 2026" (US English, short month). */
+/** Format a date-like value as "Apr 07, 2026" in Eastern Time. */
 export function formatDate(value: DateInput, fallback = ""): string {
-  if (value === null || value === undefined || value === "") return fallback
-  const date = value instanceof Date ? value : new Date(value)
-  if (Number.isNaN(date.getTime())) return fallback
-
-  return new Intl.DateTimeFormat(DATE_LOCALE_US, {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-  }).format(date)
+  return formatDateShortMonthET(value, fallback)
 }
 
-/**
- * US numeric calendar date (month/day/year), e.g. "5/10/2023".
- * Parses leading `YYYY-MM-DD` as a local calendar day so it does not shift by timezone.
- */
+/** US numeric calendar date in ET, e.g. "5/10/2023". */
 export function formatDateMonthDayYear(value: DateInput, fallback = ""): string {
-  if (value === null || value === undefined || value === "") return fallback
-
-  let date: Date
-  if (typeof value === "string") {
-    const trimmed = value.trim()
-    const ymd = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/)
-    if (ymd) {
-      const y = Number(ymd[1])
-      const mo = Number(ymd[2]) - 1
-      const d = Number(ymd[3])
-      date = new Date(y, mo, d)
-    } else {
-      date = new Date(trimmed)
-    }
-  } else if (value instanceof Date) {
-    date = value
-  } else {
-    date = new Date(value)
-  }
-
-  if (Number.isNaN(date.getTime())) return fallback
-
-  return new Intl.DateTimeFormat(DATE_LOCALE_US, {
-    month: "numeric",
-    day: "numeric",
-    year: "numeric",
-  }).format(date)
+  return formatDateMonthDayYearET(value, fallback)
 }
 
-/** Date and time in US English (e.g. "Apr 07, 2026, 3:45 PM"). */
+/** Date and time in Eastern Time, e.g. "06/24/2026 03:45 PM EDT". */
 export function formatDateTimeUS(value: DateInput, fallback = ""): string {
-  if (value === null || value === undefined || value === "") return fallback
-  const date = value instanceof Date ? value : new Date(value)
-  if (Number.isNaN(date.getTime())) return fallback
-
-  return new Intl.DateTimeFormat(DATE_LOCALE_US, {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  }).format(date)
+  return formatDateTimeET(value, fallback)
 }
 
 /** Format lastSeenAt as "Last seen X ago" (e.g. "Last seen 5m ago", "Last seen yesterday") */
@@ -118,26 +85,18 @@ export function formatLastSeen(lastSeenAt: string | null | undefined): string {
   if (diffMins < 1) return "Last seen just now"
   if (diffMins < 60) return `Last seen ${diffMins}m ago`
   if (diffHours < 24) return `Last seen ${diffHours}h ago`
-  if (diffDays === 1) return "Last seen yesterday"
+  if (isYesterdayET(date)) return "Last seen yesterday"
   if (diffDays < 7) return `Last seen ${diffDays}d ago`
   return `Last seen ${formatDate(date)}`
 }
 
-/** Exact date/time (e.g. "Mar 09, 2026, 3:45 PM") - for tooltip or "Last seen at ..." */
+/** Exact date/time in ET (e.g. "Jun 24, 2026, 3:45 PM EDT") - for tooltip or "Last seen at ..." */
 export function formatLastSeenExact(lastSeenAt: string | null | undefined): string {
   if (!lastSeenAt) return ""
-  const date = new Date(lastSeenAt)
-  if (Number.isNaN(date.getTime())) return ""
-  const dateStr = formatDate(date)
-  const timeStr = date.toLocaleTimeString(DATE_LOCALE_US, {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  })
-  return `${dateStr}, ${timeStr}`
+  return formatDateTimeET(lastSeenAt, "")
 }
 
-/** Display text for last seen: actual time when user was last online (e.g. "Last seen today at 3:45 PM") */
+/** Display text for last seen in ET (e.g. "Last seen today at 3:45 PM EDT") */
 export function formatLastSeenWithTime(lastSeenAt: string | null | undefined): string {
   if (!lastSeenAt) return "Last seen"
   const date = new Date(lastSeenAt)
@@ -145,15 +104,9 @@ export function formatLastSeenWithTime(lastSeenAt: string | null | undefined): s
   const diffMs = now.getTime() - date.getTime()
   const diffMins = Math.floor(diffMs / 60000)
   if (diffMins < 1) return "Last seen just now"
-  const timeStr = date.toLocaleTimeString(DATE_LOCALE_US, {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  })
-  const isToday = date.toDateString() === now.toDateString()
-  const isYesterday = new Date(now.getTime() - 86400000).toDateString() === date.toDateString()
-  if (isToday) return `Last seen today at ${timeStr}`
-  if (isYesterday) return `Last seen yesterday at ${timeStr}`
+  const timeStr = formatTimeET(date)
+  if (isTodayET(date)) return `Last seen today at ${timeStr}`
+  if (isYesterdayET(date)) return `Last seen yesterday at ${timeStr}`
   const dateStr = formatDate(date)
   return `Last seen ${dateStr} at ${timeStr}`
 }
@@ -257,25 +210,6 @@ export function parseNumberUS(value: unknown): number {
   return Number.isFinite(n) ? n : NaN
 }
 
-/** Max fraction digits for offer/factor rate (`OfferDecision.rate` is Decimal(18, 6)). */
-export const FACTOR_RATE_MAX_DECIMALS = 6
-
-/**
- * Factor / sell rate for read-only display (e.g. 1.598). Does not force two decimals.
- */
-export function formatFactorRateUS(value: unknown): string {
-  if (value === null || value === undefined) return ""
-  const num = parseNumberUS(value)
-  if (Number.isNaN(num)) {
-    if (typeof value === "string" && value.trim() !== "") return value.trim()
-    return ""
-  }
-  return num.toLocaleString("en-US", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: FACTOR_RATE_MAX_DECIMALS,
-  })
-}
-
 /**
  * US English number for read-only display: comma thousands, period decimal, always two fraction digits.
  */
@@ -292,7 +226,9 @@ export function formatNumberUS(value: unknown): string {
   })
 }
 
-/** Factor/sell rate — preserves precision (e.g. 1.499), not forced to two decimals. */
+/**
+ * Factor/sell rate — keeps real precision (e.g. 1.499), not forced to two decimals.
+ */
 export function formatRateUS(value: unknown): string {
   if (value === null || value === undefined) return ""
   const num = parseNumberUS(value)
@@ -306,6 +242,7 @@ export function formatRateUS(value: unknown): string {
   })
 }
 
+/** Normalize rate on blur without rounding to two decimal places. */
 export function formatRateUSCommit(raw: string): string {
   const num = parseNumberUS(raw)
   if (!Number.isFinite(num)) return ""

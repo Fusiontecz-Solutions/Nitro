@@ -9,7 +9,7 @@ import {
   idbDelete,
   idbGetAllInNamespace,
   idbSet,
-} from "@/lib/crmCache/idbStore";
+} from "@/lib/persistentCache/idbStore";
 
 const TTL_MS = 5 * 60_000;
 const MAX_ENTRIES = 30;
@@ -134,4 +134,27 @@ export function buildDetailHydrationPayload(
       : (body as Application);
   if (!data || typeof data !== "object") return null;
   return { data };
+}
+
+/** Read a cached application row/API body for a route param (L1 only). */
+export function readApplicationDetailCache(
+  routeParam: string,
+): Application | undefined {
+  const raw = getCachedApplicationDetail(routeParam);
+  if (raw == null) return undefined;
+  const hydrated = buildDetailHydrationPayload(raw);
+  if (hydrated) return hydrated.data;
+  if (typeof raw === "object") return raw as Application;
+  return undefined;
+}
+
+/** Store an application under all route keys (numeric id, UUID, legacy id). */
+export function writeApplicationDetailCache(app: Application): void {
+  const keys = new Set<string>();
+  if (app.applicationId != null) keys.add(String(app.applicationId));
+  const id = app._id ?? (app as { id?: string }).id;
+  if (id != null) keys.add(String(id));
+  for (const key of keys) {
+    setCachedApplicationDetail(key, app);
+  }
 }

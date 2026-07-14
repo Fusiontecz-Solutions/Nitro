@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Eye, Loader2 } from "lucide-react";
 import { useDispatch, useSelector } from "react-redux";
 import { toast } from "react-toastify";
@@ -12,20 +12,39 @@ import BackgroundCheckItemCard from "@/components/application/BackgroundCheckIte
 import BackgroundCheckSidebar from "@/components/application/BackgroundCheckSidebar";
 import NyCourtEvidenceSections from "@/components/application/NyCourtEvidenceSections";
 import DataMerchPanel from "@/components/application/DataMerchPanel";
+import OpenCorporatesPanel from "@/components/application/OpenCorporatesPanel";
+import NyCourtPanel from "@/components/application/NyCourtPanel";
+import {
+  apiCheckToFormState,
+  buildItemIdMap,
+  formItemToApiPayload,
+  resolveLatestSavedAt,
+} from "@/components/application/backgroundCheckApiMapper";
 import {
   backgroundCheckPdfFilename,
   defaultBackgroundCheckLogoUrl,
+  getBackgroundCheckPdfErrorMessage,
   downloadBackgroundCheckPdf,
   fetchBackgroundCheckPdfBlob,
   formatBackgroundCheckEin,
 } from "@/components/application/backgroundCheckPdf";
 import PDFViewerDocsModal from "@/components/application/PDFViewerDocsModal";
-import type { BackgroundCheckFormState } from "@/components/application/backgroundCheckTypes";
-import { normalizeBackgroundCheckStatus } from "@/components/application/backgroundCheckTypes";
+import type { BackgroundCheckFormState, BackgroundCheckItemState } from "@/components/application/backgroundCheckTypes";
 import type { DataMerchLookupData } from "@/redux/actions/datamerch-actions";
+import {
+  addCheckAttachment,
+  getBackgroundCheck,
+  updateCheckItem,
+} from "@/redux/actions/backgroundCheckActions";
+import type { BackgroundCheck } from "@/redux/slices/backgroundCheckSlice";
+import {
+  buildOpenCorporatesQueryKey,
+  loadOpenCorporatesCache,
+  type OpenCorporatesLookupData,
+} from "@/components/application/opencorporatesTypes";
 import { getOfferDecisionByApplication } from "@/redux/actions/offerDecisionActions";
 import { getTermsOffers } from "@/redux/actions/termsOfferActions";
-import { resolveApplicationOfferAmount } from "@/lib/offerDecisionFees";
+import { resolveApplicationOfferAmount } from "@/lib/applicationLoanAmount";
 import { formatCurrency } from "@/lib/utils";
 
 const CHECK_IDS = BACKGROUND_CHECK_RESOURCES.map((r) => r.id);
@@ -36,46 +55,9 @@ function emptyChecks(): BackgroundCheckFormState {
   );
 }
 
-function normalizeCheckItem(
-  item: BackgroundCheckFormState[string] | undefined,
-): BackgroundCheckFormState[string] {
-  if (!item) return { notes: "", optional: false };
-  const legacy = item as BackgroundCheckFormState[string] & { notesSavedAt?: string };
-  return {
-    ...item,
-    status: normalizeBackgroundCheckStatus(item.status),
-    savedAt: item.savedAt ?? legacy.notesSavedAt,
-  };
-}
-
 function buildDataMerchQueryKey(businessName: string, ein: string): string {
   const einDigits = ein.replace(/\D/g, "");
   return `${einDigits}|${businessName.trim().toLowerCase()}`;
-}
-
-function loadPersistedState(applicationId: string): {
-  checks: BackgroundCheckFormState;
-  savedAt: string | null;
-} | null {
-  try {
-    const raw = localStorage.getItem(`background-check:${applicationId}`);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as {
-      checks?: BackgroundCheckFormState;
-      savedAt?: string;
-      decision?: unknown;
-    };
-    const mergedChecks = { ...emptyChecks() };
-    for (const id of CHECK_IDS) {
-      mergedChecks[id] = normalizeCheckItem(parsed.checks?.[id]);
-    }
-    return {
-      checks: mergedChecks,
-      savedAt: parsed.savedAt ? String(parsed.savedAt) : null,
-    };
-  } catch {
-    return null;
-  }
 }
 
 function loadDataMerchForExport(
@@ -99,6 +81,15 @@ function loadDataMerchForExport(
   }
 }
 
+function loadOpenCorporatesForExport(
+  applicationId: string,
+  queryKey: string,
+): { result: OpenCorporatesLookupData; searchedAt: string } | null {
+  const cached = loadOpenCorporatesCache(applicationId, queryKey);
+  if (!cached) return null;
+  return { result: cached.result, searchedAt: cached.searchedAt };
+}
+
 export default function BackgroundCheckTab() {
   const dispatch = useDispatch<AppDispatch>();
   const applicationData = useSelector(
@@ -114,6 +105,16 @@ export default function BackgroundCheckTab() {
     (state: RootState) => state.login.data?.user as
       | { firstName?: string; lastName?: string }
       | undefined,
+  );
+
+  const applicationUuid = useMemo(
+    () =>
+      String(
+        applicationData?._id ??
+          applicationData?.id ??
+          "",
+      ).trim(),
+    [applicationData],
   );
 
   const applicationId = useMemo(
@@ -147,9 +148,11 @@ export default function BackgroundCheckTab() {
   const linkContext = useMemo(() => {
     const client = applicationData?.client as Record<string, unknown> | undefined;
     const business = client?.business as Record<string, unknown> | undefined;
+    const address = business?.address as Record<string, unknown> | undefined;
     const businessName = String(
       business?.name ?? client?.businessName ?? applicationData?.businessName ?? "",
     ).trim();
+    const state = String(address?.state ?? client?.state ?? "").trim();
     const ein = String(
       business?.einNumber ??
         business?.ein ??
@@ -170,16 +173,13 @@ export default function BackgroundCheckTab() {
       (applicationData?.OfferDecision as Record<string, unknown> | null | undefined) ??
       (applicationData?.offerDecision as Record<string, unknown> | null | undefined) ??
       null;
-    const offerAmount = resolveApplicationOfferAmount({
-      application:
-        Array.isArray(termsOffers) && termsOffers.length > 0
-          ? { ...applicationData, termsOffers }
-          : applicationData,
-      offerDecision: offerDecisionSource,
-    });
+    const offerAmount = resolveApplicationOfferAmount(
+      offerDecisionSource,
+      termsOffers?.[0],
+    );
     const offerAmountLabel =
       offerAmount != null && offerAmount > 0 ? formatCurrency(offerAmount) : "";
-    return { businessName, ein, dealId, ownerName, ownerSsn, offerAmountLabel };
+    return { businessName, ein, state, dealId, ownerName, ownerSsn, offerAmountLabel };
   }, [applicationData, offerDecisionData, termsOffers]);
 
   const savedByName = useMemo(() => {
@@ -189,36 +189,80 @@ export default function BackgroundCheckTab() {
 
   const [checks, setChecks] = useState<BackgroundCheckFormState>(emptyChecks);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [viewingPdf, setViewingPdf] = useState(false);
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
   const [pdfPreviewName, setPdfPreviewName] = useState("Compliance-Report.pdf");
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
+  const itemIdByResource = useRef<Record<string, string>>({});
 
   useEffect(() => {
-    if (!applicationId) {
+    if (!applicationUuid) {
       setChecks(emptyChecks());
       setSavedAt(null);
+      itemIdByResource.current = {};
       return;
     }
-    const persisted = loadPersistedState(applicationId);
-    if (persisted) {
-      setChecks(persisted.checks);
-      setSavedAt(persisted.savedAt);
-      return;
-    }
-    setChecks(emptyChecks());
-    setSavedAt(null);
-  }, [applicationId]);
 
-  useEffect(() => {
-    if (!applicationId) return;
-    localStorage.setItem(
-      `background-check:${applicationId}`,
-      JSON.stringify({ checks, savedAt: savedAt ?? undefined }),
-    );
-  }, [applicationId, checks, savedAt]);
+    let cancelled = false;
+    setLoading(true);
+    void dispatch(getBackgroundCheck(applicationUuid))
+      .unwrap()
+      .then((check) => {
+        if (cancelled || !check) return;
+        itemIdByResource.current = buildItemIdMap(check);
+        setChecks(apiCheckToFormState(check));
+        setSavedAt(resolveLatestSavedAt(check));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = typeof error === "string" ? error : "Failed to load background check.";
+        toast.error(message);
+        setChecks(emptyChecks());
+        setSavedAt(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applicationUuid, dispatch]);
+
+  const persistItem = useCallback(
+    async (resourceId: string, state: BackgroundCheckItemState) => {
+      const itemId = itemIdByResource.current[resourceId];
+      if (!itemId) {
+        throw new Error("Background check item not found.");
+      }
+
+      const payload = formItemToApiPayload(state);
+      let check = (await dispatch(updateCheckItem({ itemId, ...payload })).unwrap()) as BackgroundCheck;
+      itemIdByResource.current = buildItemIdMap(check);
+
+      const apiItem = check.items.find((item) => item.id === itemId);
+      const hasAttachment = (apiItem?.attachments ?? []).some(
+        (attachment) => attachment.url === state.attachmentUrl,
+      );
+      if (state.attachmentUrl && !hasAttachment) {
+        check = (await dispatch(
+          addCheckAttachment({
+            itemId,
+            url: state.attachmentUrl,
+            publicId: state.attachmentPublicId,
+            originalName: state.attachmentName,
+          }),
+        ).unwrap()) as BackgroundCheck;
+        itemIdByResource.current = buildItemIdMap(check);
+      }
+
+      return check;
+    },
+    [dispatch],
+  );
 
   const requiredCheckIds = useMemo(
     () => CHECK_IDS.filter((id) => !checks[id]?.optional),
@@ -244,32 +288,52 @@ export default function BackgroundCheckTab() {
   );
 
   const saveCheck = useCallback(
-    (id: string, extra?: Partial<BackgroundCheckFormState[string]>) => {
-      updateCheck(id, {
+    async (id: string, extra?: Partial<BackgroundCheckItemState>) => {
+      const state = {
+        ...checks[id],
         ...extra,
         savedAt: new Date().toISOString(),
-      });
-      setSavedAt(null);
+      };
+      setSaving(true);
+      try {
+        const check = await persistItem(id, state);
+        setChecks((prev) => ({ ...prev, [id]: state }));
+        setSavedAt(resolveLatestSavedAt(check));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to save background check.";
+        toast.error(message);
+      } finally {
+        setSaving(false);
+      }
     },
-    [updateCheck],
+    [checks, persistItem],
   );
 
-  const handleSaveAll = useCallback(() => {
+  const handleSaveAll = useCallback(async () => {
     const now = new Date().toISOString();
+    const next = { ...checks };
+    for (const id of CHECK_IDS) {
+      next[id] = { ...next[id], savedAt: now };
+    }
+
     setSaving(true);
-    setChecks((prev) => {
-      const next = { ...prev };
+    try {
+      let latestCheck = null;
       for (const id of CHECK_IDS) {
-        next[id] = { ...next[id], savedAt: now };
+        latestCheck = await persistItem(id, next[id]);
       }
-      return next;
-    });
-    setSavedAt(now);
-    window.setTimeout(() => {
-      setSaving(false);
+      setChecks(next);
+      setSavedAt(latestCheck ? resolveLatestSavedAt(latestCheck) : now);
       toast.success("Background check saved.");
-    }, 150);
-  }, []);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to save background check.";
+      toast.error(message);
+    } finally {
+      setSaving(false);
+    }
+  }, [checks, persistItem]);
 
   const buildPdfInput = useCallback(() => {
     const datamerchQueryKey = buildDataMerchQueryKey(
@@ -278,6 +342,13 @@ export default function BackgroundCheckTab() {
     );
     const datamerchExport = applicationId
       ? loadDataMerchForExport(applicationId, datamerchQueryKey)
+      : null;
+    const opencorporatesQueryKey = buildOpenCorporatesQueryKey(
+      linkContext.businessName,
+      linkContext.state,
+    );
+    const opencorporatesExport = applicationId
+      ? loadOpenCorporatesForExport(applicationId, opencorporatesQueryKey)
       : null;
 
     return {
@@ -293,6 +364,8 @@ export default function BackgroundCheckTab() {
       savedAt,
       datamerch: datamerchExport?.result ?? null,
       datamerchSearchedAt: datamerchExport?.searchedAt ?? null,
+      opencorporates: opencorporatesExport?.result ?? null,
+      opencorporatesSearchedAt: opencorporatesExport?.searchedAt ?? null,
     };
   }, [applicationId, checks, linkContext, savedAt, savedByName]);
 
@@ -301,8 +374,9 @@ export default function BackgroundCheckTab() {
     try {
       await downloadBackgroundCheckPdf(buildPdfInput());
       toast.success("Background check PDF downloaded.");
-    } catch {
-      toast.error("Could not generate the background check PDF.");
+    } catch (error) {
+      const message = await getBackgroundCheckPdfErrorMessage(error);
+      toast.error(message);
     } finally {
       setDownloadingPdf(false);
     }
@@ -320,8 +394,9 @@ export default function BackgroundCheckTab() {
       });
       setPdfPreviewName(filename);
       setIsPdfPreviewOpen(true);
-    } catch {
-      toast.error("Could not generate the background check PDF.");
+    } catch (error) {
+      const message = await getBackgroundCheckPdfErrorMessage(error);
+      toast.error(message);
     } finally {
       setViewingPdf(false);
     }
@@ -338,6 +413,12 @@ export default function BackgroundCheckTab() {
 
   return (
     <div className="space-y-4">
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          Loading background check…
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-[#111827]">Background Check</h2>
@@ -414,11 +495,13 @@ export default function BackgroundCheckTab() {
           {BACKGROUND_CHECK_RESOURCES.map((resource) => {
             const state = checks[resource.id] ?? { notes: "", optional: false };
             const isDataMerch = resource.isApi === true;
+            const isOpenCorporates = resource.hasPanel === true && resource.id === "opencorporates";
             const isNyCourt = resource.id === "nyscef";
 
             return (
               <BackgroundCheckItemCard
                 key={resource.id}
+                anchorId={`bg-check-${resource.id}`}
                 title={resource.title}
                 description={resource.description}
                 href={resolveBackgroundCheckHref(resource, linkContext)}
@@ -442,9 +525,9 @@ export default function BackgroundCheckTab() {
                     noteImages: (state.noteImages ?? []).filter((image) => image.id !== imageId),
                   })
                 }
-                onSaveCheck={() => saveCheck(resource.id)}
+                onSaveCheck={() => void saveCheck(resource.id)}
                 onLinkOpen={() =>
-                  saveCheck(resource.id, { linkOpenedAt: new Date().toISOString() })
+                  void saveCheck(resource.id, { linkOpenedAt: new Date().toISOString() })
                 }
                 onStatusChange={(status) => markCheckDirty(resource.id, { status })}
                 onRiskChange={(risk) => markCheckDirty(resource.id, { risk })}
@@ -479,6 +562,18 @@ export default function BackgroundCheckTab() {
                 }
               >
                 {isDataMerch ? <DataMerchPanel manualSearch embedded /> : null}
+                {isOpenCorporates ? (
+                  <OpenCorporatesPanel
+                    embedded
+                    onApplyToNotes={(notes) => markCheckDirty(resource.id, { notes })}
+                  />
+                ) : null}
+                {isNyCourt ? (
+                  <NyCourtPanel
+                    embedded
+                    onApplyToNotes={(notes) => markCheckDirty(resource.id, { notes })}
+                  />
+                ) : null}
               </BackgroundCheckItemCard>
             );
           })}
@@ -493,7 +588,7 @@ export default function BackgroundCheckTab() {
             saving={saving}
             downloadingPdf={downloadingPdf}
             viewingPdf={viewingPdf}
-            onSaveAll={handleSaveAll}
+            onSaveAll={() => void handleSaveAll()}
             onDownloadPdf={handleDownloadPdf}
             onViewPdf={handleViewPdf}
           />

@@ -143,7 +143,7 @@ const PublicApprovalPage = () => {
           <div className="mb-2 text-center">{brandLogo}</div>
 
           <div className="mt-4 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
-            <div className="font-semibold text-[#151357]">
+            <div className="font-semibold text-[var(--brand)]">
               {errorCode === "TOKEN_EXPIRED" ? "Link expired" : "Link not available"}
             </div>
             {errorCode === "TOKEN_EXPIRED" && expiresAt ? (
@@ -163,7 +163,7 @@ const PublicApprovalPage = () => {
         <div className="max-w-screen-2xl mx-auto">
           <div className="mb-2 text-center">{brandLogo}</div>
           <div className="mt-4 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
-            <div className="font-semibold text-[#151357]">Session error</div>
+            <div className="font-semibold text-[var(--brand)]">Session error</div>
             <div className="mt-1">{sessionError}</div>
           </div>
         </div>

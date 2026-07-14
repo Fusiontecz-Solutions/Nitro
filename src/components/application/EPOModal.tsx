@@ -134,7 +134,7 @@ export default function EPOModal({ open, onOpenChange, applicationId, onSave }: 
                     <Button
                         type="button"
                         size="sm"
-                        className="bg-[#3B8BD1] hover:bg-[#2d6fad] text-white"
+                        className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white"
                         onClick={addEntry}
                     >
                         Add
@@ -213,7 +213,7 @@ export default function EPOModal({ open, onOpenChange, applicationId, onSave }: 
                         type="button"
                         disabled={saving}
                         onClick={handleSave}
-                        className="bg-[#3B8BD1] hover:bg-[#2d6fad] text-white"
+                        className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white"
                     >
                         {saving ? "Saving..." : "Save"}
                     </Button>

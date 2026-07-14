@@ -18,6 +18,8 @@ interface ApplicationProgressBarProps {
         state?: string | null;
         statsCurrentState?: string | null;
         status?: string | null;
+        underwriterAction?: string | null;
+        finalApprovalSource?: string | null;
       }
     | null
     | undefined;
@@ -25,24 +27,30 @@ interface ApplicationProgressBarProps {
 }
 
 const TWO_LINE_STAGE_KEYS = new Set<ApplicationProgressStageKey>([
+  "FINAL_APPROVAL",
   "CONTRACT_GENERATED",
   "CONTRACT_SIGNED",
+  "FINAL_AND_FUNDING",
 ]);
 
 /** Compact labels so all steps fit without crushing layout. Full text stays in `title`. */
 const COMPACT_STAGE_LABELS: Partial<Record<ApplicationProgressStageKey, string>> = {
-  SCRUBBING: "Scrubbing",
   UNDERWRITER: "Underwriter",
-  FUNDING_CALL: "Funding Call",
   DISBURSEMENT: "Disbursement",
 };
 
 function splitStageLabel(key: ApplicationProgressStageKey, label: string) {
+  if (key === "FINAL_APPROVAL") {
+    return { primary: "Final", secondary: "Approval" };
+  }
   if (key === "CONTRACT_GENERATED") {
     return { primary: "Contract", secondary: "Generated" };
   }
   if (key === "CONTRACT_SIGNED") {
     return { primary: "Contract", secondary: "Signed" };
+  }
+  if (key === "FINAL_AND_FUNDING") {
+    return { primary: "Final &", secondary: "Funding" };
   }
   return { primary: COMPACT_STAGE_LABELS[key] ?? label, secondary: null };
 }

@@ -15,7 +15,6 @@ import { getTermsOffers } from "@/redux/actions/termsOfferActions";
 import { getApplicationById } from "@/redux/actions/applicationActions";
 import { axiosGet, axiosPost } from "@/redux/axios";
 import type { TermsOffer } from "@/types/termsOfferTypes";
-import { inferFeePercentFromFeesRaw } from "@/lib/offerDecisionFees";
 import IsoApproveReviewDialog from "./IsoApproveReviewDialog";
 
 // Yup validation schema
@@ -98,7 +97,7 @@ const CustomSlider = ({ value, onChange, min, max, step = 1, disabled = false }:
             {/* Track */}
             <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-2 overflow-hidden rounded-full bg-muted">
                 <div
-                    className="h-full bg-[#374151]"
+                    className="h-full bg-[var(--brand-accent)]"
                     style={{ width: `${percentage}%` }}
                 />
             </div>
@@ -117,14 +116,14 @@ const CustomSlider = ({ value, onChange, min, max, step = 1, disabled = false }:
 
             {/* Thumb */}
             <div
-                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-[#111827] rounded-full shadow-md border-2 border-background"
+                className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-[var(--brand-accent)] rounded-full shadow-md border-2 border-background"
                 style={{ left: `calc(${percentage}% - 8px)` }}
             />
         </div>
     );
 };
 
-// Circular Progress Ring – shows current form values (dynamic from underwriter data)
+// Circular Progress Ring – shows current form values (dynamic from scrubbing data)
 interface CircularProgressProps {
     advanceAmount: number;
     term: number;
@@ -143,9 +142,9 @@ const CircularProgress = ({
     isDark = false,
 }: CircularProgressProps) => {
     const rings = [
-        { percentage: Math.min(100, (advanceAmount / 100000) * 75), color: "#111827", radius: 80 },
-        { percentage: Math.min(100, (term / 24) * 100), color: "#374151", radius: 60 },
-        { percentage: Math.min(100, (upsell / 50) * 100), color: "#6B7280", radius: 40 },
+        { percentage: Math.min(100, (advanceAmount / 100000) * 75), color: "#5C3670", radius: 80 },
+        { percentage: Math.min(100, (term / 24) * 100), color: "var(--brand)", radius: 60 },
+        { percentage: Math.min(100, (upsell / 50) * 100), color: "var(--brand-accent)", radius: 40 },
     ];
 
     const trackStroke = isDark ? "#334155" : "#E5E7EB";
@@ -153,7 +152,7 @@ const CircularProgress = ({
         ? "bg-slate-950/95 shadow-xl shadow-black/40 border border-slate-700/80"
         : "bg-white/95 backdrop-blur-sm shadow-lg border border-gray-100";
     const labelClass = isDark ? "text-slate-400" : "text-gray-600";
-    const valueClass = "font-semibold text-[#111827] dark:text-gray-200 text-right whitespace-nowrap tabular-nums";
+    const valueClass = "font-semibold text-[var(--brand-accent)] text-right whitespace-nowrap tabular-nums";
 
     const summaryRows = [
         { label: "Purchase amount", value: formatCurrency(advanceAmount) },
@@ -245,6 +244,8 @@ const Approval = ({
     const applicationId = (applicationData as { _id?: string; id?: string })?.id ?? (applicationData as { _id?: string })?._id;
     const offerDecisionApplicationId = (applicationData as { applicationId?: string | number })?.applicationId ?? applicationId;
 
+    const calculatorEditable = allowCalculatorEdit || !readOnly;
+
     /**
      * Approval action state.
      *
@@ -308,8 +309,8 @@ const Approval = ({
             }
 
             setApprovalStatusOverride({
-                currentQueue: body?.data?.currentQueue ?? "Approved",
-                currentState: body?.data?.currentState ?? "Approved",
+                currentQueue: body?.data?.currentQueue ?? "Contract Pending",
+                currentState: body?.data?.currentState ?? "Contract_Pending",
             });
             setLocallyApproved(true);
 
@@ -382,7 +383,7 @@ const Approval = ({
         POST_APPROVAL_TOKENS.has(effectiveStateToken);
     const isApproved = currentlyApproved || locallyApproved;
 
-    // Fetch underwriter terms offers for this application (skip when preloaded or in read-only mode)
+    // Fetch scrubbing terms offers for this application (skip when preloaded or in read-only mode)
     useEffect(() => {
         if (readOnly) return;
         if (!applicationId) return;
@@ -418,37 +419,20 @@ const Approval = ({
 
     const latestTermsOffer: TermsOffer | undefined = termsOffers?.[0];
 
-    /** Only show offer figures after Decision Making "Approve & Save" (persisted approved offer). */
-    const savedOfferAmount = toValidNumber(resolvedOfferDecision?.offer);
-    const savedTerm = toValidNumber(resolvedOfferDecision?.term);
-    const savedRate =
-        toValidNumber(resolvedOfferDecision?.rate) ??
-        toValidNumber(resolvedOfferDecision?.factorRate) ??
-        toValidNumber(resolvedOfferDecision?.buyRate);
-    const hasSavedOffer =
-        resolvedOfferDecision?.decision === "approved" &&
-        savedOfferAmount != null &&
-        savedOfferAmount > 0;
-
-    const calculatorEditable = (allowCalculatorEdit || !readOnly) && hasSavedOffer;
-
-    const resolvedOfferAmount = hasSavedOffer ? savedOfferAmount : 0;
+    const resolvedOfferAmount =
+        toValidNumber(resolvedOfferDecision?.offer) ??
+        toValidNumber(latestTermsOffer?.approvedAmount) ??
+        toValidNumber(applicationData?.loanAmount) ??
+        100000;
     const resolvedTerm =
-        hasSavedOffer && savedTerm != null && savedTerm > 0 ? savedTerm : 1;
-    const resolvedUpsell = hasSavedOffer
-        ? (toValidNumber(applicationData?.commissionPercentage) ??
-          toValidNumber(latestTermsOffer?.commissionPercent) ??
-          0)
-        : 0;
-    const resolvedOriginationFeePercent = hasSavedOffer
-        ? (inferFeePercentFromFeesRaw(
-              resolvedOfferDecision?.fees,
-              savedOfferAmount ?? 0,
-              savedOfferAmount != null && savedRate != null
-                  ? savedOfferAmount * savedRate
-                  : null,
-          ) ?? 0)
-        : 0;
+        toValidNumber(resolvedOfferDecision?.term) ??
+        toValidNumber(latestTermsOffer?.termLength) ??
+        8;
+    const resolvedUpsell =
+        toValidNumber(applicationData?.commissionPercentage) ??
+        toValidNumber(resolvedOfferDecision?.fees) ??
+        toValidNumber(latestTermsOffer?.commissionPercent) ??
+        12;
     const {
         control,
         formState: { errors },
@@ -459,7 +443,7 @@ const Approval = ({
             advanceAmount: resolvedOfferAmount,
             term: resolvedTerm,
             upsell: resolvedUpsell,
-            originationFeePercent: resolvedOriginationFeePercent,
+            originationFeePercent: 10,
         },
     });
 
@@ -469,82 +453,61 @@ const Approval = ({
             advanceAmount: resolvedOfferAmount,
             term: resolvedTerm,
             upsell: resolvedUpsell,
-            originationFeePercent: resolvedOriginationFeePercent,
+            originationFeePercent: 10,
         });
-    }, [
-        resolvedOfferDecision?._id,
-        latestTermsOffer?._id,
-        resolvedOfferAmount,
-        resolvedTerm,
-        resolvedUpsell,
-        resolvedOriginationFeePercent,
-        reset,
-    ]);
+    }, [resolvedOfferDecision?._id, latestTermsOffer?._id, resolvedOfferAmount, resolvedTerm, resolvedUpsell, reset]);
 
     const advanceAmount = useWatch({ control, name: "advanceAmount", defaultValue: resolvedOfferAmount });
     const term = useWatch({ control, name: "term", defaultValue: resolvedTerm });
     const upsell = useWatch({ control, name: "upsell", defaultValue: resolvedUpsell });
-    const originationFeePercent = useWatch({
-        control,
-        name: "originationFeePercent",
-        defaultValue: resolvedOriginationFeePercent,
-    });
-    const buyRateNum = hasSavedOffer && savedRate != null && savedRate > 0 ? savedRate : null;
-    const calculatorPurchaseAmount = hasSavedOffer
-        ? Math.max(0, toValidNumber(advanceAmount) ?? 0)
-        : 0;
-    const calculatorTerm = hasSavedOffer ? Math.max(1, toValidNumber(term) ?? 1) : 1;
-    const calculatorUpsell = hasSavedOffer ? Math.max(0, toValidNumber(upsell) ?? 0) : 0;
-    const calculatorPaybackAmount =
-        buyRateNum != null ? calculatorPurchaseAmount * buyRateNum : null;
-    const calculatorPaymentAmount =
-        calculatorPaybackAmount != null && calculatorTerm > 0
-            ? calculatorPaybackAmount / calculatorTerm
-            : null;
+    const originationFeePercent = useWatch({ control, name: "originationFeePercent", defaultValue: 10 });
+    const buyRateNum =
+        toValidNumber(resolvedOfferDecision?.buyRate) ??
+        toValidNumber(resolvedOfferDecision?.factorRate) ??
+        toValidNumber(latestTermsOffer?.buyRate) ??
+        toValidNumber(latestTermsOffer?.factorRate) ??
+        1.499;
+    const calculatorPurchaseAmount = Math.max(0, toValidNumber(advanceAmount) ?? 0);
+    const calculatorTerm = Math.max(1, toValidNumber(term) ?? 1);
+    const calculatorUpsell = Math.max(0, toValidNumber(upsell) ?? 0);
+    const calculatorPaybackAmount = calculatorPurchaseAmount * buyRateNum;
+    const calculatorPaymentAmount = calculatorPaybackAmount / calculatorTerm;
     const centerGaugePeriodicPayment = formatCurrency(calculatorPaymentAmount);
 
-    // Applicant summary — only financial fields when Decision Making offer was saved.
+    // Applicant summary aligned with Offer logic
     const applicantSummary = (() => {
         const client = applicationData?.client as any;
         const borrowerName = client?.owner ? `${client.owner.firstName || ""} ${client.owner.lastName || ""}`.trim() : null;
         const businessName = client?.business?.name ?? null;
 
-        const normalizedFrequency = String(resolvedOfferDecision?.frequency ?? "").trim();
-        const frequency =
-            normalizedFrequency === "Weekly" ||
-            normalizedFrequency === "Monthly" ||
-            normalizedFrequency === "Daily" ||
-            normalizedFrequency === "Bi-Weekly"
-                ? normalizedFrequency
-                : "—";
+        const dbOfferNum = toValidNumber(resolvedOfferDecision?.offer);
+        const termsApprovedAmountNum = toValidNumber(latestTermsOffer?.approvedAmount);
+        const formAdvanceNum = toValidNumber(advanceAmount);
+        const applicationLoanAmountNum = toValidNumber(applicationData?.loanAmount);
+
+        const normalizedFrequency = String(resolvedOfferDecision?.frequency ?? latestTermsOffer?.frequency ?? "").trim();
+        const frequency = normalizedFrequency === "Weekly" || normalizedFrequency === "Monthly" || normalizedFrequency === "Daily"
+            ? normalizedFrequency
+            : "Daily";
 
         return {
             borrowerName: borrowerName || "—",
             businessName: businessName || "—",
-            loanAmount: hasSavedOffer ? formatCurrency(savedOfferAmount) : "—",
-            factorRate:
-                hasSavedOffer && buyRateNum != null ? buyRateNum.toFixed(3) : "—",
-            tenure:
-                hasSavedOffer && savedTerm != null && savedTerm > 0
-                    ? `${savedTerm}`
-                    : "—",
-            frequency: hasSavedOffer ? frequency : "—",
+            // Loan Amount column should show persisted Offer first (DB by application id)
+            loanAmount: formatCurrency(dbOfferNum ?? termsApprovedAmountNum ?? formAdvanceNum ?? applicationLoanAmountNum),
+            // Factor Rate is fixed per OfferDecisionToggle logic
+            factorRate: "1.499",
+            // Tenure should reflect the active term value
+            tenure: `${resolvedOfferDecision?.term ?? term}`,
+            // Keep frequency in sync with offer logic (Daily default)
+            frequency,
         };
     })();
 
-    const centerGaugePaymentLabel =
-        applicantSummary.frequency && applicantSummary.frequency !== "—"
-            ? `${applicantSummary.frequency} Payment`
-            : "Payment";
+    const centerGaugePaymentLabel = `${applicantSummary.frequency} Payment`;
 
-    // Woodmere brand: black / slate-gray gradients (logo palette)
-    const gradient = isDark
-        ? "linear-gradient(135deg, #374151 0%, #1F2937 45%, #000000 100%)"
-        : "linear-gradient(135deg, #6F7887 0%, #374151 50%, #111827 100%)";
-
-    const summaryPanelClass = isDark
-        ? "bg-white/8 border border-white/12 backdrop-blur-sm rounded-lg"
-        : "bg-white/12 border border-white/20 backdrop-blur-sm rounded-lg";
+    // Brand gradient is theme- and mode-aware via the --brand-gradient CSS var.
+    const gradient = "var(--brand-gradient)";
 
     // const handleSendToClient = async () => {
     //     if (!canSendToClient) return;
@@ -606,8 +569,7 @@ const Approval = ({
                     <Button
                         type="button"
                         onClick={() => setReviewOpen(true)}
-                        disabled={isApproving || isApproved || !hasSavedOffer}
-                        title={!hasSavedOffer ? "An offer must be saved in Decision Making before approval." : undefined}
+                        disabled={isApproving || isApproved}
                         className={`shrink-0 cursor-pointer font-semibold px-5 py-2 rounded-md text-white shadow-sm transition-colors disabled:cursor-not-allowed ${
                             isApproved
                                 ? "bg-[#16A34A] hover:bg-[#16A34A] disabled:opacity-100"
@@ -627,40 +589,40 @@ const Approval = ({
             </div>
 
             {/* Applicant Summary — always visible below Calculator button */}
-            <Card className={`border-0 shadow-lg overflow-hidden py-0 ${isDark ? "ring-1 ring-gray-600/30" : "ring-1 ring-gray-300/40"}`}>
+            <Card className="border-0 shadow-lg overflow-hidden py-0">
                 <CardContent
                     className={compactSpacing ? "p-4 pt-4" : "p-6"}
                     style={{ background: gradient }}
                 >
-                    <h2 className={`text-white font-bold uppercase tracking-wider ${compactSpacing ? "mb-2 text-xl" : "mb-4 text-2xl"}`}>
+                    <h2 className={`text-white font-bold ${compactSpacing ? "mb-2 text-xl" : "mb-4 text-2xl"}`}>
                         CALCULATE YOUR OWN APPROVAL
                     </h2>
-                    <p className={`text-gray-300 text-sm ${compactSpacing ? "mb-3" : "mb-4"}`}>Applicant Summary</p>
+                    <p className={`text-white/90 text-sm ${compactSpacing ? "mb-3" : "mb-4"}`}>Applicant Summary</p>
 
-                    <div className={`${summaryPanelClass} ${compactSpacing ? "p-3" : "p-4"}`}>
+                    <div className={`bg-white/30 backdrop-blur-sm rounded-lg ${compactSpacing ? "p-3" : "p-4"}`}>
                         <div className={`grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 text-white ${compactSpacing ? "gap-3" : "gap-4"}`}>
                             <div>
-                                <p className="text-xs font-medium text-gray-300 mb-1">Borrower Name</p>
+                                <p className="text-xs font-medium opacity-80 mb-1">Borrower Name</p>
                                 <p className="text-sm font-semibold">{applicantSummary.borrowerName}</p>
                             </div>
                             <div>
-                                <p className="text-xs font-medium text-gray-300 mb-1">Business Name</p>
+                                <p className="text-xs font-medium opacity-80 mb-1">Business Name</p>
                                 <p className="text-sm font-semibold">{applicantSummary.businessName}</p>
                             </div>
                             <div>
-                                <p className="text-xs font-medium text-gray-300 mb-1">Loan Amount</p>
+                                <p className="text-xs font-medium opacity-80 mb-1">Loan Amount</p>
                                 <p className="text-sm font-semibold">{applicantSummary.loanAmount}</p>
                             </div>
                             <div>
-                                <p className="text-xs font-medium text-gray-300 mb-1">Factor Rate</p>
+                                <p className="text-xs font-medium opacity-80 mb-1">Factor Rate</p>
                                 <p className="text-sm font-semibold">{applicantSummary.factorRate}</p>
                             </div>
                             <div>
-                                <p className="text-xs font-medium text-gray-300 mb-1">Terms</p>
+                                <p className="text-xs font-medium opacity-80 mb-1">Terms</p>
                                 <p className="text-sm font-semibold">{applicantSummary.tenure}</p>
                             </div>
                             <div>
-                                <p className="text-xs font-medium text-gray-300 mb-1">Frequency</p>
+                                <p className="text-xs font-medium opacity-80 mb-1">Frequency</p>
                                 <p className="text-sm font-semibold">{applicantSummary.frequency}</p>
                             </div>
                         </div>
@@ -671,12 +633,6 @@ const Approval = ({
             {/* Calculator fields + Buy Rate Summary — toggled by Calculator button */}
             {showCalculator && (
             <div className={compactSpacing ? "grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5" : "grid grid-cols-1 gap-6 lg:grid-cols-3"}>
-                {!hasSavedOffer ? (
-                    <div className="lg:col-span-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-200">
-                        No approval offer has been saved yet. The underwriter must complete the offer in Decision Making and click <strong>Approve &amp; Save</strong> before amounts appear here.
-                    </div>
-                ) : (
-                <>
                 <div className="lg:col-span-2">
                     {/* Sliders Section */}
                     <div>
@@ -691,7 +647,7 @@ const Approval = ({
                                         <label className="text-sm font-medium text-gray-700">
                                             Purchase Amount ($)
                                         </label>
-                                        <span className="text-sm font-semibold text-[#111827] dark:text-gray-200">
+                                        <span className="text-sm font-semibold text-[var(--brand-accent)]">
                                             {termsOffersLoading ? "—" : formatCurrency(advanceAmount ?? 0)}
                                         </span>
                                     </div>
@@ -738,7 +694,7 @@ const Approval = ({
                                         <label className="text-sm font-medium text-gray-700">
                                             Est. Term 
                                         </label>
-                                        {/* <span className="text-sm font-semibold text-[#111827] dark:text-gray-200">{term ?? 24}</span> */}
+                                        {/* <span className="text-sm font-semibold text-[var(--brand-accent)]">{term ?? 24}</span> */}
                                     </div>
                                     <Controller
                                         name="term"
@@ -746,7 +702,7 @@ const Approval = ({
                                         render={({ field }) => (
                                             <CustomSlider
                                                 disabled={!calculatorEditable}
-                                                value={field.value ?? resolvedTerm}
+                                                value={field.value ?? 8}
                                                 onChange={field.onChange}
                                                 min={1}
                                                 max={24}
@@ -776,7 +732,7 @@ const Approval = ({
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
                                         <label className="text-sm font-medium text-gray-700">Upsell (%)</label>
-                                        {/* <span className="text-sm font-semibold text-[#111827] dark:text-gray-200">{upsell ?? 0}</span> */}
+                                        {/* <span className="text-sm font-semibold text-[var(--brand-accent)]">{upsell ?? 0}</span> */}
                                     </div>
                                     <Controller
                                         name="upsell"
@@ -784,7 +740,7 @@ const Approval = ({
                                         render={({ field }) => (
                                             <CustomSlider
                                                 disabled={!calculatorEditable}
-                                                value={field.value ?? resolvedUpsell}
+                                                value={field.value ?? (applicationData?.commissionPercentage ?? latestTermsOffer?.commissionPercent ?? 12)}
                                                 onChange={field.onChange}
                                                 min={1}
                                                 max={50}
@@ -815,8 +771,8 @@ const Approval = ({
                             <div className="flex justify-center items-center">
                                 <CircularProgress
                                     advanceAmount={advanceAmount ?? 0}
-                                    term={term ?? resolvedTerm}
-                                    upsell={upsell ?? resolvedUpsell}
+                                    term={term ?? 8}
+                                    upsell={upsell ?? 12}
                                     paymentLabel={centerGaugePaymentLabel}
                                     periodicPaymentFormatted={centerGaugePeriodicPayment}
                                     isDark={isDark}
@@ -826,7 +782,7 @@ const Approval = ({
                     </div>
                 </div>
 
-                {/* Right Column - Buy Rate Summary (dynamic from underwriter terms offer + form) */}
+                {/* Right Column - Buy Rate Summary (dynamic from scrubbing terms offer + form) */}
                 <div className="lg:col-span-1">
                     <Card className="border border-gray-200 shadow-sm sticky top-4">
                         <CardHeader className="pb-2">
@@ -845,13 +801,13 @@ const Approval = ({
                                         const payback = formatCurrency(calculatorPaybackAmount);
                                         const periodicPayment = formatCurrency(calculatorPaymentAmount);
                                         const paymentLabel = `${applicantSummary.frequency} Payment`;
-                                        const buyRate = buyRateNum != null ? buyRateNum.toFixed(3) : "—";
+                                        const buyRate = buyRateNum.toFixed(3);
                                         const upsellPercent = calculatorUpsell;
                                         const upsellVal = upsellPercent != null ? `${upsellPercent}%` : "—";
                                         const sellRate =
-                                            buyRateNum != null && upsellPercent != null
+                                            upsellPercent != null
                                                 ? (buyRateNum + (buyRateNum * upsellPercent) / 100).toFixed(3)
-                                                : "—";
+                                                : buyRate;
                                         const purchaseNum = Number(advance) || 0;
                                         const originationPct = originationFeePercent ?? 10;
                                         const originationDollar = purchaseNum * (originationPct / 100);
@@ -877,7 +833,7 @@ const Approval = ({
                                                     <div key={index} className="w-full">
                                                         <div className="flex w-full items-center gap-2 py-2">
                                                             <div className="flex w-[55%] min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[#111827] dark:text-gray-200">
+                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[var(--brand-accent)]">
                                                                     {item.label}
                                                                 </span>
                                                                 {calculatorEditable ? (
@@ -927,7 +883,7 @@ const Approval = ({
                                                     <div key={index} className="w-full">
                                                         <div className="flex w-full items-center gap-2 py-2">
                                                             <div className="flex w-[55%] min-w-0 shrink-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[#111827] dark:text-gray-200">
+                                                                <span className="shrink-0 text-sm font-medium leading-tight text-[var(--brand-accent)]">
                                                                     {item.label}
                                                                 </span>
                                                                 <div className="inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-md border border-input bg-background px-2 shadow-sm">
@@ -973,7 +929,7 @@ const Approval = ({
 
                                             return (
                                                 <div key={index} className="flex w-full items-center justify-between gap-2 py-2">
-                                                    <span className="w-[55%] shrink-0 text-sm font-medium text-[#111827] dark:text-gray-200">{item.label}</span>
+                                                    <span className="w-[55%] shrink-0 text-sm font-medium text-[var(--brand-accent)]">{item.label}</span>
                                                     <span className="w-[45%] min-w-0 text-right text-sm font-semibold text-foreground break-words">
                                                         {item.value}
                                                     </span>
@@ -986,8 +942,6 @@ const Approval = ({
                         </CardContent>
                     </Card>
                 </div>
-                </>
-                )}
             </div>
             )}
 

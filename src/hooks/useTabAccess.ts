@@ -9,7 +9,7 @@ const fallbackComponent: ReactNode = createElement(
   },
   createElement(
     "div",
-    { className: "font-semibold text-[#151357]" },
+    { className: "font-semibold text-[var(--brand)]" },
     "Access Denied"
   ),
   createElement(

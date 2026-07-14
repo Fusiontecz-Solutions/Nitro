@@ -1,5 +1,11 @@
 /** Shared commission history row mapping — used by Monthly history and Commission dashboard (same data rules). */
 
+import {
+    type CommissionRecipientType,
+    getStoredCommissionPctForRecipient,
+    getUnderwriterNameFromApplication,
+} from './commissionRecipientShared'
+
 export type DealStatus = 'APPROVED' | 'PAID' | 'PENDING' | 'CLAWBACK'
 
 type FundedDealApi = {
@@ -33,6 +39,25 @@ export function toNum(value: unknown): number | null {
     }
     const n = Number(cleaned)
     return Number.isFinite(n) ? n : null
+}
+
+export function getApplicationUnderwriterId(app: unknown): string | null {
+    const r = app as Record<string, unknown>
+    const assigned = r?.assignedUnderwriter as Record<string, unknown> | undefined
+    const approved = r?.approvedByUnderwriter as Record<string, unknown> | undefined
+    const claimed = r?.claimedByUnderwriter as Record<string, unknown> | undefined
+    const raw =
+        r?.assignedUnderwriterId ??
+        assigned?.id ??
+        assigned?._id ??
+        r?.approvedByUnderwriterId ??
+        approved?.id ??
+        approved?._id ??
+        r?.claimedByUnderwriterId ??
+        claimed?.id ??
+        claimed?._id
+    if (raw == null || String(raw).trim() === '') return null
+    return String(raw).trim()
 }
 
 export function getIsoNameFromApplication(app: unknown): string {
@@ -138,6 +163,7 @@ export function mapApplicationToHistoryRow(
     app: unknown,
     rowIndex: number,
     commission: Record<string, unknown> | null | undefined,
+    recipientType: CommissionRecipientType = 'iso',
 ): DealRow {
     const r = app as Record<string, unknown>
     const offerDecisionRaw = r?.OfferDecision as Record<string, unknown> | undefined
@@ -176,8 +202,11 @@ export function mapApplicationToHistoryRow(
         toNum(r?.commissionAmount) ??
         0
 
-    const storedPctRaw = toNum(r?.commissionPercentage)
-    const crPctRaw = commission ? toNum(commission.commissionPercentage) : null
+    const storedPctRaw = getStoredCommissionPctForRecipient(r, recipientType)
+    const crPctRaw =
+        recipientType === 'iso' && commission
+            ? toNum(commission.commissionPercentage)
+            : null
     const derivedPct =
         fundedAmount > 0 && commissionAmount !== 0
             ? Math.round((commissionAmount / fundedAmount) * 10000) / 100
@@ -248,7 +277,10 @@ export function mapApplicationToHistoryRow(
         dealDisplayId,
         merchant,
         funded: offerAmount,
-        iso: getIsoNameFromApplication(app),
+        iso:
+            recipientType === 'underwriter'
+                ? getUnderwriterNameFromApplication(app)
+                : getIsoNameFromApplication(app),
         base,
         net,
         commissionPctLabel,

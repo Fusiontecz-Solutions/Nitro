@@ -129,7 +129,7 @@ export function AvochatoCallSurface({
       )}
     >
       <div
-        className="pointer-events-none absolute -right-24 -top-24 size-56 rounded-full bg-[#276D9C]/15 blur-3xl dark:bg-[#276D9C]/25"
+        className="pointer-events-none absolute -right-24 -top-24 size-56 rounded-full bg-[var(--brand)]/15 blur-3xl dark:bg-[var(--brand)]/25"
         aria-hidden
       />
       <div
@@ -140,7 +140,7 @@ export function AvochatoCallSurface({
       <div className="relative flex flex-col gap-5 p-5 sm:gap-6 sm:p-6">
         {!embedded ? (
           <div className="space-y-1">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#276D9C] dark:text-[#5AACEA]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[var(--brand)] dark:text-[#C07BE0]">
               Voice link
             </p>
             <h3 className="text-lg font-semibold tracking-tight text-foreground sm:text-xl">Secure Avochato call</h3>
@@ -173,8 +173,8 @@ export function AvochatoCallSurface({
                 className={cn(
                   "!h-14 min-h-14 max-h-14 w-[5.25rem] shrink-0 self-stretch rounded-xl border-border/60 bg-muted/20 px-2 font-mono text-xs shadow-inner",
                   "flex items-center justify-center gap-1 py-0",
-                  "focus-visible:border-[#276D9C]/50 focus-visible:ring-[#276D9C]/25",
-                  "dark:border-white/[0.07] dark:bg-white/[0.04] dark:focus-visible:border-[#5AACEA]/40",
+                  "focus-visible:border-[var(--brand)]/50 focus-visible:ring-[var(--brand)]/25",
+                  "dark:border-white/[0.07] dark:bg-white/[0.04] dark:focus-visible:border-[#C07BE0]/40",
                   "[&_svg]:size-3.5",
                 )}
               >
@@ -205,8 +205,8 @@ export function AvochatoCallSurface({
               className={cn(
                 "!h-14 min-h-14 max-h-14 min-w-0 flex-1 self-stretch rounded-xl border-border/60 bg-muted/20 font-mono text-base tracking-wide shadow-inner",
                 "placeholder:text-muted-foreground/50",
-                "focus-visible:border-[#276D9C]/50 focus-visible:ring-[#276D9C]/25",
-                "dark:border-white/[0.07] dark:bg-white/[0.04] dark:focus-visible:border-[#5AACEA]/40",
+                "focus-visible:border-[var(--brand)]/50 focus-visible:ring-[var(--brand)]/25",
+                "dark:border-white/[0.07] dark:bg-white/[0.04] dark:focus-visible:border-[#C07BE0]/40",
               )}
             />
             <Button
@@ -282,9 +282,9 @@ export function AvochatoCallSurface({
               size="lg"
               className={cn(
                 "relative h-14 w-full overflow-hidden rounded-xl border-0 font-semibold tracking-wide shadow-lg",
-                "bg-gradient-to-r from-[#1a4d6e] via-[#276D9C] to-[#2f7fb8] text-white",
-                "shadow-[#276D9C]/30 transition-all duration-300",
-                "hover:from-[#215a84] hover:via-[#2d7ab8] hover:to-[#3d8ec9] hover:shadow-xl hover:shadow-[#276D9C]/35",
+                "bg-gradient-to-r from-[#1a4d6e] via-[var(--brand)] to-[#2f7fb8] text-white",
+                "shadow-[var(--brand)]/30 transition-all duration-300",
+                "hover:from-[#215a84] hover:via-[#2d7ab8] hover:to-[#3d8ec9] hover:shadow-xl hover:shadow-[var(--brand)]/35",
                 "disabled:from-muted disabled:via-muted disabled:to-muted disabled:text-muted-foreground disabled:shadow-none",
                 "mx-auto w-full max-w-[280px]",
                 "before:pointer-events-none before:absolute before:inset-0 before:bg-gradient-to-t before:from-transparent before:to-white/15",

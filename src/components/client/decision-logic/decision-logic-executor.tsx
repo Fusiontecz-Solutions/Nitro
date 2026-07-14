@@ -46,7 +46,6 @@ function findWidgetScriptEl(): HTMLScriptElement | undefined {
   return undefined;
 }
 
-/** Only treat real bank-login completion as a save trigger — ignore load/progress events. */
 function isWidgetCompletionSignal(detail: unknown): boolean {
   if (detail == null || detail === "") return false;
 
@@ -113,7 +112,6 @@ export default function DecisionLogicExecutor({
   const [widgetLoaded, setWidgetLoaded] = useState(false);
   const [widgetLoadError, setWidgetLoadError] = useState("");
   const [isSavingReport, setIsSavingReport] = useState(false);
-  const [widgetContentMissing, setWidgetContentMissing] = useState(false);
   const reportSubmittedRef = useRef(false);
   const reportDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -326,81 +324,47 @@ export default function DecisionLogicExecutor({
     if (!widgetLoaded) return;
     let cancelled = false;
     let ro: ResizeObserver | undefined;
-    let mo: MutationObserver | undefined;
-    let pollId = 0;
 
-    const applySizes = (): boolean => {
-      if (cancelled) return false;
+    const applySizes = () => {
+      if (cancelled) return;
       const shell = document.getElementById("widgetHeight");
       const host = document.getElementById("widget3");
-      if (!shell || !host) return false;
+      if (!shell || !host) return;
 
-      const shellH = Math.max(420, Math.floor(shell.getBoundingClientRect().height));
+      const shellH = Math.max(320, Math.floor(shell.getBoundingClientRect().height));
       host.style.display = "block";
       host.style.width = "100%";
       host.style.maxWidth = "100%";
       host.style.boxSizing = "border-box";
       host.style.minHeight = `${shellH}px`;
-      host.style.height = `${shellH}px`;
 
       const root = host.shadowRoot;
-      if (!root) return false;
+      if (!root) return;
       const iframe = root.querySelector("iframe");
       if (iframe instanceof HTMLIFrameElement) {
         iframe.style.width = "100%";
         iframe.style.maxWidth = "100%";
         iframe.style.minHeight = `${shellH}px`;
-        iframe.style.height = `${shellH}px`;
+        iframe.style.height = "auto";
         iframe.style.border = "0";
         iframe.style.display = "block";
-        return true;
       }
-      return false;
     };
 
     applySizes();
     const t1 = window.setTimeout(applySizes, 120);
     const t2 = window.setTimeout(applySizes, 500);
-    const t3 = window.setTimeout(applySizes, 1500);
     const shell = document.getElementById("widgetHeight");
-    const host = document.getElementById("widget3");
     if (shell && typeof ResizeObserver !== "undefined") {
       ro = new ResizeObserver(() => applySizes());
       ro.observe(shell);
     }
-    if (host && typeof MutationObserver !== "undefined") {
-      mo = new MutationObserver(() => applySizes());
-      mo.observe(host, { childList: true, subtree: true, attributes: true });
-      if (host.shadowRoot) {
-        mo.observe(host.shadowRoot, { childList: true, subtree: true });
-      }
-    }
-
-    let attempts = 0;
-    pollId = window.setInterval(() => {
-      attempts += 1;
-      const hasIframe = applySizes();
-      if (hasIframe) {
-        setWidgetContentMissing(false);
-        window.clearInterval(pollId);
-        pollId = 0;
-        return;
-      }
-      if (attempts >= 20) {
-        setWidgetContentMissing(true);
-        window.clearInterval(pollId);
-        pollId = 0;
-      }
-    }, 500);
 
     return () => {
       cancelled = true;
       window.clearTimeout(t1);
       window.clearTimeout(t2);
-      window.clearTimeout(t3);
-      if (pollId) window.clearInterval(pollId);
       ro?.disconnect();
-      mo?.disconnect();
     };
   }, [widgetLoaded]);
 
@@ -421,7 +385,7 @@ export default function DecisionLogicExecutor({
 
   return (
     <div className="dl-widget-page flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-slate-100 antialiased">
-      <header className="shrink-0 bg-[#276D9C] shadow-[0_1px_0_rgba(0,0,0,0.08)]">
+      <header className="shrink-0 bg-[image:var(--brand-gradient)] shadow-[0_1px_0_rgba(0,0,0,0.08)]">
         <div className="mx-auto flex w-full max-w-[1920px] flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 md:px-8">
           <div className="flex min-w-0 items-start gap-3">
             <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white ring-1 ring-white/25">
@@ -446,32 +410,13 @@ export default function DecisionLogicExecutor({
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="mx-auto flex min-h-0 w-full max-w-[1920px] flex-1 flex-col px-3 py-4 sm:px-5 sm:py-5 md:px-8 md:py-6">
           <div className="widget_section flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_12px_40px_-12px_rgba(15,23,42,0.12)]">
-            {(widgetLoadError || showEnvHint || isSavingReport || widgetContentMissing) && (
+            {(widgetLoadError || showEnvHint || isSavingReport) && (
               <div className="shrink-0 space-y-2 border-b border-slate-100 bg-slate-50/80 px-4 py-3 sm:px-6">
                 {isSavingReport ? (
                   <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 text-sm text-blue-900">
                     <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
                     <p>
                       Bank login complete. Fetching your full Decision Logic report — this can take up to a minute.
-                    </p>
-                  </div>
-                ) : null}
-                {widgetContentMissing && !widgetLoadError ? (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950">
-                    <p className="font-medium">Bank selection UI did not load</p>
-                    <p className="mt-1 text-xs leading-relaxed">
-                      DecisionLogic returned a request code, but the CDN widget stayed empty. This is usually a
-                      credentials/mode mismatch: set matching LIVE{" "}
-                      <code className="font-mono text-[0.7rem]">SITE_USER_GUID</code> /{" "}
-                      <code className="font-mono text-[0.7rem]">PROFILE_GUID</code> on the API and{" "}
-                      <code className="font-mono text-[0.7rem]">VITE_DECISION_LOGIC_*</code> on the frontend, then
-                      restart both and open a fresh invite link.
-                    </p>
-                    <p className="mt-2 text-xs text-amber-900/90">
-                      Mode: {widgetMode} · Request: {requestCode || "—"} · Site GUID:{" "}
-                      {widgetGuids.siteUserGuid
-                        ? `${widgetGuids.siteUserGuid.slice(0, 8)}…`
-                        : "missing"}
                     </p>
                   </div>
                 ) : null}
@@ -507,7 +452,7 @@ export default function DecisionLogicExecutor({
               ) : (
                 <div className="flex min-h-[50dvh] flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
                   <Loader2
-                    className="h-10 w-10 animate-spin text-[#276D9C]"
+                    className="h-10 w-10 animate-spin text-[var(--brand)]"
                     aria-hidden
                   />
                   <div>

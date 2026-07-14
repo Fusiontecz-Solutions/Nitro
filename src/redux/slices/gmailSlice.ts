@@ -6,6 +6,7 @@ import {
   getGmailAttachments,
   autoCreateApplications,
   sendGmailCompose,
+  fetchGmailConnection,
 } from '../actions/gmailActions';
 import type { GmailLabel } from '../actions/gmailActions';
 
@@ -48,6 +49,14 @@ interface GmailState {
   syncSuccess: boolean;
   syncError: string | null;
 
+  // Gmail OAuth connection (from /gmail/me)
+  gmailConnected: boolean;
+  gmailEmail: string | null;
+  crmEmail: string | null;
+  connectionLoading: boolean;
+  connectionChecked: boolean;
+  connectionError: string | null;
+
   // Auto-create applications
   autoCreating: boolean;
   autoCreateResults: any[];
@@ -80,6 +89,13 @@ const initialState: GmailState = {
   syncing: false,
   syncSuccess: false,
   syncError: null,
+
+  gmailConnected: false,
+  gmailEmail: null,
+  crmEmail: null,
+  connectionLoading: false,
+  connectionChecked: false,
+  connectionError: null,
 
   autoCreating: false,
   autoCreateResults: [],
@@ -162,6 +178,8 @@ export const gmailSlice = createSlice({
         state.syncing = false;
         state.loadingList = false;
         state.syncSuccess = true;
+        state.syncError = null;
+        state.listError = null;
 
         // 🔒 Stale-response guard: if the user already switched to a
         //    different label, discard the outdated response entirely.
@@ -194,9 +212,40 @@ export const gmailSlice = createSlice({
 
         state.syncing = false;
         state.loadingList = false;
-        state.syncError = action.payload as string;
-        state.listError = action.payload as string;
+        const errMsg = action.payload as string;
+        state.syncError = errMsg;
         state.syncSuccess = false;
+
+        // Keep last good inbox when still connected — don't flip to "connect" UI
+        if (state.gmailConnected || state.messages.length > 0) {
+          state.listError = null;
+        } else {
+          state.listError = errMsg;
+        }
+      })
+
+      // ===============================
+      // 🔵 Gmail connection status
+      // ===============================
+      .addCase(fetchGmailConnection.pending, (state) => {
+        state.connectionLoading = true;
+        state.connectionError = null;
+      })
+      .addCase(fetchGmailConnection.fulfilled, (state, action) => {
+        state.connectionLoading = false;
+        state.connectionChecked = true;
+        state.gmailConnected = action.payload.connected;
+        state.gmailEmail = action.payload.gmailEmail;
+        state.crmEmail = action.payload.crmEmail;
+        if (!action.payload.connected) {
+          state.listError = null;
+        }
+      })
+      .addCase(fetchGmailConnection.rejected, (state, action) => {
+        state.connectionLoading = false;
+        state.connectionChecked = true;
+        state.connectionError = action.payload as string;
+        state.gmailConnected = false;
       })
 
 

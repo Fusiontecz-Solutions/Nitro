@@ -124,7 +124,6 @@ function writeDealsCache(
     }
 }
 
-const SUPPORTING_DOC_ACCEPT = '.pdf,.png,.jpg,.jpeg,.webp,.doc,.docx'
 
 const PREVIEW_EXT_TO_MIME: Record<string, string> = {
     pdf: 'application/pdf',
@@ -778,7 +777,7 @@ export default function BrokerPortal() {
                 scheduledPayDate,
                 paidAt: paidAtIso,
             })
-            invalidateApplicationsListCache()
+            await invalidateApplicationsListCache()
             toast.success('Commission payout updated.')
             setDealEditOpen(false)
             setDealEditing(null)
@@ -899,7 +898,7 @@ export default function BrokerPortal() {
 
     const selectTriggerClass = isDark
         ? 'h-9 min-w-[220px] border-[#374151] bg-transparent text-foreground hover:bg-[#374151]/20'
-        : 'h-9 min-w-[220px] border-[#3184BB]/40 bg-white text-foreground hover:bg-[#3184BB]/5'
+        : 'h-9 min-w-[220px] border-[var(--brand)]/40 bg-white text-foreground hover:bg-[var(--brand)]/5'
 
     if (isoListLoading && isos.length === 0) {
         return (
@@ -956,7 +955,7 @@ export default function BrokerPortal() {
                         </Button>
                         <Button
                             type="button"
-                            className="bg-[#3184BB] text-white hover:bg-[#276D9C]"
+                            className="bg-[image:var(--brand-gradient)] text-white hover:bg-[image:var(--brand-gradient)]"
                             disabled={isoUpdateLoading}
                             onClick={() => void saveBanking()}
                         >
@@ -1035,7 +1034,7 @@ export default function BrokerPortal() {
                                     type="button"
                                     className={cn(
                                         'absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors',
-                                        'hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3184BB]/40',
+                                        'hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40',
                                     )}
                                     aria-label="Open calendar"
                                     onClick={() => {
@@ -1110,7 +1109,7 @@ export default function BrokerPortal() {
                                                 type="button"
                                                 className={cn(
                                                     'absolute right-1 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors',
-                                                    'hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3184BB]/40',
+                                                    'hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40',
                                                 )}
                                                 aria-label="Open calendar"
                                                 onClick={() => {
@@ -1168,7 +1167,7 @@ export default function BrokerPortal() {
                         </Button>
                         <Button
                             type="button"
-                            className="bg-[#3184BB] text-white hover:bg-[#276D9C]"
+                            className="bg-[image:var(--brand-gradient)] text-white hover:bg-[image:var(--brand-gradient)]"
                             disabled={dealSaving}
                             onClick={() => void saveDealEdit()}
                         >
@@ -1250,7 +1249,7 @@ export default function BrokerPortal() {
             <div className={`p-6 ${cardClass} flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between`}>
                 <div className="flex min-w-0 flex-1 items-center gap-4">
                     <div
-                        className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white shadow-sm ${isDark ? 'bg-[#3184BB] shadow-[#3184BB]/25' : 'bg-[#3184BB]'
+                        className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white shadow-sm ${isDark ? 'bg-[image:var(--brand-gradient)] shadow-[var(--brand)]/25' : 'bg-[image:var(--brand-gradient)]'
                             }`}
                     >
                         {iso.initials}
@@ -1271,7 +1270,7 @@ export default function BrokerPortal() {
                             <SelectTrigger className={selectTriggerClass}>
                                 <SelectValue placeholder="Select ISO" />
                             </SelectTrigger>
-                            <SelectContent align="end" className="min-w-[var(--radix-select-trigger-width)]">
+                            <SelectContent align="end" enableSearch className="min-w-[var(--radix-select-trigger-width)]">
                                 {isos.map((b) => (
                                     <SelectItem key={b.id} value={String(b.id)}>
                                         <span className="font-medium">{b.name}</span>
@@ -1304,8 +1303,8 @@ export default function BrokerPortal() {
                         label: 'PENDING PAYOUT',
                         val: stats.pending,
                         sub: debouncedDealsSearch ? 'Matching Search' : 'Not Yet Paid',
-                        icon: <Clock className="text-[#3184BB]" />,
-                        accent: 'text-[#3184BB]',
+                        icon: <Clock className="text-[var(--brand)]" />,
+                        accent: 'text-[var(--brand)]',
                     },
                     {
                         label: 'MY RATE',
@@ -1357,7 +1356,7 @@ export default function BrokerPortal() {
                                 value={dealsSearchInput}
                                 onChange={(e) => setDealsSearchInput(e.target.value)}
                                 className={cn(
-                                    'h-9 border-[#E5E7EB] bg-white pl-9 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:ring-2 focus:ring-[#276D9C]/25',
+                                    'h-9 border-[#E5E7EB] bg-white pl-9 text-sm text-[#111827] placeholder:text-[#9CA3AF] focus:ring-2 focus:ring-[var(--brand)]/25',
                                     isDark ? 'border-[#374151] bg-transparent text-foreground placeholder:text-muted-foreground' : '',
                                 )}
                                 aria-label="Search deals"
@@ -1422,7 +1421,7 @@ export default function BrokerPortal() {
                                         <td className="px-5 py-3">
                                             <button
                                                 type="button"
-                                                className="text-sm font-semibold text-[#0c2461] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3184BB]/40 focus-visible:ring-offset-2 dark:text-sky-400"
+                                                className="text-sm font-semibold text-[#0c2461] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 focus-visible:ring-offset-2 dark:text-sky-400"
                                             >
                                                 {getIsoDealIdDisplay(row)}
                                             </button>
@@ -1460,7 +1459,7 @@ export default function BrokerPortal() {
                                                     'h-7 rounded-full cursor-pointer border px-2 text-[11px] font-semibold',
                                                     isDark
                                                         ? 'border-[#4b5563] text-slate-200 hover:bg-slate-800'
-                                                        : 'border-[#BFDBFE] text-[#2563EB] hover:bg-[#EFF6FF]',
+                                                        : 'border-[#BFDBFE] text-[var(--brand)] hover:bg-[#EFF6FF]',
                                                 )}
                                                 onClick={() => openDealEdit(row)}
                                             >
@@ -1558,14 +1557,13 @@ export default function BrokerPortal() {
                             type="file"
                             className="sr-only"
                             multiple
-                            accept={SUPPORTING_DOC_ACCEPT}
                             onChange={(e) => {
                                 void uploadIsoPortalDocuments(e.target.files, 'supporting')
                             }}
                         />
                         <p className="text-md font-semibold text-foreground">Supporting documents</p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                            Optional extras—contracts, correspondence, or other files (PDF, images, Word).
+                            Optional extras—contracts, correspondence, or other files.
                         </p>
                         <button
                             type="button"
@@ -1584,17 +1582,17 @@ export default function BrokerPortal() {
                             }}
                             className={cn(
                                 'mt-4 flex w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors',
-                                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3184BB]/40 focus-visible:ring-offset-2',
+                                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40 focus-visible:ring-offset-2',
                                 isDark
-                                    ? 'border-[#374151] bg-black/20 hover:border-[#3184BB]/45 hover:bg-[#3184BB]/[0.06]'
-                                    : 'border-[#3184BB]/25 bg-[#3184BB]/[0.04] hover:border-[#3184BB]/45 hover:bg-[#3184BB]/[0.07]',
+                                    ? 'border-[#374151] bg-black/20 hover:border-[var(--brand)]/45 hover:bg-[var(--brand)]/[0.06]'
+                                    : 'border-[var(--brand)]/25 bg-[var(--brand)]/[0.04] hover:border-[var(--brand)]/45 hover:bg-[var(--brand)]/[0.07]',
                                 (isoDocUploading || isoUpdateLoading) && 'pointer-events-none opacity-60',
                             )}
                         >
                             <div
                                 className={cn(
                                     'flex h-12 w-12 items-center justify-center rounded-full',
-                                    isDark ? 'bg-[#3184BB]/20 text-[#5BA3D9]' : 'bg-[#3184BB]/15 text-[#3184BB]',
+                                    isDark ? 'bg-[var(--brand)]/20 text-[#C07BE0]' : 'bg-[var(--brand)]/15 text-[var(--brand)]',
                                 )}
                             >
                                 {isoDocUploading ? (
@@ -1613,8 +1611,8 @@ export default function BrokerPortal() {
                                 className={cn(
                                     'mt-4 inline-flex items-center rounded-lg px-4 py-2 text-[11px] font-bold uppercase tracking-wide',
                                     isDark
-                                        ? 'bg-[#3184BB]/25 text-[#93C5E8]'
-                                        : 'bg-[#3184BB] text-white shadow-sm shadow-[#3184BB]/20',
+                                        ? 'bg-[var(--brand)]/25 text-[#93C5E8]'
+                                        : 'bg-[image:var(--brand-gradient)] text-white shadow-sm shadow-[var(--brand)]/20',
                                 )}
                             >
                                 Choose files
@@ -1631,15 +1629,15 @@ export default function BrokerPortal() {
                                         className={cn(
                                             'flex items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors',
                                             isDark
-                                                ? 'border-[#374151] bg-black/25 hover:border-[#3184BB]/30'
-                                                : 'border-[#E2E8F0] bg-white hover:border-[#3184BB]/25',
+                                                ? 'border-[#374151] bg-black/25 hover:border-[var(--brand)]/30'
+                                                : 'border-[#E2E8F0] bg-white hover:border-[var(--brand)]/25',
                                         )}
                                     >
                                         <div className="flex min-w-0 items-center gap-2.5">
                                             <span
                                                 className={cn(
                                                     'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-                                                    isDark ? 'bg-[#3184BB]/15 text-[#5BA3D9]' : 'bg-[#3184BB]/10 text-[#3184BB]',
+                                                    isDark ? 'bg-[var(--brand)]/15 text-[#C07BE0]' : 'bg-[var(--brand)]/10 text-[var(--brand)]',
                                                 )}
                                             >
                                                 <FileText className="h-4 w-4" />

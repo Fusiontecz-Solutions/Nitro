@@ -37,7 +37,7 @@ export const createApplication = createAsyncThunk(
             }
 
             const response = await axiosPostFormData('/applications', formData);
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Create application error:', error);
@@ -120,7 +120,6 @@ export async function executeApplicationsListFetch(params: GetApplicationsParams
     const url = buildApplicationsListUrl(fetchParams);
     const response = await axiosGet(url, axiosListConfig);
     if (!skipListCache) {
-        console.log('response.data', response.data);
         setCachedApplicationsList(cacheKey, response.data);
     }
     return response.data;
@@ -146,13 +145,13 @@ export const getApplications = createAsyncThunk(
 
 export const claimUnderwriterDeal = createAsyncThunk(
     'application/claimUnderwriterDeal',
-    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
+    async ({ applicationId }: { applicationId: string }, { dispatch, rejectWithValue }) => {
         try {
             await axiosPost(
                 `/applications/${encodeURIComponent(applicationId)}/scrubbing-claim`,
                 {},
             );
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return true;
         } catch (error: any) {
             console.error('Claim scrubbing deal error:', error);
@@ -173,7 +172,7 @@ export const claimFinalUnderwriterDeal = createAsyncThunk(
                 `/applications/${encodeURIComponent(applicationId)}/underwriter-claim`,
                 {},
             );
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return true;
         } catch (error: any) {
             console.error('Claim underwriter deal error:', error);
@@ -188,16 +187,16 @@ export const claimFinalUnderwriterDeal = createAsyncThunk(
 
 export const releaseUnderwriterDeal = createAsyncThunk(
     'application/releaseUnderwriterDeal',
-    async ({ applicationId }: { applicationId: string }, { rejectWithValue }) => {
+    async ({ applicationId }: { applicationId: string }, { dispatch, rejectWithValue }) => {
         try {
             await axiosPost(
                 `/applications/${encodeURIComponent(applicationId)}/scrubbing-release`,
                 {},
             );
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return true;
         } catch (error: any) {
-            console.error('Release underwriter deal error:', error);
+            console.error('Release scrubbing deal error:', error);
             return rejectWithValue(
                 error.response?.data?.message ||
                     error?.message ||
@@ -221,7 +220,7 @@ export const assignApplicationToUnderwriter = createAsyncThunk(
                 `/applications/${encodeURIComponent(applicationId)}/assign-underwriter`,
                 { underwriterId },
             );
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Assign application to Underwriter error:', error);
@@ -251,7 +250,7 @@ export const sendApplicationForFinalUnderwriterApproval = createAsyncThunk(
                 `/applications/${encodeURIComponent(applicationId)}/send-final-underwriter-approval`,
                 source ? { source } : {},
             );
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Send for final Underwriter approval error:', error);
@@ -281,11 +280,11 @@ export interface ApplicationStatsData {
     underwriting: ApplicationStatsBucket;
     /** Agent queue / Pending state — backend `/applications/stats`. */
     workflowPending?: ApplicationStatsBucket;
-    /** Underwriter queue / In Progress state — backend `/applications/stats`. */
+    /** Scrubbing queue / In Progress state — backend `/applications/stats`. */
     workflowInProgress?: ApplicationStatsBucket;
     /** All applications in stats scope once each (dashboard “Total Deals Picked”). */
     totalDealsPicked?: ApplicationStatsBucket;
-    /** Apps in the viewer’s primary queue: Agent / Underwriter / Final Underwriter. */
+    /** Apps in the viewer’s primary queue: Agent / Scrubbing / Underwriter. */
     roleQueueAssigned?: ApplicationStatsBucket;
 }
 
@@ -476,6 +475,38 @@ export const getApplicationsByIsoId = createAsyncThunk(
     }
 );
 
+// Get applications by underwriter id
+export const getApplicationsByUnderwriterId = createAsyncThunk(
+    'application/getByUnderwriterId',
+    async (
+        args: string | { underwriterId: string; search?: string; currentQueue?: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const underwriterId = typeof args === 'string' ? args : args.underwriterId;
+            const search = typeof args === 'string' ? '' : (args.search ?? '');
+            const currentQueue = typeof args === 'string' ? '' : (args.currentQueue ?? '');
+            const queryParams = new URLSearchParams();
+            if (search.trim()) {
+                queryParams.append('search', search.trim());
+            }
+            if (currentQueue.trim()) {
+                queryParams.append('currentQueue', currentQueue.trim());
+            }
+            const query = queryParams.toString();
+            const response = await axiosGet(
+                `/applications/by-underwriter/${underwriterId}${query ? `?${query}` : ''}`,
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Get applications by underwriter id error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fetch applications by underwriter',
+            );
+        }
+    },
+);
+
 export type SaveSchedulePaymentTrackingPayload = {
     paymentStartDate: string;
     effectiveStartDate: string;
@@ -597,7 +628,7 @@ export const updateApplication = createAsyncThunk(
     async ({ id, data }: { id: string; data: UpdateApplicationPayload }, { rejectWithValue }) => {
         try {
             const response = await axiosPut(`/applications/${id}`, data);
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Update application error:', error);
@@ -614,7 +645,7 @@ export const updateApplicationQueue = createAsyncThunk(
     async ({ id, data }: { id: string; data: UpdateQueuePayload }, { rejectWithValue }) => {
         try {
             const response = await axiosPatch(`/applications/${id}/queue`, data);
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Update application queue error:', error);
@@ -631,7 +662,7 @@ export const updateApplicationState = createAsyncThunk(
     async ({ id, data }: { id: string; data: UpdateStatePayload }, { rejectWithValue }) => {
         try {
             const response = await axiosPatch(`/applications/${id}/state`, data);
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Update application state error:', error);
@@ -672,20 +703,27 @@ export const rejectApplication = createAsyncThunk(
             reason,
             emailHtml,
             emailSubject,
+            isoEmail,
+            ccEmails,
         }: {
             id: string | number;
             reason: string;
-            /** Rendered rejection template emailed to the linked ISO. */
             emailHtml?: string;
             emailSubject?: string;
+            isoEmail?: string;
+            ccEmails?: string[];
         },
         { rejectWithValue },
     ) => {
         try {
             const response = await axiosPost(`/applications/${id}/reject`, {
                 reason,
-                ...(emailHtml ? { emailHtml, emailSubject } : {}),
+                ...(emailHtml ? { emailHtml } : {}),
+                ...(emailSubject ? { emailSubject } : {}),
+                ...(isoEmail ? { isoEmail } : {}),
+                ccEmails: ccEmails ?? [],
             });
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Reject application error:', error);
@@ -696,13 +734,13 @@ export const rejectApplication = createAsyncThunk(
     }
 );
 
-// Delete application
+// Delete application (soft-delete → Recently Deleted)
 export const deleteApplication = createAsyncThunk(
     'application/delete',
     async (id: string, { rejectWithValue }) => {
         try {
             const response = await axiosDelete(`/applications/${id}`);
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return { ...response.data, deletedId: id };
         } catch (error: any) {
             console.error('Delete application error:', error);
@@ -711,6 +749,51 @@ export const deleteApplication = createAsyncThunk(
             );
         }
     }
+);
+
+// Permanently delete a soft-deleted application (Super Admin / Operations)
+export const permanentlyDeleteApplication = createAsyncThunk(
+    'application/permanentlyDelete',
+    async (id: string, { rejectWithValue }) => {
+        try {
+            const response = await axiosDelete(`/applications/${id}/permanent`);
+            await invalidateApplicationsListCache();
+            return { ...response.data, deletedId: id };
+        } catch (error: any) {
+            console.error('Permanent delete application error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to permanently delete application',
+            );
+        }
+    },
+);
+
+// Restore a soft-deleted application to a scrubber's claimed queue
+export const restoreApplicationToScrubber = createAsyncThunk(
+    'application/restoreToScrubber',
+    async (
+        {
+            applicationId,
+            scrubberId,
+        }: { applicationId: string; scrubberId: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${encodeURIComponent(applicationId)}/restore-to-scrubber`,
+                { scrubberId },
+            );
+            await invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Restore application to scrubber error:', error);
+            return rejectWithValue(
+                error.response?.data?.message ||
+                    error?.message ||
+                    'Failed to restore application to scrubber',
+            );
+        }
+    },
 );
 
 // Upload documents to an existing application
@@ -727,26 +810,14 @@ export const uploadApplicationDocuments = createAsyncThunk(
         try {
             const formData = new FormData();
 
-            const slug = String(requestedDocumentSlug || '').trim();
-
-            // Append files. When a requested-document slug is provided, prefix the
-            // filename with `${slug}__` so the backend matcher
-            // (isDocumentRequestFulfilled) links the upload to that request and
-            // flips its checklist row to "Received".
+            // Append files
             if (files && files.length > 0) {
                 files.forEach((file) => {
-                    const upload = slug
-                        ? new File([file], `${slug}__${file.name}`, {
-                              type: file.type,
-                              lastModified: file.lastModified,
-                          })
-                        : file;
-                    formData.append('files', upload);
+                    formData.append('files', file);
                 });
             }
-
-            if (slug) {
-                formData.append('requestedDocumentSlug', slug);
+            if (requestedDocumentSlug?.trim()) {
+                formData.append('requestedDocumentSlug', requestedDocumentSlug.trim());
             }
 
             const response = await axiosPostFormData(`/applications/${id}/files`, formData);
@@ -776,6 +847,53 @@ export const deleteApplicationFile = createAsyncThunk(
     }
 );
 
+// Assign a document-request slug to an existing uploaded file
+export const assignApplicationFileDocumentType = createAsyncThunk(
+    'application/assignFileDocumentType',
+    async (
+        {
+            applicationId,
+            fileId,
+            requestedDocumentSlug,
+        }: { applicationId: string; fileId: string; requestedDocumentSlug: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPatch(`/applications/${applicationId}/files/${fileId}`, {
+                requestedDocumentSlug: requestedDocumentSlug.trim() || null,
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error('Assign file document type error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to assign document type',
+            );
+        }
+    },
+);
+
+/** Run Claude/Document AI extraction on a stored application PDF and merge into client fields. */
+export const fillApplicationFromPdfFile = createAsyncThunk(
+    'application/fillApplicationFromPdfFile',
+    async (
+        { applicationId, fileId }: { applicationId: string; fileId: string },
+        { rejectWithValue },
+    ) => {
+        try {
+            const response = await axiosPost(
+                `/applications/${applicationId}/files/${fileId}/fill-from-pdf`,
+                {},
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error('Fill application from PDF error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to fill application from PDF',
+            );
+        }
+    },
+);
+
 // Send approval email to client for an application
 export const sendApprovalEmail = createAsyncThunk(
     'application/sendApprovalEmail',
@@ -783,13 +901,21 @@ export const sendApprovalEmail = createAsyncThunk(
         {
             applicationId,
             resend,
+            reinitiateContract,
             emailHtml,
             emailSubject,
+            isoEmail,
+            ccEmails,
         }: {
             applicationId: string | number;
             resend?: boolean;
+            /** Archive prior contract envelope when resending updated offer to ISO. */
+            reinitiateContract?: boolean;
+            /** Branded HTML rendered by the frontend approval template (backend injects URL / names). */
             emailHtml?: string;
             emailSubject?: string;
+            isoEmail?: string;
+            ccEmails?: string[];
         },
         { rejectWithValue }
     ) => {
@@ -797,8 +923,13 @@ export const sendApprovalEmail = createAsyncThunk(
             const response = await axiosPost('/applications/send-approval-email', {
                 applicationId,
                 resend: !!resend,
-                ...(emailHtml ? { emailHtml, emailSubject } : {}),
+                reinitiateContract: !!reinitiateContract,
+                ...(emailHtml ? { emailHtml } : {}),
+                ...(emailSubject ? { emailSubject } : {}),
+                ...(isoEmail ? { isoEmail } : {}),
+                ccEmails: ccEmails ?? [],
             });
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Send approval email error:', error);
@@ -807,6 +938,24 @@ export const sendApprovalEmail = createAsyncThunk(
             );
         }
     }
+);
+
+export const reinitiateContract = createAsyncThunk(
+    'application/reinitiateContract',
+    async (applicationId: string | number, { rejectWithValue }) => {
+        try {
+            const response = await axiosPost('/applications/reinitiate-contract', {
+                applicationId,
+            });
+            await invalidateApplicationsListCache();
+            return response.data;
+        } catch (error: any) {
+            console.error('Reinitiate contract error:', error);
+            return rejectWithValue(
+                error.response?.data?.message || 'Failed to reinitiate contract',
+            );
+        }
+    },
 );
 
 /** Funded notification — best-effort client email (any role with app access) */
@@ -871,7 +1020,7 @@ export const extractBusinessDetails = createAsyncThunk(
             formData.append('pdf', pdfFile);
 
             const response = await axiosPostFormData('/applications/extract-pdf', formData);
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data;
         } catch (error: any) {
             console.error('Extract business details error:', error);
@@ -890,7 +1039,7 @@ export const bulkUploadApplicationsExcel = createAsyncThunk(
             const formData = new FormData();
             formData.append('file', file);
             const response = await axiosPostFormData('/applications/bulk-upload-excel', formData);
-            invalidateApplicationsListCache();
+            await invalidateApplicationsListCache();
             return response.data as {
                 success?: boolean;
                 message?: string;

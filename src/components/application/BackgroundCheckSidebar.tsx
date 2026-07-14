@@ -167,7 +167,7 @@ export default function BackgroundCheckSidebar({
         <div className="mt-4 flex flex-col gap-2">
           <Button
             type="button"
-            className="h-10 w-full bg-gradient-to-r from-[var(--brand)] to-[#6366F1] text-white hover:opacity-95"
+            className="h-10 w-full bg-[image:var(--brand-gradient)] text-white hover:opacity-95"
             disabled={saving || downloadingPdf || viewingPdf}
             onClick={onSaveAll}
           >

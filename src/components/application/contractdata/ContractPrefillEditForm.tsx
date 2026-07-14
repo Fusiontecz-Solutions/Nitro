@@ -43,6 +43,10 @@ import {
     applyLiveBankDetailsToPrefillMerge,
     applyLiveOfferSyncToPrefillPartial,
     applyOwnerRowsToPrefillMerge,
+    CANONICAL_BUSINESS_ADDRESS_CITY_KEYS,
+    CANONICAL_BUSINESS_ADDRESS_STATE_KEYS,
+    CANONICAL_BUSINESS_ADDRESS_STREET_KEYS,
+    CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS,
     finalizeContractPrefillMoneyFields,
     getContractPrefillEditDefaultsFromApplication,
     normalizeContractPrefillOverrides,
@@ -626,42 +630,22 @@ const PREFILL_SYNC_GROUPS: PrefillSyncGroup[] = [
     {
         id: "street",
         label: "Street",
-        keys: [
-            "businessAddress",
-            "businessAddressContract",
-            "securityBusinessAddress",
-            "achAuthorizationAccountHolderAddress",
-        ],
+        keys: [...CANONICAL_BUSINESS_ADDRESS_STREET_KEYS],
     },
     {
         id: "city",
         label: "City",
-        keys: [
-            "businessAddressCity",
-            "businessAddressContractCity",
-            "securityBusinessAddressCity",
-            "achAuthorizationAccountHolderCity",
-        ],
+        keys: [...CANONICAL_BUSINESS_ADDRESS_CITY_KEYS],
     },
     {
         id: "addressState",
         label: "State",
-        keys: [
-            "businessAddressState",
-            "businessAddressContractState",
-            "securityBusinessAddressState",
-            "achAuthorizationAccountHolderState",
-        ],
+        keys: [...CANONICAL_BUSINESS_ADDRESS_STATE_KEYS],
     },
     {
         id: "zip",
         label: "ZIP",
-        keys: [
-            "businessAddressZip",
-            "businessAddressContractZip",
-            "securityBusinessAddressZip",
-            "achAuthorizationAccountHolderZip",
-        ],
+        keys: [...CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS],
     },
     {
         id: "offerAmount",
@@ -1534,24 +1518,33 @@ export function ContractPrefillEditForm({
             (activeGuarantorCount < 2 && guarantor2KeySet.has(k));
         const updates: Partial<Record<keyof BuildContractPrefillFieldsArgs, string>> = {};
         const syncedLabels: string[] = [];
-        for (const group of PREFILL_SYNC_GROUPS) {
+        let foundFilledSharedField = false;
+        // Prefer groups that appear on this stage so we always copy from the visible fields.
+        const groupsToSync =
+            activeSectionSyncGroups.length > 0 ? activeSectionSyncGroups : PREFILL_SYNC_GROUPS;
+        for (const group of groupsToSync) {
             const sourceKey = group.keys.find(
                 (k) => keysInSection.has(k) && String(values[k] ?? "").trim() !== "",
             );
             if (!sourceKey) continue;
-            const value = String(values[sourceKey] ?? "");
+            foundFilledSharedField = true;
+            const value = String(values[sourceKey] ?? "").trim();
             let changed = false;
             for (const k of group.keys) {
                 if (isHiddenTarget(k)) continue;
-                if (String(values[k] ?? "") !== value) {
+                if (String(values[k] ?? "").trim() !== value) {
                     updates[k] = value;
                     changed = true;
                 }
             }
             if (changed) syncedLabels.push(group.label);
         }
-        if (!syncedLabels.length) {
+        if (!foundFilledSharedField) {
             toast.info("Fill a shared field on this stage first, then sync.");
+            return;
+        }
+        if (!syncedLabels.length) {
+            toast.info("Shared fields on this stage already match every other stage.");
             return;
         }
         setValues((prev) => ({ ...prev, ...updates }));
@@ -1886,9 +1879,9 @@ export function ContractPrefillEditForm({
                 className="flex max-h-[92vh] w-[min(100vw-2rem,960px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px]"
                 onOpenAutoFocus={(e: any) => e.preventDefault()}
             >
-                <DialogHeader className="shrink-0 border-b border-[#276D9C]/15 bg-gradient-to-r from-[#276D9C]/10 via-white to-slate-50 px-6 py-4 dark:from-[#276D9C]/20 dark:via-slate-950 dark:to-slate-900">
+                <DialogHeader className="shrink-0 border-b border-[var(--brand)]/15 bg-gradient-to-r from-[var(--brand)]/10 via-white to-slate-50 px-6 py-4 dark:from-[var(--brand)]/20 dark:via-slate-950 dark:to-slate-900">
                     <div className="flex items-start gap-3">
-                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#276D9C] text-white shadow-md shadow-[#276D9C]/25">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[image:var(--brand-gradient)] text-white shadow-md shadow-[var(--brand)]/25">
                             <ScrollText className="h-5 w-5" aria-hidden />
                         </div>
                         <div className="min-w-0 space-y-1">
@@ -1918,7 +1911,7 @@ export function ContractPrefillEditForm({
                         Section
                     </Label>
                     <Select value={activeSectionId} onValueChange={setActiveSectionId}>
-                        <SelectTrigger className="h-10 w-full border-[#276D9C]/25 bg-white dark:border-slate-600 dark:bg-slate-950">
+                        <SelectTrigger className="h-10 w-full border-[var(--brand)]/25 bg-white dark:border-slate-600 dark:bg-slate-950">
                             <SelectValue placeholder="Choose section" />
                         </SelectTrigger>
                         <SelectContent position="popper" className="z-[10200] max-h-[min(70vh,420px)]">
@@ -1937,7 +1930,7 @@ export function ContractPrefillEditForm({
                         className="hidden max-h-[min(58vh,520px)] w-[220px] shrink-0 flex-col gap-0.5 overflow-y-auto border-b border-slate-200 p-3 md:flex md:border-b-0 md:border-r dark:border-slate-700"
                         aria-label="Contract sections"
                     >
-                        <p className="mb-2 flex items-center gap-1.5 px-2 text-[10px] font-semibold uppercase tracking-wide text-[#276D9C] dark:text-[#5a9fd4]">
+                        <p className="mb-2 flex items-center gap-1.5 px-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--brand)] dark:text-[var(--brand-accent)]">
                             <LayoutList className="h-3 w-3" aria-hidden />
                             Outline
                         </p>
@@ -1951,7 +1944,7 @@ export function ContractPrefillEditForm({
                                     className={cn(
                                         "flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
                                         isActive
-                                            ? "bg-[#276D9C]/12 font-medium text-[#276D9C] ring-1 ring-[#276D9C]/25 dark:bg-[#276D9C]/20 dark:text-[#7eb8e8]"
+                                            ? "bg-[var(--brand)]/12 font-medium text-[var(--brand)] ring-1 ring-[var(--brand)]/25 dark:bg-[var(--brand)]/20 dark:text-[#7eb8e8]"
                                             : "text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800",
                                     )}
                                 >
@@ -1965,10 +1958,10 @@ export function ContractPrefillEditForm({
                     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
                         {activeSection ? (
                             <div className="space-y-4">
-                                <div className="rounded-xl border border-[#276D9C]/12 bg-slate-50/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-900/50">
+                                <div className="rounded-xl border border-[var(--brand)]/12 bg-slate-50/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-900/50">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="flex min-w-0 items-start gap-3">
-                                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#276D9C]/12 text-[#276D9C]">
+                                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--brand)]/12 text-[var(--brand)]">
                                                 <activeSection.Icon className="h-4 w-4" aria-hidden />
                                             </div>
                                             <div className="min-w-0">
@@ -1990,7 +1983,7 @@ export function ContractPrefillEditForm({
                                                 title={`Copy this stage's shared fields (${activeSectionSyncGroups
                                                     .map((g) => g.label)
                                                     .join(", ")}) to every other stage`}
-                                                className="h-8 shrink-0 gap-1.5 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                className="h-8 shrink-0 gap-1.5 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                             >
                                                 <CopyCheck className="h-3.5 w-3.5" aria-hidden />
                                                 Sync to all
@@ -2088,7 +2081,7 @@ export function ContractPrefillEditForm({
                                                                                 type="button"
                                                                                 variant="outline"
                                                                                 size="sm"
-                                                                                className="h-9 shrink-0 gap-1.5 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                                                                className="h-9 shrink-0 gap-1.5 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                                                                 onClick={() => setSpaModalOpen(true)}
                                                                             >
                                                                                 <Calculator
@@ -2149,7 +2142,7 @@ export function ContractPrefillEditForm({
                                             type="button"
                                             variant="outline"
                                             size="sm"
-                                            className="gap-1 border-[#276D9C]/30 text-[#276D9C] hover:bg-[#276D9C]/10"
+                                            className="gap-1 border-[var(--brand)]/30 text-[var(--brand)] hover:bg-[var(--brand)]/10"
                                             onClick={() => setActiveSectionId(nextSection.id)}
                                         >
                                             Next: {nextSection.title}
@@ -2193,7 +2186,7 @@ export function ContractPrefillEditForm({
                         </Button>
                         {!readOnly && (
                             <Button
-                                className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                                className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                                 type="button"
                                 onClick={() => void handleSave()}
                                 disabled={saving || parsePositiveContractId(contractId) == null}

@@ -6,6 +6,7 @@ import {
   getApplicationDuplicates,
   type DuplicateApplication,
 } from "@/redux/actions/applicationDedupeActions";
+import { clearDedupe } from "@/redux/slices/dedupeSlice";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 
 function duplicateApplicationHref(dup: DuplicateApplication): string | null {
@@ -32,6 +33,7 @@ export default function ApplicationSheetDudep({
 
   useEffect(() => {
     if (!applicationId) return;
+    dispatch(clearDedupe());
     dispatch(getApplicationDuplicates(applicationId));
   }, [applicationId, dispatch]);
 
@@ -47,7 +49,7 @@ export default function ApplicationSheetDudep({
   if (isForbidden) {
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Dupes view is only visible to Underwriters and Admins.
+        Dupes view is only visible to Scrubbing and Admins.
       </div>
     );
   }

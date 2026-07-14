@@ -5,46 +5,33 @@ import { useParams } from "react-router"
 import { Card, CardContent } from "../ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table"
 import { Button } from "../ui/button"
-import { Trash2, Eye, Pin } from "lucide-react"
+import { Trash2, Eye, Pin, Sparkles, Loader2 } from "lucide-react"
 import { useDispatch, useSelector } from "react-redux"
 import type { AppDispatch, RootState } from "@/redux/store"
 import type { ApplicationFiles } from "@/types/applicationTypes"
-import { deleteApplicationFile, getApplicationByApplicationId, getApplicationById, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
+import { deleteApplicationFile, fillApplicationFromPdfFile, getApplicationByApplicationId, uploadApplicationDocuments } from "@/redux/actions/applicationActions"
 import { toast } from "react-toastify"
 import { useTheme } from "@/context/ThemeContext"
 import PDFViewerDocsModal from "./PDFViewerDocsModal"
 import { formatDateTimeUS, cn } from "@/lib/utils"
-import { isPinnedDocumentSlug, normalizeDocumentSlug } from "@/constants/documentRequestTypes"
-import { isNumericApplicationRouteParam } from "@/lib/applicationRouteMatch"
-
-const extractSlugFromFilename = (name?: string | null): string => {
-    const raw = String(name ?? "").trim()
-    const sep = raw.indexOf("__")
-    if (sep <= 0) return ""
-    return raw.slice(0, sep).trim()
-}
+import { isPinnedDocumentSlug } from "@/constants/documentRequestTypes"
 
 const fileDocumentSlug = (file: ApplicationFiles): string =>
-    normalizeDocumentSlug(
-        file.documentType || file.requestedDocumentSlug || extractSlugFromFilename(file.originalName),
-    )
+    String((file as any).documentType || (file as any).requestedDocumentSlug || "").trim()
+
+const isPdfApplicationFile = (file: ApplicationFiles): boolean => {
+    const name = String(file.originalName || "").trim().toLowerCase()
+    const mime = String(file.mimeType || "").toLowerCase()
+    return mime === "application/pdf" || name.endsWith(".pdf")
+}
 
 type UploadedDocumentsProps = {
     applicationId?: string
     /** Hide upload/delete and required-doc acknowledgements (e.g. OPERATIONS view-only). */
     readOnly?: boolean
-    /** Public ISO portal: only show requested documents (upload/view/replace), hide unrelated files. */
-    documentRequestOnly?: boolean
-    /** Styling/layout for the public upload URL page (used with documentRequestOnly). */
-    publicPortalLayout?: boolean
 }
 
-const UploadedDocuments = ({
-    applicationId,
-    readOnly = false,
-    documentRequestOnly = false,
-    publicPortalLayout = false,
-}: UploadedDocumentsProps) => {
+const UploadedDocuments = ({ applicationId, readOnly = false }: UploadedDocumentsProps) => {
     const { applicationId: routeApplicationId } = useParams<{ applicationId: string }>()
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
@@ -53,6 +40,8 @@ const UploadedDocuments = ({
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false)
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
     const [pdfFileName, setPdfFileName] = useState<string>("")
+    const [pdfMimeTypeHint, setPdfMimeTypeHint] = useState<string>("")
+    const [fillingFileId, setFillingFileId] = useState<string | null>(null)
     const fileInputRef = useRef<HTMLInputElement | null>(null)
 
     const { data: applicationData } = useSelector(
@@ -60,9 +49,6 @@ const UploadedDocuments = ({
     )
     const { loading: uploadLoading } = useSelector(
         (state: RootState) => state.uploadDocuments
-    )
-    const { loading: documentRequestsLoading, data: documentRequests } = useSelector(
-        (state: RootState) => state.documentRequests
     )
     const dispatch: AppDispatch = useDispatch()
 
@@ -77,11 +63,8 @@ const UploadedDocuments = ({
         if (lastFetchedApplicationIdRef.current === requestedKey) return
         lastFetchedApplicationIdRef.current = requestedKey
 
-        if (isNumericApplicationRouteParam(requestedKey)) {
-            dispatch(getApplicationByApplicationId(requestedKey))
-        } else {
-            dispatch(getApplicationById(requestedKey))
-        }
+        // Treat this as business applicationId (numeric id in route and preview sheet).
+        dispatch(getApplicationByApplicationId(requestedKey))
         void dispatch(getDocumentRequestsByApplication(requestedKey))
     }, [effectiveApplicationId, dispatch])
 
@@ -182,6 +165,7 @@ const UploadedDocuments = ({
         if (file.url) {
             setPdfFileUrl(file.url)
             setPdfFileName(file.originalName || "Document")
+            setPdfMimeTypeHint(String(file.mimeType || "").trim())
             setIsPDFModalOpen(true)
         } else {
             toast.error("File URL not available")
@@ -192,6 +176,41 @@ const UploadedDocuments = ({
         setIsPDFModalOpen(false)
         setPdfFileUrl(null)
         setPdfFileName("")
+        setPdfMimeTypeHint("")
+    }
+
+    const handleFillApplicationFromPdf = async (file: ApplicationFiles) => {
+        if (!applicationData?._id || !file._id) {
+            toast.error("Application or file ID not found")
+            return
+        }
+
+        setFillingFileId(file._id)
+        try {
+            await dispatch(
+                fillApplicationFromPdfFile({
+                    applicationId: applicationData._id,
+                    fileId: file._id,
+                }),
+            ).unwrap()
+
+            toast.success("Application details filled from PDF")
+
+            const refreshKey = applicationData.applicationId ?? effectiveApplicationId
+            if (refreshKey != null) {
+                await dispatch(getApplicationByApplicationId(refreshKey))
+            }
+        } catch (error: unknown) {
+            const message =
+                typeof error === "string"
+                    ? error
+                    : error instanceof Error
+                      ? error.message
+                      : "Failed to fill application from PDF"
+            toast.error(message)
+        } finally {
+            setFillingFileId(null)
+        }
     }
 
     // Pin the two key ISO-captured docs (voided check / driver's license) to the
@@ -204,61 +223,12 @@ const UploadedDocuments = ({
         })
     }, [uploadedFiles])
 
-    const portalRequestsEmpty =
-        documentRequestOnly &&
-        !documentRequestsLoading &&
-        (!documentRequests || documentRequests.length === 0)
-
-    const requestedDocumentsSection = (
-        <div className={cn(publicPortalLayout ? "px-5 py-5" : "px-6 pt-4")}>
-            {portalRequestsEmpty ? (
-                <p
-                    className={cn(
-                        "rounded-lg border px-4 py-8 text-center text-sm",
-                        isDark ? "border-gray-700 text-gray-400" : "border-slate-200 text-slate-500",
-                    )}
-                >
-                    No documents have been requested at this time.
-                </p>
-            ) : (
-                <RequestedDocumentsPanel
-                    applicationLookupId={applicationData?.applicationId ?? effectiveApplicationId ?? null}
-                    applicationUuid={applicationData?._id ? String(applicationData._id) : null}
-                    businessApplicationId={applicationData?.applicationId ?? effectiveApplicationId ?? null}
-                    readOnly={readOnly}
-                    compact={publicPortalLayout}
-                    className={
-                        publicPortalLayout
-                            ? "border-none bg-transparent p-0 shadow-none dark:bg-transparent"
-                            : undefined
-                    }
-                />
-            )}
-        </div>
-    )
-
-    if (documentRequestOnly) {
-        if (publicPortalLayout) {
-            return requestedDocumentsSection
-        }
-
-        return (
-            <Card
-                className={`rounded-lg box-border p-0 border py-0 gap-0 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.14),0_4px_14px_-4px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_40px_-8px_rgba(0,0,0,0.55)] ${isDark ? "border-[#374151] bg-[#141517]" : "border-slate-200/90 bg-card"
-                    }`}
-            >
-                <CardContent className="p-0">{requestedDocumentsSection}</CardContent>
-            </Card>
-        )
-    }
-
     return (
         <Card
             className={`rounded-lg box-border p-0 border py-0 gap-0 shadow-[0_12px_40px_-12px_rgba(15,23,42,0.14),0_4px_14px_-4px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_40px_-8px_rgba(0,0,0,0.55)] ${isDark ? "border-[#374151] bg-[#141517]" : "border-slate-200/90 bg-card"
                 }`}
         >
             <CardContent className="p-0">
-                {!documentRequestOnly ? (
                 <div className="px-6 pt-4">
                     <RequestedDocumentsPanel
                         applicationLookupId={applicationData?.applicationId ?? effectiveApplicationId ?? null}
@@ -267,7 +237,6 @@ const UploadedDocuments = ({
                         readOnly={readOnly}
                     />
                 </div>
-                ) : null}
                 <div
                     className={cn(
                         'flex items-center justify-between gap-3 border-b px-6 py-3',
@@ -307,7 +276,7 @@ const UploadedDocuments = ({
                                 size="sm"
                                 onClick={handleUploadSelectedFiles}
                                 disabled={selectedFiles.length === 0 || uploadLoading}
-                                className="h-8 px-3 text-xs font-medium bg-[#276D9C] hover:bg-[#276D9C] text-white cursor-pointer shadow-md"
+                                className="h-8 px-3 text-xs font-medium bg-[image:var(--brand-gradient)] hover:bg-[image:var(--brand-gradient)] text-white cursor-pointer shadow-md"
                             >
                                 {uploadLoading ? "Uploading..." : "Upload"}
                             </Button>
@@ -406,13 +375,13 @@ const UploadedDocuments = ({
                                         <TableCell
                                             className={cn(
                                                 'text-[0.85rem] py-2 px-6 font-poppins text-foreground',
-                                                pinned && 'border-l-2 border-l-[#2563EB] dark:border-l-[#5AACEA]',
+                                                pinned && 'border-l-2 border-l-[var(--brand)] dark:border-l-[#C07BE0]',
                                             )}
                                         >
                                             <div className="flex flex-col gap-1">
                                                 <span className="flex items-center gap-1.5">
                                                     {pinned && (
-                                                        <Pin className="h-3.5 w-3.5 shrink-0 fill-[#2563EB] text-[#2563EB] dark:fill-[#5AACEA] dark:text-[#5AACEA]" />
+                                                        <Pin className="h-3.5 w-3.5 shrink-0 fill-[var(--brand)] text-[var(--brand)] dark:fill-[#C07BE0] dark:text-[#C07BE0]" />
                                                     )}
                                                     {file.originalName}
                                                 </span>
@@ -426,8 +395,8 @@ const UploadedDocuments = ({
                                                             className={cn(
                                                                 'inline-flex w-fit items-center rounded-md px-2 py-0.5 text-[10px] font-semibold',
                                                                 pinned
-                                                                    ? 'bg-[#2563EB] text-white dark:bg-[#5AACEA] dark:text-[#0b1220]'
-                                                                    : 'bg-[#EAF1FA] text-[#276D9C] dark:bg-[#1f2937] dark:text-[#5AACEA]',
+                                                                    ? 'bg-[image:var(--brand-gradient)] text-white dark:bg-[#C07BE0] dark:text-[#0b1220]'
+                                                                    : 'bg-[#EAF1FA] text-[var(--brand)] dark:bg-[#1f2937] dark:text-[#C07BE0]',
                                                             )}
                                                         >
                                                             {label}
@@ -454,6 +423,23 @@ const UploadedDocuments = ({
                                                 >
                                                     <Eye className="size-4" />
                                                 </Button>
+                                                {!readOnly && isPdfApplicationFile(file) && (
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        onClick={() => handleFillApplicationFromPdf(file)}
+                                                        disabled={fillingFileId === file._id}
+                                                        className="text-violet-600 hover:text-violet-700 hover:bg-violet-50 dark:hover:bg-violet-950 h-4 w-4 py-0 px-2"
+                                                        title="Fill application from this PDF"
+                                                    >
+                                                        {fillingFileId === file._id ? (
+                                                            <Loader2 className="size-4 animate-spin" />
+                                                        ) : (
+                                                            <Sparkles className="size-4" />
+                                                        )}
+                                                    </Button>
+                                                )}
                                                 {!readOnly && (
                                                     <Button
                                                         type="button"
@@ -482,6 +468,7 @@ const UploadedDocuments = ({
                 onClose={handleClosePDFModal}
                 fileUrl={pdfFileUrl}
                 fileName={pdfFileName}
+                mimeTypeHint={pdfMimeTypeHint}
             />
         </Card >
     )

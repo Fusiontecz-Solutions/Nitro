@@ -586,7 +586,7 @@ export default function Transactions() {
     if (applicationDetailLoading && !applicationData) {
       return (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 py-16 text-center text-muted-foreground">
-          <Loader2 className="mb-3 h-8 w-8 animate-spin text-[#276D9C]" aria-hidden />
+          <Loader2 className="mb-3 h-8 w-8 animate-spin text-[var(--brand)]" aria-hidden />
           <p className="text-sm font-medium">Loading application…</p>
         </div>
       );
@@ -602,7 +602,7 @@ export default function Transactions() {
   if (collectionPaymentsLoading && !dealView && !hasFetchedCollections) {
     return (
       <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 py-16 text-center text-muted-foreground">
-        <Loader2 className="mb-3 h-8 w-8 animate-spin text-[#276D9C]" aria-hidden />
+        <Loader2 className="mb-3 h-8 w-8 animate-spin text-[var(--brand)]" aria-hidden />
         <p className="text-sm font-medium">Loading collections & deal economics…</p>
       </div>
     );
@@ -883,8 +883,8 @@ export default function Transactions() {
                       "highlight" in cell &&
                         cell.highlight &&
                         (isDark
-                          ? "border-[#276D9C]/40 bg-[#276D9C]/[0.08]"
-                          : "border-[#276D9C]/30 bg-[#276D9C]/[0.05]")
+                          ? "border-[var(--brand)]/40 bg-[var(--brand)]/[0.08]"
+                          : "border-[var(--brand)]/30 bg-[var(--brand)]/[0.05]")
                     )}
                   >
                     <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -918,7 +918,7 @@ export default function Transactions() {
                   className={cn(
                     "flex-1 cursor-pointer rounded-lg px-4 text-xs font-semibold uppercase tracking-wide transition-all sm:flex-none sm:px-5 sm:text-[13px] sm:normal-case sm:tracking-normal",
                     activeSection === "schedule"
-                      ? "bg-[#276D9C] text-white shadow-sm"
+                      ? "bg-[image:var(--brand-gradient)] text-white shadow-sm"
                       : isDark
                         ? "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
                         : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
@@ -934,7 +934,7 @@ export default function Transactions() {
                   className={cn(
                     "flex-1 cursor-pointer rounded-lg px-4 text-xs font-semibold uppercase tracking-wide transition-all sm:flex-none sm:px-5 sm:text-[13px] sm:normal-case sm:tracking-normal",
                     activeSection === "notes"
-                      ? "bg-[#276D9C] text-white shadow-sm"
+                      ? "bg-[image:var(--brand-gradient)] text-white shadow-sm"
                       : isDark
                         ? "text-muted-foreground hover:bg-white/[0.06] hover:text-foreground"
                         : "text-muted-foreground hover:bg-background/80 hover:text-foreground"
@@ -1036,7 +1036,7 @@ export default function Transactions() {
               type="button"
               onClick={handleSaveEconomics}
               disabled={isSavingEconomics}
-              className="bg-[#276D9C] text-white hover:bg-[#1f598a]"
+              className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
             >
               {isSavingEconomics ? (
                 <>

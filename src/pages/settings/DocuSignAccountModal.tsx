@@ -118,7 +118,7 @@ export default function DocuSignAccountModal({
                   id="ds-name"
                   value={form.name}
                   onChange={(e) => set("name", e.target.value)}
-                  placeholder="e.g. Woodmere Financial Production"
+                  placeholder="e.g. Production account"
                 />
               </Field>
             </div>
@@ -212,7 +212,7 @@ export default function DocuSignAccountModal({
             Cancel
           </Button>
           <Button
-            className="bg-[var(--brand)] hover:bg-[var(--brand)]/90"
+            className="bg-[image:var(--brand-gradient)] hover:opacity-90"
             disabled={saving}
             onClick={() => void handleSubmit()}
           >

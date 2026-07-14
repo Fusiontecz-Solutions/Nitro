@@ -324,7 +324,7 @@ const Message = ({ selectedConversationId, className, onSelectConversation }: Me
                         >
                             <div className="relative">
                                 <Avatar>
-                                    <AvatarFallback className="bg-[#276D9C] text-white">{agent.initials}</AvatarFallback>
+                                    <AvatarFallback className="bg-[image:var(--brand-gradient)] text-white">{agent.initials}</AvatarFallback>
                                 </Avatar>
                                 <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 ${isDark ? 'border-[#111b21]' : 'border-white'} ${agent.status === 'Online' ? 'bg-emerald-500' : 'bg-yellow-400'}`} />
                             </div>
@@ -345,7 +345,7 @@ const Message = ({ selectedConversationId, className, onSelectConversation }: Me
                 <div className={`px-4 py-2 flex items-center justify-between border-b ${isDark ? 'bg-[#202c33] border-none' : 'bg-[#f0f2f5] border-gray-300'}`}>
                     <div className="flex items-center gap-3">
                         <Avatar className="h-10 w-10">
-                            <AvatarFallback className="bg-[#276D9C] text-white">GT</AvatarFallback>
+                            <AvatarFallback className="bg-[image:var(--brand-gradient)] text-white">GT</AvatarFallback>
                         </Avatar>
                         <div>
                             <h2 className="font-semibold text-sm md:text-base">

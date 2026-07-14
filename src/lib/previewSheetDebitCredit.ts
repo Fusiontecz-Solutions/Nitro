@@ -14,7 +14,6 @@ function getPreviewRowValue(rowData: Record<string, string>, ...candidates: stri
   return "";
 }
 
-
 function hasPreviewCellValue(value: string): boolean {
   const s = String(value ?? "").trim();
   return s.length > 0 && s !== "—" && s !== "-";

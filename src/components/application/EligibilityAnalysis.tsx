@@ -558,7 +558,7 @@ export default function EligibilityAnalysis() {
                         type="button"
                         size="sm"
                         variant="default"
-                        className="h-7 bg-[var(--brand)] text-white hover:opacity-90"
+                        className="h-7 bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
                         disabled={isSendingDecisionLogicEmail}
                         onClick={onInitiateDecisionLogic}
                       >

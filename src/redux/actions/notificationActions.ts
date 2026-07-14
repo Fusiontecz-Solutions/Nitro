@@ -6,20 +6,24 @@ export interface SendDocumentRequestPayload {
     requestedDocuments: string[];
     requestAdditional?: boolean;
     reason?: string;
-    /** Primary ISO recipient (editable in UI). */
+    /** Contract modal ISO email flow — omit for underwriting send-back. */
     isoEmail?: string;
-    /** Extra To addresses besides ISO. */
     additionalToEmails?: string[];
     ccEmails?: string[];
-    /**
-     * Branded email HTML rendered on the client with the upload-URL placeholder
-     * (`__DOCUMENT_REQUEST_UPLOAD_URL__`). The backend swaps the placeholder for
-     * the real public upload link before sending. The frontend never builds the
-     * real link itself.
-     */
+    /** Pre-rendered HTML from the CRM email template. */
     emailHtml?: string;
-    /** Subject line for the branded document request email. */
     emailSubject?: string;
+}
+
+export interface SendDocumentRequestResponse {
+    success: boolean;
+    message: string;
+    data?: unknown;
+    application?: unknown;
+    emailSent?: boolean;
+    emailError?: string;
+    emailedTo?: string[];
+    emailedCc?: string[];
 }
 
 export interface NotifyFinalUnderwriterPayload {
@@ -35,88 +39,71 @@ export const sendDocumentRequest = createAsyncThunk(
             const response = await axiosPost('/notifications/document-request', data);
             return response.data;
         } catch (error: any) {
-            const message = error.response?.data?.message || error.message || 'Failed to send document request';
-            console.error('Send document request error:', message, error.response?.data);
-            return rejectWithValue(message);
+            const responseData = error.response?.data;
+            const message =
+                responseData?.message || error.message || 'Failed to send document request';
+            console.error('Send document request error:', message, responseData);
+            return rejectWithValue({
+                message,
+                emailSent: responseData?.emailSent,
+                emailError: responseData?.emailError,
+                application: responseData?.application,
+                status: error.response?.status,
+            });
         }
     }
 );
 
-// Notify Final Underwriter when an application is sent from Underwriter
+// Notify Underwriter when an application is sent from Scrubbing
 export const notifyFinalUnderwriterOnAssignment = createAsyncThunk(
     'notification/notifyFinalUnderwriterOnAssignment',
     async (data: NotifyFinalUnderwriterPayload, { rejectWithValue }) => {
         try {
-            const response = await axiosPost('/notifications/application-sent-to-final-underwriter', data);
+            const response = await axiosPost('/notifications/application-sent-to-final-scrubbing', data);
             return response.data;
         } catch (error: any) {
             const message =
                 error.response?.data?.message ||
                 error.message ||
-                'Failed to notify Final Underwriter';
-            console.error('Notify Final Underwriter error:', message, error.response?.data);
+                'Failed to notify Underwriter';
+            console.error('Notify Underwriter error:', message, error.response?.data);
             return rejectWithValue(message);
         }
     }
 );
 
-export interface NotifyOperationsDisbursementPayload {
-    applicationId: string | number;
+export interface GetNotificationsParams {
+    isRead?: boolean;
+    limit?: number;
+    page?: number;
+    personalOnly?: boolean;
+    /** Action bucket: inbox | todo | follow_up | snoozed | done */
+    bucket?: string;
+    /** MCA category filter */
+    category?: string;
+    /** Importance filter: urgent | high | normal | low */
+    importance?: string;
+    /** Include archived rows (default false) */
+    archived?: boolean;
+    /** Include not-yet-due snoozed rows (default false) */
+    includeSnoozed?: boolean;
 }
-
-export interface NotifyOperationsDisbursementResponse {
-    notified: number;
-    emailsSent: number;
-    recipients: Array<{ id: string; name: string; email: string }>;
-}
-
-/**
- * Super Admin → Operations: signals that the Funding Call is complete and
- * Operations may proceed with disbursement. Backend persists a notification,
- * pushes it via Socket.IO (so the bell updates immediately) and emails every
- * active Operations user that has a verified address.
- */
-export const notifyOperationsForDisbursement = createAsyncThunk(
-    'notification/notifyOperationsForDisbursement',
-    async (data: NotifyOperationsDisbursementPayload, { rejectWithValue }) => {
-        try {
-            const response = await axiosPost(
-                '/notifications/notify-operations-disbursement',
-                data,
-            );
-            return response.data;
-        } catch (error: any) {
-            const message =
-                error.response?.data?.message ||
-                error.message ||
-                'Failed to notify Operations for disbursement';
-            console.error('Notify Operations disbursement error:', message, error.response?.data);
-            return rejectWithValue(message);
-        }
-    },
-);
 
 // Get notifications for current user
 export const getNotifications = createAsyncThunk(
     'notification/getNotifications',
-    async (
-        params: { isRead?: boolean; limit?: number; page?: number; personalOnly?: boolean } = {},
-        { rejectWithValue },
-    ) => {
+    async (params: GetNotificationsParams = {}, { rejectWithValue }) => {
         try {
             const queryParams = new URLSearchParams();
-            if (params.isRead !== undefined) {
-                queryParams.append('isRead', params.isRead.toString());
-            }
-            if (params.limit) {
-                queryParams.append('limit', params.limit.toString());
-            }
-            if (params.page) {
-                queryParams.append('page', params.page.toString());
-            }
-            if (params.personalOnly) {
-                queryParams.append('personalOnly', 'true');
-            }
+            if (params.isRead !== undefined) queryParams.append('isRead', params.isRead.toString());
+            if (params.limit) queryParams.append('limit', params.limit.toString());
+            if (params.page) queryParams.append('page', params.page.toString());
+            if (params.personalOnly) queryParams.append('personalOnly', 'true');
+            if (params.bucket) queryParams.append('bucket', params.bucket);
+            if (params.category) queryParams.append('category', params.category);
+            if (params.importance) queryParams.append('importance', params.importance);
+            if (params.archived) queryParams.append('archived', 'true');
+            if (params.includeSnoozed) queryParams.append('includeSnoozed', 'true');
 
             const url = `/notifications${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
             const response = await axiosGet(url);
@@ -126,6 +113,58 @@ export const getNotifications = createAsyncThunk(
             return rejectWithValue(
                 error.response?.data?.message || 'Failed to fetch notifications'
             );
+        }
+    }
+);
+
+export interface NotificationStatePatch {
+    bucket?: string;
+    importance?: string;
+    category?: string;
+    /** ISO string, or null to clear the snooze */
+    snoozedUntil?: string | null;
+    isArchived?: boolean;
+    isRead?: boolean;
+}
+
+// Triage counts for headings + bell badge
+export const getNotificationSummary = createAsyncThunk(
+    'notification/getSummary',
+    async (_: void | undefined, { rejectWithValue }) => {
+        try {
+            const response = await axiosGet('/notifications/summary');
+            return response.data;
+        } catch (error: any) {
+            console.error('Get notification summary error:', error);
+            return rejectWithValue(error.response?.data?.message || 'Failed to fetch notification summary');
+        }
+    }
+);
+
+// Update per-user triage state for a single notification
+export const updateNotificationState = createAsyncThunk(
+    'notification/updateState',
+    async ({ id, patch }: { id: string; patch: NotificationStatePatch }, { rejectWithValue }) => {
+        try {
+            const response = await axiosPatch(`/notifications/${id}/state`, patch);
+            return response.data;
+        } catch (error: any) {
+            console.error('Update notification state error:', error);
+            return rejectWithValue(error.response?.data?.message || 'Failed to update notification');
+        }
+    }
+);
+
+// Apply a triage patch to many notifications at once
+export const bulkUpdateNotifications = createAsyncThunk(
+    'notification/bulkUpdate',
+    async ({ ids, patch }: { ids: string[]; patch: NotificationStatePatch }, { rejectWithValue }) => {
+        try {
+            const response = await axiosPatch('/notifications/bulk', { ids, patch });
+            return { ...response.data, ids, patch };
+        } catch (error: any) {
+            console.error('Bulk update notifications error:', error);
+            return rejectWithValue(error.response?.data?.message || 'Failed to update notifications');
         }
     }
 );
@@ -201,7 +240,6 @@ export const getDocumentRequestsByApplication = createAsyncThunk(
     }
 );
 
-// Remove a specific document request for an application
 export const removeDocumentRequest = createAsyncThunk(
     'notification/removeDocumentRequest',
     async (
@@ -212,7 +250,11 @@ export const removeDocumentRequest = createAsyncThunk(
             const response = await axiosDelete(
                 `/notifications/document-requests/${data.applicationId}/${encodeURIComponent(data.documentId)}`,
             );
-            return { ...response.data, documentId: data.documentId, applicationId: data.applicationId };
+            return {
+                ...response.data,
+                documentId: data.documentId,
+                applicationId: data.applicationId,
+            };
         } catch (error: any) {
             console.error('Remove document request error:', error);
             return rejectWithValue(

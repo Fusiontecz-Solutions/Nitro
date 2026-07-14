@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -15,8 +15,9 @@ import type { RootState } from "@/redux/store";
 import { axiosGet, axiosPost, axiosPut, axiosDelete } from "@/redux/axios";
 import type { BankAnalysis } from "@/types/bankAnalysisTypes";
 import { toast } from "react-toastify";
-import { formatNumberUS, normalizeApiDateToYyyyMmDd } from "@/lib/utils";
+import { formatInt, formatNumberUS, formatNumberUSForInput, normalizeApiDateToYyyyMmDd } from "@/lib/utils";
 import BankTotalTable from "@/components/application/BankTotalTable";
+import { SPA_SCRUBBER_SYNCED_EVENT } from "@/components/application/contractdata/spaScrubberSync";
 import type {
   BankTotalTableAverageCells,
   BankTotalTableRow,
@@ -87,8 +88,14 @@ interface BankAnalysisTableProps {
     allocatedBankAnalysisId?: number;
   }>;
   onBanksMetaChange?: (banks: Array<{ id: number; accountNumber: string }>) => void;
-  /** Parent registers bulk save (e.g. Offer Approve & Save). */
+  /** When true, hide per-bank Save rows / account Save — bulk save runs on Approve & Save. */
+  hideToolbarSave?: boolean;
+  /** Registers a bulk-save hook for the parent Approve & Save flow. */
   onRegisterSaveAll?: (saveAll: () => Promise<boolean>) => void;
+  /** When true, debounce-save bank rows/account after edits (Scrubbing tab). */
+  autoSave?: boolean;
+  /** Debounce delay for {@link autoSave} (ms). */
+  autoSaveDelayMs?: number;
 }
 
 const parseCurrency = (value: string): number => {
@@ -126,7 +133,6 @@ const hasAnyValue = (row: MonthlyData): boolean => {
   );
 };
 
-/** After save/load: show currency inputs with two fraction digits (e.g. 900.00). */
 const formatMoneyRowDisplay = (row: MonthlyData): MonthlyData => ({
   ...row,
   totalCredit: hasEnteredNumericValue(row.totalCredit)
@@ -144,7 +150,37 @@ const formatMoneyRowDisplay = (row: MonthlyData): MonthlyData => ({
   avgDailyBlc: hasEnteredNumericValue(row.avgDailyBlc)
     ? formatNumberUS(parseCurrency(row.avgDailyBlc))
     : row.avgDailyBlc,
+  nsfNegDays: hasEnteredNumericValue(row.nsfNegDays)
+    ? formatInt(parseCurrency(row.nsfNegDays))
+    : row.nsfNegDays,
+  lowBlcDays: hasEnteredNumericValue(row.lowBlcDays)
+    ? formatInt(parseCurrency(row.lowBlcDays))
+    : row.lowBlcDays,
 });
+
+/** Parsed snapshot for auto-save debounce — ignores display formatting churn. */
+function buildBanksPersistSignature(banks: BankAnalysisInstance[]): string {
+  return JSON.stringify(
+    banks.map((b) => ({
+      id: b.id,
+      backendId: b.backendId ?? "",
+      accountNumber: (b.accountNumber ?? "").trim(),
+      rows: b.rows
+        .filter(hasAnyValue)
+        .map((r) => ({
+          month: r.month,
+          rowBackendId: r.rowBackendId ?? "",
+          totalCredit: parseCurrency(r.totalCredit),
+          loanTransfer: parseCurrency(r.loanTransfer),
+          deposit: parseCurrency(r.deposit),
+          other: parseCurrency(r.other),
+          nsfNegDays: parseCurrency(r.nsfNegDays),
+          lowBlcDays: parseCurrency(r.lowBlcDays),
+          avgDailyBlc: parseCurrency(r.avgDailyBlc),
+        })),
+    })),
+  );
+}
 
 const computeBankTotalForMonth = (bucket: MonthSummaryBucket): BankTotalMonth => {
   const totalCredit = bucket.totalCredit;
@@ -160,7 +196,7 @@ const computeBankTotalForMonth = (bucket: MonthSummaryBucket): BankTotalMonth =>
 
   let avgDailyBlc: number | null = null;
   if (bucket.avgDailyBlcPositiveCount > 0 && bucket.avgDailyBlcSum > 0) {
-    avgDailyBlc = bucket.avgDailyBlcSum;
+    avgDailyBlc = bucket.avgDailyBlcSum / bucket.avgDailyBlcPositiveCount;
   } else if (netCredit !== null && netCredit > 0) {
     avgDailyBlc = netCredit / 30;
   }
@@ -251,6 +287,7 @@ function monthLabelSortKey(label: string): number {
     : Number.NEGATIVE_INFINITY;
 }
 
+
 /** Newest month first (same convention as default rows: current MTD, then prior full months). */
 function sortMonthlyRowsByMonthDesc(rows: MonthlyData[]): MonthlyData[] {
   return [...rows].sort((a, b) => {
@@ -275,8 +312,21 @@ function labelForMonthBeforeOldest(sortedRowsDesc: MonthlyData[]): string {
   return `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-/** First cell for average footer rows: bold “AVERAGE” with blue “(MTD not counted)” subtitle. */
-function BankAnalysisAverageFooterLabelCell() {
+/** First cell for average footer rows: bold “AVERAGE” with blue subtitle. */
+function BankAnalysisAverageFooterLabelCell({
+  monthWindow,
+  monthCount,
+}: {
+  /** When set, labels the row as a last-N-month scrubbing average. */
+  monthWindow?: number;
+  monthCount?: number;
+}) {
+  let subtitle = "(MTD not counted)";
+  if (monthWindow != null && monthWindow > 0) {
+    subtitle = `(last ${monthWindow} months, MTD not counted)`;
+  } else if (monthCount != null && monthCount > 0) {
+    subtitle = `(all ${monthCount} months, MTD not counted)`;
+  }
   return (
     <td className="px-4 py-3 align-middle bg-inherit">
       <div className="flex flex-col leading-snug">
@@ -284,7 +334,7 @@ function BankAnalysisAverageFooterLabelCell() {
           Average
         </span>
         <span className="mt-0.5 text-[11px] font-medium text-[#1d5f8a] dark:text-sky-300">
-          (MTD not counted)
+          {subtitle}
         </span>
       </div>
     </td>
@@ -300,16 +350,16 @@ const BankAnalysisTable = ({
   applicationId: applicationIdProp,
   positions = [],
   onBanksMetaChange,
+  hideToolbarSave = false,
   onRegisterSaveAll,
+  autoSave = false,
+  autoSaveDelayMs = 1500,
 }: BankAnalysisTableProps) => {
   const isReadOnly = !!readOnly;
+  /** Hide per-bank Save when bulk save is wired (e.g. Offer "Approve & Save"). */
+  const deferToolbarSave = hideToolbarSave || Boolean(onRegisterSaveAll);
   const isDeleteDisabled = !!disableDelete;
   const isCreateDisabled = !!disableCreate;
-
-  useEffect(() => {
-    onRegisterSaveAll?.(async () => true);
-  }, [onRegisterSaveAll]);
-
   const [fundingBreakdownModal, setFundingBreakdownModal] = useState<{
     bankId: number;
     rowIndex: number;
@@ -323,6 +373,9 @@ const BankAnalysisTable = ({
   const [deletingRow, setDeletingRow] = useState<{ bankId: number; rowIndex: number } | null>(null);
   /** Blocks duplicate API saves when save is triggered faster than React re-renders. */
   const saveBankInFlightRef = useRef<Set<number>>(new Set());
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoSavedBanksSigRef = useRef<string>("");
+  const banksAutoSaveBootstrappedRef = useRef(false);
 
   const { data: applicationData } = useSelector(
     (state: RootState) => state.applicationDetail,
@@ -408,74 +461,89 @@ const BankAnalysisTable = ({
   };
 
   // Load existing bank analysis data for this application
-  useEffect(() => {
-    const load = async () => {
-      if (!applicationId) {
+  const loadBankAnalysis = useCallback(async () => {
+    if (!applicationId) {
+      setIsInitialLoading(false);
+      return;
+    }
+    try {
+      const resp = await axiosGet(
+        `/bank-analysis?${new URLSearchParams({ application: applicationId }).toString()}`,
+      );
+      const payload = resp.data;
+      const list: BankAnalysis[] = payload?.data ?? payload ?? [];
+      if (!Array.isArray(list) || list.length === 0) {
         setIsInitialLoading(false);
         return;
       }
-      try {
-        const resp = await axiosGet(
-          `/bank-analysis?${new URLSearchParams({ application: applicationId }).toString()}`,
-        );
-        const payload = resp.data;
-        const list: BankAnalysis[] = payload?.data ?? payload ?? [];
-        if (!Array.isArray(list) || list.length === 0) {
-          setIsInitialLoading(false);
-          return;
-        }
 
-        setBanks(
-          list.map((item, index) => ({
-            id: index + 1,
-            backendId: item._id,
-            accountNumber: item.accountNumber || "",
-            accountHeaderLocked: Boolean(item.accountNumber?.trim()),
-            rows:
-              item.rows && item.rows.length > 0
-                ? sortMonthlyRowsByMonthDesc(
-                    item.rows.map((r) => {
-                      const backendNetCredit =
-                        (r.totalCredit || 0) -
-                        ((r.loanTransfer || 0) +
-                          (r.deposit || 0) +
-                          (r.other || 0));
-                      const autoAvgDailyBlc =
-                        backendNetCredit > 0 ? backendNetCredit / 30 : 0;
+      setBanks(
+        list.map((item, index) => ({
+          id: index + 1,
+          backendId: item._id,
+          accountNumber: item.accountNumber || "",
+          accountHeaderLocked: Boolean(item.accountNumber?.trim()),
+          rows:
+            item.rows && item.rows.length > 0
+              ? sortMonthlyRowsByMonthDesc(
+                  item.rows.map((r) => {
+                    const backendNetCredit =
+                      (r.totalCredit || 0) -
+                      ((r.loanTransfer || 0) +
+                        (r.deposit || 0) +
+                        (r.other || 0));
+                    const autoAvgDailyBlc =
+                      backendNetCredit > 0 ? backendNetCredit / 30 : 0;
 
-                      const mr: MonthlyData = {
-                        month: r.monthLabel,
-                        totalCredit: r.totalCredit ? String(r.totalCredit) : "",
-                        loanTransfer: r.loanTransfer
-                          ? String(r.loanTransfer)
+                    const mr: MonthlyData = {
+                      month: r.monthLabel,
+                      totalCredit: r.totalCredit ? String(r.totalCredit) : "",
+                      loanTransfer: r.loanTransfer
+                        ? String(r.loanTransfer)
+                        : "",
+                      deposit: r.deposit ? String(r.deposit) : "",
+                      other: r.other ? String(r.other) : "",
+                      nsfNegDays: r.nsfNegDays ? String(r.nsfNegDays) : "",
+                      lowBlcDays: r.lowBlcDays ? String(r.lowBlcDays) : "",
+                      avgDailyBlc: r.avgDailyBlc
+                        ? String(r.avgDailyBlc)
+                        : autoAvgDailyBlc > 0
+                          ? formatNumberUS(autoAvgDailyBlc)
                           : "",
-                        deposit: r.deposit ? String(r.deposit) : "",
-                        other: r.other ? String(r.other) : "",
-                        nsfNegDays: r.nsfNegDays ? String(r.nsfNegDays) : "",
-                        lowBlcDays: r.lowBlcDays ? String(r.lowBlcDays) : "",
-                        avgDailyBlc: r.avgDailyBlc
-                          ? String(r.avgDailyBlc)
-                          : autoAvgDailyBlc > 0
-                            ? formatNumberUS(autoAvgDailyBlc)
-                            : "",
-                        rowBackendId: (r as { _id?: string; id?: string })._id ?? (r as { _id?: string; id?: string }).id,
-                      };
-                      const locked = { ...mr, isLocked: hasAnyValue(mr) };
-                      return formatMoneyRowDisplay(locked);
-                    }),
-                  )
-                : createDefaultRows(),
-          })),
-        );
-      } catch (error) {
-        console.error("Failed to load bank analysis", error);
-      } finally {
-        setIsInitialLoading(false);
-      }
-    };
-
-    void load();
+                      rowBackendId: (r as { _id?: string; id?: string })._id ?? (r as { _id?: string; id?: string }).id,
+                    };
+                    const locked = { ...mr, isLocked: hasAnyValue(mr) };
+                    return formatMoneyRowDisplay(locked);
+                  }),
+                )
+              : createDefaultRows(),
+        })),
+      );
+    } catch (error) {
+      console.error("Failed to load bank analysis", error);
+    } finally {
+      setIsInitialLoading(false);
+    }
   }, [applicationId]);
+
+  useEffect(() => {
+    void loadBankAnalysis();
+  }, [loadBankAnalysis]);
+
+  useEffect(() => {
+    if (!applicationId || typeof window === "undefined") return;
+    const onSpaScrubberSynced = (event: Event) => {
+      const detail = (event as CustomEvent<{ applicationUuid?: string }>).detail;
+      if (String(detail?.applicationUuid ?? "").trim() !== String(applicationId).trim()) {
+        return;
+      }
+      void loadBankAnalysis();
+    };
+    window.addEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaScrubberSynced);
+    return () => {
+      window.removeEventListener(SPA_SCRUBBER_SYNCED_EVENT, onSpaScrubberSynced);
+    };
+  }, [applicationId, loadBankAnalysis]);
 
   const monthSummary = useMemo(() => {
     const summary: Record<string, MonthSummaryBucket> = {};
@@ -527,10 +595,18 @@ const BankAnalysisTable = ({
     return summary;
   }, [banks, loanTransferAllocatedByBankAndMonth]);
 
-  /** Bank Total footer: MTD excluded; divisor = non-MTD months that have core data in at least one bank (positions-only months omitted). */
+  /** Scrubbing / EST. Lvg / footer display: all non-MTD months with data. */
   const bankTotalAverages = useMemo(() => {
+    return computeBankTotalAveragesForMonths(banks, monthSummary, undefined);
+  }, [banks, monthSummary]);
+
+  function computeBankTotalAveragesForMonths(
+    bankTables: BankAnalysisInstance[],
+    summary: Record<string, MonthSummaryBucket>,
+    monthLimit?: number,
+  ) {
     const activeMonthSet = new Set<string>();
-    banks.forEach((table) => {
+    bankTables.forEach((table) => {
       (table.rows || []).forEach((row) => {
         const monthLabel = normalizeMonthLabelKey(row.month);
         if (!monthLabel || monthLabel.includes("mtd")) return;
@@ -544,14 +620,18 @@ const BankAnalysisTable = ({
       });
     });
 
-    const firstBankMonths = banks[0]?.rows.length
-      ? sortMonthlyRowsByMonthDesc(banks[0].rows).map((r) => r.month)
+    const firstBankMonths = bankTables[0]?.rows.length
+      ? sortMonthlyRowsByMonthDesc(bankTables[0].rows).map((r) => r.month)
       : [];
-    const activeBankTotalMonths = firstBankMonths.filter((m) => {
+    const filteredMonths = firstBankMonths.filter((m) => {
       const ml = normalizeMonthLabelKey(m);
       if (!ml || ml.includes("mtd")) return false;
       return activeMonthSet.has(ml);
     });
+    const activeBankTotalMonths =
+      monthLimit != null && monthLimit > 0
+        ? filteredMonths.slice(0, monthLimit)
+        : filteredMonths;
 
     const n = activeBankTotalMonths.length;
     const acc = {
@@ -577,7 +657,7 @@ const BankAnalysisTable = ({
         totals.lowBlcDays > 0);
 
     for (const month of activeBankTotalMonths) {
-      const bucket = monthSummary[month];
+      const bucket = summary[month];
       const totals = bucket ? computeBankTotalForMonth(bucket) : null;
       const rowHasData = bankTotalRowHasData(totals);
 
@@ -622,7 +702,7 @@ const BankAnalysisTable = ({
       lowBlcDays: finish(acc.lowBlcDays),
       divisorMonths: n,
     };
-  }, [banks, monthSummary]);
+  }
 
   const hasBankTotalAverageRow = bankTotalAverages.divisorMonths > 0;
 
@@ -663,8 +743,8 @@ const BankAnalysisTable = ({
           : hasData && totals && totals.avgDailyBlc !== null
             ? `$ ${formatNumberUS(totals.avgDailyBlc)}`
             : "-",
-        nsfNegDays: L ? "Loading..." : hasData && totals ? String(totals.nsfNegDays) : "-",
-        lowBalDays: L ? "Loading..." : hasData && totals ? String(totals.lowBlcDays) : "-",
+        nsfNegDays: L ? "Loading..." : hasData && totals ? formatInt(totals.nsfNegDays) : "-",
+        lowBalDays: L ? "Loading..." : hasData && totals ? formatInt(totals.lowBlcDays) : "-",
       };
     });
 
@@ -702,13 +782,14 @@ const BankAnalysisTable = ({
             !Number.isNaN(avgDailyBlcAvg)
           ? `$ ${formatNumberUS(avgDailyBlcAvg)}`
           : "-",
-      nsfNegDays: L ? "Loading..." : H && nsfAvg !== null ? String(Math.round(nsfAvg)) : "-",
-      lowBalDays: L ? "Loading..." : H && lowBlcAvg !== null ? String(Math.round(lowBlcAvg)) : "-",
+      nsfNegDays: L ? "Loading..." : H && nsfAvg !== null ? formatInt(Math.round(nsfAvg)) : "-",
+      lowBalDays: L ? "Loading..." : H && lowBlcAvg !== null ? formatInt(Math.round(lowBlcAvg)) : "-",
     };
 
     return { rows, average };
   }, [baseMonths, monthSummary, isInitialLoading, bankTotalAverages, hasBankTotalAverageRow]);
 
+  /** Scrubbing / EST. Lvg denominator — all non-MTD months (matches footer). */
   const netCreditAvg = bankTotalAverages.netCredit;
 
   const lastEmittedNetCreditAvgRef = useRef<number | null | undefined>(undefined);
@@ -898,9 +979,12 @@ const BankAnalysisTable = ({
     return { bank, row };
   }, [fundingBreakdownModal, banks]);
 
-  const saveBank = async (
+  const saveBank = useCallback(async (
     bank: BankAnalysisInstance,
+    opts?: { lockAfterSave?: boolean; silent?: boolean },
   ): Promise<"saved" | "failed" | "skipped"> => {
+    const lockAfterSave = opts?.lockAfterSave !== false;
+    const silent = !!opts?.silent;
     if (!applicationId) {
       console.error("Cannot save bank analysis without applicationId");
       return "failed";
@@ -962,7 +1046,7 @@ const BankAnalysisTable = ({
             return formatMoneyRowDisplay({
               ...r,
               rowBackendId: rowBackendId ?? r.rowBackendId,
-              isLocked: hasAnyValue(r),
+              isLocked: lockAfterSave ? hasAnyValue(r) : r.isLocked,
             });
           });
           return {
@@ -976,17 +1060,19 @@ const BankAnalysisTable = ({
       return "saved";
     } catch (error) {
       console.error("Failed to save bank analysis", error);
-      toast.error("Failed to save bank analysis. Please try again.");
+      if (!silent) {
+        toast.error("Failed to save bank analysis. Please try again.");
+      }
       return "failed";
     } finally {
       saveBankInFlightRef.current.delete(bank.id);
     }
-  };
+  }, [applicationId]);
 
   const handleBulkSaveBank = async (bank: BankAnalysisInstance) => {
     setBulkSavingBankId(bank.id);
     try {
-      const result = await saveBank(bank);
+      const result = await saveBank(bank, { lockAfterSave: true });
       if (result === "saved") {
         toast.success("Bank analysis saved.");
       }
@@ -994,6 +1080,99 @@ const BankAnalysisTable = ({
       setBulkSavingBankId(null);
     }
   };
+
+  const bankNeedsPersist = (bank: BankAnalysisInstance): boolean =>
+    Boolean(bank.accountNumber?.trim()) ||
+    bank.rows.some((row) => hasAnyValue(row));
+
+  /**
+   * Persist every bank card (account number + month rows) in one pass.
+   * Registered with the parent for Offer "Approve & Save".
+   */
+  const saveAll = useCallback(async (): Promise<boolean> => {
+    if (!applicationId) return true;
+    let allOk = true;
+    for (const bank of banks) {
+      if (!bankNeedsPersist(bank)) continue;
+      const result = await saveBank(bank);
+      if (result === "failed") {
+        allOk = false;
+      } else if (result === "saved") {
+        setBanks((prev) =>
+          prev.map((b) =>
+            b.id === bank.id
+              ? {
+                  ...b,
+                  accountHeaderLocked: Boolean(bank.accountNumber?.trim()),
+                }
+              : b,
+          ),
+        );
+      }
+    }
+    return allOk;
+  }, [applicationId, banks, saveBank]);
+
+  useEffect(() => {
+    onRegisterSaveAll?.(saveAll);
+  }, [onRegisterSaveAll, saveAll]);
+
+  useEffect(() => {
+    banksAutoSaveBootstrappedRef.current = false;
+    lastAutoSavedBanksSigRef.current = "";
+  }, [applicationId]);
+
+  /** Debounced auto-save for Scrubbing — persists without re-locking rows. */
+  useEffect(() => {
+    if (!autoSave || isReadOnly || isInitialLoading || !applicationId) return;
+
+    const sig = buildBanksPersistSignature(banks);
+    if (!banksAutoSaveBootstrappedRef.current) {
+      banksAutoSaveBootstrappedRef.current = true;
+      lastAutoSavedBanksSigRef.current = sig;
+      return;
+    }
+    if (sig === lastAutoSavedBanksSigRef.current) return;
+
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      void (async () => {
+        let savedAny = false;
+        for (const bank of banks) {
+          if (!bankNeedsPersist(bank)) continue;
+          const hasUnlockedData = bank.rows.some(
+            (row) => !row.isLocked && hasAnyValue(row),
+          );
+          if (!hasUnlockedData && !deferToolbarSave) continue;
+
+          const result = await saveBank(bank, {
+            lockAfterSave: false,
+            silent: true,
+          });
+          if (result === "saved") savedAny = true;
+        }
+        if (savedAny) {
+          lastAutoSavedBanksSigRef.current = sig;
+        }
+      })();
+    }, autoSaveDelayMs);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    banks,
+    autoSave,
+    autoSaveDelayMs,
+    isReadOnly,
+    isInitialLoading,
+    applicationId,
+    saveBank,
+    deferToolbarSave,
+  ]);
 
   /** Persist account number only. Backend update skips rows when `rows` is omitted, so row edits stay local until full save. */
   const saveAccountHeaderOnly = async (
@@ -1051,20 +1230,38 @@ const BankAnalysisTable = ({
           key={bank.id}
           className="w-full overflow-hidden rounded-xl border border-[#E2E8F0] bg-white shadow-sm dark:border-slate-700 dark:bg-[#141517]"
         >
-          {/* Header Section */}
-          <div className="flex flex-row flex-nowrap items-center justify-between gap-3 overflow-x-auto bg-[#D9E9F6] px-5 py-3 dark:bg-[#2A2B2F]">
+          {/* Header Section — single horizontal toolbar */}
+          <div className="flex items-center gap-3 overflow-x-auto bg-[#D9E9F6] px-5 py-3 dark:bg-[#2A2B2F] [scrollbar-width:thin]">
             <h2 className="shrink-0 text-lg font-bold uppercase tracking-wide text-[#334155] dark:text-slate-100">
               Bank Analysis {bankIndex + 1}
             </h2>
 
-            <div className="flex flex-nowrap items-center gap-2">
+            <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-2">
               {!isReadOnly && bank.rows.length > 0 && (
                 <>
-                  {bank.rows.every((r) => r.isLocked) ? (
+                  {deferToolbarSave ? (
+                    bank.rows.some((r) => r.isLocked) ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                        disabled={
+                          isInitialLoading ||
+                          bulkSavingBankId === bank.id ||
+                          deletingBankId === bank.id ||
+                          savingHeaderBankId === bank.id
+                        }
+                        onClick={() => handleUnlockAllBankRows(bank.id)}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        Edit rows
+                      </Button>
+                    ) : null
+                  ) : bank.rows.some((r) => r.isLocked) ? (
                     <Button
                       type="button"
                       variant="outline"
-                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
                       disabled={
                         isInitialLoading ||
                         bulkSavingBankId === bank.id ||
@@ -1079,7 +1276,7 @@ const BankAnalysisTable = ({
                   ) : (
                     <Button
                       type="button"
-                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg bg-[#2B70A1] px-3 text-xs font-medium text-white hover:bg-[#235d85]"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[image:var(--brand-gradient)] px-3 text-xs font-medium text-white hover:opacity-90"
                       disabled={
                         isInitialLoading ||
                         bulkSavingBankId === bank.id ||
@@ -1096,115 +1293,130 @@ const BankAnalysisTable = ({
                       {bulkSavingBankId === bank.id ? "Saving…" : "Save rows"}
                     </Button>
                   )}
+                  <span
+                    className="mx-1 hidden h-6 w-px shrink-0 bg-slate-300/80 dark:bg-slate-600/80 sm:block"
+                    aria-hidden
+                  />
                 </>
               )}
-              <div className="flex shrink-0 flex-nowrap items-center gap-2">
-                <span className="whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-[#556987] dark:text-slate-300">
-                  Account Number
-                </span>
-                <Input
-                  className={`h-9 w-44 shrink-0 rounded-md border border-[#E2E8F0] text-xs dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-400 ${
-                    bank.accountHeaderLocked || isReadOnly
-                      ? "bg-slate-50 dark:bg-slate-800/70"
-                      : "bg-white dark:bg-slate-900"
-                  }`}
-                  placeholder={isInitialLoading ? "Loading..." : "Enter account number"}
-                  readOnly={!!bank.accountHeaderLocked || isReadOnly}
-                  value={bank.accountNumber}
-                  onChange={(e) =>
-                    handleAccountChange(bank.id, e.target.value)
-                  }
-                />
-                {!isReadOnly && bank.accountHeaderLocked ? (
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800"
-                      aria-live="polite"
-                    >
-                      <Check className="h-3.5 w-3.5 shrink-0" />
-                      Saved
-                    </span>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="flex h-9 cursor-pointer items-center gap-1.5 border-slate-300 px-3 text-xs font-medium dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                      onClick={() =>
+
+              <span className="shrink-0 whitespace-nowrap text-[11px] font-medium uppercase tracking-wider text-[#556987] dark:text-slate-300">
+                Account Number
+              </span>
+              <Input
+                className={`h-9 w-36 shrink-0 rounded-md border border-[#E2E8F0] text-xs dark:border-slate-700 dark:text-slate-100 dark:placeholder:text-slate-400 ${
+                  (!deferToolbarSave && bank.accountHeaderLocked) || isReadOnly
+                    ? "bg-slate-50 dark:bg-slate-800/70"
+                    : "bg-white dark:bg-slate-900"
+                }`}
+                placeholder={isInitialLoading ? "Loading..." : "Enter account number"}
+                readOnly={
+                  isReadOnly || (!deferToolbarSave && !!bank.accountHeaderLocked)
+                }
+                value={bank.accountNumber}
+                onChange={(e) =>
+                  handleAccountChange(bank.id, e.target.value)
+                }
+              />
+              {!isReadOnly && !deferToolbarSave && bank.accountHeaderLocked ? (
+                <>
+                  <span
+                    className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-300"
+                    aria-live="polite"
+                  >
+                    <Check className="h-3.5 w-3.5 shrink-0" />
+                    Saved
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0 cursor-pointer border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                    aria-label="Edit account number"
+                    onClick={() =>
+                      setBanks((prev) =>
+                        prev.map((b) =>
+                          b.id === bank.id
+                            ? { ...b, accountHeaderLocked: false }
+                            : b,
+                        ),
+                      )
+                    }
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </>
+              ) : !isReadOnly && !deferToolbarSave ? (
+                <Button
+                  type="button"
+                  className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[image:var(--brand-gradient)] px-3 text-xs font-medium text-white hover:opacity-90"
+                  disabled={isInitialLoading || savingHeaderBankId === bank.id}
+                  onClick={async () => {
+                    setSavingHeaderBankId(bank.id);
+                    try {
+                      const result = await saveAccountHeaderOnly(bank);
+                      if (result === "saved") {
+                        toast.success("Account number saved.");
                         setBanks((prev) =>
                           prev.map((b) =>
                             b.id === bank.id
-                              ? { ...b, accountHeaderLocked: false }
+                              ? { ...b, accountHeaderLocked: true }
                               : b,
                           ),
-                        )
+                        );
+                      } else if (result === "failed") {
+                        toast.error("Failed to save account number.");
                       }
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    
-                    </Button>
-                  </div>
-                ) : !isReadOnly ? (
-                  <Button
-                    type="button"
-                    className="bg-[#2B70A1] hover:bg-[#235d85] text-white rounded-lg h-9 px-3 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
-                    disabled={isInitialLoading || savingHeaderBankId === bank.id}
-                    onClick={async () => {
-                      setSavingHeaderBankId(bank.id);
-                      try {
-                        const result = await saveAccountHeaderOnly(bank);
-                        if (result === "saved") {
-                          toast.success("Account number saved.");
-                          setBanks((prev) =>
-                            prev.map((b) =>
-                              b.id === bank.id
-                                ? { ...b, accountHeaderLocked: true }
-                                : b,
-                            ),
-                          );
-                        } else if (result === "failed") {
-                          toast.error("Failed to save account number.");
-                        }
-                      } finally {
-                        if (!saveBankInFlightRef.current.has(bank.id)) {
-                          setSavingHeaderBankId(null);
-                        }
+                    } finally {
+                      if (!saveBankInFlightRef.current.has(bank.id)) {
+                        setSavingHeaderBankId(null);
                       }
-                    }}
-                  >
-                    {savingHeaderBankId === bank.id ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Check className="h-3.5 w-3.5" />
-                    )}
-                    {savingHeaderBankId === bank.id ? "Saving..." : "Save"}
-                  </Button>
-                ) : null}
-              </div>
-              {!isReadOnly && !isCreateDisabled && bankIndex === 0 && (
-                <Button
-                  className="bg-[#2B70A1] hover:bg-[#235d85] text-white rounded-lg px-4 py-2 text-sm font-semibold flex shrink-0 items-center gap-2 cursor-pointer whitespace-nowrap"
-                  type="button"
-                  disabled={isInitialLoading}
-                  onClick={handleAddBank}
+                    }
+                  }}
                 >
-                  <Plus className="h-4 w-4" />
-                  Add Bank
+                  {savingHeaderBankId === bank.id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Check className="h-3.5 w-3.5" />
+                  )}
+                  {savingHeaderBankId === bank.id ? "Saving…" : "Save"}
                 </Button>
-              )}
-              {!isReadOnly && !isDeleteDisabled && (
-              <Button
-                variant="outline"
-                type="button"
-                className="flex h-8 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap border-red-200 px-3 text-[11px] text-red-600 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/20"
-                disabled={isInitialLoading || deletingBankId === bank.id}
-                onClick={() => handleDeleteBank(bank.id)}
-              >
-                {deletingBankId === bank.id ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3 w-3" />
-                )}
-                {deletingBankId === bank.id ? "Deleting..." : "Delete"}
-              </Button>
+              ) : null}
+
+              {!isReadOnly && (
+                <>
+                  <span
+                    className="mx-1 hidden h-6 w-px shrink-0 bg-slate-300/80 dark:bg-slate-600/80 sm:block"
+                    aria-hidden
+                  />
+                  {!isCreateDisabled && bankIndex === 0 && (
+                    <Button
+                      type="button"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-[image:var(--brand-gradient)] px-3 text-xs font-medium text-white hover:opacity-90"
+                      disabled={isInitialLoading}
+                      onClick={handleAddBank}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add Bank
+                    </Button>
+                  )}
+                  {!isDeleteDisabled && (
+                    <Button
+                      variant="outline"
+                      type="button"
+                      className="flex h-9 shrink-0 cursor-pointer items-center gap-1.5 border-red-200 px-3 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60 dark:border-red-800/50 dark:text-red-400 dark:hover:bg-red-900/20"
+                      disabled={isInitialLoading || deletingBankId === bank.id}
+                      onClick={() => handleDeleteBank(bank.id)}
+                    >
+                      {deletingBankId === bank.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      {deletingBankId === bank.id ? "Deleting…" : "Delete"}
+                    </Button>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -1302,7 +1514,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "totalCredit",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1380,7 +1592,7 @@ const BankAnalysisTable = ({
                                       bank.id,
                                       rowIndex,
                                       "loanTransfer",
-                                      e.target.value,
+                                      formatNumberUSForInput(e.target.value),
                                     )
                                   }
                                 />
@@ -1413,7 +1625,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "deposit",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1445,7 +1657,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "other",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1483,7 +1695,7 @@ const BankAnalysisTable = ({
                               {isInitialLoading
                                 ? "Loading..."
                                 : hasEnteredNumericValue(row.nsfNegDays)
-                                  ? row.nsfNegDays
+                                  ? formatInt(parseCurrency(row.nsfNegDays))
                                   : "-"}
                             </div>
                           ) : (
@@ -1498,7 +1710,7 @@ const BankAnalysisTable = ({
                                   bank.id,
                                   rowIndex,
                                   "nsfNegDays",
-                                  e.target.value,
+                                  formatNumberUSForInput(e.target.value),
                                 )
                               }
                             />
@@ -1510,7 +1722,7 @@ const BankAnalysisTable = ({
                               {isInitialLoading
                                 ? "Loading..."
                                 : hasEnteredNumericValue(row.lowBlcDays)
-                                  ? row.lowBlcDays
+                                  ? formatInt(parseCurrency(row.lowBlcDays))
                                   : "-"}
                             </div>
                           ) : (
@@ -1525,7 +1737,7 @@ const BankAnalysisTable = ({
                                   bank.id,
                                   rowIndex,
                                   "lowBlcDays",
-                                  e.target.value,
+                                  formatNumberUSForInput(e.target.value),
                                 )
                               }
                             />
@@ -1556,7 +1768,7 @@ const BankAnalysisTable = ({
                                     bank.id,
                                     rowIndex,
                                     "avgDailyBlc",
-                                    e.target.value,
+                                    formatNumberUSForInput(e.target.value),
                                   )
                                 }
                               />
@@ -1607,7 +1819,9 @@ const BankAnalysisTable = ({
                       hasEnteredNumericValue(row.avgDailyBlc)
                     );
                   };
-                  const R = bank.rows.filter(isActiveNonMtdRow);
+                  const R = sortMonthlyRowsByMonthDesc(
+                    bank.rows.filter(isActiveNonMtdRow),
+                  );
                   const n = R.length;
 
                   const acc = {
@@ -1691,7 +1905,7 @@ const BankAnalysisTable = ({
 
                   return (
                     <tr className="bg-slate-100/80 text-sm font-semibold text-slate-800 dark:bg-slate-800/80 dark:text-slate-100">
-                      <BankAnalysisAverageFooterLabelCell />
+                      <BankAnalysisAverageFooterLabelCell monthCount={n} />
                       <td className="px-4 py-3 text-left">
                         {isInitialLoading
                           ? "Loading..."
@@ -1731,14 +1945,14 @@ const BankAnalysisTable = ({
                         {isInitialLoading
                           ? "Loading..."
                           : hasData && nsfAvg !== null
-                            ? Math.round(nsfAvg)
+                            ? formatInt(Math.round(nsfAvg))
                             : "-"}
                       </td>
                       <td className="px-4 py-3 text-left">
                         {isInitialLoading
                           ? "Loading..."
                           : hasData && lowAvg !== null
-                            ? Math.round(lowAvg)
+                            ? formatInt(Math.round(lowAvg))
                             : "-"}
                       </td>
                       <td className="px-4 py-3 text-left">
@@ -1771,7 +1985,11 @@ const BankAnalysisTable = ({
         </div>
       ))}
 
-      <BankTotalTable rows={bankTotalTablePayload.rows} average={bankTotalTablePayload.average} />
+      <BankTotalTable
+        rows={bankTotalTablePayload.rows}
+        average={bankTotalTablePayload.average}
+        averageMonthCount={bankTotalAverages.divisorMonths}
+      />
       {fundingBreakdownModal && selectedBreakdownRow && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
@@ -1803,7 +2021,7 @@ const BankAnalysisTable = ({
                     fundingBreakdownModal.bankId,
                     fundingBreakdownModal.rowIndex,
                     "loanTransfer",
-                    e.target.value,
+                    formatNumberUSForInput(e.target.value),
                   )
                 }
               />

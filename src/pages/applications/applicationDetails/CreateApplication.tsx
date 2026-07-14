@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, useEffect } from 'react'
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { Controller, useForm, type SubmitHandler } from 'react-hook-form'
 import { yupResolver } from '@hookform/resolvers/yup'
@@ -22,7 +22,6 @@ import {
     resetUploadDocuments,
 } from '@/redux/slices/applicationSlice'
 import { toast } from 'react-toastify'
-
 import {
     ArrowLeft,
     Trash2,
@@ -57,6 +56,12 @@ import { useTheme } from '@/context/ThemeContext'
 import PDFViewerDocsModal from '@/components/application/PDFViewerDocsModal'
 import { cn, formatNumberUSForInput, parseNumberUS } from '@/lib/utils'
 import { UsCurrencyInput } from '@/components/ui/us-currency-input'
+import {
+    formatSessionUserDisplayName,
+    normalizeRoleKey,
+    resolveEffectiveRole,
+    resolveSessionUser,
+} from '@/lib/sessionRole'
 
 // Types
 interface UploadedFile {
@@ -149,6 +154,7 @@ const CreateApplication = () => {
     const [isFormReset, setIsFormReset] = useState(false)
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false)
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null)
+    const [pdfMimeTypeHint, setPdfMimeTypeHint] = useState<string>("")
     const [pdfFileName, setPdfFileName] = useState<string>('')
     const [isAutoCreatingClient, setIsAutoCreatingClient] = useState(false)
 
@@ -174,6 +180,14 @@ const CreateApplication = () => {
     const { loading: uploadLoading, success: uploadSuccess, error: uploadError } = useSelector(
         (state: RootState) => state.uploadDocuments
     )
+    const loginUser = useSelector((state: RootState) => state.login.data?.user)
+    const sessionUser = useMemo(
+        () => resolveSessionUser(loginUser),
+        [loginUser],
+    )
+    const isAgentUser =
+        normalizeRoleKey(resolveEffectiveRole(sessionUser ?? loginUser)) === 'AGENT'
+    const loggedInAgentId = isAgentUser && sessionUser ? sessionUser.id : ''
 
     const isLoading = isEditMode ? updateLoading : createLoading
     const isPageLoading = isEditMode && fetchLoading
@@ -183,17 +197,12 @@ const CreateApplication = () => {
         handleSubmit,
         formState: { errors, isValid },
         reset,
+        setValue,
     } = useForm<ApplicationFormValues>({
         resolver: yupResolver(applicationSchema) as any,
         mode: 'all',
         defaultValues: defaultFormValues,
     })
-
-    // Clear stale create/update flags so a prior edit does not toast on this page.
-    useEffect(() => {
-        dispatch(resetCreateApplication())
-        dispatch(resetUpdateApplication())
-    }, [dispatch])
 
     // Fetch clients and users on mount
     useEffect(() => {
@@ -279,42 +288,35 @@ const CreateApplication = () => {
         }
     }, [fetchError])
 
-    // Handle create/update success/error (mode-guarded to avoid wrong toast)
+    // Handle create success/error
     useEffect(() => {
-        if (!isEditMode && createSuccess) {
+        if (createSuccess) {
             toast.success('Application created successfully!')
             dispatch(resetCreateApplication())
             navigate('/applications', {
                 state: { refreshApplicationsList: true },
             })
-            return
         }
-        if (!isEditMode && createError) {
+        if (createError) {
             toast.error(createError)
             dispatch(resetCreateApplication())
-            return
         }
-        if (isEditMode && updateSuccess) {
+    }, [createSuccess, createError, dispatch, navigate])
+
+    // Handle update success/error
+    useEffect(() => {
+        if (updateSuccess) {
             toast.success('Application updated successfully!')
             dispatch(resetUpdateApplication())
             navigate('/applications', {
                 state: { refreshApplicationsList: true },
             })
-            return
         }
-        if (isEditMode && updateError) {
+        if (updateError) {
             toast.error(updateError)
             dispatch(resetUpdateApplication())
         }
-    }, [
-        isEditMode,
-        createSuccess,
-        createError,
-        updateSuccess,
-        updateError,
-        dispatch,
-        navigate,
-    ])
+    }, [updateSuccess, updateError, dispatch, navigate])
 
     // Cleanup on unmount
     useEffect(() => {
@@ -460,6 +462,7 @@ const CreateApplication = () => {
             const fileUrl = URL.createObjectURL(file.file)
             setPdfFileUrl(fileUrl)
             setPdfFileName(file.name)
+            setPdfMimeTypeHint(file.file.type || file.type || "")
             setIsPDFModalOpen(true)
         }
     }, [])
@@ -472,6 +475,7 @@ const CreateApplication = () => {
         }
         setPdfFileUrl(null)
         setPdfFileName('')
+        setPdfMimeTypeHint("")
     }, [pdfFileUrl])
 
     // Handle document submit (for edit mode - upload files separately)
@@ -564,6 +568,20 @@ const CreateApplication = () => {
         }
     }, [agents])
 
+    const loggedInAgentLabel = useMemo(() => {
+        const fromSession = formatSessionUserDisplayName(sessionUser)
+        if (fromSession) return fromSession
+        if (!loggedInAgentId) return ''
+        const match = agentOptions.find(
+            (o) => o.value === loggedInAgentId,
+        )
+        return match?.label ?? ''
+    }, [sessionUser, loggedInAgentId, agentOptions])
+
+    useEffect(() => {
+        if (!isAgentUser || !loggedInAgentId) return
+        setValue('referringAgent', loggedInAgentId, { shouldValidate: true })
+    }, [isAgentUser, loggedInAgentId, setValue])
 
     // Show loading state while fetching application data in edit mode
     if (isPageLoading) {
@@ -693,34 +711,46 @@ const CreateApplication = () => {
                                         <Label className={`text-sm font-[400] font-roboto ${isDark ? 'text-white' : 'text-[#374151]'}`}>
                                             Referring Agent
                                         </Label>
-                                        <Controller
-                                            control={control}
-                                            name="referringAgent"
-                                            render={({ field }) => (
-                                                <Select
-                                                    value={field.value}
-                                                    onValueChange={field.onChange}
-                                                    disabled={usersLoading}
-                                                >
-                                                    <SelectTrigger className="h-9 w-full rounded-md bg-background border border-[#E5E7EB]">
-                                                        <SelectValue placeholder={usersLoading ? "Loading agents..." : "Select Agent"} />
-                                                    </SelectTrigger>
-                                                    <SelectContent>
-                                                        {agentOptions.length > 0 ? (
-                                                            agentOptions.map((option) => (
-                                                                <SelectItem key={option.value} value={option.value}>
-                                                                    {option.label}
-                                                                </SelectItem>
-                                                            ))
-                                                        ) : (
-                                                            <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                                                                {usersLoading ? 'Loading agents...' : 'No agents available'}
-                                                            </div>
-                                                        )}
-                                                    </SelectContent>
-                                                </Select>
-                                            )}
-                                        />
+                                        {isAgentUser ? (
+                                            <div
+                                                className="flex h-9 w-full items-center rounded-md border border-[#E5E7EB] bg-muted/40 px-3 text-sm text-foreground"
+                                                aria-readonly="true"
+                                            >
+                                                {loggedInAgentLabel ||
+                                                    (usersLoading
+                                                        ? 'Loading…'
+                                                        : '—')}
+                                            </div>
+                                        ) : (
+                                            <Controller
+                                                control={control}
+                                                name="referringAgent"
+                                                render={({ field }) => (
+                                                    <Select
+                                                        value={field.value}
+                                                        onValueChange={field.onChange}
+                                                        disabled={usersLoading}
+                                                    >
+                                                        <SelectTrigger className="h-9 w-full rounded-md bg-background border border-[#E5E7EB]">
+                                                            <SelectValue placeholder={usersLoading ? "Loading agents..." : "Select Agent"} />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            {agentOptions.length > 0 ? (
+                                                                agentOptions.map((option) => (
+                                                                    <SelectItem key={option.value} value={option.value}>
+                                                                        {option.label}
+                                                                    </SelectItem>
+                                                                ))
+                                                            ) : (
+                                                                <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                                                                    {usersLoading ? 'Loading agents...' : 'No agents available'}
+                                                                </div>
+                                                            )}
+                                                        </SelectContent>
+                                                    </Select>
+                                                )}
+                                            />
+                                        )}
                                     </div>
 
                                     {/* Sales Representative */}
@@ -841,7 +871,7 @@ const CreateApplication = () => {
                                         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:flex-nowrap">
                                             <Button
                                                 type="button"
-                                                className="h-9 shrink-0 px-4 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                                                className="h-9 shrink-0 px-4 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                                                 onClick={() => navigate('/create-clients')}
                                             >
                                                 Add Client
@@ -861,7 +891,7 @@ const CreateApplication = () => {
                                                 <Button
                                                     type="button"
                                                     variant="outline"
-                                                    className="h-9 whitespace-nowrap px-4 gap-2 border border-[#276D9C] text-[#276D9C] bg-transparent shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[#276D9C]/90"
+                                                    className="h-9 whitespace-nowrap px-4 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
                                                     onClick={() => autoClientPdfInputRef.current?.click()}
                                                     disabled={isAutoCreatingClient}
                                                 >
@@ -957,7 +987,7 @@ const CreateApplication = () => {
                                     <Button
                                         type="button"
                                         onClick={handleDocumentSubmit}
-                                        className="h-9 px-4 bg-blue-600 text-white hover:bg-blue-700"
+                                        className="h-9 px-4 bg-primary text-primary-foreground hover:bg-primary/90"
                                         disabled={uploadedFiles.length === 0 || uploadLoading}
                                     >
                                         {uploadLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -1090,7 +1120,7 @@ const CreateApplication = () => {
                             <Button
                                 type="button"
                                 variant="outline"
-                                className="px-4 py-2 gap-2 border border-[#276D9C] text-[#276D9C] bg-transparent cursor-pointer shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[#276D9C]/90"
+                                className="px-4 py-2 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent cursor-pointer shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
                                 onClick={() => navigate('/applications')}
                                 disabled={isLoading}
                             >
@@ -1098,7 +1128,7 @@ const CreateApplication = () => {
                             </Button>
                             <Button
                                 type="submit"
-                                className="px-4 shadow-[0px_0px_0px_1px_#5E5ADB] py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
+                                className="px-4 shadow-[0px_0px_0px_1px_#5E5ADB] py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:pointer-events-none"
                                 disabled={isLoading || !isValid}
                             >
                                 {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -1115,6 +1145,7 @@ const CreateApplication = () => {
                 onClose={handleClosePDFModal}
                 fileUrl={pdfFileUrl}
                 fileName={pdfFileName}
+                mimeTypeHint={pdfMimeTypeHint}
             />
         </div>
     )

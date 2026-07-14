@@ -1061,7 +1061,7 @@ const CreateTermsOffer = () => {
                                 <Button
                                     type="button"
                                     variant="outline"
-                                    className="px-4 py-2 gap-2 border border-[#276D9C] text-[#276D9C] bg-transparent cursor-pointer shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[#276D9C]/90"
+                                    className="px-4 py-2 gap-2 border border-[var(--brand)] text-[var(--brand)] bg-transparent cursor-pointer shadow-[0px_1px_1px_0px_#0000001A] hover:bg-transparent hover:text-[var(--brand)]/90"
                                     onClick={handleCancel}
                                     disabled={loading}
                                 >
@@ -1070,7 +1070,7 @@ const CreateTermsOffer = () => {
                                 {!isViewMode && (
                                     <Button
                                         type="submit"
-                                        className="px-4 shadow-[0px_0px_0px_1px_#5E5ADB] py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                                        className="px-4 shadow-[0px_0px_0px_1px_#5E5ADB] py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                                         disabled={loading || (!isEditMode && !applicationMongoId) || (isEditMode && termsOfferLoading)}
                                     >
                                         {loading ? (isEditMode ? 'Updating...' : 'Submitting...') : (isEditMode ? 'Update' : 'Submit')}

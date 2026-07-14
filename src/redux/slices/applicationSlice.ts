@@ -1,6 +1,6 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { Application } from '@/types/applicationTypes';
-import { buildDetailHydrationPayload } from '@/lib/applicationDetailCache';
+import { buildDetailHydrationPayload } from '@/lib/applicationDetailCache.ts';
 import {
     createApplication,
     getApplications,
@@ -10,6 +10,7 @@ import {
     getApplicationByApplicationId,
     getApplicationsByClient,
     getApplicationsByIsoId,
+    getApplicationsByUnderwriterId,
     updateApplication,
     updateApplicationQueue,
     updateApplicationState,
@@ -194,6 +195,15 @@ export const applicationsSlice = createSlice({
                 patchApplicationInList(state, action.payload);
             })
             .addCase(updateApplicationState.fulfilled, (state, action) => {
+                patchApplicationInList(state, action.payload);
+            })
+            .addCase(updateApplication.fulfilled, (state, action) => {
+                patchApplicationInList(state, action.payload);
+            })
+            .addCase(getApplicationById.fulfilled, (state, action) => {
+                patchApplicationInList(state, action.payload);
+            })
+            .addCase(getApplicationByApplicationId.fulfilled, (state, action) => {
                 patchApplicationInList(state, action.payload);
             });
     },
@@ -461,7 +471,8 @@ export const applicationDetailSlice = createSlice({
                         state.data = {
                             ...state.data,
                             ...updatedApplication,
-                            note: updatedApplication.note, // Ensure note is updated
+                            note: updatedApplication.note,
+                            iso: updatedApplication.iso ?? (state.data as any).iso,
                         } as Application;
                     }
                 }
@@ -559,6 +570,63 @@ export const isoApplicationsSlice = createSlice({
                 state.cache[key] = rows;
             })
             .addCase(getApplicationsByIsoId.rejected, (state, action) => {
+                state.loading = false;
+                state.error = action.payload as string;
+            });
+    },
+});
+
+// Underwriter Applications State
+interface UnderwriterApplicationsState {
+    loading: boolean;
+    data: Application[];
+    error: string | null;
+    cache: Record<string, Application[]>;
+}
+
+const underwriterApplicationsInitialState: UnderwriterApplicationsState = {
+    loading: false,
+    data: [],
+    error: null,
+    cache: {},
+};
+
+function underwriterApplicationsCacheKey(
+    arg: string | { underwriterId: string; search?: string; currentQueue?: string },
+) {
+    if (typeof arg === 'string') return `uw:${arg}|search:`;
+    return `uw:${arg.underwriterId}|search:${(arg.search ?? '').trim().toLowerCase()}|queue:${(arg.currentQueue ?? '').trim().toLowerCase()}`;
+}
+
+export const underwriterApplicationsSlice = createSlice({
+    name: 'underwriterApplications',
+    initialState: underwriterApplicationsInitialState,
+    reducers: {
+        clearUnderwriterApplications: (state) => {
+            state.data = [];
+            state.error = null;
+            state.loading = false;
+        },
+    },
+    extraReducers: (builder) => {
+        builder
+            .addCase(getApplicationsByUnderwriterId.pending, (state, action) => {
+                state.loading = true;
+                state.error = null;
+                const key = underwriterApplicationsCacheKey(action.meta.arg);
+                if (state.cache[key]) {
+                    state.data = state.cache[key];
+                    state.loading = false;
+                }
+            })
+            .addCase(getApplicationsByUnderwriterId.fulfilled, (state, action) => {
+                state.loading = false;
+                const rows = action.payload.data || action.payload;
+                state.data = rows;
+                const key = underwriterApplicationsCacheKey(action.meta.arg);
+                state.cache[key] = rows;
+            })
+            .addCase(getApplicationsByUnderwriterId.rejected, (state, action) => {
                 state.loading = false;
                 state.error = action.payload as string;
             });
@@ -791,8 +859,10 @@ export const {
     clearApplicationDetail,
     hydrateApplicationDetailFromCache,
 } = applicationDetailSlice.actions;
+export const setApplicationDetail = hydrateApplicationDetailFromCache;
 export const { clearClientApplications } = clientApplicationsSlice.actions;
 export const { clearIsoApplications } = isoApplicationsSlice.actions;
+export const { clearUnderwriterApplications } = underwriterApplicationsSlice.actions;
 export const { resetUpdateApplication } = updateApplicationSlice.actions;
 export const { resetRejectApplication } = rejectApplicationSlice.actions;
 export const { resetDeleteApplication } = deleteApplicationSlice.actions;

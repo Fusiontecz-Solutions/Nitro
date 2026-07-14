@@ -19,7 +19,17 @@ export const getBackgroundCheck = createAsyncThunk(
 export const updateCheckItem = createAsyncThunk(
     'backgroundCheck/updateItem',
     async (
-        { itemId, ...body }: { itemId: string; result?: string | null; notes?: string; status?: string; required?: boolean },
+        {
+            itemId,
+            ...body
+        }: {
+            itemId: string;
+            result?: string | null;
+            notes?: string;
+            status?: string;
+            required?: boolean;
+            metadata?: Record<string, unknown> | null;
+        },
         { rejectWithValue },
     ) => {
         try {

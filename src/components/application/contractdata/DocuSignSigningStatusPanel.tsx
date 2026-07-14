@@ -36,7 +36,7 @@ export function DocuSignSigningStatusPanel({
     title,
     description,
     statusLabel,
-    badgeClassName = "bg-[#276D9C]/12 text-[#276D9C]",
+    badgeClassName = "bg-[var(--brand)]/12 text-[var(--brand)]",
     steps = DEFAULT_DOCUSIGN_SIGNING_STEPS,
     activeIndex,
     isTerminal = false,
@@ -57,7 +57,7 @@ export function DocuSignSigningStatusPanel({
             className={cn(
                 refreshInHeader
                     ? "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                    : "inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#276D9C] transition-colors hover:bg-[#276D9C]/10 disabled:cursor-not-allowed disabled:opacity-60",
+                    : "inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--brand)] transition-colors hover:bg-[var(--brand)]/10 disabled:cursor-not-allowed disabled:opacity-60",
             )}
         >
             <RefreshCw
@@ -72,10 +72,10 @@ export function DocuSignSigningStatusPanel({
     ) : null;
 
     return (
-        <div className="rounded-2xl border border-[#276D9C]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
+        <div className="rounded-2xl border border-[var(--brand)]/15 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-950">
             <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-2">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#276D9C]/10 text-[#276D9C]">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--brand)]/10 text-[var(--brand)]">
                         <Info className="h-4 w-4" aria-hidden />
                     </div>
                     <div className="min-w-0">
@@ -114,7 +114,7 @@ export function DocuSignSigningStatusPanel({
                                             className={cn(
                                                 "flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold transition-colors",
                                                 isDone
-                                                    ? "border-[#276D9C] bg-[#276D9C] text-white shadow-sm shadow-[#276D9C]/25"
+                                                    ? "border-[var(--brand)] bg-[image:var(--brand-gradient)] text-white shadow-sm shadow-[var(--brand)]/25"
                                                     : "border-slate-300 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-950",
                                             )}
                                         >
@@ -131,7 +131,7 @@ export function DocuSignSigningStatusPanel({
                                             className={cn(
                                                 "mt-0.5 text-[10px] leading-snug",
                                                 isCurrent
-                                                    ? "text-[#276D9C]"
+                                                    ? "text-[var(--brand)]"
                                                     : "text-slate-400",
                                             )}
                                         >
@@ -143,7 +143,7 @@ export function DocuSignSigningStatusPanel({
                                             className={cn(
                                                 "mt-4 h-0.5 w-8 shrink-0 rounded-full",
                                                 activeIndex > index
-                                                    ? "bg-[#276D9C]"
+                                                    ? "bg-[image:var(--brand-gradient)]"
                                                     : "bg-slate-200 dark:bg-slate-700",
                                             )}
                                         />

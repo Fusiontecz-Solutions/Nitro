@@ -6,6 +6,9 @@ export function isPrefetchFresh(lastFetchedAt: number | null | undefined): boole
   return Date.now() - lastFetchedAt < SHELL_PREFETCH_TTL_MS;
 }
 
+/** Alias used by shell bootstrap / older call sites. */
+export const isShellPrefetchFresh = isPrefetchFresh;
+
 /** TanStack Query refetchInterval helper — pause polling when tab is hidden. */
 export function visibleRefetchInterval(intervalMs: number): number | false {
   if (typeof document !== "undefined" && document.hidden) return false;

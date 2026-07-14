@@ -62,7 +62,7 @@ body {
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* Light theme aligned with Operations Dashboard (slate canvas, white surfaces, #276D9C accent) */
+/* Light theme — black / muted-silver brand system */
 :root {
   --radius: 0.625rem;
   --background: #f8fafc;
@@ -71,7 +71,7 @@ body {
   --card-foreground: #111827;
   --popover: #ffffff;
   --popover-foreground: #111827;
-  --primary: #276d9c;
+  --primary: #1f1f23;
   --primary-foreground: #ffffff;
   --secondary: #f1f5f9;
   --secondary-foreground: #111827;
@@ -82,28 +82,29 @@ body {
   --destructive: oklch(0.577 0.245 27.325);
   --border: #e5e7eb;
   --input: #e5e7eb;
-  --ring: #276d9c;
-  --chart-1: #276d9c;
+  --ring: #3f3f46;
+  --chart-1: #3f3f46;
   --chart-2: #f97316;
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: #ffffff;
   --sidebar-foreground: #111827;
-  --sidebar-primary: #276d9c;
+  --sidebar-primary: #1f1f23;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #f1f5f9;
   --sidebar-accent-foreground: #111827;
   --sidebar-border: #e5e7eb;
-  --sidebar-ring: #276d9c;
-  /* Brand tokens for Katan-parity components (Background Check, pipeline tabs) */
-  --brand: #276d9c;
-  --brand-hover: #1b4e6f;
-  --brand-mid: #2f7fb3;
-  --brand-accent: #276d9c;
-  --brand-accent-strong: #151357;
-  --brand-gradient: linear-gradient(135deg, #276d9c 0%, #2f7fb3 40%, #276d9c 100%);
-  --tab-pipeline-active-bg: #151357;
+  --sidebar-ring: #3f3f46;
+  /* Brand tokens — black → muted silver (platform-wide) */
+  --brand: #1f1f23;
+  --brand-hover: #0a0a0a;
+  --brand-mid: #3f3f46;
+  --brand-accent: #63636b;
+  --brand-accent-strong: #121212;
+  --brand-soft: #e4e4e7;
+  --brand-gradient: linear-gradient(90deg, #0a0a0a 0%, #121212 35%, #1f1f23 60%, #3f3f46 82%, #63636b 100%);
+  --tab-pipeline-active-bg: #1f1f23;
 }
 
 .dark {
@@ -113,7 +114,7 @@ body {
   --card-foreground: #f9fafb;
   --popover: #1a1b1e;
   --popover-foreground: #f9fafb;
-  --primary: #3d8bc0;
+  --primary: #63636b;
   --primary-foreground: #ffffff;
   --secondary: #27272f;
   --secondary-foreground: #f9fafb;
@@ -124,27 +125,28 @@ body {
   --destructive: oklch(0.704 0.191 22.216);
   --border: #374151;
   --input: #374151;
-  --ring: #3d8bc0;
-  --chart-1: #3d8bc0;
+  --ring: #63636b;
+  --chart-1: #63636b;
   --chart-2: #fb923c;
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: #1a1b1e;
   --sidebar-foreground: #f9fafb;
-  --sidebar-primary: #3d8bc0;
+  --sidebar-primary: #63636b;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #27272f;
   --sidebar-accent-foreground: #f9fafb;
   --sidebar-border: #374151;
-  --sidebar-ring: #3d8bc0;
-  --brand: #3d8bc0;
-  --brand-hover: #2f7fb3;
-  --brand-mid: #2f7fb3;
-  --brand-accent: #3d8bc0;
-  --brand-accent-strong: #151357;
-  --brand-gradient: linear-gradient(135deg, #151357 0%, #276d9c 45%, #3d8bc0 100%);
-  --tab-pipeline-active-bg: #151357;
+  --sidebar-ring: #63636b;
+  --brand: #63636b;
+  --brand-hover: #52525b;
+  --brand-mid: #3f3f46;
+  --brand-accent: #a1a1aa;
+  --brand-accent-strong: #0a0a0a;
+  --brand-soft: #27272f;
+  --brand-gradient: linear-gradient(90deg, #0a0a0a 0%, #121212 35%, #1f1f23 60%, #3f3f46 82%, #63636b 100%);
+  --tab-pipeline-active-bg: #1f1f23;
 }
 
 @layer base {
@@ -200,11 +202,11 @@ body {
     color: #475569;
   }
 
-  /* Application pipeline tab active state (Woodmere navy) */
+  /* Application pipeline tab active state (black → muted silver gradient) */
   .tab-pipeline-active,
   .tab-pipeline-active[data-state="active"] {
-    background-color: var(--tab-pipeline-active-bg) !important;
-    background-image: none !important;
+    background-color: #1f1f23 !important;
+    background-image: var(--brand-gradient) !important;
     color: #ffffff !important;
   }
 }

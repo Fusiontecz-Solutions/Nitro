@@ -1,9 +1,8 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import type { PaymentDashboardData } from '@/types/paymentDashboardTypes';
 import {
-  fetchPaymentFailedSummary,
-  fetchPaymentFinancialOverviewSummary,
-  getPaymentDashboard,
+    fetchPaymentFinancialOverviewSummary,
+    getPaymentDashboard,
 } from '../actions/paymentDashboardActions';
 
 interface PaymentDashboardState {
@@ -24,15 +23,6 @@ const initialState: PaymentDashboardState = {
   fetched: false,
 };
 
-function applyDashboardPending(state: PaymentDashboardState) {
-  state.error = null;
-  if (state.data) {
-    state.isRefreshing = true;
-  } else {
-    state.loading = true;
-  }
-}
-
 export const paymentDashboardSlice = createSlice({
   name: 'paymentDashboard',
   initialState,
@@ -44,7 +34,7 @@ export const paymentDashboardSlice = createSlice({
       state.loading = false;
       state.isRefreshing = false;
     },
-    /** Session snapshot (sessionStorage) — restores cards before slow summary returns. */
+    /** Session snapshot (sessionStorage) — restores cards before slow `/collection-payments/dashboard` returns. */
     hydratePaymentDashboardFromCache: (state, action: PayloadAction<PaymentDashboardData>) => {
       state.data = action.payload;
       state.fetched = true;
@@ -54,46 +44,33 @@ export const paymentDashboardSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    const handlePending = (state: PaymentDashboardState) => {
+      state.error = null;
+      if (state.data) {
+        state.isRefreshing = true;
+      } else {
+        state.loading = true;
+      }
+    };
+    const handleFulfilled = (state: PaymentDashboardState, action: PayloadAction<PaymentDashboardData>) => {
+      state.loading = false;
+      state.isRefreshing = false;
+      state.data = action.payload;
+      state.fetched = true;
+    };
+    const handleRejected = (state: PaymentDashboardState, action: { payload?: unknown }) => {
+      state.loading = false;
+      state.isRefreshing = false;
+      state.error = action.payload as string;
+    };
+
     builder
-      .addCase(getPaymentDashboard.pending, (state) => {
-        applyDashboardPending(state);
-      })
-      .addCase(getPaymentDashboard.fulfilled, (state, action) => {
-        state.loading = false;
-        state.isRefreshing = false;
-        state.data = action.payload;
-        state.fetched = true;
-      })
-      .addCase(getPaymentDashboard.rejected, (state, action) => {
-        state.loading = false;
-        state.isRefreshing = false;
-        state.error = action.payload as string;
-      })
-      .addCase(fetchPaymentFinancialOverviewSummary.pending, (state) => {
-        applyDashboardPending(state);
-      })
-      .addCase(fetchPaymentFinancialOverviewSummary.fulfilled, (state, action) => {
-        state.loading = false;
-        state.isRefreshing = false;
-        state.data = {
-          ...action.payload,
-          failedPaymentSummary:
-            action.payload.failedPaymentSummary ?? state.data?.failedPaymentSummary,
-        };
-        state.fetched = true;
-      })
-      .addCase(fetchPaymentFinancialOverviewSummary.rejected, (state, action) => {
-        state.loading = false;
-        state.isRefreshing = false;
-        state.error = action.payload as string;
-      })
-      .addCase(fetchPaymentFailedSummary.fulfilled, (state, action) => {
-        if (!state.data) return;
-        state.data = {
-          ...state.data,
-          failedPaymentSummary: action.payload,
-        };
-      });
+      .addCase(getPaymentDashboard.pending, handlePending)
+      .addCase(getPaymentDashboard.fulfilled, handleFulfilled)
+      .addCase(getPaymentDashboard.rejected, handleRejected)
+      .addCase(fetchPaymentFinancialOverviewSummary.pending, handlePending)
+      .addCase(fetchPaymentFinancialOverviewSummary.fulfilled, handleFulfilled)
+      .addCase(fetchPaymentFinancialOverviewSummary.rejected, handleRejected);
   },
 });
 

@@ -14,11 +14,6 @@ interface FundingCallListState {
   error: string | null;
 }
 
-interface FundingCallDraftState {
-  applicationId: string | null;
-  callStatus: string | null;
-}
-
 const createInitialState: FundingCallCreateState = {
   loading: false,
   success: false,
@@ -30,11 +25,6 @@ const listInitialState: FundingCallListState = {
   loading: false,
   data: [],
   error: null,
-};
-
-const draftInitialState: FundingCallDraftState = {
-  applicationId: null,
-  callStatus: null,
 };
 
 export const createFundingCallSlice = createSlice({
@@ -95,26 +85,6 @@ export const fundingCallsSlice = createSlice({
   },
 });
 
-export const fundingCallDraftSlice = createSlice({
-  name: 'fundingCallDraft',
-  initialState: draftInitialState,
-  reducers: {
-    setFundingCallDraft: (
-      state,
-      action: { payload: FundingCallDraftState },
-    ) => {
-      state.applicationId = action.payload.applicationId;
-      state.callStatus = action.payload.callStatus;
-    },
-    clearFundingCallDraft: (state) => {
-      state.applicationId = null;
-      state.callStatus = null;
-    },
-  },
-});
-
 export const { resetCreateFundingCall } = createFundingCallSlice.actions;
 export const { clearFundingCalls } = fundingCallsSlice.actions;
-export const { setFundingCallDraft, clearFundingCallDraft } =
-  fundingCallDraftSlice.actions;
 

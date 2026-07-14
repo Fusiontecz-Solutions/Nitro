@@ -4,8 +4,20 @@
  */
 export const OPERATIONS_APPLICATIONS_LIST_ALL_QUERY = "all";
 
+/** Approval workflow substages (between Underwriter and Contract). */
+export const OPERATIONS_APPROVAL_PIPELINE_STATUSES = [
+  "Approved_By_UW",
+  "Approval_Sent",
+  "Approved_By_ISO",
+] as const;
+
+export type OperationsApprovalPipelineStatus =
+  (typeof OPERATIONS_APPROVAL_PIPELINE_STATUSES)[number];
+
 /** Backend `operationsStatus` values used by Operations dashboard stat cards and `/applications` filtering. */
 export const OPERATIONS_DASHBOARD_APPLICATION_STATUSES = [
+  ...OPERATIONS_APPROVAL_PIPELINE_STATUSES,
+  "Approved",
   "Contract_Pending",
   "Contract_Generated",
   "Contract_Sent",
@@ -13,12 +25,15 @@ export const OPERATIONS_DASHBOARD_APPLICATION_STATUSES = [
   "Contract_Out",
   "Contracted",
   "Contract_Signed",
+  "Reinitiate_Contract",
   "Signed_Contracts",
   "Funding Call",
   "Finals_And_Funding_Call",
   "Disbursment",
+  "On_Hold",
   "Funded",
   "Declined",
+  "Recently_Deleted",
 ] as const;
 
 export type OperationsDashboardApplicationStatus =
@@ -29,7 +44,7 @@ export const OPERATIONS_PIPELINE_QUEUE_STATUSES = [
   "Agent",
   "Scrubbing",
   "Underwriter",
-  "Final Underwriter",
+  "Final_Approval",
   "Final",
 ] as const;
 
@@ -46,25 +61,61 @@ export type OperationsApplicationsListStatus =
   (typeof OPERATIONS_APPLICATIONS_LIST_STATUSES)[number];
 
 const STATUS_LABELS: Record<OperationsApplicationsListStatus, string> = {
+  Approved_By_UW: "Approved By UW",
+  Approval_Sent: "Approval Sent",
+  Approved_By_ISO: "Approved By ISO",
+  Approved: "Approved",
   Contract_Pending: "Contract Pending",
   Contract_Generated: "Contract Generated",
   Contract_Sent: "Contract Sent",
   Contract_Cancelled: "Contract Cancelled",
-  Contract_Out: "Contract Sent",
-  Contracted: "Contract",
+  Contract_Out: "Contract Out",
+  Contracted: "Contracted",
   Contract_Signed: "Contract Signed",
+  Reinitiate_Contract: "Reinitiated Contract",
   Signed_Contracts: "Signed Contracts",
   "Funding Call": "Funding Call",
   Finals_And_Funding_Call: "Finals and Funding Call",
   Disbursment: "Disbursement",
+  On_Hold: "On Hold",
   Funded: "Funded",
   Declined: "Rejected",
+  Recently_Deleted: "Recently Deleted",
   Agent: "Agent",
   Scrubbing: "Scrubbing",
-  Underwriter: "Underwriter",
-  "Final Underwriter": "Final Underwriter",
+  "Underwriter": "Underwriter",
+  Final_Approval: "Final Approval",
   Final: "Final",
 };
+
+/**
+ * Operations dashboard filters where each row should show its inferred pipeline
+ * status instead of forcing the dashboard bucket label on every row.
+ */
+export const OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS = new Set<
+  OperationsApplicationsListStatus
+>([
+  "Agent",
+  "Scrubbing",
+  "Underwriter",
+  "Final_Approval",
+  "Approved_By_UW",
+  "Approval_Sent",
+  "Approved_By_ISO",
+  "Approved",
+  "Contract_Pending",
+  "Contract_Generated",
+  "Contract_Sent",
+  "Contract_Cancelled",
+  "Contract_Out",
+  "Contracted",
+  "Contract_Signed",
+  "Reinitiate_Contract",
+  "Signed_Contracts",
+  "Final",
+  "Funding Call",
+  "Finals_And_Funding_Call",
+]);
 
 const ALLOWED = new Set<string>(OPERATIONS_APPLICATIONS_LIST_STATUSES);
 
@@ -83,22 +134,32 @@ export function normalizeOperationsDashboardStatusParam(
     contract_generated: "Contract_Generated",
     contract_sent: "Contract_Sent",
     contract_cancelled: "Contract_Cancelled",
-    contract_out: "Contract_Sent",
+    contract_canceled: "Contract_Cancelled",
+    contract_out: "Contract_Out",
     contracted: "Contracted",
-    contracts_out: "Contract_Sent",
+    contracts_out: "Contract_Out",
     contract_signed: "Contract_Signed",
+    reinitiate_contract: "Reinitiate_Contract",
+    reinitiated_contract: "Reinitiate_Contract",
     signed_contracts: "Contract_Signed",
     funding_call: "Funding Call",
     finals_and_funding_call: "Finals_And_Funding_Call",
     disbursment: "Disbursment",
     disbursement: "Disbursment",
+    on_hold: "On_Hold",
+    hold: "On_Hold",
     funded: "Funded",
     declined: "Declined",
     rejected: "Declined",
+    recently_deleted: "Recently_Deleted",
     agent: "Agent",
     scrubbing: "Scrubbing",
     underwriter: "Underwriter",
-    final_underwriter: "Final Underwriter",
+    final_approval: "Final_Approval",
+    approved_by_uw: "Approved_By_UW",
+    approval_sent: "Approval_Sent",
+    approved_by_iso: "Approved_By_ISO",
+    approved: "Approved",
     final: "Final",
   };
   const mapped = map[key];
@@ -128,9 +189,6 @@ export function inferOperationsListStatusFromApplication(
   const st = normalizePipelineKey(options?.explicitStatus);
   const state = normalizePipelineKey(options?.currentState);
 
-  if (q === "declined" || st === "declined" || state === "cancelled") {
-    return "Declined";
-  }
   if (st === "funded" || q === "funded") return "Funded";
   if (
     q === "disbursment" ||
@@ -139,47 +197,54 @@ export function inferOperationsListStatusFromApplication(
   ) {
     return "Disbursment";
   }
-  if (
-    state === "fundingcall" ||
-    q === "fundingcall" ||
-    (q.includes("funding") && q.includes("call"))
-  ) {
+  if (q === "fundingcall" || (q.includes("funding") && q.includes("call"))) {
     return "Funding Call";
   }
-  if (
-    (state === "final" && !state.includes("underwriter")) ||
-    (q === "final" && !q.includes("underwriter"))
-  ) {
-    return "Final";
+  if (q === "onhold") return "On_Hold";
+  if (q === "final" && !q.includes("scrubbing")) return "Final";
+  if (q === "underwriter" || q === "finalreview") return "Underwriter";
+  if (q === "finalapproval" || state === "finalapproval") return "Final_Approval";
+  if (q === "underwriterapproved" && state === "underwriterapproved") {
+    return "Approved_By_UW";
   }
-  if (q === "finalunderwriter" || q === "finalreview") return "Final Underwriter";
-  if (q === "scrubbing") return "Scrubbing";
+  if (q === "approvalsent" || state === "approvalsent") {
+    return "Approval_Sent";
+  }
+  if (q === "isoapproved" || state === "isoapproved") {
+    return "Approved_By_ISO";
+  }
+  if (q === "approved" && state === "approved") {
+    return "Approved_By_ISO";
+  }
   if (
-    q === "underwriter" ||
+    q === "scrubbing" ||
     q === "underwriting" ||
     q === "review"
   ) {
-    return "Underwriter";
-  }
-  if (q === "contractpending") {
-    return "Contract_Pending";
+    return "Scrubbing";
   }
   if (q === "contractgenerated") {
     return "Contract_Generated";
   }
-  if (q === "contractsent" || q === "contractout" || q === "contractsout") {
+  if (q === "contractsent") {
     return "Contract_Sent";
   }
-  if (q === "contractcancelled") {
+  if (q === "contractcancelled" || q === "contractcanceled") {
     return "Contract_Cancelled";
+  }
+  if (q === "contractout" || q === "contractsout") {
+    return "Contract_Sent";
   }
   if (q === "contractsigned" || q === "signedcontracts") {
     return "Contract_Signed";
   }
+  if (q === "declined" || q === "rejected") {
+    return "Declined";
+  }
   if (state === "signedcontracts" || state === "signed_contracts") {
     return "Contract_Signed";
   }
-  if (q === "approved" && (state === "approved" || st === "approved")) {
+  if (q === "contractpending" || state === "contractpending") {
     return "Contract_Pending";
   }
   if (q === "contracted" || st === "contracted") {
@@ -190,11 +255,6 @@ export function inferOperationsListStatusFromApplication(
 
   return null;
 }
-
-/** Operations list filters that combine multiple stages — table rows show each deal's actual status. */
-export const OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS = new Set<
-  OperationsApplicationsListStatus
->(["Contracted", "Finals_And_Funding_Call"]);
 
 export function normalizeFundingCallStatus(
   value: string | null | undefined,
@@ -212,7 +272,7 @@ export function isFundingCallStatusCallDone(
   return normalizeFundingCallStatus(value) === "calldone";
 }
 
-/** Latest persisted funding call status is "Rejected" (case / spacing insensitive). */
+/** Latest funding call status is "Rejected" (case / spacing insensitive). */
 export function isFundingCallStatusRejected(
   value: string | null | undefined,
 ): boolean {
@@ -221,8 +281,8 @@ export function isFundingCallStatusRejected(
 
 /**
  * Whether the Disbursement tab may be opened for Operations / Super Admin.
- * Unlocks when there is a latest Funding Call selection that is NOT "Rejected",
- * or when the deal is already in Disbursement / Funded.
+ * Locked only when the latest funding call status is Rejected; any other saved
+ * call status unlocks it, as does a deal already in Disbursement / Funded.
  */
 export function canOpenDisbursementTab(
   currentQueue: string | null | undefined,
@@ -232,19 +292,18 @@ export function canOpenDisbursementTab(
     latestFundingCallStatus?: string | null;
   },
 ): boolean {
-  const inferred = inferOperationsListStatusFromApplication(currentQueue, options);
-  if (inferred === "Disbursment" || inferred === "Funded") {
-    return true;
-  }
+  const callStatus = options?.latestFundingCallStatus;
 
-  // If Operations explicitly rejected the deal in Funding Call, do not allow moving to Disbursement.
-  if (isFundingCallStatusRejected(options?.latestFundingCallStatus)) {
+  if (isFundingCallStatusRejected(callStatus)) {
     return false;
   }
 
-  // If a Funding Call outcome exists and is not "Rejected", allow Disbursement.
-  const latest = options?.latestFundingCallStatus;
-  if (latest != null && String(latest).trim() !== "") {
+  if (callStatus && String(callStatus).trim()) {
+    return true;
+  }
+
+  const inferred = inferOperationsListStatusFromApplication(currentQueue, options);
+  if (inferred === "Disbursment" || inferred === "Funded") {
     return true;
   }
 

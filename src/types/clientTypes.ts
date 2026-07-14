@@ -55,6 +55,7 @@ export interface Client {
 // Create/Update Client Payload
 export interface CreateClientPayload {
     business: BusinessProfile;
+    owner?: OwnerDetail;
     owners: OwnerDetail[];
 }
 

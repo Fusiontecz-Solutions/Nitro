@@ -41,7 +41,7 @@ import {
     uploadAndDownloadCsv,
 } from "@/redux/actions/automatedBankStatementActions";
 import { updateApplication } from "@/redux/actions/applicationActions";
-import { normalizeApiDateToYyyyMmDd } from "@/lib/utils";
+import { normalizeApiDateToYyyyMmDd, formatNumberUSForInput } from "@/lib/utils";
 import type { Application } from "@/types/applicationTypes";
 import { toast } from "react-toastify";
 
@@ -75,6 +75,55 @@ function applicationUpdateRouteId(app: unknown): string {
     const aid = a.applicationId;
     if (aid != null && String(aid).trim() !== "") return String(aid).trim();
     return "";
+}
+
+/** True when at least one calculator row has user-entered / saved field values. */
+function positionsHaveMeaningfulData(arr: unknown): boolean {
+    if (!Array.isArray(arr) || arr.length === 0) return false;
+    return arr.some((row) => {
+        if (!row || typeof row !== "object") return false;
+        const r = row as Record<string, unknown>;
+        for (const key of [
+            "lender",
+            "installment",
+            "amountFunded",
+            "totalRepayments",
+            "monthlyMcaPmts",
+            "mcaRemit",
+            "startingDate",
+        ]) {
+            const v = r[key];
+            if (v != null && String(v).trim() !== "") return true;
+        }
+        const status = String(r.status ?? "").trim().toUpperCase();
+        if (status && status !== "SELECT") return true;
+        const frequency = String(r.frequency ?? "").trim();
+        if (frequency && frequency !== "Select") return true;
+        return false;
+    });
+}
+
+/** Two scope keys refer to the same application when their id tokens overlap. */
+function sameApplicationScope(prev: string | null, next: string | null): boolean {
+    if (!prev || !next) return prev === next;
+    const prevIds = new Set(prev.split("|"));
+    for (const id of next.split("|")) {
+        if (prevIds.has(id)) return true;
+    }
+    return false;
+}
+
+function buildApplicationScopeKey(
+    app: unknown,
+    fallbackId: string | number | null | undefined,
+): string | null {
+    const a = app as Record<string, unknown> | null;
+    const ids = new Set<string>();
+    for (const v of [a?._id, a?.id, a?.applicationId, fallbackId]) {
+        if (v != null && String(v).trim() !== "") ids.add(String(v).trim());
+    }
+    if (ids.size === 0) return null;
+    return Array.from(ids).sort().join("|");
 }
 
 /** Stable JSON signature for Redux-derived positions so we do not reset livePositions on referential churn. */
@@ -111,9 +160,15 @@ type BankAnalysisProps = {
     readOnly?: boolean;
     /** When false, hide add-bank/month and Create Position even if not read-only. Defaults to true when editable. */
     enableCreate?: boolean;
+    /** When false, hide automated bank statement upload (e.g. Decision Making / Scrubbing tab). */
+    showBankStatementUpload?: boolean;
 };
 
-const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisProps) => {
+const BankAnalysis = ({
+    readOnly = false,
+    enableCreate = true,
+    showBankStatementUpload = true,
+}: BankAnalysisProps) => {
     // const { resolvedTheme } = useTheme();
     // const isDark = resolvedTheme === 'dark';
     const dispatch = useDispatch<AppDispatch>();
@@ -162,25 +217,46 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
         setEditingLoanAmount(false);
     }, [resolvedApplicationId]);
 
-    const handleSaveRequestedLoanAmount = useCallback(async () => {
+    /** Bulk-save hook registered by {@link PositionTableCalculator} for Approve & Save. */
+    const saveAllPositionsRef = useRef<(() => Promise<boolean>) | null>(null);
+    const handleRegisterSaveAllPositions = useCallback((saveAll: () => Promise<boolean>) => {
+        saveAllPositionsRef.current = saveAll;
+    }, []);
+
+    /** Bulk-save hook registered by {@link BankAnalysisTable} for Approve & Save. */
+    const saveAllBanksRef = useRef<(() => Promise<boolean>) | null>(null);
+    const handleRegisterSaveAllBanks = useCallback((saveAll: () => Promise<boolean>) => {
+        saveAllBanksRef.current = saveAll;
+    }, []);
+
+    /**
+     * Persist the requested loan amount as part of the combined "Approve & Save"
+     * flow. Best-effort and quiet: skips when empty/unchanged, surfaces only
+     * hard failures. Returns false when an entered amount is invalid.
+     */
+    const persistRequestedLoanAmount = useCallback(async (opts?: {
+        silent?: boolean;
+        keepEditing?: boolean;
+    }): Promise<boolean> => {
+        const silent = !!opts?.silent;
+        const keepEditing = opts?.keepEditing ?? !silent;
         const updateId = applicationUpdateRouteId(applicationData);
-        if (!updateId) {
-            toast.error("Application ID not found.");
-            return;
-        }
+        if (!updateId) return true;
         const raw = String(requestedLoanAmountInput ?? "").trim();
+        if (!raw) return true;
         const parsed = parseFloat(raw.replace(/[^0-9.-]+/g, ""));
         if (Number.isNaN(parsed) || parsed <= 0) {
-            toast.error("Enter a valid amount greater than zero.");
-            return;
+            if (!silent) {
+                toast.error("Enter a valid requested amount greater than zero.");
+            }
+            return false;
         }
         const prevStr = loanAmountToInputString(
             (applicationData as Application | null)?.loanAmount,
         ).replace(/[^0-9.-]+/g, "");
         const prev = prevStr === "" ? NaN : parseFloat(prevStr);
         if (!Number.isNaN(prev) && Math.abs(parsed - prev) < 0.005) {
-            toast.info("No changes to save.");
-            return;
+            return true;
         }
         setSavingRequestedLoanAmount(true);
         try {
@@ -190,18 +266,49 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                     data: { loanAmount: parsed },
                 }),
             ).unwrap();
-            toast.success("Requested amount saved.");
-            setEditingLoanAmount(false);
+            if (keepEditing) {
+                setEditingLoanAmount(true);
+            } else {
+                setEditingLoanAmount(false);
+            }
+            return true;
         } catch (e: unknown) {
             const msg =
                 e && typeof e === "object" && "message" in e
                     ? String((e as { message?: string }).message)
                     : "Failed to save requested amount.";
-            toast.error(msg);
+            if (!silent) {
+                toast.error(msg);
+            }
+            return false;
         } finally {
             setSavingRequestedLoanAmount(false);
         }
     }, [applicationData, dispatch, requestedLoanAmountInput]);
+
+    /** Save requested amount, bank rows, and positions — Offer "Approve & Save". */
+    const handleApproveSaveAll = useCallback(async (): Promise<boolean> => {
+        const loanOk = await persistRequestedLoanAmount();
+        if (!loanOk) return false;
+
+        try {
+            const banksOk = (await saveAllBanksRef.current?.()) ?? true;
+            if (!banksOk) return false;
+        } catch (err) {
+            console.error("Failed to save bank analysis on approve:", err);
+            return false;
+        }
+
+        try {
+            const positionsOk = (await saveAllPositionsRef.current?.()) ?? true;
+            if (!positionsOk) return false;
+        } catch (err) {
+            console.error("Failed to save positions on approve:", err);
+            return false;
+        }
+
+        return true;
+    }, [persistRequestedLoanAmount]);
 
     // Local state for bank details (for optimistic updates)
     const [bankDetails, setBankDetails] = useState<BankDetail[]>([]);
@@ -225,6 +332,34 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
     } | null>(null);
     const [bankNetCreditAvg, setBankNetCreditAvg] = useState<number | null>(null);
     const [offerDecisionState, setOfferDecisionState] = useState<"approved" | "declined" | null>(null);
+    const [isPreviewMode, setIsPreviewMode] = useState(false);
+    const componentsReadOnly = readOnly || isPreviewMode;
+    const scrubbingAutoSave = !componentsReadOnly;
+
+    /** Debounced auto-save for requested loan amount on the Scrubbing tab. */
+    useEffect(() => {
+        if (!scrubbingAutoSave || readOnly || savingRequestedLoanAmount) return;
+        const raw = String(requestedLoanAmountInput ?? "").trim();
+        if (!raw) return;
+        const parsed = parseFloat(raw.replace(/[^0-9.-]+/g, ""));
+        if (Number.isNaN(parsed) || parsed <= 0) return;
+        const prevStr = loanAmountToInputString(serverLoanAmount).replace(/[^0-9.-]+/g, "");
+        const prev = prevStr === "" ? NaN : parseFloat(prevStr);
+        if (!Number.isNaN(prev) && Math.abs(parsed - prev) < 0.005) return;
+
+        const timer = setTimeout(() => {
+            void persistRequestedLoanAmount({ silent: true, keepEditing: true });
+        }, 1500);
+        return () => clearTimeout(timer);
+    }, [
+        scrubbingAutoSave,
+        readOnly,
+        savingRequestedLoanAmount,
+        requestedLoanAmountInput,
+        serverLoanAmount,
+        persistRequestedLoanAmount,
+    ]);
+
     const [uploadedBankFiles, setUploadedBankFiles] = useState<string[]>([]);
     const [livePositions, setLivePositions] = useState<any[]>([]);
     const [bankAllocationOptions, setBankAllocationOptions] = useState<Array<{ id: number; label: string }>>([]);
@@ -238,20 +373,41 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
     const defaultMonthCreatedRef = useRef<boolean>(false);
     const lastPositionsSeedSigRef = useRef<string>("");
     const lastSeededAppRef = useRef<string | null>(null);
+    const livePositionsRef = useRef<any[]>([]);
+    const lastFetchedApplicationScopeRef = useRef<string | null>(null);
+
+    const applicationScopeKey = useMemo(
+        () => buildApplicationScopeKey(applicationData, resolvedApplicationId),
+        [applicationData, resolvedApplicationId],
+    );
 
     // Fetch bank details, months, and positions for this application only (application-scoped)
     useEffect(() => {
-        if (!resolvedApplicationId) {
-            dispatch(clearPositions());
-            setOfferDecisionState(null);
+        if (!resolvedApplicationId || !applicationScopeKey) {
+            if (!resolvedApplicationId) {
+                dispatch(clearPositions());
+                setOfferDecisionState(null);
+            }
+            lastFetchedApplicationScopeRef.current = null;
             return;
         }
-        // Clear stale positions from another application before fetch and then fetch for this application only
-        dispatch(clearPositions());
+        // Only clear stale Redux positions when navigating to a different application —
+        // not when the same deal is addressable by another id shape (applicationId vs _id).
+        if (
+            !sameApplicationScope(
+                lastFetchedApplicationScopeRef.current,
+                applicationScopeKey,
+            )
+        ) {
+            if (lastFetchedApplicationScopeRef.current != null) {
+                dispatch(clearPositions());
+            }
+            lastFetchedApplicationScopeRef.current = applicationScopeKey;
+        }
         dispatch(getBankDetails({ application: resolvedApplicationId as string }));
         dispatch(getMonths({ application: resolvedApplicationId as string }));
         dispatch(getPositions({ application: resolvedApplicationId as string }));
-    }, [resolvedApplicationId, dispatch]);
+    }, [resolvedApplicationId, applicationScopeKey, dispatch]);
 
     // Load persisted offer decision so holdings visibility survives refresh/reopen.
     useEffect(() => {
@@ -526,6 +682,18 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
         });
     }, [scopedPositions]);
 
+    /** Prefer in-table edits over an empty Redux snapshot while positions refetch after save. */
+    const positionsForCalculator = useMemo(() => {
+        if (positionsHaveMeaningfulData(livePositions)) {
+            return livePositions;
+        }
+        return calculatorPositions;
+    }, [livePositions, calculatorPositions]);
+
+    useEffect(() => {
+        livePositionsRef.current = livePositions;
+    }, [livePositions]);
+
     useEffect(() => {
         if (!resolvedApplicationId) {
             setLivePositions([]);
@@ -547,6 +715,15 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
 
         if (sig === lastPositionsSeedSigRef.current) return;
         lastPositionsSeedSigRef.current = sig;
+
+        // Keep showing the last known rows while Redux is briefly empty during refetch.
+        if (
+            !positionsHaveMeaningfulData(calculatorPositions) &&
+            positionsHaveMeaningfulData(livePositionsRef.current)
+        ) {
+            return;
+        }
+
         setLivePositions(calculatorPositions as any[]);
     }, [resolvedApplicationId, calculatorPositions]);
 
@@ -1161,22 +1338,17 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                                                         inputMode="decimal"
                                                         autoComplete="off"
                                                         placeholder="e.g. 50000"
-                                                        value={requestedLoanAmountInput}
+                                                        value={formatNumberUSForInput(requestedLoanAmountInput)}
                                                         onChange={(e) =>
-                                                            setRequestedLoanAmountInput(e.target.value)
+                                                            setRequestedLoanAmountInput(formatNumberUSForInput(e.target.value))
                                                         }
                                                         disabled={savingRequestedLoanAmount}
                                                         className="h-9 w-full bg-background"
                                                     />
+                                                    <p className="text-[11px] text-muted-foreground">
+                                                        Saved automatically with “Approve &amp; Save”.
+                                                    </p>
                                                 </div>
-                                                <Button
-                                                    type="button"
-                                                    className="h-9 shrink-0 bg-[#276D9C] px-4 text-white hover:bg-[#1e567d]"
-                                                    disabled={savingRequestedLoanAmount}
-                                                    onClick={() => void handleSaveRequestedLoanAmount()}
-                                                >
-                                                    {savingRequestedLoanAmount ? "Saving…" : "Save"}
-                                                </Button>
                                             </div>
                                         ) : editingLoanAmount ? (
                                             <div className="flex flex-wrap items-end gap-2">
@@ -1193,23 +1365,17 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                                                         inputMode="decimal"
                                                         autoComplete="off"
                                                         placeholder="0"
-                                                        value={requestedLoanAmountInput}
+                                                        value={formatNumberUSForInput(requestedLoanAmountInput)}
                                                         onChange={(e) =>
-                                                            setRequestedLoanAmountInput(e.target.value)
+                                                            setRequestedLoanAmountInput(formatNumberUSForInput(e.target.value))
                                                         }
                                                         disabled={savingRequestedLoanAmount}
                                                         className="h-9 w-full"
                                                     />
+                                                    <p className="text-[11px] text-muted-foreground">
+                                                        Saved automatically with “Approve &amp; Save”.
+                                                    </p>
                                                 </div>
-                                                <Button
-                                                    type="button"
-                                                    size="sm"
-                                                    className="h-9 bg-[#276D9C] text-white hover:bg-[#1e567d]"
-                                                    disabled={savingRequestedLoanAmount}
-                                                    onClick={() => void handleSaveRequestedLoanAmount()}
-                                                >
-                                                    {savingRequestedLoanAmount ? "Saving…" : "Save"}
-                                                </Button>
                                                 <Button
                                                     type="button"
                                                     variant="ghost"
@@ -1257,7 +1423,7 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                                         )}
                                     </div>
 
-                                    {/* Bank statement upload — right on desktop, right-aligned when stacked */}
+                                    {showBankStatementUpload ? (
                                     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:shrink-0">
                                         {uploadedBankFiles.length > 0 && (
                                             <div className="flex max-w-[18rem] flex-wrap gap-1 text-[11px] text-muted-foreground">
@@ -1275,14 +1441,13 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
 
                                         <Button
                                             type="button"
-                                            className="h-9 shrink-0 bg-[#276D9C] px-4 text-xs font-semibold text-white hover:bg-[#1e567d]"
+                                            variant="default"
+                                            className="h-9 shrink-0 px-4 text-xs font-semibold"
                                             disabled={uploadStatementLoading}
                                             aria-disabled={uploadStatementLoading}
                                             onClick={() => {
                                                 const input = document.createElement("input");
                                                 input.type = "file";
-                                                input.accept =
-                                                    ".pdf,.csv,.xlsx,.xls,.doc,.docx,.jpg,.jpeg,.png";
                                                 input.multiple = true;
                                                 input.onchange = async () => {
                                                     const files = input.files;
@@ -1366,6 +1531,7 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                                             </span>
                                         )}
                                     </div>
+                                    ) : null}
                                 </div>
                             )}
                         </div>
@@ -1381,6 +1547,9 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                             showNotesPanel={!readOnly}
                             disabled={readOnly}
                             showFooterActions={!readOnly}
+                            actionsAtTop
+                            showPreviewBadge
+                            onPreviewModeChange={setIsPreviewMode}
                             offerDecision={offerDecisionState}
                             activePositionCountOverride={
                                 positionTableMetrics?.activeCount
@@ -1392,32 +1561,36 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
                             totalDailyFromPositionsOverride={
                                 positionTableMetrics?.totalDailyFromPositions
                             }
-                            onApprove={async () => {
-                                setOfferDecisionState("approved");
-                            }}
+                            onApprove={handleApproveSaveAll}
                             onDecline={async () => {
                                 setOfferDecisionState("declined");
                             }}
                         />
                         <BankAnalysisTable
-                            readOnly={readOnly}
-                            disableCreate={readOnly || !enableCreate}
+                            readOnly={componentsReadOnly}
+                            disableCreate={componentsReadOnly || !enableCreate}
                             onNetCreditAverageChange={setBankNetCreditAvg}
                             positions={livePositions as any}
                             onBanksMetaChange={handleBanksMetaChange}
+                            hideToolbarSave={!readOnly}
+                            onRegisterSaveAll={readOnly ? undefined : handleRegisterSaveAllBanks}
+                            autoSave={scrubbingAutoSave}
                         />
                     </div>
                  
                     <div className="flex min-w-0 w-full flex-col gap-4">
                         <PositionTableCalculator
                             applicationId={resolvedApplicationId || undefined}
-                            positions={calculatorPositions as any}
+                            positions={positionsForCalculator as any}
                             avgBankNetCredit={bankNetCreditAvg ?? undefined}
                             onMetricsChange={setPositionTableMetrics}
                             onRowsChange={handleRowsChange}
                             bankAllocationOptions={bankAllocationOptions}
-                            readOnly={readOnly}
-                            disableCreate={readOnly || !enableCreate}
+                            readOnly={componentsReadOnly}
+                            disableCreate={componentsReadOnly || !enableCreate}
+                            hideRowSave
+                            onRegisterSaveAll={handleRegisterSaveAllPositions}
+                            autoSave={scrubbingAutoSave}
                         />
                     </div>
                 </div>
@@ -1435,4 +1608,5 @@ const BankAnalysis = ({ readOnly = false, enableCreate = true }: BankAnalysisPro
     );
 };
 
-export default BankAnalysis
+export default BankAnalysis;
+

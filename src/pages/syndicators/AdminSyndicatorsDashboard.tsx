@@ -366,13 +366,13 @@ export default function AdminSyndicatorsDashboard() {
             }
           }}
           onClick={() => navigate('/syndicators/syndicators-list')}
-          className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+          className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
         >
           <CornerSummaryCard
             isDark={isDark}
             title="TOTAL SYNDICATORS"
             icon={
-              <StatIconBadge className="bg-[#276D9C]">
+              <StatIconBadge className="bg-[image:var(--brand-gradient)]">
                 <Users className="size-4" aria-hidden />
               </StatIconBadge>
             }
@@ -384,7 +384,7 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[var(--brand)]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="TOTAL INVESTMENT"
@@ -401,7 +401,7 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[var(--brand)]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="EXPECTED RTR"
@@ -418,12 +418,12 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[var(--brand)]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="TOTAL REMAINING"
             icon={
-              <StatIconBadge className="bg-blue-600">
+              <StatIconBadge className="bg-primary">
                 <Wallet className="size-4" aria-hidden />
               </StatIconBadge>
             }
@@ -435,7 +435,7 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[var(--brand)]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="DEFAULT RTR"
@@ -452,7 +452,7 @@ export default function AdminSyndicatorsDashboard() {
           />
         </div>
 
-        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[#276D9C]/25">
+        <div className="h-full rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] hover:ring-2 hover:ring-[var(--brand)]/25">
           <CornerSummaryCard
             isDark={isDark}
             title="TOTAL COMMISSION"

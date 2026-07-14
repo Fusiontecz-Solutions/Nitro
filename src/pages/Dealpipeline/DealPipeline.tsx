@@ -34,6 +34,7 @@ import {
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
 import { filterPipelineDealsBySearch } from "@/lib/applicationTableSearch";
+import { formatDealPipelineCurrentStateLabel } from "@/lib/dealPipelineCurrentState";
 import { axiosGet } from "@/redux/axios";
 import {
   readDealPipelineListCache,
@@ -48,8 +49,8 @@ import { isListBlockingLoad } from "@/lib/listLoading";
 
 type PipelineStage =
   | "agent"
-  | "underwriter"
-  | "final-underwriter"
+  | "scrubbing"
+  | "final-scrubbing"
   | "doc-request-contract"
   | "final"
   | "funding-call";
@@ -76,34 +77,32 @@ type PipelineDeal = {
 
 const STAGE_CONFIG: Array<{ value: PipelineStage; label: string }> = [
   { value: "agent", label: "AGENT" },
-  { value: "underwriter", label: "UNDERWRITER" },
-  { value: "final-underwriter", label: "FINAL UNDERWRITER" },
-  { value: "doc-request-contract", label: "CONTRACT SIGNED" },
+  { value: "scrubbing", label: "SCRUBBING" },
+  { value: "final-scrubbing", label: "UNDERWRITER" },
+  { value: "doc-request-contract", label: "CONTRACT" },
   { value: "final", label: "FINAL" },
   { value: "funding-call", label: "FUNDING CALL" },
 ];
 
 /**
  * Matches `/applications?operationsStatus=…` filters.
- * CONTRACT SIGNED uses `Contract_Signed` so the list is strict signed-contracts only
- * (currentState in SIGNED_CONTRACTS **or** currentQueue in contract-signed labels),
- * not the broader `Contracted` / contracts-out bucket.
+ * CONTRACT uses `Contracted` (contracts out + signed) with per-row CURRENT STATE labels.
  */
 const STAGE_OPERATIONS_STATUS: Record<PipelineStage, string> = {
   agent: "Agent",
-  underwriter: "Underwriter",
-  "final-underwriter": "Final Underwriter",
-  "doc-request-contract": "Contract_Signed",
+  scrubbing: "Scrubbing",
+  "final-scrubbing": "Underwriter",
+  "doc-request-contract": "Contracted",
   final: "Final",
   "funding-call": "Funding Call",
 };
 
-/** Label to display in CURRENT STATE for each selected stage. */
+/** Label to display in CURRENT STATE for non-contract pipeline stages (uniform stage badge). */
 const STAGE_DISPLAY_STATE: Record<PipelineStage, string> = {
   agent: "Agent",
-  underwriter: "Underwriter",
-  "final-underwriter": "Final Underwriter",
-  "doc-request-contract": "Contract Signed",
+  scrubbing: "Scrubbing",
+  "final-scrubbing": "Underwriter",
+  "doc-request-contract": "Contract",
   final: "Final",
   "funding-call": "Funding Call",
 };
@@ -206,8 +205,12 @@ function mapApiApplicationToDeal(app: Record<string, unknown>): PipelineDeal {
   const amount =
     loanAmount != null && loanAmount > 0 ? loanAmount : approvedAmount ?? loanAmount ?? 0;
 
-  const currentStateRaw = app.currentState ?? app.state ?? app.currentQueue ?? app.queue;
-  const currentState = String(currentStateRaw ?? "—").trim() || "—";
+  const currentState = formatDealPipelineCurrentStateLabel({
+    currentQueue: app.currentQueue as string | null | undefined,
+    queue: app.queue as string | null | undefined,
+    currentState: app.currentState as string | null | undefined,
+    state: app.state as string | null | undefined,
+  });
 
   return {
     id: uuid,
@@ -241,10 +244,10 @@ function getDealStateBadgeClass(stateLabel: string): string {
   if (n === "declined") return "bg-red-100 text-red-700";
   if (
     n === "underwriting" ||
-    n === "underwriter" ||
+    n === "scrubbing" ||
     n === "review" ||
     n === "final review" ||
-    n === "final underwriter" ||
+    n === "final scrubbing" ||
     n === "final" ||
     n === "funding call" ||
     n === "agent"
@@ -269,9 +272,6 @@ export default function DealPipeline() {
   const dispatch = useDispatch<AppDispatch>();
   const caseStageCounts = useSelector(
     (state: RootState) => state.operationsDashboard.caseStageCounts,
-  );
-  const signedContractsSummaryCount = useSelector(
-    (state: RootState) => state.operationsDashboard.summaryCounts.signedContracts,
   );
 
   const bootstrapList = useMemo(() => {
@@ -319,17 +319,13 @@ export default function DealPipeline() {
     () =>
       STAGE_CONFIG.reduce(
         (acc, { value }) => {
-          if (value === "doc-request-contract") {
-            acc[value] = Number(signedContractsSummaryCount) || 0;
-            return acc;
-          }
           const statusKey = STAGE_OPERATIONS_STATUS[value];
           acc[value] = Number(caseStageCounts[statusKey]) || 0;
           return acc;
         },
         {} as Record<PipelineStage, number>,
       ),
-    [caseStageCounts, signedContractsSummaryCount],
+    [caseStageCounts],
   );
 
   const totalDeals = stageCounts[activeStage] ?? 0;
@@ -338,9 +334,12 @@ export default function DealPipeline() {
     () =>
       stageDeals.map((deal) => ({
         ...deal,
-        currentState: displayCurrentState,
+        currentState:
+          activeStage === "doc-request-contract"
+            ? deal.currentState
+            : displayCurrentState,
       })),
-    [stageDeals, displayCurrentState],
+    [stageDeals, displayCurrentState, activeStage],
   );
   const filteredStageDeals = useMemo(
     () => filterPipelineDealsBySearch(stageDealsWithDisplayState, searchTerm),
@@ -483,7 +482,7 @@ export default function DealPipeline() {
               e.stopPropagation();
               openPreviewForDealId(row.original.id);
             }}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
             aria-label="Preview application in drawer"
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
@@ -710,9 +709,9 @@ export default function DealPipeline() {
                     <motion.div
                       className={`w-10 h-10 flex items-center justify-center rounded-full cursor-pointer border-2 transition-all
                   ${isCompleted
-                          ? "bg-[#276D9C] border-[#276D9C] text-white"
+                          ? "bg-[image:var(--brand-gradient)] border-[var(--brand)] text-white"
                           : isActive
-                            ? "border-[#276D9C] text-[#276D9C] bg-white dark:bg-background"
+                            ? "border-[var(--brand)] text-[var(--brand)] bg-white dark:bg-background"
                             : "border-slate-300 text-slate-400 bg-white dark:bg-card"
                         }`}
                       animate={{
@@ -738,7 +737,7 @@ export default function DealPipeline() {
 
                     <motion.span
                       className={`mt-2 text-[13px] font-bold uppercase tracking-tight leading-none
-                ${isActive || isCompleted ? "text-[#276D9C]" : "text-slate-400"}`}
+                ${isActive || isCompleted ? "text-[var(--brand)]" : "text-slate-400"}`}
                       animate={{ y: isActive ? -1 : 0 }}
                       transition={{ duration: 0.2 }}
                     >
@@ -759,7 +758,7 @@ export default function DealPipeline() {
                   <div className="flex-1 mt-5 h-[2px] mx-6 bg-slate-200 dark:bg-slate-700 relative">
                     <motion.div
                       className={`absolute top-0 left-0 h-full transition-all duration-500
-                  ${isCompleted ? "bg-[#276D9C] w-full" : "bg-transparent w-0"}`}
+                  ${isCompleted ? "bg-[image:var(--brand-gradient)] w-full" : "bg-transparent w-0"}`}
                       initial={false}
                       animate={{ width: isCompleted ? "100%" : "0%" }}
                       transition={{ duration: 0.35, ease: "easeInOut" }}
@@ -915,7 +914,7 @@ export default function DealPipeline() {
                       }
                     }}
                     aria-label={`Open deal ${deal.code}`}
-                    className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${
+                    className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${
                       isDark ? "bg-[#1a1b1e] border-[#374151]" : "bg-card border-[#F0F0F0]"
                     }`}
                   >
@@ -932,7 +931,7 @@ export default function DealPipeline() {
                           e.stopPropagation();
                           openPreviewForDealId(deal.id);
                         }}
-                        className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
+                        className="shrink-0 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
                         aria-label="Preview application in drawer"
                       >
                         <EyeIcon className="h-4 w-4" />

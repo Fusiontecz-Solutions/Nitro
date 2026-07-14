@@ -1248,7 +1248,43 @@ export function computeNetToMerchantDollars(sources: NetToMerchantPrefillSources
         coerceToFiniteNumber(odEff?.RefinanceAmount) ??
         0;
 
-    return Math.max(0, advance - fees - refinance);
+    return Math.max(0, Math.round((advance - (fees || 0) - refinance) * 100) / 100);
+}
+
+/**
+ * Back-solve underwriting fees from advance and a edited net-to-merchant amount.
+ * fees = max(0, advance − refinance − netToMerchant).
+ */
+export function deriveOfferFeesDollarsForNetToMerchant(
+    sources: NetToMerchantPrefillSources,
+    netToMerchantDollars: number,
+): number | undefined {
+    if (!Number.isFinite(netToMerchantDollars) || netToMerchantDollars < 0) {
+        return undefined;
+    }
+    const advance = resolvePurchaseAmountDollars(sources);
+    if (advance === undefined || !(advance > 0)) return undefined;
+
+    const app = sources.application;
+    const contract = sources.contract;
+    const odRoot =
+        sources.offerDecision ??
+        (contract?.offer as Record<string, unknown> | undefined) ??
+        (app?.offerDecision as Record<string, unknown> | undefined) ??
+        (app?.OfferDecision as Record<string, unknown> | undefined) ??
+        null;
+    const odEff = offerDecisionEffectiveRecordForNet(odRoot ?? undefined) ?? odRoot;
+    const refinance =
+        coerceToFiniteNumber(odRoot?.refinanceAmount) ??
+        coerceToFiniteNumber(odRoot?.RefinanceAmount) ??
+        coerceToFiniteNumber(odEff?.refinanceAmount) ??
+        coerceToFiniteNumber(odEff?.RefinanceAmount) ??
+        0;
+
+    return Math.max(
+        0,
+        Math.round((advance - refinance - netToMerchantDollars) * 100) / 100,
+    );
 }
 
 export function formatNetToMerchantPrefillValue(amount: number | undefined): string {
@@ -2573,7 +2609,7 @@ export const PRIMARY_PARTY_NAME_SYNC_CAMEL_KEYS = [
     "achAuthorizationConcentAccountHolderName",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
-const CANONICAL_BUSINESS_ADDRESS_STREET_KEYS = [
+export const CANONICAL_BUSINESS_ADDRESS_STREET_KEYS = [
     "businessAddress",
     "businessAddressContract",
     "securityBusinessAddress",
@@ -2581,7 +2617,7 @@ const CANONICAL_BUSINESS_ADDRESS_STREET_KEYS = [
     "achAuthorizationAccountHolderAddress",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
-const CANONICAL_BUSINESS_ADDRESS_CITY_KEYS = [
+export const CANONICAL_BUSINESS_ADDRESS_CITY_KEYS = [
     "businessAddressCity",
     "businessAddressContractCity",
     "securityBusinessAddressCity",
@@ -2589,7 +2625,7 @@ const CANONICAL_BUSINESS_ADDRESS_CITY_KEYS = [
     "achAuthorizationAccountHolderCity",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
-const CANONICAL_BUSINESS_ADDRESS_STATE_KEYS = [
+export const CANONICAL_BUSINESS_ADDRESS_STATE_KEYS = [
     "businessAddressState",
     "businessAddressContractState",
     "securityBusinessAddressState",
@@ -2597,7 +2633,7 @@ const CANONICAL_BUSINESS_ADDRESS_STATE_KEYS = [
     "achAuthorizationAccountHolderState",
 ] as const satisfies readonly (keyof BuildContractPrefillFieldsArgs)[];
 
-const CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS = [
+export const CANONICAL_BUSINESS_ADDRESS_ZIP_KEYS = [
     "businessAddressZip",
     "businessAddressContractZip",
     "securityBusinessAddressZip",

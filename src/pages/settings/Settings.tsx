@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { shallowEqual } from 'react-redux';
-import { useSearchParams } from 'react-router';
+import { useSearchParams, Navigate } from 'react-router';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { User, UserPlus } from 'lucide-react';
@@ -11,12 +11,13 @@ import { fetchUsersByRole } from '@/redux/actions/settingsUserActions';
 import { selectRolesList, selectRolesLoading } from '@/redux/selectors/rolesSelectors';
 import { selectUsersByRole, selectUsersLoadingByRole } from '@/redux/selectors/settingsUsersSelectors';
 import type { AppDispatch, RootState } from '@/redux/store';
+import { isSuperAdminRole, resolveEffectiveRole } from '@/lib/sessionRole';
 import Agent from './Agent';
-import SCRUBBING from './SCRUBBING';
-import FINALUNDERWRITER from './FINALUNDERWRITER';
 import UNDERWRITER from './UNDERWRITER';
+import SCRUBBING from './SCRUBBING';
 import Syndicators from './Syndicators';
 import Accounts from './Accounts';
+import Operations from './Operations';
 import AddUserModal from './AddUserModal';
 
 const FALLBACK_ROLES = [
@@ -27,6 +28,7 @@ const FALLBACK_ROLES = [
     roleName: "Underwriters",
     name: "Underwriters",
   },
+  { id: "OPERATIONS", roleName: "Operations", name: "Operations" },
   { id: "SYNDICATORS", roleName: "Syndicators", name: "Syndicators" },
   { id: "ACCOUNTS", roleName: "Accounts", name: "Accounts" },
 ];
@@ -35,7 +37,7 @@ const ROLE_ID_TO_COMPONENT: Record<string, React.ComponentType<{ users: any[]; l
   AGENT: Agent,
   SCRUBBING: SCRUBBING,
   UNDERWRITER: UNDERWRITER,
-  FINAL_UNDERWRITER: FINALUNDERWRITER,
+  OPERATIONS: Operations,
   SYNDICATORS: Syndicators,
   SYNDICATOR: Syndicators,
   ACCOUNTS: Accounts,
@@ -47,21 +49,15 @@ const ROLE_ID_TO_COMPONENT: Record<string, React.ComponentType<{ users: any[]; l
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const dispatch = useDispatch<AppDispatch>();
+  const loginData = useSelector((s: RootState) => s.login?.data);
   const rolesFromStore = useSelector(selectRolesList, shallowEqual);
   const rolesLoading = useSelector(selectRolesLoading);
   const roles = rolesFromStore.length > 0 ? rolesFromStore : FALLBACK_ROLES;
 
+  const isSuperAdmin = isSuperAdminRole(resolveEffectiveRole(loginData?.user));
 
   const [activeTab, setActiveTab] = useState<string>('');
   const [addModalOpen, setAddModalOpen] = useState(false);
-
-  const isAdmin =
-    useSelector((s: RootState) => {
-      const r = s.login?.data?.user?.role;
-      return r === 'ADMIN' || r === 'SUPER_ADMIN';
-    }) ||
-    (typeof window !== 'undefined' &&
-      (localStorage.getItem('role') === 'ADMIN' || localStorage.getItem('role') === 'SUPER_ADMIN'));
 
   useEffect(() => {
     dispatch(fetchRoles());
@@ -103,6 +99,10 @@ export default function Settings() {
     setSearchParams(next, { replace: true });
   };
 
+  if (!isSuperAdmin) {
+    return <Navigate to="/user-setting" replace />;
+  }
+
   return (
     <div className="min-h-[calc(100vh-64px)] w-full bg-background p-4 md:p-6 lg:p-8">
       <div className="w-full mx-auto">
@@ -110,15 +110,13 @@ export default function Settings() {
           <h1 className="text-[22px] font-semibold tracking-tight text-foreground">
             Invite Members
           </h1>
-          {isAdmin && (
-            <Button
-              className="gap-2 bg-[#276D9C] hover:bg-[#276D9C]/90 shrink-0 cursor-pointer"
-              onClick={() => setAddModalOpen(true)}
-            >
-              <UserPlus className="h-4 w-4" />
-              {addButtonLabel}
-            </Button>
-          )}
+          <Button
+            className="gap-2 bg-[image:var(--brand-gradient)] hover:opacity-90 shrink-0 cursor-pointer"
+            onClick={() => setAddModalOpen(true)}
+          >
+            <UserPlus className="h-4 w-4" />
+            {addButtonLabel}
+          </Button>
         </div>
 
         <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full ">
@@ -133,7 +131,7 @@ export default function Settings() {
                   className={cn(
                     'gap-1.5 rounded-md px-4 py-2.5 text-sm font-medium transition-colors cursor-pointer disabled:cursor-not-allowed',
                     'data-[state=inactive]:bg-transparent data-[state=inactive]:text-[#687182] data-[state=inactive]:hover:text-foreground',
-                    'data-[state=active]:bg-[#276D9C] data-[state=active]:text-white data-[state=active]:shadow-sm'
+                    'data-[state=active]:bg-[image:var(--brand-gradient)] data-[state=active]:text-white data-[state=active]:shadow-sm'
                   )}
                 >
                   <User className="h-4 w-4 shrink-0" aria-hidden />

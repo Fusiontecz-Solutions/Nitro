@@ -2,6 +2,10 @@ import ApplicationApprovalEmail, {
   APPLICATION_APPROVAL_EMAIL_VARIABLES,
 } from "./ApplicationApprovalEmail";
 import { renderApplicationApprovalEmailHtml } from "./applicationApprovalEmailHtml";
+import ApplicationApprovedEmail, {
+  APPLICATION_APPROVED_EMAIL_VARIABLES,
+} from "./ApplicationApprovedEmail";
+import { renderApplicationApprovedEmailHtml } from "./applicationApprovedEmailHtml";
 import ApplicationRejectionEmail, {
   APPLICATION_REJECTION_EMAIL_VARIABLES,
 } from "./ApplicationRejectionEmail";
@@ -14,11 +18,19 @@ import OfferUpdatedEmail, {
   OFFER_UPDATED_EMAIL_VARIABLES,
 } from "./OfferUpdatedEmail";
 import { renderOfferUpdatedEmailHtml } from "./offerUpdatedEmailHtml";
+import PayOffLetter, {
+  PAY_OFF_LETTER_VARIABLES,
+} from "./PayOffLetter";
+import { renderPayOffLetterEmailHtml } from "./payOffLetterEmailHtml";
+import ZeroBalanceLetter, {
+  ZERO_BALANCE_LETTER_VARIABLES,
+} from "./ZeroBalanceLetter";
+import { renderZeroBalanceLetterEmailHtml } from "./zeroBalanceLetterEmailHtml";
 import type { TemplateDefinition } from "./types";
 
 /**
  * Central registry of every template in this folder. Add new templates here
- * so they automatically show up in the Template Playground (`/template-playground`).
+ * so they automatically show up in the Template Playground (`/template/playground`).
  */
 export const TEMPLATE_REGISTRY: TemplateDefinition[] = [
   {
@@ -52,6 +64,16 @@ export const TEMPLATE_REGISTRY: TemplateDefinition[] = [
     renderHtml: renderApplicationApprovalEmailHtml,
   },
   {
+    id: "application-approved-email",
+    name: "Application Approved Email",
+    category: "email",
+    description:
+      "Email sent when an application is approved, with full offer terms inline (no portal link).",
+    variables: APPLICATION_APPROVED_EMAIL_VARIABLES,
+    Component: ApplicationApprovedEmail,
+    renderHtml: renderApplicationApprovedEmailHtml,
+  },
+  {
     id: "offer-updated-email",
     name: "Offer Updated Email",
     category: "email",
@@ -60,5 +82,25 @@ export const TEMPLATE_REGISTRY: TemplateDefinition[] = [
     variables: OFFER_UPDATED_EMAIL_VARIABLES,
     Component: OfferUpdatedEmail,
     renderHtml: renderOfferUpdatedEmailHtml,
+  },
+  {
+    id: "pay-off-letter",
+    name: "Pay Off Letter",
+    category: "letter",
+    description:
+      "Payoff letter with wire instructions — purple/cyan email layout used for outbound sends.",
+    variables: PAY_OFF_LETTER_VARIABLES,
+    Component: PayOffLetter,
+    renderHtml: renderPayOffLetterEmailHtml,
+  },
+  {
+    id: "zero-balance-letter",
+    name: "Zero Balance Letter",
+    category: "letter",
+    description:
+      "Zero balance confirmation letter — purple/cyan email layout used for outbound sends.",
+    variables: ZERO_BALANCE_LETTER_VARIABLES,
+    Component: ZeroBalanceLetter,
+    renderHtml: renderZeroBalanceLetterEmailHtml,
   },
 ];

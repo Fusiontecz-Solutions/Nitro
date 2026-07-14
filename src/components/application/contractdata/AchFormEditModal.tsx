@@ -422,7 +422,7 @@ export function AchFormEditModal({
                     {!readOnly ? (
                         <Button
                             type="button"
-                            className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+                            className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
                             onClick={() => void handleSave()}
                             disabled={saving || parsePositiveContractId(contractId) == null}
                         >

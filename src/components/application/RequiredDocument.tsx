@@ -228,7 +228,7 @@ const companyWillHandle = [
 interface RequiredDocumentProps {
     isBankAnalysis?: boolean;
     isDecisionMaking?: boolean;
-    /** e.g. deal pipeline Agent/Underwriter — omit Bank Total summary above documents */
+    /** e.g. deal pipeline Agent/Scrubbing — omit Bank Total summary above documents */
     hideBankTotal?: boolean;
     /** e.g. deal pipeline any stage — omit Required Documents for funding card (checklist, upload, uploaded list) */
     hideFundingDocuments?: boolean;
@@ -238,7 +238,7 @@ interface RequiredDocumentProps {
     readOnly?: boolean;
     /**
      * When false, user can still see the upload area but cannot submit files
-     * (e.g. final underwriter / operations on decision-making — only super admin + underwriter upload here).
+     * (e.g. final scrubbing / operations on decision-making — only super admin + scrubbing upload here).
      */
     disableFundingUpload?: boolean;
 }
@@ -264,11 +264,13 @@ const RequiredDocument = ({
     const [isPDFModalOpen, setIsPDFModalOpen] = useState(false);
     const [pdfFileUrl, setPdfFileUrl] = useState<string | null>(null);
     const [pdfFileName, setPdfFileName] = useState<string>("Document");
+    const [pdfMimeTypeHint, setPdfMimeTypeHint] = useState<string>("");
 
     const handleClosePDFModal = () => {
         setIsPDFModalOpen(false);
         setPdfFileUrl(null);
         setPdfFileName("Document");
+        setPdfMimeTypeHint("");
     };
 
     const [, setUser] = useState<user>()
@@ -310,7 +312,7 @@ const RequiredDocument = ({
         }
     }, [applicationData?._id, applicationData?.documentChecklistChecked]);
 
-    // Fetch positions, terms offers, months by application (UUID or numeric applicationId) — role-independent; same data for Agent and Underwriter
+    // Fetch positions, terms offers, months by application (UUID or numeric applicationId) — role-independent; same data for Agent and Scrubbing
     const applicationIdentifier = applicationData?._id ?? applicationId;
     const scopedPositionsForBankTotal = useMemo(() => {
         if (!applicationIdentifier) return [];
@@ -355,7 +357,7 @@ const RequiredDocument = ({
         }
     }, [applicationIdentifier, dispatch]);
 
-    // Fetch transactions for each month when months data is available — role-independent; Agent and Underwriter see same transactions for the same applicationId
+    // Fetch transactions for each month when months data is available — role-independent; Agent and Scrubbing see same transactions for the same applicationId
     useEffect(() => {
         if (publicMode) return;
         if (monthsData && Array.isArray(monthsData) && monthsData.length > 0) {
@@ -462,7 +464,7 @@ const RequiredDocument = ({
     // }, [bankAnalysisData]);
 
     // const userRole = user?.role || localStorage.getItem('role') || ''
-    // const isUnderwriterRole = userRole === 'UNDERWRITER' || userRole === 'FINAL_UNDERWRITER'
+    // const isUnderwriterRole = userRole === 'SCRUBBING' || userRole === 'UNDERWRITER'
 
     const onSubmit = async (data: UploadFormData) => {
         if (disableFundingUpload) return;
@@ -676,14 +678,13 @@ const RequiredDocument = ({
                                                                 ref={fileInputRef}
                                                                 onChange={handleFileChange}
                                                                 className="hidden"
-                                                                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
                                                                 disabled={disableFundingUpload}
                                                             />
                                                             <Button
                                                                 type="button"
                                                                 onClick={handleUploadClick}
                                                                 disabled={disableFundingUpload}
-                                                                className="bg-[#5AACEA] hover:bg-[#1565C0] text-white text-sm font-medium px-4 py-2 mb-4 disabled:pointer-events-none disabled:opacity-50"
+                                                                className="bg-[#C07BE0] hover:bg-[#1565C0] text-white text-sm font-medium px-4 py-2 mb-4 disabled:pointer-events-none disabled:opacity-50"
                                                             >
                                                                 <Upload className="w-4 h-4 mr-2" />
                                                                 Upload Document
@@ -704,7 +705,7 @@ const RequiredDocument = ({
 
                                                 {disableFundingUpload && (
                                                     <p className="text-xs text-muted-foreground mt-2">
-                                                        Upload is available to Super Admin, Underwriter, and Final Underwriter only.
+                                                        Upload is available to Super Admin, Scrubbing, and Underwriter only.
                                                     </p>
                                                 )}
 
@@ -792,6 +793,7 @@ const RequiredDocument = ({
                                                                         onClick={() => {
                                                                             setPdfFileUrl(file.url ?? null);
                                                                             setPdfFileName((file.originalName ?? "Document") as string);
+                                                                            setPdfMimeTypeHint(String(file.mimeType || "").trim());
                                                                             setIsPDFModalOpen(true);
                                                                         }}
                                                                         title="View"
@@ -1010,7 +1012,7 @@ const RequiredDocument = ({
                                     navigate('/create-position');
                                 }
                             }}
-                            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white w-36 px-10 py-0 text-xs rounded-sm"
+                            className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white w-36 px-10 py-0 text-xs rounded-sm"
                         >
                             Create Position
                         </Button>
@@ -1211,7 +1213,7 @@ const RequiredDocument = ({
                                     navigate('/create-terms-offer');
                                 }
                             }}
-                            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white w-36 px-10 py-0 text-xs rounded-sm"
+                            className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white w-36 px-10 py-0 text-xs rounded-sm"
                         >
                             Create Terms Offer
                         </Button>)
@@ -1378,6 +1380,7 @@ const RequiredDocument = ({
                 onClose={handleClosePDFModal}
                 fileUrl={pdfFileUrl}
                 fileName={pdfFileName}
+                mimeTypeHint={pdfMimeTypeHint}
             />
         </div>
     );

@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { Check, Trash2, Pencil, Loader2 } from "lucide-react";
 import type { AppDispatch, RootState } from "@/redux/store";
@@ -11,6 +17,7 @@ import {
   formatPercentUS,
   normalizeApiDateToYyyyMmDd,
 } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
 interface IPosition {
   /** Optional backend ID when saved to the API. */
@@ -69,6 +76,20 @@ interface PositionsTableProps {
   disableCreate?: boolean;
   bankAllocationOptions?: Array<{ id: number; label: string }>;
   onRowsChange?: (rows: IPosition[]) => void;
+  /**
+   * Hide the per-row "save & lock" (check) control. Used when an external
+   * action (e.g. Offer "Approve & Save") persists every row at once.
+   */
+  hideRowSave?: boolean;
+  /**
+   * Parent receives the bulk-save function so it can persist all rows from
+   * Offer "Approve & Save" without per-row save buttons.
+   */
+  onRegisterSaveAll?: (saveAll: () => Promise<boolean>) => void;
+  /** When true, debounce-save unlocked rows after edits (Scrubbing tab). */
+  autoSave?: boolean;
+  /** Debounce delay for {@link autoSave} (ms). */
+  autoSaveDelayMs?: number;
 }
 
 const ACTIVE_STATUSES = ["ACTIVE", "REFI", "PIF", "REVERSE"] as const;
@@ -166,6 +187,31 @@ function buildRowsEmitSignature(rows: IPosition[]): string {
   );
 }
 
+/** True when a row has any user-entered data (so empty placeholder rows are skipped on bulk save). */
+function rowHasMeaningfulData(row: IPosition | undefined | null): boolean {
+  if (!row) return false;
+  const valueKeys: (keyof IPosition)[] = [
+    "lender",
+    "installment",
+    "amountFunded",
+    "totalRepayments",
+    "monthlyMcaPmts",
+    "mcaRemit",
+    "loanAmount",
+    "paymentTerm",
+    "startingDate",
+  ];
+  for (const key of valueKeys) {
+    const v = row[key];
+    if (v != null && String(v).trim() !== "") return true;
+  }
+  const status = String(row.status || "").trim().toUpperCase();
+  if (status && status !== "SELECT") return true;
+  const frequency = String(row.frequency || "").trim();
+  if (frequency && frequency !== "Select") return true;
+  return false;
+}
+
 /**
  * Monthly MCA $ for EST. Lvg: non-empty Monthly Pmts cell that parses and is ≥ 0 wins; else installment × frequency multiplier.
  */
@@ -192,28 +238,16 @@ function sanitizeDecimalInput(str: unknown): string {
   return s;
 }
 
-const DEFAULT_FREQUENCY_OPTIONS = [
-  "Select",
-  "Daily",
-  "Weekly",
-  "Bi-weekly",
-  "Monthly",
-] as const;
-
-function isFrequencySelected(freq?: string): boolean {
-  const f = (freq || "").trim().toLowerCase().replace(/\s+/g, "");
-  return (
-    f === "daily" ||
-    f === "weekly" ||
-    f === "bi-weekly" ||
-    f === "biweekly" ||
-    f === "monthly"
-  );
-}
-
-function frequencySelectValue(freq?: string, placeholder = "Select"): string {
-  if (!freq || freq.trim().toLowerCase() === "select") return placeholder;
-  return freq.trim();
+/** Canonical frequency label for dropdown + API (handles legacy "Bi-weekly" casing). */
+function normalizeFrequencyOption(freq?: string): string {
+  const f = (freq || "").trim();
+  if (!f || f === "Select") return "";
+  const key = f.toLowerCase().replace(/\s+/g, "");
+  if (key === "daily") return "Daily";
+  if (key === "weekly") return "Weekly";
+  if (key === "bi-weekly" || key === "biweekly") return "Bi-Weekly";
+  if (key === "monthly") return "Monthly";
+  return f;
 }
 
 /** FREQUENCY_MULTIPLIER: payments per month (Daily=22, Weekly=4.2, Bi-weekly=2, Monthly=1). */
@@ -510,7 +544,7 @@ function calculateMCAValues(row: IPosition, options?: CalculateMCAOptions): MCAV
       amountFunded <= 0 ||
       Number.isNaN(installment) ||
       installment <= 0 ||
-      !isFrequencySelected(row.frequency))
+      !row.frequency)
   ) {
     out.pmtsLeft = "0";
     out.mcaEstBalance = "0";
@@ -835,9 +869,9 @@ function FootPlainEditCell({ children }: { children: React.ReactNode }) {
   );
 }
 
-export default function PositionsTableCalculator({
+export default function PositionTableCalculator({
   positions: positionsProp,
-  frequencyOptions = [...DEFAULT_FREQUENCY_OPTIONS],
+  frequencyOptions = ["Select", "Daily", "Weekly", "Bi-Weekly", "Monthly"],
   statusOptions = ["Select", "ACTIVE", "REVERSE", "REFI", "PIF", "ONE TIME", "STOP", "RECOVERY", "LOWER"],
   avgBankNetCredit,
   applicationId,
@@ -847,6 +881,10 @@ export default function PositionsTableCalculator({
   disableCreate,
   bankAllocationOptions = [],
   onRowsChange,
+  hideRowSave,
+  onRegisterSaveAll,
+  autoSave = false,
+  autoSaveDelayMs = 1500,
 }: PositionsTableProps) {
   /** Stable: do not default to `createPlaceholderRows()` here — a new array every render breaks effects. */
   const positions = positionsProp;
@@ -858,6 +896,7 @@ export default function PositionsTableCalculator({
   const isReadOnly = !!readOnly;
   const isDeleteDisabled = !!disableDelete;
   const isCreateDisabled = !!disableCreate;
+  const effectiveHideRowSave = hideRowSave || Boolean(onRegisterSaveAll);
   const positionsState = useSelector((state: RootState) => state.positions);
   const effectiveApplicationId =
     applicationId ??
@@ -880,13 +919,19 @@ export default function PositionsTableCalculator({
       ? positions
       : createPlaceholderRows(),
   );
+  /** Tracks whether this table has ever shown real position data for the current application. */
+  const hadMeaningfulRowsRef = useRef(false);
+  const rowsApplicationRef = useRef("");
   const [isSavingRowIndex, setIsSavingRowIndex] = useState<number | null>(null);
   const [isDeletingRowIndex, setIsDeletingRowIndex] = useState<number | null>(null);
   const [hasUserAddedRow, setHasUserAddedRow] = useState(false);
   const lastKeyWasEnterRef = useRef(false);
-  /** Prevents double-submit when the save (check) control is clicked faster than React disables it. */
-  const positionLockSaveInFlightRef = useRef<Set<number>>(new Set());
   const lastRowsEmitSignatureRef = useRef<string>("");
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoSavedRowsSigRef = useRef<string>("");
+  const rowsAutoSaveBootstrappedRef = useRef(false);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const [allocationModal, setAllocationModal] = useState<{
     open: boolean;
     rowIndex: number;
@@ -896,7 +941,17 @@ export default function PositionsTableCalculator({
   // Reset the "user added" guard when we switch to a different application.
   useEffect(() => {
     setHasUserAddedRow(false);
-  }, [effectiveApplicationId]);
+    if (rowsApplicationRef.current !== normalizedEffectiveApplicationId) {
+      rowsApplicationRef.current = normalizedEffectiveApplicationId;
+      hadMeaningfulRowsRef.current = false;
+    }
+  }, [normalizedEffectiveApplicationId]);
+
+  useEffect(() => {
+    if (rows.some(rowHasMeaningfulData)) {
+      hadMeaningfulRowsRef.current = true;
+    }
+  }, [rows]);
 
   // Derive scoped positions from Redux when an application id is provided
   const positionsFromStore: IPosition[] = useMemo(() => {
@@ -914,7 +969,7 @@ export default function PositionsTableCalculator({
       return {
         _id: p._id,
         lender: p.funder ?? "",
-        frequency: p.frequency ?? "",
+        frequency: normalizeFrequencyOption(p.frequency ?? ""),
         installment:
           p.ach != null ? formatMoneyInputCommit(p.ach) : "",
         status: p.status ?? (p.activeStatus ? "ACTIVE" : "SELECT"),
@@ -967,7 +1022,7 @@ export default function PositionsTableCalculator({
     dispatch(getPositions({ application: effectiveApplicationId }));
   }, [effectiveApplicationId, positions, positionsFromStore, dispatch]);
 
-  // When positions (prop or store) are loaded/updated from API, seed local rows once.
+  // When positions (prop or store) are loaded/updated from API, seed or refresh local rows.
   // Note: we intentionally exclude avgBankNetCredit from deps to avoid an update loop,
   // since avgBankNetCredit is derived from rows that are set inside this effect.
   useEffect(() => {
@@ -980,14 +1035,25 @@ export default function PositionsTableCalculator({
       // When real positions are coming from the server, treat it as "not user-created placeholders".
       setHasUserAddedRow(false);
       setRows((prev) => {
-        // If all rows are still empty placeholders, replace with incoming positions
-        const hasRealData = prev.some((row) => {
-          return Object.values(row).some((v) => v != null && String(v).trim() !== "");
-        });
-        if (hasRealData) return prev;
-        return source.map((p, i) =>
-          recalcRow(p, { index: i, allRows: source, avgBankNetCredit }),
-        );
+        const prevHasRealData = prev.some(rowHasMeaningfulData);
+        if (!prevHasRealData) {
+          return source.map((p, i) =>
+            recalcRow(p, { index: i, allRows: source, avgBankNetCredit }),
+          );
+        }
+
+        // After Approve & Save / refetch: refresh locked rows from the server without blanking first.
+        const meaningful = prev.filter(rowHasMeaningfulData);
+        const allLockedSaved =
+          meaningful.length > 0 &&
+          meaningful.every((row) => row.isLocked && row._id);
+        if (allLockedSaved) {
+          return source.map((p, i) =>
+            recalcRow(p, { index: i, allRows: source, avgBankNetCredit }),
+          );
+        }
+
+        return prev;
       });
     }
   }, [positions, positionsFromStore]);
@@ -1006,11 +1072,12 @@ export default function PositionsTableCalculator({
 
     // Don't override rows if the user is actively adding data or has typed into any row
     // (hasUserAddedRow is only set by "Create Position", not by editing default placeholders).
+    if (positionsState.loading && hadMeaningfulRowsRef.current) return;
+
     if (!positionsState.loading && !hasUserAddedRow) {
       setRows((prev) => {
-        const hasRealData = prev.some((row) =>
-          Object.values(row).some((v) => v != null && String(v).trim() !== ""),
-        );
+        const hasRealData =
+          prev.some(rowHasMeaningfulData) || hadMeaningfulRowsRef.current;
         if (hasRealData) return prev;
         return createPlaceholderRows();
       });
@@ -1206,17 +1273,23 @@ export default function PositionsTableCalculator({
     }
   };
 
-  const handleLockRow = async (index: number) => {
-    if (isReadOnly) return;
-    const row = rows[index];
-    if (!row) return;
+  /**
+   * Validate and persist a single row (create or update). Returns a status so
+   * the bulk {@link saveAll} flow can keep going and report overall success.
+   * When `silent`, success toasts are suppressed (errors are always surfaced).
+   */
+  const persistRow = async (
+    index: number,
+    row: IPosition,
+    opts?: { silent?: boolean; lockAfterSave?: boolean },
+  ): Promise<"saved" | "invalid" | "error"> => {
+    if (!row) return "invalid";
+    const silent = !!opts?.silent;
+    const lockAfterSave = opts?.lockAfterSave !== false;
+    const fail = (msg: string) => {
+      if (!silent) toast.error(msg);
+    };
 
-    if (positionLockSaveInFlightRef.current.has(index)) {
-      return;
-    }
-    positionLockSaveInFlightRef.current.add(index);
-
-    try {
     // If we don't have an application to attach to, just lock locally
     if (!effectiveApplicationId) {
       setRows((prev) => {
@@ -1225,8 +1298,8 @@ export default function PositionsTableCalculator({
         next[index] = { ...next[index], isLocked: true };
         return next;
       });
-      toast.error("No application selected. Unable to save position to the server.");
-      return;
+      fail("No application selected. Unable to save position to the server.");
+      return "error";
     }
 
     const amountFundedNum = parseNum(row.amountFunded);
@@ -1242,8 +1315,8 @@ export default function PositionsTableCalculator({
     const paymentTermNum = parseNum(row.paymentTerm);
 
     if (Number.isNaN(amountFundedNum) || amountFundedNum <= 0) {
-      toast.error("Please enter a valid Amount Funded before saving this position.");
-      return;
+      fail("Please enter a valid Amount Funded before saving this position.");
+      return "invalid";
     }
 
     const lender = row.lender?.trim() || "";
@@ -1251,18 +1324,18 @@ export default function PositionsTableCalculator({
     const frequency = row.frequency || "";
 
     if (!lender) {
-      toast.error("Please enter the LENDER name before saving this position.");
-      return;
+      fail("Please enter the LENDER name before saving this position.");
+      return "invalid";
     }
 
-    if (!isFrequencySelected(frequency)) {
-      toast.error("Please select a FREQUENCY before saving this position.");
-      return;
+    if (!frequency || frequency === "Select") {
+      fail("Please select a FREQUENCY before saving this position.");
+      return "invalid";
     }
 
     if (Number.isNaN(installmentNum) || installmentNum <= 0) {
-      toast.error("Please enter a valid REPAYMENT amount before saving this position.");
-      return;
+      fail("Please enter a valid REPAYMENT amount before saving this position.");
+      return "invalid";
     }
 
     // PIF / REFI / etc.: EST. Lvg not shown or blank; persist 0. Others require valid EST. Lvg %.
@@ -1273,8 +1346,8 @@ export default function PositionsTableCalculator({
       !["PIF", "ONE TIME", "STOP", "REFI"].includes(status) &&
       (Number.isNaN(effectiveRemit) || effectiveRemit <= 0)
     ) {
-      toast.error("Please enter or compute a valid EST. Lvg % before saving this position.");
-      return;
+      fail("Please enter or compute a valid EST. Lvg % before saving this position.");
+      return "invalid";
     }
 
     const fundingDate = toDateInputValue(row.startingDate || "") || todayMax;
@@ -1327,14 +1400,14 @@ export default function PositionsTableCalculator({
             data: updatePayload,
           }),
         ).unwrap();
-        toast.success("Position updated successfully.");
+        if (!silent) toast.success("Position updated successfully.");
       } else {
         const result = await dispatch(createPosition(basePayload)).unwrap();
         const created = (result as any).data || result;
         if (created && typeof created === "object" && created._id) {
           savedId = String(created._id);
         }
-        toast.success("Position saved successfully.");
+        if (!silent) toast.success("Position saved successfully.");
       }
 
       setRows((prev) => {
@@ -1343,7 +1416,7 @@ export default function PositionsTableCalculator({
         const cur = next[index];
         const withIds: IPosition = {
           ...cur,
-          isLocked: true,
+          isLocked: lockAfterSave,
           _id: savedId,
           amountFunded: formatMoneyInputCommit(cur.amountFunded),
           installment: formatMoneyInputCommit(cur.installment),
@@ -1366,6 +1439,7 @@ export default function PositionsTableCalculator({
         });
         return next;
       });
+      return "saved";
     } catch (error: any) {
       console.error("Save position error:", error);
       const message =
@@ -1373,13 +1447,92 @@ export default function PositionsTableCalculator({
         error?.message ||
         "Failed to save position. Please try again.";
       toast.error(message);
+      return "error";
     } finally {
       setIsSavingRowIndex(null);
     }
-    } finally {
-      positionLockSaveInFlightRef.current.delete(index);
-    }
   };
+
+  /**
+   * Persist every row that contains data in one pass. Already-saved (locked)
+   * rows are skipped; empty placeholder rows are ignored. Registered with the
+   * parent via {@link onRegisterSaveAll} for Offer "Approve & Save".
+   */
+  const saveAll = useCallback(async (): Promise<boolean> => {
+    const current = rows;
+    let allOk = true;
+    for (let i = 0; i < current.length; i++) {
+      const row = current[i];
+      if (!rowHasMeaningfulData(row)) continue;
+      if (row?.isLocked && row?._id) continue;
+      const result = await persistRow(i, row, { silent: false });
+      if (result !== "saved") allOk = false;
+    }
+    return allOk;
+  }, [rows, persistRow]);
+
+  const persistRowRef = useRef(persistRow);
+  persistRowRef.current = persistRow;
+
+  useEffect(() => {
+    onRegisterSaveAll?.(saveAll);
+  }, [onRegisterSaveAll, saveAll]);
+
+  useEffect(() => {
+    rowsAutoSaveBootstrappedRef.current = false;
+    lastAutoSavedRowsSigRef.current = "";
+  }, [normalizedEffectiveApplicationId]);
+
+  /** Debounced auto-save for Scrubbing — persists unlocked rows without re-locking. */
+  useEffect(() => {
+    if (!autoSave || isReadOnly || !normalizedEffectiveApplicationId) return;
+
+    const sig = buildRowsEmitSignature(rows);
+    if (!rowsAutoSaveBootstrappedRef.current) {
+      rowsAutoSaveBootstrappedRef.current = true;
+      lastAutoSavedRowsSigRef.current = sig;
+      return;
+    }
+    if (sig === lastAutoSavedRowsSigRef.current) return;
+
+    const hasUnlockedEditable = rows.some(
+      (row) => !row.isLocked && rowHasMeaningfulData(row),
+    );
+    if (!hasUnlockedEditable) return;
+
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      void (async () => {
+        let savedAny = false;
+        const snapshot = rowsRef.current;
+        for (let i = 0; i < snapshot.length; i++) {
+          const row = snapshot[i];
+          if (!row || row.isLocked || !rowHasMeaningfulData(row)) continue;
+          const result = await persistRowRef.current(i, row, {
+            silent: true,
+            lockAfterSave: false,
+          });
+          if (result === "saved") savedAny = true;
+        }
+        if (savedAny) {
+          lastAutoSavedRowsSigRef.current = sig;
+        }
+      })();
+    }, autoSaveDelayMs);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    rows,
+    autoSave,
+    autoSaveDelayMs,
+    isReadOnly,
+    normalizedEffectiveApplicationId,
+  ]);
 
   const handleUnlockRow = (index: number) => {
     if (isReadOnly) return;
@@ -1482,20 +1635,31 @@ export default function PositionsTableCalculator({
       return false;
     });
 
-    const existingRemit = rowsForExistingRemitAndMonthly.reduce((sum, row) => {
-      const remitNum = parseNum(row.mcaRemit);
-      return sum + (Number.isNaN(remitNum) ? 0 : remitNum);
-    }, 0);
-
     const totalMonthlyFromPositions = rowsForExistingRemitAndMonthly.reduce(
       (sum, row) => {
-        const monthlyNum = parseNum(row.monthlyMcaPmts);
+        const monthlyNum = getMonthlyMcaPmtsForRemit(row);
         return sum + (Number.isNaN(monthlyNum) ? 0 : monthlyNum);
       },
       0,
     );
     const totalDailyFromPositions =
       totalMonthlyFromPositions > 0 ? totalMonthlyFromPositions / 22 : 0;
+
+    const avgNetCreditNum = parseAvgNetCredit(avgBankNetCredit);
+    const hasValidAvg =
+      !Number.isNaN(avgNetCreditNum) && avgNetCreditNum > 0;
+
+    const existingRemitFromRows = rowsForExistingRemitAndMonthly.reduce(
+      (sum, row) => {
+        const remitNum = parseNum(row.mcaRemit);
+        return sum + (Number.isNaN(remitNum) ? 0 : remitNum);
+      },
+      0,
+    );
+    const existingRemit =
+      hasValidAvg && totalMonthlyFromPositions > 0
+        ? (totalMonthlyFromPositions / avgNetCreditNum) * 100
+        : existingRemitFromRows;
 
     const positionsForTotals = rows.filter((row) => {
       const status = String(row.status || "")
@@ -1542,14 +1706,17 @@ export default function PositionsTableCalculator({
       (sum, row) => sum + (parseNum(row.pmtsLeft) || 0),
       0,
     );
-    const mcaRemitSum = positionsForTotals.reduce(
-      (sum, row) => sum + (parseNum(row.mcaRemit) || 0),
-      0,
-    );
-    const monthlyMcaPmtsSum = positionsForTotals.reduce(
-      (sum, row) => sum + (parseNum(row.monthlyMcaPmts) || 0),
-      0,
-    );
+    const monthlyMcaPmtsSum = positionsForTotals.reduce((sum, row) => {
+      const monthlyNum = getMonthlyMcaPmtsForRemit(row);
+      return sum + (Number.isNaN(monthlyNum) ? 0 : monthlyNum);
+    }, 0);
+    const mcaRemitSum =
+      hasValidAvg && monthlyMcaPmtsSum > 0
+        ? (monthlyMcaPmtsSum / avgNetCreditNum) * 100
+        : positionsForTotals.reduce(
+            (sum, row) => sum + (parseNum(row.mcaRemit) || 0),
+            0,
+          );
 
     return {
       activeCount: rowsActiveForCount.length,
@@ -1567,7 +1734,7 @@ export default function PositionsTableCalculator({
       mcaRemitSum,
       monthlyMcaPmtsSum,
     };
-  }, [rows]);
+  }, [rows, avgBankNetCredit]);
 
   // Surface metrics to parent if requested, but only when they actually change
   const lastMetricsRef = useRef<PositionTableMetrics | null>(null);
@@ -1605,13 +1772,14 @@ export default function PositionsTableCalculator({
           <h2 className="text-lg font-bold uppercase tracking-wide text-[#334155] dark:text-slate-100">Positions</h2>
         </div>
         {!isReadOnly && !isCreateDisabled && (
-          <button
+          <Button
             type="button"
+            variant="default"
             onClick={handleAddRow}
-            className="bg-[#2B70A1] hover:bg-[#235d85] cursor-pointer text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors"
+            className="font-semibold"
           >
             Create Position
-          </button>
+          </Button>
         )}
       </div>
       <div className="min-w-0 w-full max-h-[min(70vh,560px)] overflow-auto rounded-b-xl overscroll-x-contain">
@@ -1957,16 +2125,14 @@ export default function PositionsTableCalculator({
                     >
                       {readMode ? (
                         <div className={roCellInner}>
-                          {isFrequencySelected(row.frequency)
-                            ? frequencySelectValue(row.frequency)
-                            : frequencyOptions[0] || "Select"}
+                          {(row.frequency && row.frequency !== "Select"
+                            ? row.frequency
+                            : ""
+                          ).trim() || "-"}
                         </div>
                       ) : (
                         <select
-                          value={frequencySelectValue(
-                            row.frequency,
-                            frequencyOptions[0] || "Select",
-                          )}
+                          value={row.frequency || "Select"}
                           disabled={locked}
                           onChange={(e) =>
                             handleUpdateRow(index, "frequency", e.target.value)
@@ -2551,10 +2717,16 @@ export default function PositionsTableCalculator({
                             >
                               <Pencil className="w-4 h-4" />
                             </button>
+                          ) : effectiveHideRowSave ? (
+                            isSaving ? (
+                              <span className="text-emerald-600 p-1 inline-flex items-center justify-center">
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              </span>
+                            ) : null
                           ) : (
                             <button
                               type="button"
-                              onClick={() => handleLockRow(index)}
+                              onClick={() => void persistRow(index, rows[index])}
                               disabled={isBusy}
                               className="text-emerald-600 cursor-pointer hover:text-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none p-1 inline-flex items-center justify-center"
                               title="Save and lock"
@@ -2878,10 +3050,11 @@ export default function PositionsTableCalculator({
               >
                 Cancel
               </button>
-              <button
+              <Button
                 type="button"
+                variant="default"
                 disabled={!allocationModal.selectedBankId}
-                className="px-3 py-2 text-sm rounded cursor-pointer bg-[#2B70A1] text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={() => {
                   if (allocationModal.rowIndex >= 0 && allocationModal.selectedBankId) {
                     handleUpdateRow(
@@ -2894,7 +3067,7 @@ export default function PositionsTableCalculator({
                 }}
               >
                 Allocate
-              </button>
+              </Button>
             </div>
           </div>
         </div>

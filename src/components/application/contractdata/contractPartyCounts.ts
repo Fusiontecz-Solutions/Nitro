@@ -6,7 +6,20 @@ import {
 } from "./templateRecipients";
 
 function partyEmail(row: Record<string, unknown> | undefined): string {
-    return String(row?.email ?? "").trim();
+    return String(row?.email ?? row?.ownerEmail ?? row?.guarantorEmail ?? "").trim();
+}
+
+/** Owner/guarantor row counts when email or legal name is present. */
+export function ownerRowHasIdentity(row: Record<string, unknown> | undefined): boolean {
+    if (!row) return false;
+    if (partyEmail(row)) return true;
+    const first = String(
+        row.firstName ?? row.ownerFirstName ?? row.guarantorFirstName ?? "",
+    ).trim();
+    const last = String(
+        row.lastName ?? row.ownerLastName ?? row.guarantorLastName ?? "",
+    ).trim();
+    return Boolean(first || last);
 }
 
 export function countOwnersWithEmail(

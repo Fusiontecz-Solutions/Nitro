@@ -173,7 +173,7 @@ const PublicDocumentUploadPage = () => {
         <div className="mx-auto max-w-5xl">
           <div className="mb-4 text-center">{brandLogo}</div>
           <div className="mt-6 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
-            <div className="font-semibold text-[#151357]">
+            <div className="font-semibold text-[var(--brand-accent-strong)]">
               {errorCode === "TOKEN_EXPIRED" ? "Link expired" : "Link not available"}
             </div>
             {errorCode === "TOKEN_EXPIRED" && expiresAt ? (
@@ -193,7 +193,7 @@ const PublicDocumentUploadPage = () => {
         <div className="mx-auto max-w-5xl">
           <div className="mb-4 text-center">{brandLogo}</div>
           <div className="mt-6 rounded-md border border-[#E5E7EB] bg-white p-4 text-sm text-[#687182]">
-            <div className="font-semibold text-[#151357]">Session error</div>
+            <div className="font-semibold text-[var(--brand-accent-strong)]">Session error</div>
             <div className="mt-1">{sessionError}</div>
           </div>
         </div>
@@ -237,7 +237,7 @@ const PublicDocumentUploadPage = () => {
         ) : null}
 
         <div className="mb-6 rounded-lg border border-[#E5E7EB] bg-white p-5 shadow-sm">
-          <h1 className="text-lg font-semibold text-[#151357]">Upload requested documents</h1>
+          <h1 className="text-lg font-semibold text-[var(--brand-accent-strong)]">Upload requested documents</h1>
           <p className="mt-1 text-sm text-[#687182]">
             Application {appRef}
             {businessName !== "—" ? ` · ${businessName}` : ""}
@@ -266,7 +266,7 @@ const PublicDocumentUploadPage = () => {
               </div>
             ) : !detailReady ? (
               <div className="rounded-lg border border-[#E5E7EB] bg-white p-10 text-center text-sm text-[#687182]">
-                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[#276D9C] border-t-transparent align-[-0.125em]" />
+                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-[var(--brand)] border-t-transparent align-[-0.125em]" />
                 <span className="ml-2">Loading application…</span>
               </div>
             ) : (

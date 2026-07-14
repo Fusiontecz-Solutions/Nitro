@@ -32,8 +32,8 @@
 // import type { AppDispatch, RootState } from '@/redux/store';
 // import type { User } from '@/types/userTypes';
 
-// const ROLE_ID = 'FINAL_UNDERWRITER';
-// const LABEL = 'Final Underwriter';
+// const ROLE_ID = 'UNDERWRITER';
+// const LABEL = 'Underwriter';
 // const LABEL_PLURAL = 'Final Underwriters';
 
 // function formatDate(dateStr: string | undefined): string {
@@ -197,7 +197,7 @@
 //         <h1 className="text-lg font-semibold">{LABEL_PLURAL}</h1>
 //         <Button
 //           onClick={openAddModal}
-//           className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
+//           className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
 //         >
 //           <UserPlus className="h-4 w-4" />
 //           Add {LABEL}
@@ -233,7 +233,7 @@
 //                   className={`${
 //                     isDark
 //                       ? 'bg-[#1e293b] hover:bg-[#1e293b]'
-//                       : 'bg-[#276D9C] hover:bg-[#276D9C]'
+//                       : 'bg-[image:var(--brand-gradient)] hover:bg-[image:var(--brand-gradient)]'
 //                   } border-b-0`}
 //                 >
 //                   <TableHead className="text-white font-medium text-xs">NAME</TableHead>
@@ -517,7 +517,7 @@ export default function FinalUnderwritersDashboard() {
       localStorage.setItem("user", JSON.stringify(user));
       localStorage.setItem("role", user.role);
 
-      toast.success("Logged in as Final Underwriter");
+      toast.success("Logged in as Underwriter");
 
       navigate("/");
 
@@ -643,7 +643,7 @@ export default function FinalUnderwritersDashboard() {
           </Button>
           <Button
             onClick={openAddModal}
-            className="bg-[#276D9C] hover:bg-[#276D9C]/90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
+            className="bg-[image:var(--brand-gradient)] hover:opacity-90 text-white text-xs font-medium px-4 h-9 rounded-lg gap-1.5"
           >
             <UserPlus className="h-4 w-4" />
             New {LABEL_PLURAL}
@@ -757,12 +757,12 @@ export default function FinalUnderwritersDashboard() {
                 <TableRow
                   className={`${isDark
                     ? 'bg-[#1e293b] hover:bg-[#1e293b]'
-                    : 'bg-[#276D9C] hover:bg-[#276D9C]'} border-b-0`}
+                    : 'bg-[image:var(--brand-gradient)] hover:bg-[image:var(--brand-gradient)]'} border-b-0`}
                 >
                   <TableHead className="text-white font-medium text-xs w-[40px] px-3">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 accent-[#276D9C] cursor-pointer"
+                      className="h-4 w-4 rounded border-slate-300 accent-[var(--brand)] cursor-pointer"
                     />
                   </TableHead>
                   <TableHead className="text-white font-medium text-xs">NAME</TableHead>
@@ -792,7 +792,7 @@ export default function FinalUnderwritersDashboard() {
                       <TableCell className="w-[40px] px-3">
                         <input
                           type="checkbox"
-                          className="h-4 w-4 rounded border-slate-300 accent-[#276D9C] cursor-pointer"
+                          className="h-4 w-4 rounded border-slate-300 accent-[var(--brand)] cursor-pointer"
                         />
                       </TableCell>
                       <TableCell className="font-medium text-sm">{name}</TableCell>
@@ -864,7 +864,7 @@ export default function FinalUnderwritersDashboard() {
         </div>
       </section>
 
-      {/* Add Final Underwriter Modal */}
+      {/* Add Underwriter Modal */}
       <Dialog
         open={addModalOpen}
         onOpenChange={(o: boolean) => !o && setAddModalOpen(false)}
@@ -926,7 +926,7 @@ export default function FinalUnderwritersDashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Final Underwriter Modal */}
+      {/* Edit Underwriter Modal */}
       <Dialog
         open={!!editUser}
         onOpenChange={(o: boolean) => !o && setEditUser(null)}

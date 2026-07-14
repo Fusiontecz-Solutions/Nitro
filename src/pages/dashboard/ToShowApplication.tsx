@@ -102,11 +102,8 @@ function applicationRouteId(application: Application): string {
 const thClass =
   "px-6 py-4 text-left text-[11px] font-semibold text-gray-600 dark:text-muted-foreground uppercase tracking-widest";
 
-/** API spelling for disbursement queue (see `operationsDashboardApplications`). */
-const LETTER_GENERATOR_STATUS: OperationsApplicationsListStatus = "Disbursment";
-
 export type ToShowApplicationProps = {
-  /** `letterGenerator`: fixed Disbursement list; opens `/letter-generator/:uuid` for templates & letters only. */
+  /** `letterGenerator`: all applications; opens `/letter-generator/:uuid` for templates & letters only. */
   variant?: "operations" | "letterGenerator";
 };
 
@@ -137,7 +134,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
 
   const listMode = useMemo((): OperationsListMode => {
     if (variant === "letterGenerator") {
-      return { kind: "stage", status: LETTER_GENERATOR_STATUS };
+      return { kind: "all" };
     }
     const raw = statusParam?.trim() ?? "";
     if (!raw) return { kind: "invalid" };
@@ -158,7 +155,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
 
   const title =
     variant === "letterGenerator"
-      ? "Letter generator"
+      ? "Letters"
       : listMode.kind === "all"
         ? "All applications"
         : listMode.kind === "stage"
@@ -293,7 +290,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
               </h1>
               <p className="text-sm text-gray-700 dark:text-muted-foreground">
                 {variant === "letterGenerator"
-                  ? "Disbursement applications — open one to use templates and letters."
+                  ? "Click an application to send Payoff or Zero Balance letters."
                   : listMode.kind === "all"
                     ? "All applications across pipeline stages."
                     : listMode.kind === "stage"
@@ -328,7 +325,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                   placeholder="Search name, email, application ID…"
-                  className="h-11 w-full min-w-[220px] max-w-[320px] rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[#276D9C]/30 sm:w-[280px]"
+                  className="h-11 w-full min-w-[220px] max-w-[320px] rounded-xl border border-border bg-background pl-10 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/30 sm:w-[280px]"
                 />
               </div>
 
@@ -338,7 +335,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                   onClick={() => setViewMode("list")}
                   className={`inline-flex h-9 w-10 items-center justify-center rounded-lg transition-colors ${
                     viewMode === "list"
-                      ? "bg-[#276D9C] text-white"
+                      ? "bg-[image:var(--brand-gradient)] text-white"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                   aria-label="List view"
@@ -350,7 +347,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                   onClick={() => setViewMode("grid")}
                   className={`inline-flex h-9 w-10 items-center justify-center rounded-lg transition-colors ${
                     viewMode === "grid"
-                      ? "bg-[#276D9C] text-white"
+                      ? "bg-[image:var(--brand-gradient)] text-white"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   }`}
                   aria-label="Grid view"
@@ -431,7 +428,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                             <button
                               type="button"
                               onClick={() => handleOpen(row)}
-                              className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[#276D9C]"
+                              className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[var(--brand)]"
                             >
                               <Eye size={20} className="opacity-50" />
                             </button>
@@ -493,7 +490,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                         <button
                           type="button"
                           onClick={() => handleOpen(row)}
-                          className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[#276D9C]"
+                          className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold uppercase tracking-tighter text-muted-foreground transition-colors hover:text-[var(--brand)]"
                         >
                           <Eye size={19} className="opacity-50" />
                         </button>
@@ -549,7 +546,7 @@ const ToShowApplication = ({ variant = "operations" }: ToShowApplicationProps) =
                         onClick={() => setPage(p)}
                         className={`inline-flex h-7 min-w-7 items-center justify-center rounded-md border px-2 text-[11px] font-semibold transition-colors ${
                           safeCurrentPage === p
-                            ? "border-[#276D9C] bg-[#276D9C] text-white"
+                            ? "border-[var(--brand)] bg-[image:var(--brand-gradient)] text-white"
                             : "border-border bg-background text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                         }`}
                         aria-label={`Page ${p}`}

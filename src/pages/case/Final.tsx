@@ -15,9 +15,9 @@ import { toast } from 'react-toastify';
 import ApplicationSummary from '@/components/application/ApplicationSummary';
 
 const textareaFieldClass =
-  'w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-sm md:text-base text-gray-700 bg-white leading-5 focus:outline-none focus:ring-2 focus:ring-[#1e60a3]/40 focus:border-[#1e60a3] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:ring-sky-500/30 dark:focus:border-sky-500';
+  'w-full border border-gray-200 rounded-md px-2.5 py-1.5 text-sm md:text-base text-gray-700 bg-white leading-5 focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/40 focus:border-[var(--brand)] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:ring-[var(--brand)]/30 dark:focus:border-[var(--brand)]';
 const selectFieldClass =
-  'w-full cursor-pointer border border-gray-200 rounded-md px-2.5 py-1.5 text-sm md:text-base text-gray-700 bg-white leading-5 focus:outline-none focus:ring-2 focus:ring-[#1e60a3]/40 focus:border-[#1e60a3] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-sky-500/30 dark:focus:border-sky-500';
+  'w-full cursor-pointer border border-gray-200 rounded-md px-2.5 py-1.5 text-sm md:text-base text-gray-700 bg-white leading-5 focus:outline-none focus:ring-2 focus:ring-[var(--brand)]/40 focus:border-[var(--brand)] dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:ring-[var(--brand)]/30 dark:focus:border-[var(--brand)]';
 
 const AutoResizeTextarea = ({
   value,
@@ -71,29 +71,29 @@ type FinalProps = {
 };
 
 export const FINAL_FORM_FIELDS = [
-  { key: 'nature_business', label: 'NATURE OF THE BUSINESS' },
-  { key: 'business_duration', label: 'HOW LONG IN BUSINESS?' },
-  { key: 'previous_experience', label: 'PREVIOUS EXPERIENCE' },
-  { key: 'existing_business_purchase', label: 'BOUGHT EXISTING OR ESTABLISHED?' },
-  { key: 'ownership_percentage', label: 'PERCENTAGE OF OWNERSHIP' },
-  { key: 'location_count', label: 'HOW MANY LOCATIONS?' },
-  { key: 'current_location_duration', label: 'HOW LONG IN CURRENT LOCATION?' },
-  { key: 'lease_or_own', label: 'LEASE OR OWN - CURRENT?' },
-  { key: 'relocation_plan', label: 'ANY PLANS TO RELOCATE?' },
-  { key: 'employee_count', label: 'HOW MANY EMPLOYEES?' },
-  { key: 'payroll_type', label: 'PAYROLL TYPE' },
-  { key: 'payroll_frequency', label: 'PAYROLL FREQUENCY' },
-  { key: 'payroll_processor', label: 'PAYROLL PROCESSOR' },
-  { key: 'bank_accounts_count', label: 'HOW MANY BANK ACCTS FOR BIZ?' },
-  { key: 'receivables_advertise', label: 'MAJORITY OF RECEIVABLES | ADVERTISE?' },
-  { key: 'use_of_funds', label: 'USE OF FUNDS' },
-  { key: 'purchase_agreement_read', label: 'DID YOU READ AND SIGNED OUR PURCHASE AGREEMENT?' },
-  { key: 'understand_funding_fees', label: 'DO YOU UNDERSTAND THE FUNDING, AND AGREE WITH ALL OF THE FEES?' },
-  { key: 'personal_guarantee_understood', label: 'DO YOU UNDERSTAND THE PERSONAL GUARANTEE ON OUR AGREEMENT?' },
-  { key: 'afford_existing_positions', label: 'WILL YOUR BUSINESS BE ABLE TO COMFORTABLY AFFORD ALL EXISTING MCA POSITIONS?' },
-  { key: 'additional_funding_mentioned', label: 'HAS iso MENTIONED ADDITIONAL FUNDING INCLUDING ALTERNATIVE LOC?' },
-  { key: 'bankruptcy_last_6_months', label: 'HAVE YOU FILED FOR BK OR RESTRUCTURE THE LAST 6 MONTHS?' },
-  { key: 'fraud_acknowledgement', label: 'DO YOU ACKNOWLEDGE THAT ANY FALSE STATEMENTS MAY CONSTITUTE FRAUD AND SUBJECT YOU TO LEGAL ACTION?' },
+    { key: 'nature_business', label: 'NATURE OF THE BUSINESS' },
+    { key: 'business_duration', label: 'HOW LONG IN BUSINESS?' },
+    { key: 'previous_experience', label: 'PREVIOUS EXPERIENCE' },
+    { key: 'existing_business_purchase', label: 'BOUGHT EXISTING OR ESTABLISHED?' },
+    { key: 'ownership_percentage', label: 'PERCENTAGE OF OWNERSHIP' },
+    { key: 'location_count', label: 'HOW MANY LOCATIONS?' },
+    { key: 'current_location_duration', label: 'HOW LONG IN CURRENT LOCATION?' },
+    { key: 'lease_or_own', label: 'LEASE OR OWN - CURRENT?' },
+    { key: 'relocation_plan', label: 'ANY PLANS TO RELOCATE?' },
+    { key: 'employee_count', label: 'HOW MANY EMPLOYEES?' },
+    { key: 'payroll_type', label: 'PAYROLL TYPE' },
+    { key: 'payroll_frequency', label: 'PAYROLL FREQUENCY' },
+    { key: 'payroll_processor', label: 'PAYROLL PROCESSOR' },
+    { key: 'bank_accounts_count', label: 'HOW MANY BANK ACCTS FOR BIZ?' },
+    { key: 'receivables_advertise', label: 'MAJORITY OF RECEIVABLES | ADVERTISE?' },
+    { key: 'use_of_funds', label: 'USE OF FUNDS' },
+    { key: 'purchase_agreement_read', label: 'DID YOU READ AND SIGNED OUR PURCHASE AGREEMENT?' },
+    { key: 'understand_funding_fees', label: 'DO YOU UNDERSTAND THE FUNDING, AND AGREE WITH ALL OF THE FEES?' },
+    { key: 'personal_guarantee_understood', label: 'DO YOU UNDERSTAND THE PERSONAL GUARANTEE ON OUR AGREEMENT?' },
+    { key: 'afford_existing_positions', label: 'WILL YOUR BUSINESS BE ABLE TO COMFORTABLY AFFORD ALL EXISTING MCA POSITIONS?' },
+    { key: 'additional_funding_mentioned', label: 'HAS iso MENTIONED ADDITIONAL FUNDING INCLUDING ALTERNATIVE LOC?' },
+    { key: 'bankruptcy_last_6_months', label: 'HAVE YOU FILED FOR BK OR RESTRUCTURE THE LAST 6 MONTHS?' },
+    { key: 'fraud_acknowledgement', label: 'DO YOU ACKNOWLEDGE THAT ANY FALSE STATEMENTS MAY CONSTITUTE FRAUD AND SUBJECT YOU TO LEGAL ACTION?' },
 ] as const;
 
 export function areFinalAnswersComplete(
@@ -104,6 +104,27 @@ export function areFinalAnswersComplete(
     return typeof answer === 'string' && answer.trim() !== '';
   });
 }
+
+const yesNoQuestionKeys = new Set<string>([
+  'existing_business_purchase',
+  'relocation_plan',
+  'purchase_agreement_read',
+  'understand_funding_fees',
+  'personal_guarantee_understood',
+  'afford_existing_positions',
+  'additional_funding_mentioned',
+  'bankruptcy_last_6_months',
+  'fraud_acknowledgement',
+]);
+const payrollFrequencyOptions = ['Daily', 'Weekly', 'Bi-weekly', 'Monthly'] as const;
+const leaseOrOwnOptions = ['Lease', 'Own'] as const;
+const businessDurationOptions = [
+  'Less than 6 months',
+  '6-12 months',
+  '1-2 years',
+  '2-5 years',
+  '5+ years',
+] as const;
 
 export const Final = ({
   applicationId,
@@ -128,27 +149,6 @@ export const Final = ({
   }, [applicationId, applicationData]);
 
   const formFields = FINAL_FORM_FIELDS;
-
-  const yesNoQuestionKeys = new Set<string>([
-    'existing_business_purchase',
-    'relocation_plan',
-    'purchase_agreement_read',
-    'understand_funding_fees',
-    'personal_guarantee_understood',
-    'afford_existing_positions',
-    'additional_funding_mentioned',
-    'bankruptcy_last_6_months',
-    'fraud_acknowledgement',
-  ]);
-  const payrollFrequencyOptions = ['Daily', 'Weekly', 'Bi-weekly', 'Monthly'] as const;
-  const leaseOrOwnOptions = ['Lease', 'Own'] as const;
-  const businessDurationOptions = [
-    'Less than 6 months',
-    '6-12 months',
-    '1-2 years',
-    '2-5 years',
-    '5+ years',
-  ] as const;
 
   const answersForApplication =
     (applicationKey && finalAnswersState.byApplication[applicationKey]) || {};
@@ -361,7 +361,7 @@ export const Final = ({
               type="button"
               onClick={handleSaveAll}
               disabled={isSaving || finalAnswersState.saving}
-              className="px-3 md:px-4 py-2 text-xs cursor-pointer font-semibold text-white bg-[#1e60a3] rounded-md disabled:opacity-60"
+              className="px-3 md:px-4 py-2 text-xs cursor-pointer font-semibold text-white bg-[image:var(--brand-gradient)] hover:opacity-90 rounded-md disabled:opacity-60"
             >
               {isSaving || finalAnswersState.saving ? 'Saving...' : 'Save Answers'}
             </button>

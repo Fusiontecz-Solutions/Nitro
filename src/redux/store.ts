@@ -14,6 +14,7 @@ import {
     applicationDetailSlice,
     clientApplicationsSlice,
     isoApplicationsSlice,
+    underwriterApplicationsSlice,
     updateApplicationSlice,
     rejectApplicationSlice,
     deleteApplicationSlice,
@@ -81,11 +82,11 @@ import {
 } from './slices/complianceCheckSlice';
 import {
     notificationsSlice,
+    notificationSummarySlice,
     sendDocumentRequestSlice,
     markAsReadSlice,
     markAllAsReadSlice,
-    documentRequestsSlice,
-    notifyOperationsDisbursementSlice,
+    documentRequestsSlice
 } from './slices/notificationSlice';
 import chatReducer from '@/redux/slices/chatSlice';
 import teamChatReducer from './slices/teamChatSlice';
@@ -95,16 +96,13 @@ import { commissionRequestSlice } from './slices/commissionRequestSlice';
 import dedupeReducer from './slices/dedupeSlice';
 import activityLogReducer from './slices/activityLogSlice';
 import { finalAnswersSlice } from './slices/finalAnswerSlice';
-import {
-    createFundingCallSlice,
-    fundingCallsSlice,
-    fundingCallDraftSlice,
-} from './slices/fundingCallSlice';
+import { createFundingCallSlice, fundingCallsSlice } from './slices/fundingCallSlice';
 // import automatedBankStatementSlice from './slices/automatedBankStatementSlice'
 import { offerDecisionSlice } from './slices/offerDecisionSlice';
 import { collectionPaymentsSlice } from './slices/collectionPaymentSlice';
 import { paymentDashboardSlice } from './slices/paymentDashboardSlice';
 import { paymentDashboardCohortSlice } from './slices/paymentDashboardCohortSlice';
+import { paymentDashboardTrendSlice } from './slices/paymentDashboardTrendSlice';
 import { paymentDashboardMoneySlice } from './slices/paymentDashboardMoneySlice';
 import { operationsApplicationsSlice } from './slices/operationsApplicationsSlice';
 import { operationsDashboardSlice } from './slices/operationsDashboardSlice';
@@ -148,8 +146,11 @@ import {
     deleteUploadedContractDocumentSlice,
 } from './slices/contractSlice';
 import isoReducer from './slices/isoSlice';
+import commissionProfileReducer from './slices/commissionProfileSlice';
+import isoOnboardingReducer from './slices/isoOnboardingSlice';
 import backgroundCheckReducer from './slices/backgroundCheckSlice';
 import { paymentDashboardSessionCacheMiddleware } from './middleware/paymentDashboardSessionCacheMiddleware';
+import { hydratePaymentDashboardFromSession } from '@/lib/hydratePaymentDashboardStore';
 
 export const store = configureStore({
     reducer: {
@@ -169,6 +170,7 @@ export const store = configureStore({
         applicationDetail: applicationDetailSlice.reducer,
         clientApplications: clientApplicationsSlice.reducer,
         isoApplications: isoApplicationsSlice.reducer,
+        underwriterApplications: underwriterApplicationsSlice.reducer,
         updateApplication: updateApplicationSlice.reducer,
         rejectApplication: rejectApplicationSlice.reducer,
         deleteApplication: deleteApplicationSlice.reducer,
@@ -228,11 +230,11 @@ export const store = configureStore({
         createOrUpdateComplianceCheck: createOrUpdateComplianceCheckSlice.reducer,
         // Notification reducers
         notifications: notificationsSlice.reducer,
+        notificationSummary: notificationSummarySlice.reducer,
         sendDocumentRequest: sendDocumentRequestSlice.reducer,
         markNotificationAsRead: markAsReadSlice.reducer,
         markAllNotificationsAsRead: markAllAsReadSlice.reducer,
         documentRequests: documentRequestsSlice.reducer,
-        notifyOperationsDisbursement: notifyOperationsDisbursementSlice.reducer,
         // Chat reducer
         chat: chatReducer,
         teamChat: teamChatReducer,
@@ -248,7 +250,6 @@ export const store = configureStore({
         // Funding call
         createFundingCall: createFundingCallSlice.reducer,
         fundingCalls: fundingCallsSlice.reducer,
-        fundingCallDraft: fundingCallDraftSlice.reducer,
         // Offer decision
         offerDecision: offerDecisionSlice.reducer,
         // Contract modules
@@ -292,10 +293,13 @@ export const store = configureStore({
         collectionPayments: collectionPaymentsSlice.reducer,
         paymentDashboard: paymentDashboardSlice.reducer,
         paymentDashboardCohort: paymentDashboardCohortSlice.reducer,
+        paymentDashboardTrend: paymentDashboardTrendSlice.reducer,
         paymentDashboardMoney: paymentDashboardMoneySlice.reducer,
         operationsApplications: operationsApplicationsSlice.reducer,
         operationsDashboard: operationsDashboardSlice.reducer,
         iso: isoReducer,
+        commissionProfile: commissionProfileReducer,
+        isoOnboarding: isoOnboardingReducer,
         backgroundCheck: backgroundCheckReducer,
     },
     middleware: (getDefaultMiddleware) =>
@@ -303,6 +307,8 @@ export const store = configureStore({
             serializableCheck: false,
         }).concat(paymentDashboardSessionCacheMiddleware),
 });
+
+hydratePaymentDashboardFromSession(store);
 
 export type RootState = ReturnType<typeof store.getState>;
 export type AppDispatch = typeof store.dispatch;

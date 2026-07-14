@@ -1,19 +1,15 @@
 import { useCallback, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import { CheckCircle2, Eye, Loader2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { CheckCircle2, Eye, Loader2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AppDispatch, RootState } from "@/redux/store";
-import {
-    uploadApplicationDocuments,
-    getApplicationByApplicationId,
-    deleteApplicationFile,
-} from "@/redux/actions/applicationActions";
+import { uploadApplicationDocuments, getApplicationByApplicationId } from "@/redux/actions/applicationActions";
 import { getDocumentRequestsByApplication } from "@/redux/actions/notificationActions";
 import {
     documentRequestDisplayLabel,
     isContractUploadDocumentRequest,
     type DocumentRequestRow,
-} from "@/constants/documentRequestTypes"
+} from "@/constants/documentRequestTypes";
 import { cn } from "@/lib/utils";
 import { toast } from "react-toastify";
 import PDFViewerDocsModal from "./PDFViewerDocsModal";
@@ -50,8 +46,7 @@ export function RequestedDocumentsPanel({
         (state: RootState) => state.documentRequests,
     );
     const [uploadingSlug, setUploadingSlug] = useState<string | null>(null);
-    const [removingSlug, setRemovingSlug] = useState<string | null>(null);
-    const [previewModal, setPreviewModal] = useState<{ url: string; name: string } | null>(null);
+    const [previewModal, setPreviewModal] = useState<{ url: string; name: string; mimeType?: string } | null>(null);
     const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
     const handleViewDocument = useCallback(
@@ -65,7 +60,7 @@ export function RequestedDocumentsPanel({
             if (onViewDocument) {
                 onViewDocument(url, name);
             } else {
-                setPreviewModal({ url, name });
+                setPreviewModal({ url, name, mimeType: doc.mimeType });
             }
         },
         [onViewDocument],
@@ -85,12 +80,6 @@ export function RequestedDocumentsPanel({
     const handleUpload = useCallback(
         async (doc: DocumentRequestRow, file: File) => {
             const slug = doc.name;
-            const allowed = ["pdf", "jpg", "jpeg", "png"];
-            const ext = (file.name.split(".").pop() || "").toLowerCase();
-            if (!allowed.includes(ext)) {
-                toast.error("Please upload a PDF, JPG, or PNG.");
-                return;
-            }
 
             setUploadingSlug(slug);
             try {
@@ -117,26 +106,9 @@ export function RequestedDocumentsPanel({
                             requestedDocumentSlug: slug,
                         }),
                     ).unwrap();
-
-                    // Replacing an already-received doc: remove the previous file
-                    // after the new one uploads so only the latest is kept.
-                    if (doc.status === "Complete" && doc.fileId) {
-                        await dispatch(
-                            deleteApplicationFile({
-                                applicationId: applicationUuid,
-                                fileId: String(doc.fileId),
-                            }),
-                        )
-                            .unwrap()
-                            .catch(() => {});
-                    }
                 }
 
-                toast.success(
-                    doc.status === "Complete"
-                        ? `${documentRequestDisplayLabel(doc)} replaced.`
-                        : `${documentRequestDisplayLabel(doc)} uploaded.`,
-                );
+                toast.success(`${documentRequestDisplayLabel(doc)} uploaded.`);
                 await refreshAfterUpload();
             } catch (error: unknown) {
                 const message =
@@ -155,39 +127,6 @@ export function RequestedDocumentsPanel({
             onUploadContractDocument,
             refreshAfterUpload,
         ],
-    );
-
-    const handleRemove = useCallback(
-        async (doc: DocumentRequestRow) => {
-            if (!doc.fileId) {
-                toast.error("Uploaded file reference not found. Refresh and try again.");
-                return;
-            }
-            if (!applicationUuid) {
-                toast.error("Application not loaded. Refresh and try again.");
-                return;
-            }
-            setRemovingSlug(doc.name);
-            try {
-                await dispatch(
-                    deleteApplicationFile({
-                        applicationId: applicationUuid,
-                        fileId: String(doc.fileId),
-                    }),
-                ).unwrap();
-                toast.success(`${documentRequestDisplayLabel(doc)} removed.`);
-                await refreshAfterUpload();
-            } catch (error: unknown) {
-                const message =
-                    typeof error === "string"
-                        ? error
-                        : (error as { message?: string })?.message || "Could not remove the file.";
-                toast.error(message);
-            } finally {
-                setRemovingSlug(null);
-            }
-        },
-        [applicationUuid, dispatch, refreshAfterUpload],
     );
 
     const rows = (documentRequests || []) as DocumentRequestRow[];
@@ -234,8 +173,6 @@ export function RequestedDocumentsPanel({
                     const isReceived = doc.status === "Complete";
                     const label = documentRequestDisplayLabel(doc);
                     const isUploading = uploadingSlug === doc.name;
-                    const isRemoving = removingSlug === doc.name;
-                    const busy = isUploading || isRemoving;
 
                     return (
                         <div
@@ -257,22 +194,6 @@ export function RequestedDocumentsPanel({
                             </div>
 
                             <div className="flex shrink-0 items-center gap-1">
-                                {!readOnly ? (
-                                    <input
-                                        ref={(el) => {
-                                            fileInputRefs.current[doc.name] = el;
-                                        }}
-                                        type="file"
-                                        accept=".pdf,.jpg,.jpeg,.png"
-                                        className="hidden"
-                                        onChange={(e) => {
-                                            const file = e.target.files?.[0];
-                                            e.target.value = "";
-                                            if (file) void handleUpload(doc, file);
-                                        }}
-                                    />
-                                ) : null}
-
                                 {isReceived && doc.fileUrl ? (
                                     <Button
                                         type="button"
@@ -288,56 +209,33 @@ export function RequestedDocumentsPanel({
                                 ) : null}
 
                                 {!isReceived && !readOnly ? (
-                                    <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-8 gap-1 border-[#276D9C]/30 px-2.5 text-xs text-[#276D9C] hover:bg-[#276D9C]/5"
-                                        disabled={busy}
-                                        onClick={() => fileInputRefs.current[doc.name]?.click()}
-                                    >
-                                        {isUploading ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                            <UploadCloud className="h-3.5 w-3.5" />
-                                        )}
-                                        Upload
-                                    </Button>
-                                ) : null}
-
-                                {isReceived && !readOnly ? (
                                     <>
+                                        <input
+                                            ref={(el) => {
+                                                fileInputRefs.current[doc.name] = el;
+                                            }}
+                                            type="file"
+                                            className="hidden"
+                                            onChange={(e) => {
+                                                const file = e.target.files?.[0];
+                                                e.target.value = "";
+                                                if (file) void handleUpload(doc, file);
+                                            }}
+                                        />
                                         <Button
                                             type="button"
                                             size="sm"
                                             variant="outline"
-                                            className="h-8 gap-1 border-[#276D9C]/30 px-2.5 text-xs text-[#276D9C] hover:bg-[#276D9C]/5"
-                                            disabled={busy}
-                                            title={`Replace ${label}`}
+                                            className="h-8 gap-1 border-[var(--brand)]/30 px-2.5 text-xs text-[var(--brand)] hover:bg-[var(--brand)]/5"
+                                            disabled={isUploading}
                                             onClick={() => fileInputRefs.current[doc.name]?.click()}
                                         >
                                             {isUploading ? (
                                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                             ) : (
-                                                <RefreshCw className="h-3.5 w-3.5" />
+                                                <UploadCloud className="h-3.5 w-3.5" />
                                             )}
-                                            Replace
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="ghost"
-                                            className="h-8 gap-1 px-2.5 text-xs text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950/30"
-                                            disabled={busy}
-                                            title={`Remove ${label}`}
-                                            onClick={() => void handleRemove(doc)}
-                                        >
-                                            {isRemoving ? (
-                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                            ) : (
-                                                <Trash2 className="h-3.5 w-3.5" />
-                                            )}
-                                            Remove
+                                            Upload
                                         </Button>
                                     </>
                                 ) : null}
@@ -356,6 +254,7 @@ export function RequestedDocumentsPanel({
                 onClose={() => setPreviewModal(null)}
                 fileUrl={previewModal?.url}
                 fileName={previewModal?.name}
+                mimeTypeHint={previewModal?.mimeType}
             />
         </div>
     );

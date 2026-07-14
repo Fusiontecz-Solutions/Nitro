@@ -95,6 +95,8 @@ function rowMonthLabel(row: BankMonthRow): string {
 type BankTableLike = { rows?: BankMonthRow[] | null };
 
 function rowNetCredit(row: BankMonthRow): number | null {
+    // SPA revenue denominator should follow the Scrubbing tab logic:
+    // use the Bank Analysis "Credits" column directly (no netting against transfers/deposits/other).
     const totalCredit = parseCurrency(String(row.totalCredit ?? ""));
     const hasCredits = hasEnteredNumericValue(String(row.totalCredit ?? ""));
     if (!hasCredits) return null;
@@ -212,7 +214,7 @@ export function getPositionTotalRepaymentForSpa(row: Record<string, unknown>): n
     return getPositionRepaymentForSpa(row);
 }
 
-function isActivePositionForTotals(row: Record<string, unknown>): boolean {
+export function isActivePositionForTotals(row: Record<string, unknown>): boolean {
     const status = String(row.status ?? "")
         .trim()
         .toUpperCase();

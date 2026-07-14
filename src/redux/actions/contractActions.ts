@@ -44,6 +44,11 @@ export interface UpdateContractData {
     contractPrefillOverrides?: Record<string, unknown> | null;
     clientEmail?: string | null;
     clientName?: string | null;
+    reverseDisbursementEnabled?: boolean;
+    reverseDisbursementSchedule?: {
+        fixedDailyDebit?: string;
+        rows?: Array<Record<string, unknown>>;
+    } | null;
 
     // Optional columns for extended BoldSign prefill fields (stored as strings).
     owner1GuarantorName?: string;

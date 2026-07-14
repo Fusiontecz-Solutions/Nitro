@@ -62,6 +62,24 @@ import * as XLSX from "xlsx-js-style";
 import type { CreateClientPayload } from "@/types/clientTypes";
 import { formatUSPhoneNumber } from "@/utils/formatPhoneNumber";
 
+const getClientOwnerNames = (client: Client): string => {
+  const owners =
+    client.owners?.length ? client.owners : client.owner ? [client.owner] : [];
+
+  if (owners.length === 0) return "-";
+
+  const names = owners
+    .map((owner) =>
+      [owner.firstName, owner.middleName, owner.lastName]
+        .filter(Boolean)
+        .join(" ")
+        .trim(),
+    )
+    .filter(Boolean);
+
+  return names.length > 0 ? names.join(", ") : "-";
+};
+
 export default function Clients() {
   const navigate = useNavigate();
   const dispatch = useDispatch<AppDispatch>();
@@ -106,14 +124,6 @@ export default function Clients() {
       }
     },
     [dispatch],
-  );
-
-  const handleNavigateToEditClient = useCallback(
-    (client: Client) => {
-      if (!client.clientId) return;
-      navigate(`/create-clients/${client.clientId}`);
-    },
-    [navigate],
   );
 
   // Format date (Month Day, Year)
@@ -315,8 +325,7 @@ export default function Clients() {
       },
       {
         id: "ownerName",
-        accessorFn: (row) =>
-          `${row.owner?.firstName || ""} ${row.owner?.lastName || ""}`.trim(),
+        accessorFn: (row) => getClientOwnerNames(row),
         header: ({ column }) => (
           <div className="flex items-center justify-between gap-2">
             <span className="font-medium text-foreground">OWNER NAME</span>
@@ -333,7 +342,7 @@ export default function Clients() {
           const client = row.original;
           return (
             <span className="text-foreground">
-              {client.owner?.firstName} {client.owner?.lastName}
+              {getClientOwnerNames(client)}
             </span>
           );
         },
@@ -457,7 +466,7 @@ export default function Clients() {
         cell: ({ row }) => {
           const client = row.original;
           return (
-            <div className="text-right">
+            <div className="text-right" data-row-click-ignore>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -470,15 +479,16 @@ export default function Clients() {
                     <MoreHorizontal className="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+                <DropdownMenuContent
+                  align="end"
+                  onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                >
                   <DropdownMenuLabel>Actions</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     onSelect={(e: Event) => {
                       e.preventDefault();
-                      navigate(`/create-clients/${client.clientId}`, {
-                        state: { mode: "view" },
-                      });
+                      navigate(`/create-clients/${client.clientId}?mode=view`);
                     }}
                   >
                     View
@@ -629,6 +639,26 @@ export default function Clients() {
         };
 
         // Map Excel columns to CreateClientPayload structure
+        const owner = {
+            firstName: cleanValue(row["Owner First Name"]),
+            middleName: cleanValue(row["Owner Middle Name"]),
+            lastName: cleanValue(row["Owner Last Name"]),
+            email: cleanValue(row["Owner Email"]),
+            mobileNumber: formatUSPhoneNumber(cleanValue(row["Owner Mobile Number"])),
+            dateOfBirth: cleanValue(row["Owner Date of Birth"]),
+            ssn: cleanValue(row["Owner SSN"]),
+            ficoScore: cleanNumber(row["Owner FICO Score"]),
+            ownershipStartDate: cleanValue(row["Ownership Start Date"]),
+            ownershipPercentage: cleanNumber(row["Ownership Percentage"]),
+            address: {
+              address1: cleanValue(row["Owner Address 1"]),
+              address2: cleanValue(row["Owner Address 2"]),
+              city: cleanValue(row["Owner City"]),
+              state: cleanValue(row["Owner State"]),
+              zipCode: cleanValue(row["Owner Zip Code"]),
+            },
+          };
+
         const payload: CreateClientPayload = {
           business: {
             name: cleanValue(row["Business Name"]),
@@ -648,25 +678,8 @@ export default function Clients() {
               zipCode: cleanValue(row["Business Zip Code"]),
             },
           },
-          owners: [{
-            firstName: cleanValue(row["Owner First Name"]),
-            middleName: cleanValue(row["Owner Middle Name"]),
-            lastName: cleanValue(row["Owner Last Name"]),
-            email: cleanValue(row["Owner Email"]),
-            mobileNumber: formatUSPhoneNumber(cleanValue(row["Owner Mobile Number"])),
-            dateOfBirth: cleanValue(row["Owner Date of Birth"]),
-            ssn: cleanValue(row["Owner SSN"]),
-            ficoScore: cleanNumber(row["Owner FICO Score"]),
-            ownershipStartDate: cleanValue(row["Ownership Start Date"]),
-            ownershipPercentage: cleanNumber(row["Ownership Percentage"]),
-            address: {
-              address1: cleanValue(row["Owner Address 1"]),
-              address2: cleanValue(row["Owner Address 2"]),
-              city: cleanValue(row["Owner City"]),
-              state: cleanValue(row["Owner State"]),
-              zipCode: cleanValue(row["Owner Zip Code"]),
-            },
-          }],
+          owner,
+          owners: [owner],
         };
 
         // Validate required fields
@@ -933,14 +946,14 @@ export default function Clients() {
         <div className="flex items-center gap-3">
           <Button
             variant="outline"
-            className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer hover:text-white border-none text-sm shadow-none"
+            className="px-4 py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer hover:text-white border-none text-sm shadow-none"
             onClick={() => setIsUploadModalOpen(true)}
           >
             <Upload className="size-4" />
             Upload Excel
           </Button>
           <Button
-            className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer hover:text-white border-none text-sm shadow-none"
+            className="px-4 py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer hover:text-white border-none text-sm shadow-none"
             onClick={() => navigate("/create-clients")}
           >
             <Plus className="size-4" />
@@ -993,7 +1006,9 @@ export default function Clients() {
                 loadingMessage="Loading clients..."
                 emptyMessage="No clients found"
                 emptySubMessage="Try adjusting your search or filter criteria"
-                onRowClick={(row) => handleNavigateToEditClient(row.original)}
+                onRowClick={(row) =>
+                  navigate(`/create-clients/${row.original.clientId}?mode=view`)
+                }
               />
             </div>
           </div>
@@ -1046,7 +1061,7 @@ export default function Clients() {
             {/* Download Template Button */}
             <Button
               onClick={handleDownloadTemplate}
-              className="w-full flex items-center justify-center gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+              className="w-full flex items-center justify-center gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
             >
               <Download className="size-4" />
               Download Template
@@ -1086,7 +1101,7 @@ export default function Clients() {
             <Button
               onClick={handleFileUpload}
               disabled={!uploadFile}
-              className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+              className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
             >
               <Upload className="size-4 mr-2" />
               Upload

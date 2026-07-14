@@ -3,6 +3,7 @@ import { useDispatch } from "react-redux";
 import type { AppDispatch } from "@/redux/store";
 import { getApplications } from "@/redux/actions/applicationActions";
 import type { GetApplicationsParams } from "@/types/applicationTypes";
+import { listFetchKeyFromGetApplicationsParams } from "@/lib/applicationsListCache";
 
 type UseApplicationsListQueryOptions = {
   enabled?: boolean;
@@ -18,12 +19,20 @@ export function useApplicationsListQuery(
 ) {
   const dispatch = useDispatch<AppDispatch>();
 
+  const fetchKey = listFetchKeyFromGetApplicationsParams(params);
+
   return useQuery({
-    queryKey: ["applications-list", params],
+    queryKey: ["applications-list", fetchKey],
     enabled: options.enabled ?? true,
-    queryFn: async () => dispatch(getApplications(params)).unwrap(),
-    staleTime: 60_000,
-    /** Redux is cleared on remount; always refetch so we do not sit on loading with an empty slice. */
+    queryFn: async () => {
+      // Redux updates via `getApplications.fulfilled` (requestId guard). Do not
+      // hydrate again here — a slower, older in-flight response would overwrite
+      // the latest list and desync sidebar counts from the table.
+      return dispatch(
+        getApplications({ ...params, skipListCacheRead: true }),
+      ).unwrap();
+    },
+    staleTime: 0,
     refetchOnMount: "always",
   });
 }

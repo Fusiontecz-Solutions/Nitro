@@ -715,7 +715,7 @@ const TeamChat = () => {
         if (id && String(id).startsWith('temp-')) {
             return <Check className="w-3 h-3 text-gray-400" />;
         }
-        return <CheckCheck className="w-3 h-3 text-[#5AACEA]" />;
+        return <CheckCheck className="w-3 h-3 text-[#C07BE0]" />;
     };
 
     // ════════════════════════════════════════════════════════════════
@@ -726,11 +726,11 @@ const TeamChat = () => {
             <OnlineStatusSync />
 
             {/* ══════════ LEFT SIDEBAR ══════════ */}
-            <div className={`hidden md:flex flex-col w-60 lg:w-64 border-r shadow-sm ${isDark ? 'border-[#1f3b57] bg-[#16324a]' : 'border-[#D6E7F6] bg-white'}`}>
+            <div className={`hidden md:flex flex-col w-60 lg:w-64 border-r shadow-sm ${isDark ? 'border-[#1f3b57] bg-[var(--brand-accent-strong)]' : 'border-[var(--brand-soft)] bg-white'}`}>
                 {/* Search */}
                 <div className="p-3">
-                    <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border ${isDark ? 'bg-[#244966] border-[#2e5a7c]' : 'bg-[#ECF5FE] border-[#D6E7F6]'}`}>
-                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${isDark ? 'bg-[#276D9C]/35 text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                    <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border ${isDark ? 'bg-[var(--brand-mid)] border-[var(--brand-mid)]' : 'bg-[var(--brand-soft)] border-[var(--brand-soft)]'}`}>
+                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${isDark ? 'bg-[var(--brand)]/35 text-[var(--brand-accent)]' : 'bg-[var(--brand-soft)] text-[var(--brand)]'}`}>
                             <Search className="size-3.5" />
                         </span>
                         <input
@@ -766,7 +766,7 @@ const TeamChat = () => {
                                 </button>
                             </div>
 
-                            <div className={`rounded-b-lg border border-t-0 overflow-hidden ${isDark ? 'border-[#1f3b57] bg-[#11283c]' : 'border-[#D6E7F6] bg-[#F7FBFF]'}`}>
+                            <div className={`rounded-b-lg border border-t-0 overflow-hidden ${isDark ? 'border-[#1f3b57] bg-[#11283c]' : 'border-[var(--brand-soft)] bg-[#F7FBFF]'}`}>
                             {filteredChannels.map((channel) => (
                                 <button
                                     key={channel.id}
@@ -785,7 +785,7 @@ const TeamChat = () => {
                             </div>
 
                             {filteredChannels.length === 0 && !channelsLoading && (
-                                <p className="text-xs text-gray-500 text-center py-3 rounded-b-lg border border-t-0 border-[#D6E7F6] bg-[#F7FBFF]">No channels found</p>
+                                <p className="text-xs text-gray-500 text-center py-3 rounded-b-lg border border-t-0 border-[var(--brand-soft)] bg-[#F7FBFF]">No channels found</p>
                             )}
                         </>
                     )}
@@ -806,7 +806,7 @@ const TeamChat = () => {
                                 </button>
                             </div>
 
-                            <div className={`rounded-b-lg border border-t-0 overflow-hidden ${isDark ? 'border-[#1f3b57] bg-[#11283c]' : 'border-[#D6E7F6] bg-[#F7FBFF]'}`}>
+                            <div className={`rounded-b-lg border border-t-0 overflow-hidden ${isDark ? 'border-[#1f3b57] bg-[#11283c]' : 'border-[var(--brand-soft)] bg-[#F7FBFF]'}`}>
                             {filteredDMs.map((dm) => {
                                 const otherUser = dm.participants?.find((p) => p.userId !== currentUserId);
                                 const displayName = otherUser
@@ -822,12 +822,12 @@ const TeamChat = () => {
                                             : (isDark ? 'text-[#b8d5ef] hover:bg-[#214760]/70' : 'text-gray-700 hover:bg-[#EEF6FF]')
                                             }`}
                                     >
-                                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${activeChannelId === dm.id ? 'bg-white/20 text-white' : isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                                        <span className={`inline-flex items-center justify-center rounded-full p-1 ${activeChannelId === dm.id ? 'bg-white/20 text-white' : isDark ? 'bg-[var(--brand-mid)] text-[var(--brand-accent)]' : 'bg-[var(--brand-soft)] text-[var(--brand)]'}`}>
                                             <User className="size-3.5 shrink-0" />
                                         </span>
                                         <span className="truncate">{displayName}</span>
                                         {!!dm.unreadCount && dm.unreadCount > 0 && (
-                                            <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold bg-[#276D9C] text-white rounded-full">
+                                            <span className="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold bg-[image:var(--brand-gradient)] text-white rounded-full">
                                                 {dm.unreadCount}
                                             </span>
                                         )}
@@ -837,7 +837,7 @@ const TeamChat = () => {
                             </div>
 
                             {filteredDMs.length === 0 && !channelsLoading && (
-                                <p className="text-xs text-gray-500 text-center py-3 rounded-b-lg border border-t-0 border-[#D6E7F6] bg-[#F7FBFF]">No conversations found</p>
+                                <p className="text-xs text-gray-500 text-center py-3 rounded-b-lg border border-t-0 border-[var(--brand-soft)] bg-[#F7FBFF]">No conversations found</p>
                             )}
                         </>
                     )}
@@ -847,18 +847,18 @@ const TeamChat = () => {
             {/* ══════════ MAIN CHAT AREA ══════════ */}
             <div className="flex-1 flex flex-col relative min-w-0">
                 {/* ── Chat Header ── */}
-                <div className={`px-4 py-2.5 flex items-center justify-between border-b shadow-sm ${isDark ? 'bg-[#16324a] border-[#1f3b57]' : 'bg-white border-[#D6E7F6]'}`}>
+                <div className={`px-4 py-2.5 flex items-center justify-between border-b shadow-sm ${isDark ? 'bg-[var(--brand-accent-strong)] border-[#1f3b57]' : 'bg-white border-[var(--brand-soft)]'}`}>
                     <div className="flex items-center gap-2 min-w-0">
                         {activeChannel ? (
-                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[var(--brand-mid)] text-[var(--brand-accent)]' : 'bg-[var(--brand-soft)] text-[var(--brand)]'}`}>
                                 <Hash className="size-4 shrink-0" />
                             </span>
                         ) : activeDM ? (
-                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 ${isDark ? 'bg-[var(--brand-mid)] text-[var(--brand-accent)]' : 'bg-[var(--brand-soft)] text-[var(--brand)]'}`}>
                                 <User className="size-4 shrink-0" />
                             </span>
                         ) : (
-                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 opacity-60 ${isDark ? 'bg-[#2b5a7d] text-[#9fd0f3]' : 'bg-[#DAEDFF] text-[#276D9C]'}`}>
+                            <span className={`inline-flex items-center justify-center rounded-full p-1.5 opacity-60 ${isDark ? 'bg-[var(--brand-mid)] text-[var(--brand-accent)]' : 'bg-[var(--brand-soft)] text-[var(--brand)]'}`}>
                                 <Hash className="size-4 shrink-0" />
                             </span>
                         )}
@@ -929,13 +929,13 @@ const TeamChat = () => {
                                     <div key={msg.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'} mb-1 group`}>
                                         <div
                                             className={`relative w-fit max-w-[65%] min-w-0 shrink px-3 py-1.5 rounded-lg shadow-sm ${isMine
-                                                ? (isDark ? 'bg-[#276D9C] text-[#e1e3e6]' : 'bg-[#DAEDFF] text-black')
+                                                ? (isDark ? 'bg-[image:var(--brand-gradient)] text-[#e1e3e6]' : 'bg-[var(--brand-soft)] text-black')
                                                 : (isDark ? 'bg-[#214760] text-[#e1e3e6]' : 'bg-white text-black')
                                                 }`}
                                         >
 
                                             {!isMine && (
-                                                <p className="text-xs font-semibold text-[#5AACEA] mb-0.5">{senderName}</p>
+                                                <p className="text-xs font-semibold text-[#C07BE0] mb-0.5">{senderName}</p>
                                             )}
 
                                             <div className="flex w-fit min-w-0 max-w-full flex-col">
@@ -1045,7 +1045,7 @@ const TeamChat = () => {
 
                 {/* ── Input Area ── */}
                 <div
-                    className={`relative flex flex-col border-t ${isDark ? 'bg-[#16324a] border-[#1f3b57]' : 'bg-white border-[#D6E7F6]'}`}
+                    className={`relative flex flex-col border-t ${isDark ? 'bg-[var(--brand-accent-strong)] border-[#1f3b57]' : 'bg-white border-[var(--brand-soft)]'}`}
                 >
                     {pendingAttachments.length > 0 && (
                         <div className="flex flex-wrap gap-2 px-4 pt-3 pb-0">
@@ -1053,7 +1053,7 @@ const TeamChat = () => {
                                 <span
                                     key={`${att.url}-${idx}`}
                                     className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-xs ${isDark
-                                        ? 'border-[#244966] bg-[#244966] text-[#e1e3e6]'
+                                        ? 'border-[var(--brand-mid)] bg-[var(--brand-mid)] text-[#e1e3e6]'
                                         : 'border-gray-200 bg-gray-100 text-gray-800'
                                         }`}
                                 >
@@ -1078,15 +1078,15 @@ const TeamChat = () => {
                         {showEmojiPicker && (
                             <div
                                 ref={emojiPickerRef}
-                                className={`absolute bottom-full right-16 mb-2 w-[340px] h-[400px] rounded-lg shadow-2xl border ${isDark ? 'bg-[#16324a] border-[#244966]' : 'bg-white border-[#D6E7F6]'}`}
+                                className={`absolute bottom-full right-16 mb-2 w-[340px] h-[400px] rounded-lg shadow-2xl border ${isDark ? 'bg-[var(--brand-accent-strong)] border-[var(--brand-mid)]' : 'bg-white border-[var(--brand-soft)]'}`}
                                 style={{ zIndex: 1000 }}
                             >
                                 <div className={`flex flex-col h-full`}>
-                                    <div className={`flex gap-1 p-2 border-b ${isDark ? 'border-[#244966]' : 'border-[#D6E7F6]'}`}>
+                                    <div className={`flex gap-1 p-2 border-b ${isDark ? 'border-[var(--brand-mid)]' : 'border-[var(--brand-soft)]'}`}>
                                         {Object.keys(EMOJI_CATEGORIES).slice(0, 5).map((category) => (
                                             <button
                                                 key={category}
-                                                className={`px-3 py-1 text-xs rounded ${isDark ? 'hover:bg-[#244966]' : 'hover:bg-[#ECF5FE]'}`}
+                                                className={`px-3 py-1 text-xs rounded ${isDark ? 'hover:bg-[var(--brand-mid)]' : 'hover:bg-[var(--brand-soft)]'}`}
                                             >
                                                 {category === 'Smileys & People' ? '😀' : category === 'Gestures & Body' ? '👋' : category === 'Animals & Nature' ? '🐶' : category === 'Food & Drink' ? '🍕' : '⚽️'}
                                             </button>
@@ -1101,7 +1101,7 @@ const TeamChat = () => {
                                                         <button
                                                             key={`${category}-${idx}`}
                                                             onClick={() => handleEmojiSelect(emoji)}
-                                                            className={`text-xl p-1.5 rounded ${isDark ? 'hover:bg-[#244966]' : 'hover:bg-[#ECF5FE]'} transition-colors`}
+                                                            className={`text-xl p-1.5 rounded ${isDark ? 'hover:bg-[var(--brand-mid)]' : 'hover:bg-[var(--brand-soft)]'} transition-colors`}
                                                         >
                                                             {emoji}
                                                         </button>
@@ -1152,8 +1152,8 @@ const TeamChat = () => {
                                             : 'Type a message'
                                 }
                                 className={`border rounded-md focus-visible:ring-1 ${isDark
-                                    ? 'bg-[#244966] border-[#244966] text-[#e1e3e6] placeholder:text-gray-400 focus-visible:ring-[#276D9C]'
-                                    : 'bg-[#F7FBFF] border-[#D6E7F6] focus-visible:ring-[#5AACEA]'
+                                    ? 'bg-[var(--brand-mid)] border-[var(--brand-mid)] text-[#e1e3e6] placeholder:text-gray-400 focus-visible:ring-[var(--brand)]'
+                                    : 'bg-[#F7FBFF] border-[var(--brand-soft)] focus-visible:ring-[#C07BE0]'
                                     }`}
                                 disabled={!activeChannelId || attachmentUploading}
                             />
@@ -1162,7 +1162,7 @@ const TeamChat = () => {
                         {/* Emoji */}
                         <Smile
                             className={`size-5 shrink-0 cursor-pointer transition-colors ${showEmojiPicker
-                                ? 'text-[#5AACEA]'
+                                ? 'text-[#C07BE0]'
                                 : (isDark ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700')
                                 }`}
                             onClick={handleEmojiClick}
@@ -1179,7 +1179,7 @@ const TeamChat = () => {
                                 attachmentUploading
                             }
                             className={`p-2 rounded-full transition-colors ${(input.trim() || pendingAttachments.length > 0) && activeChannelId && !attachmentUploading
-                                ? 'bg-[#276D9C] hover:bg-[#2e7fb5] text-white'
+                                ? 'bg-[image:var(--brand-gradient)] hover:opacity-90 text-white'
                                 : (isDark ? 'text-gray-600' : 'text-gray-400')
                                 }`}
                         >
@@ -1191,11 +1191,11 @@ const TeamChat = () => {
 
             {/* ══════════ RIGHT PANEL – TEAM MEMBERS ══════════ */}
             <div
-                className={`hidden lg:flex flex-col w-64 xl:w-72 border-l shrink-0 ${isDark ? 'border-[#1f3b57] bg-[#16324a]' : 'border-[#D6E7F6] bg-white'
+                className={`hidden lg:flex flex-col w-64 xl:w-72 border-l shrink-0 ${isDark ? 'border-[#1f3b57] bg-[var(--brand-accent-strong)]' : 'border-[var(--brand-soft)] bg-white'
                     }`}
             >
                 <div
-                    className={`px-4 pt-4 pb-3 border-b ${isDark ? 'border-[#1f3b57]' : 'border-[#D6E7F6]'
+                    className={`px-4 pt-4 pb-3 border-b ${isDark ? 'border-[#1f3b57]' : 'border-[var(--brand-soft)]'
                         }`}
                 >
                     <h3
@@ -1238,7 +1238,7 @@ const TeamChat = () => {
                                                     'text-[13px] font-semibold rounded-full',
                                                     isDark
                                                         ? 'bg-sky-900/50 text-sky-200'
-                                                        : 'bg-[#DAEDFF] text-[#276D9C]',
+                                                        : 'bg-[var(--brand-soft)] text-[var(--brand)]',
                                                 )}
                                             >
                                                 {initials}
@@ -1256,7 +1256,7 @@ const TeamChat = () => {
                                         <p
                                             className={cn(
                                                 'text-sm font-medium truncate',
-                                                isDark ? 'text-sky-100' : 'text-[#276D9C]',
+                                                isDark ? 'text-sky-100' : 'text-[var(--brand)]',
                                             )}
                                         >
                                             {fullName}
@@ -1319,7 +1319,7 @@ const TeamChat = () => {
                                                 'rounded-2xl text-2xl font-bold',
                                                 isDark
                                                     ? 'bg-sky-900/50 text-sky-200'
-                                                    : 'bg-[#DAEDFF] text-[#276D9C]',
+                                                    : 'bg-[var(--brand-soft)] text-[var(--brand)]',
                                             )}
                                         >
                                             {getInitials(selectedMember.firstName, selectedMember.lastName)}
@@ -1474,7 +1474,7 @@ const TeamChat = () => {
                                                 'rounded-2xl text-2xl font-bold',
                                                 isDark
                                                     ? 'bg-sky-900/50 text-sky-200'
-                                                    : 'bg-[#DAEDFF] text-[#276D9C]',
+                                                    : 'bg-[var(--brand-soft)] text-[var(--brand)]',
                                             )}
                                         >
                                             {getInitials(selectedMember.firstName, selectedMember.lastName)}

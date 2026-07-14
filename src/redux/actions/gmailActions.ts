@@ -15,36 +15,11 @@ export interface SendGmailOptions {
   references?: string;
 }
 
-export const getGoogleAccessToken = createAsyncThunk<string, { userId?: string; email?: string } | void>(
+export const getGoogleAccessToken = createAsyncThunk<string, void>(
   "gmail/getGoogleAccessToken",
-  async (params, { rejectWithValue }) => {
+  async (_, { rejectWithValue }) => {
     try {
-      const safeParams = (params ?? {}) as { userId?: string; email?: string };
-
-      // Prefer user info from localStorage if available
-      let storedUserId: string | undefined;
-      let storedEmail: string | undefined;
-      try {
-        const stored = localStorage.getItem("user");
-        if (stored) {
-          const parsed = JSON.parse(stored) as { _id?: string; email?: string } | null;
-          storedUserId = parsed?._id || undefined;
-          storedEmail = parsed?.email || undefined;
-        }
-      } catch {
-        // ignore JSON/localStorage errors
-      }
-
-      const finalUserId = storedUserId ?? safeParams.userId;
-      const finalEmail = storedEmail ?? safeParams.email;
-
-      const response = await axiosGet("/google/test", {
-        params: {
-          userId: finalUserId,
-          email: finalEmail,
-        },
-      });
-
+      const response = await axiosGet("/google/test");
       const { success, accessToken, message } = response.data || {};
 
       if (!success || !accessToken) {
@@ -55,6 +30,38 @@ export const getGoogleAccessToken = createAsyncThunk<string, { userId?: string; 
     } catch (error: any) {
       return rejectWithValue(
         error.response?.data?.message || "Failed to get access token"
+      );
+    }
+  }
+);
+
+export interface GmailConnectionInfo {
+  connected: boolean;
+  gmailEmail: string | null;
+  crmEmail: string | null;
+  needsReconnect?: boolean;
+  message?: string | null;
+}
+
+export const fetchGmailConnection = createAsyncThunk<GmailConnectionInfo, void>(
+  "gmail/fetchConnection",
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await axiosGet("/gmail/me");
+      const data = response.data || {};
+      if (!data.success) {
+        return rejectWithValue(data.message || "Failed to check Gmail connection");
+      }
+      return {
+        connected: Boolean(data.connected),
+        gmailEmail: data.gmailEmail ?? null,
+        crmEmail: data.crmEmail ?? null,
+        needsReconnect: Boolean(data.needsReconnect),
+        message: data.message ?? null,
+      };
+    } catch (error: any) {
+      return rejectWithValue(
+        error.response?.data?.message || "Failed to check Gmail connection"
       );
     }
   }
@@ -91,19 +98,18 @@ export const syncGmail = createAsyncThunk(
         query,
       });
 
-      console.log("label", label);
-      console.log("pageToken", pageToken);
-      console.log("limit", limit);
-      console.log("query", query);
-      console.log("response", response.data);
-
-
       return response.data;
     } catch (error: any) {
       return rejectWithValue(
         error.response?.data?.message || "Failed to sync Gmail"
       );
     }
+  },
+  {
+    condition: (_, { getState }) => {
+      const state = (getState() as { gmail?: { syncing?: boolean } }).gmail;
+      return !state?.syncing;
+    },
   }
 );
 
@@ -177,6 +183,26 @@ export const autoCreateApplications = createAsyncThunk(
       );
     }
   }
+);
+
+// ==============================
+// 🏷️ Label Gmail message in-crm
+// ==============================
+export const markGmailMessageInCrmLabel = createAsyncThunk(
+  "gmail/markMessageInCrmLabel",
+  async (messageId: string, { dispatch, rejectWithValue }) => {
+    try {
+      const accessToken = await dispatch(getGoogleAccessToken()).unwrap();
+      const response = await axiosPost(`/gmail/message/${messageId}/in-crm`, {
+        accessToken,
+      });
+      return response.data;
+    } catch (error: any) {
+      return rejectWithValue(
+        error.response?.data?.message || "Failed to label Gmail message in-crm",
+      );
+    }
+  },
 );
 
 // ==============================

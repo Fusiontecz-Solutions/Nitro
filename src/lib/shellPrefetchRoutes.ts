@@ -4,20 +4,30 @@ export function isPaymentsRoute(pathname: string): boolean {
   return pathname === "/payments" || pathname.startsWith("/payments/");
 }
 
+function isOpsOrSuperAdminRole(normalizedRole: string): boolean {
+  return (
+    normalizedRole === "OPERATIONS" || normalizedRole === "SUPER_ADMIN"
+  );
+}
+
+/** Sidebar deal-pipeline badges need summary counts on any authenticated page. */
+export function shouldPrefetchOpsDashboardSummary(
+  normalizedRole: string,
+): boolean {
+  return (
+    isOpsOrSuperAdminRole(normalizedRole) || normalizedRole === "UNDERWRITER"
+  );
+}
+
 export function isOpsDashboardWarmRoute(
   pathname: string,
   normalizedRole: string,
 ): boolean {
-  const opsOrSuper =
-    normalizedRole === "OPERATIONS" || normalizedRole === "SUPER_ADMIN";
-  if (!opsOrSuper) return false;
+  if (!isOpsOrSuperAdminRole(normalizedRole)) return false;
   return (
     pathname === "/" ||
     pathname === "/cases-dashboard" ||
-    pathname === "/case-management" ||
-    pathname === "/applications" ||
-    pathname.startsWith("/applications/") ||
-    pathname.startsWith("/application-details")
+    pathname === "/case-management"
   );
 }
 

@@ -1,14 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  Filter,
-  ChevronDown,
   Search,
   Plus,
   BadgeCheck,
@@ -18,6 +10,7 @@ import {
   Loader2,
   AlertCircle,
   Trash2,
+  Undo2,
   EyeIcon,
   LayoutGrid,
   LayoutList,
@@ -26,8 +19,10 @@ import {
   Upload,
   Download,
   TrendingUp,
+  Send,
 } from "lucide-react";
 import ApplicationProgressBar from "@/components/application/ApplicationProgressBar";
+import RestoreApplicationToScrubberModal from "@/components/application/RestoreApplicationToScrubberModal";
 import { motion } from "framer-motion";
 import { CornerSummaryCard } from "@/pages/commissionPortal/CornerSummaryCard";
 import { useLocation, useNavigate } from "react-router";
@@ -36,9 +31,10 @@ import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import {
   claimUnderwriterDeal,
-  getApplications,
+  claimFinalUnderwriterDeal,
   getApplicationStats,
   deleteApplication,
+  permanentlyDeleteApplication,
   extractBusinessDetails,
   normalizeApplicationStatsData,
 } from "@/redux/actions/applicationActions";
@@ -53,14 +49,12 @@ import type { Application, GetApplicationsParams } from "@/types/applicationType
 import {
   type ColumnDef,
   type SortingState,
-  type ColumnFiltersState,
   type VisibilityState,
   type PaginationState,
   getCoreRowModel,
-  getFilteredRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { DataTableContent, DataTablePagination } from "@/components/DataTable";
+import { DataTableContent, DataTablePagination, DataTableSortHeader } from "@/components/DataTable";
 import {
   Dialog,
   DialogContent,
@@ -71,15 +65,21 @@ import {
 } from "@/components/ui/dialog";
 import type { user } from "@/redux/slices/authSlice";
 import { useTheme } from "@/context/ThemeContext";
-import { cn, formatCurrency, formatDate as formatDateUtil } from "@/lib/utils";
+import {
+  cn,
+  formatCurrency,
+  formatDate as formatDateUtil,
+  formatDateTimeUS as formatDateTimeUSUtil,
+  getPreviousMonthDateRangeET,
+} from "@/lib/utils";
 import { axiosGet, axiosPostFormData } from "@/redux/axios";
 import ApplicationDetailsSheet from "@/components/application/ApplicationDetailsSheet";
 import { getClientByClientId } from "@/redux/actions/clientActions";
 import {
-  inferOperationsListStatusFromApplication,
   normalizeOperationsDashboardStatusParam,
   OPERATIONS_APPLICATIONS_LIST_ALL_QUERY,
   OPERATIONS_DASHBOARD_PER_ROW_STATUS_FILTERS,
+  inferOperationsListStatusFromApplication,
   operationsDashboardStatusTitle,
 } from "@/constants/operationsDashboardApplications";
 import {
@@ -94,15 +94,32 @@ import {
 import { useApplicationsListQuery } from "@/hooks/useApplicationsListQuery";
 import {
   parseApplicationsListRouteFilters,
+  parseUnderwriterClaimFromSearch,
+  parseUnderwriterPipelineFromSearch,
+  poolTabFromUnderwriterClaim,
+  underwriterClaimFromPoolTab,
+  type ScrubberPoolTab,
+  type UnderwriterClaimParam,
   buildApplicationsListParams,
   applicationsListSortFromTable,
   APPLICATIONS_LIST_DEFAULT_SORT,
-  pipelineStatusFilterToApiFields,
 } from "@/lib/applicationsListParams";
+import { underwriterPipelineTitle } from "@/constants/underwriterPipeline";
+import { invalidateUnderwriterPipelineCounts } from "@/lib/underwriterPipelineCounts";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { prefetchApplicationsList } from "@/lib/applicationsListCache";
 import { prefetchApplicationDetail } from "@/lib/applicationDetailCache";
+import { getOperationsPipelineStageTabId } from "@/constants/operationsPipelineTabs";
+import { fetchOperationsDashboardSummary } from "@/redux/actions/operationsDashboardActions";
+import { shouldPrefetchOpsDashboardSummary } from "@/lib/shellPrefetchRoutes";
 import { getContractWorkflowQueueBadgeClass } from "@/lib/contractOutQueueBadge";
+import { getApplicationSummaryStatusLabel } from "@/lib/applicationSummaryStatus";
+import {
+  formatUnderwriterClaimLabel,
+  canViewApplicationClaimAssignments,
+  canViewApplicationApprovedAmount,
+  mapUsersToClaimFilterOptions,
+} from "@/lib/applicationClaimLabel";
 import {
   downloadFailedBulkUploadRows,
   type BulkImportRowError,
@@ -112,12 +129,46 @@ import {
   isContractSignedQueueBadgeLabel,
 } from "@/lib/contractSignedQueueBadge";
 import { getApplicationBusinessDisplayName } from "@/lib/applicationBusinessDisplayName";
+import { resolveApplicationRequestAmount } from "@/lib/applicationLoanAmount";
 import { ApplicationTypeFilterDropdown } from "@/components/application/ApplicationTypeFilterDropdown";
 import { ApplicationPriorityFilterDropdown } from "@/components/application/ApplicationPriorityFilterDropdown";
+import { ApplicationStatusFilterDropdown } from "@/components/application/ApplicationStatusFilterDropdown";
+import { ApplicationClaimUserFilterDropdown } from "@/components/application/ApplicationClaimUserFilterDropdown";
+import { fetchUsersByRole } from "@/redux/actions/settingsUserActions";
 import {
   normalizeRoleKey,
   resolveEffectiveRole,
 } from "@/lib/sessionRole";
+import { getApplicationApprovedAmount } from "@/lib/applicationOfferAmount";
+import {
+  getReinitiateContractIsoDecisionLabel,
+  isIsoUpdatedOfferApproved,
+  applicationAwaitingContractReinitiation,
+} from "@/lib/contractReinitiation";
+import { formatFinalApprovalSourceLabel } from "@/lib/finalApprovalSource";
+import FinalApprovalSourceBadge from "@/components/application/FinalApprovalSourceBadge";
+import SendLetterModal from "@/pages/letterGenerator/SendLetterModal";
+import {
+  LetterFunderFilterDropdown,
+  LetterKindFilterDropdown,
+  LetterSendStatusFilterDropdown,
+} from "@/pages/letterGenerator/LetterGeneratorFilterDropdowns";
+import {
+  fetchPaymentMailLogsForApplication,
+  type PaymentMailLogEntry,
+} from "@/pages/payment/paymentMailLogStorage";
+import {
+  classifyLetterFunder,
+  classifyLetterKind,
+  formatLetterSendWhen,
+  letterSendStatusBadgeClass,
+  letterSendStatusLabel,
+  matchLetterSendStatusFilter,
+  resolveLetterSendStatus,
+  type LetterFunderFilterValue,
+  type LetterKindFilterValue,
+  type LetterSendStatusFilterValue,
+} from "@/pages/letterGenerator/letterSendStatus";
 
 /** List/table: imported `dealId` when set, otherwise business `applicationId`. */
 function getApplicationDealIdDisplay(app: Application): string {
@@ -127,65 +178,13 @@ function getApplicationDealIdDisplay(app: Application): string {
   return "-";
 }
 
-/** Populated from `GET /applications` include `claimedByUnderwriter` (name/email). */
-function formatUnderwriterClaimLabel(
-  app: Application,
-  viewerUserId?: string | null,
-): string {
-  const claimer = app.claimedByUnderwriter;
-  if (!app.claimedByUnderwriterId && !claimer) return "—";
-  const claimUuid =
-    app.claimedByUnderwriterId ??
-    (typeof claimer === "object" && claimer
-      ? String(claimer.id ?? claimer._id ?? "")
-      : "");
-  if (
-    viewerUserId &&
-    claimUuid &&
-    String(viewerUserId) === String(claimUuid)
-  ) {
-    return "You";
-  }
-  if (claimer && typeof claimer === "object") {
-    const fn = (claimer.firstName ?? "").trim();
-    const ln = (claimer.lastName ?? "").trim();
-    const full = [fn, ln].filter(Boolean).join(" ");
-    if (full) return full;
-    if (claimer.email?.trim()) return claimer.email.trim();
-  }
-  return "—";
-}
-
-/**
- * Contract workflow stages for the applications pipeline filter.
- * Values map to `operationsStatus` via {@link pipelineStatusFilterToApiFields}.
- */
-const APPLICATIONS_QUEUE_FILTER_OPTIONS = [
-  { label: "Contract Pending", value: "Contract_Pending" },
-  { label: "Contract Sent", value: "Contract_Sent" },
-  { label: "Contract Generated", value: "Contract_Generated" },
-] as const;
-
 const APPLICATIONS_VIEW_MODE_STORAGE_KEY = "applicationsListViewMode";
 
-/** Calendar bounds for the month before “today” (`YYYY-MM-DD`), used for stats “last month” deltas. */
+/** Calendar bounds for the month before “today” in ET (`YYYY-MM-DD`), used for stats “last month” deltas. */
 function getPreviousCalendarMonthDateBoundaries(): { startDate: string; endDate: string } {
-  const now = new Date();
-  let year = now.getFullYear();
-  let monthIndex = now.getMonth() - 1;
-  if (monthIndex < 0) {
-    monthIndex = 11;
-    year -= 1;
-  }
-  const formatYmd = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  };
-  const start = new Date(year, monthIndex, 1);
-  const end = new Date(year, monthIndex + 1, 0);
-  return { startDate: formatYmd(start), endDate: formatYmd(end) };
+  const range = getPreviousMonthDateRangeET();
+  if (!range) return { startDate: "", endDate: "" };
+  return { startDate: range.start, endDate: range.end };
 }
 
 function getApplicationsStatCardIcon(title: string) {
@@ -206,11 +205,36 @@ function getApplicationsStatCardIcon(title: string) {
   }
 }
 
-const Applications = () => {
+export type ApplicationsProps = {
+  /** Letter generator: same table as Applications; row opens send-letters flow. */
+  mode?: "default" | "letterGenerator";
+};
+
+const Applications = ({ mode = "default" }: ApplicationsProps) => {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
   const location = useLocation();
+  const isLetterGeneratorMode = mode === "letterGenerator";
   const sessionRoleKey = normalizeRoleKey(localStorage.getItem("role") || "");
+  const loginData = useSelector((state: RootState) => state.login.data);
+  const loginUser = loginData?.user;
+  const effectiveRoleKey = normalizeRoleKey(resolveEffectiveRole(loginUser));
+  /** Super Admin / Operations — scrubbers and underwriters must not see colleagues' claims. */
+  const showClaimedByColumn = canViewApplicationClaimAssignments(effectiveRoleKey);
+  /** Ops/admin + Scrubbing/Underwriter — show approved offer amount alongside request amount. */
+  const showApprovedAmountColumn = canViewApplicationApprovedAmount(effectiveRoleKey);
+  const underwriters = useSelector(
+    (state: RootState) => state.settingsUsers.byRole.UNDERWRITER?.list ?? [],
+  );
+  const underwriterFilterOptions = useMemo(
+    () => mapUsersToClaimFilterOptions(underwriters),
+    [underwriters],
+  );
+
+  useEffect(() => {
+    if (!showClaimedByColumn) return;
+    void dispatch(fetchUsersByRole("UNDERWRITER"));
+  }, [dispatch, showClaimedByColumn]);
 
   const getApplicationClientId = useCallback((application: Application): string | null => {
     const client = application?.client;
@@ -246,8 +270,16 @@ const Applications = () => {
   const isOperationsDashboardView =
     new URLSearchParams(location.search).get("fromDashboard") === "operations";
 
+  const underwriterPipelineFilter = parseUnderwriterPipelineFromSearch(
+    location.search,
+  );
+  const showUnderwriterPipelineView =
+    sessionRoleKey === "UNDERWRITER" && Boolean(underwriterPipelineFilter);
+
   const showUwDealPoolUi =
-    sessionRoleKey === "SCRUBBING" && !isOperationsDashboardView;
+    (sessionRoleKey === "SCRUBBING" || sessionRoleKey === "UNDERWRITER") &&
+    !isOperationsDashboardView &&
+    !showUnderwriterPipelineView;
 
   // Local state (URL-derived defaults avoid a blank frame before the first list fetch)
   const [searchTerm, setSearchTerm] = useState("");
@@ -257,17 +289,37 @@ const Applications = () => {
   );
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [underwriterFilter, setUnderwriterFilter] = useState<string>("all");
+  const [letterSendStatusFilter, setLetterSendStatusFilter] =
+    useState<LetterSendStatusFilterValue>("all");
+  const [letterKindFilter, setLetterKindFilter] =
+    useState<LetterKindFilterValue>("all");
+  const [letterFunderFilter, setLetterFunderFilter] =
+    useState<LetterFunderFilterValue>("all");
   const [dashboardStateFilter, setDashboardStateFilter] = useState<string>(() =>
     parseApplicationsListRouteFilters(location.search).dashboardStateFilter,
   );
+
+  const isRecentlyDeletedView = useMemo(() => {
+    return (
+      isOperationsDashboardView &&
+      normalizeOperationsDashboardStatusParam(dashboardStateFilter) ===
+        "Recently_Deleted"
+    );
+  }, [isOperationsDashboardView, dashboardStateFilter]);
+
   const [isListFilterInitialized, setIsListFilterInitialized] = useState(true);
-  /** Primary underwriter inbox: unclaimed pool vs deals you claimed (Underwriter queue only). */
-  const [underwriterPoolTab, setUnderwriterPoolTab] = useState<"queue" | "my">(
-    "queue",
+  /** Scrubber inbox: Queue / Claimed / My deals; underwriter keeps Queue / My deals. */
+  const [underwriterPoolTab, setUnderwriterPoolTab] = useState<ScrubberPoolTab>(
+    () => poolTabFromUnderwriterClaim(parseUnderwriterClaimFromSearch(location.search)),
   );
-  /** Scrubbers should not see which colleague claimed a deal (admin/ops visibility only). */
-  const showClaimedByColumn = sessionRoleKey !== "SCRUBBING";
+  const resolveUwClaimParam = useCallback((): UnderwriterClaimParam => {
+    return underwriterClaimFromPoolTab(underwriterPoolTab, sessionRoleKey);
+  }, [sessionRoleKey, underwriterPoolTab]);
   const [claimBusyAppId, setClaimBusyAppId] = useState<string | null>(null);
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [restoreTargetIds, setRestoreTargetIds] = useState<string[]>([]);
+  const [permanentDeleteLoading, setPermanentDeleteLoading] = useState(false);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [isExtractingPDF, setIsExtractingPDF] = useState(false);
   const [showAlreadyExistsDialog, setShowAlreadyExistsDialog] = useState(false);
@@ -303,10 +355,12 @@ const Applications = () => {
     errors: [],
   });
   const isBulkDeleteRef = useRef(false);
+  const fetchApplicationsRef = useRef<(() => Promise<void>) | null>(null);
 
   // TanStack Table state
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const [sorting, setSorting] = useState<SortingState>([
+    { id: "createdAt", desc: true },
+  ]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = useState({});
   const [expandedProgressRowId, setExpandedProgressRowId] = useState<
@@ -319,12 +373,21 @@ const Applications = () => {
   const [selectedApplicationIds, setSelectedApplicationIds] = useState<string[]>([]);
   const [prevMonthStats, setPrevMonthStats] =
     useState<ApplicationStatsData | null>(null);
-  /** Stats scoped to Queue / My deals (Underwriter inbox only); avoids overwriting global Redux stats. */
+  /** Stats scoped to Queue / My deals (Scrubbing inbox only); avoids overwriting global Redux stats. */
   const [uwDealPoolStats, setUwDealPoolStats] =
     useState<ApplicationStatsData | null>(null);
   const [uwDealPoolPrevStats, setUwDealPoolPrevStats] =
     useState<ApplicationStatsData | null>(null);
   const [viewApplication, setViewApplication] = useState<Application | null>(null);
+  const [sendLetterApplication, setSendLetterApplication] =
+    useState<Application | null>(null);
+  const [letterHistoryApplication, setLetterHistoryApplication] =
+    useState<Application | null>(null);
+  const [viewedLetterLog, setViewedLetterLog] =
+    useState<PaymentMailLogEntry | null>(null);
+  const [mailLogsByAppId, setMailLogsByAppId] = useState<
+    Record<string, PaymentMailLogEntry[]>
+  >({});
   const [isNavigatingToBrowse, setIsNavigatingToBrowse] = useState(false);
   const [listViewMode, setListViewMode] = useState<"list" | "grid">(() => {
     if (typeof window === "undefined") return "list";
@@ -353,6 +416,47 @@ const Applications = () => {
     error,
   } = useSelector((state: RootState) => state.applications);
 
+  useEffect(() => {
+    if (!isLetterGeneratorMode) {
+      setMailLogsByAppId({});
+      return;
+    }
+    const ids = (applications ?? [])
+      .map((app) => app._id?.trim())
+      .filter((id): id is string => Boolean(id));
+    if (ids.length === 0) {
+      setMailLogsByAppId({});
+      return;
+    }
+
+    let cancelled = false;
+    const loadLogs = async () => {
+      const entries = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const logs = await fetchPaymentMailLogsForApplication(id);
+            return [id, logs] as const;
+          } catch {
+            return [id, [] as PaymentMailLogEntry[]] as const;
+          }
+        }),
+      );
+      if (!cancelled) {
+        setMailLogsByAppId(Object.fromEntries(entries));
+      }
+    };
+
+    void loadLogs();
+    const onUpdated = () => {
+      void loadLogs();
+    };
+    window.addEventListener("payment-mail-log-updated", onUpdated);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("payment-mail-log-updated", onUpdated);
+    };
+  }, [isLetterGeneratorMode, applications]);
+
   const { data: statsData } = useSelector(
     (state: RootState) => state.applicationStats,
   );
@@ -363,14 +467,11 @@ const Applications = () => {
     error: deleteError,
   } = useSelector((state: RootState) => state.deleteApplication);
 
-  const loginData = useSelector((state: RootState) => state.login.data);
-  const loginUser = loginData?.user;
-  const currentUserIdForClaim = loginUser?._id ?? "";
 
   const fetchUwDealPoolStats = useCallback(
     async (signal?: AbortSignal) => {
       if (!showUwDealPoolUi) return;
-      const claim = underwriterPoolTab === "queue" ? "unclaimed" : "mine";
+      const claim = resolveUwClaimParam();
       const { startDate, endDate } = getPreviousCalendarMonthDateBoundaries();
       const config = signal ? { signal } : undefined;
       const [curRes, prevRes] = await Promise.all([
@@ -394,7 +495,7 @@ const Applications = () => {
         normalizeApplicationStatsData(prevRaw?.data ?? prevRes.data),
       );
     },
-    [showUwDealPoolUi, underwriterPoolTab],
+    [showUwDealPoolUi, underwriterPoolTab, resolveUwClaimParam],
   );
 
   useEffect(() => {
@@ -408,7 +509,7 @@ const Applications = () => {
     const ac = new AbortController();
     void fetchUwDealPoolStats(ac.signal).catch((err: unknown) => {
       if (ac.signal.aborted) return;
-      console.error("Failed to fetch underwriter pool application stats", err);
+      console.error("Failed to fetch scrubbing pool application stats", err);
       setUwDealPoolStats(null);
       setUwDealPoolPrevStats(null);
     });
@@ -529,10 +630,8 @@ const Applications = () => {
     return formatDateUtil(dateString ?? "", "-");
   }, []);
 
-  // Get client email helper
-  const getClientEmail = useCallback((client: Application["client"]) => {
-    if (typeof client === "string") return "-";
-    return client?.business?.email || client?.owner?.email || "-";
+  const formatDateTime = useCallback((dateString?: string) => {
+    return formatDateTimeUSUtil(dateString ?? "", "-");
   }, []);
 
   const getApplicationIsoLabel = useCallback((application: Application): string => {
@@ -546,56 +645,23 @@ const Applications = () => {
   }, []);
 
   const getApplicationQueueLabel = useCallback((application: Application): string => {
-    const stRaw = application.currentState ?? application.state;
-    const stStr = String(stRaw ?? "").trim();
-    /** "Final Underwriter-Approved" badge only when state explicitly includes approved (not from queue alone). */
-    const hasApprovedInCurrentState = /\bapproved\b/i.test(stStr);
-
-    if (hasApprovedInCurrentState) {
-      return "Final Underwriter-Approved";
+    if (applicationAwaitingContractReinitiation(application)) {
+      return "Reinitiated Contract";
     }
-
-    const q = application.currentQueue || application.queue;
-    if (q == null || String(q).trim() === "") return "-";
-    const raw = String(q).trim();
-    if (raw.toLowerCase() !== "new") return raw;
-
-    const creator = application.createdBy as
-      | { id?: string; _id?: string; role?: string }
-      | string
-      | undefined;
-    const referring = application.referringAgent as
-      | { id?: string; _id?: string }
-      | string
-      | undefined;
-
-    const creatorRole =
-      typeof creator === "object" && creator?.role != null
-        ? String(creator.role).toUpperCase().replace(/-/g, "_")
-        : "";
-    if (creatorRole === "AGENT") return "Agent";
-
-    const creatorId =
-      typeof creator === "object" && creator
-        ? String(creator.id ?? creator._id ?? "")
-        : "";
-    const referringId =
-      typeof referring === "object" && referring
-        ? String(referring.id ?? referring._id ?? "")
-        : "";
-    if (creatorId && referringId && creatorId === referringId) return "Agent";
-
-    return raw;
+    return getApplicationSummaryStatusLabel(application);
   }, []);
 
   const getApplicationQueueBadgeClass = useCallback((queueLabel: string) => {
+    if (queueLabel.toLowerCase() === "reinitiated contract") {
+      return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200";
+    }
     const contractWorkflowClass = getContractWorkflowQueueBadgeClass(queueLabel);
     if (contractWorkflowClass) return contractWorkflowClass;
     if (isContractSignedQueueBadgeLabel(queueLabel)) {
       return CONTRACT_SIGNED_QUEUE_BADGE_CLASS;
     }
     const n = queueLabel.toLowerCase();
-    if (n === "final underwriter-approved") {
+    if (n === "final scrubbing-approved") {
       return "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200";
     }
     if (n === "funded" || n === "disbursement") {
@@ -609,10 +675,11 @@ const Applications = () => {
     }
     if (
       n === "underwriting" ||
+      n === "scrubbing" ||
       n === "underwriter" ||
       n === "review" ||
       n === "final review" ||
-      n === "final underwriter" ||
+      n === "final scrubbing" ||
       n === "final" ||
       n === "funding call"
     ) {
@@ -624,36 +691,12 @@ const Applications = () => {
     return "bg-yellow-100 text-yellow-700";
   }, []);
 
-  const handleUwClaimDeal = useCallback(
-    async (app: Application) => {
-      const id = app._id ?? (app as { id?: string }).id;
-      if (!id) return;
-      try {
-        setClaimBusyAppId(String(id));
-        await dispatch(claimUnderwriterDeal({ applicationId: String(id) })).unwrap();
-        toast.success("Deal claimed");
-        if (showUwDealPoolUi) {
-          void fetchUwDealPoolStats().catch((err: unknown) => {
-            console.error("Failed to refresh underwriter pool stats after claim", err);
-          });
-        }
-      } catch (e: unknown) {
-        const msg =
-          typeof e === "string"
-            ? e
-            : (e as { payload?: string })?.payload ||
-              (e as { message?: string })?.message ||
-              "Could not claim this deal";
-        toast.error(msg);
-      } finally {
-        setClaimBusyAppId(null);
-      }
-    },
-    [dispatch, fetchUwDealPoolStats, showUwDealPoolUi],
-  );
-
   const handleNavigateToApplication = useCallback(
-    (app: Application) => {
+    (app: Application, options?: { tab?: string }) => {
+      if (isLetterGeneratorMode) {
+        setSendLetterApplication(app);
+        return;
+      }
       const role = (localStorage.getItem("role") || "").toUpperCase();
       const usePipelineTabs =
         role === "OPERATIONS" ||
@@ -671,11 +714,66 @@ const Applications = () => {
         qs.set("operationsStatus", dashboardStateFilter);
       }
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      navigate(`/application-details/${id}${suffix}`, {
+      let tab = options?.tab;
+      if (
+        !tab &&
+        usePipelineTabs &&
+        dashboardStateFilter &&
+        dashboardStateFilter !== OPERATIONS_APPLICATIONS_LIST_ALL_QUERY &&
+        dashboardStateFilter.toLowerCase() !== "all"
+      ) {
+        const normalizedStatus =
+          normalizeOperationsDashboardStatusParam(dashboardStateFilter);
+        if (normalizedStatus) {
+          tab = getOperationsPipelineStageTabId(normalizedStatus);
+        }
+      }
+      const tabSegment = tab ? `/${tab}` : "";
+      navigate(`/application-details/${id}${tabSegment}${suffix}`, {
         state: { applicationPreview: app },
       });
     },
-    [dashboardStateFilter, navigate],
+    [dashboardStateFilter, isLetterGeneratorMode, navigate],
+  );
+
+  const handleUwClaimDeal = useCallback(
+    async (app: Application) => {
+      const id = app._id ?? (app as { id?: string }).id;
+      if (!id) return;
+      const isFinalUnderwriterRole = sessionRoleKey === "UNDERWRITER";
+      try {
+        setClaimBusyAppId(String(id));
+        if (isFinalUnderwriterRole) {
+          await dispatch(claimFinalUnderwriterDeal({ applicationId: String(id) })).unwrap();
+        } else {
+          await dispatch(claimUnderwriterDeal({ applicationId: String(id) })).unwrap();
+        }
+        toast.success(isFinalUnderwriterRole ? "Application claimed" : "Deal claimed");
+        if (showUwDealPoolUi) {
+          void fetchUwDealPoolStats().catch((err: unknown) => {
+            console.error("Failed to refresh deal pool stats after claim", err);
+          });
+        }
+        handleNavigateToApplication(app, { tab: "decision-making" });
+      } catch (e: unknown) {
+        const msg =
+          typeof e === "string"
+            ? e
+            : (e as { payload?: string })?.payload ||
+              (e as { message?: string })?.message ||
+              "Could not claim this deal";
+        toast.error(msg);
+      } finally {
+        setClaimBusyAppId(null);
+      }
+    },
+    [
+      dispatch,
+      fetchUwDealPoolStats,
+      handleNavigateToApplication,
+      sessionRoleKey,
+      showUwDealPoolUi,
+    ],
   );
 
   const handlePrefetchApplicationDetail = useCallback((app: Application) => {
@@ -688,10 +786,219 @@ const Applications = () => {
     setExpandedProgressRowId((prev) => (prev === rowId ? null : rowId));
   }, []);
 
+  const showReinitiateContractIsoDecisionColumn = useMemo(() => {
+    const normalizedStatus = normalizeOperationsDashboardStatusParam(dashboardStateFilter);
+    return (
+      (effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS") &&
+      normalizedStatus === "Reinitiate_Contract"
+    );
+  }, [dashboardStateFilter, effectiveRoleKey]);
+
+  const showFinalApprovalSourceColumn = useMemo(() => {
+    const normalizedStatus = normalizeOperationsDashboardStatusParam(dashboardStateFilter);
+    return (
+      (effectiveRoleKey === "SUPER_ADMIN" || effectiveRoleKey === "OPERATIONS") &&
+      normalizedStatus === "Final_Approval"
+    );
+  }, [dashboardStateFilter, effectiveRoleKey]);
+
+  const openRestoreModal = useCallback((ids: string[]) => {
+    const validIds = ids.filter(
+      (id) => typeof id === "string" && id.length > 0 && id !== "undefined",
+    );
+    if (validIds.length === 0) return;
+    setRestoreTargetIds(validIds);
+    setRestoreModalOpen(true);
+  }, []);
+
   // Define columns
   const columns: ColumnDef<Application>[] = useMemo(() => {
+    if (isLetterGeneratorMode) {
+      return [
+        {
+          id: "dealId",
+          size: 120,
+          accessorFn: (row) => getApplicationDealIdDisplay(row),
+          enableSorting: true,
+          header: ({ column }) => (
+            <DataTableSortHeader column={column} label="APPLICATION ID" />
+          ),
+          cell: ({ row }) => (
+            <span className="font-medium text-foreground">
+              {getApplicationDealIdDisplay(row.original)}
+            </span>
+          ),
+        },
+        {
+          id: "businessName",
+          size: 240,
+          accessorFn: (row) => getApplicationBusinessDisplayName(row),
+          enableSorting: true,
+          header: ({ column }) => (
+            <DataTableSortHeader column={column} label="BUSINESS NAME" />
+          ),
+          cell: ({ row }) => (
+            <span
+              className="block truncate text-foreground"
+              title={getApplicationBusinessDisplayName(row.original)}
+            >
+              {getApplicationBusinessDisplayName(row.original)}
+            </span>
+          ),
+        },
+        {
+          id: "approvedAmount",
+          size: 150,
+          accessorFn: (row) => getApplicationApprovedAmount(row),
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              Approved Amount
+            </span>
+          ),
+          cell: ({ row }) => {
+            const approvedAmount = getApplicationApprovedAmount(row.original);
+            if (approvedAmount == null) {
+              return <span className="text-foreground">-</span>;
+            }
+            return (
+              <span className="text-foreground">
+                {formatCurrency(approvedAmount)}
+              </span>
+            );
+          },
+        },
+        {
+          id: "status",
+          size: 150,
+          accessorFn: (row) => getApplicationQueueLabel(row),
+          enableSorting: true,
+          header: ({ column }) => (
+            <DataTableSortHeader column={column} label="Status" />
+          ),
+          cell: ({ row }) => {
+            const queueLabel = getApplicationQueueLabel(row.original);
+            return (
+              <span
+                className={`px-2 py-1 rounded-full text-xs font-medium ${getApplicationQueueBadgeClass(queueLabel)}`}
+              >
+                {queueLabel}
+              </span>
+            );
+          },
+        },
+        {
+          id: "letterSendStatus",
+          size: 160,
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              Send Status
+            </span>
+          ),
+          cell: ({ row }) => {
+            const appId = row.original._id?.trim() ?? "";
+            const latest = mailLogsByAppId[appId]?.[0];
+            if (!latest) {
+              return (
+                <span className="text-xs text-muted-foreground">Not sent</span>
+              );
+            }
+            const status = resolveLetterSendStatus(latest);
+            const statusText = letterSendStatusLabel(status);
+            const kind = classifyLetterKind(latest.templateName);
+            const letterKey =
+              kind === "zbl"
+                ? "Zbl"
+                : kind === "payoff"
+                  ? "PayOff"
+                  : latest.templateName.trim() || "Letter";
+            return (
+              <span
+                className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${letterSendStatusBadgeClass(status)}`}
+                title={`${statusText}, ${latest.templateName}`}
+              >
+                ({statusText}, {letterKey})
+              </span>
+            );
+          },
+          enableSorting: false,
+        },
+        {
+          id: "letterHistory",
+          size: 90,
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              History
+            </span>
+          ),
+          cell: ({ row }) => {
+            const appId = row.original._id?.trim() ?? "";
+            const count = mailLogsByAppId[appId]?.length ?? 0;
+            return (
+              <div
+                className="flex justify-start"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  disabled={count === 0}
+                  onClick={() => setLetterHistoryApplication(row.original)}
+                  className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={
+                    count > 0
+                      ? `View ${count} sent letter${count === 1 ? "" : "s"}`
+                      : "No sent letters"
+                  }
+                  title={
+                    count > 0
+                      ? `View ${count} sent letter${count === 1 ? "" : "s"}`
+                      : "No sent letters"
+                  }
+                >
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current">
+                    <EyeIcon className="h-4 w-4" />
+                  </span>
+                </button>
+              </div>
+            );
+          },
+          enableSorting: false,
+        },
+        {
+          id: "sendLetter",
+          size: 140,
+          header: () => (
+            <span className="font-medium text-foreground uppercase tracking-wide">
+              Action
+            </span>
+          ),
+          cell: ({ row }) => (
+            <div
+              className="flex justify-start"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <Button
+                type="button"
+                size="sm"
+                variant="success"
+                className="h-8 gap-1.5 cursor-pointer"
+                onClick={() => setSendLetterApplication(row.original)}
+              >
+                <Send className="size-3.5" />
+                Send Letter
+              </Button>
+            </div>
+          ),
+          enableSorting: false,
+          enableHiding: false,
+        },
+      ];
+    }
+
     const selectColumn: ColumnDef<Application> = {
       id: "select",
+      size: 48,
       header: ({ table }) => (
         <input
           type="checkbox"
@@ -723,21 +1030,11 @@ const Applications = () => {
     const bodyColumns: ColumnDef<Application>[] = [
       {
         id: "dealId",
+        size: 100,
         accessorFn: (row) => getApplicationDealIdDisplay(row),
         enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              DEAL ID
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className=" h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="DEAL ID" />
         ),
         cell: ({ row }) => (
           <span className="font-medium text-foreground">
@@ -747,55 +1044,24 @@ const Applications = () => {
       },
       {
         id: "businessName",
+        size: 260,
         accessorFn: (row) => getApplicationBusinessDisplayName(row),
+        enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              BUSINESS NAME
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className=" h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="BUSINESS NAME" />
         ),
         cell: ({ row }) => (
-          <span className="text-foreground">
+          <span className="block truncate text-foreground" title={getApplicationBusinessDisplayName(row.original)}>
             {getApplicationBusinessDisplayName(row.original)}
           </span>
         ),
       },
       {
-        id: "email",
-        accessorFn: (row) => getClientEmail(row.client),
-        header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              EMAIL
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className=" h-3 w-3" />
-                    </Button> */}
-          </div>
-        ),
-        cell: ({ row }) => (
-          <span className="text-foreground">
-            {getClientEmail(row.original.client)}
-          </span>
-        ),
-      },
-      {
         id: "seeProgress",
+        size: 100,
         header: () => (
           <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
-            See Progress
+            Progress
           </span>
         ),
         cell: ({ row }) => {
@@ -837,44 +1103,156 @@ const Applications = () => {
         enableSorting: false,
         enableHiding: false,
       },
-      {
-        id: "iso",
-        accessorFn: (row) => getApplicationIsoLabel(row),
-        header: () => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              ISO
-            </span>
-          </div>
-        ),
-        cell: ({ row }) => (
-          <span className="text-foreground">
-            {getApplicationIsoLabel(row.original)}
-          </span>
-        ),
-      },
+      ...(sessionRoleKey === "UNDERWRITER" || sessionRoleKey === "SCRUBBING"
+        ? []
+        : ([
+          {
+            id: "iso",
+            size: 150,
+            accessorFn: (row) => getApplicationIsoLabel(row),
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                ISO
+              </span>
+            ),
+            cell: ({ row }) => (
+              <span className="text-foreground">
+                {getApplicationIsoLabel(row.original)}
+              </span>
+            ),
+          },
+        ] satisfies ColumnDef<Application>[])),
+      ...(showClaimedByColumn
+        ? ([
+          {
+            id: "claimedByUnderwriter",
+            size: 180,
+            header: () => (
+              <span className="font-medium text-foreground tracking-wide">
+                  Underwriter
+              </span>
+            ),
+            cell: ({ row }) => {
+              const label = formatUnderwriterClaimLabel(row.original);
+              return (
+                <span
+                  className="block truncate text-foreground text-sm"
+                  title={label}
+                >
+                  {label}
+                </span>
+              );
+            },
+            enableSorting: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       {
         id: "loanAmount",
-        accessorFn: (row) => row.loanAmount,
+        size: 160,
+        accessorFn: (row) => resolveApplicationRequestAmount(row),
+        enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              Loan Amount
-            </span>
-          </div>
+          <DataTableSortHeader column={column} label="Request Amount" />
         ),
         cell: ({ row }) => {
-          const loanAmount = row.original.loanAmount;
+          const loanAmount = resolveApplicationRequestAmount(row.original);
           if (loanAmount == null) {
             return <span className="text-foreground">-</span>;
           }
           return (
             <span className="text-foreground">
-              {formatCurrency(Number(loanAmount) || 0)}
+              {formatCurrency(loanAmount)}
             </span>
           );
         },
       },
+      ...(showApprovedAmountColumn
+        ? ([
+          {
+            id: "approvedAmount",
+            size: 170,
+            accessorFn: (row) => getApplicationApprovedAmount(row),
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                Approved Amount
+              </span>
+            ),
+            cell: ({ row }) => {
+              const approvedAmount = getApplicationApprovedAmount(row.original);
+              if (approvedAmount == null) {
+                return <span className="text-foreground">-</span>;
+              }
+              return (
+                <span className="text-foreground">
+                  {formatCurrency(approvedAmount)}
+                </span>
+              );
+            },
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
+      ...(showReinitiateContractIsoDecisionColumn
+        ? ([
+          {
+            id: "isoDecision",
+            size: 140,
+            accessorFn: (row) => getReinitiateContractIsoDecisionLabel(row),
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
+                ISO Decision
+              </span>
+            ),
+            cell: ({ row }) => {
+              const label = getReinitiateContractIsoDecisionLabel(row.original);
+              const isApproved = label === "Approved";
+              return (
+                <span
+                  className={
+                    isApproved
+                      ? "font-medium text-green-700 dark:text-green-400"
+                      : "text-foreground"
+                  }
+                >
+                  {label}
+                </span>
+              );
+            },
+            enableSorting: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
+      ...(showFinalApprovalSourceColumn
+        ? ([
+          {
+            id: "finalApprovalSource",
+            size: 150,
+            minSize: 130,
+            accessorFn: (row) =>
+              formatFinalApprovalSourceLabel(row.finalApprovalSource) ?? "",
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
+                Source
+              </span>
+            ),
+            cell: ({ row }) => {
+              const label = formatFinalApprovalSourceLabel(
+                row.original.finalApprovalSource,
+              );
+              if (!label) {
+                return <span className="text-foreground">-</span>;
+              }
+              return (
+                <FinalApprovalSourceBadge
+                  source={row.original.finalApprovalSource}
+                  variant="compact"
+                />
+              );
+            },
+            enableSorting: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       // {
       //     accessorKey: 'priority',
       //     header: ({ column }) => (
@@ -913,32 +1291,17 @@ const Applications = () => {
       //     cell: ({ row }) => <span className="text-foreground capitalize">{row.original.type || '-'}</span>,
       // },
       {
-        accessorKey: "status",
+        id: "status",
+        size: 170,
+        accessorFn: (row) =>
+          getApplicationQueueLabel(row),
+        enableSorting: true,
         header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              Current State
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className="h-3 w-3" />
-                    </Button> */}
-          </div>
+          <DataTableSortHeader column={column} label="Current State" />
         ),
         cell: ({ row }) => {
           let queueLabel = getApplicationQueueLabel(row.original);
 
-          /**
-           * When navigating from the Operations dashboard (e.g. clicking the
-           * "Funded" / "Disbursement" stat cards), the list is already scoped
-           * to a single operations stage via `dashboardStateFilter`. In that
-           * context, show the normalized operations stage label so users see
-           * "Funded" applications instead of the underlying workflow queue
-           * such as "Contracted".
-           */
           if (isOperationsDashboardView && dashboardStateFilter) {
             const normalized = normalizeOperationsDashboardStatusParam(
               dashboardStateFilter,
@@ -972,76 +1335,77 @@ const Applications = () => {
           );
         },
       },
-      {
-        accessorKey: "createdAt",
-        enableSorting: true,
-        header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              CREATED AT
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className="h-3 w-3" />
-                    </Button> */}
-          </div>
-        ),
-        cell: ({ row }) => (
-          <span className="text-foreground">
-            {formatDate(row.original.createdAt)}
-          </span>
-        ),
-      },
-      {
-        accessorKey: "lastModifiedAt",
-        header: ({ column }) => (
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-foreground uppercase tracking-wide">
-              Last Modified Date
-            </span>
-            {/* <Button
-                        variant="ghost"
-                        className="p-0 h-auto font-medium text-foreground hover:bg-transparent hover:text-foreground cursor-pointer"
-                        onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-                    >
-                        <ArrowUpDown className="h-3 w-3" />
-                    </Button> */}
-          </div>
-        ),
-        cell: ({ row }) => (
-          <span className="text-foreground">
-            {formatDate(row.original.createdAt)}
-          </span>
-        ),
-      },
-      ...(showClaimedByColumn
+      ...(sessionRoleKey === "UNDERWRITER"
         ? ([
           {
-            id: "claimedByUnderwriter",
+            id: "scrubberRecommendation",
+            size: 180,
+            accessorFn: (row) => row.scrubberRecommendation ?? "",
             header: () => (
-              <span className="font-medium text-foreground uppercase tracking-wide">
-                CLAIMED BY
+              <span className="font-medium text-foreground uppercase tracking-wide whitespace-nowrap">
+                Request
               </span>
             ),
-            cell: ({ row }) => (
-              <span className="text-foreground text-sm max-w-[10rem] truncate">
-                {formatUnderwriterClaimLabel(
-                  row.original,
-                  currentUserIdForClaim,
-                )}
-              </span>
-            ),
+            cell: ({ row }) => {
+              const recommendation = row.original.scrubberRecommendation;
+              if (!recommendation) {
+                return <span className="text-foreground">-</span>;
+              }
+              const isApproval = /approv/i.test(recommendation);
+              const displayLabel = /recommend\s+decline/i.test(recommendation)
+                ? "Decline"
+                : /recommend\s+approval/i.test(recommendation)
+                  ? "Approve"
+                  : recommendation;
+              return (
+                <span
+                  className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                    isApproval
+                      ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                      : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                  }`}
+                >
+                  {displayLabel}
+                </span>
+              );
+            },
             enableSorting: false,
           },
         ] satisfies ColumnDef<Application>[])
         : []),
+      {
+        id: "createdAt",
+        size: 170,
+        accessorKey: "createdAt",
+        enableSorting: true,
+        header: ({ column }) => (
+          <DataTableSortHeader column={column} label="CREATED AT" />
+        ),
+        cell: ({ row }) => (
+          <span className="text-foreground">
+            {formatDateTime(row.original.createdAt)}
+          </span>
+        ),
+      },
+      {
+        id: "lastModifiedAt",
+        size: 170,
+        accessorKey: "updatedAt",
+        enableSorting: true,
+        header: ({ column }) => (
+          <DataTableSortHeader column={column} label="Last Modified Date" />
+        ),
+        cell: ({ row }) => (
+          <span className="text-foreground">
+            {formatDate(row.original.updatedAt ?? row.original.createdAt)}
+          </span>
+        ),
+      },
       ...(showUwDealPoolUi && underwriterPoolTab === "queue"
         ? ([
           {
             id: "uwClaim",
+            size: 110,
             header: () => (
               <span className="font-medium text-foreground uppercase tracking-wide">
                 CLAIM
@@ -1054,7 +1418,7 @@ const Applications = () => {
               const busy = claimBusyAppId === String(appUuid);
               return (
                 <div
-                  className="flex justify-end"
+                  className="flex justify-start"
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => e.stopPropagation()}
                 >
@@ -1080,8 +1444,98 @@ const Applications = () => {
           },
         ] satisfies ColumnDef<Application>[])
         : []),
+      ...(isRecentlyDeletedView
+        ? ([
+          {
+            id: "deletedAt",
+            size: 160,
+            accessorFn: (row) => row.deletedAt ?? "",
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                Deleted On
+              </span>
+            ),
+            cell: ({ row }) => (
+              <span className="text-foreground text-sm">
+                {row.original.deletedAt
+                  ? formatDateTime(row.original.deletedAt)
+                  : "—"}
+              </span>
+            ),
+            enableSorting: true,
+          },
+          {
+            id: "recentlyDeletedActions",
+            size: 220,
+            header: () => (
+              <span className="font-medium text-foreground uppercase tracking-wide">
+                Actions
+              </span>
+            ),
+            cell: ({ row }) => {
+              const app = row.original;
+              const appUuid =
+                app._id ?? (app as { id?: string }).id ?? "";
+              return (
+                <div
+                  className="flex flex-wrap items-center gap-1.5"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs gap-1"
+                    disabled={!appUuid}
+                    onClick={() => openRestoreModal([String(appUuid)])}
+                  >
+                    <Undo2 className="size-3.5" />
+                    Revert
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="h-8 text-xs gap-1"
+                    disabled={!appUuid || permanentDeleteLoading}
+                    onClick={() => {
+                      const confirmed = window.confirm(
+                        "Permanently delete this application? This cannot be undone.",
+                      );
+                      if (!confirmed || !appUuid) return;
+                      setPermanentDeleteLoading(true);
+                      void dispatch(permanentlyDeleteApplication(String(appUuid)))
+                        .unwrap()
+                        .then(() => {
+                          toast.success("Application permanently deleted!");
+                          void fetchApplicationsRef.current?.();
+                          dispatch(getApplicationStats());
+                        })
+                        .catch((err: unknown) => {
+                          const message =
+                            typeof err === "string"
+                              ? err
+                              : "Failed to permanently delete application";
+                          toast.error(message);
+                        })
+                        .finally(() => setPermanentDeleteLoading(false));
+                    }}
+                  >
+                    <Trash2 className="size-3.5" />
+                    Delete
+                  </Button>
+                </div>
+              );
+            },
+            enableSorting: false,
+            enableHiding: false,
+          },
+        ] satisfies ColumnDef<Application>[])
+        : []),
       {
         id: "view",
+        size: 90,
         header: () => (
           <span className="font-medium text-foreground uppercase tracking-wide">
             VIEW
@@ -1092,10 +1546,18 @@ const Applications = () => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
+              if (isLetterGeneratorMode) {
+                handleNavigateToApplication(row.original);
+                return;
+              }
               handleOpenApplicationDetails(row.original);
             }}
-            className="flex items-center justify-center text-[#276D9C] hover:text-[#1b4e6f] cursor-pointer"
-            aria-label="View application in drawer"
+            className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
+            aria-label={
+              isLetterGeneratorMode
+                ? "Send letters for this application"
+                : "View application in drawer"
+            }
           >
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-bold">
               <EyeIcon className="h-4 w-4" />
@@ -1110,20 +1572,33 @@ const Applications = () => {
     return [selectColumn, ...bodyColumns];
   }, [
     formatDate,
+    formatDateTime,
     getApplicationQueueBadgeClass,
     getApplicationIsoLabel,
     getApplicationBusinessDisplayName,
-    getClientEmail,
     getApplicationQueueLabel,
+    handleNavigateToApplication,
     handleOpenApplicationDetails,
+    isLetterGeneratorMode,
+    mailLogsByAppId,
     expandedProgressRowId,
     handleToggleApplicationProgress,
     showUwDealPoolUi,
     showClaimedByColumn,
+    showApprovedAmountColumn,
+    showReinitiateContractIsoDecisionColumn,
+    showFinalApprovalSourceColumn,
     underwriterPoolTab,
-    currentUserIdForClaim,
     claimBusyAppId,
     handleUwClaimDeal,
+    sessionRoleKey,
+    effectiveRoleKey,
+    isOperationsDashboardView,
+    dashboardStateFilter,
+    isRecentlyDeletedView,
+    openRestoreModal,
+    permanentDeleteLoading,
+    dispatch,
   ]);
 
   const totalItems = apiPagination?.total ?? applications?.length ?? 0;
@@ -1131,21 +1606,68 @@ const Applications = () => {
     apiPagination?.totalPages ??
     (Math.ceil(totalItems / pagination.pageSize) || 1);
 
+  const letterGeneratorFilteredApplications = useMemo(() => {
+    const rows = applications ?? [];
+    if (!isLetterGeneratorMode) return rows;
+
+    const hasLetterFilters =
+      letterSendStatusFilter !== "all" ||
+      letterKindFilter !== "all" ||
+      letterFunderFilter !== "all";
+    if (!hasLetterFilters) return rows;
+
+    return rows.filter((app) => {
+      const appId = app._id?.trim() ?? "";
+      const latest = appId ? mailLogsByAppId[appId]?.[0] : undefined;
+      if (!latest) return false;
+
+      if (
+        letterSendStatusFilter !== "all" &&
+        !matchLetterSendStatusFilter(
+          resolveLetterSendStatus(latest),
+          letterSendStatusFilter,
+        )
+      ) {
+        return false;
+      }
+
+      if (letterKindFilter !== "all") {
+        if (classifyLetterKind(latest.templateName) !== letterKindFilter) {
+          return false;
+        }
+      }
+
+      if (letterFunderFilter !== "all") {
+        if (classifyLetterFunder(latest.templateName) !== letterFunderFilter) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [
+    applications,
+    isLetterGeneratorMode,
+    letterSendStatusFilter,
+    letterKindFilter,
+    letterFunderFilter,
+    mailLogsByAppId,
+  ]);
+
   const table = useReactTable({
-    data: applications ?? [],
+    data: letterGeneratorFilteredApplications,
     columns,
     pageCount,
     onSortingChange: setSorting,
-    onColumnFiltersChange: setColumnFilters,
     getCoreRowModel: getCoreRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
     onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     onPaginationChange: setPagination,
     manualPagination: true,
+    manualSorting: true,
+    manualFiltering: true,
     state: {
       sorting,
-      columnFilters,
       columnVisibility,
       rowSelection,
       pagination,
@@ -1172,6 +1694,17 @@ const Applications = () => {
 
   const listRequestParamsForKey = useMemo((): GetApplicationsParams => {
     const sort = applicationsListSortFromTable(sorting);
+    if (showUnderwriterPipelineView && underwriterPipelineFilter) {
+      return buildApplicationsListParams({
+        pageIndex: pagination.pageIndex,
+        pageSize: pagination.pageSize,
+        searchTerm: debouncedSearchTerm,
+        dashboardStateFilter: "",
+        statusFilter: "all",
+        underwriterPipeline: underwriterPipelineFilter,
+        ...sort,
+      });
+    }
     if (showUwDealPoolUi) {
       return buildApplicationsListParams({
         pageIndex: pagination.pageIndex,
@@ -1179,8 +1712,7 @@ const Applications = () => {
         searchTerm: debouncedSearchTerm,
         dashboardStateFilter: "",
         statusFilter: "all",
-        underwriterClaim:
-          underwriterPoolTab === "queue" ? "unclaimed" : "mine",
+        underwriterClaim: resolveUwClaimParam(),
         ...sort,
       });
     }
@@ -1190,16 +1722,27 @@ const Applications = () => {
       searchTerm: debouncedSearchTerm,
       dashboardStateFilter,
       statusFilter,
-      typeFilter,
-      priorityFilter,
+      typeFilter: isLetterGeneratorMode ? "all" : typeFilter,
+      priorityFilter: isLetterGeneratorMode ? "all" : priorityFilter,
+      underwriterFilter:
+        !isLetterGeneratorMode && showClaimedByColumn ? underwriterFilter : "all",
+      useDashboardStageFilter: isOperationsDashboardView,
+      ...sort,
     });
   }, [
     dashboardStateFilter,
     statusFilter,
     typeFilter,
     priorityFilter,
+    underwriterFilter,
+    showClaimedByColumn,
+    isLetterGeneratorMode,
+    isOperationsDashboardView,
     showUwDealPoolUi,
+    showUnderwriterPipelineView,
+    underwriterPipelineFilter,
     underwriterPoolTab,
+    resolveUwClaimParam,
     pagination.pageIndex,
     pagination.pageSize,
     debouncedSearchTerm,
@@ -1207,7 +1750,10 @@ const Applications = () => {
   ]);
 
   const listFetchParams = useMemo(
-    (): GetApplicationsParams => listRequestParamsForKey,
+    (): GetApplicationsParams => ({
+      ...listRequestParamsForKey,
+      clearListOnFetch: true,
+    }),
     [listRequestParamsForKey],
   );
 
@@ -1224,9 +1770,29 @@ const Applications = () => {
     enabled: isListFilterInitialized,
   });
 
+  /** Keep sidebar pipeline badges aligned when stage filters change. */
+  useEffect(() => {
+    if (!isListFilterInitialized || !applicationsListQuery.isSuccess) return;
+    if (sessionRoleKey === "UNDERWRITER") {
+      invalidateUnderwriterPipelineCounts();
+    }
+    if (!shouldPrefetchOpsDashboardSummary(sessionRoleKey)) return;
+    void dispatch(fetchOperationsDashboardSummary());
+  }, [
+    applicationsListQuery.isSuccess,
+    dispatch,
+    isListFilterInitialized,
+    listFetchParams.operationsStatus,
+    listFetchParams.statsBucket,
+    listFetchParams.currentQueue,
+    sessionRoleKey,
+  ]);
+
   const fetchApplications = useCallback(async () => {
     await applicationsListQuery.refetch();
   }, [applicationsListQuery]);
+
+  fetchApplicationsRef.current = fetchApplications;
 
   /** Sync one-time refresh flag cleanup after query-triggered fetch. */
   useEffect(() => {
@@ -1261,9 +1827,23 @@ const Applications = () => {
   // Initialize list filter from dashboard query params
   useEffect(() => {
     const query = new URLSearchParams(location.search);
+    const uwPipeline = parseUnderwriterPipelineFromSearch(location.search);
+    if (uwPipeline) {
+      setDashboardStateFilter("");
+      setStatusFilter("all");
+
+      if (pagination.pageIndex !== 0) {
+        setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+        return;
+      }
+
+      setIsListFilterInitialized(true);
+      return;
+    }
+
     const uwClaim = query.get("underwriterClaim");
-    if (uwClaim === "unclaimed" || uwClaim === "mine") {
-      setUnderwriterPoolTab(uwClaim === "mine" ? "my" : "queue");
+    if (uwClaim === "unclaimed" || uwClaim === "claimed" || uwClaim === "mine") {
+      setUnderwriterPoolTab(poolTabFromUnderwriterClaim(uwClaim));
       setDashboardStateFilter("");
       setStatusFilter("all");
 
@@ -1319,7 +1899,7 @@ const Applications = () => {
     );
     if (idsToDelete.length === 0) return;
     const confirmed = window.confirm(
-      `Are you sure you want to delete ${idsToDelete.length} selected application(s)?`,
+      `Move ${idsToDelete.length} selected application(s) to Recently Deleted?`,
     );
     if (!confirmed) return;
 
@@ -1330,8 +1910,8 @@ const Applications = () => {
       );
       toast.success(
         idsToDelete.length === 1
-          ? "Application deleted successfully!"
-          : `${idsToDelete.length} applications deleted successfully!`,
+          ? "Application moved to Recently Deleted!"
+          : `${idsToDelete.length} applications moved to Recently Deleted!`,
       );
       dispatch(resetDeleteApplication());
       setRowSelection({});
@@ -1345,9 +1925,12 @@ const Applications = () => {
       }
       fetchApplications();
       dispatch(getApplicationStats());
+      if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+        void dispatch(fetchOperationsDashboardSummary());
+      }
       if (showUwDealPoolUi) {
         void fetchUwDealPoolStats().catch((err: unknown) => {
-          console.error("Failed to refresh underwriter pool stats after delete", err);
+          console.error("Failed to refresh scrubbing pool stats after delete", err);
         });
       }
     } catch (err: unknown) {
@@ -1369,6 +1952,60 @@ const Applications = () => {
     viewApplication,
     showUwDealPoolUi,
     fetchUwDealPoolStats,
+    sessionRoleKey,
+  ]);
+
+  const handleBulkPermanentDelete = useCallback(async () => {
+    const idsToDelete = selectedApplicationIds.filter(
+      (id) => typeof id === "string" && id.length > 0 && id !== "undefined",
+    );
+    if (idsToDelete.length === 0) return;
+    const confirmed = window.confirm(
+      `Permanently delete ${idsToDelete.length} selected application(s)? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    setPermanentDeleteLoading(true);
+    try {
+      await Promise.all(
+        idsToDelete.map((id) => dispatch(permanentlyDeleteApplication(id)).unwrap()),
+      );
+      toast.success(
+        idsToDelete.length === 1
+          ? "Application permanently deleted!"
+          : `${idsToDelete.length} applications permanently deleted!`,
+      );
+      setRowSelection({});
+      if (
+        viewApplication &&
+        idsToDelete.includes(
+          String(viewApplication._id ?? (viewApplication as { id?: string }).id ?? ""),
+        )
+      ) {
+        setViewApplication(null);
+      }
+      fetchApplications();
+      dispatch(getApplicationStats());
+      if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+        void dispatch(fetchOperationsDashboardSummary());
+      }
+    } catch (err: unknown) {
+      const message =
+        err && typeof err === "object" && "message" in err
+          ? String((err as { message: string }).message)
+          : "Failed to permanently delete some applications";
+      toast.error(message);
+      fetchApplications();
+      setRowSelection({});
+    } finally {
+      setPermanentDeleteLoading(false);
+    }
+  }, [
+    selectedApplicationIds,
+    dispatch,
+    fetchApplications,
+    viewApplication,
+    sessionRoleKey,
   ]);
 
   // Fetch stats for dashboard
@@ -1383,14 +2020,17 @@ const Applications = () => {
         dispatch(resetDeleteApplication());
         return;
       }
-      toast.success("Application deleted successfully!");
+      toast.success("Application moved to Recently Deleted!");
       dispatch(resetDeleteApplication());
       fetchApplications();
       dispatch(getApplicationStats());
+      if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+        void dispatch(fetchOperationsDashboardSummary());
+      }
       if (showUwDealPoolUi) {
         void fetchUwDealPoolStats().catch((err: unknown) => {
           console.error(
-            "Failed to refresh underwriter pool stats after delete",
+            "Failed to refresh scrubbing pool stats after delete",
             err,
           );
         });
@@ -1407,11 +2047,16 @@ const Applications = () => {
     fetchApplications,
     showUwDealPoolUi,
     fetchUwDealPoolStats,
+    sessionRoleKey,
   ]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
-  }, [searchTerm, typeFilter, priorityFilter]);
+  }, [searchTerm, typeFilter, priorityFilter, underwriterFilter]);
+
+  useEffect(() => {
+    setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
+  }, [letterSendStatusFilter, letterKindFilter, letterFunderFilter]);
 
   useEffect(() => {
     setPagination((prev) => (prev.pageIndex === 0 ? prev : { ...prev, pageIndex: 0 }));
@@ -1462,7 +2107,7 @@ const Applications = () => {
   const roleKey = normalizeRoleKey(userRole);
   const isSuperAdmin = roleKey === "SUPER_ADMIN";
   const canCreateNewApplication =
-    roleKey === "AGENT" || isSuperAdmin;
+    !isLetterGeneratorMode && (roleKey === "AGENT" || isSuperAdmin);
   const isUnderwriterRole =
     roleKey === "SCRUBBING" || roleKey === "UNDERWRITER";
   const { resolvedTheme } = useTheme();
@@ -1659,13 +2304,8 @@ const Applications = () => {
     }
   }, [bulkUploadProgress]);
 
-  const pipelineFilterButtonLabel = useMemo(() => {
-    if (statusFilter === "all") return "All";
-    const fromOptions = APPLICATIONS_QUEUE_FILTER_OPTIONS.find(
-      (o) => o.value === statusFilter,
-    );
-    return fromOptions?.label ?? statusFilter;
-  }, [statusFilter]);
+  const showStatusFilterDropdown =
+    !isOperationsDashboardView && !showUwDealPoolUi;
 
   const showOperationsFilterBack =
     Boolean(dashboardStateFilter) &&
@@ -1694,8 +2334,14 @@ const Applications = () => {
     if (normalizedStatus === "Contract_Signed") {
       return "Contract Signed Application";
     }
+    if (normalizedStatus === "Reinitiate_Contract") {
+      return "Reinitiated Contract Application";
+    }
     if (normalizedStatus === "Contracted") {
       return "CONTRACT APPLICATIONS";
+    }
+    if (normalizedStatus === "Recently_Deleted") {
+      return "RECENTLY DELETED APPLICATIONS";
     }
     const label = normalizedStatus
       ? operationsDashboardStatusTitle(normalizedStatus)
@@ -1713,7 +2359,7 @@ const Applications = () => {
     ): {
       statsBucket?: string;
       currentQueue?: string;
-      underwriterClaim?: "unclaimed" | "mine";
+      underwriterClaim?: UnderwriterClaimParam;
     } => {
       let q: { statsBucket?: string; currentQueue?: string };
 
@@ -1732,13 +2378,12 @@ const Applications = () => {
       if (showUwDealPoolUi) {
         return {
           ...q,
-          underwriterClaim:
-            underwriterPoolTab === "queue" ? "unclaimed" : "mine",
+          underwriterClaim: resolveUwClaimParam(),
         };
       }
       return q;
     },
-    [roleKey, showUwDealPoolUi, underwriterPoolTab],
+    [roleKey, showUwDealPoolUi, resolveUwClaimParam],
   );
 
   const prefetchBrowseFromStatCard = useCallback(
@@ -1921,9 +2566,25 @@ const Applications = () => {
           className={`flex items-center justify-between p-6 rounded-lg shadow-[0px_4px_20px_0px_#00000005] ${isDark ? "bg-[#141517]" : "bg-white"
             }`}
         >
-          <h1 className="text-[1.3rem] font-semibold text-foreground uppercase">
-            {showUwDealPoolUi ? "Underwriter applications" : "All Applications"}
-          </h1>
+          <div>
+            <h1 className="text-[1.3rem] font-semibold text-foreground uppercase">
+              {isLetterGeneratorMode
+                ? "Letters"
+                : showUnderwriterPipelineView && underwriterPipelineFilter
+                ? underwriterPipelineTitle(underwriterPipelineFilter)
+                : showUwDealPoolUi
+                ? sessionRoleKey === "UNDERWRITER"
+                  ? "Underwriter applications"
+                  : "Scrubbing applications"
+                : "All Applications"}
+            </h1>
+            {isLetterGeneratorMode ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                Click Send Letter to open the composer. Send status and history update after each send.
+              </p>
+            ) : null}
+          </div>
+          {!isLetterGeneratorMode ? (
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <input
@@ -1943,7 +2604,7 @@ const Applications = () => {
 
               {pdfFile && (
                 <Button
-                  className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                  className="px-4 py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                   onClick={handleExtractBusinessDetails}
                   disabled={isExtractingPDF}
                 >
@@ -1956,7 +2617,7 @@ const Applications = () => {
               {isSuperAdmin && (
                 <div className="flex flex-col items-start gap-1">
                   <Button
-                    className="px-4   py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer disabled:cursor-not-allowed"
+                    className="px-4   py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer disabled:cursor-not-allowed"
                     onClick={() => bulkUploadInputRef.current?.click()}
                     disabled={bulkUploadProgress.status === "processing"}
                   >
@@ -1981,7 +2642,7 @@ const Applications = () => {
                       {bulkUploadProgress.errors.length > 0 && (
                         <button
                           type="button"
-                          className="mt-0.5 text-[#276D9C] hover:underline cursor-pointer"
+                          className="mt-0.5 text-[var(--brand)] hover:underline cursor-pointer"
                           onClick={() => setShowBulkUploadErrorsDialog(true)}
                         >
                           View {bulkUploadProgress.errors.length} failed row
@@ -1995,7 +2656,7 @@ const Applications = () => {
             </div>
             {canCreateNewApplication && (
               <Button
-                className="px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer"
+                className="px-4 py-2 gap-2 bg-[image:var(--brand-gradient)] text-white hover:opacity-90 cursor-pointer"
                 onClick={() => navigate("/create-applications")}
               >
                 <Plus className="size-4" />
@@ -2003,11 +2664,12 @@ const Applications = () => {
               </Button>
             )}
           </div>
+          ) : null}
         </div>
       )}
 
       {/* Stats — layout matches commission portal MonthHistoryCommission (CornerSummaryCard) */}
-      {!isOperationsDashboardView && (
+      {!isOperationsDashboardView && !isLetterGeneratorMode && (
         <section
           className={`mt-6 mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 ${statsGridCols} transition-opacity duration-200 ${isNavigatingToBrowse ? "opacity-80 pointer-events-none" : "opacity-100"
             }`}
@@ -2046,30 +2708,20 @@ const Applications = () => {
                     | undefined;
                   if (cachedBrowse) {
                     dispatch(hydrateApplicationsListFromCache(cachedBrowse));
-                  } else if (applications?.length) {
-                    dispatch(
-                      hydrateApplicationsListFromCache({
-                        data: applications,
-                        pagination: apiPagination,
-                      }),
-                    );
+                  } else {
+                    prefetchApplicationsList(browseParams);
                   }
-                  dispatch(
-                    getApplications(browseParams),
+                  navigate(
+                    buildApplicationsBrowseUrl({
+                      statsBucket: q.statsBucket,
+                      currentQueue: q.currentQueue,
+                      underwriterClaim: q.underwriterClaim,
+                    }),
                   );
-                  window.setTimeout(() => {
-                    navigate(
-                      buildApplicationsBrowseUrl({
-                        statsBucket: q.statsBucket,
-                        currentQueue: q.currentQueue,
-                        underwriterClaim: q.underwriterClaim,
-                      }),
-                    );
-                  }, 90);
                 }}
                 onMouseEnter={() => prefetchBrowseFromStatCard(c.title)}
                 onFocus={() => prefetchBrowseFromStatCard(c.title)}
-                className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[#276D9C]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#276D9C]/40"
+                className="h-full cursor-pointer rounded-xl transform-gpu transition-all duration-300 ease-out hover:-translate-y-0.5 hover:scale-[1.01] active:scale-[0.99] hover:ring-2 hover:ring-[var(--brand)]/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
               >
                 <CornerSummaryCard
                   isDark={isDark}
@@ -2103,8 +2755,8 @@ const Applications = () => {
         </section>
       )}
 
-      <div className="mt-4 flex flex-col lg:flex-row items-stretch lg:items-center gap-3 justify-between">
-        <div className="flex items-center gap-3 w-full lg:max-w-[680px]">
+      <div className="relative z-10 mt-4 flex flex-col lg:flex-row items-stretch lg:items-center gap-3 justify-between">
+        <div className="flex flex-wrap items-center gap-3 w-full lg:flex-1 lg:min-w-0">
           {showOperationsFilterBack && (
             <Button
               type="button"
@@ -2121,7 +2773,11 @@ const Applications = () => {
             <div
               className="flex rounded-md border border-border overflow-hidden bg-muted/40 dark:bg-muted/25 shrink-0 p-0.5 gap-0.5"
               role="tablist"
-              aria-label="Underwriter deal pool"
+              aria-label={
+                sessionRoleKey === "UNDERWRITER"
+                  ? "Underwriter deal pool"
+                  : "Scrubbing deal pool"
+              }
             >
               <Button
                 type="button"
@@ -2145,6 +2801,30 @@ const Applications = () => {
               >
                 <span className="text-xs font-medium sm:text-sm">Queue</span>
               </Button>
+              {sessionRoleKey === "SCRUBBING" ? (
+                <Button
+                  type="button"
+                  variant={underwriterPoolTab === "claimed" ? "default" : "ghost"}
+                  className={cn(
+                    "h-9 min-w-[5.5rem] rounded-sm px-3 shadow-none gap-1.5",
+                    underwriterPoolTab !== "claimed" &&
+                      "text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => {
+                    setUnderwriterPoolTab("claimed");
+                    setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                    navigate(
+                      buildUnderwriterPipelineApplicationsUrl({
+                        underwriterClaim: "claimed",
+                      }),
+                      { replace: true },
+                    );
+                  }}
+                  aria-pressed={underwriterPoolTab === "claimed"}
+                >
+                  <span className="text-xs font-medium sm:text-sm">Claimed</span>
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant={underwriterPoolTab === "my" ? "default" : "ghost"}
@@ -2165,60 +2845,73 @@ const Applications = () => {
                 }}
                 aria-pressed={underwriterPoolTab === "my"}
               >
-                <span className="text-xs font-medium sm:text-sm">My deals</span>
+                <span className="text-xs font-medium sm:text-sm">My Deals</span>
               </Button>
             </div>
           ) : null}
-          {!isOperationsDashboardView && !showUwDealPoolUi ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  className="h-10 gap-2 text-muted-foreground bg-card"
-                >
-                  <Filter className="size-4" />
-                  <span>{pipelineFilterButtonLabel}</span>
-                  <ChevronDown className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem
-                  onClick={() => {
-                    setStatusFilter("all");
+          {showStatusFilterDropdown ? (
+            <ApplicationStatusFilterDropdown
+              value={statusFilter}
+              onChange={(next) => {
+                setStatusFilter(next);
+                setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+              }}
+            />
+          ) : null}
+          {isLetterGeneratorMode ? (
+            <>
+              <LetterSendStatusFilterDropdown
+                value={letterSendStatusFilter}
+                onChange={(next) => {
+                  setLetterSendStatusFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              <LetterKindFilterDropdown
+                value={letterKindFilter}
+                onChange={(next) => {
+                  setLetterKindFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              <LetterFunderFilterDropdown
+                value={letterFunderFilter}
+                onChange={(next) => {
+                  setLetterFunderFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <ApplicationTypeFilterDropdown
+                value={typeFilter}
+                onChange={(next) => {
+                  setTypeFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              <ApplicationPriorityFilterDropdown
+                value={priorityFilter}
+                onChange={(next) => {
+                  setPriorityFilter(next);
+                  setPagination((prev) => ({ ...prev, pageIndex: 0 }));
+                }}
+              />
+              {showClaimedByColumn ? (
+                <ApplicationClaimUserFilterDropdown
+                  allLabel="All underwriters"
+                  value={underwriterFilter}
+                  options={underwriterFilterOptions}
+                  onChange={(next) => {
+                    setUnderwriterFilter(next);
                     setPagination((prev) => ({ ...prev, pageIndex: 0 }));
                   }}
-                >
-                  All
-                </DropdownMenuItem>
-                {APPLICATIONS_QUEUE_FILTER_OPTIONS.map((opt) => (
-                  <DropdownMenuItem
-                    key={opt.value}
-                    onClick={() => {
-                      setStatusFilter(opt.value);
-                      setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-                    }}
-                  >
-                    {opt.label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : null}
-          <ApplicationTypeFilterDropdown
-            value={typeFilter}
-            onChange={(next) => {
-              setTypeFilter(next);
-              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-            }}
-          />
-          <ApplicationPriorityFilterDropdown
-            value={priorityFilter}
-            onChange={(next) => {
-              setPriorityFilter(next);
-              setPagination((prev) => ({ ...prev, pageIndex: 0 }));
-            }}
-          />
-          <div className="relative min-w-[12rem] flex-1">
+                />
+              ) : null}
+            </>
+          )}
+          <div className="relative min-w-[12rem] flex-1 max-w-xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
               placeholder="Search by Deal ID, Name, Email, ISO..."
@@ -2233,6 +2926,8 @@ const Applications = () => {
           role="group"
           aria-label="Applications display layout"
         >
+          {!isLetterGeneratorMode ? (
+            <>
           <span className="text-xs text-muted-foreground hidden sm:inline">
             View
           </span>
@@ -2262,6 +2957,8 @@ const Applications = () => {
               <span className="text-xs font-medium">Grid</span>
             </Button>
           </div>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -2282,7 +2979,7 @@ const Applications = () => {
             }`}
         >
           <span className="font-semibold text-[1rem] text-foreground font-roboto inline-flex items-center gap-2 uppercase tracking-wide">
-            Applications
+            {isLetterGeneratorMode ? "Send Letters" : "Applications"}
             {isRefreshing ? (
               <Loader2
                 className="size-4 animate-spin text-muted-foreground shrink-0"
@@ -2291,7 +2988,7 @@ const Applications = () => {
             ) : null}
           </span>
           <div className="flex flex-wrap items-center gap-3 ml-auto">
-            {listViewMode === "grid" && (
+            {!isLetterGeneratorMode && listViewMode === "grid" && (
               <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -2310,26 +3007,55 @@ const Applications = () => {
                 <span className="hidden sm:inline">Select page</span>
               </label>
             )}
-            <Button
-              variant="destructive"
-              size="sm"
-              className="gap-1 cursor-pointer text-xs shrink-0"
-              disabled={selectedApplicationIds.length === 0 || deleteLoading}
-              onClick={handleBulkDelete}
-            >
-              <Trash2 className="size-3" />
-              Delete
-            </Button>
+            {!isLetterGeneratorMode &&
+              (isRecentlyDeletedView ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1 cursor-pointer text-xs shrink-0"
+                  disabled={selectedApplicationIds.length === 0}
+                  onClick={() => openRestoreModal(selectedApplicationIds)}
+                >
+                  <Undo2 className="size-3" />
+                  Revert
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="gap-1 cursor-pointer text-xs shrink-0"
+                  disabled={
+                    selectedApplicationIds.length === 0 || permanentDeleteLoading
+                  }
+                  onClick={() => void handleBulkPermanentDelete()}
+                >
+                  <Trash2 className="size-3" />
+                  Delete Permanently
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="gap-1 cursor-pointer text-xs shrink-0"
+                disabled={selectedApplicationIds.length === 0 || deleteLoading}
+                onClick={handleBulkDelete}
+              >
+                <Trash2 className="size-3" />
+                Delete
+              </Button>
+            ))}
           </div>
         </div>
         <div
           className={`p-1 transition-opacity duration-300 ${isRefreshing ? "opacity-85" : "opacity-100"
             }`}
         >
-          {listViewMode === "list" ? (
+          {(listViewMode === "list" || isLetterGeneratorMode) ? (
             <div className="overflow-x-auto overflow-y-auto rounded-xl [scrollbar-gutter:stable] min-h-[min(32rem,65vh)] max-lg:min-h-[min(24rem,55vh)]">
               <DataTableContent
                 table={table}
+                fixedLayout
                 loading={loading && !(applications?.length)}
                 loadingMessage="Loading applications..."
                 emptyMessage={
@@ -2348,12 +3074,29 @@ const Applications = () => {
                 }
                 isRowExpanded={(row) => expandedProgressRowId === row.id}
                 renderExpandedRow={(row) => (
-                  <div className="border-t border-amber-200/50 bg-gradient-to-b from-amber-50/50 via-white to-white px-4 py-4 dark:border-amber-900/30 dark:from-amber-950/20 dark:via-slate-950/40 dark:to-slate-950/20 sm:px-6">
-                    <ApplicationProgressBar
-                      application={row.original}
-                      className="shadow-sm"
-                    />
-                  </div>
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{
+                      height: { duration: 0.32, ease: [0.4, 0, 0.2, 1] },
+                      opacity: { duration: 0.22, ease: "easeOut" },
+                    }}
+                    className="overflow-hidden"
+                  >
+                    <motion.div
+                      initial={{ y: -8 }}
+                      animate={{ y: 0 }}
+                      exit={{ y: -8 }}
+                      transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+                      className="border-t border-amber-200/50 bg-gradient-to-b from-amber-50/50 via-white to-white px-4 py-4 dark:border-amber-900/30 dark:from-amber-950/20 dark:via-slate-950/40 dark:to-slate-950/20 sm:px-6"
+                    >
+                      <ApplicationProgressBar
+                        application={row.original}
+                        className="shadow-sm"
+                      />
+                    </motion.div>
+                  </motion.div>
                 )}
               />
             </div>
@@ -2387,7 +3130,10 @@ const Applications = () => {
                 {table.getRowModel().rows.map((row) => {
                   const app = row.original;
                   const queueLabel = getApplicationQueueLabel(app);
-                  const loanAmount = app.loanAmount;
+                  const loanAmount = resolveApplicationRequestAmount(app);
+                  const approvedAmount = showApprovedAmountColumn
+                    ? getApplicationApprovedAmount(app)
+                    : null;
                   return (
                     <div
                       key={row.id}
@@ -2402,7 +3148,7 @@ const Applications = () => {
                         }
                       }}
                       aria-label={`Open application ${getApplicationDealIdDisplay(app)} (${app._id})`}
-                      className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[#276D9C]/20 cursor-pointer ${isDark
+                      className={`rounded-lg border shadow-sm flex flex-col gap-3 p-4 text-left transition hover:ring-2 hover:ring-[var(--brand)]/20 cursor-pointer ${isDark
                         ? "bg-[#1a1b1e] border-[#374151]"
                         : "bg-card border-[#F0F0F0]"
                         } ${row.getIsSelected() ? "ring-2 ring-blue-400/60" : ""}`}
@@ -2444,50 +3190,86 @@ const Applications = () => {
                         >
                           <button
                             type="button"
-                            onClick={() => void handleOpenApplicationDetails(app)}
-                            className="flex h-8 w-8 items-center justify-center rounded-full border border-[#276D9C] text-[#276D9C] hover:bg-[#276D9C]/10"
-                            aria-label="View application in drawer"
+                            onClick={() => {
+                              if (isLetterGeneratorMode) {
+                                handleNavigateToApplication(app);
+                                return;
+                              }
+                              void handleOpenApplicationDetails(app);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--brand)] text-[var(--brand)] hover:bg-[var(--brand)]/10"
+                            aria-label={
+                              isLetterGeneratorMode
+                                ? "Send letters for this application"
+                                : "View application in drawer"
+                            }
                           >
                             <EyeIcon className="h-4 w-4" />
                           </button>
                         </div>
                       </div>
                       <div className="text-xs text-muted-foreground space-y-1">
-                        <p className="truncate" title={getClientEmail(app.client)}>
-                          {getClientEmail(app.client)}
-                        </p>
                         <p className="truncate" title={getApplicationIsoLabel(app)}>
                           <span className="text-foreground/80">ISO: </span>
                           {getApplicationIsoLabel(app)}
                         </p>
-                        {showClaimedByColumn && (
+                        {showClaimedByColumn ? (
                           <p
                             className="truncate"
-                            title={formatUnderwriterClaimLabel(
-                              app,
-                              currentUserIdForClaim,
-                            )}
+                            title={formatUnderwriterClaimLabel(app)}
                           >
                             <span className="text-foreground/80">
-                              Claimed by:{" "}
+                              Underwriter:{" "}
                             </span>
                             <span className="text-foreground">
-                              {formatUnderwriterClaimLabel(
-                                app,
-                                currentUserIdForClaim,
-                              )}
+                              {formatUnderwriterClaimLabel(app)}
                             </span>
                           </p>
-                        )}
+                        ) : null}
                         <p>
-                          <span className="text-foreground/80">Loan: </span>
+                          <span className="text-foreground/80">Request: </span>
                           {loanAmount == null
                             ? "—"
-                            : formatCurrency(Number(loanAmount) || 0)}
+                            : formatCurrency(loanAmount)}
                         </p>
+                        {showApprovedAmountColumn && (
+                          <p>
+                            <span className="text-foreground/80">Approved: </span>
+                            {approvedAmount == null
+                              ? "—"
+                              : formatCurrency(approvedAmount)}
+                          </p>
+                        )}
+                        {showReinitiateContractIsoDecisionColumn ? (
+                          <p>
+                            <span className="text-foreground/80">ISO Decision: </span>
+                            <span
+                              className={
+                                isIsoUpdatedOfferApproved(app)
+                                  ? "font-medium text-green-700 dark:text-green-400"
+                                  : "text-foreground"
+                              }
+                            >
+                              {getReinitiateContractIsoDecisionLabel(app)}
+                            </span>
+                          </p>
+                        ) : null}
+                        {showFinalApprovalSourceColumn ? (
+                          <p>
+                            <span className="text-foreground/80">Source: </span>
+                            {formatFinalApprovalSourceLabel(app.finalApprovalSource) ? (
+                              <FinalApprovalSourceBadge
+                                source={app.finalApprovalSource}
+                                variant="compact"
+                              />
+                            ) : (
+                              <span className="text-foreground">-</span>
+                            )}
+                          </p>
+                        ) : null}
                         <p>
                           <span className="text-foreground/80">Created: </span>
-                          {formatDate(app.createdAt)}
+                          {formatDateTime(app.createdAt)}
                         </p>
                       </div>
                       <div className="pt-1 border-t border-border/60">
@@ -2499,7 +3281,7 @@ const Applications = () => {
                       </div>
                       {showUwDealPoolUi && underwriterPoolTab === "queue" ? (
                         <div
-                          className="pt-2 flex justify-end gap-2"
+                          className="pt-2 flex justify-start gap-2"
                           onClick={(e) => e.stopPropagation()}
                           onKeyDown={(e) => e.stopPropagation()}
                         >
@@ -2583,7 +3365,7 @@ const Applications = () => {
             <Button
               type="button"
               onClick={() => setShowAlreadyExistsDialog(false)}
-              className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+              className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
             >
               OK
             </Button>
@@ -2675,7 +3457,7 @@ const Applications = () => {
               </Button>
               <Button
                 type="button"
-                className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90 gap-2"
+                className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90 gap-2"
                 onClick={() => {
                   setShowBulkUploadErrorsDialog(false);
                   bulkUploadInputRef.current?.click();
@@ -2743,7 +3525,7 @@ const Applications = () => {
                   setPartialExtractedData(null);
                   navigate("/create-applications");
                 }}
-                className="bg-[#276D9C] text-white hover:bg-[#276D9C]/90"
+                className="bg-[image:var(--brand-gradient)] text-white hover:opacity-90"
               >
                 Open New Application
               </Button>
@@ -2758,6 +3540,192 @@ const Applications = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SendLetterModal
+        open={Boolean(sendLetterApplication)}
+        application={sendLetterApplication}
+        onOpenChange={(open: boolean) => {
+          if (!open) setSendLetterApplication(null);
+        }}
+      />
+
+      <Dialog
+        open={Boolean(letterHistoryApplication)}
+        onOpenChange={(nextOpen: boolean) => {
+          if (!nextOpen) {
+            setLetterHistoryApplication(null);
+            setViewedLetterLog(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="text-left">
+              Sent letters
+              {letterHistoryApplication?.applicationId != null
+                ? ` — APP-${letterHistoryApplication.applicationId}`
+                : ""}
+            </DialogTitle>
+            <DialogDescription className="text-left">
+              {letterHistoryApplication
+                ? `${getApplicationBusinessDisplayName(letterHistoryApplication)} — status, send time, and templates.`
+                : "Previously sent Payoff and Zero Balance letters."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="overflow-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-muted/80 backdrop-blur-sm">
+                <tr className="text-left">
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    When
+                  </th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    Letter
+                  </th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    Status
+                  </th>
+                  <th className="px-3 py-2 font-semibold">Recipient</th>
+                  <th className="px-3 py-2 font-semibold whitespace-nowrap">
+                    View
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {(letterHistoryApplication?._id
+                  ? mailLogsByAppId[letterHistoryApplication._id] ?? []
+                  : []
+                ).map((log) => {
+                  const status = resolveLetterSendStatus(log);
+                  return (
+                    <tr key={log.id} className="border-t even:bg-muted/30">
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {formatLetterSendWhen(log.at)}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {log.templateName || "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${letterSendStatusBadgeClass(status)}`}
+                        >
+                          {letterSendStatusLabel(status)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 break-all text-muted-foreground">
+                        {log.recipient || "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setViewedLetterLog(log)}
+                          className="flex items-center justify-center text-[var(--brand)] hover:text-[var(--brand-accent-strong)] cursor-pointer"
+                          aria-label={`View ${log.templateName || "letter"} template`}
+                          title="View sent template"
+                        >
+                          <span className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current">
+                            <EyeIcon className="h-4 w-4" />
+                          </span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {(letterHistoryApplication?._id
+                  ? mailLogsByAppId[letterHistoryApplication._id] ?? []
+                  : []
+                ).length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-3 py-8 text-center text-muted-foreground"
+                    >
+                      No letters sent yet for this application.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(viewedLetterLog)}
+        onOpenChange={(nextOpen: boolean) => {
+          if (!nextOpen) setViewedLetterLog(null);
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-left">
+              {viewedLetterLog?.templateName || "Sent template"}
+            </DialogTitle>
+            <DialogDescription className="text-left">
+              {viewedLetterLog
+                ? `${letterSendStatusLabel(resolveLetterSendStatus(viewedLetterLog))} · ${formatLetterSendWhen(viewedLetterLog.at)}`
+                : "Preview of the letter that was sent."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Recipient
+              </p>
+              <p className="break-all text-foreground">
+                {viewedLetterLog?.recipient || "—"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Subject
+              </p>
+              <p className="text-foreground">
+                {viewedLetterLog?.subject || "—"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Template
+              </p>
+              <div className="rounded-md border border-border bg-muted/20 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                {viewedLetterLog?.body?.trim() ? (
+                  /<\/?(?:table|html|div|p|pre|br|span|strong|ul|ol|li)\b/i.test(
+                    viewedLetterLog.body,
+                  ) ? (
+                    <div
+                      className="max-h-[52vh] overflow-y-auto rounded-md border border-slate-200 bg-white p-3 break-words font-sans text-slate-900 [&_table]:w-full [&_td]:align-top"
+                      dangerouslySetInnerHTML={{ __html: viewedLetterLog.body }}
+                    />
+                  ) : (
+                    <pre className="max-h-[52vh] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-slate-200 bg-white p-3 font-sans text-slate-900">
+                      {viewedLetterLog.body}
+                    </pre>
+                  )
+                ) : (
+                  <p className="text-muted-foreground">
+                    No template body is stored for this send.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <RestoreApplicationToScrubberModal
+        open={restoreModalOpen}
+        onOpenChange={setRestoreModalOpen}
+        applicationIds={restoreTargetIds}
+        onRestored={() => {
+          setRowSelection({});
+          fetchApplications();
+          dispatch(getApplicationStats());
+          if (shouldPrefetchOpsDashboardSummary(sessionRoleKey)) {
+            void dispatch(fetchOperationsDashboardSummary());
+          }
+        }}
+      />
     </div>
   );
 };

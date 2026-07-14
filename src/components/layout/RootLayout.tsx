@@ -8,6 +8,7 @@ import {
     normalizeRoleKey,
     resolveEffectiveRole,
 } from "@/lib/sessionRole";
+import { isAgentAllowedPath, isAgentRole } from "@/lib/agentAccess";
 import { useDispatch, useSelector } from "react-redux";
 import type { AppDispatch, RootState } from "@/redux/store";
 import { getApplicationStats } from "@/redux/actions/applicationActions";
@@ -17,7 +18,7 @@ import {
 } from "@/redux/actions/operationsDashboardActions";
 import { fetchPaymentFinancialOverviewSummary } from "@/redux/actions/paymentDashboardActions";
 import { fetchPaymentDashboardFundedDeals } from "@/redux/actions/paymentDashboardCohortActions";
-import { buildPaymentFundedCohortParams } from "@/lib/paymentDashboardFunded";
+import { DEFAULT_APPLICATIONS_PAGE_SIZE } from "@/lib/applicationsListParams";
 import { OnlineStatusSync } from "@/components/chat/OnlineStatusSync";
 import RealtimeNotificationsListener from "@/components/notifications/RealtimeNotificationsListener";
 import NotificationsSync from "@/components/notifications/NotificationsSync";
@@ -25,8 +26,9 @@ import {
     isApplicationStatsWarmRoute,
     isOpsDashboardWarmRoute,
     isPaymentsRoute,
+    shouldPrefetchOpsDashboardSummary,
 } from "@/lib/shellPrefetchRoutes";
-import { isPrefetchFresh } from "@/lib/prefetchFreshness";
+import { isShellPrefetchFresh } from "@/lib/prefetchFreshness";
 import { axiosGet } from "@/redux/axios";
 import { toast } from "react-toastify";
 
@@ -38,7 +40,7 @@ interface DecodedToken {
     exp?: number;
 }
 
-const FINAL_UNDERWRITER_ROLE = 'FINAL_UNDERWRITER';
+const FINAL_UNDERWRITER_ROLE = 'UNDERWRITER';
 
 const allowedPathsForUnderwriter = (pathname: string): boolean => {
     if (pathname === '/') return true;
@@ -50,6 +52,7 @@ const allowedPathsForUnderwriter = (pathname: string): boolean => {
     if (pathname === '/team-chat') return true;
     if (pathname === '/notifications') return true;
     if (pathname === '/user-setting') return true;
+    if (pathname === '/template/playground') return true;
     return false;
 };
 
@@ -67,8 +70,7 @@ const RootLayout = () => {
         (state: RootState) => state.paymentDashboardCohort.fetched,
     );
     const paymentCohortInFlight = useSelector(
-        (state: RootState) =>
-            state.paymentDashboardCohort.loading || state.paymentDashboardCohort.isRefreshing,
+        (state: RootState) => state.paymentDashboardCohort.loading,
     );
     const paymentDashboardFetched = useSelector(
         (state: RootState) => state.paymentDashboard.data,
@@ -84,6 +86,7 @@ const RootLayout = () => {
 
     const normalizedRole = normalizeRoleKey(userRole);
     const isFinalUnderwriter = normalizedRole === FINAL_UNDERWRITER_ROLE;
+    const isAgent = isAgentRole(userRole);
 
     // Get current user ID from token
     const currentUserId = useMemo(() => {
@@ -146,22 +149,35 @@ const RootLayout = () => {
         statsRefreshing,
     ]);
 
-    // Operations dashboard APIs only on routes that render that dashboard.
+    // Deal-pipeline sidebar badges need summary counts on any authenticated page.
     useEffect(() => {
         if (isPublicRoute) return;
         if (!localStorage.getItem("token")) return;
-        if (!isOpsDashboardWarmRoute(pathname, normalizedRole)) return;
+        if (!shouldPrefetchOpsDashboardSummary(normalizedRole)) return;
         if (
             opsDashboard.hasLoadedSummaryOnce &&
-            isPrefetchFresh(opsDashboard.lastSummaryFetchedAt)
+            isShellPrefetchFresh(opsDashboard.lastSummaryFetchedAt)
         ) {
             // Counts come from parallel DB aggregates — no refetch needed.
         } else {
             void dispatch(fetchOperationsDashboardSummary());
         }
+    }, [
+        dispatch,
+        isPublicRoute,
+        normalizedRole,
+        opsDashboard.hasLoadedSummaryOnce,
+        opsDashboard.lastSummaryFetchedAt,
+    ]);
+
+    // Recent cases list only on routes that render the operations dashboard.
+    useEffect(() => {
+        if (isPublicRoute) return;
+        if (!localStorage.getItem("token")) return;
+        if (!isOpsDashboardWarmRoute(pathname, normalizedRole)) return;
         if (
             opsDashboard.hasLoadedRecentOnce &&
-            isPrefetchFresh(opsDashboard.lastRecentFetchedAt)
+            isShellPrefetchFresh(opsDashboard.lastRecentFetchedAt)
         ) {
             // Keep recent list snapshot.
         } else {
@@ -172,8 +188,6 @@ const RootLayout = () => {
         isPublicRoute,
         pathname,
         normalizedRole,
-        opsDashboard.hasLoadedSummaryOnce,
-        opsDashboard.lastSummaryFetchedAt,
         opsDashboard.hasLoadedRecentOnce,
         opsDashboard.lastRecentFetchedAt,
     ]);
@@ -184,16 +198,20 @@ const RootLayout = () => {
         if (!localStorage.getItem("token")) return;
         if (!isPaymentsRoute(pathname)) return;
         if (!paymentDashboardFetched && !paymentDashboardLoading) {
+            const year = new Date().getFullYear();
             void dispatch(
                 fetchPaymentFinancialOverviewSummary({
-                    chartYear: new Date().getFullYear(),
+                    chartYear: year,
                     chartMonth: new Date().getMonth(),
                 }),
             );
         }
         if (!paymentCohortFetched && !paymentCohortInFlight) {
             void dispatch(
-                fetchPaymentDashboardFundedDeals(buildPaymentFundedCohortParams()),
+                fetchPaymentDashboardFundedDeals({
+                    page: 1,
+                    limit: DEFAULT_APPLICATIONS_PAGE_SIZE,
+                }),
             );
         }
     }, [
@@ -212,6 +230,14 @@ const RootLayout = () => {
             navigate('/', { replace: true });
         }
     }, [isFinalUnderwriter, location.pathname, navigate]);
+
+    useEffect(() => {
+        if (isPublicRoute) return;
+        if (!isAgent) return;
+        if (!isAgentAllowedPath(location.pathname)) {
+            navigate('/applications', { replace: true });
+        }
+    }, [isAgent, isPublicRoute, location.pathname, navigate]);
 
     // ✅ DOCUSIGN CALLBACK HANDLER - Runs on every page load
     useEffect(() => {

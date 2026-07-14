@@ -39,8 +39,6 @@ interface CommentSectionProps {
     styles?: string;
     isUnderwriter?: boolean;
     applicationId?: string;
-    /** Tighter card height when embedded beside decision making. */
-    compactLayout?: boolean;
     // Public/unregistered mode:
     // - always create/edit external comments
     // - hide comment/internal dropdowns
@@ -48,6 +46,8 @@ interface CommentSectionProps {
     publicMode?: boolean;
     /** Hide new-comment form and reply/edit/delete (e.g. `?viewOnly=1` browse mode). */
     readOnly?: boolean;
+    /** Narrow paired layout beside underwriting decision — shorter card, narrower list column. */
+    compactLayout?: boolean;
 }
 
 const CommentSection = ({
@@ -56,6 +56,7 @@ const CommentSection = ({
     applicationId: applicationIdProp,
     publicMode = false,
     readOnly = false,
+    compactLayout = false,
 }: CommentSectionProps) => {
     const { resolvedTheme } = useTheme();
     const isDark = resolvedTheme === 'dark';
@@ -445,23 +446,25 @@ const CommentSection = ({
     // input → filters → list even when the viewport is large.
     const splitLayoutClasses =
         "flex flex-col @lg:flex-row @lg:items-stretch @lg:gap-6";
-    const leftColumnClasses =
-        "w-full @lg:w-[40%] @lg:min-w-0 flex flex-col gap-4 shrink-0";
-    const rightColumnClasses =
-        "w-full @lg:w-[60%] @lg:min-w-0 flex flex-col min-h-0";
+    const leftColumnClasses = compactLayout
+        ? "w-full @lg:w-[55%] @lg:min-w-0 flex flex-col gap-3 shrink-0"
+        : "w-full @lg:w-[40%] @lg:min-w-0 flex flex-col gap-4 shrink-0";
+    const rightColumnClasses = compactLayout
+        ? "w-full @lg:w-[45%] @lg:min-w-0 flex flex-col min-h-0"
+        : "w-full @lg:w-[60%] @lg:min-w-0 flex flex-col min-h-0";
+
+    // In the paired compact layout the comment card should match the height of
+    // the sibling side component (ChecksAndDecision), whose height varies. Fill
+    // the stretched flex column (`items-stretch` on the parent) instead of a
+    // fixed pixel height so both columns stay equal.
+    const commentsCardHeightClass = compactLayout ? "h-full" : "h-[695px]";
+    const commentsCardMarginClass = compactLayout ? "my-0" : "my-6 mt-0";
+    const composeTextareaMinHClass = compactLayout ? "min-h-[72px]" : "min-h-[100px]";
 
     const totalVisibleComments = filteredComments.length;
 
-    /** Underwriter view shows Required Document Status beside Comments — narrow compose column. */
+    /** Scrubbing view shows Required Document Status beside Comments — narrow compose column. */
     const stackCommentActionsRow = Boolean(isUnderwriter && !publicMode);
-
-    const primaryActionButtonClass = publicMode
-        ? "px-4 py-2 gap-2 bg-[#111827] text-white hover:bg-[#374151] cursor-pointer rounded-sm text-sm font-roboto shadow-md"
-        : "px-4 py-2 gap-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer rounded-sm text-sm font-roboto shadow-md";
-
-    const primaryActionButtonSmClass = publicMode
-        ? "px-4 py-2 bg-[#111827] text-white hover:bg-[#374151] cursor-pointer rounded-sm text-sm font-roboto shadow-md"
-        : "px-4 py-2 bg-[#276D9C] text-white hover:bg-[#276D9C]/90 cursor-pointer rounded-sm text-sm font-roboto shadow-md";
 
     const renderCommentThread = (comment: Comment, depth: number) => {
         const isIsoComment = comment.type === "ISO Comment";
@@ -526,7 +529,7 @@ const CommentSection = ({
                     }`}
                 >
                     <Avatar className={avatarClass}>
-                        <AvatarFallback className="bg-[#276D9C] text-white">
+                        <AvatarFallback className="bg-[image:var(--brand-gradient)] text-white">
                             {getAvatarLetter(displayName)}
                         </AvatarFallback>
                     </Avatar>
@@ -536,15 +539,15 @@ const CommentSection = ({
                             <p
                                 className={`font-roboto whitespace-nowrap capitalize ${
                                     isRoot
-                                        ? "text-sm font-medium text-[#276D9C]"
-                                        : "text-xs font-semibold text-[#276D9C]"
+                                        ? "text-sm font-medium text-[var(--brand)]"
+                                        : "text-xs font-semibold text-[var(--brand)]"
                                 }`}
                             >
                                 {displayName}
                             </p>
 
                             {isRoot && roleLabelForDisplay && (
-                                <p className="text-sm font-medium text-[#276D9C] font-roboto whitespace-nowrap">
+                                <p className="text-sm font-medium text-[var(--brand)] font-roboto whitespace-nowrap">
                                     ({roleLabelForDisplay})
                                 </p>
                             )}
@@ -569,8 +572,8 @@ const CommentSection = ({
                             <div
                                 className={`mt-2 mb-2 rounded-md border px-3 py-2 text-xs font-roboto ${
                                     isDark
-                                        ? "bg-[#276D9C]/5 border-[#276D9C]/25 text-[#93C5FD]"
-                                        : "bg-[#276D9C]/5 border-[#276D9C]/20 text-[#276D9C]"
+                                        ? "bg-[var(--brand)]/5 border-[var(--brand)]/25 text-[#93C5FD]"
+                                        : "bg-[var(--brand)]/5 border-[var(--brand)]/20 text-[var(--brand)]"
                                 }`}
                             >
                                 <div className="opacity-90 font-semibold mb-1">Replying to</div>
@@ -686,7 +689,7 @@ const CommentSection = ({
                                         <Button
                                             type="button"
                                             size="sm"
-                                            className={primaryActionButtonSmClass}
+                                            className="px-4 py-2 font-roboto"
                                             onClick={() => handleSubmitReply(comment)}
                                             disabled={createLoading || !replyDraft.trim()}
                                         >
@@ -707,9 +710,9 @@ const CommentSection = ({
     };
  
     return (
-        <div className="flex gap-6 w-full">
+        <div className={`flex gap-6 w-full ${compactLayout ? "h-full" : ""}`}>
             {/* <Card className="border-border shadow-sm my-6 gap-2 w-full"> */}
-            <Card className={`@container gap-2 my-6 mt-0 w-full border shadow-md dark:shadow-lg p-0 rounded-2xl pb-3 h-[695px] flex flex-col ${
+            <Card className={`@container gap-2 ${commentsCardMarginClass} w-full border shadow-md dark:shadow-lg p-0 rounded-2xl pb-3 ${commentsCardHeightClass} flex flex-col ${
                 isDark ? 'bg-[#141517] border-[#374151]' : 'border-[#FDFDFD]'
             }`}>
                 <CardHeader className="p-0">
@@ -719,7 +722,7 @@ const CommentSection = ({
                         Comments
                     </CardTitle>
                 </CardHeader>
-                <CardContent className={`mt-4 flex-1 overflow-hidden px-5 pb-4 ${splitLayoutClasses}`}>
+                <CardContent className={`${compactLayout ? "mt-2" : "mt-4"} flex-1 overflow-hidden px-5 pb-4 ${splitLayoutClasses}`}>
                     <div className={leftColumnClasses}>
                     {!readOnly && (
                     <form onSubmit={handleSubmit(onSubmit)} className="w-full">
@@ -737,7 +740,7 @@ const CommentSection = ({
                                         <Textarea
                                             {...field}
                                             placeholder={publicMode ? "Write an external comment" : "Write an internal comment"}
-                                            className={`font-roboto min-h-[100px] resize-none rounded-[5px] bg-background border shadow-sm focus:border-blue-500 ${
+                                            className={`font-roboto ${composeTextareaMinHClass} resize-none rounded-[5px] bg-background border shadow-sm focus:border-blue-500 ${
                                                 isDark ? 'border-[#374151]' : 'border-[#E5E7EB]'
                                             } ${errors.comment ? "border-red-500" : ""}`}
                                             disabled={createLoading}
@@ -821,7 +824,7 @@ const CommentSection = ({
                                 <div className="flex w-full justify-start">
                                     <Button
                                         type="submit"
-                                        className={primaryActionButtonClass}
+                                        className="px-4 py-2 gap-2 font-roboto"
                                         disabled={(createLoading || updateLoading) || !applicationId}
                                     >
                                         {createLoading || updateLoading ? (
@@ -906,7 +909,7 @@ const CommentSection = ({
                                     <div className="shrink-0">
                                         <Button
                                             type="submit"
-                                            className={primaryActionButtonClass}
+                                            className="px-4 py-2 gap-2 font-roboto"
                                             disabled={(createLoading || updateLoading) || !applicationId}
                                         >
                                             {createLoading || updateLoading ? (
@@ -980,7 +983,7 @@ const CommentSection = ({
                     {/* Comment list (right column) */}
                     <div className={rightColumnClasses}>
                         <div
-                            className={`rounded-xl border px-4 py-3 mt-2 @lg:mt-0 shrink-0 flex items-center justify-between gap-3 shadow-sm ${
+                            className={`rounded-xl border px-4 ${compactLayout ? "py-2" : "py-3"} mt-2 @lg:mt-0 shrink-0 flex items-center justify-between gap-3 shadow-sm ${
                                 isDark ? "bg-[#171A1F] border-[#2A3440]" : "bg-[#F8FAFC] border-[#E6EDF5]"
                             }`}
                         >
@@ -1020,12 +1023,12 @@ const CommentSection = ({
                                 border-radius: 9999px;
                             }
                             .comments-scroll::-webkit-scrollbar-thumb {
-                                background: linear-gradient(180deg, #3B82F6 0%, #276D9C 100%);
+                                background: linear-gradient(180deg, #3B82F6 0%, var(--brand) 100%);
                                 border-radius: 9999px;
                                 border: 2px solid rgba(255, 255, 255, 0.6);
                             }
                             .comments-scroll::-webkit-scrollbar-thumb:hover {
-                                background: linear-gradient(180deg, #60A5FA 0%, #276D9C 100%);
+                                background: linear-gradient(180deg, #60A5FA 0%, var(--brand) 100%);
                             }
                             .comments-scroll::-webkit-scrollbar-corner {
                                 background: transparent;
@@ -1037,7 +1040,7 @@ const CommentSection = ({
                                 background: rgba(147, 197, 253, 0.08);
                             }
                             .dark .comments-scroll::-webkit-scrollbar-thumb {
-                                background: linear-gradient(180deg, #93C5FD 0%, #276D9C 100%);
+                                background: linear-gradient(180deg, #93C5FD 0%, var(--brand) 100%);
                                 border: 2px solid rgba(20, 21, 23, 0.7);
                             }
                             .document-status-scroll {
@@ -1053,12 +1056,12 @@ const CommentSection = ({
                                 border-radius: 9999px;
                             }
                             .document-status-scroll::-webkit-scrollbar-thumb {
-                                background: linear-gradient(180deg, #276D9C 0%, #0B5C86 100%);
+                                background: linear-gradient(180deg, var(--brand) 0%, #0B5C86 100%);
                                 border-radius: 9999px;
                                 border: 2px solid rgba(255, 255, 255, 0.35);
                             }
                             .document-status-scroll::-webkit-scrollbar-thumb:hover {
-                                background: linear-gradient(180deg, #3B82F6 0%, #276D9C 100%);
+                                background: linear-gradient(180deg, #3B82F6 0%, var(--brand) 100%);
                                 box-shadow: 0 0 0 3px rgba(39, 109, 156, 0.20);
                             }
                             .dark .document-status-scroll {
@@ -1068,7 +1071,7 @@ const CommentSection = ({
                                 background: rgba(147, 197, 253, 0.08);
                             }
                             .dark .document-status-scroll::-webkit-scrollbar-thumb {
-                                background: linear-gradient(180deg, #93C5FD 0%, #276D9C 100%);
+                                background: linear-gradient(180deg, #93C5FD 0%, var(--brand) 100%);
                                 border: 2px solid rgba(20, 21, 23, 0.7);
                             }
                         `}</style>
@@ -1078,12 +1081,12 @@ const CommentSection = ({
                             }`}
                         >
                             {commentsLoading ? (
-                                <div className="flex items-center justify-center py-8">
+                                <div className={`flex items-center justify-center ${compactLayout ? "py-4" : "py-8"}`}>
                                     <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                                     <span className="ml-2 text-sm text-muted-foreground">Loading comments...</span>
                                 </div>
                             ) : filteredComments.length === 0 ? (
-                                <div className="text-center py-8 text-sm text-muted-foreground font-roboto">
+                                <div className={`text-center ${compactLayout ? "py-4" : "py-8"} text-sm text-muted-foreground font-roboto`}>
                                     {comments.length === 0 
                                         ? "No comments yet. Be the first to comment!"
                                         : `No ${commentTypeFilter === "internal" ? "internal" : "external/ISO"} comments found.`
@@ -1145,7 +1148,7 @@ const CommentSection = ({
                                             {/* Document Info */}
                                             <div className="flex-1 min-w-0">
                                                 <h4 className="font-semibold text-foreground text-base font-roboto">{formatDocumentName(doc.name)}</h4>
-                                                <p className="text-xs text-[#151357] font-inter font-medium">{doc.details}</p>
+                                                <p className="text-xs text-[var(--brand)] font-inter font-medium">{doc.details}</p>
                                                 {doc.message && (
                                                     <Tooltip>
                                                         <TooltipTrigger asChild>
@@ -1175,7 +1178,7 @@ const CommentSection = ({
                                             <Button 
                                                 variant="default" 
                                                 size="sm"
-                                                className="shrink-0 bg-[#276D9C] hover:bg-[#276D9C]/90 text-white px-5 py-1 rounded-sm text-sm font-roboto shadow-md"
+                                                className="shrink-0 px-5 py-1 font-roboto"
                                             >
                                                 View
                                             </Button>

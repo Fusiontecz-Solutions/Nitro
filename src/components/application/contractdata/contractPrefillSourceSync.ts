@@ -323,6 +323,7 @@ export type SyncContractPrefillSourceRecordsArgs = {
     offerDecision?: Record<string, unknown> | null;
     contractGuarantors?: Record<string, unknown>[] | null;
     bankDetail?: Record<string, unknown> | null;
+    contract?: Record<string, unknown> | null;
 };
 
 async function syncContractGuarantorsFromPrefill(

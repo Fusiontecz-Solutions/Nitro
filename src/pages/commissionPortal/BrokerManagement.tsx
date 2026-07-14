@@ -467,7 +467,7 @@ export default function isoManagement() {
         ? 'border-[#374151] bg-[#1f2024] hover:border-slate-500'
         : 'border-border bg-card hover:border-muted-foreground/30'
     const listCardActive = isDark
-        ? 'border-[#3184BB]/55 bg-[#1f2024] ring-1 ring-[#3184BB]/30'
+        ? 'border-[var(--brand)]/55 bg-[#1f2024] ring-1 ring-[var(--brand)]/30'
         : 'border-blue-500/50 bg-blue-50/80 ring-1 ring-blue-500/20'
 
     return (
@@ -494,7 +494,7 @@ export default function isoManagement() {
                 >
                     <Button
                         type="button"
-                        className="h-10 w-full rounded-lg bg-blue-500 font-semibold text-white shadow-sm bg-[#3184BB] cursor-pointer"
+                        className="h-10 w-full rounded-lg font-semibold text-white shadow-sm bg-[image:var(--brand-gradient)] hover:opacity-90 cursor-pointer"
                         onClick={openAddDialog}
                     >
                         <Plus className="h-4 w-4" />
@@ -536,9 +536,9 @@ export default function isoManagement() {
                                     <div className="flex gap-3">
                                         <div
                                             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border text-xs font-bold ${isActive
-                                                ? 'border-[#3184BB]/50 bg-[#141517] text-[#5BA3D9]'
+                                                ? 'border-[var(--brand)]/50 bg-[#141517] text-[#C07BE0]'
                                                 : isDark
-                                                    ? 'border-[#3184BB]/30 bg-[#141517] text-[#5BA3D9]'
+                                                    ? 'border-[var(--brand)]/30 bg-[#141517] text-[#C07BE0]'
                                                     : 'border-border bg-muted text-blue-600'
                                                 }`}
                                         >
@@ -846,7 +846,7 @@ export default function isoManagement() {
                         </Button>
                         <Button
                             type="button"
-                            className="bg-blue-500 text-white hover:bg-blue-600"
+                            className="bg-primary text-primary-foreground hover:bg-primary/90"
                             disabled={
                                 !form.name.trim() ||
                                 !form.accountDetails.trim() ||
@@ -950,7 +950,7 @@ export default function isoManagement() {
                         </Button>
                         <Button
                             type="button"
-                            className="bg-blue-500 text-white hover:bg-blue-600"
+                            className="bg-primary text-primary-foreground hover:bg-primary/90"
                             disabled={
                                 !form.name.trim() ||
                                 !form.accountDetails.trim() ||

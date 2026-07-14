@@ -17,6 +17,8 @@ export type DocumentRequestRow = {
     createdAt?: string;
     fileUrl?: string;
     fileId?: string;
+    originalFileName?: string;
+    mimeType?: string;
     contractUploadKey?: "voidedCheck" | "driverLicense";
     message?: string;
 };

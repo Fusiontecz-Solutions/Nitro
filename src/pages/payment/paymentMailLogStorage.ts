@@ -27,6 +27,21 @@ export type PaymentMailLogEntry = {
   subject: string;
   body?: string;
   status: PaymentMailLogStatus;
+  attachments?: string[];
+  delivery?: {
+    status?: string;
+    sentAt?: string;
+    deliveredAt?: string;
+    openedAt?: string;
+    clickedAt?: string;
+    bouncedAt?: string;
+    openCount?: number;
+    clickCount?: number;
+    bounceReason?: string;
+    lastEvent?: string;
+    lastEventAt?: string;
+    lastClickedUrl?: string;
+  };
 };
 
 function safeParse(raw: string | null): PaymentMailLogEntry[] {
@@ -60,6 +75,13 @@ export function normalizePaymentMailLogRow(row: unknown): PaymentMailLogEntry | 
   const status = o.status as PaymentMailLogStatus;
   const applicationId =
     typeof o.applicationId === "string" ? o.applicationId : null;
+  const attachments = Array.isArray(o.attachments)
+    ? o.attachments.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : undefined;
+  const delivery =
+    o.delivery && typeof o.delivery === "object"
+      ? (o.delivery as PaymentMailLogEntry["delivery"])
+      : undefined;
   if (!id || !at) return null;
   if (!["contract", "email", "letter"].includes(String(category))) return null;
   if (
@@ -90,7 +112,23 @@ export function normalizePaymentMailLogRow(row: unknown): PaymentMailLogEntry | 
     subject,
     body,
     status,
+    attachments,
+    delivery,
   };
+}
+
+export function mergePaymentMailLogs(entries: PaymentMailLogEntry[]): void {
+  const prev = safeParse(localStorage.getItem(STORAGE_KEY));
+  const merged = new Map(prev.map((row) => [row.id, row]));
+  for (const row of entries) merged.set(row.id, row);
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify(
+      [...merged.values()].sort(
+        (a, b) => new Date(b.at).getTime() - new Date(a.at).getTime()
+      )
+    )
+  );
 }
 
 export function getPaymentMailLogs(): PaymentMailLogEntry[] {

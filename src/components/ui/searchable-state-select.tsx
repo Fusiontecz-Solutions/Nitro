@@ -58,7 +58,7 @@ export function SearchableStateSelect({
             <SelectTrigger
                 id={id}
                 className={cn(
-                    "h-10 w-full rounded-md border border-[#276D9C]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[#276D9C]/25 disabled:opacity-60 dark:border-slate-600",
+                    "h-10 w-full rounded-md border border-[var(--brand)]/20 bg-background px-3 py-2 text-sm shadow-sm focus:ring-[var(--brand)]/25 disabled:opacity-60 dark:border-slate-600",
                     triggerClassName,
                 )}
             >
