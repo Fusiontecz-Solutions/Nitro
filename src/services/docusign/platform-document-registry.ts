@@ -1,10 +1,10 @@
 import prisma from '../../config/prismaClient';
 import {
-  BOLD_SIGN_TYPE_TO_LAYOUT_KEY,
   DOCUMENT_LAYOUT_KEYS,
-  resolveLayoutKeyFromBoldSignType,
+  getDocumentLayout,
   type DocumentLayoutKey,
 } from './layouts/document-layout.registry';
+import { downloadLegacyDocuSignTemplatePdfBase64 } from './utils/download-legacy-docusign-template-pdf';
 
 export type PlatformDocumentDefinition = {
   layoutKey: DocumentLayoutKey;
@@ -22,6 +22,11 @@ export const PLATFORM_DOCUMENTS: Record<DocumentLayoutKey, PlatformDocumentDefin
     layoutKey: DOCUMENT_LAYOUT_KEYS.contract,
     name: 'Woodmere Financial Contract',
     type: 'contract',
+  },
+  [DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract]: {
+    layoutKey: DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
+    name: 'Texas Funding Group Contract',
+    type: 'texas_funding_group_contract',
   },
   [DOCUMENT_LAYOUT_KEYS.flexAddendum]: {
     layoutKey: DOCUMENT_LAYOUT_KEYS.flexAddendum,
@@ -54,6 +59,16 @@ export const SUPPLEMENTAL_PLATFORM_DOCUMENTS: PlatformDocumentDefinition[] = [
 
 const LAYOUT_KEY_SET = new Set<string>(Object.values(DOCUMENT_LAYOUT_KEYS));
 
+/** When a layout key has no uploaded PDF, also try these sibling keys' uploads. */
+const PDF_URL_ALIASES: Partial<Record<DocumentLayoutKey, DocumentLayoutKey[]>> = {
+  [DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone]: [
+    DOCUMENT_LAYOUT_KEYS.achAuthorization,
+  ],
+  [DOCUMENT_LAYOUT_KEYS.achAuthorization]: [
+    DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone,
+  ],
+};
+
 export function isDocumentLayoutKey(value: string): value is DocumentLayoutKey {
   return LAYOUT_KEY_SET.has(String(value || '').trim());
 }
@@ -64,34 +79,20 @@ function isValidRemotePdfUrl(url: string): boolean {
   return /^https?:\/\//i.test(trimmed);
 }
 
-function layoutKeyMatchScore(
-  layoutKey: DocumentLayoutKey,
-  row: { layoutKey: string | null; type: string; pdfUrl: string | null },
-): number {
-  const rowLayoutKey = String(row.layoutKey || '').trim();
-  if (rowLayoutKey === layoutKey) return 4;
-  if (resolveLayoutKeyFromBoldSignType(row.type) === layoutKey) return 2;
-  if (rowLayoutKey && resolveLayoutKeyFromBoldSignType(row.type) === layoutKey) return 3;
-  return 0;
-}
-
-/** Resolve Cloudinary (or other HTTPS) pdfUrl from BoldSignTemplate for a platform layout key. */
-export async function findBoldSignTemplatePdfUrlForLayout(
-  layoutKey: DocumentLayoutKey,
+/**
+ * Resolve pdfUrl by exact layoutKey / templateId only.
+ * Never match by BoldSignTemplate.type — multiple funders share type "contract"
+ * and fuzzy matching can return the wrong funder's PDF (legal/compliance risk).
+ */
+export async function findBoldSignTemplatePdfUrlByExactLayoutKey(
+  layoutKey: string,
 ): Promise<string | null> {
-  const def = PLATFORM_DOCUMENTS[layoutKey];
-  const typeVariants = new Set<string>([def.type, layoutKey]);
-  for (const [type, key] of Object.entries(BOLD_SIGN_TYPE_TO_LAYOUT_KEY)) {
-    if (key === layoutKey) typeVariants.add(type);
-  }
+  const key = String(layoutKey || '').trim();
+  if (!key) return null;
 
-  const rows = await prisma.boldSignTemplate.findMany({
+  const row = await prisma.boldSignTemplate.findFirst({
     where: {
-      OR: [
-        { layoutKey },
-        { templateId: layoutKey },
-        { type: { in: [...typeVariants] } },
-      ],
+      OR: [{ layoutKey: key }, { templateId: key }],
     },
     orderBy: { createdAt: 'desc' },
     select: { pdfUrl: true, layoutKey: true, type: true, templateId: true },
@@ -104,17 +105,17 @@ export async function findBoldSignTemplatePdfUrlForLayout(
   });
 
   const ranked = [...platformRows].sort(
-    (a, b) => layoutKeyMatchScore(layoutKey, b) - layoutKeyMatchScore(layoutKey, a),
-  );
 
-  for (const row of ranked) {
-    const url = String(row.pdfUrl || '').trim();
-    if (isValidRemotePdfUrl(url)) return url;
+/** Resolve Cloudinary (or other HTTPS) pdfUrl from BoldSignTemplate for a platform layout key. */
+export async function findBoldSignTemplatePdfUrlForLayout(
+  layoutKey: DocumentLayoutKey,
   }
 
   // Standalone ACH reuses the same Cloudinary PDF / row as `ach_authorization`.
   if (layoutKey === DOCUMENT_LAYOUT_KEYS.achAuthorizationStandalone) {
     return findBoldSignTemplatePdfUrlForLayout(DOCUMENT_LAYOUT_KEYS.achAuthorization);
+    const aliased = await findBoldSignTemplatePdfUrlByExactLayoutKey(alias);
+    if (aliased) return aliased;
   }
   return null;
 }
@@ -127,6 +128,23 @@ async function fetchRemotePdfAsBase64(url: string, documentName: string): Promis
   return Buffer.from(await res.arrayBuffer()).toString('base64');
 }
 
+async function loadDefaultPdfFromLegacyDocuSign(
+  layoutKey: DocumentLayoutKey,
+): Promise<string | null> {
+  const layout = getDocumentLayout(layoutKey);
+  const legacyId = String(layout.legacyDocuSignTemplateId || '').trim();
+  if (!legacyId) return null;
+  try {
+    return await downloadLegacyDocuSignTemplatePdfBase64(legacyId, layout.name);
+  } catch (err) {
+    console.warn(
+      `[platform-docs] Default DocuSign PDF failed for "${layoutKey}" (${legacyId}):`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+}
+
 export async function resolvePlatformDocumentPdfUrl(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
@@ -135,21 +153,35 @@ export async function resolvePlatformDocumentPdfUrl(
   if (fromDb) return fromDb;
 
   throw new Error(
-    `Missing PDF URL for "${def.name}". Upload the PDF to Cloudinary and set pdfUrl on the BoldSignTemplate row with layoutKey "${layoutKey}".`,
+    `Missing PDF URL for "${def.name}". Upload the PDF to Cloudinary and set pdfUrl on the BoldSignTemplate row with layoutKey "${layoutKey}", or rely on the default DocuSign template PDF via loadPlatformDocumentPdfBase64.`,
   );
 }
 
+/**
+ * Load platform document PDF bytes.
+ * Priority: uploaded BoldSignTemplate.pdfUrl → sibling layout upload → default DocuSign template PDF.
+ * Uploaded PDFs always win; DocuSign defaults are only used when nothing is uploaded.
+ */
 export async function loadPlatformDocumentPdfBase64(
   layoutKey: DocumentLayoutKey,
 ): Promise<string> {
   const def = PLATFORM_DOCUMENTS[layoutKey];
   const fromDb = await findBoldSignTemplatePdfUrlForLayout(layoutKey);
-  if (!fromDb) {
-    throw new Error(
-      `No PDF configured for "${def.name}". Upload to Cloudinary and set BoldSignTemplate.pdfUrl with layoutKey "${layoutKey}".`,
-    );
+  if (fromDb) {
+    return fetchRemotePdfAsBase64(fromDb, def.name);
   }
-  return fetchRemotePdfAsBase64(fromDb, def.name);
+
+  const fromLegacy = await loadDefaultPdfFromLegacyDocuSign(layoutKey);
+  if (fromLegacy) return fromLegacy;
+
+  for (const alias of PDF_URL_ALIASES[layoutKey] ?? []) {
+    const aliasLegacy = await loadDefaultPdfFromLegacyDocuSign(alias);
+    if (aliasLegacy) return aliasLegacy;
+  }
+
+  throw new Error(
+    `No PDF configured for "${def.name}". Upload to Cloudinary (BoldSignTemplate.pdfUrl, layoutKey "${layoutKey}") or ensure the default DocuSign template is available.`,
+  );
 }
 
 export function normalizeSupplementalLayoutKeys(refs: string[]): DocumentLayoutKey[] {

@@ -25,6 +25,8 @@ model User {
   underwriterApprovedApps    Application[]                 @relation("ApplicationApprovedByUnderwriter")
   underwriterAssignedApps    Application[]                 @relation("ApplicationAssignedUnderwriter")
   underwriterClaimedApps     Application[]                 @relation("ApplicationClaimedByUnderwriter")
+  underwriterApprovedApps       Application[]                 @relation("ApplicationApprovedByUnderwriter")
+  underwriterAssignedApps       Application[]                 @relation("ApplicationAssignedUnderwriter")
   createdApplications        Application[]                 @relation("ApplicationCreatedBy")
   deletedApplications        Application[]                 @relation("ApplicationDeletedBy")
   referringApplications      Application[]                 @relation("ApplicationReferringAgent")
@@ -220,6 +222,13 @@ model Application {
   status                          String?
   claimedByUnderwriterId          String?                       @db.Uuid
   claimedAt                       DateTime?
+  approvedByUnderwriterId  String?                       @db.Uuid
+  approvedAt               DateTime?
+  /// Last action an Underwriter performed on this deal: "Approved By UW", "Decline by UW", "Final Approved by UW".
+  underwriterAction        String?
+  assignedUnderwriterId    String?                       @db.Uuid
+  /// Tab that sent the deal to Final Approval: "Decision Logic" or "Funding Call".
+  finalApprovalSource      String?
   category                        String?
   organization                    String?
   approvedAt                      DateTime?
@@ -253,6 +262,8 @@ model Application {
   approvedByUnderwriter           User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
   assignedUnderwriter             User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])
   claimedByUnderwriter            User?                         @relation("ApplicationClaimedByUnderwriter", fields: [claimedByUnderwriterId], references: [id])
+  approvedByUnderwriter    User?                         @relation("ApplicationApprovedByUnderwriter", fields: [approvedByUnderwriterId], references: [id])
+  assignedUnderwriter      User?                         @relation("ApplicationAssignedUnderwriter", fields: [assignedUnderwriterId], references: [id])
   client                          Client                        @relation(fields: [clientId], references: [id])
   createdBy                       User?                         @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
   deletedBy                       User?                         @relation("ApplicationDeletedBy", fields: [deletedById], references: [id])
@@ -271,6 +282,7 @@ model Application {
   comments                        Comment[]
   complianceChecks                ComplianceCheck[]
   contract                        Contract?
+  backgroundCheck          BackgroundCheck?
   conversations                   Conversation[]
   disclosures                     Disclosure?
   document                        Document?

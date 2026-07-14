@@ -31,6 +31,12 @@ export type DocumentLayoutPlacement = {
   sourceTabLabel?: string;
   /** When true, prefill tab is locked so signers cannot edit. */
   lockedForSigner?: boolean;
+  /** When true, tab is left blank at send so the signer fills it during signing (never locked or flattened). */
+  fillAtSigning?: boolean;
+  /** When true, DocuSign / flattened PDF text uses bold. */
+  bold?: boolean;
+  /** Explicit DocuSign/PDF font size in points (e.g. 14 → size14). */
+  fontSize?: string | number;
 };
 
 export type DocumentLayout = {
@@ -212,6 +218,60 @@ export function convertDocuSignTemplateExport(
     })),
     variables,
     placements,
+  };
+}
+
+/** Optional sign slots route to Owner 2 when `ownerCount >= 2`. Text stays on signer 1 (prefill only). */
+function applyDiscoverStyleOwnerRouting(
+  placements: DocumentLayoutPlacement[],
+): DocumentLayoutPlacement[] {
+  return placements.map((placement) => {
+    const isOwner2Signature =
+      placement.type === 'signature' && placement.optional === true;
+
+    if (!isOwner2Signature) {
+      return placement;
+    }
+
+    return {
+      ...placement,
+      signerParty: 'secondary',
+      when: 'owners >= 2',
+    };
+  });
+}
+
+/** Root-level `tabs` export (e.g. texas_funding_group_contract.json) without full DocuSign template envelope. */
+export function convertSimplifiedTabsContractExport(
+  exportJson: Record<string, unknown>,
+  meta: {
+    key: string;
+    name?: string;
+    description?: string;
+    pdfSource?: 'contractTemplate' | 'boldSignTemplate';
+    pdfFileName?: string;
+  },
+): DocumentLayout {
+  const wrapped = {
+    name: meta.name || exportJson.name,
+    documents: [
+      {
+        documentId: '1',
+        name: exportJson.documentName || meta.pdfFileName,
+        pageCount: exportJson.pageCount,
+      },
+    ],
+    recipients: {
+      signers: [
+        { roleName: 'Signer', routingOrder: 1, tabs: exportJson.tabs || {} },
+        { roleName: 'Owner 2', routingOrder: 2, tabs: {} },
+      ],
+    },
+  };
+  const layout = convertDocuSignTemplateExport(wrapped, meta);
+  return {
+    ...layout,
+    placements: applyDiscoverStyleOwnerRouting(layout.placements),
   };
 }
 

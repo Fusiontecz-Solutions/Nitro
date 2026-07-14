@@ -27,6 +27,10 @@ router.get('/document-requests/:applicationId', notificationController.getDocume
 
 // Bulk triage update (multi-select). Must precede '/:id/...' so 'bulk' isn't read as an id.
 router.patch('/bulk', notificationController.bulkUpdate.bind(notificationController));
+    '/document-requests/:applicationId/:documentId',
+    notificationController.removeDocumentRequest.bind(notificationController),
+);
+
 
 // Mark all notifications as read for current user (precede '/:id/read')
 router.patch('/read-all', notificationController.markAllAsRead.bind(notificationController));

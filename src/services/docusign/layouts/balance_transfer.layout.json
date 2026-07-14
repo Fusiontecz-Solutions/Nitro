@@ -28,6 +28,8 @@
     "client_legal_name",
     "client_name_by",
     "dba",
+    "deal_id_prefix",
+    "funder_name_with_deal_prefix",
     "merchant_legal_name",
     "purchase_price",
     "signature_date"
@@ -174,8 +176,8 @@
       "variable": "dba",
       "documentId": "1406",
       "pageNumber": "1",
-      "x": "100",
-      "y": "172",
+      "x": "103",
+      "y": "174",
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "dba"
@@ -191,6 +193,74 @@
       "signerRole": "Signer",
       "optional": true,
       "sourceTabLabel": "merchant_legal_name"
+    },
+    {
+      "id": "p14",
+      "type": "text",
+      "variable": "funder_name_with_deal_prefix",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "71",
+      "y": "315",
+      "width": "320",
+      "height": "22",
+      "fontSize": "14",
+      "signerRole": "Signer",
+      "optional": true,
+      "lockedForSigner": true,
+      "sourceTabLabel": "funder_name_with_deal_prefix"
+    },
+    {
+      "id": "p15",
+      "type": "text",
+      "variable": "deal_id_prefix",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "311",
+      "y": "458",
+      "signerRole": "Signer",
+      "optional": true,
+      "lockedForSigner": true,
+      "sourceTabLabel": "deal_id_prefix_311_458"
+    },
+    {
+      "id": "p16",
+      "type": "text",
+      "variable": "deal_id_prefix",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "232",
+      "y": "476",
+      "signerRole": "Signer",
+      "optional": true,
+      "lockedForSigner": true,
+      "sourceTabLabel": "deal_id_prefix_232_476"
+    },
+    {
+      "id": "p17",
+      "type": "text",
+      "variable": "deal_id_prefix",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "193",
+      "y": "492",
+      "signerRole": "Signer",
+      "optional": true,
+      "lockedForSigner": true,
+      "sourceTabLabel": "deal_id_prefix_193_492"
+    },
+    {
+      "id": "p18",
+      "type": "text",
+      "variable": "deal_id_prefix",
+      "documentId": "1406",
+      "pageNumber": "1",
+      "x": "477",
+      "y": "515",
+      "signerRole": "Signer",
+      "optional": true,
+      "lockedForSigner": true,
+      "sourceTabLabel": "deal_id_prefix_477_515"
     }
   ]
 }

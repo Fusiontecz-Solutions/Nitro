@@ -256,6 +256,153 @@ export async function getApplicationForUserByRef(
 const normalizeSsn = (ssn: string | null | undefined) =>
     ssn ? String(ssn).replace(/\D/g, '') : null;
 
+/** Helper to normalize EIN to last 9 digits */
+const normalizeEin = (ein: string | null | undefined) => {
+    const digits = ein ? String(ein).replace(/\D/g, '') : '';
+    if (!digits) return null;
+    return digits.length >= 9 ? digits.slice(-9) : digits;
+};
+
+const normalizeBusinessName = (name: string | null | undefined) =>
+    name ? String(name).replace(/\s+/g, ' ').trim() : '';
+
+const normalizeEmail = (email: string | null | undefined) =>
+    email ? String(email).trim().toLowerCase() : '';
+
+const ssnMatches = (a: string | null | undefined, b: string | null | undefined) => {
+    const aNorm = normalizeSsn(a);
+    const bNorm = normalizeSsn(b);
+    if (!aNorm || !bNorm || aNorm.length < 4 || bNorm.length < 4) return false;
+    return aNorm === bNorm || aNorm.slice(-4) === bNorm.slice(-4);
+};
+
+export type ExistingClientMatchReason =
+    | 'ein'
+    | 'business_name_email'
+    | 'owner_ssn'
+    | 'owner_ssn_client_owner'
+    | 'business_name_owner_name'
+    | 'business_name_owner_name_client_owner';
+
+/**
+ * Resolve an existing Client for PDF auto-create flows.
+ * Matches by EIN, business name + email, owner SSN (flat + ClientOwner rows), then business + owner name.
+ */
+export async function findExistingClientFromPdfExtract(
+    business: Record<string, unknown>,
+    owner: Record<string, unknown>,
+): Promise<{ client: any; matchedBy: ExistingClientMatchReason } | null> {
+    const einNorm = normalizeEin(
+        (business.business_ein_number ??
+            business.ein_number ??
+            business.businessEinNumber) as string | null | undefined,
+    );
+    const businessNameNorm = normalizeBusinessName(
+        (business.business_name ?? business.dba_name ?? business.businessName) as
+            | string
+            | null
+            | undefined,
+    );
+    const businessEmailNorm = normalizeEmail(
+        (business.business_email ?? business.email ?? business.businessEmail) as
+            | string
+            | null
+            | undefined,
+    );
+    const ownerFirstNorm = normalizeBusinessName(
+        (owner.owner_first_name ?? owner.firstName) as string | null | undefined,
+    );
+    const ownerLastNorm = normalizeBusinessName(
+        (owner.owner_last_name ?? owner.lastName) as string | null | undefined,
+    );
+    const ownerSsnRaw =
+        (owner.owner_ssn ?? owner.ownerSsn ?? owner.ssn ?? null) as string | null | undefined;
+
+    if (einNorm) {
+        const clientsWithEin = await prisma.client.findMany({
+            where: { businessEinNumber: { not: null } },
+            orderBy: { createdAt: 'desc' },
+            take: 500,
+        });
+        const existingByEin = clientsWithEin.find(
+            (c) => normalizeEin(c.businessEinNumber) === einNorm,
+        );
+        if (existingByEin) {
+            return { client: existingByEin, matchedBy: 'ein' };
+        }
+    }
+
+    if (businessNameNorm && businessEmailNorm) {
+        const existingByBusiness = await prisma.client.findFirst({
+            where: {
+                businessName: { equals: businessNameNorm, mode: 'insensitive' },
+                businessEmail: { equals: businessEmailNorm, mode: 'insensitive' },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (existingByBusiness) {
+            return { client: existingByBusiness, matchedBy: 'business_name_email' };
+        }
+    }
+
+    if (ownerSsnRaw) {
+        const clientsWithSsn = await prisma.client.findMany({
+            where: { ownerSsn: { not: null } },
+            orderBy: { createdAt: 'desc' },
+            take: 500,
+        });
+        const existingBySsn = clientsWithSsn.find((c) => ssnMatches(c.ownerSsn, ownerSsnRaw));
+        if (existingBySsn) {
+            return { client: existingBySsn, matchedBy: 'owner_ssn' };
+        }
+
+        const clientOwnersWithSsn = await prisma.clientOwner.findMany({
+            where: { ssn: { not: null } },
+            include: { client: true },
+            orderBy: { createdAt: 'desc' },
+            take: 500,
+        });
+        const ownerRecordMatch = clientOwnersWithSsn.find((co) => ssnMatches(co.ssn, ownerSsnRaw));
+        if (ownerRecordMatch?.client) {
+            return { client: ownerRecordMatch.client, matchedBy: 'owner_ssn_client_owner' };
+        }
+    }
+
+    if (businessNameNorm && ownerFirstNorm && ownerLastNorm) {
+        const existingByName = await prisma.client.findFirst({
+            where: {
+                businessName: { equals: businessNameNorm, mode: 'insensitive' },
+                ownerFirstName: { equals: ownerFirstNorm, mode: 'insensitive' },
+                ownerLastName: { equals: ownerLastNorm, mode: 'insensitive' },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (existingByName) {
+            return { client: existingByName, matchedBy: 'business_name_owner_name' };
+        }
+
+        const ownerNameMatch = await prisma.clientOwner.findFirst({
+            where: {
+                firstName: { equals: ownerFirstNorm, mode: 'insensitive' },
+                lastName: { equals: ownerLastNorm, mode: 'insensitive' },
+                client: {
+                    businessName: { equals: businessNameNorm, mode: 'insensitive' },
+                },
+            },
+            include: { client: true },
+            orderBy: { createdAt: 'desc' },
+        });
+        if (ownerNameMatch?.client) {
+            return {
+                client: ownerNameMatch.client,
+                matchedBy: 'business_name_owner_name_client_owner',
+            };
+        }
+    }
+
+    return null;
+}
+
 /** Helper to parse numeric amounts like "$12,345.67" */
 const parseNumericAmount = (value: string | number | null | undefined): number | null => {
     if (value === null || value === undefined) return null;
@@ -470,26 +617,15 @@ export async function createClientAndApplicationFromPDFBuffer(
     const monthlyRevenue =
         annualRevenue != null ? Math.round((annualRevenue / 12) * 100) / 100 : null;
 
-    // 3️⃣ Try to find existing client by SSN
-    let clientRecord: any | null = null;
-    let existingClient = false;
+    // 3️⃣ Try to find existing client (EIN, business+email, SSN, business+owner name)
+    const existingMatch = await findExistingClientFromPdfExtract(business, owner);
+    let clientRecord: any | null = existingMatch?.client ?? null;
+    let existingClient = Boolean(clientRecord);
 
-    if (ownerSsnNorm && ownerSsnNorm.length >= 4) {
-        const ssnLast4 = ownerSsnNorm.slice(-4);
-        const clientsWithSsn = await prisma.client.findMany({
-            where: { ownerSsn: { not: null } },
-            orderBy: { createdAt: 'desc' },
-            take: 200,
-        });
-        clientRecord =
-            clientsWithSsn.find((c) => {
-                const cNorm = normalizeSsn(c.ownerSsn);
-                return cNorm && (cNorm === ownerSsnNorm || cNorm.slice(-4) === ssnLast4);
-            }) || null;
-
-        if (clientRecord) {
-            existingClient = true;
-        }
+    if (existingMatch) {
+        console.log(
+            `[createClientAndApplicationFromPDFBuffer] Reusing existing client (${existingMatch.matchedBy}): clientId=${clientRecord?.clientId}`,
+        );
     }
 
     // 4️⃣ Create client + application
@@ -942,5 +1078,7 @@ const applicationService = {
     createApplicationFromGmailSubjectFallback,
     applyPdfExtractToApplicationFromStoredFile,
 };
+
+export { mergePdfExtractIntoExistingClient };
 
 export default applicationService;

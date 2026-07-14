@@ -23,8 +23,12 @@ import {
   resolveDocumentsLayoutFunderId,
   canManageFunderDocuments,
 } from '../utils/funderDocumentSource';
+import {
+  funderStateListIncludes,
+  normalizeContractStateToken,
+} from '../utils/usStateMatch';
 
-/** Client-side fallback profile ids (e.g. `fallback-alliance-bridge`) are not DB UUIDs. */
+/** Client-side fallback profile ids are not DB UUIDs. */
 const PERSISTED_FUNDER_PROFILE_ID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -52,6 +56,7 @@ export type FunderProfileInput = {
   legalName?: string | null;
   contactEmail?: string | null;
   contactPhone?: string | null;
+  defaultCcEmail?: string | null;
   addressLine1?: string | null;
   addressCity?: string | null;
   addressState?: string | null;
@@ -117,6 +122,7 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
     legalName: row.legalName != null ? String(row.legalName) : null,
     contactEmail: row.contactEmail != null ? String(row.contactEmail) : null,
     contactPhone: row.contactPhone != null ? String(row.contactPhone) : null,
+    defaultCcEmail: row.defaultCcEmail != null ? String(row.defaultCcEmail) : null,
     addressLine1: row.addressLine1 != null ? String(row.addressLine1) : null,
     addressCity: row.addressCity != null ? String(row.addressCity) : null,
     addressState: row.addressState != null ? String(row.addressState) : null,
@@ -142,6 +148,36 @@ export function serializeFunderProfile(row: Record<string, unknown>) {
       row.sharedDisclosureFunderId != null ? String(row.sharedDisclosureFunderId) : null,
     sharedDocumentsFunderName:
       row.sharedDocumentsFunderName != null ? String(row.sharedDocumentsFunderName) : null,
+    addendumDocumentsSource: normalizeFunderDocumentsSource(
+      row.addendumDocumentsSource != null
+        ? String(row.addendumDocumentsSource)
+        : row.documentsSource != null
+          ? String(row.documentsSource)
+          : null,
+    ),
+    disclosureDocumentsSource: normalizeFunderDocumentsSource(
+      row.disclosureDocumentsSource != null
+        ? String(row.disclosureDocumentsSource)
+        : row.documentsSource != null
+          ? String(row.documentsSource)
+          : null,
+    ),
+    sharedAddendumFunderId:
+      row.sharedAddendumFunderId != null
+        ? String(row.sharedAddendumFunderId)
+        : row.sharedDocumentsFunderId != null
+          ? String(row.sharedDocumentsFunderId)
+          : null,
+    sharedDisclosureFunderId:
+      row.sharedDisclosureFunderId != null
+        ? String(row.sharedDisclosureFunderId)
+        : row.sharedDocumentsFunderId != null
+          ? String(row.sharedDocumentsFunderId)
+          : null,
+    sharedAddendumFunderName:
+      row.sharedAddendumFunderName != null ? String(row.sharedAddendumFunderName) : null,
+    sharedDisclosureFunderName:
+      row.sharedDisclosureFunderName != null ? String(row.sharedDisclosureFunderName) : null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -163,10 +199,16 @@ export function funderNamesEquivalent(
   const b = normalizeFunderLookupToken(right);
   if (!a || !b) return false;
   if (a === b) return true;
-  const katanIi = new Set(['katan ii', 'katan 2', 'katan2']);
-  const katanIii = new Set(['katan iii', 'katan 3', 'katan3']);
-  if (katanIi.has(a) && katanIi.has(b)) return true;
-  if (katanIii.has(a) && katanIii.has(b)) return true;
+  const woodmere = new Set(['woodmere financial', 'woodmere']);
+  const texasFundingGroup = new Set([
+    'texas funding group',
+    'texas funding',
+    'tfg',
+  ]);
+  if (woodmere.has(a) && woodmere.has(b)) return true;
+  if (texasFundingGroup.has(a) && texasFundingGroup.has(b)) return true;
+  if (a.includes('woodmere') && b.includes('woodmere')) return true;
+  if (a.includes('texas funding group') && b.includes('texas funding group')) return true;
   return false;
 }
 
@@ -193,9 +235,6 @@ export async function resolveStoredContractFunderName(
   if (pickFunderProfileFromList(profiles, canonical, contractState)) {
     return canonical;
   }
-
-    const funderOrg = resolveFunderOrganizationFromName(trimmed);
-    if (funderOrg) return funderOrg.organization;
 
   return trimmed;
 }
@@ -294,6 +333,11 @@ async function enrichFunderProfilesWithSharedNames<
     ...new Set(
       profiles
         .map((p) => p.sharedDocumentsFunderId)
+        .flatMap((p) => [
+          p.sharedDocumentsFunderId,
+          p.sharedAddendumFunderId,
+          p.sharedDisclosureFunderId,
+        ])
         .filter((id): id is string => Boolean(id)),
     ),
   ];
@@ -309,6 +353,12 @@ async function enrichFunderProfilesWithSharedNames<
     ...p,
     sharedDocumentsFunderName: p.sharedDocumentsFunderId
       ? nameById.get(p.sharedDocumentsFunderId) ?? null
+      : null,
+    sharedAddendumFunderName: p.sharedAddendumFunderId
+      ? nameById.get(p.sharedAddendumFunderId) ?? null
+      : null,
+    sharedDisclosureFunderName: p.sharedDisclosureFunderId
+      ? nameById.get(p.sharedDisclosureFunderId) ?? null
       : null,
   }));
 }
@@ -330,18 +380,43 @@ export async function getFunderProfileById(id: string) {
   return enriched;
 }
 
-export function assertCanManageFunderDocuments(profile: SerializedFunderProfile) {
-  if (canManageFunderDocuments(profile)) return;
-  if (normalizeFunderDocumentsSource(profile.documentsSource) === 'platform') {
+export function assertCanManageFunderAddendums(profile: SerializedFunderProfile) {
+  if (canManageFunderAddendums(profile)) return;
+  if (resolveAddendumDocumentsSource(profile) === 'platform') {
     throw new Error(
-      'This funder uses platform addendums and disclosures (same as Katan II / Katan III).',
+      'This funder uses platform addendums (same as Woodmere Financial). Switch addendum source to “This funder only” to upload.',
     );
   }
   const ownerName = profile.sharedDocumentsFunderName;
+  const ownerName = profile.sharedAddendumFunderName || profile.sharedDocumentsFunderName;
   if (ownerName) {
     throw new Error(`Upload PDFs on "${ownerName}" — this funder shares their documents.`);
+    throw new Error(`Upload addendums on "${ownerName}" — this funder shares their addendums.`);
   }
   throw new Error('This funder does not manage its own addendum/disclosure uploads.');
+  throw new Error('This funder does not manage its own addendum uploads.');
+}
+
+export function assertCanManageFunderDisclosures(profile: SerializedFunderProfile) {
+  if (canManageFunderDisclosures(profile)) return;
+  if (resolveDisclosureDocumentsSource(profile) === 'platform') {
+    throw new Error(
+      'This funder uses platform disclosures (same as Woodmere Financial). Switch disclosure source to “This funder only” to upload.',
+    );
+  }
+  const ownerName = profile.sharedDisclosureFunderName || profile.sharedDocumentsFunderName;
+  if (ownerName) {
+    throw new Error(
+      `Upload disclosures on "${ownerName}" — this funder shares their disclosures.`,
+    );
+  }
+  throw new Error('This funder does not manage its own disclosure uploads.');
+}
+
+/** @deprecated Prefer assertCanManageFunderAddendums / assertCanManageFunderDisclosures */
+export function assertCanManageFunderDocuments(profile: SerializedFunderProfile) {
+  if (canManageFunderAddendums(profile) || canManageFunderDisclosures(profile)) return;
+  assertCanManageFunderAddendums(profile);
 }
 
 export async function getFunderWithDocuSignCredentials(
@@ -500,6 +575,8 @@ export async function uploadFunderSupplementalPdf(
   if (!profile) throw new Error('Funder not found.');
   assertCanManageFunderDocuments(profile);
   const layoutFunderId = resolveDocumentsLayoutFunderId(profile) || funderId;
+  assertCanManageFunderAddendums(profile);
+  const layoutFunderId = resolveAddendumDocumentsLayoutFunderId(profile) || funderId;
 
   const mimetype = String(file.mimetype || '').toLowerCase();
   if (mimetype !== 'application/pdf') {
@@ -538,8 +615,10 @@ export async function uploadFunderDisclosurePdf(
   const profile = await getFunderProfileById(funderId);
   if (!profile) throw new Error('Funder not found.');
   assertCanManageFunderDocuments(profile);
+  assertCanManageFunderDisclosures(profile);
 
   const layoutFunderId = resolveDocumentsLayoutFunderId(profile) || funderId;
+  const layoutFunderId = resolveDisclosureDocumentsLayoutFunderId(profile) || funderId;
   const mimetype = String(file.mimetype || '').toLowerCase();
   if (mimetype !== 'application/pdf') {
     throw new Error('Only PDF files are allowed for funder disclosure documents.');
@@ -879,6 +958,8 @@ export async function updateFunderProfile(id: string, input: Partial<FunderProfi
     data.sharedAddendumFunderId = input.sharedAddendumFunderId
       ? String(input.sharedAddendumFunderId).trim()
       : null;
+    data.sharedAddendumFunderId = sharedId;
+    data.sharedDocumentsFunderId = sharedId;
   }
   if (input.sharedDisclosureFunderId !== undefined) {
     data.sharedDisclosureFunderId = input.sharedDisclosureFunderId

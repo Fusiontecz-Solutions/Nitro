@@ -20,7 +20,6 @@ export type AchAuthorizationDocuSignMeta = {
   status: AchAuthorizationDocuSignCapsuleStatus;
   sentAt?: string | null;
   updatedAt?: string | null;
-  funderName?: string | null;
 };
 
 export type AchSendHistoryEntry = {
@@ -28,7 +27,6 @@ export type AchSendHistoryEntry = {
   status: AchAuthorizationDocuSignCapsuleStatus;
   sentAt?: string | null;
   archivedAt: string;
-  funderName?: string | null;
 };
 
 function achCapsuleToInternal(status: AchAuthorizationDocuSignCapsuleStatus): string {
@@ -83,7 +81,6 @@ export function parseAchAuthorizationDocuSignFromPrefill(
     status,
     sentAt: o.sentAt != null ? String(o.sentAt) : null,
     updatedAt: o.updatedAt != null ? String(o.updatedAt) : null,
-    funderName: o.funderName != null ? String(o.funderName).trim() || null : null,
   };
 }
 
@@ -113,8 +110,6 @@ export function mergeAchAuthorizationDocuSignIntoPrefill(
             ? (prior.sentAt ?? now)
             : (prior.sentAt ?? null),
     updatedAt: patch.updatedAt ?? now,
-    funderName:
-      patch.funderName !== undefined ? patch.funderName : (prior.funderName ?? null),
   };
   return {
     ...base,

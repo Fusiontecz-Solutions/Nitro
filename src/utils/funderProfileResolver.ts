@@ -1,12 +1,18 @@
 import {
   funderAvailableForState,
+  funderNamesEquivalent,
   isPersistedFunderProfileId,
   pickFunderProfileFromList,
   resolveFunderProfile,
   type SerializedFunderProfile,
 } from '../services/funderProfileService';
 import prisma from '../config/prismaClient';
-import { isAllianceBridgeFunder, isTexasContractState } from '../services/docusign/utils/resolve-main-contract-layout';
+import {
+  isTexasContractState,
+  isTexasFundingGroupFunder,
+} from '../services/docusign/utils/resolve-main-contract-layout';
+import { DOCUMENT_LAYOUT_KEYS } from '../services/docusign/layouts/document-layout.registry';
+import { CONTRACT_ENVELOPE_LENDER_NAME } from '../utils/contractEnvelopeEmailSubject';
 
 export type { SerializedFunderProfile };
 export { pickFunderProfileFromList, resolveFunderProfile };
@@ -17,7 +23,23 @@ function normalizeFunderToken(value?: string | null): string {
     .toLowerCase();
 }
 
-export function isAllianceFunderProfile(profile: {
+export function isWoodmereFunderProfile(profile: {
+  name?: string | null;
+  displayName?: string | null;
+  organization?: string | null;
+  legalName?: string | null;
+}): boolean {
+  const tokens = [profile.name, profile.displayName, profile.organization, profile.legalName]
+    .map(normalizeFunderToken)
+    .filter(Boolean);
+  return tokens.some(
+    (t) =>
+      funderNamesEquivalent(t, CONTRACT_ENVELOPE_LENDER_NAME) ||
+      (t.includes('woodmere') && !t.includes('texas')),
+  );
+}
+
+export function isTexasFundingGroupFunderProfile(profile: {
   name?: string | null;
   displayName?: string | null;
   mainContractLayoutKey?: string | null;
@@ -25,17 +47,15 @@ export function isAllianceFunderProfile(profile: {
   legalName?: string | null;
   contactEmail?: string | null;
 }): boolean {
+  if (isWoodmereFunderProfile(profile)) return false;
+
   return (
-    isAllianceBridgeFunder(profile.name) ||
-    isAllianceBridgeFunder(profile.displayName) ||
-    isAllianceBridgeFunder(profile.organization) ||
-    isAllianceBridgeFunder(profile.legalName) ||
-    String(profile.name ?? '').toLowerCase().includes('alliance capital') ||
-    String(profile.displayName ?? '').toLowerCase().includes('alliance capital') ||
-    String(profile.contactEmail ?? '')
-      .toLowerCase()
-      .includes('@alliancebridgecapital.com') ||
-    String(profile.mainContractLayoutKey || '').trim() === 'alliance_bridge_contract'
+    isTexasFundingGroupFunder(profile.name) ||
+    isTexasFundingGroupFunder(profile.displayName) ||
+    isTexasFundingGroupFunder(profile.organization) ||
+    isTexasFundingGroupFunder(profile.legalName) ||
+    String(profile.mainContractLayoutKey || '').trim() ===
+      DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract
   );
 }
 
@@ -53,31 +73,11 @@ export function resolveDefaultFunderNameForState(
   const normalizedState = normalizeFunderToken(state);
   const active = profiles.filter((p) => p.isActive !== false);
 
-  if (isTexasContractState(normalizedState)) {
-    const alliance = active
-      .filter((p) => isAllianceFunderProfile(p))
-      .filter((p) =>
-        funderAvailableForState(
-          p.allowedStates ?? [],
-          p.excludedStates ?? [],
-          normalizedState,
-        ),
-      )
-      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-    if (alliance[0]?.name) return String(alliance[0].name).trim();
-  }
-
-  const katanIi = active.find(
-    (p) =>
-      normalizeFunderToken(p.name) === 'katan ii' ||
-      normalizeFunderToken(p.displayName) === 'katan ii' ||
-      normalizeFunderToken(p.name) === 'katan 2' ||
-      normalizeFunderToken(p.displayName) === 'katan 2',
-  );
-  if (katanIi?.name) return String(katanIi.name).trim();
+  const woodmere = active.find((p) => isWoodmereFunderProfile(p));
+  if (woodmere?.name) return String(woodmere.name).trim();
 
   const fallback = active
-    .filter((p) => !isAllianceFunderProfile(p))
+    .filter((p) => !isTexasFundingGroupFunderProfile(p))
     .filter((p) =>
       funderAvailableForState(
         p.allowedStates ?? [],
@@ -113,12 +113,11 @@ export function resolveFunderSwitchOnStateChange(options: {
   );
   const enteringTexas = isTexasContractState(pickedState);
 
-  if (enteringTexas) {
-    const allianceName = resolveDefaultFunderNameForState(profiles, pickedState);
-    if (allianceName) return allianceName;
+  if (current && isWoodmereFunderProfile(current)) {
+    return null;
   }
 
-  if (current && isAllianceFunderProfile(current) && !enteringTexas) {
+  if (current && isTexasFundingGroupFunderProfile(current) && !enteringTexas) {
     return resolveDefaultFunderNameForState(profiles, pickedState);
   }
 

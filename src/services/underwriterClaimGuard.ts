@@ -21,7 +21,6 @@ export type UnderwriterClaimMutationDenial = { status: number; message: string }
 /**
  * Scrubbing queue: only the claiming scrubbing may mutate the deal.
  * Unclaimed (`claimedByUnderwriterId` null): SCRUBBING may not change anything until they claim.
- * Other roles are not restricted here.
  */
 export function getUnderwriterClaimMutationDenial(
     user: AuthenticatedUser | null | undefined,
@@ -46,7 +45,19 @@ export function getUnderwriterClaimMutationDenial(
         if (claimId !== user.id) {
             return {
                 status: 403,
-                message: 'This deal is claimed by another scrubbing. You can only review the overview.',
+            message: 'This deal is claimed by another underwriter. You can only review the overview.',
+            };
+        }
+        return null;
+    }
+
+    if (roleUpper === 'UNDERWRITER' && isApplicationInFinalUnderwriterQueue(app.currentQueue)) {
+        const assignId = app.assignedUnderwriterId ?? null;
+        if (!assignId) {
+            return {
+                status: 403,
+                message:
+                    'Claim this application before making changes. Until then, you can only review the application overview.',
             };
         }
         return null;

@@ -9,50 +9,29 @@ import {
   funderContractLayoutKey,
   isFunderContractLayoutKey,
 } from '../../../utils/funderContractLayout';
-import { isAllianceFunderProfile } from '../../../utils/funderProfileResolver';
+import { findBoldSignTemplatePdfUrlByExactLayoutKey } from '../platform-document-registry';
+import {
+  isTexasFundingGroupFunderProfile,
+  isWoodmereFunderProfile,
+} from '../../../utils/funderProfileResolver';
 import { isTexasContractState as isTexasState } from '../../../utils/usStateMatch';
 
-export const ALLIANCE_BRIDGE_FUNDER_LABEL = 'ALLIANCE BRIDGE CAPITAL';
+export const TEXAS_FUNDING_GROUP_FUNDER_LABEL = 'TEXAS FUNDING GROUP';
 
-/**
- * Layout-key token for the Alliance Bridge contract. The platform coordinate
- * registry intentionally does not ship Alliance coordinates, so this token is
- * only used for detection — Alliance contracts fall back to the standard
- * `contract` coordinate layout.
- */
-const ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY = 'alliance_bridge_contract';
-
-/** Exact-match BoldSignTemplate pdfUrl lookup by layout/template key. */
-async function findBoldSignTemplatePdfUrlByExactLayoutKey(
-  layoutKey: string,
-): Promise<string | null> {
-  const trimmed = String(layoutKey || '').trim();
-  if (!trimmed) return null;
-  const row = await prisma.boldSignTemplate.findFirst({
-    where: { OR: [{ layoutKey: trimmed }, { templateId: trimmed }] },
-    orderBy: { createdAt: 'desc' },
-    select: { pdfUrl: true },
-  });
-  const url = String(row?.pdfUrl || '').trim();
-  return /^https?:\/\//i.test(url) ? url : null;
+export function isTexasContractState(state?: string | null): boolean {
+  return isTexasState(state);
 }
 
-export function isAllianceBridgeFunder(funderName?: string | null): boolean {
+export function isTexasFundingGroupFunder(funderName?: string | null): boolean {
   const normalized = String(funderName ?? '')
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ');
   if (!normalized) return false;
   return (
-    normalized === 'alliance bridge capital' ||
-    normalized === 'alliance bridge' ||
-    normalized.includes('alliance bridge') ||
-    normalized.includes('alliance capital')
+    normalized === 'texas funding group' ||
+    normalized.includes('texas funding group')
   );
-}
-
-export function isTexasContractState(state?: string | null): boolean {
-  return isTexasState(state);
 }
 
 /** Coordinate layout for main contract PDF (not necessarily the PDF storage key). */
@@ -61,8 +40,20 @@ export function resolveMainContractCoordinateLayoutKey(options: {
   state?: string | null;
   mainContractLayoutKey?: string | null;
 }): DocumentLayoutKey {
-  // Alliance Bridge coordinates are not part of the platform registry, so all
-  // funders (including Alliance) use the standard contract coordinate layout.
+  if (isWoodmereFunderProfile({ name: options.funderName })) {
+    return DOCUMENT_LAYOUT_KEYS.contract;
+  }
+
+  const profileLayout = String(options.mainContractLayoutKey || '').trim();
+  const texasFundingGroup =
+    isTexasFundingGroupFunder(options.funderName) ||
+    profileLayout === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract;
+
+  if (texasFundingGroup) {
+    return isTexasContractState(options.state)
+      ? DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract
+      : DOCUMENT_LAYOUT_KEYS.contract;
+  }
   return DOCUMENT_LAYOUT_KEYS.contract;
 }
 
@@ -81,25 +72,58 @@ export function resolveMainContractLayoutKey(
 export async function resolveMainContractLayoutKeyForSend(options: {
   mainContractLayoutKey?: string | null;
   funderName?: string | null;
+  funderProfileId?: string | null;
   state?: string | null;
 }): Promise<string> {
   const fromClient = String(options.mainContractLayoutKey || '').trim();
-  const funderName = String(options.funderName || '').trim();
   const state = options.state ?? null;
 
-  if (funderName) {
-    const profile = await getFunderProfileByName(funderName, state);
-    if (profile) {
+  if (fromClient && isFunderContractLayoutKey(fromClient)) {
+    const scopedPdf = await findBoldSignTemplatePdfUrlByExactLayoutKey(fromClient);
+    if (scopedPdf) return fromClient;
+  }
+
+  const profile = await resolveFunderProfile({
+    funderProfileId: options.funderProfileId,
+    funderName: options.funderName,
+    state,
+  });
+  const funderName = String(options.funderName || profile?.name || '').trim();
+
+  if (profile) {
+    const funderId = String(profile.id || '').trim();
+    if (funderId && isPersistedFunderProfileId(funderId)) {
+      const funderScopedKey = funderContractLayoutKey(funderId);
+      const scopedPdf = await findBoldSignTemplatePdfUrlByExactLayoutKey(funderScopedKey);
+      if (scopedPdf) return funderScopedKey;
+    }
+
+    if (isWoodmereFunderProfile(profile)) {
+        const profileKey = String(profile.mainContractLayoutKey || '').trim();
+        if (isFunderContractLayoutKey(profileKey)) {
+          return profileKey;
+        }
+        return DOCUMENT_LAYOUT_KEYS.contract;
+      }
+
       const profileKey = String(profile.mainContractLayoutKey || '').trim();
       if (isFunderContractLayoutKey(profileKey)) {
         return profileKey;
       }
       if (profileKey && isDocumentLayoutKey(profileKey)) {
-        // Platform coordinate layout keys are used as-is (no Alliance-specific
-        // layout ships in the platform registry).
+        if (
+          profileKey === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract &&
+          !isTexasContractState(state)
+        ) {
+          if (funderId) {
+            const funderScopedKey = funderContractLayoutKey(funderId);
+            const scopedPdf = await findBoldSignTemplatePdfUrlByExactLayoutKey(funderScopedKey);
+            if (scopedPdf) return funderScopedKey;
+          }
+          return DOCUMENT_LAYOUT_KEYS.contract;
+        }
         return profileKey;
       }
-      const funderId = String(profile.id || '').trim();
       if (funderId) {
         const funderScopedKey = funderContractLayoutKey(funderId);
         const scopedPdf = await findBoldSignTemplatePdfUrlByExactLayoutKey(funderScopedKey);
@@ -107,7 +131,7 @@ export async function resolveMainContractLayoutKeyForSend(options: {
           return funderScopedKey;
         }
       }
-      if (isAllianceFunderProfile(profile)) {
+      if (isTexasFundingGroupFunderProfile(profile)) {
         return resolveMainContractCoordinateLayoutKey({
           funderName: profile.name,
           state,
@@ -117,13 +141,20 @@ export async function resolveMainContractLayoutKeyForSend(options: {
       if (profileKey) {
         return profileKey;
       }
-    }
   }
 
   if (fromClient) {
     if (
-      fromClient === ALLIANCE_BRIDGE_CONTRACT_LAYOUT_KEY &&
+      fromClient === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract &&
       !isTexasContractState(state)
+    ) {
+      return DOCUMENT_LAYOUT_KEYS.contract;
+    }
+    if (
+      funderName &&
+      isWoodmereFunderProfile({ name: funderName }) &&
+      (fromClient === DOCUMENT_LAYOUT_KEYS.contract ||
+        fromClient === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract)
     ) {
       return DOCUMENT_LAYOUT_KEYS.contract;
     }

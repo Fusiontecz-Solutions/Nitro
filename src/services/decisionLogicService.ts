@@ -127,9 +127,9 @@ export const decisionLogicService = {
                 applicationRef,
             );
 
-            const serviceKey = process.env.SERVICE_KEY;
-            const siteUserGuid = process.env.SITE_USER_GUID;
-            const profileGuid = process.env.PROFILE_GUID;
+            const serviceKey = String(process.env.SERVICE_KEY ?? "").trim();
+            const siteUserGuid = String(process.env.SITE_USER_GUID ?? "").trim();
+            const profileGuid = String(process.env.PROFILE_GUID ?? "").trim();
             if (!serviceKey || !siteUserGuid || !profileGuid) {
                 throw new ValidationError(
                     "Decision Logic is not configured: set SERVICE_KEY, SITE_USER_GUID, and PROFILE_GUID on the server.",

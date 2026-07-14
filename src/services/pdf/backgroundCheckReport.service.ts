@@ -1,17 +1,33 @@
 import { renderHtmlToA4PdfBuffer } from './letterHtmlToPdf.service';
+import fs from 'fs';
+import path from 'path';
+import { renderLetterHtmlToPdfBuffer } from './letterHtmlToPdf.service';
 
-const LOGO_MARK_URL =
-  process.env.BACKGROUND_CHECK_REPORT_LOGO_MARK_URL?.trim() ||
-  'https://res.cloudinary.com/dfy6ahsqz/image/upload/c_crop,w_500,h_526,x_0,y_0,f_png/v1780324705/white_logo_d8bsb1.png';
+const BRAND_LOGO_PATH = path.resolve(__dirname, '..', '..', '..', 'public', 'white_logo.svg');
+
+let cachedLogoDataUri: string | undefined;
+
+function resolveBackgroundCheckLogoSrc(): string {
+  const override =
+    process.env.BACKGROUND_CHECK_REPORT_LOGO_URL?.trim() ||
+    process.env.BACKGROUND_CHECK_REPORT_LOGO_MARK_URL?.trim();
+  if (override) return override;
+
+  if (!cachedLogoDataUri) {
+    if (!fs.existsSync(BRAND_LOGO_PATH)) {
+      throw new Error(`Woodmere logo not found at ${BRAND_LOGO_PATH}`);
+    }
+    const svg = fs.readFileSync(BRAND_LOGO_PATH, 'utf8');
+    cachedLogoDataUri = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  }
+  return cachedLogoDataUri;
+}
 
 function buildHeaderLogoHtml(): string {
+  const logoSrc = resolveBackgroundCheckLogoSrc();
   return `
-    <div style="display:flex;align-items:center;gap:10px;min-width:0;">
-      <img src="${esc(LOGO_MARK_URL)}" alt="" style="height:34px;width:auto;display:block;flex-shrink:0;" />
-      <div style="color:#ffffff;line-height:1.05;white-space:nowrap;">
-        <div style="font-size:14px;font-weight:800;letter-spacing:1.2px;">KATAN</div>
-        <div style="font-size:10px;font-weight:700;letter-spacing:2px;margin-top:2px;">CAPITAL</div>
-      </div>
+    <div style="display:flex;align-items:center;min-width:0;">
+      <img src="${esc(logoSrc)}" alt="Woodmere Financial" style="height:34px;width:auto;display:block;max-width:240px;" />
     </div>`;
 }
 
@@ -80,47 +96,6 @@ type DataMerchMerchant = {
   notes?: DataMerchRecord[];
 };
 
-type OpenCorporatesOfficer = {
-  name?: string;
-  position?: string;
-  status?: string;
-};
-
-type OpenCorporatesAddress = {
-  label?: string;
-  address?: string;
-};
-
-type OpenCorporatesIdentifier = {
-  system?: string;
-  value?: string;
-  category?: string;
-};
-
-type OpenCorporatesCompanyHit = {
-  name?: string;
-  companyNumber?: string;
-  jurisdictionCode?: string;
-  currentStatus?: string;
-  incorporationDate?: string;
-  registeredAddress?: string;
-  headOfficeAddress?: string;
-  mailingAddress?: string;
-  agentName?: string;
-  agentAddress?: string;
-  addresses?: OpenCorporatesAddress[];
-  companyType?: string;
-  opencorporatesUrl?: string;
-  registryUrl?: string;
-  officers?: OpenCorporatesOfficer[];
-  inactiveOfficers?: OpenCorporatesOfficer[];
-  identifiers?: OpenCorporatesIdentifier[];
-  dataSource?: string;
-  lastUpdateFromSource?: string;
-  lastChangeRecorded?: string;
-  nextUpdateFromSource?: string;
-};
-
 export type BackgroundCheckReportPayload = {
   merchantName: string;
   ownerName: string;
@@ -136,13 +111,6 @@ export type BackgroundCheckReportPayload = {
     businessName?: string;
   } | null;
   datamerchSearchedAt?: string | null;
-  opencorporates?: {
-    searchQuery?: string;
-    jurisdictionCode?: string;
-    companies?: OpenCorporatesCompanyHit[];
-    sourceUrl?: string;
-  } | null;
-  opencorporatesSearchedAt?: string | null;
   attachmentPreviews?: Record<string, AttachmentPreview | null>;
 };
 
@@ -254,35 +222,11 @@ function countByRisk(
   return checkIds.filter((id) => normalizeCheckRisk(checks[id]?.risk) === risk).length;
 }
 
-function formatStructuredNotesForPdf(html: string): string {
-  const cleaned = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+="[^"]*"/gi, '')
-    .replace(/\son\w+='[^']*'/gi, '');
-  return `<div class="bc-pdf-structured-notes">${cleaned}</div>`;
-}
-
 function formatFindings(
   notes: string | undefined,
   noteImages?: CheckItemState['noteImages'],
 ): string {
   const trimmed = String(notes || '').trim();
-  if (trimmed.includes('data-crm-bg-notes')) {
-    const structured = formatStructuredNotesForPdf(trimmed);
-    const images = (noteImages ?? [])
-      .map(
-        (image) => `
-        <div style="margin-top:6px;">
-          <a href="${esc(image.url)}" style="color:#2563eb;text-decoration:underline;font-size:10px;">${esc(image.name)}</a>
-          <div style="margin-top:4px;border:1px solid #e2e8f0;border-radius:6px;padding:6px;background:#fff;">
-            <img src="${esc(image.url)}" alt="${esc(image.name)}" style="display:block;width:100%;max-height:260px;object-fit:contain;object-position:top center;" />
-          </div>
-        </div>`,
-      )
-      .join('');
-    return `${structured}${images}`;
-  }
-
   const textHtml = trimmed ? `<div>${esc(trimmed).replace(/\n/g, '<br/>')}</div>` : '';
   const images = (noteImages ?? [])
     .map(
@@ -519,145 +463,6 @@ function buildDataMerchHtml(
     </div>`;
 }
 
-function buildOpenCorporatesCompanyHtml(company: OpenCorporatesCompanyHit): string {
-  const name = esc(String(company.name ?? 'Unknown company'));
-  const meta = [
-    company.jurisdictionCode ? `Jurisdiction: ${esc(String(company.jurisdictionCode))}` : null,
-    company.companyNumber ? `No: ${esc(String(company.companyNumber))}` : null,
-    company.currentStatus ? `Status: ${esc(String(company.currentStatus))}` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-
-  const detailParts = [
-    company.incorporationDate ? `Incorporated: ${esc(String(company.incorporationDate))}` : null,
-    company.companyType ? `Type: ${esc(String(company.companyType))}` : null,
-    company.agentName ? `Agent: ${esc(String(company.agentName))}` : null,
-    company.agentAddress ? `Agent address: ${esc(String(company.agentAddress))}` : null,
-    company.headOfficeAddress ? `Head office: ${esc(String(company.headOfficeAddress))}` : null,
-    company.mailingAddress ? `Mailing: ${esc(String(company.mailingAddress))}` : null,
-    company.registeredAddress ? `Registered address: ${esc(String(company.registeredAddress))}` : null,
-    company.registryUrl
-      ? `Registry: <a href="${esc(String(company.registryUrl))}" style="color:#2563eb;text-decoration:underline;">${esc(String(company.registryUrl))}</a>`
-      : null,
-    company.opencorporatesUrl
-      ? `Profile: <a href="${esc(String(company.opencorporatesUrl))}" style="color:#2563eb;text-decoration:underline;">${esc(String(company.opencorporatesUrl))}</a>`
-      : null,
-    company.dataSource ? `Source: ${esc(String(company.dataSource))}` : null,
-    company.lastUpdateFromSource
-      ? `Last update: ${esc(String(company.lastUpdateFromSource))}`
-      : null,
-    company.lastChangeRecorded
-      ? `Last change: ${esc(String(company.lastChangeRecorded))}`
-      : null,
-    company.nextUpdateFromSource
-      ? `Next update: ${esc(String(company.nextUpdateFromSource))}`
-      : null,
-  ].filter(Boolean);
-
-  const addresses = (company.addresses ?? [])
-    .map((entry) => {
-      const label = esc(String(entry.label ?? '').trim());
-      const address = esc(String(entry.address ?? '').trim());
-      if (!label || !address) return '';
-      return `<li>${label}: ${address}</li>`;
-    })
-    .filter(Boolean)
-    .join('');
-
-  const identifiers = (company.identifiers ?? [])
-    .map((identifier) => {
-      const system = esc(String(identifier.system ?? '').trim());
-      const value = esc(String(identifier.value ?? '').trim());
-      if (!system || !value) return '';
-      const category = String(identifier.category ?? '').trim();
-      return `<li>${system}: ${value}${category ? ` (${esc(category)})` : ''}</li>`;
-    })
-    .filter(Boolean)
-    .join('');
-
-  const officers = (company.officers ?? [])
-    .map((officer) => {
-      const officerName = esc(String(officer.name ?? '').trim());
-      if (!officerName) return '';
-      const position = String(officer.position ?? '').trim();
-      return `<li>${officerName}${position ? ` (${esc(position)})` : ''}</li>`;
-    })
-    .filter(Boolean)
-    .join('');
-
-  const inactiveOfficers = (company.inactiveOfficers ?? [])
-    .map((officer) => {
-      const officerName = esc(String(officer.name ?? '').trim());
-      if (!officerName) return '';
-      const position = String(officer.position ?? '').trim();
-      return `<li>${officerName}${position ? ` (${esc(position)})` : ''}</li>`;
-    })
-    .filter(Boolean)
-    .join('');
-
-  return `
-    <div class="oc-company" style="border:1px solid #e5e7eb;border-radius:6px;background:#fff;padding:10px 12px;margin-bottom:8px;break-inside:avoid;page-break-inside:avoid;-webkit-column-break-inside:avoid;">
-      <div style="font-size:12px;font-weight:600;color:#111827;line-height:1.3;">${name}</div>
-      ${meta ? `<div style="font-size:10px;color:#6b7280;margin-top:2px;">${meta}</div>` : ''}
-      ${detailParts.length ? `<div style="margin-top:4px;font-size:9px;color:#6b7280;line-height:1.45;">${detailParts.join('<br/>')}</div>` : ''}
-      ${addresses ? `<div style="margin-top:6px;font-size:9px;color:#374151;"><strong>Addresses</strong><ul style="margin:4px 0 0 16px;padding:0;line-height:1.45;">${addresses}</ul></div>` : ''}
-      ${identifiers ? `<div style="margin-top:6px;font-size:9px;color:#374151;"><strong>Identifiers</strong><ul style="margin:4px 0 0 16px;padding:0;line-height:1.45;">${identifiers}</ul></div>` : ''}
-      ${officers ? `<div style="margin-top:6px;font-size:9px;color:#374151;"><strong>Officers</strong><ul style="margin:4px 0 0 16px;padding:0;line-height:1.45;">${officers}</ul></div>` : ''}
-      ${inactiveOfficers ? `<div style="margin-top:6px;font-size:9px;color:#374151;"><strong>Inactive officers</strong><ul style="margin:4px 0 0 16px;padding:0;line-height:1.45;">${inactiveOfficers}</ul></div>` : ''}
-    </div>`;
-}
-
-function buildOpenCorporatesFindingsHtml(
-  notes: string | undefined,
-  status: string | undefined,
-  noteImages: CheckItemState['noteImages'],
-  opencorporates?: BackgroundCheckReportPayload['opencorporates'] | null,
-): string {
-  const trimmed = String(notes || '').trim();
-  if (trimmed || (noteImages && noteImages.length > 0)) {
-    return formatFindings(notes, noteImages);
-  }
-  const count = opencorporates?.companies?.length ?? 0;
-  if (count > 0) {
-    return esc(
-      `${count} compan${count !== 1 ? 'ies' : 'y'} found for "${opencorporates?.searchQuery ?? ''}".`,
-    );
-  }
-  if (opencorporates?.searchQuery) {
-    return esc(`No OpenCorporates matches for "${opencorporates.searchQuery}".`);
-  }
-  if (normalizeCheckStatus(status) === 'completed') {
-    return 'OpenCorporates review completed.';
-  }
-  return '—';
-}
-
-function buildOpenCorporatesHtml(
-  opencorporates: NonNullable<BackgroundCheckReportPayload['opencorporates']>,
-  searchedAt?: string | null,
-): string {
-  const companies = opencorporates.companies ?? [];
-  const count = companies.length;
-  const hasResults = count > 0;
-  const summaryTitle = hasResults
-    ? `<div style="font-size:11px;font-weight:600;color:#92400e;">${count} compan${count !== 1 ? 'ies' : 'y'} found</div>`
-    : `<div style="font-size:11px;font-weight:600;color:#166534;">No OpenCorporates matches found</div>`;
-  const matchLine = hasResults
-    ? `Matched "${esc(opencorporates.searchQuery ?? '')}"`
-    : `Searched for "${esc(opencorporates.searchQuery ?? '')}"`;
-
-  return `
-    <div style="margin-top:10px;padding-top:10px;border-top:1px solid #e8edf3;">
-      ${searchedAt ? `<div style="font-size:9px;color:#6b7280;margin:0 0 6px;">Last searched ${esc(fmtTimestamp(searchedAt))}</div>` : ''}
-      <div style="border:1px solid ${hasResults ? '#fde68a' : '#bbf7d0'};background:${hasResults ? '#fffbeb' : '#f0fdf4'};border-radius:6px;padding:8px 10px;margin-bottom:6px;color:${hasResults ? '#92400e' : '#166534'};">
-        ${summaryTitle}
-        <div style="font-size:10px;margin-top:3px;line-height:1.4;">${matchLine}</div>
-      </div>
-      ${companies.map((company) => buildOpenCorporatesCompanyHtml(company)).join('')}
-    </div>`;
-}
-
 function isImageAttachment(name: string): boolean {
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name);
 }
@@ -886,27 +691,6 @@ function buildHtml(payload: BackgroundCheckReportPayload): string {
         dmFindings,
       );
     }
-    if (resource.id === 'opencorporates' && payload.opencorporates) {
-      const ocFindings = buildOpenCorporatesFindingsHtml(
-        state.notes,
-        state.status,
-        state.noteImages,
-        payload.opencorporates,
-      );
-      const ocContent = buildOpenCorporatesHtml(
-        payload.opencorporates,
-        payload.opencorporatesSearchedAt,
-      );
-      return buildCheckCardHtml(
-        index,
-        resource.title,
-        resource.description,
-        state,
-        preview,
-        ocContent,
-        ocFindings,
-      );
-    }
     if (resource.id === 'nyscef') {
       const nyExtra = buildNyCourtEvidenceHtml(state);
       return buildCheckCardHtml(
@@ -960,105 +744,6 @@ function buildHtml(payload: BackgroundCheckReportPayload): string {
           break-inside: avoid;
           page-break-inside: avoid;
         }
-      }
-      .bc-pdf-structured-notes .crm-bg-notes {
-        font-size: 10px;
-        line-height: 1.45;
-        color: #334155;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__toolbar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        align-items: center;
-        margin-bottom: 8px;
-        padding-bottom: 6px;
-        border-bottom: 1px solid #e5e7eb;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__source {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-size: 8px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__source--oc {
-        background: #eef2ff;
-        color: #4338ca;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__source--court {
-        background: #ccfbf1;
-        color: #0f766e;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__summary,
-      .bc-pdf-structured-notes .crm-bg-notes__searched {
-        font-size: 9px;
-        color: #6b7280;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__stack {
-        display: block;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__entity,
-      .bc-pdf-structured-notes .crm-bg-notes__case {
-        border: 1px solid #e5e7eb;
-        border-radius: 6px;
-        background: #fff;
-        padding: 8px 10px;
-        margin-bottom: 6px;
-        break-inside: avoid;
-        page-break-inside: avoid;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__title,
-      .bc-pdf-structured-notes .crm-bg-notes__case-title {
-        margin: 0;
-        font-size: 11px;
-        font-weight: 700;
-        color: #111827;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__chips {
-        margin-top: 4px;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__chip {
-        display: inline-block;
-        margin: 0 4px 4px 0;
-        padding: 1px 6px;
-        border-radius: 999px;
-        background: #f3f4f6;
-        color: #4b5563;
-        font-size: 8px;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__chip--status {
-        background: #fef3c7;
-        color: #92400e;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__details {
-        margin: 6px 0 0;
-        padding: 0;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__row {
-        margin-bottom: 4px;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__row dt {
-        font-size: 7px;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        color: #9ca3af;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__row dd {
-        margin: 0;
-        font-size: 9px;
-        color: #374151;
-      }
-      .bc-pdf-structured-notes .crm-bg-notes__link {
-        display: inline-block;
-        margin-top: 6px;
-        font-size: 9px;
-        font-weight: 600;
-        color: #2563eb;
-        text-decoration: none;
       }
     </style>
     <div style="font-family:Arial,Helvetica,sans-serif;color:#0f172a;background:#fff;font-size:12px;line-height:1.35;">
@@ -1141,7 +826,7 @@ export async function generateBackgroundCheckReportPdf(
   payload: BackgroundCheckReportPayload,
 ): Promise<{ buffer: Buffer; filename: string }> {
   const html = buildHtml(payload);
-  const buffer = await renderHtmlToA4PdfBuffer(html);
+  const buffer = await renderLetterHtmlToPdfBuffer(html);
   return {
     buffer,
     filename: buildBackgroundCheckReportFilename(payload.merchantName),

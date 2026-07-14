@@ -55,7 +55,7 @@ const AGENT_STAGE_TOKENS = new Set([
 
 const UNDERWRITER_STAGE_TOKENS = new Set(['scrubbing', 'underwriting']);
 
-const FINAL_UNDERWRITER_STAGE_TOKENS = new Set([
+const UNDERWRITER_STAGE_TOKENS = new Set([
     'underwriter',
     'finalreview',
 ]);
@@ -106,10 +106,10 @@ function resolveStageKey(
     const stateToken = normalizeToken(currentState);
 
     // Queue drives stage. FU keeps queue "Underwriter" with state "Approved" after
-    // sending approval mail (and while resending after ISO comments) — still FU-owned.
     if (POST_FINAL_STAGE_TOKENS.has(queueToken)) return 'POST_FINAL';
     if (FINAL_UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'UNDERWRITER';
     if (UNDERWRITER_STAGE_TOKENS.has(queueToken)) return 'SCRUBBING';
+    if (SCRUBBING_STAGE_TOKENS.has(queueToken)) return 'SCRUBBING';
     if (AGENT_STAGE_TOKENS.has(queueToken)) return 'AGENT';
 
     if (POST_FINAL_STAGE_TOKENS.has(stateToken)) return 'POST_FINAL';

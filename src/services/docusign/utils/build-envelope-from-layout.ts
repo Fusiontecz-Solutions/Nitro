@@ -13,7 +13,9 @@ import {
   applyDocuSignPrefillTabStyle,
   resolveDocuSignPrefillTabWidth,
 } from './docusign-tab-style';
-import { embedArialPdfFont } from './embed-arial-pdf-font';
+import { embedArialBoldPdfFont, embedArialPdfFont } from './embed-arial-pdf-font';
+import { DOCUMENT_LAYOUT_KEYS } from '../layouts/document-layout.registry';
+import { isFunderContractLayoutKey } from '../../../utils/funderContractLayout';
 
 const DOCUSIGN_SECONDARY_SIGNER_ROLE_NAME = DOCUSIGN_SECONDARY_ROLE_NAME;
 
@@ -50,6 +52,10 @@ export type BuildEnvelopeFromLayoutOptions = {
   flattenedLayoutKeys?: ReadonlySet<string>;
   /** When true, text/date tabs are created locked (use only when sending immediately). */
   lockDataTabs?: boolean;
+  /** Merged PDF bytes when multiple layouts are combined into one DocuSign document. */
+  mergedDocument?: { name: string; documentBase64: string };
+  /** Page offset per layout key (0-based) inside `mergedDocument`. */
+  pageOffsetByLayoutKey?: Map<string, number>;
 };
 
 export async function countPdfPagesFromBase64(documentBase64: string): Promise<number> {
@@ -88,30 +94,87 @@ export type LayoutPartyCounts = {
 
 /** Canonical CRM keys copied to legacy / duplicate tab labels automatically. */
 const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
-  agreement_date: ['signature_date', 'disclosure_date'],
-  signature_date: ['agreement_date', 'Signature_date', 'disclosure_date'],
-  Signature_date: ['signature_date', 'agreement_date', 'disclosure_date'],
-  disclosure_date: ['agreement_date', 'signature_date'],
+  agreement_date: ['signature_date', 'disclosure_date', 'addendum_date'],
+  addendum_date: ['agreement_date', 'signature_date', 'disclosure_date'],
+  signature_date: ['agreement_date', 'addendum_date', 'Signature_date', 'disclosure_date'],
+  Signature_date: ['signature_date', 'agreement_date', 'addendum_date', 'disclosure_date'],
+  disclosure_date: ['agreement_date', 'addendum_date', 'signature_date'],
   date_by_which_amount_mustbe_received: ['prepayment_received_by_date'],
   funder_name: ['disclosure_funder_name'],
-  client_legal_name: ['business_legal_name', 'merchant_legal_name', 'business_name_2'],
+  client_legal_name: ['business_legal_name', 'merchant_legal_name'],
   business_name_2: [
     'owner2_guarantor_name',
     'guaranty_owner2_name',
     'guaranty_guarantor2_name',
     'merchant2_name',
     'appendix_merchant2_name',
-    'client_legal_name',
-    'client_name',
-    'business_legal_name',
-    'security_business_name',
+    'addendum_dated_principal_owner2_name',
   ],
   client_name: [
     'client_name_by',
+    'addendum_client_name',
     'guaranty_client_name',
     'owner1_guarantor_name',
     'guaranty_owner1_name',
     'guaranty_guarantor1_name',
+    'security_guarantor',
+  ],
+  addendum_client_name: [
+    'client_name',
+    'owner1_guarantor_name',
+    'guaranty_owner1_name',
+    'guaranty_guarantor1_name',
+    'guaranty_client_name',
+    'security_guarantor',
+  ],
+  business_address: [
+    'business_address_contract',
+    'security_business_address',
+    'guarantor_address',
+    'recipient_address',
+    'recipient_address1',
+    'ach_authorization_account_holder_address',
+  ],
+  business_address_city: [
+    'business_address_contract_city',
+    'security_business_address_city',
+    'guarantor_address_city',
+    'ach_authorization_account_holder_city',
+  ],
+  business_address_state: [
+    'business_address_contract_state',
+    'security_business_address_state',
+    'guarantor_address_state',
+    'ach_authorization_account_holder_state',
+  ],
+  business_address_zip: [
+    'business_address_contract_zip',
+    'security_business_address_zip',
+    'guarantor_address_zip',
+    'ach_authorization_account_holder_zip',
+  ],
+  authorization_client_name: [
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+  ],
+  authorization_client_signer_name: [
+    'customer_name',
+    'client_name',
+    'owner1_guarantor_name',
+  ],
+  ach_authorization_concent_account_holder_name: [
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'authorization_client_name',
+  ],
+  ach_authorization_concent_account_holder_name_2: [
+    'ach_authorization_concent_account_holder_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'authorization_client_name',
   ],
   entity_type: ['typeOfEntity1', 'typeofentity1'],
   typeofentity1: ['entity_type', 'typeOfEntity1'],
@@ -155,10 +218,44 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   disbursement_amount: ['disclosure_recipient_funds', 'total_amount_fund_disbursed', 'net_to_merchant'],
   total_repayment_amount: ['disclosure_total_payment', 'purchase_price', 'estimatedTotalPaymentAmount'],
   estimated_number_of_payement: ['disclosure_term_days', 'estimated_number_of_payments'],
-  disclosure_name: ['client_name', 'recipient_name'],
+  disclosure_name: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_merchant_name',
+    'recipient_name',
+    'client_name',
+  ],
+  disclosure_merchant_name: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_name',
+    'recipient_name',
+    'client_name',
+  ],
   disclosure_date2: ['disclosure_date', 'agreement_date', 'signature_date'],
-  recipient_name: ['client_name', 'disclosure_name'],
-  recipient_name2: ['client_name', 'recipient_name'],
+  recipient_name: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_merchant_name',
+    'disclosure_name',
+    'client_name',
+  ],
+  recipient_name2: [
+    'legal_name',
+    'client_legal_name',
+    'security_business_name',
+    'business_legal_name',
+    'disclosure_merchant_name',
+    'recipient_name',
+    'disclosure_name',
+    'client_name',
+  ],
   recipient_address2: ['recipient_address', 'recipient_address1'],
   recipient_address: ['recipient_address1', 'business_address'],
   total_amount_commercial_financing: ['disclosure_amount_financed', 'funding_provided', 'total_amount_business_fund'],
@@ -181,15 +278,45 @@ const PREFILL_VALUE_ALIASES: Record<string, string[]> = {
   security_guarantor: ['guaranty_guarantor1_name', 'guaranty_owner1_name', 'owner1_guarantor_name', 'client_name'],
   guaranty_owner1_ss: ['guaranty_guarantor1_ss'],
   guaranty_guarantor1_ss: ['guaranty_owner1_ss'],
-  owner2_guarantor_name: ['guaranty_owner2_name', 'guaranty_guarantor2_name', 'merchant2_name'],
-  guaranty_owner2_name: ['owner2_guarantor_name', 'guaranty_guarantor2_name', 'merchant2_name'],
-  guaranty_guarantor2_name: ['owner2_guarantor_name', 'guaranty_owner2_name', 'merchant2_name'],
-  merchant2_name: ['owner2_guarantor_name', 'guaranty_owner2_name', 'guaranty_guarantor2_name'],
+  owner2_guarantor_name: [
+    'guaranty_owner2_name',
+    'guaranty_guarantor2_name',
+    'merchant2_name',
+    'appendix_merchant2_name',
+    'addendum_dated_principal_owner2_name',
+    'business_name_2',
+  ],
+  guaranty_owner2_name: [
+    'owner2_guarantor_name',
+    'guaranty_guarantor2_name',
+    'merchant2_name',
+    'appendix_merchant2_name',
+    'addendum_dated_principal_owner2_name',
+    'business_name_2',
+  ],
+  guaranty_guarantor2_name: [
+    'owner2_guarantor_name',
+    'guaranty_owner2_name',
+    'merchant2_name',
+    'appendix_merchant2_name',
+    'addendum_dated_principal_owner2_name',
+    'business_name_2',
+  ],
+  merchant2_name: [
+    'owner2_guarantor_name',
+    'guaranty_owner2_name',
+    'guaranty_guarantor2_name',
+    'appendix_merchant2_name',
+    'addendum_dated_principal_owner2_name',
+    'business_name_2',
+  ],
   appendix_merchant2_name: [
     'owner2_guarantor_name',
     'guaranty_owner2_name',
     'merchant2_name',
     'guaranty_guarantor2_name',
+    'addendum_dated_principal_owner2_name',
+    'business_name_2',
   ],
   guaranty_owner2_ss: ['guaranty_guarantor2_ss'],
   guaranty_guarantor2_ss: ['guaranty_owner2_ss'],
@@ -221,15 +348,38 @@ const PARTY2_NAME_KEYS = [
   'guaranty_guarantor2_name',
   'merchant2_name',
   'appendix_merchant2_name',
+  'addendum_dated_principal_owner2_name',
+  'business_name_2',
+] as const;
+
+const PARTY2_NAME_PRIORITY = [
+  'owner2_guarantor_name',
+  'merchant2_name',
+  'guaranty_owner2_name',
+  'guaranty_guarantor2_name',
+  'appendix_merchant2_name',
+  'addendum_dated_principal_owner2_name',
+  'business_name_2',
 ] as const;
 
 const PARTY1_NAME_KEYS = [
   'client_name',
+  'addendum_client_name',
   'owner1_guarantor_name',
   'guaranty_owner1_name',
   'guaranty_guarantor1_name',
   'guaranty_client_name',
   'security_guarantor',
+] as const;
+
+const PARTY1_NAME_PRIORITY = [
+  'owner1_guarantor_name',
+  'guaranty_owner1_name',
+  'guaranty_guarantor1_name',
+  'guaranty_client_name',
+  'security_guarantor',
+  'client_name',
+  'addendum_client_name',
 ] as const;
 
 const PARTY1_SS_KEYS = ['guaranty_owner1_ss', 'guaranty_guarantor1_ss'] as const;
@@ -239,6 +389,147 @@ const PARTY1_DL_KEYS = [
 ] as const;
 
 const PARTY2_SS_KEYS = ['guaranty_owner2_ss', 'guaranty_guarantor2_ss'] as const;
+
+/** Woodmere contract page 16 = Katan page 15 (ACH portal, credentials, references). */
+export const FILL_AT_SIGNING_VARIABLES = new Set([
+  'ach_authorization_bank_portal_website',
+  'ach_authorization_username',
+  'ach_authorization_password',
+  'ach_authorization_security_question1',
+  'ach_authorization_security_answer1',
+  'ach_authorization_security_question2',
+  'ach_authorization_security_answer2',
+  'ach_authorization_security_question3',
+  'ach_authorization_security_answer3',
+  'ach_authorization_other_infomation',
+  'ach_authorization_reference_name1',
+  'ach_authorization_reference_number_1',
+  'ach_authorization_reference_relationship1',
+  'ach_authorization_reference_name2',
+  'ach_authorization_reference_number2',
+  'ach_authorization_reference_relationship2',
+  'ach_authorization_reference_name3',
+  'ach_authorization_reference_number3',
+  'ach_authorization_reference_relationship3',
+]);
+
+/** Katan uses page 15; Woodmere contract shifts portal section to page 16. */
+const WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE = '16';
+
+/** Woodmere-style 17-page contract (page-16 portal section) — excludes Texas Funding Group layout. */
+function usesWoodmereStyleNonTexasContractLayout(layoutKey: string | undefined): boolean {
+  const key = String(layoutKey || '').trim();
+  if (!key || key === DOCUMENT_LAYOUT_KEYS.contract) return true;
+  if (key === DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract) return false;
+  if (isFunderContractLayoutKey(key)) return true;
+  return false;
+}
+
+/** Contract page 1 — merchant confirms or enters phone at signing (prefilled when available). */
+export const REQUIRED_SIGNER_EDITABLE_VARIABLES = new Set(['client_phone']);
+
+function isRequiredSignerEditablePlacement(placement: DocumentLayoutPlacement): boolean {
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return REQUIRED_SIGNER_EDITABLE_VARIABLES.has(variable);
+}
+
+function isFillAtSigningPlacement(placement: DocumentLayoutPlacement): boolean {
+  if (placement.fillAtSigning === true) return true;
+  const variable = String(placement.variable || '').trim().toLowerCase();
+  return FILL_AT_SIGNING_VARIABLES.has(variable);
+}
+
+function isWoodmereContractFillAtSigningPlacement(
+  layoutKey: string | undefined,
+  placement: DocumentLayoutPlacement,
+): boolean {
+  if (!usesWoodmereStyleNonTexasContractLayout(layoutKey)) return false;
+  // Explicit fillAtSigning works on any page (e.g. page-14 business phone).
+  if (placement.fillAtSigning === true) return true;
+  return (
+    String(placement.pageNumber || '') === WOODMERE_CONTRACT_FILL_AT_SIGNING_PAGE &&
+    isFillAtSigningPlacement(placement)
+  );
+}
+
+/** Page-16 ACH fields start blank; page-1 client phone keeps CRM prefill on the live tab. */
+function clearsValueAtSend(
+  layoutKey: string | undefined,
+  placement: DocumentLayoutPlacement,
+): boolean {
+  return isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
+}
+
+function isSignerEditableTextPlacement(
+  layoutKey: string | undefined,
+  placement: DocumentLayoutPlacement,
+): boolean {
+  // Page-1 client_phone is always signer-editable (required) on every contract layout.
+  if (isRequiredSignerEditablePlacement(placement)) return true;
+  if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
+  return false;
+}
+
+/** Portal / reference fields on contract page 16, plus page-1 client phone. */
+function isRequiredSignerTextField(
+  placement: DocumentLayoutPlacement,
+  layoutKey?: string,
+): boolean {
+  if (placement.type !== 'text') return false;
+  if (isRequiredSignerEditablePlacement(placement)) return true;
+  return isWoodmereContractFillAtSigningPlacement(layoutKey, placement);
+}
+
+/** True when a live DocuSign tab must stay unlocked at send (signer fills or confirms). */
+export function isFillAtSigningTabRef(tab: {
+  tabLabel?: string;
+  name?: string;
+}): boolean {
+  const label = String(tab.tabLabel || tab.name || '')
+    .trim()
+    .toLowerCase();
+  return Boolean(
+    label &&
+      (FILL_AT_SIGNING_VARIABLES.has(label) ||
+        REQUIRED_SIGNER_EDITABLE_VARIABLES.has(label) ||
+        label === 'authorized_business_phone'),
+  );
+}
+
+function shouldIncludeEmptyTextPlacement(
+  placement: DocumentLayoutPlacement,
+  layoutKey?: string,
+): boolean {
+  if (placement.type !== 'text') return false;
+  if (isSignerEditableTextPlacement(layoutKey, placement)) return true;
+  if (isWoodmereContractFillAtSigningPlacement(layoutKey, placement)) return true;
+  return includeEmptyLockedOptionalTextPlacement(placement);
+}
+
+/** Contract ACH account-holder name lines (pages 14 & 15 — owner person name). */
+const WOODMERE_ACH_OWNER_NAME_VARIABLES = new Set([
+  'ach_authorization_account_holder_name',
+]);
+
+/** Consent / title lines on ACH pages — merchant business name (not owner). */
+const WOODMERE_ACH_CONSENT_BUSINESS_NAME_VARIABLES = new Set([
+  'ach_authorization_concent_account_holder_name',
+  'ach_authorization_concent_account_holder_name_2',
+]);
+
+/** Woodmere ACH pages 1/14/15/16 — explicit owner-2 tabs; do not auto-mirror initials here. */
+const WOODMERE_CONTRACT_NO_OWNER2_INITIAL_MIRROR_PAGES = new Set(['1', '14', '15', '16']);
+/** ACH authorization pages 14 & 15 — owner 2 initials only (no signature/date). */
+const WOODMERE_ACH_OWNER2_INITIALS_ONLY_PAGES = new Set(['14', '15']);
+
+function placementPageOffset(
+  placement: DocumentLayoutPlacement,
+  pageOffset: number,
+): DocumentLayoutPlacement {
+  if (!pageOffset) return placement;
+  const base = Math.max(1, parseInt(String(placement.pageNumber || '1'), 10) || 1);
+  return { ...placement, pageNumber: String(base + pageOffset) };
+}
 const PARTY2_DL_KEYS = [
   'guaranty_owner2_driver_license',
   'guaranty_guarantor2_driver_license',
@@ -255,26 +546,65 @@ function mirrorIdentityFields(
   }
 }
 
-function expandPrefillValues(values: Record<string, string>): Record<string, string> {
+/** Owner / Merchant / Guarantor / Client 1 are the same person — force one canonical name. */
+function syncParty1NameFields(out: Record<string, string>): void {
+  const canonical = PARTY1_NAME_PRIORITY.map((k) => String(out[k] || '').trim()).find(
+    Boolean,
+  );
+  if (!canonical) return;
+  for (const k of PARTY1_NAME_KEYS) {
+    out[k] = canonical;
+  }
+}
+
+/** Owner / Merchant / Guarantor / Client 2 are the same person — force one canonical name. */
+function syncParty2NameFields(out: Record<string, string>): void {
+  const canonical = PARTY2_NAME_PRIORITY.map((k) => String(out[k] || '').trim()).find(
+    Boolean,
+  );
+  if (!canonical) return;
+  for (const k of PARTY2_NAME_KEYS) {
+    out[k] = canonical;
+  }
+}
+
+function stripParty2ValueKeys(out: Record<string, string>): void {
+  for (const k of [...PARTY2_NAME_KEYS, ...PARTY2_SS_KEYS, ...PARTY2_DL_KEYS]) {
+    delete out[k];
+  }
+  for (const key of Object.keys(out)) {
+    const norm = key.toLowerCase();
+    if (
+      /owner2|owner_2|guarantor2|guarantor_2|merchant2|merchant_2|appendix_merchant2|business_name_2/.test(
+        norm,
+      )
+    ) {
+      delete out[key];
+    }
+  }
+}
+
+function expandPrefillValues(
+  values: Record<string, string>,
+  ownerCount?: number,
+): Record<string, string> {
   const out = { ...values };
-  mirrorIdentityFields(out, PARTY1_NAME_KEYS);
+  syncParty1NameFields(out);
   mirrorIdentityFields(out, PARTY1_SS_KEYS);
   mirrorIdentityFields(out, PARTY1_DL_KEYS);
-  mirrorIdentityFields(out, PARTY2_NAME_KEYS);
-  mirrorIdentityFields(out, PARTY2_SS_KEYS);
-  mirrorIdentityFields(out, PARTY2_DL_KEYS);
+  if (ownerCount === undefined || ownerCount >= 2) {
+    syncParty2NameFields(out);
+    mirrorIdentityFields(out, PARTY2_SS_KEYS);
+    mirrorIdentityFields(out, PARTY2_DL_KEYS);
+  } else {
+    stripParty2ValueKeys(out);
+  }
   for (const [canonical, aliases] of Object.entries(PREFILL_VALUE_ALIASES)) {
     const v = String(out[canonical] || '').trim();
     if (!v) continue;
     for (const alias of aliases) {
       if (!String(out[alias] || '').trim()) out[alias] = v;
     }
-  }
-  if (!String(out.client_name || '').trim()) {
-    const legal = String(
-      out.client_legal_name || out.business_legal_name || out.merchant_legal_name || '',
-    ).trim();
-    if (legal) out.client_name = legal;
   }
   return out;
 }
@@ -293,49 +623,41 @@ function enrichValuesFromSigners(
       '',
   ).trim();
   if (primaryName) {
-    for (const k of PRIMARY_GUARANTOR_NAME_VARIABLES) {
-      if (!String(out[k] || '').trim()) out[k] = primaryName;
-    }
-    for (const k of PARTY1_NAME_KEYS) {
-      if (!String(out[k] || '').trim()) out[k] = primaryName;
+    for (const k of [...PRIMARY_GUARANTOR_NAME_VARIABLES, ...PARTY1_NAME_KEYS]) {
+      out[k] = primaryName;
     }
   }
+  syncParty1NameFields(out);
   if (ownerCount >= 2) {
-    const party2FromPrefill = PARTY2_NAME_KEYS.map((k) => String(out[k] || '').trim()).find(
-      Boolean,
-    );
-    if (party2FromPrefill) {
-      mirrorIdentityFields(out, PARTY2_NAME_KEYS);
-      mirrorIdentityFields(out, PARTY2_SS_KEYS);
-      mirrorIdentityFields(out, PARTY2_DL_KEYS);
-      const party2Name = PARTY2_NAME_KEYS.map((k) => String(out[k] || '').trim()).find(
-        Boolean,
-      );
-      if (party2Name) out.business_name_2 = party2Name;
-    } else {
-      const primaryEmail = String(
-        signers.find((s) => /receiver|client|merchant|customer/i.test(s.roleName))?.email ||
-          signers[0]?.email ||
-          '',
-      )
-        .trim()
-        .toLowerCase();
-      const secondarySigner =
-        signers.find((s) => /owner\s*2|guarantor\s*2/i.test(s.roleName)) ||
-        (signers.length >= 2 ? signers[signers.length - 1] : undefined) ||
-        signers.find((s) => {
-          const email = String(s.email || '').trim().toLowerCase();
-          return Boolean(email && email !== primaryEmail);
-        });
-      const secondaryName = String(secondarySigner?.name || '').trim();
-      const primaryNameNorm = primaryName.toLowerCase();
-      if (secondaryName && secondaryName.toLowerCase() !== primaryNameNorm) {
-        for (const k of PARTY2_NAME_KEYS) {
-          out[k] = secondaryName;
-        }
+    const primaryEmail = String(
+      signers.find((s) => /receiver|client|merchant|customer/i.test(s.roleName))?.email ||
+        signers[0]?.email ||
+        '',
+    )
+      .trim()
+      .toLowerCase();
+    const secondarySigner =
+      signers.find((s) => /owner\s*2|guarantor\s*2/i.test(s.roleName)) ||
+      (signers.length >= 2 ? signers[signers.length - 1] : undefined) ||
+      signers.find((s) => {
+        const email = String(s.email || '').trim().toLowerCase();
+        return Boolean(email && email !== primaryEmail);
+      });
+    const secondaryName = String(secondarySigner?.name || '').trim();
+    const primaryNameNorm = primaryName.toLowerCase();
+    if (secondaryName && secondaryName.toLowerCase() !== primaryNameNorm) {
+      for (const k of PARTY2_NAME_KEYS) {
+        out[k] = secondaryName;
+      }
+      if (!String(out.business_name_2 || '').trim()) {
         out.business_name_2 = secondaryName;
       }
     }
+    syncParty2NameFields(out);
+    mirrorIdentityFields(out, PARTY2_SS_KEYS);
+    mirrorIdentityFields(out, PARTY2_DL_KEYS);
+  } else {
+    stripParty2ValueKeys(out);
   }
   return out;
 }
@@ -386,6 +708,67 @@ function resolveSecondarySignerRoleName(signers: LayoutSignerInput[]): string {
   );
 }
 
+function resolvePrimarySignerIndex(signers: LayoutSignerInput[]): number {
+  const primaryRole = resolvePrimarySignerRoleName(signers).toLowerCase();
+  const idx = signers.findIndex((s) => s.roleName.toLowerCase() === primaryRole);
+  return idx >= 0 ? idx : 0;
+}
+
+function resolveSecondarySignerIndex(signers: LayoutSignerInput[]): number {
+  const secondaryRole = resolveSecondarySignerRoleName(signers).toLowerCase();
+  const idx = signers.findIndex((s) => s.roleName.toLowerCase() === secondaryRole);
+  if (idx >= 0) return idx;
+  return signers.length > 1 ? 1 : 0;
+}
+
+function resolvePlacementSignerIndex(
+  placement: DocumentLayoutPlacement,
+  signers: LayoutSignerInput[],
+  counts: LayoutPartyCounts,
+  layoutKey?: string,
+): number {
+  // Prefill + date fields → merchant #1. Owner 2 only gets initials/signatures.
+  // Do not reuse the same tabLabel on multiple pages (DocuSign groups them → green).
+  if (placement.type === 'text' || placement.type === 'date') {
+    return resolvePrimarySignerIndex(signers);
+  }
+
+  const party = placement.signerParty;
+  const page = String(placement.pageNumber || '');
+
+  if (isSecondaryParty(party)) {
+    if (counts.ownerCount >= 2) {
+      if (
+        layoutKey === 'contract' &&
+        WOODMERE_ACH_OWNER2_INITIALS_ONLY_PAGES.has(page) &&
+        placement.type !== 'initial'
+      ) {
+        return resolvePrimarySignerIndex(signers);
+      }
+      if (placement.type === 'initial') {
+        return resolveSecondarySignerIndex(signers);
+      }
+      return resolveSecondarySignerIndex(signers);
+    }
+    if (placement.type === 'initial') {
+      return resolvePrimarySignerIndex(signers);
+    }
+    return signers.length > 1 ? resolveSecondarySignerIndex(signers) : 0;
+  }
+
+  if (isPrimaryParty(party)) {
+    return resolvePrimarySignerIndex(signers);
+  }
+
+  const legacy = String(placement.signerRole || '').trim();
+  if (legacy && legacy.toLowerCase() !== 'signer') {
+    const idx = signers.findIndex((s) => s.roleName.toLowerCase() === legacy.toLowerCase());
+    if (idx >= 0) return idx;
+  }
+
+  return resolvePrimarySignerIndex(signers);
+}
+
 function isSecondaryParty(party: string | undefined): boolean {
   return party === 'secondary' || party === 'owner2' || party === 'guarantor2';
 }
@@ -403,36 +786,10 @@ function resolvePlacementSignerRoleName(
   placement: DocumentLayoutPlacement,
   signers: LayoutSignerInput[],
   counts: LayoutPartyCounts,
+  layoutKey?: string,
 ): string {
-  const party = placement.signerParty;
-
-  if (isSecondaryParty(party)) {
-    if (counts.ownerCount >= 2) {
-      return resolveSecondarySignerRoleName(signers);
-    }
-    // One signer deal: secondary-slot initials (e.g. page 11) go to the merchant/owner1.
-    if (placement.type === 'initial') {
-      return resolvePrimarySignerRoleName(signers);
-    }
-    return resolveSecondarySignerRoleName(signers);
-  }
-
-  if (isPrimaryParty(party)) {
-    return resolvePrimarySignerRoleName(signers);
-  }
-
-  const legacy = String(placement.signerRole || '').trim();
-  if (!legacy || legacy.toLowerCase() === 'signer') {
-    return resolvePrimarySignerRoleName(signers);
-  }
-
-  const match = signers.find((s) => s.roleName.toLowerCase() === legacy.toLowerCase());
-  if (match) return match.roleName;
-
-  // DocuSign template exports use legacy role names (e.g. "Receiver") that do not
-  // match platform signer roles ("Client", "Owner 2"). Prefill tabs must attach to
-  // the primary merchant signer or they are dropped at envelope build time.
-  return resolvePrimarySignerRoleName(signers);
+  const idx = resolvePlacementSignerIndex(placement, signers, counts, layoutKey);
+  return signers[idx]?.roleName || resolvePrimarySignerRoleName(signers);
 }
 
 const PRIMARY_GUARANTOR_NAME_VARIABLES = [
@@ -441,6 +798,7 @@ const PRIMARY_GUARANTOR_NAME_VARIABLES = [
   'guaranty_guarantor1_name',
   'guaranty_client_name',
   'client_name',
+  'addendum_client_name',
   'security_guarantor',
 ] as const;
 
@@ -466,6 +824,14 @@ function expandLayoutsWithOwner2Initials(
     for (const placement of layout.placements) {
       if (placement.type !== 'initial') continue;
       if (placement.when === 'owners >= 2') continue;
+      if (
+        layout.key === 'contract' &&
+        WOODMERE_CONTRACT_NO_OWNER2_INITIAL_MIRROR_PAGES.has(
+          String(placement.pageNumber || ''),
+        )
+      ) {
+        continue;
+      }
       if (isSecondaryParty(placement.signerParty)) continue;
       const party = placement.signerParty;
       if (party && !isPrimaryParty(party)) continue;
@@ -489,12 +855,81 @@ function expandLayoutsWithOwner2Initials(
   });
 }
 
+const FLEX_ADDENDUM_MONEY_VARIABLES = new Set([
+  'daily_payment_1',
+  'daily_payment_2',
+  'receivable_purchase_1',
+  'receivable_purchase_2',
+]);
+
+function formatFlexAddendumMoneyUsd(value: string): string {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  const n = Number(trimmed.replace(/[$,\s]/g, ''));
+  if (!Number.isFinite(n)) return trimmed;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+}
+
 function resolveTextPlacementValue(
   variable: string,
   values: Record<string, string>,
+  placement?: DocumentLayoutPlacement,
+  layoutKey?: string,
 ): string {
   const key = String(variable || '').trim();
   if (!key) return '';
+
+  const formatIfMoney = (raw: string) =>
+    FLEX_ADDENDUM_MONEY_VARIABLES.has(key.toLowerCase())
+      ? formatFlexAddendumMoneyUsd(raw)
+      : raw;
+
+  if (
+    layoutKey === 'contract' &&
+    (String(placement?.pageNumber || '') === '14' ||
+      String(placement?.pageNumber || '') === '15') &&
+    WOODMERE_ACH_CONSENT_BUSINESS_NAME_VARIABLES.has(key.toLowerCase())
+  ) {
+    const business = String(
+      values.client_legal_name ||
+        values.security_business_name ||
+        values.business_legal_name ||
+        values.authorization_client_name ||
+        values.ach_authorization_concent_account_holder_name ||
+        values.ach_authorization_concent_account_holder_name_2 ||
+        '',
+    ).trim();
+    if (business) return formatIfMoney(business);
+  }
+
+  if (
+    key.toLowerCase() === 'client_name' ||
+    key.toLowerCase() === 'addendum_client_name'
+  ) {
+    // Always prefer Owner 1 person name — never merchant legal name.
+    for (const aliasKey of PARTY1_NAME_PRIORITY) {
+      const owner1 = String(values[aliasKey] || '').trim();
+      if (owner1) return owner1;
+    }
+  }
+
+  if (
+    layoutKey === 'contract' &&
+    (String(placement?.pageNumber || '') === '14' ||
+      String(placement?.pageNumber || '') === '15') &&
+    WOODMERE_ACH_OWNER_NAME_VARIABLES.has(key.toLowerCase())
+  ) {
+    for (const aliasKey of PARTY1_NAME_KEYS) {
+      const owner1 = String(values[aliasKey] || '').trim();
+      if (owner1) return owner1;
+    }
+  }
+
   const candidates = [
     key,
     key.toLowerCase(),
@@ -502,12 +937,12 @@ function resolveTextPlacementValue(
   ].filter(Boolean);
   for (const candidate of candidates) {
     const direct = String(values[candidate] || '').trim();
-    if (direct) return direct;
+    if (direct) return formatIfMoney(direct);
     const aliases = PREFILL_VALUE_ALIASES[candidate] || PREFILL_VALUE_ALIASES[candidate.toLowerCase()];
     if (aliases) {
       for (const alias of aliases) {
         const v = String(values[alias] || '').trim();
-        if (v) return v;
+        if (v) return formatIfMoney(v);
       }
     }
   }
@@ -518,10 +953,20 @@ function placementAllowed(
   placement: DocumentLayoutPlacement,
   counts: LayoutPartyCounts,
   values: Record<string, string> = {},
+  layoutKey?: string,
 ): boolean {
   const when = String(placement.when || '').trim();
   if (when === 'owners >= 2' && counts.ownerCount < 2) return false;
   if (when === 'guarantors >= 2' && counts.ownerCount < 2) return false;
+
+  if (
+    layoutKey === 'contract' &&
+    WOODMERE_ACH_OWNER2_INITIALS_ONLY_PAGES.has(String(placement.pageNumber || '')) &&
+    isSecondaryParty(placement.signerParty) &&
+    (placement.type === 'signature' || placement.type === 'date')
+  ) {
+    return false;
+  }
 
   if (isSecondaryParty(placement.signerParty)) {
     if (counts.ownerCount < 2) return false;
@@ -540,6 +985,9 @@ function placementAllowed(
   if (variable) {
     if (/owner2|owner_2/.test(variable) && counts.ownerCount < 2) return false;
     if (/guarantor2|guarantor_2/.test(variable) && counts.ownerCount < 2) return false;
+    if (/merchant2|merchant_2|appendix_merchant2|business_name_2/.test(variable) && counts.ownerCount < 2) {
+      return false;
+    }
   }
 
   return true;
@@ -562,6 +1010,8 @@ function toTextTab(
   lockDataTabs = false,
   layoutKey?: string,
 ): DocuSignTab {
+  const signerEditable = isSignerEditableTextPlacement(layoutKey, placement);
+  const tabValue = clearsValueAtSend(layoutKey, placement) ? '' : value;
   const variable = String(placement.variable || '').trim();
   const displayLabel =
     getPrefillDisplayLabel(variable) ||
@@ -573,10 +1023,14 @@ function toTextTab(
     displayLabel ||
     `${variable || 'text'}_${placement.id}`;
   const width = resolveDocuSignPrefillTabWidth({
-    value,
+    value: tabValue,
     height: placement.height,
     layoutWidth: placement.width,
+    fontSize: placement.fontSize,
   });
+  // Page-16 ACH and page-1 client phone stay editable; other prefilled text locks at send.
+  const lockTab = signerEditable ? false : lockDataTabs || Boolean(placement.lockedForSigner);
+  const optionalTab = !isRequiredSignerTextField(placement, layoutKey);
   return applyDocuSignPrefillTabStyle(
     {
       tabLabel,
@@ -585,13 +1039,17 @@ function toTextTab(
       pageNumber: placement.pageNumber,
       xPosition: placement.x,
       yPosition: resolveTabYPosition(placement.y, layoutKey),
-      value,
-      ...(lockDataTabs || placement.lockedForSigner ? { locked: 'true' } : {}),
-      ...(placement.optional ? { optional: 'true' } : {}),
+      ...(tabValue ? { value: tabValue } : {}),
+      ...(optionalTab ? { optional: 'true' } : { required: 'true', optional: 'false' }),
+      ...(lockTab ? { locked: 'true' } : {}),
+      ...(placement.bold ? { bold: 'true' } : {}),
+      // Prefill hangs on signer 1; Owner 2 uses initials/signatures only. Keep tabLabels unique
+      // across pages so DocuSign does not auto-group them (same label → green sync group).
+      shared: 'false',
       width,
       ...(placement.height ? { height: placement.height } : {}),
     },
-    { height: placement.height },
+    { height: placement.height, fontSize: placement.fontSize },
   );
 }
 
@@ -604,13 +1062,17 @@ export async function renderFlattenedLayoutPdf(
   const { PDFDocument, rgb } = await import('pdf-lib');
   const pdfDoc = await PDFDocument.load(Buffer.from(layout.documentBase64, 'base64'));
   const font = await embedArialPdfFont(pdfDoc);
+  const boldFont = await embedArialBoldPdfFont(pdfDoc);
   const pages = pdfDoc.getPages();
-  const expanded = expandPrefillValues(values);
+  const expanded = expandPrefillValues(values, counts.ownerCount);
 
   for (const placement of layout.placements) {
     if (placement.type !== 'text' && placement.type !== 'date') continue;
-    if (!placementAllowed(placement, counts, expanded)) continue;
-    const text = resolveTextPlacementValue(placement.variable || '', expanded);
+    if (!placementAllowed(placement, counts, expanded, layout.key)) continue;
+    if (isWoodmereContractFillAtSigningPlacement(layout.key, placement)) continue;
+    // Keep client_phone as a live DocuSign tab (required + writable), never burn into PDF.
+    if (isRequiredSignerEditablePlacement(placement)) continue;
+    const text = resolveTextPlacementValue(placement.variable || '', expanded, placement, layout.key);
     if (!text) continue;
 
     const pageIndex = Math.max(0, parseInt(String(placement.pageNumber || '1'), 10) - 1);
@@ -618,7 +1080,11 @@ export async function renderFlattenedLayoutPdf(
     if (!page) continue;
 
     const tabHeight = parseFloat(String(placement.height || '19')) || 19;
-    const fontSize = Math.min(11, Math.max(7, Math.round(tabHeight * 0.55)));
+    const explicitFontSize = parseFloat(String(placement.fontSize ?? '').trim());
+    const fontSize =
+      Number.isFinite(explicitFontSize) && explicitFontSize > 0
+        ? explicitFontSize
+        : Math.min(11, Math.max(7, Math.round(tabHeight * 0.55)));
     const { height: pageHeight } = page.getSize();
     const x = parseFloat(String(placement.x || '0')) || 0;
     const yTop = parseFloat(resolveTabYPosition(placement.y, layout.key)) || 0;
@@ -629,13 +1095,14 @@ export async function renderFlattenedLayoutPdf(
         value: text,
         height: placement.height,
         layoutWidth: placement.width,
+        fontSize: placement.fontSize,
       }),
     );
     page.drawText(text, {
       x,
       y: Math.max(2, y),
       size: fontSize,
-      font,
+      font: placement.bold ? boldFont : font,
       color: rgb(0, 0, 0),
       maxWidth: Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : undefined,
     });
@@ -713,26 +1180,26 @@ export function buildRecipientTabsByRoleForLayout(
   signers: LayoutSignerInput[],
   counts: LayoutPartyCounts,
 ): Map<string, SignerTabBuckets> {
-  const signerTabs = new Map<string, SignerTabBuckets>();
+  const signerTabs = new Map<number, SignerTabBuckets>();
 
-  const ensureSigner = (roleName: string) => {
-    if (!signerTabs.has(roleName)) {
-      signerTabs.set(roleName, emptySignerTabBuckets());
+  const ensureSigner = (signerIndex: number) => {
+    if (!signerTabs.has(signerIndex)) {
+      signerTabs.set(signerIndex, emptySignerTabBuckets());
     }
-    return signerTabs.get(roleName)!;
+    return signerTabs.get(signerIndex)!;
   };
 
   for (const placement of layout.placements) {
-    if (!placementAllowed(placement, counts, values)) continue;
+    if (!placementAllowed(placement, counts, values, layout.key)) continue;
 
-    const roleName = resolvePlacementSignerRoleName(placement, signers, counts);
+    const signerIndex = resolvePlacementSignerIndex(placement, signers, counts, layout.key);
 
-    const bucket = ensureSigner(roleName);
+    const bucket = ensureSigner(signerIndex);
 
     if (placement.type === 'text' || placement.type === 'date') {
       const variable = placement.variable || '';
-      const value = resolveTextPlacementValue(variable, values);
-      if (!value && !includeEmptyLockedOptionalTextPlacement(placement)) continue;
+      const value = resolveTextPlacementValue(variable, values, placement, layout.key);
+      if (!value && !shouldIncludeEmptyTextPlacement(placement, layout.key)) continue;
       const tab = toTextTab(placement, value, envelopeDocumentId, false, layout.key);
       if (placement.type === 'date') bucket.dateTabs.push(tab);
       else bucket.textTabs.push(tab);
@@ -754,7 +1221,12 @@ export function buildRecipientTabsByRoleForLayout(
     }
   }
 
-  return signerTabs;
+  const byRole = new Map<string, SignerTabBuckets>();
+  signers.forEach((s, idx) => {
+    const tabs = signerTabs.get(idx);
+    if (tabs) byRole.set(s.roleName, tabs);
+  });
+  return byRole;
 }
 
 function signerHasTabs(tabs: SignerTabBuckets): boolean {
@@ -778,7 +1250,7 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     guarantorCount: options.guarantorCount ?? 0,
   };
   const values = enrichValuesFromSigners(
-    expandPrefillValues(options.values),
+    expandPrefillValues(options.values, counts.ownerCount),
     options.signers,
     counts.ownerCount,
   );
@@ -786,84 +1258,107 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
     [];
   /** Map each layout package to envelope document id (1-based merge order). */
   const layoutKeyToEnvelopeDocId = new Map<string, string>();
+  const pageOffsetByLayoutKey = options.pageOffsetByLayoutKey ?? new Map<string, number>();
 
-  options.layouts.forEach((layout, idx) => {
-    const envelopeDocId = String(idx + 1);
-    layoutKeyToEnvelopeDocId.set(layout.key, envelopeDocId);
-    const base64 = (layout as DocumentLayout & { documentBase64?: string })
-      .documentBase64;
-    if (!base64) {
-      throw new Error(
-        `Layout "${layout.key}" is missing documentBase64 on the merged envelope build.`,
-      );
-    }
+  if (options.mergedDocument?.documentBase64) {
+    const mergedName =
+      String(options.mergedDocument.name || '').trim() ||
+      options.primaryDocumentName ||
+      'Contract Package';
     documents.push({
-      documentId: envelopeDocId,
-      name:
-        idx === 0 && options.primaryDocumentName
-          ? options.primaryDocumentName
-          : layout.document.originalFileName || layout.name,
-      documentBase64: base64,
+      documentId: '1',
+      name: mergedName,
+      documentBase64: options.mergedDocument.documentBase64,
     });
-  });
-
-  const signerTabs = new Map<string, SignerTabBuckets>();
-
-  const ensureSigner = (roleName: string) => {
-    if (!signerTabs.has(roleName)) {
-      signerTabs.set(roleName, emptySignerTabBuckets());
+    for (const layout of options.layouts) {
+      layoutKeyToEnvelopeDocId.set(layout.key, '1');
     }
-    return signerTabs.get(roleName)!;
+  } else {
+    options.layouts.forEach((layout, idx) => {
+      const envelopeDocId = String(idx + 1);
+      layoutKeyToEnvelopeDocId.set(layout.key, envelopeDocId);
+      const base64 = (layout as DocumentLayout & { documentBase64?: string })
+        .documentBase64;
+      if (!base64) {
+        throw new Error(
+          `Layout "${layout.key}" is missing documentBase64 on the merged envelope build.`,
+        );
+      }
+      documents.push({
+        documentId: envelopeDocId,
+        name:
+          idx === 0 && options.primaryDocumentName
+            ? options.primaryDocumentName
+            : layout.document.originalFileName || layout.name,
+        documentBase64: base64,
+      });
+    });
+  }
+
+  const signerTabs = new Map<number, SignerTabBuckets>();
+
+  const ensureSigner = (signerIndex: number) => {
+    if (!signerTabs.has(signerIndex)) {
+      signerTabs.set(signerIndex, emptySignerTabBuckets());
+    }
+    return signerTabs.get(signerIndex)!;
   };
 
   const expandedLayouts = expandLayoutsWithOwner2Initials(options.layouts, counts.ownerCount);
 
   for (const layout of expandedLayouts) {
     const envelopeDocId = layoutKeyToEnvelopeDocId.get(layout.key) || '1';
+    const pageOffset = pageOffsetByLayoutKey.get(layout.key) ?? 0;
 
     for (const placement of layout.placements) {
-      if (!placementAllowed(placement, counts, values)) continue;
+      if (!placementAllowed(placement, counts, values, layout.key)) continue;
 
-      const roleName = resolvePlacementSignerRoleName(placement, options.signers, counts);
+      const signerIndex = resolvePlacementSignerIndex(
+        placement,
+        options.signers,
+        counts,
+        layout.key,
+      );
 
-      const bucket = ensureSigner(roleName);
+      const bucket = ensureSigner(signerIndex);
+      const tabPlacement = placementPageOffset(placement, pageOffset);
 
       if (placement.type === 'text' || placement.type === 'date') {
         if (
           layoutPrefillBurnedIntoPdf(layout.key, options) &&
-          !includeEmptyLockedOptionalTextPlacement(placement)
+          !shouldIncludeEmptyTextPlacement(placement, layout.key)
         ) {
           continue;
         }
         const variable = placement.variable || '';
-        const value = resolveTextPlacementValue(variable, values);
-        if (!value && !includeEmptyLockedOptionalTextPlacement(placement)) continue;
-        const tab = toTextTab(placement, value, envelopeDocId, options.lockDataTabs, layout.key);
+        const value = resolveTextPlacementValue(variable, values, placement, layout.key);
+        if (!value && !shouldIncludeEmptyTextPlacement(placement, layout.key)) continue;
+        const tab = toTextTab(tabPlacement, value, envelopeDocId, options.lockDataTabs, layout.key);
         if (placement.type === 'date') bucket.dateTabs.push(tab);
         else bucket.textTabs.push(tab);
         continue;
       }
 
       if (placement.type === 'signature') {
-        bucket.signHereTabs.push(toSignTab(placement, envelopeDocId, layout.key));
+        bucket.signHereTabs.push(toSignTab(tabPlacement, envelopeDocId, layout.key));
         continue;
       }
 
       if (placement.type === 'initial') {
-        bucket.initialHereTabs.push(toSignTab(placement, envelopeDocId, layout.key));
+        bucket.initialHereTabs.push(toSignTab(tabPlacement, envelopeDocId, layout.key));
         continue;
       }
 
       if (placement.type === 'attachment') {
-        bucket.signerAttachmentTabs.push(toAttachmentTab(placement, envelopeDocId, layout.key));
+        bucket.signerAttachmentTabs.push(toAttachmentTab(tabPlacement, envelopeDocId, layout.key));
       }
     }
   }
 
   const emptyTabs = emptySignerTabBuckets;
 
-  const mappedSigners = options.signers.map((s) => {
-    const tabs = signerTabs.get(s.roleName) || emptyTabs();
+  const mappedSigners = options.signers.map((s, idx) => {
+    const tabs = signerTabs.get(idx) || emptyTabs();
     return {
       roleName: s.roleName,
       name: s.name,
@@ -874,28 +1369,17 @@ export function buildEnvelopeFromLayouts(options: BuildEnvelopeFromLayoutOptions
   });
 
   if (counts.ownerCount >= 2) {
-    const secondaryRole = resolveSecondarySignerRoleName(options.signers);
-    const secondaryTabs = signerTabs.get(secondaryRole);
+    const secondaryIdx = resolveSecondarySignerIndex(options.signers);
+    const secondaryTabs = signerTabs.get(secondaryIdx);
     const hasSecondaryRecipient = mappedSigners.some(
-      (s) => s.roleName.toLowerCase() === secondaryRole.toLowerCase() && signerHasTabs(s.tabs),
+      (s, idx) => idx === secondaryIdx && signerHasTabs(s.tabs),
     );
     if (!hasSecondaryRecipient && secondaryTabs && signerHasTabs(secondaryTabs)) {
-      const primaryEmail = String(
-        options.signers.find((s) => /client|merchant|customer/i.test(s.roleName))?.email ||
-          options.signers[0]?.email ||
-          '',
-      )
-        .trim()
-        .toLowerCase();
-      const secondaryInput =
-        options.signers.find((s) => s.roleName.toLowerCase() === secondaryRole.toLowerCase()) ||
-        options.signers.find((s) => {
-          const email = String(s.email || '').trim().toLowerCase();
-          return Boolean(email && email !== primaryEmail);
-        });
+      const secondaryInput = options.signers[secondaryIdx];
       if (secondaryInput) {
         mappedSigners.push({
-          roleName: secondaryRole,
+          roleName:
+            secondaryInput.roleName || resolveSecondarySignerRoleName(options.signers),
           name: secondaryInput.name,
           email: secondaryInput.email,
           routingOrder: secondaryInput.routingOrder ?? 2,

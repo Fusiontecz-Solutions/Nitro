@@ -1,13 +1,16 @@
 import type { DocumentLayout } from '../utils/convert-docusign-template-export';
+import { convertSimplifiedTabsContractExport } from '../utils/convert-docusign-template-export';
 import achAuthorizationLayout from './ach_authorization.layout.json';
 import achAuthorizationStandaloneLayout from './ach_authorization_standalone.layout.json';
 import balanceTransferLayout from './balance_transfer.layout.json';
 import contractLayout from './contract.layout.json';
 import flexAddendumLayout from './flex_addendum.layout.json';
+import texasFundingGroupContractExport from './texas_funding_group_contract.json';
 
 /** Document type keys used with BoldSignTemplate.type and merge order. */
 export const DOCUMENT_LAYOUT_KEYS = {
   contract: 'contract',
+  texasFundingGroupContract: 'texas_funding_group_contract',
   balanceTransfer: 'balance_transfer',
   flexAddendum: 'flex_addendum',
   achAuthorization: 'ach_authorization',
@@ -20,6 +23,8 @@ export type DocumentLayoutKey =
 /** Maps BoldSignTemplate.type values to coordinate layouts. */
 export const BOLD_SIGN_TYPE_TO_LAYOUT_KEY: Record<string, DocumentLayoutKey> = {
   contract: DOCUMENT_LAYOUT_KEYS.contract,
+  texas_funding_group_contract: DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
+  texas_funding_group: DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
   balance_transfer: DOCUMENT_LAYOUT_KEYS.balanceTransfer,
   addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
   flex_addendum: DOCUMENT_LAYOUT_KEYS.flexAddendum,
@@ -29,8 +34,18 @@ export const BOLD_SIGN_TYPE_TO_LAYOUT_KEY: Record<string, DocumentLayoutKey> = {
   woodmere_ach_authorization: DOCUMENT_LAYOUT_KEYS.achAuthorization,
 };
 
+const texasFundingGroupLayout = convertSimplifiedTabsContractExport(
+  texasFundingGroupContractExport as Record<string, unknown>,
+  {
+    key: DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract,
+    name: 'Texas Funding Group Contract',
+    pdfFileName: 'TEXAS FUNDING GROUP.pdf',
+  },
+);
+
 const REGISTRY: Record<DocumentLayoutKey, DocumentLayout> = {
   [DOCUMENT_LAYOUT_KEYS.contract]: contractLayout as DocumentLayout,
+  [DOCUMENT_LAYOUT_KEYS.texasFundingGroupContract]: texasFundingGroupLayout,
   [DOCUMENT_LAYOUT_KEYS.balanceTransfer]: balanceTransferLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.flexAddendum]: flexAddendumLayout as DocumentLayout,
   [DOCUMENT_LAYOUT_KEYS.achAuthorization]: achAuthorizationLayout as DocumentLayout,

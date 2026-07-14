@@ -18,19 +18,35 @@ interface UploadResult {
     error?: string;
 }
 
+function resolveCloudinaryResourceType(file: {
+    mimetype?: string;
+    name?: string;
+}): 'image' | 'raw' {
+    const mime = String(file.mimetype || '').toLowerCase();
+    const name = String(file.name || '').toLowerCase();
+    if (mime === 'application/pdf' || name.endsWith('.pdf')) {
+        return 'image';
+    }
+    if (mime.startsWith('image/')) {
+        return 'image';
+    }
+    return 'raw';
+}
+
 class UploadToCloudinaryService {
     // Upload single file to Cloudinary
     async uploadFile(file: UploadedFile, folder: string, title?: string): Promise<UploadResult> {
         try {
             const fileName = title || file.name;
-            const options = { folder, resource_type: 'raw' as const };
+            const resourceType = resolveCloudinaryResourceType(file);
+            const options = { folder, resource_type: resourceType as 'image' | 'raw' };
 
             // If file has a stream-like property, use upload_stream
             if (file.tempFileStream) {
                 return new Promise((resolve, reject) => {
                     const uploadStream = cloudinary.uploader.upload_stream(
                         {
-                            resource_type: 'raw',
+                            resource_type: resourceType,
                             folder,
                             public_id: `${Date.now()}_${fileName}`,
                         },
@@ -80,11 +96,12 @@ class UploadToCloudinaryService {
             const safeBase = String(fileName || 'document.pdf').replace(/[^\w.\-]+/g, '_');
             const withoutExt = safeBase.replace(/\.[^/.]+$/, '');
             const publicId = `${Date.now()}_${withoutExt || 'document'}`;
+            const resourceType = resolveCloudinaryResourceType({ name: safeBase });
 
             return await new Promise<UploadResult>((resolve) => {
                 const uploadStream = cloudinary.uploader.upload_stream(
                     {
-                        resource_type: 'raw',
+                        resource_type: resourceType,
                         folder,
                         public_id: publicId,
                     },

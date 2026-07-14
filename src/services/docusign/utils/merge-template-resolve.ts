@@ -2,6 +2,7 @@ import prisma from '../../../config/prismaClient';
 import {
   findBoldSignTemplatePdfUrlForLayout,
   isDocumentLayoutKey,
+  loadPlatformDocumentPdfBase64,
   PLATFORM_DOCUMENTS,
 } from '../platform-document-registry';
 import type { DocumentLayout } from './convert-docusign-template-export';
@@ -16,15 +17,43 @@ import {
   type LayoutSignerInput,
 } from './build-envelope-from-layout';
 import { tryBuildStateDisclosureLayoutFromDbRow } from './state-document-layout';
+import {
+  parseFunderSupplementalLayoutKey,
+  resolveFunderSupplementalStorageType,
+} from '../../../utils/funderContractLayout';
 
 export type ResolvedMergeTemplate = {
   sourceRef: string;
   name?: string;
   pdfUrl?: string;
+  /** When set, PDF bytes were already resolved (e.g. DocuSign default template). */
+  documentBase64?: string;
   layoutKey?: DocumentLayoutKey;
   /** When set, coordinates come from `state-document-config.ts` (disclosure merge). */
   inlineLayout?: DocumentLayout;
 };
+
+/**
+ * Funder-owned layout keys (`funder_{uuid}_balance_transfer`, etc.) store that
+ * funder's PDF, but always reuse the shared platform coordinate layouts.
+ */
+export function resolveCoordinateLayoutKeyForTemplate(options: {
+  layoutKey?: string | null;
+  type?: string | null;
+}): DocumentLayoutKey | null {
+  const key = String(options.layoutKey || '').trim();
+  if (isDocumentLayoutKey(key)) return key;
+
+  const parsed = parseFunderSupplementalLayoutKey(key);
+  if (parsed) {
+    const storageType = resolveFunderSupplementalStorageType(
+      parsed.supplementalType,
+    );
+    if (isDocumentLayoutKey(storageType)) return storageType;
+  }
+
+  return resolveLayoutKeyFromBoldSignType(String(options.type || '')) || null;
+}
 
 export async function resolveTemplateRefForMerge(
   ref: string,
@@ -37,52 +66,78 @@ export async function resolveTemplateRefForMerge(
   if (isDocumentLayoutKey(sourceRef)) {
     const def = PLATFORM_DOCUMENTS[sourceRef];
     const dbPdfUrl = await findBoldSignTemplatePdfUrlForLayout(sourceRef);
-    if (!dbPdfUrl) {
-      throw new Error(
-        `No Cloudinary pdfUrl for "${def.name}". Set pdfUrl on the BoldSignTemplate row with layoutKey "${sourceRef}".`,
-      );
+    if (dbPdfUrl) {
+      return {
+        sourceRef,
+        name: def.name,
+        layoutKey: sourceRef,
+        pdfUrl: dbPdfUrl,
+      };
     }
+    // No uploaded PDF — use default DocuSign template PDF for this layout.
+    const documentBase64 = await loadPlatformDocumentPdfBase64(sourceRef);
     return {
       sourceRef,
       name: def.name,
       layoutKey: sourceRef,
-      pdfUrl: dbPdfUrl,
+      documentBase64,
     };
   }
 
   const row = await prisma.boldSignTemplate.findFirst({
     where: {
-      OR: [{ id: sourceRef }, { templateId: sourceRef }],
+      OR: [
+        { id: sourceRef },
+        { templateId: sourceRef },
+        { layoutKey: sourceRef },
+      ],
     },
+    orderBy: { createdAt: 'desc' },
   });
 
   if (row) {
     const layoutFromRow = String(row.layoutKey || '').trim();
     const layoutKey =
-      (layoutFromRow as DocumentLayoutKey) ||
-      resolveLayoutKeyFromBoldSignType(String(row.type || '')) ||
-      undefined;
+      resolveCoordinateLayoutKeyForTemplate({
+        layoutKey: layoutFromRow,
+        type: row.type,
+      }) || undefined;
     const pdfUrl = String(row.pdfUrl || '').trim() || undefined;
     const inlineLayout = tryBuildStateDisclosureLayoutFromDbRow(row);
+    const hasRemotePdf =
+      !!pdfUrl &&
+      (pdfUrl.startsWith('http://') || pdfUrl.startsWith('https://')) &&
+      !pdfUrl.startsWith('platform://');
 
-    if (!pdfUrl) {
-      throw new Error(
-        `Template "${row.name}" has no pdfUrl. Upload a PDF to Cloudinary and set pdfUrl on the document template record.`,
-      );
-    }
-    if (!layoutKey && !inlineLayout) {
-      throw new Error(
-        `Template "${row.name}" has no layoutKey and no state-document-config entry for frequency="${row.frequency}" state="${row.state}".`,
-      );
+    if (hasRemotePdf) {
+      if (!layoutKey && !inlineLayout) {
+        throw new Error(
+          `Template "${row.name}" has no layoutKey and no state-document-config entry for frequency="${row.frequency}" state="${row.state}".`,
+        );
+      }
+      return {
+        sourceRef,
+        name: row.name,
+        pdfUrl,
+        layoutKey,
+        inlineLayout: inlineLayout || undefined,
+      };
     }
 
-    return {
-      sourceRef,
-      name: row.name,
-      pdfUrl,
-      layoutKey,
-      inlineLayout: inlineLayout || undefined,
-    };
+    if (layoutKey && isDocumentLayoutKey(layoutKey)) {
+      const documentBase64 = await loadPlatformDocumentPdfBase64(layoutKey);
+      return {
+        sourceRef,
+        name: row.name,
+        layoutKey,
+        documentBase64,
+        inlineLayout: inlineLayout || undefined,
+      };
+    }
+
+    throw new Error(
+      `Template "${row.name}" has no pdfUrl. Upload a PDF to Cloudinary and set pdfUrl on the document template record.`,
+    );
   }
 
   throw new Error(
@@ -184,7 +239,10 @@ export async function buildPdfCompositeFromResolved(
   ownerCount = 1,
   guarantorCount = 0,
 ): Promise<Record<string, unknown>> {
-  if (!resolved.pdfUrl || (!resolved.layoutKey && !resolved.inlineLayout)) {
+  if (
+    (!resolved.pdfUrl && !resolved.documentBase64) ||
+    (!resolved.layoutKey && !resolved.inlineLayout)
+  ) {
     throw new Error(
       `Template "${resolved.name || resolved.sourceRef}" is missing pdfUrl or layout`,
     );
@@ -197,16 +255,19 @@ export async function buildPdfCompositeFromResolved(
       `Template "${resolved.name || resolved.sourceRef}" could not resolve a document layout`,
     );
   }
-  const pdfUrl = String(resolved.pdfUrl || '').trim();
-  if (!pdfUrl || pdfUrl.startsWith('platform://')) {
-    throw new Error(
-      `Template "${resolved.name || resolved.sourceRef}" is missing a Cloudinary pdfUrl.`,
+  let documentBase64 = String(resolved.documentBase64 || '').trim();
+  if (!documentBase64) {
+    const pdfUrl = String(resolved.pdfUrl || '').trim();
+    if (!pdfUrl || pdfUrl.startsWith('platform://')) {
+      throw new Error(
+        `Template "${resolved.name || resolved.sourceRef}" is missing a Cloudinary pdfUrl.`,
+      );
+    }
+    documentBase64 = await fetchPdfAsBase64(
+      pdfUrl,
+      resolved.name || resolved.sourceRef,
     );
   }
-  const documentBase64 = await fetchPdfAsBase64(
-    pdfUrl,
-    resolved.name || resolved.sourceRef,
-  );
   if (!documentBase64) {
     throw new Error(
       `Template "${resolved.name || resolved.sourceRef}" PDF could not be loaded`,

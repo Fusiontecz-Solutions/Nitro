@@ -330,6 +330,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
     const {
       templates,
       templateIds,
+      supplementalLayoutKeys,
       supplementalDocumentRefs,
       standaloneDocumentRefs,
       contractTemplateFilters,
@@ -344,6 +345,13 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       ownerCount,
       guarantorCount,
       skipApplicationEnvelopeLink,
+      includeMainContract,
+      mainContractLayoutKey,
+      contractId,
+      sendPackage,
+      funderName,
+      funderProfileId,
+      contractState,
     } = req.body;
 
     if (!roles?.length) {
@@ -353,6 +361,7 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
     const result = await docusignService.mergeAndSendTemplates(userId, {
       templates,
       templateIds,
+      supplementalLayoutKeys,
       supplementalDocumentRefs,
       standaloneDocumentRefs,
       contractTemplateFilters,
@@ -367,6 +376,28 @@ export const mergeAndSendTemplates = async (req: Request, res: Response) => {
       ownerCount: ownerCount != null ? Number(ownerCount) : undefined,
       guarantorCount: guarantorCount != null ? Number(guarantorCount) : undefined,
       skipApplicationEnvelopeLink: skipApplicationEnvelopeLink === true,
+      includeMainContract:
+        includeMainContract === false ? false : includeMainContract === true ? true : undefined,
+      mainContractLayoutKey:
+        typeof mainContractLayoutKey === 'string' ? mainContractLayoutKey.trim() : undefined,
+      contractId: contractId != null ? Number(contractId) : undefined,
+      sendPackage:
+        sendPackage && typeof sendPackage === 'object' && !Array.isArray(sendPackage)
+          ? {
+              includeMainContract: sendPackage.includeMainContract === true,
+              includeAddendum: sendPackage.includeAddendum === true,
+              includeDisclosure: sendPackage.includeDisclosure === true,
+            }
+          : undefined,
+      funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+      funderProfileId:
+        typeof funderProfileId === 'string' && funderProfileId.trim()
+          ? funderProfileId.trim()
+          : undefined,
+      contractState:
+        typeof contractState === 'string' && contractState.trim()
+          ? contractState.trim()
+          : undefined,
     });
 
     return res.json(result);
@@ -404,16 +435,19 @@ export const docusignWebhook = async (req: Request, res: Response) => {
 export const syncDocusignEnvelopeStatus = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user?.id;
-    const { applicationId, envelopeId, ccEmails } = req.body || {};
+    const { applicationId, envelopeId, ccEmails, contractId } = req.body || {};
     if (!applicationId && !envelopeId) {
       return res.status(400).json({
         message: 'applicationId or envelopeId is required',
       });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.syncEnvelopeStatusFromDocusign(userId, {
       applicationId,
       envelopeId,
       ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
+      contractId:
+        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
     });
     return res.json(result);
   } catch (error: any) {
@@ -431,17 +465,32 @@ export const createDraftEnvelope = async (req: Request, res: Response) => {
 export const getSenderView = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId, returnUrl, ccEmails, applicationId, signerEmail, signerName, roles } =
-      req.body;
+    const {
+      envelopeId,
+      returnUrl,
+      ccEmails,
+      applicationId,
+      signerEmail,
+      signerName,
+      roles,
+      contractId,
+      funderName,
+      contractState,
+    } = req.body;
     if (!envelopeId || !returnUrl) {
       return res.status(400).json({ message: 'Missing envelopeId and returnUrl' });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.getSenderViewUrl(userId, envelopeId, returnUrl, {
       ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
       applicationId: applicationId ? String(applicationId) : undefined,
       signerEmail: signerEmail ? String(signerEmail) : undefined,
       signerName: signerName ? String(signerName) : undefined,
       roles: Array.isArray(roles) ? roles : undefined,
+      contractId:
+        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+      funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+      contractState: typeof contractState === 'string' ? contractState.trim() : undefined,
     });
     return res.json(result);
   } catch (error: unknown) {
@@ -454,14 +503,20 @@ export const getSenderView = async (req: Request, res: Response) => {
 export const sendEnvelope = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId, applicationId, ccEmails, title } = req.body;
+    const { envelopeId, applicationId, ccEmails, title, contractId, funderName, contractState } =
+      req.body;
     if (!envelopeId) {
       return res.status(400).json({ message: 'Missing envelopeId' });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.sendEnvelope(userId, String(envelopeId), {
       applicationId: applicationId ? String(applicationId) : undefined,
       ccEmails: Array.isArray(ccEmails) ? ccEmails : undefined,
       title: title ? String(title) : undefined,
+      contractId:
+        Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+      funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+      contractState: typeof contractState === 'string' ? contractState.trim() : undefined,
     });
     return res.json(result);
   } catch (error: any) {
@@ -472,11 +527,21 @@ export const sendEnvelope = async (req: Request, res: Response) => {
 export const syncEnvelopeCc = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
-    const { envelopeId, ccEmails, applicationId, signerEmail, signerName, roles } =
-      req.body;
+    const {
+      envelopeId,
+      ccEmails,
+      applicationId,
+      signerEmail,
+      signerName,
+      roles,
+      contractId,
+      funderName,
+      contractState,
+    } = req.body;
     if (!envelopeId) {
       return res.status(400).json({ message: 'Missing envelopeId' });
     }
+    const contractIdNum = Number(contractId);
     const result = await docusignService.syncEnvelopeCcEmails(
       userId,
       String(envelopeId),
@@ -485,6 +550,12 @@ export const syncEnvelopeCc = async (req: Request, res: Response) => {
       signerEmail ? String(signerEmail) : undefined,
       signerName ? String(signerName) : undefined,
       Array.isArray(roles) ? roles : undefined,
+      {
+        contractId:
+          Number.isFinite(contractIdNum) && contractIdNum > 0 ? contractIdNum : undefined,
+        funderName: typeof funderName === 'string' ? funderName.trim() : undefined,
+        contractState: typeof contractState === 'string' ? contractState.trim() : undefined,
+      },
     );
     return res.json(result);
   } catch (error: any) {

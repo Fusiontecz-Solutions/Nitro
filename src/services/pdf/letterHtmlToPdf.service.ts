@@ -35,6 +35,48 @@ const LETTER_PDF_MAX_HEIGHT_MM = (() => {
     const n = Number(process.env.LETTER_PDF_MAX_HEIGHT_MM ?? '1500');
     return Number.isFinite(n) && n > 0 ? n : 1500;
 })();
+  right: '0.35in',
+  bottom: '0.4in',
+  left: '0.35in',
+} as const;
+
+const COMPLIANCE_PDF_PRINT_STYLE = `<style id="compliance-pdf-print-inject">
+  @page {
+    size: letter;
+    margin: 0.35in 0.35in 0.4in 0.35in;
+    background: #ffffff;
+  }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100%;
+    background: #ffffff !important;
+    overflow-x: hidden;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+  .compliance-pdf-root {
+    width: 100%;
+    background: #ffffff;
+  }
+  table {
+    border-collapse: collapse;
+    max-width: 100%;
+  }
+  td, th {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+</style>`;
 
 /** Standard A4 (matches typical contract PDF pages). */
 const A4_PAGE_WIDTH_MM = 210;
@@ -374,14 +416,18 @@ async function waitForNextPaint(page: Page): Promise<void> {
 
 async function measureContentHeightPx(page: Page): Promise<number> {
     return page.evaluate(() => {
-        const g = globalThis as unknown as {
-            document: {
+        type Measurable = {
                 querySelector: (sel: string) => {
                     getBoundingClientRect: () => { height: number };
-                    scrollHeight: number;
-                } | null;
+            scrollHeight: number;
+            offsetHeight?: number;
                 body: { scrollHeight: number };
                 documentElement: { scrollHeight: number };
+        const g = globalThis as unknown as {
+            document: {
+                documentElement: Measurable;
+                body: Measurable | null;
+                querySelector: (sel: string) => Measurable | null;
             };
         };
         const stage = g.document.querySelector('.letter-pdf-stage');
@@ -390,6 +436,17 @@ async function measureContentHeightPx(page: Page): Promise<number> {
         if (!el) {
             return Math.ceil(
                 Math.max(g.document.body.scrollHeight, g.document.documentElement.scrollHeight),
+        const rootRect = root?.getBoundingClientRect?.();
+        // Do not use clientHeight — that is the viewport (Letter tall) and pads short
+        // content with blank space / stretches tall PDFs incorrectly.
+                rootRect?.width ?? 0,
+                root?.scrollWidth ?? 0,
+                body?.scrollWidth ?? 0,
+                body?.offsetWidth ?? 0,
+                doc?.scrollWidth ?? 0,
+            ),
+                rootRect?.height ?? 0,
+                root?.scrollHeight ?? 0,
             );
         }
         const rect = el.getBoundingClientRect();
@@ -401,6 +458,22 @@ async function applyDynamicPageSize(page: Page, widthMm: number, heightMm: numbe
     await page.addStyleTag({
         content: `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; background: #ffffff; }`,
     });
+}
+
+async function renderComplianceReportPdf(page: Page): Promise<Buffer> {
+    const pdfUint8 = await page.pdf({
+        format: 'letter',
+        printBackground: true,
+        preferCSSPageSize: true,
+        margin: { ...COMPLIANCE_PDF_MARGIN },
+        omitBackground: false,
+        tagged: false,
+    });
+    const buf = Buffer.from(pdfUint8);
+    if (!buf.length) {
+        throw new Error('Puppeteer returned an empty PDF buffer');
+    }
+    return buf;
 }
 
 /**
@@ -536,10 +609,11 @@ export async function renderHtmlToA4PdfBuffer(htmlBody: string): Promise<Buffer>
         browser = await launchLetterPdfBrowser();
         const page = await browser.newPage();
         await page.emulateMediaType('print');
+        await page.emulateMediaType(kind === 'compliance-report' ? 'print' : 'screen');
         await page.setViewport({
             width: mmToCssPx(A4_PAGE_WIDTH_MM),
             height: mmToCssPx(A4_PAGE_HEIGHT_MM),
-            deviceScaleFactor: 2,
+            deviceScaleFactor: kind === 'compliance-report' ? 1 : 2,
         });
 
         const documentHtml = wrapHtmlForA4Pdf(htmlBody);
